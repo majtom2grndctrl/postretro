@@ -73,6 +73,79 @@ The analyzer's byte model and the shipped findings bound what a tile-level hiera
 - Owner ruling (this session): a marginal disk-and-live-VRAM win is accepted because the hierarchy is bandwidth-neutral and taken only where unnoticeable, so the ~15–20%-of-stored-tiles figure is informational, not a go/no-go gate. Phase 1 confirms magnitude per fixture and sizes Phase 3 (whose win on large open / directional-lit maps is the L1-shaped bounce gradient); it does not decide whether to build.
 - Resource weighting for the Phase 3 gate (owner): the reject test is per-resource, not a scalar net. On the measured fixtures composed-atlas live VRAM is ~16–20 MB against a ~1 GB residency budget — abundant — while `.prl` disk is the epic's scarce term and GPU bandwidth is protected (the hierarchy is bandwidth-neutral). So a net cost that lands only in an abundant resource does not reject Phase 3; only an unoffset net loss in a scarce resource does. Phase 1's per-level attribution reports the L1-vs-L2 delta per resource so the gate can be applied this way.
 
+## Phase 1 local measurement — 2026-09-17
+
+The owner requested a manageable local map and reserved the preferred full Warren hallway for Windows. `stress-warren-hallway-inspection-mini.map` proved not manageable on this Mac at the pinned 1.0 m spacing: an exact cold attempt reached 2% of SH after 75.73 s while its ETA worsened to about 46 minutes; the ordinary approximate development path showed the same order of cost. Both were stopped before emitting an artifact. The completed local control therefore uses the already-approved Phase-1 theatrical fixture `content/dev/maps/kinematic-platform.map`; the Windows runbook below retains the full hallway stress proof.
+
+Measurement identity:
+
+- source checkpoint: `ea4ade943` (`measure adaptive SH hierarchy projection`)
+- machine class: macOS 26.6.2, x86_64, 16 logical CPUs
+- command: `target/debug/prl-build content/dev/maps/kinematic-platform.map -o <temp>/kinematic.prl --release --no-tui --sh-probe-spacing 1.0 --sh-analyze --sh-analyze-out <temp>/kinematic.analysis.json -j 14`
+- cache/quality: exact `--release`; cache bypassed
+- workers: 14
+- wall time: 33.73 s; SH stage 11.46 s
+- maximum resident set: 1,757,925,376 B (1.64 GiB); macOS peak-footprint counter 1,051,430,912 B
+- grid: 23×65×89 = 133,055 probes, 118,231 valid; 2,346 bricks, 2,112 non-empty
+- output hashes: PRL SHA-256 `998401450a586b2c9e9a978bfcdda47c9375d2b3e3a201cf7764c3c8d9221f07`; JSON SHA-256 `38dcfbd70d576c8c759d38987cf5670a04f9ed4b6faa75efca2338bf041260ac`
+- cleanup: outputs lived only under `/private/tmp/postretro-adaptive-kinematic.0jv1kv` and were removed after recording these numbers
+
+The id-34, id-35, and composed carriers share the same stored-tile geometry and 288-byte raw tile size on this fixture:
+
+| measure | stored tiles | bytes per carrier |
+|---|---:|---:|
+| shipped scale-0 classification | 43,179 | 12,435,552 |
+| hierarchy projection | 42,850 | 12,340,800 |
+| all-L2 structural floor | 2,112 | 608,256 |
+| dense id-34 probe records | n/a | 1,064,440 |
+
+The hierarchy saves 329 tiles (0.762% of shipped stored tiles), or 94,752 raw bytes per carrier. The two on-disk base carriers therefore save 189,504 raw bytes together; the composed live atlas saves another 94,752 bytes. L1 nodes contribute 224 saved tiles (64,512 B per carrier) and L2 nodes contribute 105 (30,240 B per carrier). Because L1 makes a positive contribution in scarce disk as well as abundant composed-atlas memory, Phase 3 is selected.
+
+| node scale | L0 | L1 | L2 |
+|---:|---:|---:|---:|
+| 0 | 773 | 879 | 308 |
+| 1 | 0 | 4 | 15 |
+| 2 | 0 | 0 | 0 |
+| 3 | 0 | 0 | 0 |
+
+Of the 19 scale-1 nodes, four passed the relative gate directly (worst relative p95 0.08849, worst relative max 0.15506) and 15 used the specified darkness bypass. Darkness-bypass nodes reached relative p95 0.27982 / relative max 0.62629, which is expected because the relative comparison is deliberately skipped below the absolute darkness floor. No level-smoothing demotion was needed. Candidate blocks were: delta entry 57, partial edge 70, member shape/level 135, gate 3, protection 0.
+
+The hierarchy seam pass measured 5,528 differing-node brick faces: 244 cross-scale and 1,862 cross-level. Residual max/mean were 0.03799 / 0.000943 overall and 0.03220 / 0.002313 on cross-scale faces. Since only scale 1 participates, adjacent scale differences cannot exceed one at the adopted operating point; the cross-scale maximum is also below the overall maximum. Adopt maximum emitted scale 1 and add no separate 2:1 scale-balance rule.
+
+### Windows Warren hallway runbook (owner action)
+
+Run the preferred full stress map from a clean checkout after Tasks 3–8 land. This is blocking external evidence, not inferred from the local control. In a Developer PowerShell at the repository root:
+
+```powershell
+cargo build -p postretro-level-compiler --release
+$Run = Join-Path $env:TEMP "postretro-adaptive-warren-hallway"
+New-Item -ItemType Directory -Force $Run | Out-Null
+$Map = "content/dev/maps/stress-warren-hallway-inspection.map"
+$Prl = Join-Path $Run "hallway.prl"
+$Json = Join-Path $Run "hallway.analysis.json"
+$Args = @($Map, "-o", $Prl, "--release", "--no-tui", "--sh-probe-spacing", "1.0", "--sh-analyze", "--sh-analyze-out", $Json, "-j", "14")
+$Clock = [Diagnostics.Stopwatch]::StartNew()
+$Process = Start-Process -FilePath ".\target\release\prl-build.exe" -ArgumentList $Args -NoNewWindow -PassThru
+$Peak = 0L
+while (-not $Process.HasExited) {
+    $Process.Refresh()
+    $Peak = [Math]::Max($Peak, $Process.PeakWorkingSet64)
+    Start-Sleep -Milliseconds 500
+}
+$Clock.Stop()
+[pscustomobject]@{
+    ExitCode = $Process.ExitCode
+    WallSeconds = $Clock.Elapsed.TotalSeconds
+    PeakWorkingSetBytes = $Peak
+    Processor = $env:PROCESSOR_IDENTIFIER
+    LogicalProcessors = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+    PhysicalMemoryBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+}
+Get-FileHash -Algorithm SHA256 $Prl, $Json
+```
+
+Record the JSON hierarchy table, projected/shipped/all-L2 bytes, node errors, blocker attribution, seam residuals, worker count, exact command, machine fields, wall/RSS, hashes, and whether every required receiver renders without wgpu validation errors. If the full map is infeasible, repeat the same script with `stress-warren-hallway-inspection-mini.map` and record the full-map stopping stage/limit. After copying the measurements, clean up with `Remove-Item -Recurse -Force $Run`.
+
 ## Pinned orderings
 
 | id | scenario | ordering pinned | expected outcome |

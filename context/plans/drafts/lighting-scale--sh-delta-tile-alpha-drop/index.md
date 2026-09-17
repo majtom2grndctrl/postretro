@@ -2,7 +2,7 @@
 
 Brief · compact · Epic: lighting scale (on-disk + VRAM) · reads: `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache · `context/lib/rendering_pipeline.md` §4 · read at 4f9e5c5
 
-> **Build order (lighting-scale footprint / peak-RAM track):** `sh-delta-cone-reach-cull` → **2 — this brief** → `adaptive-probe-spacing` → `sh-delta-cell-major-two-pass-bake` (Phase 2, conditional). Follows cone-reach-cull: re-baseline this brief's delta byte-identity ACs and the three delta stage-version bumps onto the post-cone format (both touch the id-27/41/45 sections — see Open questions R6). Precedes adaptive-probe-spacing by value, not dependency: adaptive is a separate wire surface (base id-34/35), so the two do not collide on versions, only on the shared SH compose/sampler code area.
+> **Build order (lighting-scale footprint track):** `sh-delta-cone-reach-cull` (Phase 1) has **shipped to `main`**, so this is now the **next** footprint item → then `adaptive-probe-spacing`. Re-baseline this brief's delta byte-identity ACs and the three delta stage-version bumps onto the **landed** post-cull format — cone-reach already bumped those versions, so this stacks on the new baseline (Open questions R6). Independent of adaptive on the wire (delta id-27/41/45 vs base id-34/35); coordinate only on the shared SH compose/sampler code. **Re-ground before build:** cone-reach's landing edited the delta bake code this brief cites (it was read at 4f9e5c5) — refresh symbols against `main` in the `/review-brief` pass.
 
 ## Problem
 Developer-raised, from the lighting-scale size work. Baked `.prl` files run to multiple GB

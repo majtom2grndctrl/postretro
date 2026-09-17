@@ -1,5 +1,5 @@
 // AnimatedDirectShDeltaVolumes PRL section (ID 45): direct SH deltas for animated baked lights.
-// See: context/plans/in-progress/animated-direct-sh-dynamic-receivers/
+// See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
 use crate::delta_sh_volumes::{
@@ -11,7 +11,7 @@ use crate::sh_reconstruct::Level;
 /// Section-internal version, written as the first byte of the payload.
 pub const ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 4;
 
-/// Animated direct SH delta volumes section (ID 45), version 3.
+/// Animated direct SH delta volumes section (ID 45), version 4.
 ///
 /// This is the direct-lighting counterpart to `DeltaShVolumesSection` (ID 27).
 /// Its descriptor-index table and CSR light indices are independently keyed by

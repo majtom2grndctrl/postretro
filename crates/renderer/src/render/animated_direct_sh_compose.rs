@@ -118,8 +118,9 @@ pub(super) fn build_animated_direct_pass(
     views: AnimatedDirectShPassViews<'_>,
     uniform_bind_group_layout: &wgpu::BindGroupLayout,
 ) -> AnimatedDirectShComposePipeline {
+    let delta_subblocks = animated_delta.delta_subblocks.as_slice();
     let buffers = build_animated_direct_delta_buffers(Some(animated_delta), layout.grid_dimensions);
-    let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+    let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
     let compaction_meta_bytes =
         pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
     let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);

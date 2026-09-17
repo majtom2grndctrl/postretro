@@ -121,8 +121,9 @@ struct DirectPromotionStorage {
 
 impl DirectPromotionStorage {
     fn new(delta: Option<&DirectShDeltaVolumesSection>, grid_dimensions: [u32; 3]) -> Self {
+        let delta_subblocks: &[u16] = delta.map_or(&[], |delta| delta.delta_subblocks.as_slice());
         let buffers = build_direct_delta_buffers(delta, grid_dimensions);
-        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
         let compaction_meta_bytes =
             pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
         let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
@@ -796,28 +797,74 @@ mod tests {
                 "loader must decode through {decode}"
             );
         }
-        assert!(
-            !loader.contains("delta_subblocks.clone()"),
-            "the loader must not clone a decoded delta payload",
-        );
+        for forbidden in [
+            "delta_subblocks.clone()",
+            "delta_subblocks.to_vec()",
+            "delta_subblocks.to_owned()",
+        ] {
+            assert!(
+                !loader.contains(forbidden),
+                "the loader must not re-own a decoded delta payload via {forbidden}",
+            );
+        }
 
-        for (label, source) in [
-            ("id 41", include_str!("direct_sh_compose.rs")),
-            ("id 27", include_str!("sh_compose.rs")),
-            ("id 45", include_str!("animated_direct_sh_compose.rs")),
+        let compose_builder = include_str!("../../../render-cpu/src/sh_compose.rs");
+        let compose_builder_production = compose_builder
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("render-cpu compose source has a production prefix");
+        assert!(
+            !compose_builder_production.contains("pub delta_subblocks: Vec<u16>"),
+            "compose builders must return metadata without re-owning the format payload",
+        );
+        for forbidden in [
+            ".delta_subblocks.clone()",
+            ".delta_subblocks.to_vec()",
+            ".delta_subblocks.to_owned()",
+        ] {
+            assert!(
+                !compose_builder_production.contains(forbidden),
+                "compose builders must not create an intermediate payload via {forbidden}",
+            );
+        }
+
+        for (label, source, borrowed_payload) in [
+            (
+                "id 41",
+                include_str!("direct_sh_compose.rs"),
+                "delta.map_or(&[], |delta| delta.delta_subblocks.as_slice())",
+            ),
+            (
+                "id 27",
+                include_str!("sh_compose.rs"),
+                "delta.map_or(&[], |delta| delta.delta_subblocks.as_slice())",
+            ),
+            (
+                "id 45",
+                include_str!("animated_direct_sh_compose.rs"),
+                "animated_delta.delta_subblocks.as_slice()",
+            ),
         ] {
             let production = source
                 .split("\n#[cfg(test)]\nmod tests")
                 .next()
                 .expect("renderer source has a production prefix");
             assert!(
-                production.contains("u16_slice_to_bytes(&buffers.delta_subblocks)"),
-                "{label} upload must stage the format-owned halves verbatim",
+                production.contains(borrowed_payload)
+                    && production.contains("u16_slice_to_bytes(delta_subblocks)"),
+                "{label} renderer must stage bytes directly from the borrowed format payload",
             );
-            assert!(
-                !production.contains("buffers.delta_subblocks.clone()"),
-                "{label} upload must not clone or re-own the half payload",
-            );
+            for forbidden in [
+                "buffers.delta_subblocks",
+                "delta_subblocks.clone()",
+                "delta_subblocks.to_vec()",
+                "delta_subblocks.to_owned()",
+            ] {
+                assert!(
+                    !production.contains(forbidden),
+                    "{label} renderer must not add an intermediate payload via {forbidden}",
+                );
+            }
         }
     }
 
@@ -948,7 +995,7 @@ mod tests {
         // Regression: without id 41 or id 45, Pass A must remain available so
         // clearing bit 3 writes zero instead of exposing the immutable base.
         let storage = DirectPromotionStorage::new(None, [1, 1, 1]);
-        assert!(storage.buffers.delta_subblocks.is_empty());
+        assert_eq!(storage.subblock_bytes, vec![0; 4]);
         assert_eq!(storage.buffers.affinity_offsets, vec![0, 0]);
         assert!(storage.buffers.affinity_lights.is_empty());
 

@@ -1218,6 +1218,7 @@ pub(crate) fn bake_probe(
             mean_distance: f32_to_f16_bits(mean_distance),
             mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
             density_level: 0,
+            node_scale: 0,
         },
     }
 }
@@ -1490,18 +1491,21 @@ mod tests {
                     mean_distance: 0,
                     mean_sq_distance: 0,
                     density_level: 0,
+                    node_scale: 0,
                 },
                 OctahedralShProbe {
                     validity: 0,
                     mean_distance: 0,
                     mean_sq_distance: 0,
                     density_level: 0,
+                    node_scale: 0,
                 },
                 OctahedralShProbe {
                     validity: 1,
                     mean_distance: 0,
                     mean_sq_distance: 0,
                     density_level: 0,
+                    node_scale: 0,
                 },
             ],
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,

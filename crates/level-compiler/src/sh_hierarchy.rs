@@ -6,7 +6,7 @@
 
 use postretro_level_format::sh_reconstruct::Level;
 
-pub(crate) const MAX_NODE_SCALE: u8 = 3;
+pub(crate) use postretro_level_format::sh_reconstruct::MAX_NODE_SCALE;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BrickInput {

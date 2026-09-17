@@ -100,15 +100,23 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
 - [ ] Odd-half alignment: a texel at an odd f16 offset — every odd texel index once the
   stride is three — reads back its own R, G, B through the word-packed reader, for the
   first texel of a probe at every kept rank and the last texel of a tile (research.md R4).
-- [ ] Entry dropping and coarsening decide identically: on the id-41 and id-45 fixtures the
-  retained entry set, `cell_levels` and `valid_probe_masks` are equal before and after.
+- [ ] Entry dropping and coarsening decide identically: on the id-41, id-45 and id-27 fixtures
+  the retained entry set, `cell_levels` and `valid_probe_masks` are equal before and after.
 - [ ] Working-set projection and raw-payload cap summaries report the reduced per-entry size
-  for 6×6 tiles; `--sh-delta-max-size` and the working-set default are unchanged.
+  for 6×6 tiles — the compose footprint fixture literal moves 18,432 → 13,824 B and the
+  working-set per-entry projection asserts the same 13,824 B; `--sh-delta-max-size` and the
+  working-set default are unchanged.
 - [ ] Cache: each delta stage's key changes with its version; a cache directory populated by
-  the pre-change binary serves no entry; two warm builds under the new format emit
-  byte-identical `.prl` (research.md R5).
-- [ ] Runtime RAM: no new owned copy of a delta payload is introduced — the loader's section
-  and the renderer's staging bytes remain the only CPU copies.
+  the pre-change binary serves no entry by key, not by length; two warm builds under the new
+  format emit byte-identical `.prl`; the hardcoded stage-version pin test is re-baselined to
+  the bumped INDIRECT/DIRECT_SH_DELTA/ANIMATED_DIRECT delta versions (research.md R5).
+- [ ] Runtime RAM: a source gate over the loader decode and renderer upload path shows this
+  change clones or re-owns no delta payload — the loader's `from_bytes` section and the
+  renderer's verbatim staging bytes stay the only CPU copies (grep gate; no runtime counter
+  exists).
+- [ ] Landing order, adaptive-probe-spacing: after both land, the three delta compose shaders
+  derive the per-texel multiplier from the single format stride constant, and no id-27/41/45
+  byte comparison is taken against the pre-adaptive base format (research.md R7).
 
 ### Manual
 - [ ] Size delta, recorded in `research.md`: for one real id-41 map and one real id-45 map,

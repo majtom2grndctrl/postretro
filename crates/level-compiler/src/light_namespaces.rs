@@ -14,6 +14,7 @@
 // - `StaticBakedLights`: internal to lightmap and SH base bakes; no on-disk slot.
 
 use postretro_level_format::light_influence::InfluenceRecord;
+use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
 
 use crate::map_data::{LightType, MapLight};
 
@@ -122,6 +123,21 @@ impl<'a> AnimatedBakedLights<'a> {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Build the raw `MapData::lights` to animated-descriptor slot table.
+    ///
+    /// This metadata depends only on namespace membership. Planning can use it
+    /// before the base SH rays run, and both cold and grouped SH bakes reuse the
+    /// same source so their emitted table cannot drift from the planner.
+    pub fn slot_for_source_lights(&self, source_light_count: usize) -> Vec<u32> {
+        let mut slots = vec![ANIMATED_SLOT_NONE; source_light_count];
+        for (slot, entry) in self.entries.iter().enumerate() {
+            if entry.source_index < slots.len() {
+                slots[entry.source_index] = slot as u32;
+            }
+        }
+        slots
     }
 
     /// Construct from parallel light + influence slices in this namespace's
@@ -315,6 +331,24 @@ mod tests {
         let alpha = AlphaLightsNs::from_lights(&lights);
 
         assert_eq!(alpha.compact_source_table(&[10_u32, 20, 30]), [20, 30]);
+    }
+
+    #[test]
+    fn animated_slots_are_available_without_baking_base_sh() {
+        let mut bake_only = light(ShadowType::StaticLightMap, true, false);
+        bake_only.bake_only = true;
+        let lights = vec![
+            light(ShadowType::StaticLightMap, false, false),
+            bake_only,
+            light(ShadowType::StaticLightMap, true, false),
+            light(ShadowType::StaticLightMap, false, true),
+        ];
+
+        let animated = AnimatedBakedLights::from_lights(&lights);
+        assert_eq!(
+            animated.slot_for_source_lights(lights.len()),
+            [ANIMATED_SLOT_NONE, 0, 1, ANIMATED_SLOT_NONE,]
+        );
     }
 
     #[test]

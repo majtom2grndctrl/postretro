@@ -291,13 +291,10 @@ pub fn bake_sh_volume_controlled(
         .collect();
 
     // Emit the map-light-index to animated-slot table consumed by runtime
-    // animation lookup. This is the inverse of `AnimatedBakedLights` slotting.
-    let mut slot_for_map_light = vec![ANIMATED_SLOT_NONE; inputs.total_light_count];
-    for (slot, entry) in inputs.animated_lights.entries().iter().enumerate() {
-        if entry.source_index < slot_for_map_light.len() {
-            slot_for_map_light[entry.source_index] = slot as u32;
-        }
-    }
+    // animation lookup. Planning uses this same metadata before probe rays run.
+    let slot_for_map_light = inputs
+        .animated_lights
+        .slot_for_source_lights(inputs.total_light_count);
 
     let section = OctahedralShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
@@ -868,12 +865,15 @@ fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
 
 /// Must match `cone_attenuation` in `forward.wgsl` — Hermite cubic smoothstep
 /// so direct and indirect agree along the cone fringe.
-fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
+pub(crate) fn spot_cone_parameters(light: &MapLight) -> (Vec3, f32, f32) {
     let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
     let inner = light.cone_angle_inner.unwrap_or(0.0);
     let outer = light.cone_angle_outer.unwrap_or(inner + 0.01);
-    let cos_outer = outer.cos();
-    let cos_inner = inner.cos();
+    (dir, inner.cos(), outer.cos())
+}
+
+fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
+    let (dir, cos_inner, cos_outer) = spot_cone_parameters(light);
     let cos_theta = dir.dot(light_to_surface.normalize_or_zero());
     smoothstep(cos_outer, cos_inner, cos_theta)
 }

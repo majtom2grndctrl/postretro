@@ -28,12 +28,12 @@ use crate::animated_direct_sh_bake::{
 use crate::bake_control::BakeControl;
 use crate::billboard_direct_scatter_bake::{
     ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID, BILLBOARD_DIRECT_SCATTER_STAGE_ID,
-    BillboardDirectScatterBakeInputs,
+    BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, BillboardDirectScatterBakeInputs,
     bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled,
     bake_billboard_direct_scatter_volume_cached_controlled,
 };
 use crate::bvh_build::build_bvh;
-use crate::cache::StageCache;
+use crate::cache::{CacheKey, StageCache};
 use crate::cell_visibility_bake::{
     CELL_VISIBILITY_STAGE_VERSION, cell_visibility_bake_cached, cell_visibility_cache_key,
 };
@@ -50,8 +50,9 @@ use crate::delta_sh_bake::{
 };
 use crate::delta_sh_cache::{DeltaShEntryKeyInputs, delta_sh_entry_cache_key};
 use crate::direct_sh_bake::{
-    DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DIRECT_SH_STAGE_ID, DirectBakeInputs,
-    bake_direct_sh_delta_volumes_controlled_with_tally, bake_direct_sh_volume_cached_controlled,
+    DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DIRECT_SH_STAGE_ID,
+    DIRECT_SH_STAGE_VERSION, DirectBakeInputs, bake_direct_sh_delta_volumes_controlled_with_tally,
+    bake_direct_sh_volume_cached_controlled,
 };
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::governor::Governor;
@@ -277,6 +278,7 @@ fn bake_deltas_with_controls(
         sh_ctx: &sh_ctx,
         portals: &[],
         animated_lights: &animated_lights,
+        mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
     };
     let direct_inputs = DirectBakeInputs {
         sh_ctx: &sh_ctx,
@@ -356,6 +358,7 @@ fn bake_animated_delta_pair(
         sh_ctx: &sh_ctx,
         portals: &[],
         animated_lights: &animated_lights,
+        mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
     };
     let config = ShConfig { probe_spacing: 1.0 };
     let (indirect, indirect_tally) =
@@ -796,6 +799,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
         };
         let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             &animated_inputs,
@@ -1335,5 +1339,30 @@ fn five_stage_version_bumps_miss_then_hit() {
     assert_eq!(cache.get(&bumped_chunk), None);
     cache.put(&bumped_chunk, b"bumped");
     assert_eq!(cache.get(&bumped_chunk), Some(b"bumped".to_vec()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cone_reach_cache_versions_only_invalidate_direct_stages() {
+    assert_eq!(DIRECT_SH_STAGE_VERSION, 4);
+    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 2);
+    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 2);
+    assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
+    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 1);
+
+    let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
+    let current = CacheKey::new(
+        BILLBOARD_DIRECT_SCATTER_STAGE_ID,
+        BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
+        &[0; 32],
+    );
+    let bumped = CacheKey::new(
+        BILLBOARD_DIRECT_SCATTER_STAGE_ID,
+        BILLBOARD_DIRECT_SCATTER_STAGE_VERSION + 1,
+        &[0; 32],
+    );
+    assert_ne!(current.as_filename(), bumped.as_filename());
+    cache.put(&current, b"current");
+    assert_eq!(cache.get(&bumped), None);
     let _ = std::fs::remove_dir_all(dir);
 }

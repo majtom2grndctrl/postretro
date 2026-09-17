@@ -742,12 +742,12 @@ pub struct Args {
     /// id-41 classifier and the analysis's protected projection. Repeatable.
     /// Compiler-only measurement input; never stored.
     sh_protect_aabbs: Vec<[f32; 6]>,
-    /// Measurement-only override for base SH stored density. The classifier and
-    /// delta ceilings land in Task 6; this interim flag exists to exercise the
-    /// L1/L2 pack and runtime paths before that classifier is wired.
+    /// Compiler-only debug override for base SH stored density. Delta,
+    /// protection, partial-brick, and seam constraints still apply.
     sh_density_force_level: Option<postretro_level_format::sh_reconstruct::Level>,
-    /// Measurement-only hierarchy scale override. Phase 1 reports the value;
-    /// the emitted bake remains byte-identical until the hierarchy wire lands.
+    /// Compiler-only hierarchy scale override. Analysis consumes it without
+    /// changing output; without analysis it forces emitted nodes subject to
+    /// the same storage/protection constraints as production classification.
     sh_density_force_scale: Option<u8>,
 }
 
@@ -790,8 +790,8 @@ fn help_text() -> String {
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
-         --sh-density-force-level <0|1|2> Measurement-only base SH brick level override; partial bricks and L1 bricks with no valid corner remain L0 (default: none)\n    \
-         --sh-density-force-scale <0..3> Measurement-only base SH hierarchy scale override; emitted bytes remain unchanged in the analysis phase (default: none)\n    \
+         --sh-density-force-level <0|1|2> Debug base SH brick level override; storage/protection ceilings still apply (default: none)\n    \
+         --sh-density-force-scale <0..3> Debug base SH hierarchy scale override; with --sh-analyze it affects analysis only, otherwise it affects emitted nodes after storage/protection clamping (default: none)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,

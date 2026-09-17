@@ -1188,12 +1188,12 @@ fn run_after_parsing(
         alpha_lights_ns.compact_source_table(&raw_slot_for_map_light);
     // Both warm grouped and cold monolithic bakes reach this packaging seam as
     // the same lossless RGBA16F valid-probe-order intermediate. Keep group-cache
-    // records format-independent; final v10 packing/BC6H encoding happens only
+    // records format-independent; final v11 packing/BC6H encoding happens only
     // after the delta envelope and base-density classifier settle.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
     // Base stored-set packing now happens only after all delta classifiers have
     // finalized their cell levels. Retain this dense RGBA16F source for every
-    // v10 bake — including `_sh_coarsen "0"` — so both the final pack and an
+    // v11 bake — including `_sh_coarsen "0"` — so both the final pack and an
     // optional analysis have the same pre-BC6H tiles.
     let mut sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
@@ -1525,9 +1525,12 @@ fn run_after_parsing(
         anim_direct: delta_sections.animated_direct.as_ref(),
     };
     let density_classification = if !sh_coarsening_enabled {
+        let levels = sh_density::uniform_l0_levels(sh_volume_section.grid_dimensions)
+            .map_err(|error| anyhow::anyhow!("base SH uniform levels failed: {error}"))?;
+        let scales = vec![0; levels.len()];
         sh_density::DensityClassification {
-            levels: sh_density::uniform_l0_levels(sh_volume_section.grid_dimensions)
-                .map_err(|error| anyhow::anyhow!("base SH uniform levels failed: {error}"))?,
+            levels,
+            scales,
             ..Default::default()
         }
     } else if let Some(force_level) = args.sh_density_force_level {
@@ -1561,10 +1564,24 @@ fn run_after_parsing(
             &protect_aabbs,
         )
         .map_err(|error| anyhow::anyhow!("base SH forced-level constraints failed: {error}"))?;
+        let forced_scale = args
+            .sh_density_force_scale
+            .filter(|_| !args.sh_analyze)
+            .unwrap_or(0);
+        let forced = sh_density::apply_forced_scale_constraints(
+            &mut levels,
+            &sh_volume_section,
+            all_deltas,
+            &protect_aabbs,
+            forced_scale,
+        )
+        .map_err(|error| anyhow::anyhow!("base SH forced-scale constraints failed: {error}"))?;
         sh_density::DensityClassification {
             levels,
+            scales: forced.scales,
             delta_pins,
             protection_pins,
+            hierarchy_blocks: forced.blocks,
         }
     } else {
         let fidelity =
@@ -1572,14 +1589,30 @@ fn run_after_parsing(
         let mut params = sh_coarsen::CoarsenParams::default();
         params.rel_p95_max *= fidelity;
         params.rel_max_max *= fidelity;
-        sh_density::classify_base_levels(
+        let mut classification = sh_density::classify_base_levels(
             &sh_volume_section,
             direct_sh_volume_section.as_ref(),
             all_deltas,
             &protect_aabbs,
             &params,
         )
-        .map_err(|error| anyhow::anyhow!("base SH density classification failed: {error}"))?
+        .map_err(|error| anyhow::anyhow!("base SH density classification failed: {error}"))?;
+        // Phase-1 analysis owns the scale override when `--sh-analyze` is
+        // present, preserving that mode's byte-for-byte output contract. The
+        // same flag without analysis is the Phase-2 emitted R-FORCE path.
+        if let Some(forced_scale) = args.sh_density_force_scale.filter(|_| !args.sh_analyze) {
+            let forced = sh_density::apply_forced_scale_constraints(
+                &mut classification.levels,
+                &sh_volume_section,
+                all_deltas,
+                &protect_aabbs,
+                forced_scale,
+            )
+            .map_err(|error| anyhow::anyhow!("base SH forced-scale constraints failed: {error}"))?;
+            classification.scales = forced.scales;
+            classification.hierarchy_blocks = forced.blocks;
+        }
+        classification
     };
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
     delta_sections.enforce_payload_cap()?;
@@ -1627,10 +1660,11 @@ fn run_after_parsing(
     // exactly the same prefix scheme.
     let dense_indirect = sh_analyze_base_indirect
         .take()
-        .expect("every v10 bake retains its dense RGBA16F indirect source");
+        .expect("every v11 bake retains its dense RGBA16F indirect source");
     let (packed_sh_volume, sh_density_stats) = sh_density::pack_indirect_section_with_levels(
         dense_indirect,
         &density_classification.levels,
+        &density_classification.scales,
     )
     .map_err(|error| anyhow::anyhow!("indirect SH stored-set packing failed: {error}"))?;
     sh_volume_section =
@@ -1645,27 +1679,18 @@ fn run_after_parsing(
     }
     let indirect_section_bytes = sh_volume_section
         .try_to_bytes()
-        .map_err(|error| anyhow::anyhow!("OctahedralShVolume v10 serialization failed: {error}"))?
+        .map_err(|error| anyhow::anyhow!("OctahedralShVolume v11 serialization failed: {error}"))?
         .len();
     let direct_section_bytes = direct_sh_volume_section
         .as_ref()
         .map(|section| section.try_to_bytes().map(|bytes| bytes.len()))
         .transpose()
-        .map_err(|error| anyhow::anyhow!("DirectShVolume v3 serialization failed: {error}"))?;
-    log::info!(
-        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, delta pins id27/id41/id45 {}/{}/{}, protection pins {}, id34 {} bytes, id35 {}, format tag {}",
-        sh_density_stats.brick_levels[0],
-        sh_density_stats.brick_levels[1],
-        sh_density_stats.brick_levels[2],
-        sh_density_stats.stored_tiles,
-        density_classification.delta_pins[0],
-        density_classification.delta_pins[1],
-        density_classification.delta_pins[2],
-        density_classification.protection_pins,
+        .map_err(|error| anyhow::anyhow!("DirectShVolume v4 serialization failed: {error}"))?;
+    sh_density::log_density_summary(
+        sh_density_stats,
+        &density_classification,
         indirect_section_bytes,
-        direct_section_bytes
-            .map(|bytes| format!("{bytes} bytes"))
-            .unwrap_or_else(|| "absent".to_owned()),
+        direct_section_bytes,
         sh_volume_section.irradiance_format,
     );
 

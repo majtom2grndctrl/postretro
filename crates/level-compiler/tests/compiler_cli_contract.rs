@@ -70,7 +70,7 @@ impl Drop for TempBuildDir {
 }
 
 fn compile_fixture(input: &Path, output: &Path, jobs: usize) -> Output {
-    compile_fixture_with_irradiance_format(input, output, jobs, true)
+    compile_fixture_with_irradiance_format(input, output, jobs, true, None)
 }
 
 fn compile_fixture_with_irradiance_format(
@@ -78,6 +78,7 @@ fn compile_fixture_with_irradiance_format(
     output: &Path,
     jobs: usize,
     uncompressed_irradiance: bool,
+    forced_scale: Option<u8>,
 ) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
     command
@@ -90,6 +91,11 @@ fn compile_fixture_with_irradiance_format(
         .arg(jobs.to_string());
     if uncompressed_irradiance {
         command.arg("--uncompressed-irradiance");
+    }
+    if let Some(scale) = forced_scale {
+        command
+            .arg("--sh-density-force-scale")
+            .arg(scale.to_string());
     }
     command.output().expect("spawn prl-build")
 }
@@ -174,6 +180,60 @@ fn sh_analysis_is_byte_preserving_for_compiled_prl() {
     );
 }
 
+#[test]
+fn forced_hierarchy_output_round_trips_through_production_loader() {
+    let workspace = workspace_root();
+    let source = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        source.is_file(),
+        "fixture map missing: {}",
+        source.display()
+    );
+
+    let temp = TempBuildDir::new();
+    let input = temp.0.join("forced-hierarchy.map");
+    let map = std::fs::read_to_string(&source)
+        .expect("read hierarchy source fixture")
+        .replacen(
+            "\"classname\" \"light\"",
+            "\"classname\" \"light_dynamic\"",
+            1,
+        );
+    std::fs::write(&input, map).expect("write hierarchy fixture without static delta lights");
+    let output = temp.0.join("forced-hierarchy.prl");
+    let build = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+        .env("RUST_LOG", "info")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--no-cache")
+        .arg("--no-tui")
+        .arg("--verbose")
+        .arg("--uncompressed-irradiance")
+        .arg("--sh-probe-spacing")
+        .arg("1")
+        .arg("--lightmap-density")
+        .arg("0.25")
+        .arg("--sh-density-force-level")
+        .arg("1")
+        .arg("--sh-density-force-scale")
+        .arg("1")
+        .arg("-j")
+        .arg("1")
+        .output()
+        .expect("spawn forced hierarchy prl-build");
+    assert_success(&build, 1);
+
+    let section = read_sh_volume(&output);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        section.probes.iter().any(|probe| probe.node_scale == 1),
+        "forced hierarchy fixture must emit at least one scale-1 node:\n{stderr}"
+    );
+    postretro_level_loader::load_prl(output.to_str().expect("UTF-8 fixture path"))
+        .expect("production loader must accept forced hierarchy output");
+}
+
 fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let bytes = std::fs::read(output).expect("read compiled PRL");
     let mut cursor = Cursor::new(bytes);
@@ -181,7 +241,7 @@ fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let section = read_section_data(&mut cursor, &metadata, SectionId::OctahedralShVolume as u32)
         .expect("read OctahedralShVolume section")
         .expect("OctahedralShVolume section must be present");
-    OctahedralShVolumeSection::from_bytes(&section).expect("parse v10 OctahedralShVolume")
+    OctahedralShVolumeSection::from_bytes(&section).expect("parse v11 OctahedralShVolume")
 }
 
 fn run_compiler(args: &[&str]) -> Output {
@@ -688,7 +748,7 @@ fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
     );
 }
 
-/// The v10 brick-major stored base atlas must be deterministic at the compiler seam:
+/// The v11 node-aware stored base atlas must be deterministic at the compiler seam:
 /// `--no-cache` selects the monolithic bake and the pipeline then chooses the
 /// uncompressed debug payload or default BC6H payload. `gate-heavily-lit` keeps
 /// the four cold bakes representative without making the regular test target
@@ -707,7 +767,7 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
     let bc6h_b = temp.0.join("bc6h-b.prl");
 
     for output in [&uncompressed_a, &uncompressed_b] {
-        let build = compile_fixture_with_irradiance_format(&input, output, 1, true);
+        let build = compile_fixture_with_irradiance_format(&input, output, 1, true, Some(1));
         assert_success(&build, 1);
     }
     assert_eq!(
@@ -722,7 +782,7 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
     );
 
     for output in [&bc6h_a, &bc6h_b] {
-        let build = compile_fixture_with_irradiance_format(&input, output, 1, false);
+        let build = compile_fixture_with_irradiance_format(&input, output, 1, false, Some(1));
         assert_success(&build, 1);
     }
     let first_bc6h = read_sh_volume(&bc6h_a);

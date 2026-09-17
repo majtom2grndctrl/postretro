@@ -107,7 +107,7 @@ pub(crate) struct DeltaView<'a> {
     pub(crate) affinity_dims: [u32; 3],
     tile_dimension: usize,
     valid_probe_masks: &'a [u64],
-    offsets: &'a [u32],
+    pub(crate) offsets: &'a [u32],
     subblocks: &'a [u16],
     /// Starting f16 offset for every CSR entry, in the final compact payload
     /// order. The trailing value is the total payload length.
@@ -1615,7 +1615,7 @@ fn project_hierarchy(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn evaluate_hierarchy_node(
+pub(crate) fn evaluate_hierarchy_node(
     truth: &[Option<Tile>],
     grid_dims: [u32; 3],
     origin: [u32; 3],

@@ -132,6 +132,28 @@ initial empty compose (`delta_subblocks` 4 B, total 32 B); it precedes map data 
 graded section. The automation stopped the engine after all three lines appeared; its later
 stray-process sweep may return non-zero after the process tree is already gone.
 
+## Windows promoted animated-light capture
+
+M2 passed on the same Windows 11/NVIDIA GeForce GTX 1660 SUPER Vulkan adapter as M1 (vendor
+`0x10de`, device `0x21c4`, NVIDIA driver 616.92). Before commit `29e8611c` and after commit
+`06fd2f0f` each built with `--features capture`, baked, and loaded only their matching
+`spawner-alpha` PRL. The input map SHA-256 was identical in both:
+`78B6BDC149AFD9DF58B83A340383F39191E378CB0C976592D86AA586F00C07EA`.
+
+| Check | Result |
+|---|---|
+| Capture dimensions | 640 × 480 |
+| PNG SHA-256 | identical: `D0B5262D3DD4698E92905DC32CA26411E3037050C1E50834829C179C0414DC27` |
+| Decoded RGBA difference | 0 of 307,200 pixels; max channel delta 0 |
+| Fresh-process repeat | byte-identical second run for each commit |
+| Matched PRL size | before 4,364,738 B; after 4,315,345 B |
+
+Both captures used camera `[6.1, 2.2, -2.5]`, yaw 77°, pitch -12°, FOV 90°, and the same
+640×480 target. `alarm_light` was forced active at radiance `[4.0, 0.0, 0.0]` with promotion
+weight 1.0. The same image 0.25.10 PNG encoder ran in both builds, so byte equality is a
+meaningful additional check. A ReShade64 Vulkan-layer loader message in the logs did not
+affect the verified capture output.
+
 For the same cold before/after artifacts, sections 34, 35, and 48 were byte-identical:
 
 | Section | bytes | SHA-256 (both artifacts) |

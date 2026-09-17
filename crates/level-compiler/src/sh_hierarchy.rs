@@ -44,7 +44,7 @@ pub(crate) struct NodeRecord {
     pub evaluation: NodeEvaluation,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockCounts {
     pub delta: u64,
     pub protection: u64,

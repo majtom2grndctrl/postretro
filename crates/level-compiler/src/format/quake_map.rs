@@ -246,12 +246,34 @@ pub fn translate_light(
         LightType::Point => {}
     }
 
-    let style = parse_optional_int(props, "style")?.unwrap_or_else(|| {
+    let authored_style = parse_optional_int(props, "style")?.unwrap_or_else(|| {
         log::warn!("light entity missing 'style'; defaulting to 0 (no animation)");
         0
     });
+    let directional_animation_authored = light_type == LightType::Directional
+        && (authored_style != 0
+            || props.contains_key("brightness_curve")
+            || props.contains_key("color_curve")
+            || props.contains_key("direction_curve")
+            || props
+                .get("_animated")
+                .is_some_and(|value| value.trim() != "0"));
+    if directional_animation_authored {
+        log::warn!(
+            "[SH-DENSITY-DIRECTIONAL-STATIC] light {} authored animation, but directional lights are normalized to static so base-node coarsening remains time-invariant",
+            format_light_ref(classname, origin),
+        );
+    }
+    let style = if light_type == LightType::Directional {
+        0
+    } else {
+        authored_style
+    };
 
-    let phase_raw = match props.get("_phase") {
+    let phase_raw = match props
+        .get("_phase")
+        .filter(|_| light_type != LightType::Directional)
+    {
         Some(s) => parse_f32(s).ok_or_else(|| TranslateError::InvalidProperty {
             key: "_phase",
             value: s.clone(),
@@ -315,7 +337,7 @@ pub fn translate_light(
     // weight map and an `AnimationDescriptor` slot for the light; the runtime
     // bridge writes the actual brightness/color curve into the section slot
     // on `setLightAnimation`. Task 2c of `sdf-static-occluder-shadows`.
-    let is_animated = match parse_optional_int(props, "_animated")? {
+    let authored_is_animated = match parse_optional_int(props, "_animated")? {
         None | Some(0) => false,
         Some(1) => true,
         Some(other) => {
@@ -326,6 +348,7 @@ pub fn translate_light(
             });
         }
     };
+    let is_animated = authored_is_animated && light_type != LightType::Directional;
 
     // `_cast_entity_shadows` controls whether this light casts shadows from
     // dynamic ENTITIES (enemies / moving meshes). It is valid ONLY on
@@ -364,9 +387,10 @@ pub fn translate_light(
 
     // Curves resample to uniform samples at compile time. When both `style` and
     // `brightness_curve` are present, the curve wins and `style` is ignored.
-    let has_any_curve = props.contains_key("brightness_curve")
-        || props.contains_key("color_curve")
-        || props.contains_key("direction_curve");
+    let has_any_curve = light_type != LightType::Directional
+        && (props.contains_key("brightness_curve")
+            || props.contains_key("color_curve")
+            || props.contains_key("direction_curve"));
 
     let animation = if has_any_curve {
         let light_ref = format_light_ref(classname, origin);
@@ -1003,6 +1027,8 @@ fn quake_style_animation(style: i32, phase: f32) -> Option<LightAnimation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
 
     fn props(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -1114,6 +1140,30 @@ mod tests {
         // -45 pitch, yaw 0 → engine (-qf_y, qf_z, -qf_x) = (0, -0.707, -0.707).
         let dir = light.cone_direction.expect("directional dir");
         assert_vec_close(dir, [0.0, -0.70710677, -0.70710677], 1e-4, "directional");
+    }
+
+    #[test]
+    fn directional_animation_is_normalized_to_static_equivalent() {
+        let capture = LogCapture::start();
+        let static_props = props(&[
+            ("light", "200"),
+            ("_color", "180 200 255"),
+            ("angles", "-45 0 0"),
+        ]);
+        let mut animated_props = static_props.clone();
+        animated_props.insert("style".to_string(), "2".to_string());
+        animated_props.insert("_animated".to_string(), "1".to_string());
+        animated_props.insert(
+            "brightness_curve".to_string(),
+            "this is deliberately ignored".to_string(),
+        );
+
+        let static_light = translate_light(&static_props, DVec3::ZERO, "light_sun").unwrap();
+        let normalized = translate_light(&animated_props, DVec3::ZERO, "light_sun").unwrap();
+
+        assert_eq!(normalized, static_light);
+        assert!(normalized.animation.is_none());
+        capture.assert_logged_once(Level::Warn, "[SH-DENSITY-DIRECTIONAL-STATIC]");
     }
 
     /// `_cast_entity_shadows` is only valid on dynamic-tier lights. Authored

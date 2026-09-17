@@ -1,7 +1,7 @@
 # lighting-scale--adaptive-probe-spacing — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: c269dd906
 
 ## Corrections
@@ -10,13 +10,14 @@ read at: c269dd906
 - The forward texture-budget test is at `crates/renderer/src/render/tests/pipeline_budget_tests.rs`, not directly under `src/render/`; extend that existing test module.
 - The Quake light translator is at `crates/level-compiler/src/format/quake_map.rs`. Normalize authored animated directional lights there, where `style`, `*_curve`, and `_animated` are still distinguishable from later data-script membership.
 - No cited lighting source changed between the brief's grounded revision `2441b87` and current `main` `c269dd906`. Current format baselines are id 34 v10, id 35 v3, and delta ids 27/41/45 at v6/v4/v4; the planned v11/v4 break remains correctly scoped.
+- Owner-approved measurement split: use `content/dev/maps/stress-warren-hallway-inspection-mini.map` for local iteration and recorded local findings, then leave `content/dev/maps/stress-warren-hallway-inspection.map` as the explicit Windows stress/visual runbook. This replaces the local full-warren attempt and the three-map local matrix without changing the measurement fields or quality contract.
 
 ## Delegated answers
 
 - Maximum emitted node scale — pending Task 2 measurement; choose the highest scale up to 3 that has measured participation without violating the exact gate, and record the fixture histogram rather than assuming the wire maximum is the production operating point.
 - 2:1 scale balance — pending Task 2 seam metrics; add the rule only if cross-scale residuals identify a seam not bounded by the existing level-smoothing rule.
 - Phase 3 build decision — pending Task 2 per-resource attribution; build L1 nodes and the scale-aware sampler on any scarce-resource win or only-abundant-resource cost, and refuse only a clear unoffset loss in a constrained resource, exactly as the brief delegates.
-- Full `stress-warren.map` at 1.0 m — attempt during Task 2 with the fixture, cold-cache, worker-count, machine-class, wall-time, peak-RSS, and cleanup recorded; record `not-yet-evaluable` if an upstream resource limit prevents the bake.
+- Stress-map feasibility — local proof uses `stress-warren-hallway-inspection-mini.map`; the owner will run `stress-warren-hallway-inspection.map` on Windows from the Task 10 runbook, with cold-cache intent, worker count, machine class, wall time, peak RSS when available, and cleanup recorded.
 
 ## AC-to-proof
 
@@ -39,7 +40,7 @@ read at: c269dd906
 | P3-A1 scale-aware L1 slots/weights equal shared reconstruction; whole-cell and distinct-tile bounds hold | Render-cpu constructed/property tests mirrored by WGSL source-contract tests at scales 0..3 | achievable as stated if Task 2 selects Phase 3 |
 | P3-A2 SDF E[d] decode remains bit-identical | Existing moment packing regression extended across scale-bearing words plus `sdf_shadow.wgsl` source-contract assertion on R/G decode | achievable as stated if Task 2 selects Phase 3 |
 | P3-A3 emitted hierarchy reconstruction has zero node failures | Focused analyzer test and fixture report assertion using the exact node-level gate | achievable as stated if Task 2 selects Phase 3 |
-| M1 Phase 1 footprint/error/seam measurements on named fixtures and full-warren attempt | Recorded table in `research.md` with fixture, 1.0 m spacing, cold cache, machine, workers, wall/RSS, cleanup, histograms, bytes, errors, and seam residuals | manual-measurement; blocking input to Tasks 3 and 7 |
+| M1 Phase 1 footprint/error/seam measurements | Local table for `stress-warren-hallway-inspection-mini.map` in `research.md`, plus an explicit Windows runbook for `stress-warren-hallway-inspection.map`; both pin 1.0 m spacing, cache mode, machine, workers, wall/RSS when available, cleanup, histograms, bytes, errors, and seam residuals | local measurement blocks Tasks 3 and 7; Windows stress result remains blocking external proof |
 | M2 Phase 3 decision recorded from per-resource findings | Decision entry in this plan under Delegated answers with disk/VRAM/bandwidth attribution | manual-analysis; achievable after M1 |
 | M3 scale>=1 L2 bakes boot and cover every named receiver without wgpu validation errors | Owner/on-hardware runbook over Phase 1 fixtures with receiver checklist and captured renderer log | manual-visual; blocks landing |
 | M4 Phase 3 visual hunt at node faces/open mover paths/lit pools | Owner/on-hardware runbook at default fidelity and forced worst case, recorded as a visual read | manual-visual; blocks landing if Phase 3 is built |
@@ -49,8 +50,8 @@ read at: c269dd906
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Add the byte-preserving hierarchy projection, recursive merge model, seam/error reporting, and `--sh-density-force-scale`; prove all Phase 1 automated rows with focused tests | integrating executor | — | pending approval |
-| 2 | Run the Phase 1 measurement matrix, attempt full warren, record results, and resolve maximum scale, 2:1 balance, and the Phase 3 decision | integrating executor | 1 | pending |
+| 1 | Add the byte-preserving hierarchy projection, recursive merge model, seam/error reporting, and `--sh-density-force-scale`; prove all Phase 1 automated rows with focused tests | integrating executor | — | pending |
+| 2 | Measure `stress-warren-hallway-inspection-mini.map` locally, record results, resolve maximum scale, 2:1 balance, and the Phase 3 decision, and preserve the full hallway-inspection map for the Windows runbook | integrating executor | 1 | pending |
 | 3 | Introduce the shared node-aware reconstruction/stored-set contract, id 34 v11/id 35 v4 wire fields, shared validator, node prefix sum, scale ceilings, and format/loader rejection tests | integrating executor | 2 | pending |
 | 4 | Integrate bottom-up hierarchy classification and forced-scale clamping into the compiler; pack id 34/id 35 node payloads; normalize authored animated directional lights; extend summaries and determinism/compatibility tests | integrating executor | 3 | pending |
 | 5 | Extend the one runtime indirection word with scale, keep the moments and three compose carriers identical, implement L2 node writer election/copy-through, and re-run binding/texture/storage budget tests | integrating executor | 3, 4 | pending |

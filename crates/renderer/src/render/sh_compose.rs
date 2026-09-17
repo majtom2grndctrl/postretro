@@ -600,9 +600,12 @@ mod tests {
         );
         assert!(
             source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
-                && source.contains("brick_indirection.level == 2u && local_probe == 0u")
+                && source.contains(
+                    "brick_indirection.level == 2u && local_probe == 0u && node_origin_writer"
+                )
+                && source.contains("let node_edge = 1u << brick_indirection.scale;")
                 && source.contains("select(0.0, 1.0, stored_slot.valid)"),
-            "L1 must write its eight slots with alpha validity and L2 must write local zero"
+            "L1 must write its eight slots with alpha validity and L2 must elect only the node-origin brick"
         );
     }
 
@@ -677,9 +680,9 @@ mod tests {
             vec![
                 INVALID_PROBE_INDIRECTION,
                 4,
-                12,
+                36,
                 INVALID_PROBE_INDIRECTION,
-                20
+                68
             ],
         );
         assert_eq!(

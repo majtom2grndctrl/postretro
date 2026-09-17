@@ -195,6 +195,7 @@ struct ComposeStoredSlot {
 }
 
 fn stored_slot_for_invocation(
+    brick: vec3<u32>,
     local_probe: u32,
     in_grid: bool,
     local_indirection: ShProbeIndirection,
@@ -217,7 +218,10 @@ fn stored_slot_for_invocation(
             brick_indirection.slot + l1_shared_slot(local_probe),
         );
     }
-    if (brick_indirection.level == 2u && local_probe == 0u) {
+    let node_edge = 1u << brick_indirection.scale;
+    let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+    let node_origin_writer = all(brick == node_origin);
+    if (brick_indirection.level == 2u && local_probe == 0u && node_origin_writer) {
         return ComposeStoredSlot(true, true, brick_indirection.slot);
     }
     return ComposeStoredSlot(false, false, 0u);
@@ -325,6 +329,7 @@ fn compose_main(
     }
     workgroupBarrier();
     let stored_slot = stored_slot_for_invocation(
+        brick,
         local_probe,
         in_grid,
         local_indirection,

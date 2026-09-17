@@ -1,27 +1,41 @@
-//! Host modder SDK bundle assembly.
+//! Host modder SDK bundle assembly — a *content-complete* kit.
 //!
-//! Unlike `dist` (which produces a runnable *player* payload — baked levels,
-//! source-excluded content, a release engine), `sdk-dist` produces a *modder*
-//! bundle that ships SOURCES and the tools to author with them: a DEBUG engine
-//! built with `--features dev-tools` (TS auto-compile + hot reload require debug
-//! assertions; the inspector requires the feature), the `prl-build` and
-//! `scripts-build` compilers, the `sdk/`, `docs/`, and `tools/` trees, base
-//! content, and the mod tree with its `.map`/`.ts` sources intact. It does not
-//! bake levels and does not run the player payload's source-exclusion filter or
-//! forbidden-source-artifact sweep.
+//! Unlike `dist` (the lean *player* payload: baked levels, source-excluded
+//! content, a release engine), `sdk-dist` produces a bundle that is playable on
+//! arrival AND fully editable. It runs the same content bakes as the player
+//! payload — model textures, per-level `prl-build --release`, materials copy —
+//! so the baked `maps/<name>.prl` and `baked/materials/` ship ready to play, and
+//! it *additionally* ships what authoring needs: a DEBUG engine built with
+//! `--features dev-tools` (TS auto-compile + hot reload require debug assertions;
+//! the inspector requires the feature), the `prl-build`/`scripts-build`
+//! compilers, the `sdk/`, `docs/`, and `tools/` trees, base content, and the mod
+//! tree WHOLE — its `.map`/`.ts` sources beside the freshly baked `.prl` and the
+//! emitted entry `.js`, never run through the player payload's source-excluding
+//! filter.
 //!
-//! See: context/lib/build_pipeline.md §Distribution packaging
+//! It reuses the player payload's bake stages and its containment and
+//! completion-gate machinery. The one invariant separating the two outputs is
+//! subtraction, not baking: the player payload carries only released runtime
+//! artifacts, while the SDK bundle is a superset that also carries the sources
+//! and tools. The SDK sweep is therefore lighter — it confirms the required
+//! entries exist rather than forbidding sources.
+//!
+//! See: context/lib/build_pipeline.md §Distribution packaging (§SDK bundle)
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::dist::binary_name;
-use crate::dist::cargo_target_dir;
 use crate::dist::manifest::Manifest;
 use crate::dist::payload::{MARKER_NAME, count_payload, replace_payload_root};
-use crate::dist::resolve::{EntryExt, entry_script_choice, guard_payload_root, is_at_or_under};
+use crate::dist::resolve::{
+    EntryExt, Resolved, bake_order, guard_payload_root, is_at_or_under, outstanding_outputs,
+};
+use crate::dist::{
+    binary_name, cargo_target_dir, stage_four_bake_model_textures, stage_seven_copy_materials,
+    stage_six_bake_levels, stage_three_resolve_levels, stage_two_emit_entry_script,
+};
 use crate::{run_checked, workspace_root};
 
 struct SdkDistArgs {
@@ -42,6 +56,9 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let bundle_name = sdk_bundle_root_name(&manifest.package.name);
     let bundle_root = cli.output_root.join(&bundle_name);
 
+    // Stage 1: prove the bundle root is a removable tree under dist/, and that
+    // the cargo target directory does not itself sit under dist/ (its release/
+    // dir holds the engine binary that provenance would misread as a payload).
     guard_payload_root(&bundle_root, &workspace)
         .map_err(|error| format!("sdk-dist stage 1: {error}"))?;
 
@@ -62,20 +79,64 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         ));
     }
 
+    // Stage 2: build the debug dev-tools engine and the release compilers.
     let binaries = stage_two_build_binaries(&cargo, &workspace, &target_dir)?;
-    stage_three_assemble_bundle(
+
+    // Stage 3: emit the mod entry script and resolve the shipped level set,
+    // reusing the player payload's stages verbatim.
+    let (entry_ext, entry_script) = stage_two_emit_entry_script(
+        &binaries.scripts_build,
+        &workspace,
+        &target_dir,
+        &cli.manifest_path,
+        &manifest,
+    )?;
+    let resolved = stage_three_resolve_levels(&entry_script, &manifest, &workspace)?;
+
+    // Stage 4: bake model textures into the workspace materials tree.
+    stage_four_bake_model_textures(&workspace, &manifest)?;
+
+    // Stage 5: assemble the bundle tree (sources + tools + verbatim trees), with
+    // the completion marker tracking the outstanding level bakes.
+    stage_five_assemble_bundle(
         &workspace,
         &cli.output_root,
         &bundle_root,
         &bundle_name,
         &manifest,
         &binaries,
+        entry_ext,
+        &entry_script,
+        &resolved,
     )?;
-    sweep_sdk_bundle(&bundle_root, Path::new(&manifest.package.mod_root))?;
+
+    // Stage 6: bake the levels into the bundle mod tree, rewriting the marker
+    // after each bake (reused dist stage; package name is the -sdk bundle name so
+    // its marker temp files never collide with a concurrent player payload run).
+    stage_six_bake_levels(
+        &workspace,
+        &cli.output_root,
+        &bundle_root,
+        &bundle_name,
+        &manifest.package.mod_root,
+        &binaries.prl_build,
+        &resolved,
+    )?;
+
+    // Stage 7: copy the baked materials into the bundle.
+    stage_seven_copy_materials(&workspace, &bundle_root)?;
+
+    // Stage 8: light SDK sweep, then drop the completion marker.
+    sweep_sdk_bundle(
+        &bundle_root,
+        Path::new(&manifest.package.mod_root),
+        entry_ext,
+        &resolved,
+    )?;
 
     fs::remove_file(bundle_root.join(MARKER_NAME)).map_err(|error| {
         format!(
-            "sdk-dist stage 4: remove completion marker {}: {error}",
+            "sdk-dist stage 8: remove completion marker {}: {error}",
             bundle_root.join(MARKER_NAME).display()
         )
     })?;
@@ -220,19 +281,27 @@ fn build_release_binary(
     run_checked(&mut command, &format!("sdk-dist stage 2 build {binary}"))
 }
 
-fn stage_three_assemble_bundle(
+#[allow(clippy::too_many_arguments)]
+fn stage_five_assemble_bundle(
     workspace: &Path,
     output_root: &Path,
     bundle_root: &Path,
     bundle_name: &str,
     manifest: &Manifest,
     binaries: &BuiltBinaries,
+    entry_ext: EntryExt,
+    entry_script: &Path,
+    resolved: &[Resolved],
 ) -> Result<(), String> {
-    println!("sdk-dist stage 3: assemble SDK bundle tree");
+    println!("sdk-dist stage 5: assemble content-complete bundle tree");
     guard_payload_root(bundle_root, workspace)
-        .map_err(|error| format!("sdk-dist stage 3: {error}"))?;
-    // No baked levels ship in the SDK bundle, so nothing is ever outstanding.
-    replace_payload_root(output_root, bundle_root, bundle_name, &[])?;
+        .map_err(|error| format!("sdk-dist stage 5: {error}"))?;
+    // The completion gate tracks the outstanding level bakes exactly as the
+    // player payload does: the marker carries the full resolved set at assembly,
+    // and stage 6 rewrites it after each bake.
+    let ordered = bake_order(resolved);
+    let all_outstanding = outstanding_outputs(&ordered, 0);
+    replace_payload_root(output_root, bundle_root, bundle_name, &all_outstanding)?;
 
     fs::copy(
         &binaries.postretro,
@@ -240,7 +309,7 @@ fn stage_three_assemble_bundle(
     )
     .map_err(|error| {
         format!(
-            "sdk-dist stage 3: copy debug postretro {}: {error}",
+            "sdk-dist stage 5: copy debug postretro {}: {error}",
             binaries.postretro.display()
         )
     })?;
@@ -248,13 +317,13 @@ fn stage_three_assemble_bundle(
     let bin_dir = bundle_root.join("bin");
     fs::create_dir_all(&bin_dir).map_err(|error| {
         format!(
-            "sdk-dist stage 3: create bin directory {}: {error}",
+            "sdk-dist stage 5: create bin directory {}: {error}",
             bin_dir.display()
         )
     })?;
     fs::copy(&binaries.prl_build, bin_dir.join(binary_name("prl-build"))).map_err(|error| {
         format!(
-            "sdk-dist stage 3: copy prl-build {}: {error}",
+            "sdk-dist stage 5: copy prl-build {}: {error}",
             binaries.prl_build.display()
         )
     })?;
@@ -264,7 +333,7 @@ fn stage_three_assemble_bundle(
     )
     .map_err(|error| {
         format!(
-            "sdk-dist stage 3: copy scripts-build {}: {error}",
+            "sdk-dist stage 5: copy scripts-build {}: {error}",
             binaries.scripts_build.display()
         )
     })?;
@@ -284,8 +353,9 @@ fn stage_three_assemble_bundle(
         println!("  copied {copied} files from {name}/");
     }
 
-    // The mod tree ships with its .map/.ts sources, but stale generated .prl/.js
-    // are dropped: the modder regenerates those from source.
+    // The mod tree ships WITH its .map/.ts sources, but committed stale generated
+    // .prl/.js are dropped: fresh .prl come from stage 6's level bake and the
+    // fresh entry .js is installed just below.
     let mod_root_rel = Path::new(&manifest.package.mod_root);
     let mod_copied = copy_bundle_tree(
         &workspace.join(mod_root_rel),
@@ -297,10 +367,25 @@ fn stage_three_assemble_bundle(
         manifest.package.mod_root
     );
 
+    // Install the emitted entry .js beside its .ts source (a TS mod). A Luau mod
+    // already shipped its `start-script.luau` source via the tree copy and needs
+    // no emitted sibling.
+    if entry_ext == EntryExt::Js {
+        let installed = bundle_root
+            .join(mod_root_rel)
+            .join(EntryExt::Js.file_name());
+        fs::copy(entry_script, &installed).map_err(|error| {
+            format!(
+                "sdk-dist stage 5: install emitted entry script {}: {error}",
+                installed.display()
+            )
+        })?;
+    }
+
     let readme = render_readme(&manifest.package.name, &manifest.package.mod_root);
     fs::write(bundle_root.join("README.md"), readme).map_err(|error| {
         format!(
-            "sdk-dist stage 3: write bundle README {}: {error}",
+            "sdk-dist stage 5: write bundle README {}: {error}",
             bundle_root.join("README.md").display()
         )
     })?;
@@ -310,7 +395,7 @@ fn stage_three_assemble_bundle(
 
 /// Copy a directory tree into the bundle, skipping build caches, autosaves, VCS
 /// metadata, and OS junk. When `skip_stale_outputs` is set (the mod tree), stale
-/// generated `.prl`/`.js` build outputs are also dropped.
+/// committed generated `.prl`/`.js` build outputs are also dropped.
 fn copy_bundle_tree(
     source: &Path,
     destination: &Path,
@@ -328,13 +413,13 @@ fn copy_bundle_tree_inner(
 ) -> Result<usize, String> {
     fs::create_dir_all(destination).map_err(|error| {
         format!(
-            "sdk-dist stage 3: create destination tree {}: {error}",
+            "sdk-dist stage 5: create destination tree {}: {error}",
             destination.display()
         )
     })?;
     let entries = fs::read_dir(source).map_err(|error| {
         format!(
-            "sdk-dist stage 3: read source tree {}: {error}",
+            "sdk-dist stage 5: read source tree {}: {error}",
             source.display()
         )
     })?;
@@ -342,11 +427,11 @@ fn copy_bundle_tree_inner(
     let mut copied = 0;
     for entry in entries {
         let entry =
-            entry.map_err(|error| format!("sdk-dist stage 3: read source tree entry: {error}"))?;
+            entry.map_err(|error| format!("sdk-dist stage 5: read source tree entry: {error}"))?;
         let source_path = entry.path();
         let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
             return Err(format!(
-                "sdk-dist stage 3: source tree entry {} is not valid UTF-8",
+                "sdk-dist stage 5: source tree entry {} is not valid UTF-8",
                 source_path.display()
             ));
         };
@@ -357,7 +442,7 @@ fn copy_bundle_tree_inner(
         let destination_path = destination.join(&name);
         let file_type = entry.file_type().map_err(|error| {
             format!(
-                "sdk-dist stage 3: inspect source tree entry {}: {error}",
+                "sdk-dist stage 5: inspect source tree entry {}: {error}",
                 source_path.display()
             )
         })?;
@@ -371,7 +456,7 @@ fn copy_bundle_tree_inner(
         } else if file_type.is_file() {
             fs::copy(&source_path, &destination_path).map_err(|error| {
                 format!(
-                    "sdk-dist stage 3: copy {} to {}: {error}",
+                    "sdk-dist stage 5: copy {} to {}: {error}",
                     source_path.display(),
                     destination_path.display()
                 )
@@ -379,7 +464,7 @@ fn copy_bundle_tree_inner(
             copied += 1;
         } else {
             return Err(format!(
-                "sdk-dist stage 3: refuse non-regular source tree entry {}",
+                "sdk-dist stage 5: refuse non-regular source tree entry {}",
                 source_path.display()
             ));
         }
@@ -390,8 +475,8 @@ fn copy_bundle_tree_inner(
 /// Return whether a tree entry must not enter the SDK bundle.
 ///
 /// Always drops build caches, `maps/autosave/`, any `.git*` entry, and
-/// `.DS_Store`. When `skip_stale_outputs` is set, also drops generated
-/// `.prl`/`.js` (the modder regenerates those from source).
+/// `.DS_Store`. When `skip_stale_outputs` is set, also drops committed generated
+/// `.prl`/`.js` (fresh ones are produced during the run).
 fn should_skip_bundle_entry(
     name: &str,
     parent_name: Option<&str>,
@@ -416,8 +501,9 @@ fn should_skip_bundle_entry(
 
 /// The mod-root-relative source entry-script filename for a resolved choice.
 ///
-/// The SDK bundle ships the authoring *source*, not the emitted runtime script:
-/// a TypeScript mod ships `start-script.ts`, a Luau mod ships `start-script.luau`.
+/// The SDK bundle ships the authoring *source*: a TypeScript mod's source is
+/// `start-script.ts` (the emitted `.js` ships beside it), a Luau mod's source is
+/// `start-script.luau`.
 fn sdk_entry_source_name(choice: EntryExt) -> &'static str {
     match choice {
         EntryExt::Js => "start-script.ts",
@@ -425,37 +511,48 @@ fn sdk_entry_source_name(choice: EntryExt) -> &'static str {
     }
 }
 
-/// Light completion check: confirm the required top-level entries exist. Unlike
-/// the player sweep, sources (`.map`/`.ts`/`.md`) are allowed and expected here.
-fn sweep_sdk_bundle(bundle_root: &Path, mod_root: &Path) -> Result<(), String> {
+/// Light completion check for the content-complete bundle. Unlike the player
+/// sweep, sources (`.map`/`.ts`/`.md`) are allowed and expected; this instead
+/// confirms the required entries are present: the engine and compilers, `sdk/`,
+/// the mod entry SOURCE, every resolved baked `maps/<name>.prl`, and the baked
+/// `baked/materials/` tree.
+fn sweep_sdk_bundle(
+    bundle_root: &Path,
+    mod_root: &Path,
+    entry_ext: EntryExt,
+    resolved: &[Resolved],
+) -> Result<(), String> {
     let mod_dir = bundle_root.join(mod_root);
-    let choice = entry_script_choice(
-        mod_dir.join("start-script.ts").is_file(),
-        mod_dir.join("start-script.luau").is_file(),
-    )
-    .map_err(|error| format!("sdk-dist stage 4: {}: {error}", mod_dir.display()))?;
-    let entry_script = mod_dir.join(sdk_entry_source_name(choice));
 
-    let files = [
+    let mut required_files = vec![
         bundle_root.join(binary_name("postretro")),
         bundle_root.join("bin").join(binary_name("prl-build")),
         bundle_root.join("bin").join(binary_name("scripts-build")),
-        entry_script,
+        mod_dir.join(sdk_entry_source_name(entry_ext)),
     ];
-    for file in &files {
+    // Every resolved level must have baked into the bundle's maps/ tree.
+    for resolved in resolved {
+        required_files.push(mod_dir.join(&resolved.output));
+    }
+    for file in &required_files {
         if !file.is_file() {
             return Err(format!(
-                "sdk-dist stage 4: required bundle file missing: {}",
+                "sdk-dist stage 8: required bundle file missing: {}",
                 file.display()
             ));
         }
     }
-    let sdk_dir = bundle_root.join("sdk");
-    if !sdk_dir.is_dir() {
-        return Err(format!(
-            "sdk-dist stage 4: required bundle directory missing: {}",
-            sdk_dir.display()
-        ));
+
+    for dir in [
+        bundle_root.join("sdk"),
+        bundle_root.join("baked").join("materials"),
+    ] {
+        if !dir.is_dir() {
+            return Err(format!(
+                "sdk-dist stage 8: required bundle directory missing: {}",
+                dir.display()
+            ));
+        }
     }
     Ok(())
 }
@@ -466,12 +563,13 @@ fn render_readme(package_name: &str, mod_root: &str) -> String {
     let prl_build = binary_name("prl-build");
     let scripts_build = binary_name("scripts-build");
     format!(
-        "# {package_name} — modding SDK\n\
+        "# {package_name} — content-complete modding SDK\n\
 \n\
-This is a complete modding kit for `{package_name}`: an authoring engine, the\n\
-level and script compilers, the SDK definitions, the human-facing docs, the\n\
-asset tools, base content, and the mod tree with its `.map`/`.ts` sources. With\n\
-it you can author levels and scripts and run them directly against the engine.\n\
+This is a complete, content-complete kit for `{package_name}`. It is\n\
+**playable out of the box** — the levels and material mips are already baked —\n\
+and **fully editable** — it ships the mod's `.map`/`.ts` sources, the level and\n\
+script compilers, the SDK definitions, the human-facing docs, the asset tools,\n\
+and a debug/hot-reload authoring engine. Play it as-is, or edit and reload.\n\
 \n\
 ## Host-native caveat\n\
 \n\
@@ -479,22 +577,30 @@ This bundle is **host-native**: the binaries were compiled for the operating\n\
 system this bundle was built on and link native C/C++ dependencies. Run it on\n\
 that same OS. To build for another platform, produce the bundle there.\n\
 \n\
-The authoring engine is a **debug** build compiled with `--features dev-tools`:\n\
-it auto-compiles `.ts` on load, hot-reloads script edits, and exposes the\n\
-egui debug/inspector UI. It is not an optimized release build.\n\
+The engine is a **debug** build compiled with `--features dev-tools`: it\n\
+auto-compiles `.ts` on load, hot-reloads script edits, and exposes the egui\n\
+debug/inspector UI. It is not an optimized release build. To produce a lean,\n\
+optimized **player** build (baked content, no sources or tools), see\n\
+`docs/distribution.md`.\n\
 \n\
-## Quickstart\n\
+## Flow A — play immediately\n\
 \n\
-1. **Author a level** in TrenchBroom using `sdk/TrenchBroom/postretro.fgd` and\n\
+Launch `{engine_binary}` from the bundle root. The baked `maps/*.prl` levels and\n\
+`baked/materials/` mips are already present, so the game runs with no build\n\
+step. The current working directory must be the bundle root so content paths\n\
+resolve.\n\
+\n\
+## Flow B — author (edit and reload)\n\
+\n\
+1. **Edit a level** in TrenchBroom using `sdk/TrenchBroom/postretro.fgd` and\n\
    `sdk/TrenchBroom/GameConfig.cfg`.\n\
-2. **Compile the level**:\n\
+2. **Recompile the level**:\n\
    `bin/{prl_build} maps/<name>.map -o {mod_root}/maps/<name>.prl`.\n\
-3. **Author scripts** in TypeScript against `sdk/types/` and `sdk/lib/`. The\n\
-   debug engine auto-compiles `.ts` on load and hot-reloads edits, so you can\n\
-   usually skip a manual compile. To compile by hand:\n\
+3. **Edit scripts** in TypeScript against `sdk/types/` and `sdk/lib/`. This debug\n\
+   engine auto-compiles `.ts` on load and hot-reloads edits, so you can usually\n\
+   skip a manual compile. To compile by hand:\n\
    `bin/{scripts_build} --in {mod_root}/start-script.ts --out {mod_root}/start-script.js`.\n\
-4. **Run**: launch `{engine_binary}` from the bundle root. The current working\n\
-   directory must be the bundle root so content paths resolve. The\n\
+4. **Re-run**: launch `{engine_binary}` from the bundle root again. The\n\
    `--features dev-tools` inspector is available in this build.\n\
 \n\
 ## Further reading\n\
@@ -505,7 +611,8 @@ egui debug/inspector UI. It is not an optimized release build.\n\
 - `docs/diagnostics.md` — diagnosing and profiling a running session.\n\
 - `tools/` — Python asset helpers. See `tools/README.md` for the Python and\n\
   library requirements they need.\n\
-- `docs/distribution.md` — producing a shippable **player** build with `dist`.\n"
+- `docs/distribution.md` — producing a lean, shippable **player** build with\n\
+  `dist`.\n"
     )
 }
 
@@ -555,6 +662,7 @@ mod tests {
             for name in [
                 "campaign-test.map",
                 "start-script.ts",
+                "start-script.luau",
                 "anim-demo.README.md",
                 "texture.png",
                 "scene.gltf",
@@ -589,12 +697,119 @@ mod tests {
         assert_eq!(sdk_entry_source_name(EntryExt::Luau), "start-script.luau");
     }
 
+    fn resolved(output: &str) -> Resolved {
+        Resolved {
+            output: output.to_string(),
+            source: PathBuf::from("unused.map"),
+            args: Vec::new(),
+            lightmap_density: 0.04,
+        }
+    }
+
+    /// Build a minimal complete bundle tree the sweep should accept, then let a
+    /// caller knock one required entry out to prove the sweep rejects it.
+    fn assemble_swept_bundle(root: &Path, mod_root: &Path, resolved: &[Resolved]) {
+        let mod_dir = root.join(mod_root);
+        fs::create_dir_all(mod_dir.join("maps")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("sdk")).unwrap();
+        fs::create_dir_all(root.join("baked").join("materials")).unwrap();
+        fs::write(root.join(binary_name("postretro")), "engine").unwrap();
+        fs::write(root.join("bin").join(binary_name("prl-build")), "prl").unwrap();
+        fs::write(
+            root.join("bin").join(binary_name("scripts-build")),
+            "scripts",
+        )
+        .unwrap();
+        fs::write(mod_dir.join("start-script.ts"), "source").unwrap();
+        for level in resolved {
+            fs::write(mod_dir.join(&level.output), "baked").unwrap();
+        }
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time follows Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "postretro_sdk_dist_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&path).expect("temporary tree created");
+        path
+    }
+
     #[test]
-    fn readme_covers_the_contract_points() {
+    fn sweep_accepts_a_content_complete_bundle_with_baked_levels_and_sources() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new("content/dev");
+        let levels = [resolved("maps/campaign-test.prl"), resolved("maps/arena.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+
+        assert!(sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels).is_ok());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sweep_requires_each_resolved_baked_prl() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new("content/dev");
+        let levels = [resolved("maps/campaign-test.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+        fs::remove_file(root.join(mod_root).join("maps/campaign-test.prl")).unwrap();
+
+        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            .expect_err("missing baked .prl is rejected");
+        assert!(error.contains("campaign-test.prl"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sweep_requires_the_baked_materials_directory() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new("content/dev");
+        let levels = [resolved("maps/campaign-test.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+        fs::remove_dir_all(root.join("baked").join("materials")).unwrap();
+
+        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            .expect_err("missing baked materials is rejected");
+        assert!(error.contains("materials"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sweep_requires_the_mod_entry_source() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new("content/dev");
+        let levels = [resolved("maps/campaign-test.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+        fs::remove_file(root.join(mod_root).join("start-script.ts")).unwrap();
+
+        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            .expect_err("missing entry source is rejected");
+        assert!(error.contains("start-script.ts"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn readme_covers_both_flows_and_the_contract_points() {
         let readme = render_readme("postretro-dev", "content/dev");
         for needle in [
             "postretro-dev",
-            "modding",
+            "content-complete",
+            "playable out of the box",
+            "fully editable",
+            "Flow A",
+            "play immediately",
+            "Flow B",
+            "edit and reload",
             "host-native",
             "dev-tools",
             "hot-reload",

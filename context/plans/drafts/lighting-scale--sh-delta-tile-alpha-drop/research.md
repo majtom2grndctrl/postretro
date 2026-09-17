@@ -88,6 +88,7 @@ half 107 inside the tile — no read past the tile.
 | R4 | Odd texel index; first texel of a probe at odd/even kept rank; texel 35 of a tile. | Word-packed read vs. half-indexed CPU reference. | Same R, G, B; no read outside the tile's 108 halves. |
 | R5 | Warm cache populated by the pre-change binary; then two warm builds on the new binary. | Stage-version bump vs. `decode_subblock` length rejection. | Every pre-change entry is a miss by key (not by length); second warm build is a full hit and byte-identical to the first. |
 | R6 | Cone-reach-cull lands before or after this brief. | Each brief's byte-identity baseline is taken at the format version in effect. | No cross-brief byte comparison; stage versions bump once per landing. |
+| R7 | adaptive-probe-spacing lands before or after this brief; both edit the shared SH compose grid uniform / octahedral sampler. | Neither brief compares delta bytes against the other's base format; the second to land re-verifies the delta compose reads its per-texel stride from the format constant, not a literal. | No cross-brief byte comparison; the shared compose/sampler code carries one stride source after both land. |
 
 ## Rival shapes considered
 

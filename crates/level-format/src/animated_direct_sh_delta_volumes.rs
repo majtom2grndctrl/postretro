@@ -9,7 +9,7 @@ use crate::octahedral::{DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_D
 use crate::sh_reconstruct::Level;
 
 /// Section-internal version, written as the first byte of the payload.
-pub const ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 3;
+pub const ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 4;
 
 /// Animated direct SH delta volumes section (ID 45), version 3.
 ///
@@ -20,7 +20,7 @@ pub const ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 3;
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   u8       version                    (= ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 3)
+///   u8       version                    (= ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 4)
 ///   u8       affinity_factor            (= AFFINITY_FACTOR = 4)
 ///   u32 × 3  affinity_dims              (affinity cells along x/y/z)
 ///   u32      animated_light_count
@@ -32,7 +32,7 @@ pub const ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 3;
 ///   u32 × (affinity_cell_count + 1)     affinity_offsets (CSR; last = list len)
 ///   u32 × affinity_offsets[-1]          affinity_lights (AnimatedBakedLights indices)
 ///   f16 × Σ(entry e) stored_delta_tiles(cell_levels[cell(e)], valid_probe_masks[cell(e)])
-///       × tile_dimension × tile_dimension × 4
+///       × tile_dimension × tile_dimension × 3
 ///                                       delta_subblocks
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -61,7 +61,7 @@ pub struct AnimatedDirectShDeltaVolumesSection {
     /// Flat AnimatedBakedLights indices, grouped by affinity cell. Each value
     /// must be `< animation_descriptor_indices.len()`.
     pub affinity_lights: Vec<u32>,
-    /// Flat probe payload, one compact valid-probe RGBA16F octahedral tile
+    /// Flat probe payload, one compact valid-probe RGB16F octahedral tile
     /// sub-block per CSR entry, index-parallel to `affinity_lights`.
     pub delta_subblocks: Vec<u16>,
 }
@@ -431,7 +431,7 @@ impl AnimatedDirectShDeltaVolumesSection {
         }
         if offset != data.len() {
             return Err(invalid_data(format!(
-                "animated direct sh delta volumes has {} trailing byte(s)",
+                "animated direct sh delta volumes delta sub-block length mismatch: {} trailing byte(s)",
                 data.len() - offset
             )));
         }
@@ -850,6 +850,33 @@ mod tests {
             valid_probe_mask_payload_f16_count(&offsets, &masks, &levels, stride),
             Some(payload.len()),
         );
+    }
+
+    #[test]
+    fn rejects_previous_rgba_delta_subblock_length() {
+        let section = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_subblock(5),
+        };
+        let mut bytes = section.to_bytes();
+        bytes.extend(std::iter::repeat_n(
+            0u8,
+            PROBES_PER_CELL
+                * DEFAULT_IRRADIANCE_TILE_DIMENSION as usize
+                * DEFAULT_IRRADIANCE_TILE_DIMENSION as usize
+                * 2,
+        ));
+
+        let err = AnimatedDirectShDeltaVolumesSection::from_bytes(&bytes).unwrap_err();
+        assert!(err.to_string().contains("delta sub-block length mismatch"));
     }
 
     #[test]

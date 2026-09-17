@@ -2565,7 +2565,7 @@ mod tests {
                     static_indices: None,
                 },
             ],
-            18_432 / 2,
+            13_824 / 2,
             0,
             DELTA_WORKING_SET_COPY_FACTOR,
         )
@@ -2813,16 +2813,16 @@ mod tests {
                     selection_slot: 3,
                     static_index: 17,
                     csr_entry_count: 4,
-                    byte_total: 73_728,
+                    byte_total: 55_296,
                 },
                 direct_sh_bake::DirectDeltaBakeStatsRow {
                     selection_slot: 1,
                     static_index: 5,
                     csr_entry_count: 1,
-                    byte_total: 18_432,
+                    byte_total: 13_824,
                 },
             ],
-            total_bytes: 92_160,
+            total_bytes: 69_120,
         }
     }
 
@@ -2923,7 +2923,7 @@ mod tests {
         assert_eq!(records[0].level, Level::Info);
         assert_eq!(
             records[0].message,
-            "DirectShDeltaVolumes: 92160 delta bytes; top static_index 17 (selection slot 3, 4 CSR entries, 73728 bytes)"
+            "DirectShDeltaVolumes: 69120 delta bytes; top static_index 17 (selection slot 3, 4 CSR entries, 55296 bytes)"
         );
         capture.assert_not_logged(Level::Info, "DirectShDeltaVolumes histogram:");
     }
@@ -2942,9 +2942,9 @@ mod tests {
         assert_eq!(
             messages,
             vec![
-                "DirectShDeltaVolumes: 92160 delta bytes; top static_index 17 (selection slot 3, 4 CSR entries, 73728 bytes)",
-                "DirectShDeltaVolumes histogram: selection slot 3, static_index 17, 4 CSR entries, 73728 bytes",
-                "DirectShDeltaVolumes histogram: selection slot 1, static_index 5, 1 CSR entries, 18432 bytes",
+                "DirectShDeltaVolumes: 69120 delta bytes; top static_index 17 (selection slot 3, 4 CSR entries, 55296 bytes)",
+                "DirectShDeltaVolumes histogram: selection slot 3, static_index 17, 4 CSR entries, 55296 bytes",
+                "DirectShDeltaVolumes histogram: selection slot 1, static_index 5, 1 CSR entries, 13824 bytes",
             ]
         );
     }

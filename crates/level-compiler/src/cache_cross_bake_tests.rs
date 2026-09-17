@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::DVec3;
 use log::Level;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
-use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::delta_sh_volumes::{DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -1133,8 +1133,8 @@ fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
     );
     assert!(
         raw.delta_subblocks
-            .chunks_exact(4)
-            .all(|rgba| rgba[..3].iter().all(|value| *value & 0x7fff == 0)),
+            .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+            .all(|rgb| rgb.iter().all(|value| *value & 0x7fff == 0)),
         "zero authored intensity must produce zero RGB direct deltas"
     );
     let raw_entry_count = raw.affinity_lights.len();
@@ -1273,6 +1273,17 @@ fn five_stage_version_bumps_miss_then_hit() {
         (DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION),
     ];
     for (stage_id, version) in delta_keys {
+        let previous = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+            stage_id,
+            stage_version: version - 1,
+            geometry_hash: &[9; 32],
+            affinity_dims: [1, 1, 1],
+            cell: 0,
+            probe_spacing: 1.0,
+            valid_probe_mask: u64::MAX,
+            seed_axis: 0,
+            light: &key_light,
+        });
         let current = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
             stage_id,
             stage_version: version,
@@ -1284,25 +1295,22 @@ fn five_stage_version_bumps_miss_then_hit() {
             seed_axis: 0,
             light: &key_light,
         });
-        let bumped = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
-            stage_id,
-            stage_version: version + 1,
-            geometry_hash: &[9; 32],
-            affinity_dims: [1, 1, 1],
-            cell: 0,
-            probe_spacing: 1.0,
-            valid_probe_mask: u64::MAX,
-            seed_axis: 0,
-            light: &key_light,
-        });
-        cache.put(&current, b"current");
+        cache.put(&previous, b"previous-format payload");
         assert_eq!(
-            cache.get(&bumped),
+            cache.get(&current),
             None,
-            "version bump must miss {stage_id}"
+            "the current key must not serve a previous-format {stage_id} payload"
         );
-        cache.put(&bumped, b"bumped");
-        assert_eq!(cache.get(&bumped), Some(b"bumped".to_vec()));
+        cache.put(&current, b"current-format payload");
+        assert_eq!(
+            cache.get(&current),
+            Some(b"current-format payload".to_vec()),
+        );
+        assert_eq!(
+            cache.get(&current),
+            Some(b"current-format payload".to_vec()),
+            "a second warm lookup must serve the byte-identical current payload",
+        );
     }
 
     let tree = tree_with_leaves(&[DVec3::ZERO]);
@@ -1343,12 +1351,12 @@ fn five_stage_version_bumps_miss_then_hit() {
 }
 
 #[test]
-fn cone_reach_cache_versions_only_invalidate_direct_stages() {
+fn lighting_scale_cache_versions_pin_current_epochs() {
     assert_eq!(DIRECT_SH_STAGE_VERSION, 4);
-    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 2);
-    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 2);
+    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 3);
+    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 3);
     assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
-    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 1);
+    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 2);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

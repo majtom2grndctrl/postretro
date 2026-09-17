@@ -689,6 +689,7 @@ fn direct_compose_should_dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 
     #[cfg(feature = "dev-tools")]
     use log::Level;
@@ -748,6 +749,76 @@ mod tests {
             LightTermMask::ALL,
             LightTermMask::ALL,
         ));
+    }
+
+    #[test]
+    fn all_delta_compose_shaders_derive_rgb_stride_and_select_odd_half_parity() {
+        assert_eq!(DELTA_TILE_TEXEL_F16_COUNT, 3);
+        let shaders = [
+            ("id 41", include_str!("../shaders/direct_sh_compose.wgsl")),
+            ("id 27", include_str!("../shaders/sh_compose.wgsl")),
+            (
+                "id 45",
+                include_str!("../shaders/animated_direct_sh_compose.wgsl"),
+            ),
+        ];
+
+        for (label, source) in shaders {
+            assert!(
+                source.contains("let texel_f16_count = grid.delta_probe_f16_stride")
+                    && source.contains("/ (grid.tile_dimension * grid.tile_dimension);")
+                    && source.contains("+ texel_index * texel_f16_count;"),
+                "{label} must derive its texel multiplier from the format-fed probe stride",
+            );
+            assert!(
+                source.contains("(half_base & 1u) != 0u")
+                    && source.contains("vec3<f32>(first.x, first.y, second.x)")
+                    && source.contains("vec3<f32>(first.y, second.x, second.y)"),
+                "{label} must select RGB halves by packed-word parity",
+            );
+            assert!(
+                !source.contains("texel_index * 4u"),
+                "{label} must not retain the old RGBA texel stride",
+            );
+        }
+    }
+
+    #[test]
+    fn delta_loader_and_upload_paths_add_no_payload_clone() {
+        let loader = include_str!("../../../level-loader/src/prl_loader.rs");
+        for decode in [
+            "DeltaShVolumesSection::from_bytes(data)?",
+            "AnimatedDirectShDeltaVolumesSection::from_bytes(data)",
+            "DirectShDeltaVolumesSection::from_bytes(data)",
+        ] {
+            assert!(
+                loader.contains(decode),
+                "loader must decode through {decode}"
+            );
+        }
+        assert!(
+            !loader.contains("delta_subblocks.clone()"),
+            "the loader must not clone a decoded delta payload",
+        );
+
+        for (label, source) in [
+            ("id 41", include_str!("direct_sh_compose.rs")),
+            ("id 27", include_str!("sh_compose.rs")),
+            ("id 45", include_str!("animated_direct_sh_compose.rs")),
+        ] {
+            let production = source
+                .split("\n#[cfg(test)]\nmod tests")
+                .next()
+                .expect("renderer source has a production prefix");
+            assert!(
+                production.contains("u16_slice_to_bytes(&buffers.delta_subblocks)"),
+                "{label} upload must stage the format-owned halves verbatim",
+            );
+            assert!(
+                !production.contains("buffers.delta_subblocks.clone()"),
+                "{label} upload must not clone or re-own the half payload",
+            );
+        }
     }
 
     #[test]
@@ -828,7 +899,7 @@ mod tests {
         assert_eq!(
             storage.footprint(),
             ComposeStorageFootprint {
-                delta_subblocks_bytes: 18_432,
+                delta_subblocks_bytes: 13_824,
                 delta_compaction_meta_bytes: 16,
                 affinity_offsets_bytes: 8,
                 affinity_lights_bytes: 4,

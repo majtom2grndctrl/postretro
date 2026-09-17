@@ -17,16 +17,15 @@ pub(super) fn facing_direction(
     let moving_velocity = path_state
         .map(|path| path.velocity)
         .filter(|velocity| LocomotionIntent::from_velocity(*velocity).moving);
+    let aim_facing =
+        target_perception.map(|perception| perception.target_aim - perception.enemy_eye);
     match steering {
-        SteeringIntent::MoveTo(_) if let Some(velocity) = moving_velocity => Some(velocity),
-        SteeringIntent::MoveTo(_) => None,
-        _ if committed_aim => {
-            target_perception.map(|perception| perception.target_aim - perception.enemy_eye)
-        }
-        _ if engaged && let Some(velocity) = moving_velocity => Some(velocity),
-        _ if engaged => {
-            target_perception.map(|perception| perception.target_aim - perception.enemy_eye)
-        }
+        // Moving toward a destination faces the movement velocity, else nothing.
+        SteeringIntent::MoveTo(_) => moving_velocity,
+        // A committed aim turns toward the eye-to-target vector.
+        _ if committed_aim => aim_facing,
+        // Other engaged states face velocity first, falling back to the aim vector.
+        _ if engaged => moving_velocity.or(aim_facing),
         _ => None,
     }
 }

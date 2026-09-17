@@ -359,8 +359,10 @@ mod tests {
     }
 
     #[test]
-    fn scaled_node_members_share_the_origin_slot_and_scale_bits() {
-        let section = scaled_l2_fixture();
+    fn serialized_scale_one_l2_fixture_builds_runtime_words_and_moments() {
+        let encoded = scaled_l2_fixture().to_bytes();
+        let section = OctahedralShVolumeSection::from_bytes(&encoded)
+            .expect("the scale-1 fixture must cross the v11 wire/runtime seam");
         let words = build_probe_indirection_words(Some(&section));
         assert_eq!(words.len(), 8 * 8 * 8);
         for &word in &words {

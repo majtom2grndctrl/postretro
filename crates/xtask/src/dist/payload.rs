@@ -10,10 +10,10 @@ use std::path::{Component, Path, PathBuf};
 
 use super::resolve::{EntryExt, Resolved, is_prm_filename};
 
-pub(super) const MARKER_NAME: &str = ".dist-incomplete";
+pub(crate) const MARKER_NAME: &str = ".dist-incomplete";
 
 /// Replace any prior payload with an empty root carrying the completion marker.
-pub(super) fn replace_payload_root(
+pub(crate) fn replace_payload_root(
     output_root: &Path,
     payload_root: &Path,
     package_name: &str,
@@ -123,7 +123,7 @@ fn clear_stale_stage_five_siblings(output_root: &Path, package_name: &str) -> Re
     Ok(())
 }
 
-pub(super) fn write_marker(
+pub(crate) fn write_marker(
     destination_root: &Path,
     output_root: &Path,
     package_name: &str,
@@ -309,7 +309,7 @@ pub(super) fn sweep_payload(
 }
 
 /// Count regular files and their total byte size under a payload root.
-pub(super) fn count_payload(root: &Path) -> Result<(u64, u64), String> {
+pub(crate) fn count_payload(root: &Path) -> Result<(u64, u64), String> {
     let mut files = 0;
     let mut bytes = 0;
     count_payload_tree(root, &mut files, &mut bytes)?;

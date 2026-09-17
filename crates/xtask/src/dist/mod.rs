@@ -14,8 +14,8 @@ use crate::{bake_model_textures_for_gltf, run_checked, workspace_root};
 
 mod launcher;
 pub(crate) mod manifest;
-mod payload;
-mod resolve;
+pub(crate) mod payload;
+pub(crate) mod resolve;
 
 use manifest::Manifest;
 use payload::{
@@ -175,7 +175,7 @@ pub(crate) fn usage() -> &'static str {
     "dist usage:\n  cargo run -p xtask -- dist [--manifest <path>] [--out <dir>]"
 }
 
-fn cargo_target_dir(cargo: &OsStr, workspace: &Path) -> Result<PathBuf, String> {
+pub(crate) fn cargo_target_dir(cargo: &OsStr, workspace: &Path) -> Result<PathBuf, String> {
     let output = Command::new(cargo)
         .current_dir(workspace)
         .arg("metadata")
@@ -248,7 +248,7 @@ fn cargo_build(cargo: &OsStr, workspace: &Path, package: &str, binary: &str) -> 
     run_checked(&mut command, &format!("stage 1 build {binary}"))
 }
 
-fn binary_name(name: &str) -> String {
+pub(crate) fn binary_name(name: &str) -> String {
     if cfg!(windows) {
         format!("{name}.exe")
     } else {

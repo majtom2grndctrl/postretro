@@ -1,7 +1,7 @@
 # lighting-scale--sh-delta-tile-alpha-drop — plan of record
 
 mode: compact
-status: test-ready
+status: done
 read at: 29e8611c6
 
 ## Corrections
@@ -29,7 +29,7 @@ read at: 29e8611c6
 | A9 No new runtime RAM copy | Source gate over loader decode and renderer verbatim upload paths | achievable as stated | pass: compose builders now own metadata only; `delta_loader_and_upload_paths_add_no_payload_clone` covers loader → render-cpu → all three renderer staging paths |
 | A10 Adaptive landing-order guard | Shader source guards derive multiplier from the format-fed grid stride; no base/delta cross-format byte baseline | achievable as stated | pass: `all_delta_compose_shaders_derive_rgb_stride_and_select_odd_half_parity` |
 | M1 Real-map disk/payload/storage size row | `campaign-test` plus resolved id-45 map; compiler summaries, dev-tools footprint log, and file sizes recorded in `research.md` | manual-measurement | pass: same Windows 11/Vulkan adapter capture confirms all three storage rows exactly |
-| M2 E20 promoted animated-light capture is pixel-identical before/after | Owner, same-adapter before/after E20 capture | manual-visual | pending |
+| M2 E20 promoted animated-light capture is pixel-identical before/after | Owner, same-adapter before/after E20 capture | manual-visual | pass: 640×480 PNG and decoded RGBA are byte-identical on the same Windows 11/Vulkan adapter, including fresh-process repeats |
 | R1 Base atlases ids 34/35 byte-identical | Existing base-section bytes captured on the same focused bake fixtures before and after | achievable as stated | pass: campaign-test cold artifacts match byte-for-byte; hashes recorded in `research.md` |
 | R2 Billboard scatter section 48 byte-identical | Existing section-48 bytes captured on the same focused animated fixture before and after | achievable as stated | pass: campaign-test cold artifacts match byte-for-byte; hash recorded in `research.md` |
 
@@ -39,8 +39,8 @@ read at: 29e8611c6
 |---|---|---|---|---|
 | 1 | Prove the highest-risk id-41 slice end to end: RGB wire stride/version, direct writer, compaction/reconstruction, packed CPU reader, direct compose shader, and identity/odd-half tests | integrating executor | — | done — focused format/render-cpu/renderer tests pass |
 | 2 | Extend the RGB layout to ids 27/45 and every shared writer, classifier, envelope, entry-drop, compose, and shader consumer; bump all remaining section/stage versions | integrating executor | 1 | done — compiler delta suite passes 79 tests |
-| 3 | Close the cross-cutting acceptance matrix: lockstep/source/RAM guards, cache proofs, decision-equivalence fixtures, footprint/gate updates, and untouched base/scatter regressions | integrating executor | 2 | done — automated matrix and cold-artifact regressions pass; the dev-tools regression was repaired and its manual log remains |
-| 4 | Run focused verification, review/fix loop, final preflight, and populate every automated result; prepare and execute the real-map/manual runbook where locally possible | integrating executor | 3 | done — review/fix and final preflight pass; external gates below remain |
+| 3 | Close the cross-cutting acceptance matrix: lockstep/source/RAM guards, cache proofs, decision-equivalence fixtures, footprint/gate updates, and untouched base/scatter regressions | integrating executor | 2 | done — automated matrix, cold-artifact regressions, and same-adapter footprint capture pass |
+| 4 | Run focused verification, review/fix loop, final preflight, and populate every automated result; prepare and execute the real-map/manual runbook where locally possible | integrating executor | 3 | done — review/fix, final preflight, and both external gates pass |
 
 ## Review and verification
 
@@ -53,15 +53,6 @@ read at: 29e8611c6
 - Final preflight: `cargo fmt --check`, workspace
   `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, and `cargo test` pass.
 
-## External runbook
+## External verification
 
-One manual row blocks landing. Do not move this brief to `done/` until it is recorded.
-
-1. **Same-adapter E20 capture (M2).** Use commit `29e8611c6` as the before binary and this
-   branch as the after binary, each with its correspondingly baked `spawner-test.prl`. Build
-   both with `--features capture`. For both captures use the camera constants from
-   `spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest`, force
-   `alarm_light` active with radiance `[4.0, 0.0, 0.0]`, and force promotion weight `1.0`.
-   Run both binaries on the same adapter and compare decoded RGBA pixels (PNG byte equality is
-   also acceptable on one adapter). Expected: pixel-identical before/after. Record adapter,
-   commands, and hashes in `research.md`.
+Both manual gates passed. Evidence is recorded in `research.md`.

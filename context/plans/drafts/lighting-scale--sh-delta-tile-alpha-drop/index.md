@@ -12,8 +12,8 @@ probe; no consumer reads it — validity comes from `valid_probe_masks` and the 
 every reader takes `.rgb` (audit in `research.md`). The renderer uploads the payload verbatim
 into a storage buffer, so the dead channel is paid on disk and in VRAM. When done: each delta
 tile texel is three f16 halves; section bytes and delta storage buffers shrink by the dropped
-quarter of the payload, every reconstructed tile and composed atlas is bit-identical to
-today's, and runtime steady-state RAM does not grow.
+quarter of the payload, every valid probe's reconstructed tile and the composed atlas are
+bit-identical to today's, and runtime steady-state RAM does not grow.
 
 ## Decisions
 - **Drop alpha where the delta payload is serialized, not in the shared tile packer.** The
@@ -35,12 +35,16 @@ today's, and runtime steady-state RAM does not grow.
   composed atlas from the RGB payload is bit-identical to the one from the RGBA payload for
   the same bake, at every coarsening level. This is the equivalence proof because `.prl`
   byte-identity is impossible by construction.
-- **Compatible with landed delta passes, unchanged in value.** `delta-entry-dropping` (done)
-  already treats alpha as structural; its zero test chunks texels by the stride constant and
-  keeps its semantics. The coarsening classifier (`sh_coarsen.rs`) and the runtime-safe
-  envelope (`sh_runtime_envelope_scoring.rs`) read RGB only: their offset arithmetic follows
-  the stride, their decisions do not change. Coarsening is orthogonal; the drop applies at
-  L0, L1 and L2 alike.
+- **Compatible with landed delta passes, unchanged in value.** `delta-sh-valid-probe-compaction`
+  (done) is the closest predecessor: it owns the CSR-entry compaction and the stride-based
+  compose resolver (`offset[entry] + within_cell_rank × stride`) that this change re-strides —
+  the resolver reads the stride from the same constant, so its arithmetic follows the drop and
+  its layout semantics are unchanged. `delta-entry-dropping` (done) already treats alpha as
+  structural; its zero test chunks texels by the stride constant and keeps its semantics. The
+  coarsening classifier (`sh_coarsen.rs`) and the runtime-safe envelope
+  (`sh_runtime_envelope_scoring.rs`) read RGB only: their offset arithmetic follows the stride,
+  their decisions do not change. Coarsening is orthogonal; the drop applies at L0, L1 and L2
+  alike.
 - **Version bumps make the old format unloadable and the old cache unservable.** Bump the
   three section-internal versions (`DELTA_SH_VOLUMES_VERSION`,
   `DIRECT_SH_DELTA_VOLUMES_VERSION`, `ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION`) and the three
@@ -126,6 +130,11 @@ today's, and runtime steady-state RAM does not grow.
   `rgb_payload_is_zero`, and `read_delta_texel` in the three compose shaders.
 - **Shape.** RGB triplets, tile-contiguous, kept-rank order unchanged. Rivals: strip alpha at
   load or at upload — no disk win and an extra load-time copy, against the RAM constraint.
+  Defer and fold the drop into the future sub-f16/BC6H delta re-encode instead of spending a
+  version bump and review gate now — rejected: that re-encode is gated (unbounded
+  `animated_light_scale` multiply on 27/45; a storage→texture restructure for BC6H), while the
+  alpha drop is the certain, unconditional floor available today, mirroring
+  `sh-base-atlas-at-rest-slimming`'s split posture of taking the free at-rest win first.
 - **Word packing.** The storage buffer is `array<u32>`, two halves per word. Entry and probe
   bases stay even (a 6×6 tile is 108 halves); odd texels start mid-word, so the reader loads
   two words and selects by parity. Do not pad texels back to four — that is the status quo.

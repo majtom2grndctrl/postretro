@@ -2,6 +2,8 @@
 
 Brief · resumable · Epic: compile-time peak RAM · reads: `context/lib/build_pipeline.md` §Compiler pipeline, `context/lib/rendering_pipeline.md` §4 · read at e36e86b
 
+> **Build order (lighting-scale footprint / peak-RAM track):** `sh-delta-cone-reach-cull` → `sh-delta-tile-alpha-drop` → `adaptive-probe-spacing` → **4 — this brief (Phase 2, conditional)**. Build only if cone-reach-cull's first-slice measurement shows the cull alone does not clear the 16 GiB peak-RAM gate; if the cull clears it, this Phase 2 is not needed.
+
 ## Problem
 Anticipated need, following `lighting-scale--sh-delta-cone-reach-cull` (Phase 1). Phase 1
 makes `stress-warren-hallway-inspection` compile because its lights are cones whose

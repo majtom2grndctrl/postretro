@@ -2,6 +2,8 @@
 
 Brief · compact · Epic: compile-time peak RAM · reads: `context/lib/build_pipeline.md` §PRL section IDs, `context/lib/rendering_pipeline.md` §4 · read at e36e86b
 
+> **Build order (lighting-scale footprint / peak-RAM track):** **1 — this brief** → `sh-delta-tile-alpha-drop` → `adaptive-probe-spacing` → `sh-delta-cell-major-two-pass-bake` (Phase 2, conditional). Lands first: it is the byte-identical delta baseline the other delta-touching work re-baselines onto (it bumps the three delta stage versions), and its first-slice measurement decides whether the cell-major two-pass (Phase 2) is needed at all.
+
 ## Problem
 Developer-raised, from the `lighting-scale--compile-peak-ram` gate. `prl-build` refuses
 `content/dev/maps/stress-warren-hallway-inspection.map` — the map that exists to expose

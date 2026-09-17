@@ -4,7 +4,7 @@
 // of validity, brick density level, and the stored-atlas slot mapping.
 
 use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
-use postretro_level_format::sh_reconstruct::{Level, stored_brick_prefix_sum};
+use postretro_level_format::sh_reconstruct::{Level, MAX_NODE_SCALE, stored_node_prefix_sum};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_render_cpu::sh_compose::u32_slice_to_bytes;
 
@@ -12,8 +12,11 @@ use postretro_render_cpu::sh_compose::u32_slice_to_bytes;
 pub(super) const SH_INDIRECTION_LEVEL_MASK: u32 = 0x0000_0003;
 /// A nonzero word is valid only when this bit is set.
 pub(super) const SH_INDIRECTION_VALID_BIT: u32 = 0x0000_0004;
+/// Two bits carry the node scale (0..=3).
+pub(super) const SH_INDIRECTION_SCALE_MASK: u32 = 0x0000_0018;
+pub(super) const SH_INDIRECTION_SCALE_SHIFT: u32 = 3;
 /// Stored-atlas slots occupy the remaining high bits.
-pub(super) const SH_INDIRECTION_SLOT_SHIFT: u32 = 3;
+pub(super) const SH_INDIRECTION_SLOT_SHIFT: u32 = 5;
 pub(super) const SH_INDIRECTION_SLOT_BITS: u32 = u32::BITS - SH_INDIRECTION_SLOT_SHIFT;
 pub(super) const SH_INDIRECTION_MAX_SLOT: u32 = u32::MAX >> SH_INDIRECTION_SLOT_SHIFT;
 
@@ -32,6 +35,7 @@ pub(super) const WGSL_DECODE_HELPER: &str = include_str!("../shaders/sh_indirect
 pub(super) struct ProbeIndirectionWord {
     pub(super) valid: bool,
     pub(super) level: u32,
+    pub(super) scale: u32,
     pub(super) slot: u32,
 }
 
@@ -40,11 +44,16 @@ pub(super) fn decode_probe_indirection_word(word: u32) -> ProbeIndirectionWord {
     ProbeIndirectionWord {
         valid: word & SH_INDIRECTION_VALID_BIT != 0,
         level: word & SH_INDIRECTION_LEVEL_MASK,
+        scale: (word & SH_INDIRECTION_SCALE_MASK) >> SH_INDIRECTION_SCALE_SHIFT,
         slot: word >> SH_INDIRECTION_SLOT_SHIFT,
     }
 }
 
-fn encode_probe_indirection_word(level: Level, slot: u32) -> u32 {
+fn encode_probe_indirection_word(level: Level, scale: u8, slot: u32) -> u32 {
+    assert!(
+        scale <= MAX_NODE_SCALE,
+        "SH node scale {scale} exceeds the {MAX_NODE_SCALE} runtime indirection limit",
+    );
     assert!(
         slot <= SH_INDIRECTION_MAX_SLOT,
         "SH stored-atlas slot {slot} exceeds the {}-bit probe-indirection field",
@@ -52,6 +61,7 @@ fn encode_probe_indirection_word(level: Level, slot: u32) -> u32 {
     );
     (slot << SH_INDIRECTION_SLOT_SHIFT)
         | SH_INDIRECTION_VALID_BIT
+        | (u32::from(scale) << SH_INDIRECTION_SCALE_SHIFT)
         | (u32::from(level.to_u8()) & SH_INDIRECTION_LEVEL_MASK)
 }
 
@@ -74,9 +84,10 @@ pub(super) fn build_probe_indirection_words(
     }
 
     let affinity_dims = grid.map(|axis| axis.div_ceil(u32::from(AFFINITY_FACTOR)));
-    let mut brick_levels = Vec::with_capacity(
-        (affinity_dims[0] as usize) * (affinity_dims[1] as usize) * (affinity_dims[2] as usize),
-    );
+    let brick_count =
+        (affinity_dims[0] as usize) * (affinity_dims[1] as usize) * (affinity_dims[2] as usize);
+    let mut brick_levels = Vec::with_capacity(brick_count);
+    let mut brick_scales = Vec::with_capacity(brick_count);
     for brick_z in 0..affinity_dims[2] {
         for brick_y in 0..affinity_dims[1] {
             for brick_x in 0..affinity_dims[0] {
@@ -89,6 +100,7 @@ pub(super) fn build_probe_indirection_words(
                 let level = Level::from_u8(section.probes[probe_index].density_level)
                     .expect("id-34 metadata was validated before renderer resource creation");
                 brick_levels.push(level);
+                brick_scales.push(section.probes[probe_index].node_scale);
             }
         }
     }
@@ -97,7 +109,7 @@ pub(super) fn build_probe_indirection_words(
         .iter()
         .map(|probe| probe.validity != 0)
         .collect();
-    let prefix = stored_brick_prefix_sum(grid, &brick_levels, &validity)
+    let prefix = stored_node_prefix_sum(grid, &brick_levels, &brick_scales, &validity)
         .expect("id-34 metadata was validated before renderer resource creation");
 
     let mut words = vec![INVALID_PROBE_INDIRECTION; probe_count];
@@ -109,7 +121,17 @@ pub(super) fn build_probe_indirection_words(
                     + brick_y * affinity_dims[0] as usize
                     + brick_z * affinity_dims[0] as usize * affinity_dims[1] as usize;
                 let level = brick_levels[brick_index];
-                let range = prefix.bricks[brick_index];
+                let scale = brick_scales[brick_index];
+                let node_edge = 1usize << scale;
+                let node_origin = [
+                    brick_x / node_edge * node_edge,
+                    brick_y / node_edge * node_edge,
+                    brick_z / node_edge * node_edge,
+                ];
+                let node_origin_index = node_origin[0]
+                    + node_origin[1] * affinity_dims[0] as usize
+                    + node_origin[2] * affinity_dims[0] as usize * affinity_dims[1] as usize;
+                let range = prefix.bricks[node_origin_index];
                 let mut l0_slot_offset = 0u32;
                 for local_z in 0..factor {
                     for local_y in 0..factor {
@@ -136,12 +158,13 @@ pub(super) fn build_probe_indirection_words(
                                 }
                                 Level::L1 | Level::L2 => range.base_slot,
                             };
-                            words[probe_index] = encode_probe_indirection_word(level, slot);
+                            words[probe_index] = encode_probe_indirection_word(level, scale, slot);
                         }
                     }
                 }
                 debug_assert!(
-                    level != Level::L0 || l0_slot_offset == range.stored_tile_count,
+                    level != Level::L0
+                        || l0_slot_offset == prefix.bricks[brick_index].stored_tile_count,
                     "the L0 stored-slot prefix must exactly cover valid probes",
                 );
             }
@@ -155,6 +178,12 @@ pub(super) fn build_probe_indirection_words(
 /// padded representation than the other two.
 pub(super) fn probe_indirection_storage_bytes(words: &[u32]) -> Vec<u8> {
     u32_slice_to_bytes(words)
+}
+
+#[cfg(test)]
+fn is_node_origin_writer(brick: [u32; 3], scale: u32) -> bool {
+    let edge = 1u32 << scale;
+    brick.iter().all(|axis| axis % edge == 0)
 }
 
 #[cfg(test)]
@@ -216,6 +245,46 @@ mod tests {
         }
     }
 
+    fn scaled_l2_fixture() -> OctahedralShVolumeSection {
+        let grid = [8, 8, 8];
+        let layout =
+            irradiance_atlas_array_layout([1, 1, 1], DEFAULT_IRRADIANCE_TILE_DIMENSION, 8192)
+                .unwrap();
+        OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: grid,
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [layout.atlas_width, layout.atlas_height],
+            layer_count: layout.layer_count,
+            tiles_per_layer: layout.tiles_per_layer,
+            atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            probes: vec![
+                OctahedralShProbe {
+                    validity: 1,
+                    mean_distance: 0x1234,
+                    mean_sq_distance: 0xabcd,
+                    density_level: Level::L2.to_u8(),
+                    node_scale: 1,
+                    ..Default::default()
+                };
+                8 * 8 * 8
+            ],
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            compact_atlas: vec![
+                0;
+                (layout.layer_count
+                    * layout.atlas_width.div_ceil(4)
+                    * layout.atlas_height.div_ceil(4)
+                    * 16) as usize
+            ],
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
     #[test]
     fn builder_maps_levels_slots_and_empty_bricks_from_metadata() {
         let words = build_probe_indirection_words(Some(&fixture()));
@@ -228,6 +297,7 @@ mod tests {
             ProbeIndirectionWord {
                 valid: true,
                 level: 0,
+                scale: 0,
                 slot: 0
             }
         );
@@ -236,6 +306,7 @@ mod tests {
             ProbeIndirectionWord {
                 valid: true,
                 level: 0,
+                scale: 0,
                 slot: 63
             }
         );
@@ -247,6 +318,7 @@ mod tests {
             ProbeIndirectionWord {
                 valid: true,
                 level: 1,
+                scale: 0,
                 slot: 64
             }
         );
@@ -259,6 +331,7 @@ mod tests {
             ProbeIndirectionWord {
                 valid: true,
                 level: 2,
+                scale: 0,
                 slot: 72
             }
         );
@@ -279,17 +352,58 @@ mod tests {
             ProbeIndirectionWord {
                 valid: false,
                 level: 0,
+                scale: 0,
                 slot: 0,
             }
         );
     }
 
     #[test]
+    fn scaled_node_members_share_the_origin_slot_and_scale_bits() {
+        let section = scaled_l2_fixture();
+        let words = build_probe_indirection_words(Some(&section));
+        assert_eq!(words.len(), 8 * 8 * 8);
+        for &word in &words {
+            assert_eq!(
+                decode_probe_indirection_word(word),
+                ProbeIndirectionWord {
+                    valid: true,
+                    level: 2,
+                    scale: 1,
+                    slot: 0,
+                }
+            );
+        }
+        let packed = crate::render::sh_volume::pack_probe_depth_moments(
+            &section.probes,
+            section.grid_dimensions,
+            &words,
+        );
+        for texel in packed.chunks_exact(4) {
+            assert_eq!(&texel[..2], &[0x1234, 0xabcd]);
+        }
+    }
+
+    #[test]
+    fn one_brick_elects_the_l2_node_writer_at_every_scale() {
+        for scale in 1..=3 {
+            let edge = 1u32 << scale;
+            let writers = (0..edge)
+                .flat_map(|z| (0..edge).flat_map(move |y| (0..edge).map(move |x| [x, y, z])))
+                .filter(|&brick| is_node_origin_writer(brick, scale))
+                .collect::<Vec<_>>();
+            assert_eq!(writers, vec![[0, 0, 0]]);
+        }
+    }
+
+    #[test]
     fn wgsl_decode_constants_match_the_rust_contract() {
-        assert!(SH_INDIRECTION_SLOT_BITS >= 28);
+        assert!(SH_INDIRECTION_SLOT_BITS >= 27);
         for (name, value) in [
             ("SH_INDIRECTION_LEVEL_MASK", SH_INDIRECTION_LEVEL_MASK),
             ("SH_INDIRECTION_VALID_BIT", SH_INDIRECTION_VALID_BIT),
+            ("SH_INDIRECTION_SCALE_MASK", SH_INDIRECTION_SCALE_MASK),
+            ("SH_INDIRECTION_SCALE_SHIFT", SH_INDIRECTION_SCALE_SHIFT),
             ("SH_INDIRECTION_SLOT_SHIFT", SH_INDIRECTION_SLOT_SHIFT),
         ] {
             let literal = format!("const {name}: u32 = 0x{value:08x}u");

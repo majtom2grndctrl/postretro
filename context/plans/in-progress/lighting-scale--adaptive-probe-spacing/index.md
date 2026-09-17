@@ -38,8 +38,8 @@ Phase 2
 - [x] A v10 id 34 or v3 id 35 aborts the load with the named recompile error; no degrade.
 - [x] `--sh-density-force-scale 3` on a fixture with delta entries, a partial edge brick, and a protection AABB pins those bricks to scale 0 (clamped like `--sh-density-force-level`), and the forced-scale bake round-trips through the loader with no nonzero-scale-on-delta / nonzero-scale-on-partial / protected-scale reject (research `R-FORCE`).
 - [x] A bake with maximum scale 0 emits probe records and atlas blobs byte-identical to the prior version's on a gate fixture apart from the version words; two `--no-cache` runs of a scale-≥1 bake are byte-identical.
-- [ ] One builder yields the word with scale; the moments B/A halves and every compose carrier decode to the same word per probe; the compose slot election writes each node slot exactly once per dispatch (source-shape tests extended).
-- [ ] No sampler pipeline gains a binding; the forward fragment texture inventory is unchanged; every compose BGL stays ≤ 8 storage buffers (regression guard on the budget tests).
+- [x] One builder yields the word with scale; the moments B/A halves and every compose carrier decode to the same word per probe; the compose slot election writes each node slot exactly once per dispatch (source-shape tests extended).
+- [x] No sampler pipeline gains a binding; the forward fragment texture inventory is unchanged; every compose BGL stays ≤ 8 storage buffers (regression guard on the budget tests).
 - [x] Every brick with an id-41 entry is stamped scale 0 (the crossfade guard), asserted on a fixture with selected static lights.
 - [x] An animated directional light (`light_sun` with `style`/`*_curve`/`_animated`) is normalized to static with a build warning naming the entity, and the bake then coarsens identically to its static equivalent; asserted on a fixture pairing a static and an animated `light_sun` over an open volume.
 - [x] The bake summary reports the node histogram by scale and level and the bricks pinned to scale 0 by delta entries and by protection.

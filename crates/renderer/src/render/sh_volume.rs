@@ -1175,12 +1175,14 @@ mod tests {
             mean_distance: 0x4200,
             mean_sq_distance: 0x4900,
             density_level: 0,
+            node_scale: 0,
         };
         let probe_b = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x3c00,
             mean_sq_distance: 0x4000,
             density_level: 0,
+            node_scale: 0,
         };
 
         let words = [0x1234_5674, 0xabcd_efc4];
@@ -1202,12 +1204,14 @@ mod tests {
             mean_distance: 0x4400,
             mean_sq_distance: 0x4c00,
             density_level: 0,
+            node_scale: 0,
         };
         let probe_invalid = OctahedralShProbe {
             validity: 0,
             mean_distance: 0x7bff,
             mean_sq_distance: 0x7bff,
             density_level: 0,
+            node_scale: 0,
         };
 
         let moments =

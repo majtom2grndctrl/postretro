@@ -1110,7 +1110,11 @@ mod tests {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
         assert!(
             source.contains("let output_is_stored = stored_slot.write;")
-                && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection"),
+                && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection")
+                && source.contains("let node_edge = 1u << brick_indirection.scale;")
+                && source.contains(
+                    "brick_indirection.level == 2u && local_probe == 0u && node_origin_writer"
+                ),
             "direct SH compose must derive stored-slot writes from id-34 indirection"
         );
         assert!(

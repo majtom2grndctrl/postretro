@@ -1,0 +1,43 @@
+# lighting-scale--sh-delta-tile-alpha-drop — plan of record
+
+mode: compact
+status: active
+read at: 29e8611c6
+
+## Corrections
+
+- None. No cited crate changed between the brief's `read at` commit and current `main`; the live stride, writer, decoder, shader, footprint, and version sites still match the brief.
+
+## Delegated answers
+
+- Real id-45 size map — start with `campaign-test`; if its compiled section inventory lacks id 45, use the smallest existing animated-light fixture that emits id 45 and record the substitution in `research.md`.
+- Packed WGSL reader — use branchless parity selection over two adjacent `u32` words; it directly mirrors the half-index derivation and avoids divergent control flow.
+- Cone-reach landing order — cone-reach is already on `main`; bump each delta section and stage version once from the landed values and take all byte-identity baselines from this post-cull format. Adaptive probe spacing has not landed, so leave base ids 34/35 untouched and keep the shared stride source explicit for its later rebase.
+
+## AC-to-proof
+
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 Three-half round trip, old length rejection, and stale-version recompile errors for ids 27/41/45 | Focused `postretro-level-format` section tests | achievable as stated | pending |
+| A2 Id-41 composed-atlas f16 identity at L0, L1 kept, L1 dropped-valid, and L2 | New delta RGB identity integration test over compiler emission and CPU reconstruction | achievable as stated | pending |
+| A3 Id-45 and id-27 composed-atlas f16 identity at all coarsening levels | Same identity integration test fixtures for animated-direct and indirect sections | achievable as stated | pending |
+| A4 Stride lockstep through format, compaction, emitted view, envelope view, CPU decoder, entry drop, and all compose shaders | Distinct-channel fixture plus shader source guard | achievable as stated | pending |
+| A5 Odd-half alignment through packed reader at odd texels, kept ranks, and tile tail | Rust packed-word reader parity test plus shader source guard | achievable as stated | pending |
+| A6 Entry dropping and coarsening decisions unchanged for ids 27/41/45 | Before/after-layout decision fixtures retaining identical entry sets, levels, and validity masks | achievable as stated | pending |
+| A7 Working-set and raw-cap summaries use 13,824 B while defaults stay unchanged | Compiler pipeline projection/cap tests and renderer compose-footprint test | achievable as stated | pending |
+| A8 Cache epochs invalidate old keys and new warm builds are byte-identical | Delta cache-key tests, stage-version pin, and cross-bake warm determinism tests | achievable as stated | pending |
+| A9 No new runtime RAM copy | Source gate over loader decode and renderer verbatim upload paths | achievable as stated | pending |
+| A10 Adaptive landing-order guard | Shader source guards derive multiplier from the format-fed grid stride; no base/delta cross-format byte baseline | achievable as stated | pending |
+| M1 Real-map disk/payload/storage size row | `campaign-test` plus resolved id-45 map; compiler summaries, dev-tools footprint log, and file sizes recorded in `research.md` | manual-measurement | pending |
+| M2 E20 promoted animated-light capture is pixel-identical before/after | Owner, same-adapter before/after E20 capture | manual-visual | pending |
+| R1 Base atlases ids 34/35 byte-identical | Existing base-section bytes captured on the same focused bake fixtures before and after | achievable as stated | pending |
+| R2 Billboard scatter section 48 byte-identical | Existing section-48 bytes captured on the same focused animated fixture before and after | achievable as stated | pending |
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | Prove the highest-risk id-41 slice end to end: RGB wire stride/version, direct writer, compaction/reconstruction, packed CPU reader, direct compose shader, and identity/odd-half tests | integrating executor | — | active |
+| 2 | Extend the RGB layout to ids 27/45 and every shared writer, classifier, envelope, entry-drop, compose, and shader consumer; bump all remaining section/stage versions | integrating executor | 1 | pending |
+| 3 | Close the cross-cutting acceptance matrix: lockstep/source/RAM guards, cache proofs, decision-equivalence fixtures, footprint/gate updates, and untouched base/scatter regressions | integrating executor | 2 | pending |
+| 4 | Run focused verification, review/fix loop, final preflight, and populate every automated result; prepare and execute the real-map/manual runbook where locally possible | integrating executor | 3 | pending |

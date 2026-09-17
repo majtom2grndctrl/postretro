@@ -1,6 +1,6 @@
 # lighting-scale--sh-delta-tile-alpha-drop
 
-Brief · compact · Epic: lighting scale (on-disk + VRAM) · reads: `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache · `context/lib/rendering_pipeline.md` §4 · read at 4f9e5c5
+Brief · compact · Epic: lighting scale (on-disk + VRAM) · reads: `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache · `context/lib/rendering_pipeline.md` §4 · symbols re-grounded against `main` at d48b791 in `/review-brief`
 
 > **Build order (lighting-scale footprint track):** `sh-delta-cone-reach-cull` (Phase 1) has **shipped to `main`**, so this is now the **next** footprint item → then `adaptive-probe-spacing`. Re-baseline this brief's delta byte-identity ACs onto the **landed** post-cull format (Open questions R6). Cone-reach bumped only `DIRECT_SH_STAGE_VERSION` and `BILLBOARD_DIRECT_SCATTER_STAGE_VERSION`, **not** the six delta versions — those are unbumped on `main` (sections 5/3/3, stages 1/2/2, the Wire-table "before" baseline), so this brief performs their **first** bump. Independent of adaptive on the wire (delta id-27/41/45 vs base id-34/35); coordinate only on the shared SH compose/sampler code. **Re-ground before build:** refresh symbols against `main` in the `/review-brief` pass — in particular the `sh_analyze.rs` delta decoders that hold literal strides (see `research.md` §Stride sites).
 

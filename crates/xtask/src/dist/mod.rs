@@ -98,9 +98,10 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         &workspace,
         &cli.output_root,
         &payload_root,
-        &manifest,
+        &manifest.package.name,
+        &manifest.package.mod_root,
         &binaries.prl_build,
-        &state,
+        &state.resolved,
     )?;
     stage_seven_copy_materials(&workspace, &payload_root)?;
     sweep_payload(
@@ -256,7 +257,7 @@ pub(crate) fn binary_name(name: &str) -> String {
     }
 }
 
-fn stage_two_emit_entry_script(
+pub(crate) fn stage_two_emit_entry_script(
     scripts_build: &Path,
     workspace: &Path,
     target_dir: &Path,
@@ -312,7 +313,7 @@ fn stage_two_emit_entry_script(
     Ok((choice, output))
 }
 
-fn stage_three_resolve_levels(
+pub(crate) fn stage_three_resolve_levels(
     entry_script: &Path,
     manifest: &Manifest,
     workspace: &Path,
@@ -331,7 +332,10 @@ fn stage_three_resolve_levels(
     Ok(resolved)
 }
 
-fn stage_four_bake_model_textures(workspace: &Path, manifest: &Manifest) -> Result<(), String> {
+pub(crate) fn stage_four_bake_model_textures(
+    workspace: &Path,
+    manifest: &Manifest,
+) -> Result<(), String> {
     println!("Stage 4: bake model textures");
     let models = workspace.join(&manifest.package.mod_root).join("models");
     let mut gltfs = Vec::new();
@@ -437,20 +441,21 @@ fn stage_five_assemble_payload(
     Ok(())
 }
 
-fn stage_six_bake_levels(
+pub(crate) fn stage_six_bake_levels(
     workspace: &Path,
     output_root: &Path,
     payload_root: &Path,
-    manifest: &Manifest,
+    package_name: &str,
+    mod_root: &str,
     prl_build: &Path,
-    state: &RunState,
+    resolved: &[Resolved],
 ) -> Result<(), String> {
     println!("Stage 6: bake release levels");
-    let ordered = bake_order(&state.resolved);
+    let ordered = bake_order(resolved);
     write_marker(
         payload_root,
         output_root,
-        &manifest.package.name,
+        package_name,
         "stage 6",
         &outstanding_outputs(&ordered, 0),
     )?;
@@ -463,9 +468,7 @@ fn stage_six_bake_levels(
     }
 
     for (index, resolved) in ordered.iter().enumerate() {
-        let output = payload_root
-            .join(&manifest.package.mod_root)
-            .join(&resolved.output);
+        let output = payload_root.join(mod_root).join(&resolved.output);
         let parent = output.parent().expect("resolved output has a maps/ parent");
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -498,18 +501,15 @@ fn stage_six_bake_levels(
         } else {
             "stage 6"
         };
-        write_marker(
-            payload_root,
-            output_root,
-            &manifest.package.name,
-            stage,
-            &outstanding,
-        )?;
+        write_marker(payload_root, output_root, package_name, stage, &outstanding)?;
     }
     Ok(())
 }
 
-fn stage_seven_copy_materials(workspace: &Path, payload_root: &Path) -> Result<(), String> {
+pub(crate) fn stage_seven_copy_materials(
+    workspace: &Path,
+    payload_root: &Path,
+) -> Result<(), String> {
     println!("Stage 7: copy baked materials");
     let source = workspace.join("baked").join("materials");
     let destination = payload_root.join("baked").join("materials");

@@ -19,13 +19,11 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
 
 ## Decisions
 - **Drop alpha where the delta payload is serialized, not in the shared tile packer.** The
-  base atlases (id 34/35) reuse `pack_octahedral_irradiance_tile` (`sh_bake.rs`), and their
-  sampler reads stored alpha for L1 stored-corner presence (`sh_sample.wgsl`) — base tile
-  layout is untouched. Alpha leaves at each delta writer: the id-41 sub-block bake
-  (`bake_direct_delta_subblock`, `direct_sh_bake.rs`), the id-27 sub-block bake
-  (`delta_sh_bake.rs`), the id-45 sub-block bake (`animated_direct_sh_bake.rs`), and the
-  compaction-time L2 brick-mean encoder (`synthesize_l2_mean_tile`, `delta_sections.rs`),
-  which re-encodes a tile after the bake and must follow the same layout.
+  base atlases (id 34/35) reuse `pack_octahedral_irradiance_tile` and their sampler reads
+  stored alpha for L1 corner presence, so base tile layout is untouched. Alpha leaves at each
+  delta writer *and* at the compaction-time L2 brick-mean encoder (`synthesize_l2_mean_tile`),
+  which re-encodes a tile after the bake and must follow the same layout — the full writer
+  list is `research.md` §Alpha audit.
 - **One wire change across all three sections, stride in lockstep.** The texel becomes RGB
   f16 and `DELTA_TILE_TEXEL_F16_COUNT` (`delta_sh_volumes.rs`) becomes the single source of
   the stride, threaded through `delta_probe_f16_stride` and the compose grid uniform. Every
@@ -44,11 +42,10 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
   structural; its zero test chunks texels by the stride constant and keeps its semantics. The
   coarsening classifier (`sh_coarsen.rs`, decoding through `DeltaView`/`DenseDeltaView` in
   `sh_analyze.rs`) and the runtime-safe envelope (`sh_runtime_envelope_scoring.rs`) read RGB
-  only, so their *decisions* do not change — but the classifier's decoders hold literal `× 4`
-  texel and tile strides (and a `tile²×4×2` size-sweep byte estimate) that must be edited in
-  lockstep like any other literal site (`research.md` §Stride sites); the envelope already
-  derives its stride from the constant. Coarsening is orthogonal; the drop applies at L0, L1
-  and L2 alike.
+  only, so their *decisions* do not change — but the classifier's decoders hold literal strides
+  that must be hand-edited in lockstep (`research.md` §Stride sites flags them as not
+  auto-following), while the envelope already derives its stride from the constant. Coarsening
+  is orthogonal; the drop applies at L0, L1 and L2 alike.
 - **Version bumps make the old format unloadable and the old cache unservable.** Bump the
   three section-internal versions (`DELTA_SH_VOLUMES_VERSION`,
   `DIRECT_SH_DELTA_VOLUMES_VERSION`, `ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION`) and the three
@@ -138,12 +135,11 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
 - [ ] Section 48 is byte-identical before and after.
 
 ## Path
-- **Seams.** Two kinds of stride site, both in `research.md` §Stride sites: those that already
-  derive from `delta_probe_f16_stride` / the compose grid uniform (compaction meta, drop
-  policy entry stride, working-set projection — they follow the constant), and those with a
-  literal texel multiplier that must be edited: `reconstruct_delta_probe_tile`,
-  `EmittedDeltaSectionRef::decode_interior`, `DenseDirectView::decode_valid_entry`,
-  `rgb_payload_is_zero`, and `read_delta_texel` in the three compose shaders.
+- **Seams.** Two kinds of stride site, both tabled in `research.md` §Stride sites: those that
+  already derive from `delta_probe_f16_stride` / the compose grid uniform and follow the drop
+  for free, and those with a literal multiplier that must be hand-edited — including the
+  `sh_analyze.rs` classifier decoders the table flags as not auto-following. The table is the
+  edit checklist.
 - **Shape.** RGB triplets, tile-contiguous, kept-rank order unchanged. Rivals: strip alpha at
   load or at upload — no disk win and an extra load-time copy, against the RAM constraint.
   Defer and fold the drop into the future sub-f16/BC6H delta re-encode instead of spending a
@@ -151,9 +147,9 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
   `animated_light_scale` multiply on 27/45; a storage→texture restructure for BC6H), while the
   alpha drop is the certain, unconditional floor available today, mirroring
   `sh-base-atlas-at-rest-slimming`'s split posture of taking the free at-rest win first.
-- **Word packing.** The storage buffer is `array<u32>`, two halves per word. Entry and probe
-  bases stay even (a 6×6 tile is 108 halves); odd texels start mid-word, so the reader loads
-  two words and selects by parity. Do not pad texels back to four — that is the status quo.
+- **Word packing.** Odd texels start mid-word at stride 3, so the packed reader loads two
+  words and selects by parity (derivation in `research.md` §Word packing). Do not pad texels
+  back to four — that is the status quo.
 - **First slice.** id 41 end to end — constant, `bake_direct_delta_subblock`, format identity,
   CPU reference, `direct_sh_compose.wgsl` — and the id-41 identity row on the
   `cache_cross_bake_tests.rs` fixture before touching 27/45.

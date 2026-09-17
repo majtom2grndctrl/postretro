@@ -63,8 +63,8 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
 use postretro_level_format::sh_reconstruct::{
-    Level, Tile, local_xyz, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles,
-    stored_tiles, zero_tile,
+    Level, Tile, local_xyz, node_l1_corner_weight, node_probe_edge, reconstruct_l1_tile,
+    reconstruct_l2_tile, stored_delta_tiles, stored_tiles, zero_tile,
 };
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use serde::Serialize;
@@ -1635,7 +1635,7 @@ pub(crate) fn evaluate_hierarchy_node(
         level,
     };
     let probe_origin = origin.map(|axis| axis * AFFINITY_FACTOR);
-    let probe_edge = AFFINITY_FACTOR << scale;
+    let probe_edge = node_probe_edge(scale).expect("validated hierarchy scale");
     let mut errors = ErrAccum::default();
     let mut magnitudes = ErrAccum::default();
     for z in probe_origin[2]..probe_origin[2] + probe_edge {
@@ -1694,7 +1694,7 @@ fn hierarchy_basis(
     texels: usize,
 ) -> HierarchyBasis {
     let probe_origin = origin.map(|axis| axis * AFFINITY_FACTOR);
-    let probe_edge = AFFINITY_FACTOR << scale;
+    let probe_edge = node_probe_edge(scale).expect("validated hierarchy scale");
     let mut mean = zero_tile(texels);
     let mut count = 0u32;
     for z in probe_origin[2]..probe_origin[2] + probe_edge {
@@ -1765,29 +1765,17 @@ fn reconstruct_hierarchy_tile(
         return basis.mean.clone();
     }
     let probe_origin = assignment.origin.map(|axis| axis * AFFINITY_FACTOR);
-    let span = (AFFINITY_FACTOR << assignment.scale) - 1;
-    let fractions = [
-        (target[0] - probe_origin[0]) as f32 / span as f32,
-        (target[1] - probe_origin[1]) as f32 / span as f32,
-        (target[2] - probe_origin[2]) as f32 / span as f32,
+    let local = [
+        target[0] - probe_origin[0],
+        target[1] - probe_origin[1],
+        target[2] - probe_origin[2],
     ];
     let mut reconstructed = zero_tile(texels);
     let mut weight_sum = 0.0;
     for (index, corner) in basis.corners.iter().enumerate() {
         let Some(corner) = corner else { continue };
-        let weight = (if index & 1 == 0 {
-            1.0 - fractions[0]
-        } else {
-            fractions[0]
-        }) * (if index & 2 == 0 {
-            1.0 - fractions[1]
-        } else {
-            fractions[1]
-        }) * (if index & 4 == 0 {
-            1.0 - fractions[2]
-        } else {
-            fractions[2]
-        });
+        let weight = node_l1_corner_weight(local, index as u8, assignment.scale)
+            .expect("hierarchy target lies inside its assigned node");
         if weight <= 0.0 {
             continue;
         }

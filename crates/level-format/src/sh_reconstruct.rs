@@ -64,6 +64,65 @@ pub fn trilinear_weight(target: (usize, usize, usize), corner: (usize, usize, us
     axis(target.0, corner.0) * axis(target.1, corner.1) * axis(target.2, corner.2)
 }
 
+/// Probe edge length of an aligned hierarchy node at `scale`.
+///
+/// Scale zero is one 4-probe affinity brick; every additional scale doubles
+/// the brick edge while retaining the same eight-corner L1 stored set.
+pub fn node_probe_edge(scale: u8) -> Option<u32> {
+    (scale <= MAX_NODE_SCALE).then(|| u32::from(AFFINITY_FACTOR) << scale)
+}
+
+/// Probe-local coordinate inside the aligned node containing `probe`.
+pub fn node_local_coord(probe: [u32; 3], scale: u8) -> Option<[u32; 3]> {
+    let edge = node_probe_edge(scale)?;
+    Some(probe.map(|axis| axis % edge))
+}
+
+/// Absolute probe coordinate of one L1 node corner in x-fastest corner order.
+pub fn node_corner_coord(probe_origin: [u32; 3], scale: u8, corner: u8) -> Option<[u32; 3]> {
+    if corner >= 8 {
+        return None;
+    }
+    let span = node_probe_edge(scale)? - 1;
+    Some([
+        probe_origin[0] + if corner & 1 == 0 { 0 } else { span },
+        probe_origin[1] + if corner & 2 == 0 { 0 } else { span },
+        probe_origin[2] + if corner & 4 == 0 { 0 } else { span },
+    ])
+}
+
+/// Scale-aware L1 trilinear weight for one node-local target and stored corner.
+///
+/// This is the hierarchy reconstruction definition mirrored by
+/// `sh_sample.wgsl`: the fraction spans the complete `4 * 2^scale` probe edge,
+/// not the target probe's containing brick.
+pub fn node_l1_corner_weight(local: [u32; 3], corner: u8, scale: u8) -> Option<f32> {
+    if corner >= 8 {
+        return None;
+    }
+    let edge = node_probe_edge(scale)?;
+    if local.into_iter().any(|axis| axis >= edge) {
+        return None;
+    }
+    let span = (edge - 1) as f32;
+    let fraction = local.map(|axis| axis as f32 / span);
+    Some(
+        (if corner & 1 == 0 {
+            1.0 - fraction[0]
+        } else {
+            fraction[0]
+        }) * (if corner & 2 == 0 {
+            1.0 - fraction[1]
+        } else {
+            fraction[1]
+        }) * (if corner & 4 == 0 {
+            1.0 - fraction[2]
+        } else {
+            fraction[2]
+        }),
+    )
+}
+
 /// L1 reconstruction of the tile at `target_local` from the brick's valid corner
 /// tiles. Corners that are absent/invalid are dropped and the surviving weights
 /// renormalized. Returns `None` when no valid corner exists.
@@ -75,9 +134,14 @@ pub fn reconstruct_l1_tile(
     let target = local_xyz(target_local);
     let mut acc = zero_tile(texels);
     let mut wsum = 0.0f32;
-    for corner_local in corner_locals() {
+    for (corner, corner_local) in corner_locals().into_iter().enumerate() {
         if let Some(tile) = &tiles[corner_local] {
-            let w = trilinear_weight(target, local_xyz(corner_local));
+            let w = node_l1_corner_weight(
+                [target.0 as u32, target.1 as u32, target.2 as u32],
+                corner as u8,
+                0,
+            )
+            .expect("brick-local L1 coordinates use scale zero");
             if w <= 0.0 {
                 continue;
             }
@@ -465,6 +529,46 @@ mod tests {
                 "trilinear weights must partition unity at local {target_local}"
             );
         }
+    }
+
+    #[test]
+    fn node_l1_weights_and_corners_cover_every_wire_scale() {
+        for scale in 0..=MAX_NODE_SCALE {
+            let edge = node_probe_edge(scale).unwrap();
+            let origin = [17, 29, 41];
+            assert_eq!(node_corner_coord(origin, scale, 0), Some(origin));
+            assert_eq!(
+                node_corner_coord(origin, scale, 7),
+                Some(origin.map(|axis| axis + edge - 1)),
+            );
+            assert_eq!(
+                node_local_coord([edge + 1, edge * 2 + 2, edge * 3 + 3], scale),
+                Some([1, 2, 3]),
+            );
+
+            for z in 0..edge {
+                for y in 0..edge {
+                    for x in 0..edge {
+                        let local = [x, y, z];
+                        let sum: f32 = (0..8)
+                            .map(|corner| node_l1_corner_weight(local, corner, scale).unwrap())
+                            .sum();
+                        assert!(
+                            (sum - 1.0).abs() < 1.0e-5,
+                            "scale {scale} local {local:?} weights summed to {sum}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn node_geometry_rejects_out_of_contract_inputs() {
+        assert_eq!(node_probe_edge(MAX_NODE_SCALE + 1), None);
+        assert_eq!(node_corner_coord([0; 3], 0, 8), None);
+        assert_eq!(node_l1_corner_weight([0; 3], 8, 0), None);
+        assert_eq!(node_l1_corner_weight([4, 0, 0], 0, 0), None);
     }
 
     #[test]

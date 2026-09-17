@@ -44,8 +44,8 @@ Phase 2
 - [x] An animated directional light (`light_sun` with `style`/`*_curve`/`_animated`) is normalized to static with a build warning naming the entity, and the bake then coarsens identically to its static equivalent; asserted on a fixture pairing a static and an animated `light_sun` over an open volume.
 - [x] The bake summary reports the node histogram by scale and level and the bricks pinned to scale 0 by delta entries and by protection.
 Phase 3
-- [ ] For constructed level/scale/validity fields, the sampler's node-local corner slots and weights at every scale equal the shared reconstruction definition; a cell with all eight corners in one L1 node takes the whole-cell path with ≤ 8 taps; no cell touches more than 8 distinct tiles.
-- [ ] The SDF shadow moments decode reads the same E[d] bits before and after (regression guard).
+- [x] For constructed level/scale/validity fields, the sampler's node-local corner slots and weights at every scale equal the shared reconstruction definition; a cell with all eight corners in one L1 node takes the whole-cell path with ≤ 8 taps; no cell touches more than 8 distinct tiles.
+- [x] The SDF shadow moments decode reads the same E[d] bits before and after (regression guard).
 - [ ] The emitted-reconstruction analysis of a classified hierarchy bake reports zero bricks over the gate at node granularity.
 
 ### Manual

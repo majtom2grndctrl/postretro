@@ -1,0 +1,106 @@
+# lighting-scale--sh-delta-tile-alpha-drop — research
+
+Ephemeral. Grounding and pinned orderings behind `index.md`. Symbols as of 4f9e5c5; they
+drift — the brief states only what survives.
+
+## Alpha audit
+
+Writers of the delta alpha channel (all write constant f16 1.0 for a valid probe, 0 otherwise):
+
+| Site | Section | Note |
+|---|---|---|
+| `pack_octahedral_irradiance_tile` (`sh_bake.rs`) | shared packer | Untouched: id 34/35 reuse it; `sh_sample.wgsl` reads stored alpha for L1 corner presence (`sample.a`, `stored[corner].a`). |
+| `bake_direct_delta_subblock` (`direct_sh_bake.rs`) | 41 | `out.extend_from_slice(&texel.rgba)` |
+| `bake_subblock` (`delta_sh_bake.rs`) | 27 | `out[dst..dst + 4].copy_from_slice(&texel.rgba)`; comment already says alpha is unused downstream |
+| id-45 sub-block bake (`animated_direct_sh_bake.rs`) | 45 | `out.extend_from_slice(&texel.rgba)` |
+| `synthesize_l2_mean_tile` (`delta_sections.rs`) | 27/41/45 | Post-bake compaction re-encodes the L2 mean with `valid_alpha`; not in the handoff's enumeration — must move with the writers. |
+
+Readers: none consume the value. `direct_sh_compose.wgsl`, `sh_compose.wgsl`,
+`animated_direct_sh_compose.wgsl` take `.rgb` from `read_delta_texel` and from the shared
+kept lattice; output alpha is `prior.a` from the base sample or stored-slot validity.
+`reconstruct_delta_probe_tile` decodes halves `i..i+2` and its doc says alpha is unused.
+`rgb_payload_is_zero` tests `rgba[..3]`. `DenseDirectView`, `EmittedDeltaSectionRef`,
+`emitted_reconstruction_error_by_cell` build `Vec3` from three halves.
+
+## Stride sites (lockstep inventory)
+
+Sites that compute a texel offset or tile/entry length from the per-texel half count. Every
+row moves in the one change.
+
+| Site | Kind | Today |
+|---|---|---|
+| `DELTA_TILE_TEXEL_F16_COUNT`, `DEFAULT_DELTA_PROBE_F16_STRIDE`, `DEFAULT_DELTA_PROBE_BYTES`, `delta_probe_f16_stride` (`level-format/delta_sh_volumes.rs`) | constant / derived | 4 |
+| `delta_probe_f16_stride_checked` ×3 (`delta_sh_volumes.rs`, `direct_sh_delta_volumes.rs`, `animated_direct_sh_delta_volumes.rs`) | length validation in `from_bytes` | `× DELTA_TILE_TEXEL_F16_COUNT` |
+| Doc comments "RGBA16F" / "× 4" in the three format files | layout doc | literal |
+| `bake_direct_delta_subblock`, id-27 `bake_subblock` (`base + texel_index * 4`), id-45 bake | writers | `.rgba` |
+| `expected_subblock_f16_len` at the three `bake_or_load_delta_subblocks` call sites | cache length assert | `PROBES_PER_CELL × stride` — follows constant |
+| `synthesize_l2_mean_tile` (`delta_sections.rs`) | writer + `tile_texels = probe_stride / COUNT` | literal push of alpha |
+| `EmittedDeltaSectionRef::new` / `decode_interior`; `emitted_reconstruction_error_by_cell` (`delta_sections.rs`) | readers | `× DELTA_TILE_TEXEL_F16_COUNT` |
+| `DenseDirectView::new` / `decode_valid_entry` (`sh_runtime_envelope_scoring.rs`) | reader | `× DELTA_TILE_TEXEL_F16_COUNT` |
+| `rgb_payload_is_zero` (`delta_drop_policy.rs`) | reader | `chunks_exact(4)` |
+| `delta_entry_offsets`, `resolve_delta_f16_offset` (`render-cpu/sh_compose.rs`) | compaction meta | take `delta_probe_f16_stride()` — follow |
+| `reconstruct_delta_probe_tile`, `DeltaProbeReconstructionContext` doc (`render-cpu/sh_compose.rs`) | CPU reference | `i = base + t * 4` literal |
+| `build_compose_grid_bytes` (`render-cpu/sh_compose.rs`) | uniform `delta_probe_f16_stride` | follows constant |
+| `read_delta_texel` ×3 (WGSL) | GPU reader | `texel_index * 4u` literal; two-word RGBA unpack |
+| `pipeline.rs` working-set `subblock_f16_len` | gate projection | follows `delta_probe_f16_stride` |
+| `sh_runtime_envelope.rs` `mutable_cost` / `payload_bytes` | diagnostics | follow `delta_probe_f16_stride()` |
+| `delta_drop_policy.rs` `drop_*_zero_entries` | entry stride | `PROBES_PER_CELL × delta_probe_f16_stride()` — follow |
+
+Tests that hard-code the old stride and will need the new one: `delta_drop_policy.rs` tests
+(`STRIDE = PROBES_PER_CELL * 4`, `block` pushes alpha); `sh_runtime_envelope_tests.rs`
+(`dense_direct` pushes `[v, v, v]` + alpha); `sh_coarsen.rs` tests (`PROBES_PER_CELL * 4`,
+`sub.extend([h, h, h, 0])`); `render-cpu/sh_compose.rs` tests (`stride = tile_texels * 4`,
+`[bits, bits, bits, 0]`, `stride = 4u32`); `renderer/render/direct_sh_compose.rs` footprint
+test (`delta_subblocks_bytes: 18_432`); `postretro/tests/capture_receiver_controls`
+(`4 * 6 * 6 * 4`); `delta_sections.rs` tests (`payload[i + 3] = alpha`); `delta_sh_bake.rs`
+test (`flat_map(|texel| texel.rgba)`); `animated_direct_sh_bake.rs` test (`chunks_exact(4)`).
+
+Not on the stride and untouched: `sh_reconstruct.rs` (`kept_mask`, `stored_delta_tiles`),
+loader validation (`prl_loader.rs` uses `expected_delta_subblock_f16_count`), the base-atlas
+serializers (`direct_sh_bake.rs` atlas blob, `sh_group.rs`, `sh_density.rs`), section 48
+(`BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT`, `F16_PER_SAMPLE`).
+
+## Size arithmetic (6×6 tiles, all-valid L0 cell)
+
+- Per probe tile: 36 texels × 4 halves × 2 B = 288 B → 36 × 3 × 2 = 216 B.
+- Per dense CSR entry: 64 × 288 = 18,432 B → 13,824 B. The compile-peak-ram gate's
+  per-entry projection and the `direct_sh_compose.rs` footprint test both carry 18,432.
+- Payload reduction is exactly 25% at every level (L1 corners and the L2 mean use the same
+  texel). Section headers, masks, levels and CSR tables are unchanged, so the `.prl`
+  reduction is 25% of the delta payload, not of the file.
+
+## Word packing at stride 3
+
+Storage binding is `array<u32>`, `unpack2x16float` gives (low, high). Entry bases are
+`kept_tiles × stride` and probe bases `rank × stride`; at 108 halves per tile both stay
+even. Texel base `texel_index × 3` is odd for odd texels, so R sits in the high half of
+word `⌊half/2⌋` and G, B in the next word. Reader loads two words either way; parity
+chooses which halves form (R, G, B). The last texel of a tile (index 35, base 105) ends at
+half 107 inside the tile — no read past the tile.
+
+## Pinned orderings
+
+| id | scenario | ordering pinned | expected outcome |
+|----|----------|-----------------|------------------|
+| R1 | A `.prl` written before this change is loaded by the new binary. | Section version check precedes any payload length identity. | Rejected with the section's named "recompile the .prl" error; no length-mismatch or panic path is reached. |
+| R2 | The same bake serialized RGBA (old) and RGB (new); both decoded by their own reader. | Identity is per reconstructed tile, compared as f16 bit patterns, after compaction and at each level. | Bit-equal at L0, L1 kept corner, L1 dropped-valid (trilinear of kept corners), L2 mean. The L2 mean is re-encoded from RGB in both cases, so its f16 rounding is unchanged. |
+| R3 | One site keeps the old multiplier while the constant is 3. | Fixture channels distinct per texel and per probe (e.g. R = texel index, G = probe rank, B = entry). | The lagging site reads a neighbour's channel and the identity row fails; a fixture with uniform channels would not detect it. |
+| R4 | Odd texel index; first texel of a probe at odd/even kept rank; texel 35 of a tile. | Word-packed read vs. half-indexed CPU reference. | Same R, G, B; no read outside the tile's 108 halves. |
+| R5 | Warm cache populated by the pre-change binary; then two warm builds on the new binary. | Stage-version bump vs. `decode_subblock` length rejection. | Every pre-change entry is a miss by key (not by length); second warm build is a full hit and byte-identical to the first. |
+| R6 | Cone-reach-cull lands before or after this brief. | Each brief's byte-identity baseline is taken at the format version in effect. | No cross-brief byte comparison; stage versions bump once per landing. |
+
+## Rival shapes considered
+
+- Strip alpha at load into the storage buffer: VRAM only, no disk win, one extra CPU copy at
+  load — violates the RAM constraint. Rejected.
+- Keep four halves and repurpose alpha: no size win. Rejected.
+- Sub-f16 RGB encodings and BC6H: see Non-goals in `index.md`.
+
+## Size delta (populated by the executor)
+
+| Map | Section | Payload bytes before | after | `.prl` before | after | Storage buffer before | after |
+|---|---|---|---|---|---|---|---|
+| campaign-test | 41 | | | | | | |
+| campaign-test | 45 | | | | | | |
+| campaign-test | 27 | | | | | | |
+| <id-45 map> | 45 | | | | | | |

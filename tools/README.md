@@ -53,15 +53,40 @@ cargo run -p xtask -- bake-model-textures <out.gltf>
 Placeholder for future automation scripts (e.g. `new-mod.sh`, `new-level.sh`). See
 `tools/scripts/README.md`.
 
-## Python tool setup
+## Requirements
 
-The `gen_specular.py`, `gen_normal.py`, and `gen_emissive.py` helpers require a
-`uv`-managed virtual environment. Run once from the repo root:
+Python 3.8+ for all standalone (non-Blender) scripts in this directory.
+
+Install the third-party deps into a venv, from the repo root:
 
 ```sh
-uv venv && source .venv/bin/activate
-uv pip install Pillow numpy   # numpy only required by gen_normal.py
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r tools/requirements.txt
 ```
+
+(A `uv`-managed venv works the same way: `uv venv && uv pip install -r tools/requirements.txt`.)
+
+Per-script deps:
+
+| Script | Third-party deps |
+| --- | --- |
+| `gen_specular.py` | Pillow |
+| `gen_normal.py` | Pillow, numpy (optional — see below) |
+| `gen_emissive.py` | Pillow |
+| `gen_sdf_shadow_fixture.py` | none (stdlib only) |
+| `gen_stress_map.py` | none (stdlib only) |
+| `inspect_fbx_ascii.py` | none (stdlib only) |
+
+`gen_normal.py` imports `numpy` inside a `try`/`except`: if it's missing, the
+script still runs but falls back to a flat/neutral normal map instead of the
+Sobel-filtered one.
+
+`blender_model_rebake.py`, `prop_to_gltf.py`, `mixamo_to_gltf.py`, and
+`extract_cyberpunk_weapons.py` import `bpy` (and `mathutils`), Blender's own
+Python API. They run **inside Blender's bundled Python interpreter** (`blender
+--background --python tools/<script>.py -- ...`), not a standalone
+interpreter — nothing from `requirements.txt` needs to be pip-installed for
+them.
 
 ### Invocation
 

@@ -1,0 +1,7 @@
+# Requirements for the standalone (non-Blender) tools/*.py asset helpers.
+# Install with: pip install -r tools/requirements.txt
+#
+# numpy is used only by gen_normal.py, to derive Sobel-filtered normal maps;
+# without it, gen_normal.py still runs but falls back to flat/neutral output.
+Pillow>=9.0
+numpy>=1.22

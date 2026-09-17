@@ -23,6 +23,9 @@ use crate::delta_sh_volumes::{AFFINITY_FACTOR, PROBES_PER_CELL};
 /// Affinity factor as `usize` — a 4×4×4 brick edge (= one affinity cell).
 const AF: usize = AFFINITY_FACTOR as usize; // 4
 
+/// Largest power-of-two brick-node scale represented by the v11 base wire.
+pub const MAX_NODE_SCALE: u8 = 3;
+
 /// An octahedral interior tile: `interior*interior` RGB texels.
 pub type Tile = Vec<Vec3>;
 
@@ -252,6 +255,26 @@ pub fn stored_brick_prefix_sum(
     brick_levels: &[Level],
     probe_validity: &[bool],
 ) -> Option<StoredBrickPrefixSum> {
+    stored_node_prefix_sum(
+        grid_dimensions,
+        brick_levels,
+        &vec![0; brick_levels.len()],
+        probe_validity,
+    )
+}
+
+/// Whole-grid stored-tile prefix sum for the node-aware v11 base contract.
+///
+/// Every brick carries its containing node's level and scale. A node is an
+/// aligned cube of `2^scale` bricks. Its stored set is charged to the aligned
+/// origin brick; all other member bricks receive a zero-length range. Scale 0
+/// is exactly [`stored_brick_prefix_sum`]'s v10 layout.
+pub fn stored_node_prefix_sum(
+    grid_dimensions: [u32; 3],
+    brick_levels: &[Level],
+    brick_scales: &[u8],
+    probe_validity: &[bool],
+) -> Option<StoredBrickPrefixSum> {
     let probe_count = grid_dimensions
         .iter()
         .try_fold(1usize, |count, &dimension| {
@@ -268,7 +291,7 @@ pub fn stored_brick_prefix_sum(
         .try_fold(1usize, |count, &dimension| {
             count.checked_mul(dimension as usize)
         })?;
-    if brick_levels.len() != brick_count {
+    if brick_levels.len() != brick_count || brick_scales.len() != brick_count {
         return None;
     }
 
@@ -280,6 +303,44 @@ pub fn stored_brick_prefix_sum(
                 let brick_index = brick_x
                     + brick_y * affinity_dimensions[0] as usize
                     + brick_z * affinity_dimensions[0] as usize * affinity_dimensions[1] as usize;
+                let scale = brick_scales[brick_index];
+                if scale > MAX_NODE_SCALE || (scale > 0 && brick_levels[brick_index] == Level::L0) {
+                    return None;
+                }
+                let node_edge = 1usize << scale;
+                let node_origin = [
+                    brick_x / node_edge * node_edge,
+                    brick_y / node_edge * node_edge,
+                    brick_z / node_edge * node_edge,
+                ];
+                if node_origin[0] + node_edge > affinity_dimensions[0] as usize
+                    || node_origin[1] + node_edge > affinity_dimensions[1] as usize
+                    || node_origin[2] + node_edge > affinity_dimensions[2] as usize
+                    || (scale > 0
+                        && ((node_origin[0] + node_edge) * AF > grid_dimensions[0] as usize
+                            || (node_origin[1] + node_edge) * AF > grid_dimensions[1] as usize
+                            || (node_origin[2] + node_edge) * AF > grid_dimensions[2] as usize))
+                {
+                    return None;
+                }
+                for member_z in node_origin[2]..node_origin[2] + node_edge {
+                    for member_y in node_origin[1]..node_origin[1] + node_edge {
+                        for member_x in node_origin[0]..node_origin[0] + node_edge {
+                            let member = member_x
+                                + member_y * affinity_dimensions[0] as usize
+                                + member_z
+                                    * affinity_dimensions[0] as usize
+                                    * affinity_dimensions[1] as usize;
+                            if brick_levels[member] != brick_levels[brick_index]
+                                || brick_scales[member] != scale
+                            {
+                                return None;
+                            }
+                        }
+                    }
+                }
+
+                let is_node_origin = [brick_x, brick_y, brick_z] == node_origin;
                 let mut valid_probe_mask = 0u64;
                 for local_z in 0..AF {
                     for local_y in 0..AF {
@@ -306,10 +367,35 @@ pub fn stored_brick_prefix_sum(
                     }
                 }
 
-                let stored_tile_count = u32::try_from(
-                    stored_tile_set(brick_levels[brick_index], valid_probe_mask).len(),
-                )
-                .ok()?;
+                let stored_tile_count = if scale == 0 {
+                    u32::try_from(
+                        stored_tile_set(brick_levels[brick_index], valid_probe_mask).len(),
+                    )
+                    .ok()?
+                } else if !is_node_origin {
+                    0
+                } else {
+                    let probe_origin = node_origin.map(|axis| axis * AF);
+                    let probe_edge = node_edge * AF;
+                    let mut any_valid = false;
+                    for z in probe_origin[2]..probe_origin[2] + probe_edge {
+                        for y in probe_origin[1]..probe_origin[1] + probe_edge {
+                            for x in probe_origin[0]..probe_origin[0] + probe_edge {
+                                let probe = x
+                                    + y * grid_dimensions[0] as usize
+                                    + z * grid_dimensions[0] as usize * grid_dimensions[1] as usize;
+                                any_valid |= probe_validity[probe];
+                            }
+                        }
+                    }
+                    if !any_valid {
+                        0
+                    } else if brick_levels[brick_index] == Level::L1 {
+                        8
+                    } else {
+                        1
+                    }
+                };
                 bricks.push(StoredBrickRange {
                     base_slot: total_stored_tiles,
                     stored_tile_count,
@@ -513,6 +599,46 @@ mod tests {
     fn stored_brick_prefix_sum_rejects_mismatched_input_shapes() {
         assert!(stored_brick_prefix_sum([4, 4, 4], &[], &[true; 64]).is_none());
         assert!(stored_brick_prefix_sum([4, 4, 4], &[Level::L0], &[]).is_none());
+    }
+
+    #[test]
+    fn stored_node_prefix_sum_charges_only_the_aligned_origin() {
+        let grid = [8, 8, 8];
+        let levels = vec![Level::L1; 8];
+        let scales = vec![1; 8];
+        let valid = vec![true; 8 * 8 * 8];
+        let prefix = stored_node_prefix_sum(grid, &levels, &scales, &valid).unwrap();
+        assert_eq!(prefix.total_stored_tiles, 8);
+        assert_eq!(prefix.bricks[0].stored_tile_count, 8);
+        assert!(
+            prefix.bricks[1..]
+                .iter()
+                .all(|range| range.stored_tile_count == 0 && range.base_slot == 8)
+        );
+
+        let l2 = stored_node_prefix_sum(grid, &vec![Level::L2; 8], &scales, &valid).unwrap();
+        assert_eq!(l2.total_stored_tiles, 1);
+        assert_eq!(l2.bricks[0].stored_tile_count, 1);
+    }
+
+    #[test]
+    fn stored_node_prefix_sum_rejects_disagreement_partial_nodes_and_scaled_l0() {
+        let valid = vec![true; 8 * 8 * 8];
+        let mut levels = vec![Level::L1; 8];
+        let mut scales = vec![1; 8];
+        levels[7] = Level::L2;
+        assert!(stored_node_prefix_sum([8, 8, 8], &levels, &scales, &valid).is_none());
+
+        levels.fill(Level::L1);
+        scales[7] = 0;
+        assert!(stored_node_prefix_sum([8, 8, 8], &levels, &scales, &valid).is_none());
+        assert!(
+            stored_node_prefix_sum([7, 8, 8], &levels, &vec![1; 8], &vec![true; 7 * 8 * 8],)
+                .is_none()
+        );
+        assert!(
+            stored_node_prefix_sum([8, 8, 8], &vec![Level::L0; 8], &vec![1; 8], &valid,).is_none()
+        );
     }
 
     #[test]

@@ -5356,7 +5356,7 @@ mod tests {
         let direct = minimal_direct_sh_volume_section();
         let base = base_octahedral_section_for_direct(&direct);
         let mut stale_bytes = direct.to_bytes();
-        stale_bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+        stale_bytes[0..4].copy_from_slice(&3u32.to_le_bytes());
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -5369,15 +5369,46 @@ mod tests {
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
-        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_v2.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_v3.prl");
         let error =
             load_prl(tmp.to_str().unwrap()).expect_err("stale present id-35 must reject the PRL");
         assert!(
             error
                 .to_string()
                 .contains("DirectShVolume validation error")
-                && error.to_string().contains("v3 stored-atlas format"),
+                && error
+                    .to_string()
+                    .contains("v4 node-aware stored-atlas format"),
             "expected named id-35 stale-format error, got {error}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_stale_present_octahedral_sh_volume() {
+        let mut stale_bytes = base_octahedral_section([2, 1, 1]).to_bytes();
+        stale_bytes[0..4].copy_from_slice(&10u32.to_le_bytes());
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::OctahedralShVolume as u32,
+                version: 1,
+                data: stale_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_octahedral_sh_v10.prl");
+        let error =
+            load_prl(tmp.to_str().unwrap()).expect_err("stale present id-34 must reject the PRL");
+        assert!(
+            error.to_string().contains("PRL format error")
+                && error.to_string().contains("octahedral sh volume")
+                && error
+                    .to_string()
+                    .contains("v11 node-aware stored-atlas format"),
+            "expected named id-34 stale-format error, got {error}"
         );
         std::fs::remove_file(&tmp).ok();
     }

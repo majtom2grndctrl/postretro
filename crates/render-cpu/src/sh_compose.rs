@@ -74,10 +74,11 @@ impl ComposeStorageFootprint {
     }
 }
 
+/// Derived id-27/id-45 compose metadata. The raw payload remains owned by the
+/// decoded format section until the renderer stages it for upload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeltaComposeBuffers {
     pub animated_light_count: u32,
-    pub delta_subblocks: Vec<u16>,
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     pub animation_descriptor_indices: Vec<u32>,
@@ -112,9 +113,10 @@ impl DeltaComposeBuffers {
     }
 }
 
+/// Derived id-41 compose metadata. The raw payload remains owned by the
+/// decoded format section until the renderer stages it for upload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectDeltaComposeBuffers {
-    pub delta_subblocks: Vec<u16>,
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     /// One id-34-cross-checked valid-probe descriptor per affinity cell.
@@ -298,7 +300,6 @@ pub fn build_delta_buffers(
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
@@ -310,7 +311,6 @@ pub fn build_delta_buffers(
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
@@ -336,7 +336,6 @@ pub fn build_direct_delta_buffers(
     let Some(delta) = delta else {
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DirectDeltaComposeBuffers {
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
@@ -346,7 +345,6 @@ pub fn build_direct_delta_buffers(
         };
     };
     DirectDeltaComposeBuffers {
-        delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
@@ -576,7 +574,6 @@ pub fn build_animated_direct_delta_buffers(
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
@@ -588,7 +585,6 @@ pub fn build_animated_direct_delta_buffers(
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
@@ -968,10 +964,9 @@ mod tests {
     }
 
     #[test]
-    fn build_delta_buffers_no_section_returns_empty_payload_with_full_empty_offsets() {
+    fn build_delta_buffers_no_section_returns_full_empty_offsets() {
         let b = build_delta_buffers(None, [5, 2, 1]);
         assert_eq!(b.animated_light_count, 0);
-        assert!(b.delta_subblocks.is_empty());
         assert_eq!(b.affinity_dims, [2, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
         assert_eq!(b.valid_probe_masks, vec![0, 0]);
@@ -979,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn build_delta_buffers_maps_section_fields_keeping_f16() {
+    fn build_delta_buffers_maps_section_metadata_without_owning_payload() {
         let mut subblocks = sample_subblock(10);
         subblocks.extend(sample_subblock(200));
         let section = DeltaShVolumesSection {
@@ -992,7 +987,7 @@ mod tests {
             cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
-            delta_subblocks: subblocks.clone(),
+            delta_subblocks: subblocks,
         };
 
         let b = build_delta_buffers(Some(&section), [12, 1, 1]);
@@ -1001,7 +996,6 @@ mod tests {
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.animation_descriptor_indices, vec![4, u32::MAX]);
-        assert_eq!(b.delta_subblocks, subblocks);
         assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
         assert_eq!(
             b.entry_offsets,
@@ -1029,7 +1023,6 @@ mod tests {
     fn delta_compaction_meta_places_cell_levels_before_entry_offsets() {
         let buffers = DeltaComposeBuffers {
             animated_light_count: 0,
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0, 1, 2],
             affinity_lights: vec![0, 1],
             animation_descriptor_indices: Vec::new(),
@@ -1108,9 +1101,8 @@ mod tests {
     }
 
     #[test]
-    fn build_direct_delta_buffers_no_section_returns_empty_payload_with_full_empty_offsets() {
+    fn build_direct_delta_buffers_no_section_returns_full_empty_offsets() {
         let b = build_direct_delta_buffers(None, [5, 2, 1]);
-        assert!(b.delta_subblocks.is_empty());
         assert_eq!(b.affinity_dims, [2, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
         assert!(b.affinity_lights.is_empty());
@@ -1119,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn build_direct_delta_buffers_maps_section_fields_keeping_f16() {
+    fn build_direct_delta_buffers_maps_section_metadata_without_owning_payload() {
         let mut subblocks = sample_subblock(10);
         subblocks.extend(sample_subblock(200));
         let section = DirectShDeltaVolumesSection {
@@ -1131,14 +1123,13 @@ mod tests {
             cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
-            delta_subblocks: subblocks.clone(),
+            delta_subblocks: subblocks,
         };
 
         let b = build_direct_delta_buffers(Some(&section), [12, 1, 1]);
         assert_eq!(b.affinity_dims, [3, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
-        assert_eq!(b.delta_subblocks, subblocks);
         assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
         assert_eq!(
             b.entry_offsets,
@@ -1165,7 +1156,6 @@ mod tests {
     #[test]
     fn direct_delta_compaction_meta_places_cell_levels_before_entry_offsets() {
         let buffers = DirectDeltaComposeBuffers {
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0, 1, 2],
             affinity_lights: vec![0, 1],
             valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
@@ -1267,13 +1257,12 @@ mod tests {
             cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
-            delta_subblocks: subblocks.clone(),
+            delta_subblocks: subblocks,
         };
 
         let buffers = build_animated_direct_delta_buffers(Some(&section), [1, 1, 1]);
         assert_eq!(buffers.animation_descriptor_indices, vec![7]);
         assert_eq!(buffers.affinity_lights, vec![0]);
-        assert_eq!(buffers.delta_subblocks, subblocks);
         assert_eq!(buffers.valid_probe_masks, vec![u64::MAX]);
         assert_eq!(buffers.entry_offsets, vec![0]);
         assert_eq!(

@@ -11,7 +11,7 @@ use crate::sh_reconstruct::Level;
 /// Section-internal version, written as the first byte of the payload.
 pub const DIRECT_SH_DELTA_VOLUMES_VERSION: u8 = 4;
 
-/// Direct SH delta volumes section (ID 41), version 3.
+/// Direct SH delta volumes section (ID 41), version 4.
 ///
 /// On-disk layout (all little-endian):
 ///

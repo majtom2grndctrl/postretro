@@ -64,8 +64,9 @@ serializers (`direct_sh_bake.rs` atlas blob, `sh_group.rs`, `sh_density.rs`), se
 ## Size arithmetic (6×6 tiles, all-valid L0 cell)
 
 - Per probe tile: 36 texels × 4 halves × 2 B = 288 B → 36 × 3 × 2 = 216 B.
-- Per dense CSR entry: 64 × 288 = 18,432 B → 13,824 B. The compile-peak-ram gate's
-  per-entry projection and the `direct_sh_compose.rs` footprint test both carry 18,432.
+- Per dense CSR entry: pre-change 64 × 288 = 18,432 B; post-change 64 × 216 = 13,824 B.
+  The compile-peak-ram gate's per-entry projection and the `direct_sh_compose.rs` footprint
+  test both carry 13,824 B.
 - Payload reduction is exactly 25% at every level (L1 corners and the L2 mean use the same
   texel). Section headers, masks, levels and CSR tables are unchanged, so the `.prl`
   reduction is 25% of the delta payload, not of the file.
@@ -102,7 +103,27 @@ half 107 inside the tile — no read past the tile.
 
 | Map | Section | Payload bytes before | after | `.prl` before | after | Storage buffer before | after |
 |---|---|---|---|---|---|---|---|
-| campaign-test | 41 | | | | | | |
-| campaign-test | 45 | | | | | | |
-| campaign-test | 27 | | | | | | |
-| <id-45 map> | 45 | | | | | | |
+| campaign-test | 41 | 2,075,328 | 1,556,496 | 177,924,897 | 174,098,246 | 2,075,328 | 1,556,496 |
+| campaign-test | 45 | 6,198,624 | 4,648,968 | 177,924,897 | 174,098,246 | 6,198,624 | 4,648,968 |
+| campaign-test | 27 | 7,032,672 | 5,274,504 | 177,924,897 | 174,098,246 | 7,032,672 | 5,274,504 |
+
+`campaign-test` emits ids 27, 41, 45, and 48, so it is also the resolved real id-45 map;
+no substitute fixture was needed. Each delta payload and its verbatim storage upload fell
+by exactly 25%. The whole file fell by 3,826,651 bytes; the three payloads account for
+3,826,656 bytes and id 28 build statistics grew by 5 bytes because the recorded timings
+changed. Section-internal versions were verified as 5/3/3 before and 6/4/4 after, guarding
+against accidentally comparing two builds from the same compiler.
+
+The dev-tools footprint log could not be captured because the pre-existing
+`DiagnosticsTab::ALL` array-length mismatch prevents a dev-tools renderer build. Storage
+bytes above are nevertheless exact: the loader retains the decoded `Vec<u16>` and the
+renderer uploads that slice verbatim (the no-clone source guard pins this path), and all
+three payload byte counts are already four-byte aligned.
+
+For the same cold before/after artifacts, sections 34, 35, and 48 were byte-identical:
+
+| Section | bytes | SHA-256 (both artifacts) |
+|---|---:|---|
+| 34 base indirect SH | 2,917,644 | `a67e07479dfbf0c1c695bd82fe3b1973e2b259dd7f14da1e321a668e6855e98b` |
+| 35 base direct SH | 1,364,284 | `17391eb88ec87dc6e761831b61f1b7e7eb927b475c7cf76b5f747fae4ae77ad5` |
+| 48 billboard direct scatter | 479,730 | `185423fbb38e52f2f7a844d91dde692ab12bed46851455b664cf6deceab91607` |

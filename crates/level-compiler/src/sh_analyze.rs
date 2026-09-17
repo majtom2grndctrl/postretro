@@ -826,7 +826,10 @@ pub(crate) fn accumulate_delta_for_cell(
                     let full =
                         ((border + iy) * tile_dim + (border + ix)) * DELTA_TILE_TEXEL_F16_COUNT;
                     let idx = probe_base + full;
-                    if idx + 3 >= view.subblocks.len() {
+                    let Some(rgb_end) = idx.checked_add(DELTA_TILE_TEXEL_F16_COUNT) else {
+                        continue;
+                    };
+                    if rgb_end > view.subblocks.len() {
                         continue;
                     }
                     let r = f16_bits_to_f32(view.subblocks[idx]);
@@ -938,9 +941,9 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // Sweep counters.
     let thresholds = inputs.thresholds;
 
-    // Byte accumulators, per (level assignment) for the sweep, per section.
-    // We accumulate stored-tile counts; bytes = tiles * probe_tile_bytes.
-    let probe_tile_bytes = (tile_dim * tile_dim * DELTA_TILE_TEXEL_F16_COUNT * 2) as u64;
+    // Base and composed atlases are RGBA16F. Delta sections contain RGB16F.
+    let base_tile_bytes = (tile_dim * tile_dim * 8) as u64;
+    let delta_tile_bytes = (tile_dim * tile_dim * DELTA_TILE_TEXEL_F16_COUNT * 2) as u64;
 
     // Section byte lines.
     let mut base_uniform_tiles = 0u64;
@@ -1146,11 +1149,11 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // --- Section byte tables ---
     let mk = |id: u32, uni: u64, comp: u64, ez: u64, l1: u64, l2: u64| SectionBytes {
         id,
-        uniform_bytes: uni * probe_tile_bytes,
-        compacted_bytes: comp * probe_tile_bytes,
-        exact_zero_dropped_bytes: ez * probe_tile_bytes,
-        coarsen_all_l1_bytes: l1 * probe_tile_bytes,
-        coarsen_all_l2_bytes: l2 * probe_tile_bytes,
+        uniform_bytes: uni * base_tile_bytes,
+        compacted_bytes: comp * base_tile_bytes,
+        exact_zero_dropped_bytes: ez * base_tile_bytes,
+        coarsen_all_l1_bytes: l1 * base_tile_bytes,
+        coarsen_all_l2_bytes: l2 * base_tile_bytes,
         compacted_ratio: ratio(comp, uni),
         coarsen_all_l1_ratio: ratio(l1, uni),
         coarsen_all_l2_ratio: ratio(l2, uni),
@@ -1222,24 +1225,24 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     // Composed atlas projection (dense per stored probe; same geometry as base).
     report.composed_atlas = SectionBytes {
         id: 0, // synthetic: composed runtime atlas
-        uniform_bytes: base_uniform_tiles * probe_tile_bytes,
-        compacted_bytes: base_compacted_tiles * probe_tile_bytes,
+        uniform_bytes: base_uniform_tiles * base_tile_bytes,
+        compacted_bytes: base_compacted_tiles * base_tile_bytes,
         exact_zero_dropped_bytes: 0,
-        coarsen_all_l1_bytes: base_l1_tiles * probe_tile_bytes,
-        coarsen_all_l2_bytes: base_l2_tiles * probe_tile_bytes,
+        coarsen_all_l1_bytes: base_l1_tiles * base_tile_bytes,
+        coarsen_all_l2_bytes: base_l2_tiles * base_tile_bytes,
         compacted_ratio: ratio(base_compacted_tiles, base_uniform_tiles),
         coarsen_all_l1_ratio: ratio(base_l1_tiles, base_uniform_tiles),
         coarsen_all_l2_ratio: ratio(base_l2_tiles, base_uniform_tiles),
     };
 
     // --- Threshold sweep ---
-    // Uniform baseline for the ratio = base uniform + delta uniform + composed
-    // uniform (dense everything).
-    let uniform_total_tiles = base_uniform_tiles + delta_uniform_tiles + base_uniform_tiles;
+    // Uniform baseline for the ratio = base RGBA + delta RGB + composed RGBA.
+    let uniform_total_bytes =
+        (base_uniform_tiles * 2) * base_tile_bytes + delta_uniform_tiles * delta_tile_bytes;
     for &t in thresholds.iter() {
         let mut counts = [0u64; 6];
-        let mut proj_tiles = 0u64;
-        let mut proj_tiles_prot = 0u64;
+        let mut projected_bytes = 0u64;
+        let mut projected_bytes_protected = 0u64;
         for b in 0..brick_count {
             if !brick_nonempty[b] {
                 continue;
@@ -1259,7 +1262,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 Level::L1 => counts[1] += 1,
                 Level::L2 => counts[2] += 1,
             }
-            proj_tiles += base_t * 2 + delta_t; // base + composed + delta
+            projected_bytes += (base_t * 2) * base_tile_bytes + delta_t * delta_tile_bytes;
 
             // protected: intersecting bricks forced L0.
             let plvl = if brick_protected[b] { Level::L0 } else { lvl };
@@ -1274,7 +1277,8 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 Level::L1 => counts[4] += 1,
                 Level::L2 => counts[5] += 1,
             }
-            proj_tiles_prot += pbase_t * 2 + pdelta_t;
+            projected_bytes_protected +=
+                (pbase_t * 2) * base_tile_bytes + pdelta_t * delta_tile_bytes;
         }
         report.sweep.push(SweepRow {
             threshold: t,
@@ -1284,10 +1288,10 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
             l0_protected: counts[3],
             l1_protected: counts[4],
             l2_protected: counts[5],
-            projected_bytes: proj_tiles * probe_tile_bytes,
-            projected_bytes_protected: proj_tiles_prot * probe_tile_bytes,
-            ratio_to_uniform: ratio(proj_tiles, uniform_total_tiles),
-            ratio_to_uniform_protected: ratio(proj_tiles_prot, uniform_total_tiles),
+            projected_bytes,
+            projected_bytes_protected,
+            ratio_to_uniform: ratio(projected_bytes, uniform_total_bytes),
+            ratio_to_uniform_protected: ratio(projected_bytes_protected, uniform_total_bytes),
         });
     }
 
@@ -2610,6 +2614,19 @@ mod tests {
     }
 
     #[test]
+    fn accumulate_delta_consumes_final_rgb_triple() {
+        let masks = [1];
+        let offsets = [0, 1];
+        let payload = [0x3c00, 0x4000, 0x4200];
+        let view = DeltaView::new([1, 1, 1], 1, &masks, &offsets, &payload);
+        let mut acc: [Tile; PROBES_PER_CELL] = std::array::from_fn(|_| zero_tile(1));
+
+        accumulate_delta_for_cell(&view, 0, 1, 0, &mut acc);
+
+        assert_eq!(acc[0][0], Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
     fn analysis_keeps_valid_cell_zero_direct_fallback_in_l1_l2_projections() {
         // Regression: a selected all-zero id 41 fallback was counted as dropped
         // even though the finalized CSR retains it to preserve light coverage.
@@ -2661,7 +2678,14 @@ mod tests {
         assert_eq!(direct_bytes.coarsen_all_l1_bytes, 6);
         assert_eq!(direct_bytes.coarsen_all_l2_bytes, 6);
         assert_eq!(report.exact_zero_entry_fraction, 1.0);
-        assert_eq!(report.sweep[0].projected_bytes, 18);
+        let base_bytes = report
+            .section_bytes
+            .iter()
+            .find(|section| section.id == 34)
+            .expect("id 34 accounting must be present");
+        assert_eq!(base_bytes.compacted_bytes, 8);
+        assert_eq!(report.composed_atlas.compacted_bytes, 8);
+        assert_eq!(report.sweep[0].projected_bytes, 22);
     }
 
     #[test]

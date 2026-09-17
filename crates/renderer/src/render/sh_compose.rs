@@ -76,9 +76,9 @@ impl ShComposeResources {
         delta: Option<&DeltaShVolumesSection>,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        // Build the sparse CSR delta buffers. Probes stay f16 (raw `u16` halves)
-        // in the storage buffer — the shader `unpack2x16float`s them. No
-        // f16→f32 expansion.
+        // Build the sparse CSR metadata. Probes stay in the format-owned f16
+        // payload until this renderer stages its verbatim bytes for upload.
+        let delta_subblocks: &[u16] = delta.map_or(&[], |delta| delta.delta_subblocks.as_slice());
         let buffers = build_delta_buffers(delta, sh.grid_dimensions);
         let light_count = buffers.animated_light_count;
 
@@ -92,7 +92,7 @@ impl ShComposeResources {
         // entering the loop, so the empty case must pad to two `u32`s (8 bytes).
         // Both are zero, so `start == end` and the loop skips — but `[0]` and
         // `[1]` are genuinely in bounds rather than relying on OOB clamping.
-        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
         let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
         let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
         let descriptor_index_bytes =

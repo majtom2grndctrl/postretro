@@ -146,6 +146,36 @@ Get-FileHash -Algorithm SHA256 $Prl, $Json
 
 Record the JSON hierarchy table, projected/shipped/all-L2 bytes, node errors, blocker attribution, seam residuals, worker count, exact command, machine fields, wall/RSS, hashes, and whether every required receiver renders without wgpu validation errors. If the full map is infeasible, repeat the same script with `stress-warren-hallway-inspection-mini.map` and record the full-map stopping stage/limit. After copying the measurements, clean up with `Remove-Item -Recurse -Force $Run`.
 
+## Phase 2 local runtime seam and receiver checklist — 2026-09-17
+
+The manageable local runtime proof used `content/dev/maps/kinematic-platform.map` at the pinned 1.0 m spacing. Two exact, cache-bypassed builds — one ordinary emission and one with the byte-preserving analysis sidecar — produced byte-identical 101,508,408-byte PRLs (SHA-256 `28d42e106387aaa7eb2619e5b1b421e56fd7d53845be22a7c64eee3fc57f9943`). The ordinary build completed in 30.16 s and the analyzed build in 33.15 s. The emitted summary contained four scale-1 L1 nodes and one scale-1 L2 node; the sidecar retained the Phase 1 SHA-256 `38dcfbd70d576c8c759d38987cf5670a04f9ed4b6faa75efca2338bf041260ac`. This proves the runtime input is a real hierarchy bake, not only a constructed in-memory section.
+
+The focused compiler fixture `forced_hierarchy_output_round_trips_through_production_loader` also passed. On the renderer side, `serialized_scale_one_l2_fixture_builds_runtime_words_and_moments` serializes id 34 v11, decodes it, derives the scale-bearing runtime words, and verifies the shared moments carrier after the wire boundary.
+
+The fresh kinematic PRL then completed the synchronous offscreen capture path on an AMD Radeon Pro 5300M / Metal adapter. The production loader accepted id 34 v11 and id 35 v4, renderer resource installation created the 23×65×89 indirect and direct compose paths, all six kinematic movers installed, and a 26-joint skinned model uploaded. The capture exited 0 with no panic or wgpu validation error and wrote a 1280×720 PNG (SHA-256 `80b254fc834902bc9c69a36143f00ecc8efe982c023d763b3f4f48bb37bb067d`). The frame is evidence that the loader-to-renderer seam executes; its fixed camera is close to level geometry, so it is deliberately **not** recorded as visual parity or complete receiver coverage.
+
+### Phase 2 owner receiver run (blocking manual evidence)
+
+After Tasks 7–10 are complete, use the full Warren hallway PRL produced by the Windows measurement run above. Keep the explicit content root because `$Prl` lives under `%TEMP%`:
+
+```powershell
+$Log = Join-Path $Run "hallway-runtime.log"
+$env:RUST_LOG = "info"
+cargo run -p xtask -- run --features dev-tools -- --content-root content/dev $Prl 2>&1 | Tee-Object $Log
+Remove-Item Env:RUST_LOG
+Select-String -Path $Log -Pattern "validation error|wgpu.*error|panic" -CaseSensitive:$false
+```
+
+Close the engine normally after walking the fixture, then record adapter/backend and a pass/fail/n-a result for each item rather than inferring it from the clean Mac capture:
+
+- world: inspect corridor walls, floors, and open-room transitions under indirect light;
+- movers: ride or cross at least one of the 11 authored kinematic movers and inspect it both at rest and in motion;
+- skinned meshes: inspect the authored `reference_enemy` models in a lit area;
+- node faces: pause at visible lighting transitions while crossing open volumes and mover paths, looking for a seam or pop;
+- log: the `Select-String` command returns no wgpu validation error or panic.
+
+The Warren hallway does not author `fog_volume` or `billboard_emitter`, so it cannot honestly close those two receiver rows. The final Task-10 runbook will retain a short `campaign-test` follow-up for billboard and fog coverage; Warren remains the requested stress-map step and its result is never substituted by that supplemental fixture.
+
 ## Pinned orderings
 
 | id | scenario | ordering pinned | expected outcome |

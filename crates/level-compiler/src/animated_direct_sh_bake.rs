@@ -19,7 +19,8 @@ use crate::sh_bake::{
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
-    DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+    DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
+    DELTA_TILE_TEXEL_F16_COUNT, PROBES_PER_CELL,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -34,7 +35,7 @@ const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_ID: &str = "animated_direct_delta_sh_subblock";
 
 /// Bump when the animated-direct sub-block computation or its key inputs change.
-pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 2;
+pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 3;
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the
 /// shared SH context, keeping section-45 sub-blocks coincident with base probes.
@@ -332,7 +333,7 @@ fn bake_direct_subblock(
                     pack_octahedral_irradiance_tile(&[0.0; 27], false, TILE_DIMENSION, TILE_BORDER)
                 };
                 for texel in tile {
-                    out.extend_from_slice(&texel.rgba);
+                    out.extend_from_slice(&texel.rgba[..DELTA_TILE_TEXEL_F16_COUNT]);
                 }
             }
         }
@@ -816,8 +817,8 @@ mod tests {
         assert!(decoded.iter().all(|value| value.is_finite()));
         assert!(
             decoded
-                .chunks_exact(4)
-                .any(|rgba| rgba[..3].iter().any(|&value| value > 0.0)),
+                .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+                .any(|rgb| rgb.iter().any(|&value| value > 0.0)),
             "the authored rest direction must produce direct transport even when a direction curve is present"
         );
     }

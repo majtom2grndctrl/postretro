@@ -25,7 +25,6 @@ fn dense_direct(
                 let v = value(entry, local);
                 for _ in 0..TILE as usize * TILE as usize {
                     payload.extend([v, v, v].map(f32_to_f16_bits));
-                    payload.push(f32_to_f16_bits(1.0));
                 }
             }
         }

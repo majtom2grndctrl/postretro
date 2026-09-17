@@ -121,8 +121,9 @@ struct DirectPromotionStorage {
 
 impl DirectPromotionStorage {
     fn new(delta: Option<&DirectShDeltaVolumesSection>, grid_dimensions: [u32; 3]) -> Self {
+        let delta_subblocks: &[u16] = delta.map_or(&[], |delta| delta.delta_subblocks.as_slice());
         let buffers = build_direct_delta_buffers(delta, grid_dimensions);
-        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
+        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
         let compaction_meta_bytes =
             pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
         let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
@@ -689,6 +690,7 @@ fn direct_compose_should_dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 
     #[cfg(feature = "dev-tools")]
     use log::Level;
@@ -748,6 +750,122 @@ mod tests {
             LightTermMask::ALL,
             LightTermMask::ALL,
         ));
+    }
+
+    #[test]
+    fn all_delta_compose_shaders_derive_rgb_stride_and_select_odd_half_parity() {
+        assert_eq!(DELTA_TILE_TEXEL_F16_COUNT, 3);
+        let shaders = [
+            ("id 41", include_str!("../shaders/direct_sh_compose.wgsl")),
+            ("id 27", include_str!("../shaders/sh_compose.wgsl")),
+            (
+                "id 45",
+                include_str!("../shaders/animated_direct_sh_compose.wgsl"),
+            ),
+        ];
+
+        for (label, source) in shaders {
+            assert!(
+                source.contains("let texel_f16_count = grid.delta_probe_f16_stride")
+                    && source.contains("/ (grid.tile_dimension * grid.tile_dimension);")
+                    && source.contains("+ texel_index * texel_f16_count;"),
+                "{label} must derive its texel multiplier from the format-fed probe stride",
+            );
+            assert!(
+                source.contains("(half_base & 1u) != 0u")
+                    && source.contains("vec3<f32>(first.x, first.y, second.x)")
+                    && source.contains("vec3<f32>(first.y, second.x, second.y)"),
+                "{label} must select RGB halves by packed-word parity",
+            );
+            assert!(
+                !source.contains("texel_index * 4u"),
+                "{label} must not retain the old RGBA texel stride",
+            );
+        }
+    }
+
+    #[test]
+    fn delta_loader_and_upload_paths_add_no_payload_clone() {
+        let loader = include_str!("../../../level-loader/src/prl_loader.rs");
+        for decode in [
+            "DeltaShVolumesSection::from_bytes(data)?",
+            "AnimatedDirectShDeltaVolumesSection::from_bytes(data)",
+            "DirectShDeltaVolumesSection::from_bytes(data)",
+        ] {
+            assert!(
+                loader.contains(decode),
+                "loader must decode through {decode}"
+            );
+        }
+        for forbidden in [
+            "delta_subblocks.clone()",
+            "delta_subblocks.to_vec()",
+            "delta_subblocks.to_owned()",
+        ] {
+            assert!(
+                !loader.contains(forbidden),
+                "the loader must not re-own a decoded delta payload via {forbidden}",
+            );
+        }
+
+        let compose_builder = include_str!("../../../render-cpu/src/sh_compose.rs");
+        let compose_builder_production = compose_builder
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("render-cpu compose source has a production prefix");
+        assert!(
+            !compose_builder_production.contains("pub delta_subblocks: Vec<u16>"),
+            "compose builders must return metadata without re-owning the format payload",
+        );
+        for forbidden in [
+            ".delta_subblocks.clone()",
+            ".delta_subblocks.to_vec()",
+            ".delta_subblocks.to_owned()",
+        ] {
+            assert!(
+                !compose_builder_production.contains(forbidden),
+                "compose builders must not create an intermediate payload via {forbidden}",
+            );
+        }
+
+        for (label, source, borrowed_payload) in [
+            (
+                "id 41",
+                include_str!("direct_sh_compose.rs"),
+                "delta.map_or(&[], |delta| delta.delta_subblocks.as_slice())",
+            ),
+            (
+                "id 27",
+                include_str!("sh_compose.rs"),
+                "delta.map_or(&[], |delta| delta.delta_subblocks.as_slice())",
+            ),
+            (
+                "id 45",
+                include_str!("animated_direct_sh_compose.rs"),
+                "animated_delta.delta_subblocks.as_slice()",
+            ),
+        ] {
+            let production = source
+                .split("\n#[cfg(test)]\nmod tests")
+                .next()
+                .expect("renderer source has a production prefix");
+            assert!(
+                production.contains(borrowed_payload)
+                    && production.contains("u16_slice_to_bytes(delta_subblocks)"),
+                "{label} renderer must stage bytes directly from the borrowed format payload",
+            );
+            for forbidden in [
+                "buffers.delta_subblocks",
+                "delta_subblocks.clone()",
+                "delta_subblocks.to_vec()",
+                "delta_subblocks.to_owned()",
+            ] {
+                assert!(
+                    !production.contains(forbidden),
+                    "{label} renderer must not add an intermediate payload via {forbidden}",
+                );
+            }
+        }
     }
 
     #[test]
@@ -828,7 +946,7 @@ mod tests {
         assert_eq!(
             storage.footprint(),
             ComposeStorageFootprint {
-                delta_subblocks_bytes: 18_432,
+                delta_subblocks_bytes: 13_824,
                 delta_compaction_meta_bytes: 16,
                 affinity_offsets_bytes: 8,
                 affinity_lights_bytes: 4,
@@ -877,7 +995,7 @@ mod tests {
         // Regression: without id 41 or id 45, Pass A must remain available so
         // clearing bit 3 writes zero instead of exposing the immutable base.
         let storage = DirectPromotionStorage::new(None, [1, 1, 1]);
-        assert!(storage.buffers.delta_subblocks.is_empty());
+        assert_eq!(storage.subblock_bytes, vec![0; 4]);
         assert_eq!(storage.buffers.affinity_offsets, vec![0, 0]);
         assert!(storage.buffers.affinity_lights.is_empty());
 

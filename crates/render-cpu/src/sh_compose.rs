@@ -3,7 +3,8 @@
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL, delta_probe_f16_stride,
+    AFFINITY_FACTOR, DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection, PROBES_PER_CELL,
+    delta_probe_f16_stride,
 };
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::sh_reconstruct::{
@@ -73,10 +74,11 @@ impl ComposeStorageFootprint {
     }
 }
 
+/// Derived id-27/id-45 compose metadata. The raw payload remains owned by the
+/// decoded format section until the renderer stages it for upload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeltaComposeBuffers {
     pub animated_light_count: u32,
-    pub delta_subblocks: Vec<u16>,
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     pub animation_descriptor_indices: Vec<u32>,
@@ -111,9 +113,10 @@ impl DeltaComposeBuffers {
     }
 }
 
+/// Derived id-41 compose metadata. The raw payload remains owned by the
+/// decoded format section until the renderer stages it for upload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectDeltaComposeBuffers {
-    pub delta_subblocks: Vec<u16>,
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     /// One id-34-cross-checked valid-probe descriptor per affinity cell.
@@ -297,7 +300,6 @@ pub fn build_delta_buffers(
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
@@ -309,7 +311,6 @@ pub fn build_delta_buffers(
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
@@ -335,7 +336,6 @@ pub fn build_direct_delta_buffers(
     let Some(delta) = delta else {
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DirectDeltaComposeBuffers {
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
@@ -345,7 +345,6 @@ pub fn build_direct_delta_buffers(
         };
     };
     DirectDeltaComposeBuffers {
-        delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
@@ -484,11 +483,11 @@ pub struct DeltaProbeReconstructionContext<'a> {
     pub cell_levels: &'a [u8],
     /// Kept-rank base offsets produced by `delta_entry_offsets`.
     pub entry_offsets: &'a [u32],
-    /// Packed f16 RGBA payload. Reconstruction reads RGB; alpha is unused.
+    /// Packed f16 RGB payload.
     pub delta_subblocks: &'a [u16],
     /// Interior RGB texel count per tile.
     pub tile_texels: usize,
-    /// f16 stride per probe tile (`tile_texels * 4` for RGBA16F).
+    /// f16 stride per probe tile (`tile_texels * 3` for RGB16F).
     pub tile_f16_stride: u32,
 }
 
@@ -523,12 +522,12 @@ pub fn reconstruct_delta_probe_tile(
     let entry_base = *context.entry_offsets.get(entry)?;
 
     // Read `tile_texels` RGB texels from the f16 payload at the given kept rank,
-    // taking the R,G,B of each 4-f16 (RGBA) texel.
+    // taking the R,G,B of each packed RGB texel.
     let decode = |kept_rank: u32| -> Vec<glam::Vec3> {
         let base = (entry_base + kept_rank * context.tile_f16_stride) as usize;
         (0..context.tile_texels)
             .map(|t| {
-                let i = base + t * 4;
+                let i = base + t * DELTA_TILE_TEXEL_F16_COUNT;
                 glam::Vec3::new(
                     f16_bits_to_f32(context.delta_subblocks[i]),
                     f16_bits_to_f32(context.delta_subblocks[i + 1]),
@@ -575,7 +574,6 @@ pub fn build_animated_direct_delta_buffers(
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
@@ -587,7 +585,6 @@ pub fn build_animated_direct_delta_buffers(
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
@@ -721,11 +718,255 @@ mod tests {
         }
     }
 
+    fn read_word_packed_rgb(words: &[u32], half_base: usize) -> [u16; 3] {
+        let word_base = half_base / 2;
+        let first = words[word_base];
+        let second = words[word_base + 1];
+        let first_halves = [first as u16, (first >> 16) as u16];
+        let second_halves = [second as u16, (second >> 16) as u16];
+        if half_base & 1 == 0 {
+            [first_halves[0], first_halves[1], second_halves[0]]
+        } else {
+            [first_halves[1], second_halves[0], second_halves[1]]
+        }
+    }
+
     #[test]
-    fn build_delta_buffers_no_section_returns_empty_payload_with_full_empty_offsets() {
+    fn word_packed_rgb_reader_matches_half_indexed_reference_at_odd_offsets() {
+        const KEPT_RANKS: usize = 8;
+        let tile_texels =
+            DEFAULT_IRRADIANCE_TILE_DIMENSION as usize * DEFAULT_IRRADIANCE_TILE_DIMENSION as usize;
+        let stride = tile_texels * DELTA_TILE_TEXEL_F16_COUNT;
+        assert_eq!(stride, DEFAULT_DELTA_PROBE_F16_STRIDE);
+        let halves: Vec<u16> = (0..KEPT_RANKS * stride)
+            .map(|index| index as u16 ^ 0x5a5a)
+            .collect();
+        let words: Vec<u32> = halves
+            .chunks_exact(2)
+            .map(|pair| pair[0] as u32 | (pair[1] as u32) << 16)
+            .collect();
+
+        for kept_rank in 0..KEPT_RANKS {
+            for texel in 0..tile_texels {
+                let half_base = kept_rank * stride + texel * DELTA_TILE_TEXEL_F16_COUNT;
+                assert_eq!(
+                    read_word_packed_rgb(&words, half_base),
+                    [
+                        halves[half_base],
+                        halves[half_base + 1],
+                        halves[half_base + 2]
+                    ],
+                    "kept rank {kept_rank}, texel {texel}, half offset {half_base}",
+                );
+            }
+            let first = kept_rank * stride;
+            assert_eq!(read_word_packed_rgb(&words, first)[0], halves[first]);
+            let last = first + (tile_texels - 1) * DELTA_TILE_TEXEL_F16_COUNT;
+            assert_eq!(
+                read_word_packed_rgb(&words, last),
+                [halves[last], halves[last + 1], halves[last + 2]],
+            );
+        }
+
+        assert!(
+            (1..tile_texels)
+                .step_by(2)
+                .all(|texel| texel * DELTA_TILE_TEXEL_F16_COUNT & 1 == 1),
+            "every odd texel starts at an odd half offset with RGB stride three",
+        );
+        assert_ne!(
+            read_word_packed_rgb(&words, 4),
+            [halves[3], halves[4], halves[5]],
+            "the old four-half texel advance must read a neighbour's channels",
+        );
+    }
+
+    fn reconstruct_legacy_rgba_probe_tile(
+        payload: &[u16],
+        level: Level,
+        mask: u64,
+        local_probe: u32,
+        tile_texels: usize,
+    ) -> Option<Vec<glam::Vec3>> {
+        if local_probe >= PROBES_PER_CELL as u32 || mask & (1u64 << local_probe) == 0 {
+            return None;
+        }
+        let kept = kept_mask(level, mask);
+        let stride = tile_texels * 4;
+        let decode = |kept_rank: u32| {
+            let base = kept_rank as usize * stride;
+            (0..tile_texels)
+                .map(|texel| {
+                    let index = base + texel * 4;
+                    glam::Vec3::new(
+                        f16_bits_to_f32(payload[index]),
+                        f16_bits_to_f32(payload[index + 1]),
+                        f16_bits_to_f32(payload[index + 2]),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let local_bit = 1u64 << local_probe;
+        if kept & local_bit != 0 {
+            return Some(decode((kept & (local_bit - 1)).count_ones()));
+        }
+
+        let mut kept_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] =
+            std::array::from_fn(|_| None);
+        let mut remaining = kept;
+        while remaining != 0 {
+            let local = remaining.trailing_zeros() as usize;
+            let rank = (kept & ((1u64 << local) - 1)).count_ones();
+            kept_tiles[local] = Some(decode(rank));
+            remaining &= remaining - 1;
+        }
+        match level {
+            Level::L0 => None,
+            Level::L1 => reconstruct_l1_tile(&kept_tiles, local_probe as usize, tile_texels),
+            Level::L2 => reconstruct_l2_tile(&kept_tiles, tile_texels),
+        }
+    }
+
+    fn assert_rgb_layout_matches_legacy_rgba(level: Level, mask: u64) -> Vec<u16> {
+        let tile_texels =
+            DEFAULT_IRRADIANCE_TILE_DIMENSION as usize * DEFAULT_IRRADIANCE_TILE_DIMENSION as usize;
+        let kept = kept_mask(level, mask);
+        let mut rgba = Vec::new();
+        let mut rgb = Vec::new();
+        let mut remaining = kept;
+        let mut rank = 0usize;
+        while remaining != 0 {
+            for texel in 0..tile_texels {
+                for channel in 0..3 {
+                    let value = rank as f32 + texel as f32 / 64.0 + channel as f32 / 256.0;
+                    let bits = f32_to_f16_bits(value);
+                    rgba.push(bits);
+                    rgb.push(bits);
+                }
+                rgba.push(f32_to_f16_bits(1.0));
+            }
+            rank += 1;
+            remaining &= remaining - 1;
+        }
+
+        let entry_offsets = [0u32];
+        let masks = [mask];
+        let levels = [level.to_u8()];
+        let context = DeltaProbeReconstructionContext {
+            valid_probe_masks: &masks,
+            cell_levels: &levels,
+            entry_offsets: &entry_offsets,
+            delta_subblocks: &rgb,
+            tile_texels,
+            tile_f16_stride: (tile_texels * DELTA_TILE_TEXEL_F16_COUNT) as u32,
+        };
+
+        for local in 0..PROBES_PER_CELL as u32 {
+            let old = reconstruct_legacy_rgba_probe_tile(&rgba, level, mask, local, tile_texels);
+            let new = reconstruct_delta_probe_tile(&context, 0, 0, local);
+            assert_eq!(
+                old.is_some(),
+                new.is_some(),
+                "level {level:?}, local {local}"
+            );
+            if let (Some(old), Some(new)) = (old, new) {
+                for (old_texel, new_texel) in old.iter().zip(&new) {
+                    assert_eq!(
+                        old_texel.to_array().map(f32_to_f16_bits),
+                        new_texel.to_array().map(f32_to_f16_bits),
+                        "level {level:?}, local {local}",
+                    );
+                }
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn rgb_payload_reconstructs_bit_identically_for_ids_27_41_45_at_all_levels() {
+        let scenarios = [
+            (Level::L0, u64::MAX),
+            (Level::L1, u64::MAX),
+            (Level::L2, u64::MAX),
+        ];
+        for (level, mask) in scenarios {
+            let payload = assert_rgb_layout_matches_legacy_rgba(level, mask);
+            let expected_len = stored_delta_tiles(level, mask) * DEFAULT_DELTA_PROBE_F16_STRIDE;
+            assert_eq!(payload.len(), expected_len);
+
+            let indirect = DeltaShVolumesSection {
+                affinity_factor: AFFINITY_FACTOR,
+                affinity_dims: [1, 1, 1],
+                tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+                animation_descriptor_indices: vec![0],
+                valid_probe_masks: vec![mask],
+                cell_levels: vec![level.to_u8()],
+                affinity_offsets: vec![0, 1],
+                affinity_lights: vec![0],
+                delta_subblocks: payload.clone(),
+            };
+            let direct = DirectShDeltaVolumesSection {
+                affinity_factor: AFFINITY_FACTOR,
+                affinity_dims: [1, 1, 1],
+                tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+                valid_probe_masks: vec![mask],
+                cell_levels: vec![level.to_u8()],
+                affinity_offsets: vec![0, 1],
+                affinity_lights: vec![0],
+                delta_subblocks: payload.clone(),
+            };
+            let animated = AnimatedDirectShDeltaVolumesSection {
+                affinity_factor: AFFINITY_FACTOR,
+                affinity_dims: [1, 1, 1],
+                tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+                tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+                animation_descriptor_indices: vec![0],
+                valid_probe_masks: vec![mask],
+                cell_levels: vec![level.to_u8()],
+                affinity_offsets: vec![0, 1],
+                affinity_lights: vec![0],
+                delta_subblocks: payload,
+            };
+
+            assert_eq!(
+                indirect.expected_delta_subblock_f16_count(),
+                Some(expected_len)
+            );
+            assert_eq!(
+                direct.expected_delta_subblock_f16_count(),
+                Some(expected_len)
+            );
+            assert_eq!(
+                animated.expected_delta_subblock_f16_count(),
+                Some(expected_len)
+            );
+            assert_eq!(
+                DeltaShVolumesSection::from_bytes(&indirect.to_bytes())
+                    .unwrap()
+                    .delta_subblocks,
+                indirect.delta_subblocks,
+            );
+            assert_eq!(
+                DirectShDeltaVolumesSection::from_bytes(&direct.to_bytes())
+                    .unwrap()
+                    .delta_subblocks,
+                direct.delta_subblocks,
+            );
+            assert_eq!(
+                AnimatedDirectShDeltaVolumesSection::from_bytes(&animated.to_bytes())
+                    .unwrap()
+                    .delta_subblocks,
+                animated.delta_subblocks,
+            );
+        }
+    }
+
+    #[test]
+    fn build_delta_buffers_no_section_returns_full_empty_offsets() {
         let b = build_delta_buffers(None, [5, 2, 1]);
         assert_eq!(b.animated_light_count, 0);
-        assert!(b.delta_subblocks.is_empty());
         assert_eq!(b.affinity_dims, [2, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
         assert_eq!(b.valid_probe_masks, vec![0, 0]);
@@ -733,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn build_delta_buffers_maps_section_fields_keeping_f16() {
+    fn build_delta_buffers_maps_section_metadata_without_owning_payload() {
         let mut subblocks = sample_subblock(10);
         subblocks.extend(sample_subblock(200));
         let section = DeltaShVolumesSection {
@@ -746,7 +987,7 @@ mod tests {
             cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
-            delta_subblocks: subblocks.clone(),
+            delta_subblocks: subblocks,
         };
 
         let b = build_delta_buffers(Some(&section), [12, 1, 1]);
@@ -755,7 +996,6 @@ mod tests {
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.animation_descriptor_indices, vec![4, u32::MAX]);
-        assert_eq!(b.delta_subblocks, subblocks);
         assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
         assert_eq!(
             b.entry_offsets,
@@ -783,7 +1023,6 @@ mod tests {
     fn delta_compaction_meta_places_cell_levels_before_entry_offsets() {
         let buffers = DeltaComposeBuffers {
             animated_light_count: 0,
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0, 1, 2],
             affinity_lights: vec![0, 1],
             animation_descriptor_indices: Vec::new(),
@@ -862,9 +1101,8 @@ mod tests {
     }
 
     #[test]
-    fn build_direct_delta_buffers_no_section_returns_empty_payload_with_full_empty_offsets() {
+    fn build_direct_delta_buffers_no_section_returns_full_empty_offsets() {
         let b = build_direct_delta_buffers(None, [5, 2, 1]);
-        assert!(b.delta_subblocks.is_empty());
         assert_eq!(b.affinity_dims, [2, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
         assert!(b.affinity_lights.is_empty());
@@ -873,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn build_direct_delta_buffers_maps_section_fields_keeping_f16() {
+    fn build_direct_delta_buffers_maps_section_metadata_without_owning_payload() {
         let mut subblocks = sample_subblock(10);
         subblocks.extend(sample_subblock(200));
         let section = DirectShDeltaVolumesSection {
@@ -885,14 +1123,13 @@ mod tests {
             cell_levels: vec![0u8; 3],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
-            delta_subblocks: subblocks.clone(),
+            delta_subblocks: subblocks,
         };
 
         let b = build_direct_delta_buffers(Some(&section), [12, 1, 1]);
         assert_eq!(b.affinity_dims, [3, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
-        assert_eq!(b.delta_subblocks, subblocks);
         assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
         assert_eq!(
             b.entry_offsets,
@@ -919,7 +1156,6 @@ mod tests {
     #[test]
     fn direct_delta_compaction_meta_places_cell_levels_before_entry_offsets() {
         let buffers = DirectDeltaComposeBuffers {
-            delta_subblocks: Vec::new(),
             affinity_offsets: vec![0, 1, 2],
             affinity_lights: vec![0, 1],
             valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
@@ -1021,13 +1257,12 @@ mod tests {
             cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
-            delta_subblocks: subblocks.clone(),
+            delta_subblocks: subblocks,
         };
 
         let buffers = build_animated_direct_delta_buffers(Some(&section), [1, 1, 1]);
         assert_eq!(buffers.animation_descriptor_indices, vec![7]);
         assert_eq!(buffers.affinity_lights, vec![0]);
-        assert_eq!(buffers.delta_subblocks, subblocks);
         assert_eq!(buffers.valid_probe_masks, vec![u64::MAX]);
         assert_eq!(buffers.entry_offsets, vec![0]);
         assert_eq!(
@@ -1190,9 +1425,9 @@ mod tests {
         let valid_probe_masks = vec![mask];
         let cell_levels = vec![Level::L1.to_u8()];
         let tile_texels = 1usize;
-        let stride = (tile_texels * 4) as u32;
+        let stride = (tile_texels * DELTA_TILE_TEXEL_F16_COUNT) as u32;
 
-        // Kept = the 8 corners. Store one RGBA texel per kept tile in kept-rank
+        // Kept = the 8 corners. Store one RGB texel per kept tile in kept-rank
         // (ascending local) order, value = 10 + lx*2 splatted across RGB.
         let kept = kept_mask(Level::L1, mask);
         let mut delta_subblocks = Vec::new();
@@ -1201,7 +1436,7 @@ mod tests {
             let k = remaining.trailing_zeros() as usize;
             let lx = k % 4;
             let bits = f32_to_f16_bits(10.0 + lx as f32 * 2.0);
-            delta_subblocks.extend_from_slice(&[bits, bits, bits, 0]);
+            delta_subblocks.extend_from_slice(&[bits, bits, bits]);
             remaining &= remaining - 1;
         }
         let entry_offsets = vec![0u32];
@@ -1244,11 +1479,11 @@ mod tests {
         let valid_probe_masks = vec![0b1111u64]; // locals 0..3 valid
         let cell_levels = vec![Level::L2.to_u8()];
         let tile_texels = 1usize;
-        let stride = (tile_texels * 4) as u32;
+        let stride = (tile_texels * DELTA_TILE_TEXEL_F16_COUNT) as u32;
         let mean = 42.0f32;
         let bits = f32_to_f16_bits(mean);
         // Kept = the single lowest bit (local 0) holding the brick-mean tile.
-        let delta_subblocks = vec![bits, bits, bits, 0];
+        let delta_subblocks = vec![bits, bits, bits];
         let entry_offsets = vec![0u32];
         let context = DeltaProbeReconstructionContext {
             valid_probe_masks: &valid_probe_masks,
@@ -1278,7 +1513,7 @@ mod tests {
 
     #[test]
     fn kept_rank_offsets_mix_l0_and_l1_cells() {
-        let stride = 4u32;
+        let stride = DELTA_TILE_TEXEL_F16_COUNT as u32;
         // Cell 0 (L0): locals 0 and 2 valid -> 2 kept tiles.
         let mask0 = 0b101u64;
         // Cell 1 (L1): all 8 corners valid plus non-corner local 1 -> 8 kept.

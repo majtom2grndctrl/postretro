@@ -9,7 +9,9 @@
 //! thresholds for nonzero tiles.
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
-use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, PROBES_PER_CELL};
+use postretro_level_format::delta_sh_volumes::{
+    DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection, PROBES_PER_CELL,
+};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::light_membership::LightMembershipManifest;
 use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
@@ -257,10 +259,9 @@ fn rebuild_csr_indexed(
 }
 
 fn rgb_payload_is_zero(block: &[u16]) -> bool {
-    // Alpha is structurally 1.0 in these tiles and has no radiance meaning.
     block
-        .chunks_exact(4)
-        .all(|rgba| rgba[..3].iter().all(|&half| f16_bits_to_f32(half) == 0.0))
+        .chunks_exact(DELTA_TILE_TEXEL_F16_COUNT)
+        .all(|rgb| rgb.iter().all(|&half| f16_bits_to_f32(half) == 0.0))
 }
 
 fn f16_bits_to_f32(bits: u16) -> f32 {
@@ -292,13 +293,12 @@ mod tests {
     use postretro_level_format::lightmap::f32_to_f16_bits;
 
     const TILE: u32 = 1;
-    const STRIDE: usize = PROBES_PER_CELL * 4;
+    const STRIDE: usize = PROBES_PER_CELL * DELTA_TILE_TEXEL_F16_COUNT;
 
     fn block(rgb: [f32; 3]) -> Vec<u16> {
         let mut result = Vec::with_capacity(STRIDE);
         for _ in 0..PROBES_PER_CELL {
             result.extend(rgb.map(f32_to_f16_bits));
-            result.push(f32_to_f16_bits(1.0));
         }
         result
     }
@@ -379,6 +379,29 @@ mod tests {
         // The interior case crosses the clamp boundary for a nonzero delta;
         // keeping it demonstrates why only exact zero is accepted today.
         assert!(direct_f16_output_error(0.003, 0.01, 0.37) > 0.001);
+    }
+
+    #[test]
+    fn rgb_layout_preserves_legacy_entry_zero_decisions() {
+        let fixtures = [
+            vec![[0.0, 0.0, 0.0]; 5],
+            vec![[0.0, -0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]],
+            vec![[0.0; 3], [0.0; 3], [0.0, 0.5, 0.0], [0.0; 3], [0.0; 3]],
+        ];
+        for fixture in fixtures {
+            let mut legacy_rgba = Vec::new();
+            let mut packed_rgb = Vec::new();
+            for rgb in fixture {
+                let rgb = rgb.map(f32_to_f16_bits);
+                packed_rgb.extend(rgb);
+                legacy_rgba.extend(rgb);
+                legacy_rgba.push(f32_to_f16_bits(1.0));
+            }
+            let legacy_zero = legacy_rgba
+                .chunks_exact(4)
+                .all(|rgba| rgba[..3].iter().all(|&half| f16_bits_to_f32(half) == 0.0));
+            assert_eq!(rgb_payload_is_zero(&packed_rgb), legacy_zero);
+        }
     }
 
     #[test]

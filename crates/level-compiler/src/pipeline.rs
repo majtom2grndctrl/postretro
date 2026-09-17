@@ -2328,7 +2328,11 @@ fn run_sh_analysis(
         protect_aabbs: &protect,
         thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
     };
-    let mut report = sh_analyze::run_analysis(&inputs);
+    let mut report = sh_analyze::run_analysis(
+        &inputs,
+        args.sh_density_force_scale
+            .unwrap_or(crate::sh_hierarchy::MAX_NODE_SCALE),
+    );
     if let Some(dense) = dense_deltas {
         match sh_analyze::run_emitted_reconstruction_analysis(
             &inputs,

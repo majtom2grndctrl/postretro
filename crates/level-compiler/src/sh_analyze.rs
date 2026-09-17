@@ -53,7 +53,7 @@
 //!   coarsening-induced discontinuity from the genuine lighting gradient across
 //!   the boundary (a raw reconstructed-value diff is also reported).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use glam::Vec3;
@@ -600,6 +600,22 @@ pub struct EmittedReconstructionReport {
     pub rel_max_limit: f32,
     pub failing_bricks: u64,
     pub bricks: Vec<EmittedBrickRecord>,
+    /// Final base-density assignments re-scored over each complete hierarchy
+    /// node with the production composed-receiver gate.
+    pub failing_nodes: u64,
+    pub nodes: Vec<EmittedHierarchyNodeRecord>,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct EmittedHierarchyNodeRecord {
+    pub origin: [u32; 3],
+    pub scale: u8,
+    pub level: u8,
+    pub brick_count: u32,
+    pub passes: bool,
+    pub darkness_bypass: bool,
+    pub relative_p95: f32,
+    pub relative_max: f32,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -2382,6 +2398,8 @@ fn accumulate_dense_and_emitted_delta(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_emitted_reconstruction_analysis(
     inputs: &AnalyzeInputs<'_>,
+    base_levels: &[Level],
+    base_scales: &[u8],
     dense_indirect: Option<&DeltaShVolumesSection>,
     dense_direct: Option<&DirectShDeltaVolumesSection>,
     dense_anim_direct: Option<&AnimatedDirectShDeltaVolumesSection>,
@@ -2451,6 +2469,7 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         leave_one_dense_errors: [LevelErrStats; 3],
     }
     let mut pending = Vec::new();
+    let mut hierarchy_truth: Vec<Option<Tile>> = vec![None; total_probes];
     for cz in 0..az {
         for cy in 0..ay {
             for cx in 0..ax {
@@ -2536,6 +2555,9 @@ pub(crate) fn run_emitted_reconstruction_analysis(
                         add_tile(&mut truth_tile, &dense_by_section[section][local]);
                         add_tile(&mut emitted_tile, &emitted_by_section[section][local]);
                     }
+                    let (lx, ly, lz) = local_xyz(local);
+                    let probe = (cx * AF + lx) + (cy * AF + ly) * nx + (cz * AF + lz) * nx * ny;
+                    hierarchy_truth[probe] = Some(truth_tile.clone());
                     truth[local] = Some(truth_tile);
                     emitted[local] = Some(emitted_tile);
                 }
@@ -2593,6 +2615,16 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         }
         records.push(pending.record);
     }
+    let (failing_nodes, nodes) = evaluate_emitted_hierarchy_nodes(
+        &hierarchy_truth,
+        dims,
+        affinity_dims,
+        base_levels,
+        base_scales,
+        texels,
+        floor,
+        &params,
+    )?;
     Ok(EmittedReconstructionReport {
         dense_truth_map_p95: map_p95,
         darkness_floor: floor,
@@ -2600,7 +2632,109 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         rel_max_limit: params.rel_max_max,
         failing_bricks: failures,
         bricks: records,
+        failing_nodes,
+        nodes,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_emitted_hierarchy_nodes(
+    truth: &[Option<Tile>],
+    grid_dims: [u32; 3],
+    affinity_dims: [u32; 3],
+    levels: &[Level],
+    scales: &[u8],
+    texels: usize,
+    darkness_floor: f32,
+    params: &CoarsenParams,
+) -> anyhow::Result<(u64, Vec<EmittedHierarchyNodeRecord>)> {
+    let brick_count = affinity_dims
+        .iter()
+        .map(|&dimension| dimension as usize)
+        .product::<usize>();
+    anyhow::ensure!(
+        levels.len() == brick_count && scales.len() == brick_count,
+        "emitted SH hierarchy assignment count disagrees with the affinity grid"
+    );
+
+    let index = |coord: [u32; 3]| {
+        coord[0] as usize
+            + coord[1] as usize * affinity_dims[0] as usize
+            + coord[2] as usize * affinity_dims[0] as usize * affinity_dims[1] as usize
+    };
+    let mut keys = BTreeSet::new();
+    for z in 0..affinity_dims[2] {
+        for y in 0..affinity_dims[1] {
+            for x in 0..affinity_dims[0] {
+                let brick = index([x, y, z]);
+                let scale = scales[brick];
+                anyhow::ensure!(
+                    scale <= sh_hierarchy::MAX_NODE_SCALE,
+                    "emitted SH node scale {scale} exceeds the supported maximum"
+                );
+                let edge = 1u32 << scale;
+                let origin = [x / edge * edge, y / edge * edge, z / edge * edge];
+                keys.insert((origin, scale, levels[brick].to_u8()));
+            }
+        }
+    }
+
+    let mut failures = 0u64;
+    let mut records = Vec::with_capacity(keys.len());
+    for (origin, scale, level_byte) in keys {
+        let level = Level::from_u8(level_byte).expect("level came from the typed assignment array");
+        let edge = 1u32 << scale;
+        anyhow::ensure!(
+            origin
+                .iter()
+                .zip(affinity_dims)
+                .all(|(&axis, dimension)| axis + edge <= dimension),
+            "emitted SH hierarchy node {origin:?} scale {scale} is partial"
+        );
+        for z in origin[2]..origin[2] + edge {
+            for y in origin[1]..origin[1] + edge {
+                for x in origin[0]..origin[0] + edge {
+                    let member = index([x, y, z]);
+                    anyhow::ensure!(
+                        levels[member] == level && scales[member] == scale,
+                        "emitted SH hierarchy node {origin:?} scale {scale} has disagreeing members"
+                    );
+                }
+            }
+        }
+
+        let evaluation = if level == Level::L0 {
+            NodeEvaluation {
+                passes: true,
+                ..Default::default()
+            }
+        } else {
+            evaluate_hierarchy_node(
+                truth,
+                grid_dims,
+                origin,
+                scale,
+                level,
+                texels,
+                darkness_floor,
+                params,
+            )
+        };
+        if !evaluation.passes {
+            failures += 1;
+        }
+        records.push(EmittedHierarchyNodeRecord {
+            origin,
+            scale,
+            level: level_byte,
+            brick_count: edge * edge * edge,
+            passes: evaluation.passes,
+            darkness_bypass: evaluation.darkness_bypass,
+            relative_p95: evaluation.rel_p95,
+            relative_max: evaluation.rel_max,
+        });
+    }
+    Ok((failures, records))
 }
 
 // ---------------------------------------------------------------------------
@@ -2961,8 +3095,9 @@ pub fn log_summary(report: &AnalysisReport) {
     if let Some(emitted) = &report.emitted_reconstruction {
         log::info!("[sh-analyze] === final emitted reconstruction (dense post-drop truth) ===");
         log::info!(
-            "[sh-analyze] emitted: {} failing brick(s), truth map-p95 {:.6}, floor {:.6}, limits p95 {:.3} max {:.3}",
+            "[sh-analyze] emitted: {} failing delta brick(s), {} failing hierarchy node(s), truth map-p95 {:.6}, floor {:.6}, limits p95 {:.3} max {:.3}",
             emitted.failing_bricks,
+            emitted.failing_nodes,
             emitted.dense_truth_map_p95,
             emitted.darkness_floor,
             emitted.rel_p95_limit,
@@ -3421,6 +3556,38 @@ mod tests {
             "linear ramp L1 error must be ~0, got {}",
             err.max
         );
+    }
+
+    #[test]
+    fn emitted_hierarchy_report_scores_one_complete_scale_one_node() {
+        let grid_dims = [8, 8, 8];
+        let affinity_dims = [2, 2, 2];
+        let truth = vec![Some(vec![Vec3::splat(2.0)]); 8 * 8 * 8];
+        let levels = vec![Level::L2; 8];
+        let scales = vec![1; 8];
+        let params = CoarsenParams::default();
+
+        let (failures, nodes) = evaluate_emitted_hierarchy_nodes(
+            &truth,
+            grid_dims,
+            affinity_dims,
+            &levels,
+            &scales,
+            1,
+            1.0e-6,
+            &params,
+        )
+        .expect("complete classified node must be reportable");
+
+        assert_eq!(failures, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].origin, [0, 0, 0]);
+        assert_eq!(nodes[0].scale, 1);
+        assert_eq!(nodes[0].level, Level::L2.to_u8());
+        assert_eq!(nodes[0].brick_count, 8);
+        assert!(nodes[0].passes);
+        assert_eq!(nodes[0].relative_p95, 0.0);
+        assert_eq!(nodes[0].relative_max, 0.0);
     }
 
     // The pure trilinear-weight / corner-index tests moved with the math into

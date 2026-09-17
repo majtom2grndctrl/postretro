@@ -46,7 +46,7 @@ Phase 2
 Phase 3
 - [x] For constructed level/scale/validity fields, the sampler's node-local corner slots and weights at every scale equal the shared reconstruction definition; a cell with all eight corners in one L1 node takes the whole-cell path with ≤ 8 taps; no cell touches more than 8 distinct tiles.
 - [x] The SDF shadow moments decode reads the same E[d] bits before and after (regression guard).
-- [ ] The emitted-reconstruction analysis of a classified hierarchy bake reports zero bricks over the gate at node granularity.
+- [x] The emitted-reconstruction analysis of a classified hierarchy bake reports zero bricks over the gate at node granularity.
 
 ### Manual
 Phase 1 (recorded in `research.md`; fixture, spacing, machine class, cache mode, and cleanup pinned per `testing_guide.md` §Resource bounds)

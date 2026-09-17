@@ -123,6 +123,10 @@ pub struct ShVolumeResources {
     /// so the density diagnostic never waits for or triggers atlas readback.
     #[cfg(feature = "dev-tools")]
     pub density_levels: Vec<u8>,
+    /// CPU mirror of the id-34 hierarchy scale stamped on each probe. Kept
+    /// separately from the runtime word so invalid probes remain diagnosable.
+    #[cfg(feature = "dev-tools")]
+    pub node_scales: Vec<u8>,
     /// CPU mirror of each probe's average tile-interior irradiance as linear
     /// RGB, z-major like `validity`; consumed by `sh_diagnostics::emit`.
     #[cfg(feature = "dev-tools")]
@@ -376,6 +380,11 @@ impl ShVolumeResources {
         #[cfg(feature = "dev-tools")]
         let density_levels: Vec<u8> = usable
             .map(|s| s.probes.iter().map(|p| p.density_level).collect())
+            .unwrap_or_default();
+
+        #[cfg(feature = "dev-tools")]
+        let node_scales: Vec<u8> = usable
+            .map(|s| s.probes.iter().map(|p| p.node_scale).collect())
             .unwrap_or_default();
 
         // The compact base atlas is BC6H by default and has no CPU decoder in
@@ -679,6 +688,8 @@ impl ShVolumeResources {
             validity,
             #[cfg(feature = "dev-tools")]
             density_levels,
+            #[cfg(feature = "dev-tools")]
+            node_scales,
             #[cfg(feature = "dev-tools")]
             probe_irradiance,
             grid_origin,

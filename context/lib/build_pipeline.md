@@ -515,6 +515,16 @@ That scan is the whole of the visibility. A catalog path assembled at runtime ra
 
 Each resolved level bakes from `<mod_root>/maps/<stem>.map` at default flags. A manifest `[[recipes]]` entry exists for a level whose source or compiler flags that default cannot infer; it is keyed by output path, and a recipe matching no scanned literal is reported as an orphan rather than passing silently.
 
+### SDK bundle (modder distribution)
+
+Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`cargo run -p xtask -- sdk-dist`). The invariant that separates them: the player payload ships only released runtime artifacts — baked `.prl` levels, baked `.prm` mips, no sources, no compilers — while the SDK bundle ships the authoring toolchain plus sources and bakes nothing. A mod's `.map`/`.ts` sources reach the bundle unchanged; a modder compiles and runs them locally instead of receiving pre-baked output.
+
+**The SDK engine is a debug build with `--features dev-tools`, never `--release`.** TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
+
+Bundle root is `<package name>-sdk` under `dist/`, sibling to the player payload's `<package name>` root; the `-sdk` suffix is what keeps the two from colliding under the same output directory. The bundle carries the authoring engine, `bin/prl-build` and `bin/scripts-build` (both built `--release`, since only the engine's TS pipeline needs debug), `sdk/`, `docs/`, `tools/`, `content/base/`, and the mod tree — the last copied whole, including `.map`/`.ts` sources, never through the player payload's source-excluding filter.
+
+It reuses the player payload's containment guard and completion-gate machinery unchanged: whole-tree, output-root containment under `dist/` (§Output-root containment), and `.dist-incomplete` marking a root that is still being assembled (§Completion gate). The same host-builds-for-host native-toolchain constraint applies (above): a bundle's binaries are as host-specific as the player payload's.
+
 ---
 
 ## Non-Goals

@@ -18,6 +18,7 @@ use postretro_model::mount::{
 
 mod crate_graph;
 mod dist;
+mod sdk_dist;
 
 fn main() {
     let code = match try_main() {
@@ -73,6 +74,10 @@ fn try_main() -> Result<i32, String> {
 
     if command == "dist" {
         return dist::run(args.collect());
+    }
+
+    if command == "sdk-dist" {
+        return sdk_dist::run(args.collect());
     }
 
     Err(format!(
@@ -1350,7 +1355,8 @@ fn print_help() {
            cargo run -p xtask -- solve-weapon-mount --read-muzzle-offset <viewmodel.gltf>\n\
            cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [--raw-source <raw> --out <output.gltf>] [options]\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\
-           cargo run -p xtask -- dist [--manifest <path>] [--out <dir>]\n\n\
+           cargo run -p xtask -- dist [--manifest <path>] [--out <dir>]\n\
+           cargo run -p xtask -- sdk-dist [--manifest <path>] [--out <dir>]\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
            observe              Build scripts-build, then run the engine headless\n\
@@ -1367,7 +1373,10 @@ fn print_help() {
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\
-           dist                 Build a host-native standalone distribution payload\n\n\
+           dist                 Build a host-native standalone distribution payload\n\
+           sdk-dist             Build a host-native modder SDK bundle: authoring engine\n\
+                                (debug + dev-tools), prl-build/scripts-build compilers,\n\
+                                sdk/docs/tools, base content, and the mod tree with sources\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\

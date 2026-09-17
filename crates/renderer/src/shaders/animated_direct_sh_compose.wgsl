@@ -233,16 +233,20 @@ fn stored_slot_for_invocation(
             local_indirection.slot,
         );
     }
-    if (brick_indirection.level == 1u && local_probe_is_l1_corner(local_probe)) {
+    let node_edge = 1u << brick_indirection.scale;
+    let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+    let node_origin_writer = all(brick == node_origin);
+    if (
+        brick_indirection.level == 1u
+            && local_probe_is_l1_corner(local_probe)
+            && node_origin_writer
+    ) {
         return ComposeStoredSlot(
             true,
             local_indirection.valid,
             brick_indirection.slot + l1_shared_slot(local_probe),
         );
     }
-    let node_edge = 1u << brick_indirection.scale;
-    let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
-    let node_origin_writer = all(brick == node_origin);
     if (brick_indirection.level == 2u && local_probe == 0u && node_origin_writer) {
         return ComposeStoredSlot(true, true, brick_indirection.slot);
     }
@@ -254,6 +258,16 @@ fn l1_shared_slot(local_probe: u32) -> u32 {
     return (local.x / (AFFINITY_FACTOR - 1u))
         + (local.y / (AFFINITY_FACTOR - 1u)) * 2u
         + (local.z / (AFFINITY_FACTOR - 1u)) * 4u;
+}
+
+fn l1_node_corner_probe(brick: vec3<u32>, local_probe: u32, scale: u32) -> vec3<u32> {
+    let node_edge = 1u << scale;
+    let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+    let probe_origin = node_origin * AFFINITY_FACTOR;
+    let probe_span = node_edge * AFFINITY_FACTOR - 1u;
+    let slot = l1_shared_slot(local_probe);
+    let corner_offset = vec3<u32>(slot & 1u, (slot >> 1u) & 1u, (slot >> 2u) & 1u);
+    return probe_origin + corner_offset * probe_span;
 }
 
 fn l1_corner_local(slot: u32) -> u32 {
@@ -377,12 +391,31 @@ fn animated_compose_main(
         }
     }
     workgroupBarrier();
+    let brick_indirection = decode_sh_probe_indirection(shared_brick_indirection);
+    var stored_indirection = local_indirection;
+    if (
+        brick_indirection.level == 1u
+            && brick_indirection.scale > 0u
+            && local_probe_is_l1_corner(local_probe)
+    ) {
+        let node_edge = 1u << brick_indirection.scale;
+        let node_origin = (brick / vec3<u32>(node_edge)) * vec3<u32>(node_edge);
+        if (all(brick == node_origin)) {
+            let corner_probe = l1_node_corner_probe(
+                brick, local_probe, brick_indirection.scale,
+            );
+            let corner_index = corner_probe.x
+                + corner_probe.y * grid.grid_dimensions.x
+                + corner_probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+            stored_indirection = decode_sh_probe_indirection(probe_indirection[corner_index]);
+        }
+    }
     let stored_slot = stored_slot_for_invocation(
         brick,
         local_probe,
         in_grid,
-        local_indirection,
-        decode_sh_probe_indirection(shared_brick_indirection),
+        stored_indirection,
+        brick_indirection,
     );
     let output_is_stored = stored_slot.write;
     let tile_origin = slot_tile_origin(stored_slot.slot);

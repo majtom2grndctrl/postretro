@@ -1137,6 +1137,13 @@ impl DeviceBufferInit for wgpu::Device {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use postretro_level_format::sh_reconstruct::{
+        MAX_NODE_SCALE, node_l1_corner_weight, node_local_coord, node_probe_edge,
+    };
+    use proptest::prelude::*;
+
     use super::*;
 
     const SH_DEPTH_MIN_VARIANCE_M2_REF: f32 = 1.0e-4;
@@ -1374,6 +1381,135 @@ mod tests {
                 && SH_SAMPLE.contains("sample_l1_whole_cell_atlas"),
             "the shared decoder and mandatory L1 whole-cell resolver must remain linked",
         );
+    }
+
+    fn sampled_node_slots(
+        gi: [u32; 3],
+        scales: [u8; 8],
+        levels: [u8; 8],
+        valid: [bool; 8],
+    ) -> BTreeSet<([u32; 3], u8, u8)> {
+        let mut slots = BTreeSet::new();
+        for outer_corner in 0..8u8 {
+            if !valid[outer_corner as usize] {
+                continue;
+            }
+            let probe = [
+                gi[0] + u32::from(outer_corner & 1 != 0),
+                gi[1] + u32::from(outer_corner & 2 != 0),
+                gi[2] + u32::from(outer_corner & 4 != 0),
+            ];
+            let scale = scales[outer_corner as usize];
+            let edge = node_probe_edge(scale).unwrap();
+            let node = probe.map(|axis| axis / edge);
+            if levels[outer_corner as usize] == 2 {
+                // L2 stores one node mean; 8 is a test-only tag disjoint from
+                // the eight L1 corner slots.
+                slots.insert((node, scale, 8));
+                continue;
+            }
+            let local = node_local_coord(probe, scale).unwrap();
+            for stored_corner in 0..8u8 {
+                if node_l1_corner_weight(local, stored_corner, scale).unwrap() > 0.0 {
+                    slots.insert((node, scale, stored_corner));
+                }
+            }
+        }
+        slots
+    }
+
+    proptest! {
+        #[test]
+        fn scale_aware_l1_cells_never_touch_more_than_eight_distinct_tiles(
+            scale in 0u8..=MAX_NODE_SCALE,
+            x in 0u32..128,
+            y in 0u32..128,
+            z in 0u32..128,
+        ) {
+            let slots = sampled_node_slots([x, y, z], [scale; 8], [1; 8], [true; 8]);
+            prop_assert!(slots.len() <= 8, "scale {scale} cell [{x}, {y}, {z}] touched {slots:?}");
+
+            let edge = node_probe_edge(scale).unwrap();
+            let first_node = [x / edge, y / edge, z / edge];
+            let whole_cell = (0..8u8).all(|corner| {
+                let probe = [
+                    x + u32::from(corner & 1 != 0),
+                    y + u32::from(corner & 2 != 0),
+                    z + u32::from(corner & 4 != 0),
+                ];
+                probe.map(|axis| axis / edge) == first_node
+            });
+            if whole_cell {
+                prop_assert_eq!(slots.len(), 8, "the whole-node fast path reads its eight stored corners once");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_aligned_scale_boundaries_keep_the_eight_tile_ceiling() {
+        let cases = [
+            (
+                [31, 5, 5],
+                [0, 3, 0, 3, 0, 3, 0, 3],
+                [1, 2, 1, 2, 1, 2, 1, 2],
+                [true, true, false, true, true, false, true, true],
+            ),
+            (
+                [31, 31, 5],
+                [0, 1, 2, 3, 0, 1, 2, 3],
+                [2, 1, 2, 1, 1, 2, 1, 2],
+                [true, false, true, true, true, true, false, true],
+            ),
+            (
+                [31, 31, 31],
+                [0, 3, 1, 2, 2, 1, 3, 0],
+                [1, 2, 2, 1, 2, 1, 1, 2],
+                [true, true, true, false, true, false, true, true],
+            ),
+        ];
+        // 32 is aligned for every supported node edge (4, 8, 16, 32).
+        for (gi, scales, levels, valid) in cases {
+            let slots = sampled_node_slots(gi, scales, levels, valid);
+            assert!(
+                slots.len() <= 8,
+                "aligned mixed-field cell {gi:?} touched {slots:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn sh_sampler_mirrors_shared_node_weight_and_whole_cell_contract() {
+        const SH_SAMPLE: &str = include_str!("../shaders/sh_sample.wgsl");
+        assert!(SH_SAMPLE.contains("return SH_AFFINITY_FACTOR << scale;"));
+        assert!(SH_SAMPLE.contains("fn sh_l1_local(idx: vec3<i32>, scale: u32)"));
+        assert!(SH_SAMPLE.contains("f32(node_probe_edge - 1u)"));
+        assert!(SH_SAMPLE.contains("indirection.scale != scale"));
+        assert!(SH_SAMPLE.contains("probe / vec3<u32>(node_probe_edge) != node"));
+        assert!(SH_SAMPLE.contains("sh_l1_corner_weight(local, corner, resolution.scale)"));
+
+        for scale in 0..=MAX_NODE_SCALE {
+            let edge = node_probe_edge(scale).unwrap();
+            for local in [[0, 0, 0], [1, 2, 3], [edge - 1; 3]] {
+                for corner in 0..8u8 {
+                    let shared = node_l1_corner_weight(local, corner, scale).unwrap();
+                    let fraction = local.map(|axis| axis as f32 / (edge - 1) as f32);
+                    let mirrored = (if corner & 1 == 0 {
+                        1.0 - fraction[0]
+                    } else {
+                        fraction[0]
+                    }) * (if corner & 2 == 0 {
+                        1.0 - fraction[1]
+                    } else {
+                        fraction[1]
+                    }) * (if corner & 4 == 0 {
+                        1.0 - fraction[2]
+                    } else {
+                        fraction[2]
+                    });
+                    assert!((shared - mirrored).abs() < 1.0e-6);
+                }
+            }
+        }
     }
 
     #[test]

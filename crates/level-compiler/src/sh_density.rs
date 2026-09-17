@@ -7,8 +7,8 @@ use postretro_level_format::octahedral::{
     IrradianceAtlasArrayLayout, irradiance_array_tile_location, irradiance_atlas_array_layout,
 };
 use postretro_level_format::sh_reconstruct::{
-    Level, StoredTile, Tile, corner_locals, local_xyz, reconstruct_l2_tile, stored_node_prefix_sum,
-    stored_tile_set,
+    Level, StoredTile, Tile, corner_locals, local_xyz, node_corner_coord, node_probe_edge,
+    reconstruct_l2_tile, stored_node_prefix_sum, stored_tile_set,
 };
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 
@@ -1317,23 +1317,23 @@ fn stored_tiles(
                     if prefix.bricks[brick].stored_tile_count == 0 {
                         continue;
                     }
-                    let node_edge = 1usize << scales[brick];
                     let probe_origin = [brick_x * 4, brick_y * 4, brick_z * 4];
-                    let probe_edge = node_edge * 4;
+                    let probe_edge = node_probe_edge(scales[brick])
+                        .expect("stored-set prefix validated the node scale")
+                        as usize;
                     match levels[brick] {
                         Level::L0 => {
                             return Err("SH density cannot pack a scaled L0 node".to_string());
                         }
                         Level::L1 => {
                             for corner in 0..8 {
-                                let coord = [
-                                    probe_origin[0]
-                                        + if corner & 1 == 0 { 0 } else { probe_edge - 1 },
-                                    probe_origin[1]
-                                        + if corner & 2 == 0 { 0 } else { probe_edge - 1 },
-                                    probe_origin[2]
-                                        + if corner & 4 == 0 { 0 } else { probe_edge - 1 },
-                                ];
+                                let coord = node_corner_coord(
+                                    probe_origin.map(|axis| axis as u32),
+                                    scales[brick],
+                                    corner,
+                                )
+                                .expect("stored-set prefix validated the L1 node corner")
+                                .map(|axis| axis as usize);
                                 let probe = probe_index(coord[0], coord[1], coord[2], dimensions);
                                 output.push(source_tiles[probe].clone().unwrap_or_else(|| {
                                     vec![OctahedralAtlasTexel::default(); tile_texels]

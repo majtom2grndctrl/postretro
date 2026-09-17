@@ -187,6 +187,18 @@ fn is_node_origin_writer(brick: [u32; 3], scale: u32) -> bool {
 }
 
 #[cfg(test)]
+fn l1_node_writer_slot(brick: [u32; 3], local_probe: u32, scale: u32) -> Option<u32> {
+    if !is_node_origin_writer(brick, scale) {
+        return None;
+    }
+    let local = [local_probe % 4, (local_probe / 4) % 4, local_probe / 16];
+    if local.into_iter().any(|axis| axis != 0 && axis != 3) {
+        return None;
+    }
+    Some(local[0] / 3 + local[1] / 3 * 2 + local[2] / 3 * 4)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
@@ -395,6 +407,28 @@ mod tests {
                 .filter(|&brick| is_node_origin_writer(brick, scale))
                 .collect::<Vec<_>>();
             assert_eq!(writers, vec![[0, 0, 0]]);
+        }
+    }
+
+    #[test]
+    fn one_brick_elects_each_l1_node_corner_writer_at_every_scale() {
+        for scale in 1..=3 {
+            let edge = 1u32 << scale;
+            let mut writers = (0..edge)
+                .flat_map(|z| (0..edge).flat_map(move |y| (0..edge).map(move |x| [x, y, z])))
+                .flat_map(|brick| {
+                    (0..64).filter_map(move |local| {
+                        l1_node_writer_slot(brick, local, scale).map(|slot| (brick, local, slot))
+                    })
+                })
+                .collect::<Vec<_>>();
+            writers.sort_by_key(|&(_, _, slot)| slot);
+            assert_eq!(writers.len(), 8);
+            assert_eq!(
+                writers.iter().map(|&(_, _, slot)| slot).collect::<Vec<_>>(),
+                (0..8).collect::<Vec<_>>(),
+            );
+            assert!(writers.iter().all(|&(brick, _, _)| brick == [0, 0, 0]));
         }
     }
 

@@ -2,7 +2,7 @@
 
 Brief · compact · Epic: lighting scale (on-disk + VRAM) · reads: `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache · `context/lib/rendering_pipeline.md` §4 · read at 4f9e5c5
 
-> **Build order (lighting-scale footprint track):** `sh-delta-cone-reach-cull` (Phase 1) has **shipped to `main`**, so this is now the **next** footprint item → then `adaptive-probe-spacing`. Re-baseline this brief's delta byte-identity ACs and the three delta stage-version bumps onto the **landed** post-cull format — cone-reach already bumped those versions, so this stacks on the new baseline (Open questions R6). Independent of adaptive on the wire (delta id-27/41/45 vs base id-34/35); coordinate only on the shared SH compose/sampler code. **Re-ground before build:** cone-reach's landing edited the delta bake code this brief cites (it was read at 4f9e5c5) — refresh symbols against `main` in the `/review-brief` pass.
+> **Build order (lighting-scale footprint track):** `sh-delta-cone-reach-cull` (Phase 1) has **shipped to `main`**, so this is now the **next** footprint item → then `adaptive-probe-spacing`. Re-baseline this brief's delta byte-identity ACs onto the **landed** post-cull format (Open questions R6). Cone-reach bumped only `DIRECT_SH_STAGE_VERSION` and `BILLBOARD_DIRECT_SCATTER_STAGE_VERSION`, **not** the six delta versions — those are unbumped on `main` (sections 5/3/3, stages 1/2/2, the Wire-table "before" baseline), so this brief performs their **first** bump. Independent of adaptive on the wire (delta id-27/41/45 vs base id-34/35); coordinate only on the shared SH compose/sampler code. **Re-ground before build:** refresh symbols against `main` in the `/review-brief` pass — in particular the `sh_analyze.rs` delta decoders that hold literal strides (see `research.md` §Stride sites).
 
 ## Problem
 Developer-raised, from the lighting-scale size work. Baked `.prl` files run to multiple GB
@@ -31,8 +31,7 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
   the stride, threaded through `delta_probe_f16_stride` and the compose grid uniform. Every
   site that computes a texel offset or a tile length moves in the same change; a site left
   at the old stride misreads the payload and is a defect, not a follow-up. The site
-  inventory is `research.md` §Stride sites. Prove id 41 first; 27 and 45 follow from the
-  shared format.
+  inventory is `research.md` §Stride sites.
 - **Output equivalence is the contract.** Section bytes change; decoded tiles do not. The
   composed atlas from the RGB payload is bit-identical to the one from the RGBA payload for
   the same bake, at every coarsening level. This is the equivalence proof because `.prl`
@@ -43,10 +42,13 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
   the resolver reads the stride from the same constant, so its arithmetic follows the drop and
   its layout semantics are unchanged. `delta-entry-dropping` (done) already treats alpha as
   structural; its zero test chunks texels by the stride constant and keeps its semantics. The
-  coarsening classifier (`sh_coarsen.rs`) and the runtime-safe envelope
-  (`sh_runtime_envelope_scoring.rs`) read RGB only: their offset arithmetic follows the stride,
-  their decisions do not change. Coarsening is orthogonal; the drop applies at L0, L1 and L2
-  alike.
+  coarsening classifier (`sh_coarsen.rs`, decoding through `DeltaView`/`DenseDeltaView` in
+  `sh_analyze.rs`) and the runtime-safe envelope (`sh_runtime_envelope_scoring.rs`) read RGB
+  only, so their *decisions* do not change — but the classifier's decoders hold literal `× 4`
+  texel and tile strides (and a `tile²×4×2` size-sweep byte estimate) that must be edited in
+  lockstep like any other literal site (`research.md` §Stride sites); the envelope already
+  derives its stride from the constant. Coarsening is orthogonal; the drop applies at L0, L1
+  and L2 alike.
 - **Version bumps make the old format unloadable and the old cache unservable.** Bump the
   three section-internal versions (`DELTA_SH_VOLUMES_VERSION`,
   `DIRECT_SH_DELTA_VOLUMES_VERSION`, `ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION`) and the three
@@ -75,8 +77,9 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
   may apply the same drop.
 - **Non-goal — container compression, selection tightening, clustering, the
   scalar/shadowmask representation, and retuning `--sh-delta-max-size` or the working-set
-  gate default.** Separate levers on separate seams; the two byte-denominated gates shrink
-  their measurements through the stride and keep their defaults.
+  gate default.** Each is a separate lever owned elsewhere in the lighting-scale footprint
+  track, not adjacent to the alpha drop; this brief only requires the two byte-denominated
+  gates to shrink their measurements through the stride and keep their defaults.
 
 ## Acceptance
 
@@ -95,11 +98,14 @@ bit-identical to today's, and runtime steady-state RAM does not grow.
   correctly through the format length identity, the compaction offset tables, the emitted
   section view, the runtime-envelope dense view, the CPU reference decoder and the entry-drop
   zero test; a reader advancing by the old stride reads a neighbour's channel and fails. The
-  three compose shaders' texel multiplier is pinned to the format constant by a source guard
-  (research.md R3).
+  three compose shaders' packed delta read — texel multiplier AND the two-word parity select —
+  is pinned to the format stride constant by a source guard, so a shader that keeps the old
+  fixed even-offset unpack fails the guard (research.md R3).
 - [ ] Odd-half alignment: a texel at an odd f16 offset — every odd texel index once the
-  stride is three — reads back its own R, G, B through the word-packed reader, for the
-  first texel of a probe at every kept rank and the last texel of a tile (research.md R4).
+  stride is three — reads back its own R, G, B through a Rust port of the word-packed reader
+  matched against the half-indexed CPU reference, for the first texel of a probe at every kept
+  rank and the last texel of a tile; the shipped WGSL packed read is pinned to that port by the
+  R3 source guard, and the E20 capture is its on-GPU proof (research.md R4).
 - [ ] Entry dropping and coarsening decide identically: on the id-41, id-45 and id-27 fixtures
   the retained entry set, `cell_levels` and `valid_probe_masks` are equal before and after.
 - [ ] Working-set projection and raw-payload cap summaries report the reduced per-entry size

@@ -42,6 +42,7 @@ mod sdf_light_select_test;
 // --- Extracted submodules (module root is slim; impls split by concern) ---
 mod material_plan;
 mod pipeline_layout;
+mod renderer_capture;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
 mod renderer_dynamic_shadow_passes;

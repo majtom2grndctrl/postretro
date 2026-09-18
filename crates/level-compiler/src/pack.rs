@@ -3,8 +3,8 @@
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
-    AlphaFalloffModel, AlphaLightRecord, AlphaLightType, AlphaLightsSection, AlphaShadowType,
-    ALPHA_LIGHT_LEAF_UNASSIGNED,
+    ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
+    AlphaLightsSection, AlphaShadowType,
 };
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
     AnimatedBillboardDirectScatterDeltaVolumesSection,
@@ -22,11 +22,11 @@ use postretro_level_format::cell_locator::{
 };
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::{
-    CellRecord, CellsSection, CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID,
+    CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
 };
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, AFFINITY_FACTOR};
+use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -44,7 +44,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
-use postretro_level_format::{read_container, read_section_data, SectionId};
+use postretro_level_format::{SectionId, read_container, read_section_data};
 use std::path::Path;
 
 use std::collections::{HashMap, HashSet};
@@ -52,7 +52,7 @@ use std::collections::{HashMap, HashSet};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{FalloffModel, LightType, ShadowType};
-use crate::partition::{find_leaf_for_point, BspChild, BspTree};
+use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
 // PRL table and NavMesh body versions are independent domains.
@@ -66,7 +66,7 @@ use pack_sections::bvh_with_chunk_ranges;
 #[path = "pack_output.rs"]
 mod pack_output;
 
-use pack_output::{write_and_validate_sections, PlannedSection};
+use pack_output::{PlannedSection, write_and_validate_sections};
 fn scatter_section_fits_pack_cap(
     section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
 ) -> bool {
@@ -1055,7 +1055,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
 mod tests {
     use super::*;
     use postretro_level_format::bsp::BspLeafRecord;
-    use postretro_level_format::bvh::{BvhLeaf, BvhNode as FlatBvhNode, BVH_NODE_FLAG_LEAF};
+    use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatBvhNode};
     use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
     use postretro_level_format::cell_visibility::CellVisibilitySection;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -1227,7 +1227,7 @@ mod tests {
 
     fn minimal_kinematic_geometry_section() -> KinematicGeometrySection {
         use postretro_level_format::kinematic_geometry::{
-            KinematicMoverRecord, KinematicWaypointRecord, KINEMATIC_GEOMETRY_VERSION,
+            KINEMATIC_GEOMETRY_VERSION, KinematicMoverRecord, KinematicWaypointRecord,
         };
 
         let geometry = sample_geo_result().geometry;
@@ -1309,8 +1309,8 @@ mod tests {
     fn minimal_direct_sh_volume() -> DirectShVolumeSection {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
         use postretro_level_format::octahedral::{
-            irradiance_atlas_array_layout, DEFAULT_IRRADIANCE_TILE_BORDER,
-            DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            irradiance_atlas_array_layout,
         };
 
         let grid = [1, 1, 1];
@@ -1635,9 +1635,10 @@ mod tests {
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::TextureCacheKeys as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::TextureCacheKeys as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::BspNodes as u32).is_none());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_none());
         assert!(meta.find_section(SectionId::Cells as u32).is_some());
@@ -1645,16 +1646,19 @@ mod tests {
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::CellDrawIndex as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::CellVisibility as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::CellVisibility as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::LightInfluence as u32)
-            .is_some());
-        assert!(meta
-            .find_section(SectionId::OctahedralShVolume as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::LightInfluence as u32)
+                .is_some()
+        );
+        assert!(
+            meta.find_section(SectionId::OctahedralShVolume as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(
             meta.find_section(SectionId::AnimatedDirectShDeltaVolumes as u32)
@@ -1722,9 +1726,10 @@ mod tests {
         let data = std::fs::read(&output).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::KinematicGeometry as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::KinematicGeometry as u32)
+                .is_some()
+        );
 
         let _ = std::fs::remove_file(&output);
     }
@@ -1797,27 +1802,30 @@ mod tests {
         let data = std::fs::read(&output_with_direct).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::EntityShadowLights as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_some()
+        );
 
         let output_without_delta = dir.join("test_pack_entity_shadow_without_delta.prl");
         write_with(&output_without_delta, Some(&direct), Some(&selected), None);
         let data = std::fs::read(&output_without_delta).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::EntityShadowLights as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
 
         let output_without_direct = dir.join("test_pack_entity_shadow_without_direct.prl");
         write_with(&output_without_direct, None, Some(&selected), Some(&delta));
         let data = std::fs::read(&output_without_direct).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::EntityShadowLights as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
 
         let empty_selection = EntityShadowLightsSection {
             light_indices: Vec::new(),
@@ -1827,9 +1835,10 @@ mod tests {
         let data = std::fs::read(&output_empty).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::EntityShadowLights as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
 
         let _ = std::fs::remove_file(&output_with_direct);
         let _ = std::fs::remove_file(&output_without_delta);
@@ -1900,27 +1909,30 @@ mod tests {
         let data = std::fs::read(&output_all).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::DirectShDeltaVolumes as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_some()
+        );
 
         let output_no_selection = dir.join("test_pack_direct_delta_no_selection.prl");
         write_with(&output_no_selection, Some(&direct), None, Some(&delta));
         let data = std::fs::read(&output_no_selection).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::DirectShDeltaVolumes as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_none()
+        );
 
         let output_no_direct = dir.join("test_pack_direct_delta_no_direct.prl");
         write_with(&output_no_direct, None, Some(&selected), Some(&delta));
         let data = std::fs::read(&output_no_direct).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::DirectShDeltaVolumes as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_none()
+        );
 
         let partial_selection = EntityShadowLightsSection {
             light_indices: vec![0, 1],
@@ -1935,12 +1947,14 @@ mod tests {
         let data = std::fs::read(&output_partial).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::DirectShDeltaVolumes as u32)
-            .is_none());
-        assert!(meta
-            .find_section(SectionId::EntityShadowLights as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_none()
+        );
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
 
         let _ = std::fs::remove_file(&output_all);
         let _ = std::fs::remove_file(&output_no_selection);
@@ -2019,9 +2033,10 @@ mod tests {
         let data = std::fs::read(&output_valid).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::ShadowmaskAtlas as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::ShadowmaskAtlas as u32)
+                .is_some()
+        );
 
         let output_no_delta = dir.join("test_pack_shadowmask_no_delta.prl");
         write_with(
@@ -2034,9 +2049,10 @@ mod tests {
         let data = std::fs::read(&output_no_delta).expect("should read output file");
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        assert!(meta
-            .find_section(SectionId::ShadowmaskAtlas as u32)
-            .is_none());
+        assert!(
+            meta.find_section(SectionId::ShadowmaskAtlas as u32)
+                .is_none()
+        );
 
         let _ = std::fs::remove_file(&output_valid);
         let _ = std::fs::remove_file(&output_no_delta);
@@ -2095,12 +2111,14 @@ mod tests {
             let data = std::fs::read(output).expect("should read output file");
             let mut cursor = Cursor::new(&data);
             let meta = read_container(&mut cursor).expect("should read container");
-            assert!(meta
-                .find_section(SectionId::EntityShadowLights as u32)
-                .is_none());
-            assert!(meta
-                .find_section(SectionId::DirectShDeltaVolumes as u32)
-                .is_none());
+            assert!(
+                meta.find_section(SectionId::EntityShadowLights as u32)
+                    .is_none()
+            );
+            assert!(
+                meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                    .is_none()
+            );
         }
 
         let dir = std::env::temp_dir().join("postretro_test_pack");
@@ -2416,19 +2434,22 @@ mod tests {
         assert_eq!(meta.header.section_count, 14);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::TextureCacheKeys as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::TextureCacheKeys as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::CellDrawIndex as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
-        assert!(meta
-            .find_section(SectionId::LightInfluence as u32)
-            .is_some());
-        assert!(meta
-            .find_section(SectionId::OctahedralShVolume as u32)
-            .is_some());
+        assert!(
+            meta.find_section(SectionId::LightInfluence as u32)
+                .is_some()
+        );
+        assert!(
+            meta.find_section(SectionId::OctahedralShVolume as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_none());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_none());

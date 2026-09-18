@@ -31,6 +31,37 @@ pub(super) struct PlannedSection<'a> {
     encode: SectionEncoder<'a>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SectionFootprint {
+    pub(super) section_id: u32,
+    pub(super) section_name: Option<SectionId>,
+    pub(super) payload_bytes: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct PrlFootprint {
+    pub(super) sections: Vec<SectionFootprint>,
+    pub(super) payload_bytes: u64,
+}
+
+/// Summarize the planned payloads without invoking their one-shot encoders.
+pub(super) fn report_section_footprint(descriptors: &[SectionDescriptor]) -> PrlFootprint {
+    let sections: Vec<_> = descriptors
+        .iter()
+        .map(|descriptor| SectionFootprint {
+            section_id: descriptor.section_id,
+            section_name: SectionId::from_u32(descriptor.section_id),
+            payload_bytes: descriptor.byte_len,
+        })
+        .collect();
+    let payload_bytes = sections.iter().map(|section| section.payload_bytes).sum();
+
+    PrlFootprint {
+        sections,
+        payload_bytes,
+    }
+}
+
 impl<'a> PlannedSection<'a> {
     pub(super) fn new(
         section_id: u32,
@@ -598,6 +629,75 @@ mod tests {
     }
 
     #[test]
+    fn section_footprint_names_known_ids_and_retains_unknown_ids() {
+        let footprint = report_section_footprint(&[
+            SectionDescriptor {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                byte_len: 3,
+            },
+            SectionDescriptor {
+                section_id: 9_001,
+                version: 1,
+                byte_len: 5,
+            },
+        ]);
+
+        assert_eq!(footprint.payload_bytes, 8);
+        assert_eq!(
+            footprint.sections,
+            vec![
+                SectionFootprint {
+                    section_id: SectionId::Geometry as u32,
+                    section_name: Some(SectionId::Geometry),
+                    payload_bytes: 3,
+                },
+                SectionFootprint {
+                    section_id: 9_001,
+                    section_name: None,
+                    payload_bytes: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn section_footprint_includes_optional_sections_only_when_emitted() {
+        let required = SectionDescriptor {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            byte_len: 3,
+        };
+        let optional = SectionDescriptor {
+            section_id: SectionId::Lightmap as u32,
+            version: 1,
+            byte_len: 5,
+        };
+
+        let without_optional = report_section_footprint(std::slice::from_ref(&required));
+        let with_optional = report_section_footprint(&[required, optional]);
+
+        assert_eq!(without_optional.payload_bytes, 3);
+        assert_eq!(
+            without_optional
+                .sections
+                .iter()
+                .map(|section| section.section_id)
+                .collect::<Vec<_>>(),
+            vec![SectionId::Geometry as u32]
+        );
+        assert_eq!(with_optional.payload_bytes, 8);
+        assert_eq!(
+            with_optional
+                .sections
+                .iter()
+                .map(|section| section.section_id)
+                .collect::<Vec<_>>(),
+            vec![SectionId::Geometry as u32, SectionId::Lightmap as u32]
+        );
+    }
+
+    #[test]
     fn windows_publication_retry_retries_transient_replacement_errors() {
         let mut attempts = 0;
         let mut delays = Vec::new();
@@ -689,6 +789,40 @@ mod tests {
             std::fs::read(&output).expect("streamed output should exist"),
             expected
         );
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    #[test]
+    fn section_footprint_matches_flushed_container_payload_portion() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-section-footprint-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let sections = vec![
+            PlannedSection::new(SectionId::Geometry as u32, 1, 3, || Ok(vec![1, 2, 3])),
+            PlannedSection::new(9_001, 1, 5, || Ok(vec![4, 5, 6, 7, 8])),
+        ];
+        let descriptors: Vec<_> = sections
+            .iter()
+            .map(|section| section.descriptor.clone())
+            .collect();
+        let footprint = report_section_footprint(&descriptors);
+
+        write_and_validate_sections(&output, sections)
+            .expect("streamed PRL should write and read back");
+
+        let file_bytes = std::fs::metadata(&output)
+            .expect("streamed output should exist")
+            .len();
+        let header_and_table_bytes = 8 + footprint.sections.len() as u64 * 22;
+        assert_eq!(
+            file_bytes - header_and_table_bytes,
+            footprint.payload_bytes,
+            "the report excludes only the PRL header and section table"
+        );
+
         std::fs::remove_file(&output).expect("output should be removable");
         remove_publication_test_artifacts(&output);
     }

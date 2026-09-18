@@ -2140,6 +2140,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         }
     }
 

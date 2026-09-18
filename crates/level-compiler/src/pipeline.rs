@@ -18,8 +18,8 @@ use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
-    resolve_content_root, resolve_lightmap_density, resolve_prm_root_via_cargo,
-    resolve_sh_density_fidelity, resolve_texture_root,
+    map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density,
+    resolve_prm_root_via_cargo, resolve_sh_density_fidelity, resolve_texture_root,
 };
 
 pub(crate) mod lightmap_stage;

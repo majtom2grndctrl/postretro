@@ -1,7 +1,6 @@
 // PRL container framing, metadata, and section I/O.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use crate::SectionId;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use thiserror::Error;

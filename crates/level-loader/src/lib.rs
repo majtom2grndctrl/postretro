@@ -3,7 +3,10 @@
 
 mod prl;
 #[cfg(feature = "load-prl")]
+mod prl_lighting;
+#[cfg(feature = "load-prl")]
 mod prl_loader;
+mod prl_queries;
 
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,

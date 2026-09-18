@@ -30,6 +30,7 @@ pub enum StageId {
     AnimatedWeightMaps,
     SdfAtlasBake,
     TextureMips,
+    ClusterDirectory,
     Packing,
 }
 
@@ -68,6 +69,7 @@ impl StageId {
             Self::AnimatedWeightMaps => "AnimWeightMaps",
             Self::SdfAtlasBake => "SDF Atlas Bake",
             Self::TextureMips => "TextureMips",
+            Self::ClusterDirectory => "ClusterDirectory",
             Self::Packing => "Packing",
         }
     }
@@ -98,12 +100,13 @@ impl StageId {
             Self::AnimatedWeightMaps => "Animated light weight maps...",
             Self::SdfAtlasBake => "SDF atlas bake...",
             Self::TextureMips => "Texture mip bake...",
+            Self::ClusterDirectory => "SH cluster directory...",
             Self::Packing => "Packing and writing...",
         }
     }
 }
 
-pub(crate) const ORDERED_STAGES: [StageId; 25] = [
+pub(crate) const ORDERED_STAGES: [StageId; 26] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -128,6 +131,7 @@ pub(crate) const ORDERED_STAGES: [StageId; 25] = [
     StageId::AnimatedWeightMaps,
     StageId::SdfAtlasBake,
     StageId::TextureMips,
+    StageId::ClusterDirectory,
     StageId::Packing,
 ];
 

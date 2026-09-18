@@ -165,6 +165,112 @@ pub struct ClusterDirectoryValidationInputs<'a> {
     pub sh: ClusterDirectoryShInventory<'a>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterDirectoryCoverageStats {
+    pub affinity_cell_count: usize,
+    pub active_affinity_cell_count: usize,
+    pub covering_references: usize,
+    pub maximum_visited_nodes_per_cluster: usize,
+}
+
+/// Build the canonical resource table for an emitted SH inventory.
+///
+/// This is shared by compiler construction and semantic validation so final
+/// section-presence filtering cannot drift between the two paths.
+pub fn canonical_resource_records(
+    inventory: ClusterDirectoryShInventory<'_>,
+) -> Result<Vec<ClusterResourceRecord>, ClusterDirectoryError> {
+    let base_dims = inventory
+        .octahedral
+        .map_or([0, 0, 0], |base| base.grid_dimensions);
+    let affinity_dims = affinity_dimensions(base_dims)?;
+    let candidates = [
+        (
+            SectionId::DeltaShVolumes,
+            inventory.delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::OctahedralShVolume,
+            inventory.octahedral.is_some(),
+            ClusterResourceDomain::DenseProbe,
+            base_dims,
+        ),
+        (
+            SectionId::DirectShVolume,
+            inventory.direct.is_some(),
+            ClusterResourceDomain::DenseProbe,
+            base_dims,
+        ),
+        (
+            SectionId::DirectShDeltaVolumes,
+            inventory.direct_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::AnimatedDirectShDeltaVolumes,
+            inventory.animated_direct_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::BillboardDirectScatterVolume,
+            inventory.billboard.is_some(),
+            ClusterResourceDomain::DenseProbe,
+            base_dims,
+        ),
+        (
+            SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+            inventory.animated_billboard_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+    ];
+    Ok(candidates
+        .into_iter()
+        .filter(|(_, present, _, _)| *present)
+        .map(|(section, _, domain, dimensions)| ClusterResourceRecord {
+            section_id: section as u32,
+            domain,
+            dimensions,
+        })
+        .collect())
+}
+
+/// Populate canonical resource rows and grid-relative ranges for an already
+/// partitioned directory. Partition selection remains compiler-owned; the
+/// sparse coverage derivation is shared with load-time validation.
+pub fn populate_canonical_resource_ranges(
+    directory: &mut ClusterDirectorySection,
+    inputs: ClusterDirectoryValidationInputs<'_>,
+) -> Result<ClusterDirectoryCoverageStats, ClusterDirectoryError> {
+    directory.resources = canonical_resource_records(inputs.sh)?;
+    let Some(base) = inputs.sh.octahedral else {
+        directory.ranges.clear();
+        for cluster in &mut directory.clusters {
+            cluster.range_start = 0;
+            cluster.range_count = 0;
+        }
+        return Ok(ClusterDirectoryCoverageStats::default());
+    };
+    let affinity_dims = affinity_dimensions(base.grid_dimensions)?;
+    validate_companions(base, inputs.sh, affinity_dims)?;
+    let (ranges, counts, stats) =
+        derive_ranges_with_counts(directory, inputs, base, affinity_dims)?;
+    let mut start = 0u32;
+    for (cluster, count) in directory.clusters.iter_mut().zip(counts) {
+        cluster.range_start = if count == 0 { 0 } else { start };
+        cluster.range_count = count;
+        start = start
+            .checked_add(count)
+            .ok_or(ClusterDirectoryError::SizeOverflow("cluster range total"))?;
+    }
+    directory.ranges = ranges;
+    Ok(stats)
+}
+
 impl ClusterDirectorySection {
     pub fn byte_len(&self) -> Result<usize, ClusterDirectoryError> {
         checked_wire_len(
@@ -1045,6 +1151,33 @@ fn derive_expected_ranges(
     base: &OctahedralShVolumeSection,
     affinity_dims: [u32; 3],
 ) -> Result<Vec<ClusterRangeRecord>, ClusterDirectoryError> {
+    let (result, counts, _) = derive_ranges_with_counts(directory, inputs, base, affinity_dims)?;
+    let mut expected_start = 0usize;
+    for (cluster_id, (cluster, count)) in directory.clusters.iter().zip(counts).enumerate() {
+        let canonical_start = if count == 0 { 0 } else { expected_start };
+        if cluster.range_start as usize != canonical_start || cluster.range_count != count {
+            return resource_mismatch(format!(
+                "cluster {cluster_id} range slice does not match derived coverage"
+            ));
+        }
+        expected_start += count as usize;
+    }
+    Ok(result)
+}
+
+fn derive_ranges_with_counts(
+    directory: &ClusterDirectorySection,
+    inputs: ClusterDirectoryValidationInputs<'_>,
+    base: &OctahedralShVolumeSection,
+    affinity_dims: [u32; 3],
+) -> Result<
+    (
+        Vec<ClusterRangeRecord>,
+        Vec<u32>,
+        ClusterDirectoryCoverageStats,
+    ),
+    ClusterDirectoryError,
+> {
     let probe_count = checked_product(base.grid_dimensions)? as usize;
     if base.probes.len() != probe_count {
         return resource_mismatch(format!(
@@ -1060,7 +1193,11 @@ fn derive_expected_ranges(
         {
             return resource_mismatch("zero-grid id 34 must have no directory ranges");
         }
-        return Ok(Vec::new());
+        return Ok((
+            Vec::new(),
+            vec![0; directory.clusters.len()],
+            ClusterDirectoryCoverageStats::default(),
+        ));
     }
     if base
         .cell_size
@@ -1141,6 +1278,7 @@ fn derive_expected_ranges(
         }
     }
 
+    let mut maximum_visited_nodes_per_cluster = 0usize;
     for cluster_coverage in &mut coverage {
         let mut queue: VecDeque<u32> = cluster_coverage.iter().copied().collect();
         let mut visited_nodes = BTreeSet::new();
@@ -1190,6 +1328,8 @@ fn derive_expected_ranges(
                 }
             }
         }
+        maximum_visited_nodes_per_cluster =
+            maximum_visited_nodes_per_cluster.max(visited_nodes.len());
     }
 
     let mut owners = BTreeMap::<u32, u32>::new();
@@ -1199,6 +1339,7 @@ fn derive_expected_ranges(
         }
     }
     let mut result = Vec::new();
+    let mut counts = Vec::with_capacity(directory.clusters.len());
     for (cluster_id, bricks) in coverage.iter().enumerate() {
         let mut cluster_ranges = Vec::new();
         for (resource_index, resource) in directory.resources.iter().enumerate() {
@@ -1253,22 +1394,16 @@ fn derive_expected_ranges(
             }
         }
         cluster_ranges.sort_by_key(|range| (range.resource_index, range.start));
-        let cluster = &directory.clusters[cluster_id];
-        let expected_start = if cluster_ranges.is_empty() {
-            0
-        } else {
-            result.len()
-        };
-        if cluster.range_start as usize != expected_start
-            || cluster.range_count as usize != cluster_ranges.len()
-        {
-            return resource_mismatch(format!(
-                "cluster {cluster_id} range slice does not match derived coverage"
-            ));
-        }
+        counts.push(u32_len(cluster_ranges.len(), "cluster range count")?);
         result.extend(cluster_ranges);
     }
-    Ok(result)
+    let stats = ClusterDirectoryCoverageStats {
+        affinity_cell_count: affinity_count,
+        active_affinity_cell_count: active.iter().filter(|&&value| value).count(),
+        covering_references: coverage.iter().map(BTreeSet::len).sum(),
+        maximum_visited_nodes_per_cluster,
+    };
+    Ok((result, counts, stats))
 }
 
 fn sparse_offsets(inventory: ClusterDirectoryShInventory<'_>) -> Vec<&[u32]> {

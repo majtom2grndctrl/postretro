@@ -4,7 +4,8 @@
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 
-use postretro_level_format::{SectionDescriptor, read_container, read_section_data};
+use postretro_level_format::cluster_directory::ClusterDirectorySection;
+use postretro_level_format::{SectionDescriptor, SectionId, read_container, read_section_data};
 
 /// Validate the flushed PRL through the handle that received the bytes.
 pub(super) fn validate_readback(
@@ -58,6 +59,11 @@ pub(super) fn validate_readback(
             actual.len(),
             expected.byte_len,
         );
+        if expected.section_id == SectionId::ClusterDirectory as u32 {
+            ClusterDirectorySection::from_bytes(&actual).map_err(|error| {
+                anyhow::anyhow!("section 49 failed same-handle semantic read-back: {error}")
+            })?;
+        }
         expected_offset += expected.byte_len;
     }
     let file_len = file.metadata()?.len();

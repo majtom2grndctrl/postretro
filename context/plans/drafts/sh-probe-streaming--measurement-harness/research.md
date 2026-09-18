@@ -152,7 +152,7 @@ Task 7 records one terminal status:
 
 | Status | Required evidence |
 |---|---|
-| `measured` | Automated fine/coarse JSON reports with raw CPU samples, computed stats, SH residency, PRL section bytes, GPU timing values or absence reasons, and exact build/capture commands. |
+| `measured` | Automated fine/coarse JSON reports with raw CPU samples, computed stats, SH residency, GPU timing values or absence reasons, and exact build/capture commands; compiler section-footprint evidence retained separately. |
 | `manual-observation` | Fine/coarse build identity, map, machine, adapter/driver when known, pose, resolution, at least three settled frame-time windows per variant, GPU timing availability, automation diagnostics, and precise absence reasons for missing automated fields. |
 | `not-yet-evaluable` | Attempted machines, commands, map, failure diagnostics, why no approved observation could run, and precise absence reasons. |
 

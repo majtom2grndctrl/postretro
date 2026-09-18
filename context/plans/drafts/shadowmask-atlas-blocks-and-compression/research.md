@@ -79,13 +79,21 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
   dimensions`), decodes the lossless RGBA16F section into the padded buffer, encodes each
   layer, and concatenates per-layer blocks — the pad-and-concat emit shape a compressed id
   42 mirrors.
-- **Domain mismatch (why this is a candidate, not the function):** BC6H is an **HDR RGB,
-  f16-internal** codec; decode is `output_f16 = (interp * 31) >> 6`, and it drops alpha. It
-  does **not** produce unorm `[0,1]`. The shadowmask needs a **BC7 or per-channel BC4 unorm**
-  encoder, which is **not present in-tree**. `bc7-color-textures` (draft, stub) confirms the
-  gap: it flags "BC7 encoder cost & determinism" as unresolved heavy work (8 modes,
-  partition search; in-tree effort or a deterministic dependency). Per `context_style_guide.md`
-  §Spec Completeness, the reuse is the *pattern + emit seam*, not the BC6H symbol.
+- **Why the brief BUILDS the encoder rather than retreating:** BC6H is an **HDR RGB,
+  f16-internal** codec; decode is `output_f16 = (interp * 31) >> 6`, and it drops alpha — it
+  does **not** produce unorm `[0,1]`, so it is a *pattern to mirror*, not the function. No
+  BC7/BC4-unorm encoder is in-tree today. Rather than fall back to a weaker codec to dodge
+  that, the brief builds a deterministic BC7-unorm encoder as a shared foundation (mirroring
+  the dependency-free, pad-and-concat `bc5.rs`/`bc6h.rs` pattern) with the shadowmask as first
+  consumer. This is the "lay the foundation, ship its first consumer in the same unit" doctrine:
+  `bc7-color-textures` (draft, stub) names the *same* deterministic BC7 encoder as its heaviest
+  task (Task 2) and top risk, and is itself blocked on `emissive-surfaces-bloom` — so the
+  shadowmask (no such dependency, graceful fallback, GPU-free testable) is the ideal proving
+  ground, and landing the encoder here retires that draft's top risk. BC7 is heavier than BC5
+  (8 modes, partition search); a mode subset meeting the fidelity bound is acceptable for v1,
+  the hard requirement being cross-platform reproducibility. Per-channel BC4 (one channel of
+  the `bc5.rs` unorm path) is the measured fidelity floor if BC7's cross-channel error on
+  independent masks fails the visual gate.
 - **Determinism (split to match the invariant).** `build_pipeline.md` §Build Cache keys the
   `"shadowmask_atlas"` memo on inputs, not outputs, and its **Determinism invariant** exempts
   lossy compressed output (BC6H irradiance) from byte-identity; `sh-base-atlas-at-rest-slimming`

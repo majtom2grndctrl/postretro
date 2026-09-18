@@ -25,18 +25,15 @@ both gaps under one version bump.
 
 ## Decisions
 
-- **Per-channel BC4 at rest, ≈2:1, decided — not a spike.** The masks are four independent
-  single-channel scalars used as a specular multiplier, spatially smooth, with a fully-lit
-  fallback (`rendering_pipeline.md` §4 World specular shadowmask). BC4 (two min/max endpoints
-  + 3-bit indices per 4×4 block, single channel) is built for exactly that — it is the
-  correct codec by the data's structure, not a compromise. BC7 was rejected here: it models a
-  cross-channel block correlation four independent masks do not have (its weak case) and would
-  spend ~2 bits/channel vs BC4's 4, so it is both structurally wrong and lower per-channel
-  precision — its only edge, ≈4:1, comes from that mismatch. The GPU decompresses BC4 in
-  hardware, so disk, CPU-load RAM, and VRAM all shrink ≈2:1 together. No fidelity gate is
-  needed to *choose* the codec; a measured error report plus a visual regression check confirm
-  the result (Acceptance). BC7 belongs to `bc7-color-textures` (correlated sRGB colour, where
-  BC7 is the right tool) — this brief neither builds nor blocks on a BC7 encoder.
+- **Per-channel BC4 at rest, ≈2:1 — decided, not a spike.** The masks are four independent
+  single-channel scalars, spatially smooth, used as a specular multiplier with a fully-lit
+  fallback (`rendering_pipeline.md` §4 World specular shadowmask). BC4 is the codec built for a
+  single smooth scalar per block — the correct fit by the data's structure. BC7 is rejected: it
+  models a cross-channel correlation four independent masks do not have, so its better ratio is
+  bought with structural error on exactly this data (the bit-depth comparison is in `research.md`).
+  The GPU decompresses BC4 in hardware, so disk, CPU-load RAM, and VRAM all shrink ≈2:1 together.
+  Lossy is accepted; no fidelity gate is needed to *choose* the codec — a measured error report
+  plus the Manual visual A/B confirm the result. BC7 belongs to `bc7-color-textures`, not here.
 - **Independent masks are single-channel planes; the `(block, channel)` slot collapses to one
   plane index.** With BC4 there is no RGBA texel to pack into, so a texel's k-th mask is simply
   plane *k*. The atlas becomes a single-channel (`R8`/BC4) `texture_2d_array`; the mask for
@@ -54,11 +51,22 @@ both gaps under one version bump.
   plane would exceed the budget. If a real map ever pushes the ceiling, a channel-grouped
   layout (four BC4 planes sampled per group, preserving density at the cost of bindings) is the
   escape hatch — noted in Path, not built.
-- **Reuse the in-tree `bc5.rs` unorm encoder; no new encoder.** BC4 is one channel of the
-  existing deterministic BC5 path (`crates/level-compiler/src/bc5.rs`), with the pad-to-4×4 +
-  per-layer-concat emit shape of `encode_direct_section_bc6h`
-  (`crates/level-compiler/src/direct_sh_bake.rs`). This lands self-contained — no cross-plan
-  dependency, no ISPC-texcomp-class encoder to build or vendor.
+- **Greedy first-fit plane assignment; retire the exact-search node-budget and its drop
+  fallback.** Under abundant planes (grown on demand), assignment is no longer the scarce-4-colour
+  packing problem the old exact-search + `SHADOWMASK_COLOR_SEARCH_NODE_BUDGET` + greedy-drop
+  fallback existed to solve. A deterministic greedy first-fit — each light, in stable selection
+  order, takes the lowest plane none of its overlap neighbours use — is complete: it uses at most
+  Δ+1 planes and drops only when a new plane would push `plane_count × layer_count` past
+  `max_texture_array_layers`. This makes the no-drop-below-budget invariant **true by
+  construction** — no search-budget-exhaustion drop path remains — deletes the search machinery
+  (lean northstar), and removes a search-budget-dependent nondeterminism source. Tradeoff: greedy may use a few more planes than
+  an optimal colouring right at the ceiling — accepted (the drop there is graceful; do not
+  reintroduce the search for compactness).
+- **In-tree, deterministic, self-contained encode — no new codec.** The BC4 block algorithm
+  already exists in-tree (deterministic min/max endpoints); the executor exposes a thin
+  single-channel wrapper over it plus the pad-to-4×4 emit shape — no external encoder to build or
+  vendor, no cross-plan dependency, no ISPC-texcomp-class work. Which in-tree seam and how to
+  surface the single channel is Path.
 - **No new device requirement or alignment constraint.** id 22/35 already require the
   `TEXTURE_COMPRESSION_BC` adapter feature, so BC4 adds none. BC is 4×4-block; the shadowmask
   shares the lightmap atlas dimensions, already BC-aligned because id 22 is BC6H — no padding
@@ -66,7 +74,7 @@ both gaps under one version bump.
 - **Determinism, aligned to the cache invariant.** The plane assignment must be a pure,
   order-deterministic function of the selection and per-light layer inputs, so the logical
   (pre-compression) atlas re-bakes byte-identically — required and precedent-aligned. The BC4
-  encode is deterministic by construction (the `bc5.rs` min/max-endpoint path), so the section
+  encode is deterministic by construction (the in-tree min/max-endpoint BC path), so the section
   re-bakes byte-identically in practice; but per `build_pipeline.md` §Build Cache (the BC6H
   irradiance exemption — the cache keys on inputs, not outputs) only **section-length
   stability** is a hard requirement, not byte-identity of the lossy bytes.
@@ -95,12 +103,8 @@ both gaps under one version bump.
   shadowmask as future subscribers but wires only SH (id 49 cluster directory reserved,
   unemitted). Compression composes with, and does not foreclose, that work (re-bakeable into
   cluster-addressable compressed form).
-- **Material / texture residency.** A separate material+mip domain, explicitly excluded from
-  the spatial substrate by `sh-probe-streaming`.
-- **A BC7 encoder / BC7 on colour textures.** `bc7-color-textures` owns BC7 — the right tool
-  for correlated sRGB colour, with its own mip chain, magnification aesthetic gate, and
-  `emissive-surfaces-bloom` dependency. This brief does not build a BC7 encoder; the shadowmask
-  is not BC7's data.
+- **A BC7 encoder / BC7 on colour textures.** `bc7-color-textures` owns BC7 (its right tool),
+  with its own encoder, mip chain, and aesthetic gate. This brief builds no BC7 encoder.
 - **Sparse / empty-region footprint trim.** Subsumed by the streaming epic above.
 - **The shadowmask bake's memory / parallelism / progress.** Owned by `shadowmask-bake-scaling`
   (landed); this brief changes what the bake emits and how masks are assigned to planes and
@@ -111,9 +115,6 @@ both gaps under one version bump.
   (BC preserves dimensions).
 - **Old-`.prl` migration.** All fixtures re-bake from source; the format version advances and
   stale caches regenerate.
-- **Raising the per-texel cap above the device array-layer budget.** Past
-  `plane_count × layer_count = 256` the existing lowest-intensity drop is retained as the
-  graceful fallback — a chosen, owner-visible ceiling.
 - **Selection eligibility / ranking.** Which lights are selected (`entity_shadow_select`) is
   unchanged.
 
@@ -129,10 +130,10 @@ both gaps under one version bump.
 - [ ] The plane assignment is collision-free: for every overlap edge in the selection graph,
   the two lights receive different planes (or one is the dropped sentinel) — a unit assertion
   over the assignment output, independent of any rendered texel.
-- [ ] The no-drop-below-budget property is proven on a fixture large enough to exercise the
-  budget-exhausted greedy fallback (not only the exact-search path): the greedy path also
-  grows to `plane_count` planes and drops only where the Decisions' drop rule permits (see the
-  search-budget carve-out, if the owner keeps that fallback).
+- [ ] The greedy first-fit assignment drops only at the device ceiling: on a fixture whose
+  overlap forces many planes, no mask is dropped while `plane_count × layer_count ≤ max`, and a
+  mask drops only when the next plane would exceed it — there is no search-budget drop path
+  (the exact-search node-budget fallback is removed).
 - [ ] `ShadowmaskAtlasSection::to_bytes` → `from_bytes` round-trips the plane table, the codec
   tag, and the layer-major payload for `plane_count > 1`; `from_bytes` rejects an out-of-range
   plane index and a payload whose length disagrees with the codec's per-plane block size ×
@@ -246,13 +247,14 @@ select. Proven when a fixture texel overlapped by 5–8 selected lights shows ev
 runtime — this falsifies the wire ↔ runtime ↔ shader boundary end to end. Encoding stays raw
 `R8` here; BC4 rides in on Task 3.
 
-**Task 2 — deterministic plane assignment + device-budget cap + graceful degradation.** Replace
-the 4-color-with-drops assignment with a plane assignment: give each selected light a plane so
-no two lights sharing a texel share a plane, opening additional planes as overlap demands,
-dropping a mask (lowest intensity) only when adding a plane would push `plane_count × layer_count`
-past `max_texture_array_layers`. Assignment is a pure, order-deterministic function of the
-selection and per-light layer inputs so the section is byte-stable. Thread the same array-layer
-bound the renderer enforces into the bake so the cap is enforced at bake time, and extend
+**Task 2 — greedy first-fit plane assignment + device-budget cap + graceful degradation.** Replace
+the exact-search + node-budget + greedy-drop machinery with a single deterministic greedy first-fit:
+each selected light, in stable selection order, takes the lowest plane none of its overlap
+neighbours use, opening additional planes as overlap demands, and dropping a mask (lowest intensity)
+only when the next plane would push `plane_count × layer_count` past `max_texture_array_layers`.
+Retire `SHADOWMASK_COLOR_SEARCH_NODE_BUDGET` and its fallback drop path. Assignment is a pure
+function of the selection and per-light layer inputs so the section is byte-stable. Thread the same
+array-layer bound the renderer enforces into the bake so the cap is enforced at bake time, and extend
 `filter_usable_shadowmask_section` so an over-budget product degrades to the all-visible
 placeholder with a `[Renderer]` error. Preserve the static→static double-count dead-zone
 unchanged — the plane generalization changes mask lookup, not the union subtraction. Track peak
@@ -279,8 +281,9 @@ out-of-range plane and a mismatched payload length under the codec's block math)
 that a light on plane `> 0` samples the correct layer in both decode paths; a bake test that a
 >4-overlap texel drops nothing below the budget and lowest-intensity only past it; a double-count
 regression; the on-disk and VRAM byte-delta tests; the CPU-free + reload test; the
-adapter-without-BC and over-budget placeholder tests; the BC4 round-trip error-bound test; and
-the deterministic-plane / length-stable re-bake test. Update the `build_pipeline.md` id-42 line
+adapter-without-BC and over-budget placeholder tests; the BC4 fidelity measure (reported, not
+gated — the Manual visual A/B is the fidelity gate); and the deterministic-plane /
+length-stable re-bake test. Update the `build_pipeline.md` id-42 line
 and the `rendering_pipeline.md` §4 world-specular statement at promotion to describe the
 single-channel planes, the device-budget drop, and the at-rest BC4 codec.
 
@@ -300,9 +303,11 @@ single-channel planes, the device-budget drop, and the at-rest BC4 codec.
   `self.level = Some(world)` (`crates/postretro/src/startup/lifecycle.rs`); the renderer borrows
   it at install and clones only the plane table. Free the payload after upload without disturbing
   that clone.
-- **Assignment seam:** the plane assignment generalizes the current `color_graph` /
-  `assign_channels_with_drops` loop from 4 colours to `plane_count` planes, grown on demand up to
-  `floor(max_texture_array_layers / layer_count)`.
+- **Assignment seam:** replace the current `color_graph` / `assign_channels_with_drops` exact
+  search (and its `SHADOWMASK_COLOR_SEARCH_NODE_BUDGET` greedy-drop fallback) with a greedy
+  first-fit over `plane_count` planes grown on demand up to
+  `floor(max_texture_array_layers / layer_count)`; re-anchor on the landed cold-working-set
+  overlap graph.
 - **Ceiling escape hatch (only if a real map binds it):** the single-channel-plane layout caps
   masks/texel at `floor(256 / layer_count)`. If that ever binds, a channel-grouped layout (four
   BC4 planes per group, `.rgba`-style sampling, preserving RGBA-era density at four bindings) is
@@ -331,7 +336,7 @@ branch. **Phase 4:** Task 4 — free CPU payload. **Phase 5:** Task 5 — round-
 
 | Invariant | Established by | Threatened at | Verified by |
 |---|---|---|---|
-| No selected mask dropped while `plane_count × layer_count ≤ max_texture_array_layers` | Task 2 plane-spilling assignment | any residual 4-slot cap in assignment, metadata, or shader | AC 1, 2 |
+| No selected mask dropped while `plane_count × layer_count ≤ max_texture_array_layers` (true by construction — greedy first-fit, no search-budget drop) | Task 2 greedy first-fit | any residual 4-slot cap in assignment, metadata, or shader | AC 1, 2 |
 | Absent / rejected / over-budget / no-BC-adapter shadowmask → fully lit, no panic | existing `filter_usable_shadowmask_section`, extended | a missed layer bound is a device breach; a missing BC-feature check is a panic | AC 4, 11 |
 | Static→static world shadowing exactly zero (pool-shadow union dead-zone) | existing promoted-union path | a plane or codec decode that alters the union term | AC 5 |
 | Plane-assigned (pre-compression) id-42 bytes deterministic; compressed section length stable | Task 2 assignment (byte-identical) + Task 3 deterministic BC4 encode (length-stable) | non-deterministic plane-open order; an encoder that changes section length across runs | AC 12 |

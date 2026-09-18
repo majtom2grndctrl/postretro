@@ -57,6 +57,18 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
   compiler warning + global drop, and `stress-warren-lit`'s 157 lights is a map-wide count.
   The plane ceiling is a deliberate build-ahead owner decision (materially more headroom than
   four), stated plainly. Task 2 still emits a per-texel overlap histogram under `--verbose`.
+- **Assignment simplifies under abundant planes.** Today's `assign_channels_with_drops` is a
+  two-phase exact-search + greedy-fallback: `color_graph_exact_bounded` searches for a 4-colouring
+  bounded by `SHADOWMASK_COLOR_SEARCH_NODE_BUDGET` (`assignment.rs:322`, `while frame.next_channel
+  < 4`), and on `BudgetExhausted` (`:163-185`) falls to `color_graph_priority_greedy` (`:381`,
+  `used = [false; 4]`), which can **drop a mask on search-budget grounds** (`:391-395`), not the
+  device ceiling — the search-budget drop gap. That machinery exists because 4 colours is scarce.
+  Under planes grown on demand, colours are abundant, so a deterministic greedy first-fit (stable
+  selection order, lowest free plane, Δ+1 planes max) is complete and drops only at
+  `plane_count × layer_count = max_texture_array_layers`. The brief retires the exact search and
+  the fallback: the no-drop-below-budget invariant becomes true by construction, the two
+  4-hardcoded loops (`:322`, `:381`) collapse to one, and a search-budget nondeterminism source is
+  removed. Cost: greedy uses ≥ χ planes (a few more than optimal near the ceiling) — accepted.
 
 ## Compression (the bytes-per-texel axis) — why BC4, not BC7
 

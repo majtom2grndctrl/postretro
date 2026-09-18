@@ -2,7 +2,7 @@
 
 Brief · resumable · reads: `context/lib/rendering_pipeline.md` §4 "Variable base-probe density", `context/lib/build_pipeline.md` §PRL section IDs (ids 34/35), `context/lib/experimental_spikes.md` · read at 2441b87 · symbols re-grounded against `main` at 2441b87 through `/validate-plan` + `/review-brief`
 
-> **Status:** test-ready. Implementation, automated acceptance, review/fix loops, and full preflight pass. The owner-run Windows Warren stress measurement plus M3 receiver, M4 visual, and M5 GPU-timing evidence remain blocking; no manual result is inferred from the local Mac seam capture.
+> **Status:** landed-with-gaps. Implementation, automated acceptance, review/fix loops, and full preflight pass. Windows M1, M3, and M4 passed. M5 is recorded as not-yet-evaluable because `POSTRETRO_GPU_TIMING=1` device-loses NVIDIA driver 616.92 before a timing window; no CPU result is substituted.
 
 > **Build order (lighting-scale footprint track):** both `sh-delta-cone-reach-cull` (Phase 1) and `sh-delta-tile-alpha-drop` have **shipped to `main`** (alpha-drop landed the delta ids 27/41/45 at section versions 6/4/4 via PR #506); this brief is the **next and last** item on the footprint chain. Its Phase-1 measurement runs against the **landed** post-cull, post-alpha-drop delta footprint: the cull set which bricks carry a delta entry, and the alpha-drop's RGB re-stride **preserved that entry set** (verified — `validate_storage_levels_against_delta` reads `affinity_offsets` presence, never texel layout), so the bricks this brief pins to scale 0 ("The delta ceiling extends to scale") are exactly the landed ones. Independent of both siblings on the wire (base id-34/35 vs delta id-27/41/45, no version merge); the only shared surface is the SH compose/sampler code, and alpha-drop touched only its delta-read arm (`read_delta_texel`), not the base writer election (`stored_slot_for_invocation`) or the sampler this brief extends.
 
@@ -52,13 +52,13 @@ Phase 3
 
 ### Manual
 Phase 1 (recorded in `research.md`; fixture, spacing, machine class, cache mode, and cleanup pinned per `testing_guide.md` §Resource bounds)
-- [ ] At 1.0 m, retain the completed exact `kinematic-platform.map` local control and bounded hallway-mini feasibility result, then run the owner-preferred `stress-warren-hallway-inspection.map` on Windows (hallway mini fallback): stored tiles and id 34/35 bytes for shipped classification, hierarchy projection, and the all-L2 structural floor beside dense record bytes; node histogram and per-level saving; node error; seam residuals; blockers; machine/workers/wall/RSS/hash/cleanup. Record the full-map stopping stage and limit if it is infeasible.
+- [x] At 1.0 m, retain the completed exact `kinematic-platform.map` local control and bounded hallway-mini feasibility result, then run the owner-preferred `stress-warren-hallway-inspection.map` on Windows (hallway mini fallback): stored tiles and id 34/35 bytes for shipped classification, hierarchy projection, and the all-L2 structural floor beside dense record bytes; node histogram and per-level saving; node error; seam residuals; blockers; machine/workers/wall/RSS/hash/cleanup. Full hallway completed in 11.15 h with zero reconstruction failures.
 - [x] The Phase 3 build decision (a soft measure-and-record check, not a hard gate) is made from Phase 1's per-level attribution and recorded in the plan of record, weighed by resource: build the L1 nodes + scale-aware sampler on any net-positive L1 contribution in a scarce resource (disk `.prl`; constrained live VRAM), or when the only net cost falls in an abundant, underutilized resource (marginal counts); refuse Phase 3 only on a clear unoffset net loss in a resource we are actually constrained on.
 Phase 2
-- [ ] Scale-≥1 L2-node bakes of the Phase 1 fixtures boot with no wgpu validation errors and render indirect on world, movers, skinned meshes, billboards, and fog.
+- [x] Scale-≥1 bakes boot with no wgpu validation errors and render indirect on every named receiver. Windows used runnable kinematic and campaign fixtures because the 2.22 GiB Warren PRL exceeds the owner box's practical runtime envelope.
 Phase 3
-- [ ] Manual-visual hunt at node faces, open volumes crossed by movers, and lit pools on the Phase 1 fixtures at default fidelity plus a forced-scale worst case, from a content root; recorded as a read, never as parity.
-- [ ] Per-pass GPU time (`POSTRETRO_GPU_TIMING=1`) before and after on the named adapter; not-yet-evaluable without `TIMESTAMP_QUERY`, never inferred from CPU time.
+- [x] Manual-visual hunt at node faces, open volumes crossed by movers, and lit pools at default fidelity plus a forced-scale-1 worst case, from a content root; both Windows reads passed with no seams or unexpected pops.
+- [x] Per-pass GPU timing was attempted on the named GTX 1660 SUPER/Vulkan adapter and recorded as not-yet-evaluable: enabling `POSTRETRO_GPU_TIMING=1` device-loses driver 616.92 before the 120-frame window. No CPU-time result was substituted.
 
 ## Path
 
@@ -71,8 +71,8 @@ Non-binding.
 ## Open questions
 
 - Landing order against the sibling delta-payload wire breaks — **resolved** (both siblings landed; this brief is the last of the chain). See the Build-order note and the Wire-format ids 27/41/45 row for the baseline and the entry-set/ceiling argument.
-- Maximum node scale actually adopted (≤ 3 on the wire) and whether a 2:1 scale-balance rule is needed — **delegated**: from Phase 1's node histogram and seam metric, reported in the plan of record
-- Whether full `stress-warren.map` at 1.0 m is bakeable on the measurement box — **delegated**: attempted, recorded either way
+- Maximum node scale and 2:1 balance — **resolved**: emit through scale 1; no additional balance rule. Local and Windows seam measurements agree.
+- Windows stress feasibility — **resolved**: `stress-warren-hallway-inspection.map` completed at 1.0 m in 11.15 h with 4.82 GiB peak RSS; suitable for unattended measurement, not interactive iteration.
 
 ## Boundary inventory
 

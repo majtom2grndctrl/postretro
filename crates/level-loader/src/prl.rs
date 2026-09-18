@@ -599,7 +599,7 @@ pub struct LevelWorld {
     /// base→total copy.
     #[cfg(feature = "load-prl")]
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
-    /// v3 metadata-derived stored-tile direct SH atlas for dynamic objects
+    /// v4 metadata-derived node-aware stored-tile direct SH atlas for dynamic objects
     /// (mesh entities + billboards). `None` only when id35 is absent. A present
     /// malformed, stale, geometry-mismatched, or tag-mismatched id35 is a fatal
     /// loader error. Renderer device-limit fallback does not clear this field.
@@ -1372,7 +1372,7 @@ mod tests {
             affinity_dims,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-            // Regression: the v10 stored-atlas fixture has one valid probe;
+            // Regression: the v11 node-aware stored-atlas fixture has one valid probe;
             // id 41 must carry the same validity and one tile per CSR entry.
             valid_probe_masks: vec![1; cell_count],
             cell_levels: vec![0u8; cell_count],
@@ -1461,7 +1461,7 @@ mod tests {
 
     /// One complete affinity brick at L2: valid metadata but only one stored
     /// tile. This is the smallest fixture that can violate I2 against an L0
-    /// delta cell while preserving id-34's v10 stored-geometry contract.
+    /// delta cell while preserving id-34's v11 node-aware stored-geometry contract.
     fn l2_storage_ceiling_base() -> OctahedralShVolumeSection {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
         use postretro_level_format::octahedral::irradiance_atlas_array_layout;
@@ -1474,6 +1474,37 @@ mod tests {
         let stored_layout =
             irradiance_atlas_array_layout([1, 1, 1], DEFAULT_IRRADIANCE_TILE_DIMENSION, 8192)
                 .expect("one L2 brick stores exactly one tile");
+        base.atlas_dimensions = [stored_layout.atlas_width, stored_layout.atlas_height];
+        base.atlas_tiles_per_row = stored_layout.atlas_tiles_per_row;
+        base.tiles_per_layer = stored_layout.tiles_per_layer;
+        base.layer_count = stored_layout.layer_count;
+        base.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+        base.compact_atlas = vec![
+            0;
+            (stored_layout.atlas_width * stored_layout.atlas_height * stored_layout.layer_count * 8)
+                as usize
+        ];
+        base
+    }
+
+    fn scaled_node_base(density_level: u8) -> OctahedralShVolumeSection {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+        use postretro_level_format::octahedral::irradiance_atlas_array_layout;
+
+        assert!(matches!(density_level, 1 | 2));
+        let mut base = base_octahedral_section([8, 8, 8]);
+        for probe in &mut base.probes {
+            probe.validity = 1;
+            probe.density_level = density_level;
+            probe.node_scale = 1;
+        }
+        let stored_tile_count = if density_level == 1 { 8 } else { 1 };
+        let stored_layout = irradiance_atlas_array_layout(
+            [stored_tile_count, 1, 1],
+            DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            8192,
+        )
+        .expect("one scaled node has valid stored geometry");
         base.atlas_dimensions = [stored_layout.atlas_width, stored_layout.atlas_height];
         base.atlas_tiles_per_row = stored_layout.atlas_tiles_per_row;
         base.tiles_per_layer = stored_layout.tiles_per_layer;
@@ -5411,6 +5442,79 @@ mod tests {
             "expected named id-34 stale-format error, got {error}"
         );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    // Regression: v11 validity is a binary wire field, not a truthy byte.
+    #[test]
+    fn load_prl_rejects_non_binary_octahedral_probe_validity() {
+        let mut malformed_bytes = base_octahedral_section([1, 1, 1]).to_bytes();
+        malformed_bytes[OctahedralShVolumeSection::HEADER_SIZE] = 2;
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::OctahedralShVolume as u32,
+                version: 1,
+                data: malformed_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_non_binary_octahedral_validity.prl",
+        );
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("non-binary id-34 probe validity must reject the PRL");
+        assert!(
+            error.to_string().contains("PRL format error")
+                && error.to_string().contains("validity 2 out of range")
+                && error.to_string().contains("binary 0 or 1"),
+            "expected named id-34 binary-validity error, got {error}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // Regression: an empty origin brick left a scaled node's elected compose
+    // writer without a valid metadata word, so its allocated slot stayed stale.
+    #[test]
+    fn load_prl_rejects_scaled_node_with_an_empty_origin_brick() {
+        for (density_level, label) in [(1, "l1"), (2, "l2")] {
+            let mut malformed_bytes = scaled_node_base(density_level).to_bytes();
+            let probe_stride = postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE as usize;
+            for z in 0..4usize {
+                for y in 0..4usize {
+                    for x in 0..4usize {
+                        let probe = x + y * 8 + z * 64;
+                        let record = OctahedralShVolumeSection::HEADER_SIZE + probe * probe_stride;
+                        malformed_bytes[record] = 0;
+                    }
+                }
+            }
+            let sections = vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                prl_format::SectionBlob {
+                    section_id: SectionId::OctahedralShVolume as u32,
+                    version: 1,
+                    data: malformed_bytes,
+                },
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+            ];
+            let fixture_name = format!("postretro_test_scaled_{label}_node_empty_origin_brick.prl");
+            let tmp = write_prl_fixture(sections, &fixture_name);
+            let error = load_prl(tmp.to_str().unwrap())
+                .expect_err("a scaled node without an origin-brick writer must reject the PRL");
+            assert!(
+                error.to_string().contains("PRL format error")
+                    && error
+                        .to_string()
+                        .contains("has no valid probe in its origin affinity brick"),
+                "expected named id-34 {label} origin-writer error, got {error}"
+            );
+            std::fs::remove_file(&tmp).ok();
+        }
     }
 
     #[test]

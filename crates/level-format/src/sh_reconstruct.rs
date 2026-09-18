@@ -1,20 +1,5 @@
-//! Intra-brick trilinear reconstruction math for SH probe tiles.
-//!
-//! Relocated verbatim from the level-compiler's measurement-only `sh_analyze`
-//! (behavior-preserving) so the compiler classifier, the CPU compose reference
-//! (`postretro-render-cpu`), and — via the WGSL port — the GPU compose passes
-//! share **one** definition of how a dropped-valid probe is reconstructed from a
-//! coarser kept lattice. See
-//! `context/plans/drafts/lighting-scale--delta-sh-probe-coarsening/` (task G1).
-//!
-//! ## Three candidate stored levels per 4×4×4 brick
-//! - **L0** — every valid base probe, in local x-fastest order.
-//! - **L1** — the 8 corner probes (in-brick local ∈ {0,3}³), trilinear
-//!   reconstruction with per-axis weights `local/3`.
-//! - **L2** — a single brick-mean tile over the brick's VALID probes only.
-//!
-//! Reconstruction is strictly **intra-brick**: an L1 target reads only the
-//! brick's own 8 corners, never a neighbor cell.
+//! Shared base/delta reconstruction: base L1 is scale-aware and node-local; delta L1/L2 are brick-local.
+//! See: context/lib/rendering_pipeline.md §4 "Adaptive base-probe spacing".
 
 use glam::Vec3;
 
@@ -331,8 +316,10 @@ pub fn stored_brick_prefix_sum(
 ///
 /// Every brick carries its containing node's level and scale. A node is an
 /// aligned cube of `2^scale` bricks. Its stored set is charged to the aligned
-/// origin brick; all other member bricks receive a zero-length range. Scale 0
-/// is exactly [`stored_brick_prefix_sum`]'s v10 layout.
+/// origin brick; all other member bricks receive a zero-length range. A scaled
+/// node therefore requires at least one valid probe in that origin brick so
+/// the elected compose workgroup can derive its shared word. Scale 0 is exactly
+/// [`stored_brick_prefix_sum`]'s v10 layout.
 pub fn stored_node_prefix_sum(
     grid_dimensions: [u32; 3],
     brick_levels: &[Level],
@@ -439,22 +426,14 @@ pub fn stored_node_prefix_sum(
                 } else if !is_node_origin {
                     0
                 } else {
-                    let probe_origin = node_origin.map(|axis| axis * AF);
-                    let probe_edge = node_edge * AF;
-                    let mut any_valid = false;
-                    for z in probe_origin[2]..probe_origin[2] + probe_edge {
-                        for y in probe_origin[1]..probe_origin[1] + probe_edge {
-                            for x in probe_origin[0]..probe_origin[0] + probe_edge {
-                                let probe = x
-                                    + y * grid_dimensions[0] as usize
-                                    + z * grid_dimensions[0] as usize * grid_dimensions[1] as usize;
-                                any_valid |= probe_validity[probe];
-                            }
-                        }
+                    // Every compose pass elects this brick's workgroup as the
+                    // sole scaled-node writer and derives node metadata from a
+                    // valid word in the brick. Reject a node whose validity
+                    // exists only in later member bricks.
+                    if valid_probe_mask == 0 {
+                        return None;
                     }
-                    if !any_valid {
-                        0
-                    } else if brick_levels[brick_index] == Level::L1 {
+                    if brick_levels[brick_index] == Level::L1 {
                         8
                     } else {
                         1
@@ -743,6 +722,23 @@ mod tests {
         assert!(
             stored_node_prefix_sum([8, 8, 8], &vec![Level::L0; 8], &vec![1; 8], &valid,).is_none()
         );
+    }
+
+    // Regression: a scaled node with validity only outside its origin brick
+    // allocated stored slots that no elected compose workgroup could write.
+    #[test]
+    fn stored_node_prefix_sum_rejects_empty_scaled_origin_brick() {
+        let grid = [8, 8, 8];
+        let scales = vec![1; 8];
+        let mut valid = vec![false; 8 * 8 * 8];
+        valid[7] = true;
+
+        for level in [Level::L1, Level::L2] {
+            assert!(
+                stored_node_prefix_sum(grid, &vec![level; 8], &scales, &valid).is_none(),
+                "{level:?} must retain a valid word in the elected origin brick"
+            );
+        }
     }
 
     #[test]

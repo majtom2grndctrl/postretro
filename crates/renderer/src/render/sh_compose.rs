@@ -665,7 +665,7 @@ mod tests {
                 ..Default::default()
             },
             OctahedralShProbe {
-                validity: 2,
+                validity: 1,
                 ..Default::default()
             },
             OctahedralShProbe {

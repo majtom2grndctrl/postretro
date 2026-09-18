@@ -564,7 +564,8 @@ pub(crate) struct ShVolumeShell {
 
 /// Dense intermediate used only while the grouped path places cached records.
 /// It preserves the v8 dense tile locations so cached values are byte-copied
-/// before the v10 stored-set packaging transform runs.
+/// before the v11 node-aware packaging transform consumes this pre-hierarchy
+/// dense/compact intermediate.
 pub(crate) struct DenseAssembledSection {
     pub(crate) section: OctahedralShVolumeSection,
     pub(crate) dense_atlas: Vec<OctahedralAtlasTexel>,

@@ -623,6 +623,12 @@ fn validate_probe_metadata(
                                     * grid_dimensions[0] as usize
                                     * grid_dimensions[1] as usize;
                             let probe = probes[probe_index];
+                            if probe.validity > 1 {
+                                return Err(invalid_data(format!(
+                                    "octahedral sh volume probe {probe_index} validity {} out of range: validity must be binary 0 or 1",
+                                    probe.validity
+                                )));
+                            }
                             let level = Level::from_u8(probe.density_level).ok_or_else(|| {
                                 invalid_data(format!(
                                     "octahedral sh volume probe {probe_index} density_level {} out of range: level must be 0..=2",
@@ -679,7 +685,7 @@ fn validate_probe_metadata(
         }
     }
 
-    let probe_validity: Vec<bool> = probes.iter().map(|probe| probe.validity != 0).collect();
+    let probe_validity: Vec<bool> = probes.iter().map(|probe| probe.validity == 1).collect();
     for brick_z in 0..affinity_dimensions[2] as usize {
         for brick_y in 0..affinity_dimensions[1] as usize {
             for brick_x in 0..affinity_dimensions[0] as usize {
@@ -724,6 +730,26 @@ fn validate_probe_metadata(
                                 )));
                             }
                         }
+                    }
+                }
+                if scale > 0 && [brick_x, brick_y, brick_z] == origin {
+                    let probe_origin = origin.map(|axis| axis * 4);
+                    let origin_brick_has_valid_probe =
+                        (probe_origin[2]..probe_origin[2] + 4).any(|z| {
+                            (probe_origin[1]..probe_origin[1] + 4).any(|y| {
+                                (probe_origin[0]..probe_origin[0] + 4).any(|x| {
+                                    let index = x
+                                        + y * grid_dimensions[0] as usize
+                                        + z * grid_dimensions[0] as usize
+                                            * grid_dimensions[1] as usize;
+                                    probe_validity[index]
+                                })
+                            })
+                        });
+                    if !origin_brick_has_valid_probe {
+                        return Err(invalid_data(format!(
+                            "octahedral sh volume node at aligned origin {origin:?} scale {scale} has no valid probe in its origin affinity brick"
+                        )));
                     }
                 }
                 if level == Level::L1 && [brick_x, brick_y, brick_z] == origin {
@@ -1299,6 +1325,9 @@ mod tests {
             let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
             assert_eq!(restored, section);
             assert!(restored.probes.iter().all(|probe| probe.node_scale == 1));
+            if level == Level::L1 {
+                assert_eq!(restored.probes[0].validity, 0);
+            }
             let prefix =
                 validate_probe_metadata(restored.grid_dimensions, &restored.probes).unwrap();
             assert_eq!(
@@ -1320,6 +1349,21 @@ mod tests {
         bytes[OctahedralShVolumeSection::HEADER_SIZE + 6] = 1;
         let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         assert!(error.to_string().contains("disagreeing node_scale"));
+    }
+
+    // Regression: v11 declares validity as binary, but accepted any nonzero byte.
+    #[test]
+    fn octahedral_rejects_non_binary_probe_validity() {
+        let section = oct_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        bytes[OctahedralShVolumeSection::HEADER_SIZE] = 2;
+
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            error.to_string().contains("validity 2 out of range")
+                && error.to_string().contains("binary 0 or 1"),
+            "expected named binary-validity error, got {error}"
+        );
     }
 
     #[test]
@@ -1369,6 +1413,34 @@ mod tests {
                 .to_string()
                 .contains("valid corner probe at node granularity")
         );
+    }
+
+    // Regression: compose elects the aligned origin workgroup, which cannot
+    // derive node metadata when its complete 4^3 brick is invalid.
+    #[test]
+    fn octahedral_rejects_scaled_node_with_an_empty_origin_brick() {
+        for level in [Level::L1, Level::L2] {
+            let section = node_section(level);
+            let mut bytes = section.to_bytes();
+            for z in 0..4usize {
+                for y in 0..4usize {
+                    for x in 0..4usize {
+                        let probe = x + y * 8 + z * 64;
+                        let record = OctahedralShVolumeSection::HEADER_SIZE
+                            + probe * OCTAHEDRAL_PROBE_STRIDE as usize;
+                        bytes[record] = 0;
+                    }
+                }
+            }
+
+            let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("has no valid probe in its origin affinity brick"),
+                "expected named origin-writer error for {level:?}, got {error}"
+            );
+        }
     }
 
     #[test]

@@ -29,11 +29,13 @@ use super::direct_sh_resources::{
     DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
 };
+#[cfg(any(feature = "dev-tools", test))]
+use super::sh_allocation::texture_allocation_bytes;
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, depth_moment_allocation, indirect_base_atlas_allocation,
     indirect_base_atlas_dummy_allocation, indirect_base_atlas_empty_payload,
     indirect_total_atlas_allocation, scripted_light_descriptor_bytes,
-    scripted_light_sample_reserve_bytes, texture_allocation_bytes, volume_3d_fits,
+    scripted_light_sample_reserve_bytes, volume_3d_fits,
 };
 use super::sh_indirection::build_probe_indirection_words;
 

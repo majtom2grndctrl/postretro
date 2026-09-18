@@ -313,7 +313,7 @@ then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the
 readback (per the boundary rule).
 
-**Planned capture measurement.** An optional measurement mode prepares the same static
+**Capture measurement.** An optional measurement mode prepares the same static
 capture scene once, warms it up, then renders repeated samples without PNG readback in the
 timed loop. CPU samples cover completed GPU work through a renderer-owned submit/wait
 boundary, not command enqueue time. GPU timing reuses the existing timestamp-query gate;
@@ -475,7 +475,7 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing; for a normal dev launch use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run`. With dev-tools enabled, use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools --`. Cargo flags before `--` go to the engine `cargo run`; args after it go to postretro. Requires adapter support for both `TIMESTAMP_QUERY` (pass-descriptor timestamps) and `TIMESTAMP_QUERY_INSIDE_ENCODERS` (multi-pass/copy brackets); silently disabled if either feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`, `direct_sh_compose`, `animated_direct_sh_compose`, `promoted_depth_cache_upper`, `dynamic_spot_depth_upper`, `dynamic_cube_depth_upper`, `smoke`, `bloom`, `billboard_direct_scatter_compose`. The two dynamic spans are intentionally upper bounds over interleaved cache, entity-pool, and promoted work; their 120-frame cache log reports exact skipped world passes and cull dispatches, which is the primary warm-cache savings proof. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
 
-Planned offscreen measurement collects only complete 120-sample windows after warmup and
+Offscreen measurement collects only complete 120-sample windows after warmup and
 reports a trailing partial window only as a count. Disabled, unsupported, inaccessible,
 and not-yet-windowed states remain distinct so missing GPU data cannot be mistaken for a
 zero-cost pass.

@@ -12,6 +12,43 @@ pub struct ClearColor {
     pub a: f64,
 }
 
+/// Adapter identity retained as plain data for capture measurement reports.
+///
+/// The renderer obtains this while it still owns the `wgpu::Adapter`; callers
+/// never receive a GPU handle or descriptor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureAdapterIdentity {
+    pub name: String,
+    pub backend: String,
+    pub device_type: String,
+}
+
+/// Why capture can or cannot collect timestamp-query windows.
+///
+/// `Active` only means the renderer has a readable timing seam. A report still
+/// waits for a full 120-frame window before calling timing `available`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureGpuTimingState {
+    NotRequested,
+    Unsupported,
+    PlainBuildUnavailable,
+    Active,
+}
+
+/// One renderer-owned pass value from a completed GPU timing window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureGpuTimingPass {
+    pub label: &'static str,
+    pub average_ms: f32,
+    pub skipped_frames: u32,
+}
+
+/// A completed 120-frame GPU timing window made safe for non-renderer code.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureGpuTimingWindow {
+    pub passes: Vec<CaptureGpuTimingPass>,
+}
+
 impl From<ClearColor> for wgpu::Color {
     fn from(color: ClearColor) -> Self {
         Self {
@@ -538,6 +575,13 @@ pub struct Renderer {
     /// can rebuild the full renderer (cube shadow pool + shared group-5 BGL) from
     /// boot state alone. `Some` cube pool iff this is true (see `FullRenderer`).
     pub(super) cube_array_supported: bool,
+
+    /// Plain capture-report identity retained at adapter selection time.
+    pub(super) capture_adapter_identity: CaptureAdapterIdentity,
+    /// Timestamp-query setup state for a capture report. This distinguishes an
+    /// inactive request from an adapter or plain-build limitation before any
+    /// window-progress analysis.
+    pub(super) capture_gpu_timing_state: CaptureGpuTimingState,
 
     /// Static bloom style cached in boot state so `finish_full_init` rebuilds
     /// the full renderer with the last committed profile after surface recovery.

@@ -7,15 +7,17 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
+use postretro_entities::ComponentKind;
 use postretro_entities::EntityRegistry;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 
 use super::prepared::PreparedCapture;
+use super::report::measurement_report;
 use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion, parse_scene};
 use crate::camera;
 use crate::render::Renderer;
@@ -30,7 +32,7 @@ use crate::runtime_movers::KinematicMoverRenderCollector;
 #[cfg(test)]
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
 #[cfg(test)]
-use postretro_entities::{ComponentKind, ComponentValue};
+use postretro_entities::ComponentValue;
 #[cfg(test)]
 use postretro_visibility::VisibleCells;
 const MAX_UNIQUE_FILE_ATTEMPTS: usize = 1024;
@@ -65,13 +67,72 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     reject_output_source_aliases(output_path, map_path, scene_path)?;
     preflight_output_path(output_path)?;
 
+    let report_path = scene
+        .measurement
+        .as_ref()
+        .map(|measurement| {
+            let report_path = Path::new(&measurement.report);
+            reject_output_source_aliases(report_path, map_path, scene_path)?;
+            reject_path_alias(report_path, output_path, "capture PNG output")?;
+            preflight_output_path(report_path)?;
+            Ok::<_, anyhow::Error>(report_path)
+        })
+        .transpose()?;
+
     let mut prepared = PreparedCapture::prepare(&scene)?;
     let [width, height] = prepared.resolution();
-    let rgba = prepared.capture_frame()?;
 
-    // `scene_color` readback is already RGBA8 sRGB. Write only after all
-    // rendering succeeded, so invalid input or GPU failures never touch output.
-    write_capture_png(output_path, &rgba, width, height)?;
+    if let Some(measurement) = &scene.measurement {
+        let map_bytes = fs::metadata(map_path)
+            .with_context(|| format!("failed to inspect capture map `{}`", map_path.display()))?
+            .len();
+        for _ in 0..measurement.warmup_frames {
+            let _ = prepared.capture_measurement_frame()?;
+        }
+        // Warmup may have completed a full timing window. It belongs to setup,
+        // never to sample statistics or report output.
+        prepared.reset_measurement_timing();
+
+        let mut cpu_samples_ms = Vec::with_capacity(measurement.sample_frames as usize);
+        let mut gpu_windows = Vec::new();
+        for _ in 0..measurement.sample_frames {
+            let sample_start = Instant::now();
+            if let Some(window) = prepared.capture_measurement_frame()? {
+                gpu_windows.push(window);
+            }
+            cpu_samples_ms.push(sample_start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        let report = measurement_report(
+            &scene,
+            map_bytes,
+            capture_git_revision(),
+            prepared.measurement_adapter_identity(),
+            prepared.sh_residency_report(),
+            cpu_samples_ms,
+            prepared.measurement_timing_state(),
+            gpu_windows,
+        );
+        let staged_report = stage_measurement_report(
+            report_path.expect("measurement report path was preflighted"),
+            &report,
+        )?;
+
+        // The only readback is after all timed work. `scene_color` readback is
+        // already RGBA8 sRGB; PNG publication remains the legacy atomic path.
+        let rgba = prepared.capture_frame()?;
+        write_capture_png(output_path, &rgba, width, height)?;
+        publish_staged_measurement_report(
+            staged_report,
+            report_path.expect("measurement report path was preflighted"),
+        )?;
+    } else {
+        let rgba = prepared.capture_frame()?;
+
+        // `scene_color` readback is already RGBA8 sRGB. Write only after all
+        // rendering succeeded, so invalid input or GPU failures never touch output.
+        write_capture_png(output_path, &rgba, width, height)?;
+    }
 
     Ok(())
 }
@@ -528,14 +589,18 @@ pub(super) fn reachable_cell_aabbs(
 /// canonicalized, so relative, absolute, and symlink spellings compare by the
 /// file they name rather than by their source text.
 fn reject_output_source_aliases(output: &Path, map: &Path, scene: &Path) -> Result<()> {
-    let output_key = path_alias_key(output)?;
     for (label, source) in [("map", map), ("scene JSON", scene)] {
-        if output_key == path_alias_key(source)? {
-            bail!(
-                "output path must not alias the capture {label}: `{}`",
-                output.display()
-            );
-        }
+        reject_path_alias(output, source, &format!("capture {label}"))?;
+    }
+    Ok(())
+}
+
+fn reject_path_alias(output: &Path, source: &Path, source_label: &str) -> Result<()> {
+    if path_alias_key(output)? == path_alias_key(source)? {
+        bail!(
+            "output path must not alias the {source_label}: `{}`",
+            output.display()
+        );
     }
     Ok(())
 }
@@ -666,6 +731,68 @@ fn write_capture_png(output: &Path, rgba: &[u8], width: u32, height: u32) -> Res
         .with_context(|| format!("failed to finalize capture PNG `{}`", output.display()))?;
     temporary.persist();
     Ok(())
+}
+
+/// Serialize the completed report beside its final path but keep it unnamed
+/// until the final PNG has published. `CaptureTempFile::Drop` removes this
+/// staged sibling on any later capture or PNG error.
+fn stage_measurement_report(
+    output: &Path,
+    report: &impl serde::Serialize,
+) -> Result<CaptureTempFile> {
+    let mut temporary = create_capture_temp_file(output)?;
+    let temporary_path = temporary.path().to_owned();
+    {
+        let file = temporary.file_mut();
+        serde_json::to_writer_pretty(&mut *file, report).with_context(|| {
+            format!("failed to encode measurement report `{}`", output.display())
+        })?;
+        file.write_all(b"\n").with_context(|| {
+            format!(
+                "failed to finalize measurement report `{}`",
+                temporary_path.display()
+            )
+        })?;
+        file.flush().with_context(|| {
+            format!(
+                "failed to flush measurement report `{}`",
+                temporary_path.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "failed to sync measurement report `{}`",
+                temporary_path.display()
+            )
+        })?;
+    }
+    temporary.close();
+    Ok(temporary)
+}
+
+fn publish_staged_measurement_report(mut temporary: CaptureTempFile, output: &Path) -> Result<()> {
+    temporary.close();
+    fs::rename(temporary.path(), output).with_context(|| {
+        format!(
+            "failed to finalize measurement report `{}`",
+            output.display()
+        )
+    })?;
+    temporary.persist();
+    Ok(())
+}
+
+fn capture_git_revision() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let revision = String::from_utf8(output.stdout).ok()?;
+    let revision = revision.trim();
+    (!revision.is_empty()).then(|| revision.to_owned())
 }
 
 /// A newly-created capture file that removes itself unless it is renamed into
@@ -1268,6 +1395,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn measurement_report_must_not_alias_scene_map_or_png_output() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let map = directory.path().join("level.prl");
+        let scene = directory.path().join("scene.json");
+        let png = directory.path().join("capture.png");
+        fs::write(&map, b"map").expect("map fixture");
+        fs::write(&scene, b"scene").expect("scene fixture");
+
+        assert!(reject_output_source_aliases(&map, &map, &scene).is_err());
+        assert!(reject_output_source_aliases(&scene, &map, &scene).is_err());
+        assert!(reject_path_alias(&png, &png, "capture PNG output").is_err());
+        assert!(
+            reject_path_alias(
+                &directory.path().join("measurement.json"),
+                &png,
+                "capture PNG output"
+            )
+            .is_ok()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn output_symlink_alias_and_non_regular_target_are_rejected() {
@@ -1305,6 +1454,34 @@ mod tests {
         assert_eq!(
             fs::read_dir(directory.path()).expect("directory").count(),
             1
+        );
+    }
+
+    #[test]
+    fn staged_measurement_report_preserves_prior_report_until_final_publication() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let report = directory.path().join("measurement.json");
+        fs::write(&report, b"prior successful report").expect("prior report");
+
+        let staged = stage_measurement_report(&report, &serde_json::json!({ "run": "new" }))
+            .expect("stage replacement report");
+        assert_eq!(
+            fs::read(&report).expect("prior report stays visible"),
+            b"prior successful report"
+        );
+        drop(staged);
+        assert_eq!(
+            fs::read(&report).expect("prior report stays visible after staged failure"),
+            b"prior successful report"
+        );
+
+        let staged = stage_measurement_report(&report, &serde_json::json!({ "run": "new" }))
+            .expect("stage replacement report");
+        publish_staged_measurement_report(staged, &report).expect("publish report last");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&report).expect("report"))
+                .expect("published JSON")["run"],
+            "new"
         );
     }
 

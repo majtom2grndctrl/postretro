@@ -8,7 +8,10 @@ use glam::{Mat4, Vec3};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
-use crate::render::{ClearColor, LevelGeometry, Renderer, level_world_to_geometry};
+use crate::render::{
+    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor,
+    LevelGeometry, Renderer, ShResidencyReport, level_world_to_geometry,
+};
 use crate::runtime_movers::{
     ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
 };
@@ -186,6 +189,48 @@ impl PreparedCapture {
             },
             true,
         )
+    }
+
+    /// Submit and complete one prepared static sample without PNG readback.
+    pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
+        self.renderer.capture_measurement_frame_indirect(
+            CameraCullVisibility {
+                cells: &self.visible_cells,
+                path: self.visibility_path,
+            },
+            &self.light_reachable_cell_mask,
+            &self.reachable_cell_aabbs,
+            &self.fog_reachable,
+            Some(self.camera_cell),
+            self.view_proj,
+            self.eye,
+            &[],
+            &self.forced_promotion_weights,
+            ClearColor {
+                r: 0.05,
+                g: 0.05,
+                b: 0.08,
+                a: 1.0,
+            },
+            true,
+        )
+    }
+
+    /// Start a fresh GPU timing window after warmup submissions complete.
+    pub(super) fn reset_measurement_timing(&mut self) {
+        self.renderer.reset_capture_measurement_timing();
+    }
+
+    pub(super) fn measurement_adapter_identity(&self) -> CaptureAdapterIdentity {
+        self.renderer.capture_measurement_adapter_identity().clone()
+    }
+
+    pub(super) fn measurement_timing_state(&self) -> CaptureGpuTimingState {
+        self.renderer.capture_measurement_timing_state()
+    }
+
+    pub(super) fn sh_residency_report(&self) -> Option<ShResidencyReport> {
+        self.renderer.sh_residency_report().cloned()
     }
 
     pub(super) const fn resolution(&self) -> [u32; 2] {

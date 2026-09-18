@@ -62,8 +62,14 @@ impl Renderer {
         }))
         .context("no suitable GPU adapter found")?;
 
-        let (device, queue, has_multi_draw_indirect, cube_array_supported) =
-            request_renderer_device_with_capabilities(&adapter)?;
+        let (
+            device,
+            queue,
+            has_multi_draw_indirect,
+            cube_array_supported,
+            capture_adapter_identity,
+            capture_gpu_timing_state,
+        ) = request_renderer_device_with_capabilities(&adapter)?;
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -98,6 +104,8 @@ impl Renderer {
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
+            capture_adapter_identity,
+            capture_gpu_timing_state,
             bloom_render_profile: BloomRenderProfile::default(),
             spot_shadow_map_resolution:
                 crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION,
@@ -126,8 +134,14 @@ impl Renderer {
             force_fallback_adapter: false,
         }))
         .context("frame capture requires a GPU adapter")?;
-        let (device, queue, has_multi_draw_indirect, cube_array_supported) =
-            request_renderer_device_with_capabilities(&adapter)?;
+        let (
+            device,
+            queue,
+            has_multi_draw_indirect,
+            cube_array_supported,
+            capture_adapter_identity,
+            capture_gpu_timing_state,
+        ) = request_renderer_device_with_capabilities(&adapter)?;
 
         // This fixed target format makes capture bytes independent of whichever
         // swapchain formats a windowed surface happens to advertise.
@@ -166,6 +180,8 @@ impl Renderer {
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
+            capture_adapter_identity,
+            capture_gpu_timing_state,
             bloom_render_profile,
             spot_shadow_map_resolution,
             boot_splash: None,
@@ -231,7 +247,14 @@ fn validate_offscreen_capture_dimensions(capture_width: u32, capture_height: u32
 /// reduced device contract.
 fn request_renderer_device_with_capabilities(
     adapter: &wgpu::Adapter,
-) -> Result<(wgpu::Device, wgpu::Queue, bool, bool)> {
+) -> Result<(
+    wgpu::Device,
+    wgpu::Queue,
+    bool,
+    bool,
+    CaptureAdapterIdentity,
+    CaptureGpuTimingState,
+)> {
     let adapter_info = adapter.get_info();
     log::info!(
         "[Renderer] GPU adapter: {} (backend={:?}, type={:?}, vendor=0x{:04x}, \
@@ -272,10 +295,17 @@ fn request_renderer_device_with_capabilities(
     }
 
     // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
+    let capture_adapter_identity = CaptureAdapterIdentity {
+        name: adapter_info.name.clone(),
+        backend: format!("{:?}", adapter_info.backend),
+        device_type: format!("{:?}", adapter_info.device_type),
+    };
     let adapter_features = adapter.features();
     let gpu_timing_requested = std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
     let gpu_timing_supported = gpu_timing_features_supported(adapter_features);
     let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
+    let capture_gpu_timing_state =
+        capture_gpu_timing_state(gpu_timing_requested, gpu_timing_supported);
     // BC5-compressed normal maps are a hard requirement (not optional like
     // GPU timing): the .prm baker emits BC5 normal slots unconditionally.
     let (device, queue) = request_renderer_device(
@@ -289,12 +319,65 @@ fn request_renderer_device_with_capabilities(
         log::error!("[Renderer] GPU device lost ({reason:?}): {message}");
     });
 
-    Ok((device, queue, has_multi_draw_indirect, cube_array_supported))
+    Ok((
+        device,
+        queue,
+        has_multi_draw_indirect,
+        cube_array_supported,
+        capture_adapter_identity,
+        capture_gpu_timing_state,
+    ))
+}
+
+fn capture_gpu_timing_state(
+    gpu_timing_requested: bool,
+    gpu_timing_supported: bool,
+) -> CaptureGpuTimingState {
+    if !gpu_timing_requested {
+        return CaptureGpuTimingState::NotRequested;
+    }
+    if !gpu_timing_supported {
+        return CaptureGpuTimingState::Unsupported;
+    }
+
+    // The existing public snapshot accessor is a dev-tools diagnostic seam.
+    // Keep production capture explicit about that boundary instead of treating
+    // an inaccessible window as a zero-cost measurement.
+    #[cfg(feature = "dev-tools")]
+    {
+        CaptureGpuTimingState::Active
+    }
+    #[cfg(not(feature = "dev-tools"))]
+    {
+        CaptureGpuTimingState::PlainBuildUnavailable
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_timing_state_prioritizes_request_and_adapter_capability() {
+        assert_eq!(
+            capture_gpu_timing_state(false, true),
+            CaptureGpuTimingState::NotRequested
+        );
+        assert_eq!(
+            capture_gpu_timing_state(true, false),
+            CaptureGpuTimingState::Unsupported
+        );
+        #[cfg(feature = "dev-tools")]
+        assert_eq!(
+            capture_gpu_timing_state(true, true),
+            CaptureGpuTimingState::Active
+        );
+        #[cfg(not(feature = "dev-tools"))]
+        assert_eq!(
+            capture_gpu_timing_state(true, true),
+            CaptureGpuTimingState::PlainBuildUnavailable
+        );
+    }
 
     #[test]
     fn offscreen_capture_dimensions_require_non_zero_sizes_within_the_texture_limit() {

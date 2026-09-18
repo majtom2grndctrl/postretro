@@ -995,51 +995,51 @@ mod tests {
         std::fs::remove_file(original).expect("original fixture should be removable");
         remove_publication_test_artifacts(&output);
     }
-}
 
-// Regression: publication overwrote an output installed after its precondition check.
-#[test]
-fn publication_rejects_regular_output_replaced_after_precondition() {
-    let output = std::env::temp_dir().join(format!(
-        "postretro-streamed-pack-regular-race-{}-{}.prl",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
-    let original = output.with_extension("original");
-    std::fs::write(&output, b"original output").expect("should create original output");
-    let original_output = OutputIdentity::capture(&output).expect("output should be regular");
-    let file_name = output.file_name().expect("test output has a file name");
-    let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
-    staged
-        .file_mut()
-        .write_all(b"validated replacement")
-        .expect("staging should write");
-    staged.file_mut().flush().expect("staging should flush");
-    let error = publish_validated_output_with_hook(staged, &output, original_output, || {
-        let lock_path = output_lock_path(&output)?;
-        let competing_lock = OpenOptions::new().read(true).write(true).open(lock_path)?;
-        assert!(matches!(
-            FileExt::try_lock(&competing_lock),
-            Err(fs4::TryLockError::WouldBlock)
+    // Regression: publication overwrote an output installed after its precondition check.
+    #[test]
+    fn publication_rejects_regular_output_replaced_after_precondition() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-regular-race-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
         ));
-        // Model an external writer that ignores the compiler's advisory lock.
-        std::fs::rename(&output, &original).expect("should preserve original fixture");
-        std::fs::write(&output, b"concurrent writer").expect("should install raced output");
-        Ok(())
-    })
-    .expect_err("publishing over a raced regular file must fail");
+        let original = output.with_extension("original");
+        std::fs::write(&output, b"original output").expect("should create original output");
+        let original_output = OutputIdentity::capture(&output).expect("output should be regular");
+        let file_name = output.file_name().expect("test output has a file name");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        staged
+            .file_mut()
+            .write_all(b"validated replacement")
+            .expect("staging should write");
+        staged.file_mut().flush().expect("staging should flush");
+        let error = publish_validated_output_with_hook(staged, &output, original_output, || {
+            let lock_path = output_lock_path(&output)?;
+            let competing_lock = OpenOptions::new().read(true).write(true).open(lock_path)?;
+            assert!(matches!(
+                FileExt::try_lock(&competing_lock),
+                Err(fs4::TryLockError::WouldBlock)
+            ));
+            // Model an external writer that ignores the compiler's advisory lock.
+            std::fs::rename(&output, &original).expect("should preserve original fixture");
+            std::fs::write(&output, b"concurrent writer").expect("should install raced output");
+            Ok(())
+        })
+        .expect_err("publishing over a raced regular file must fail");
 
-    assert!(error.to_string().contains("changed during compilation"));
-    assert_eq!(
-        std::fs::read(&output).expect("concurrent output must remain readable"),
-        b"concurrent writer"
-    );
-    assert_eq!(
-        std::fs::read(&original).expect("original output must remain readable"),
-        b"original output"
-    );
-    assert!(staging_artifacts(&output).is_empty());
-    std::fs::remove_file(&output).expect("concurrent output should be removable");
-    std::fs::remove_file(original).expect("original fixture should be removable");
-    remove_publication_test_artifacts(&output);
+        assert!(error.to_string().contains("changed during compilation"));
+        assert_eq!(
+            std::fs::read(&output).expect("concurrent output must remain readable"),
+            b"concurrent writer"
+        );
+        assert_eq!(
+            std::fs::read(&original).expect("original output must remain readable"),
+            b"original output"
+        );
+        assert!(staging_artifacts(&output).is_empty());
+        std::fs::remove_file(&output).expect("concurrent output should be removable");
+        std::fs::remove_file(original).expect("original fixture should be removable");
+        remove_publication_test_artifacts(&output);
+    }
 }

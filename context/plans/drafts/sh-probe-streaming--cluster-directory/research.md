@@ -57,6 +57,19 @@ Id 34's 8-byte probe metadata is validity at 0, two depth f16 values at 1–4, d
 
 The existing local `parsed_animated_direct_sh_delta_volumes` is retained through scatter validation; only afterward is an empty CSR filtered from the exposed animated-direct field. Id-49 validation must use this parsed evidence. Otherwise a valid empty 45/48 pair appears to target a missing section. Raw presence, parse validity, and runtime availability are distinct states. Directory absence/failure must never change which old lighting data is accepted.
 
+Use the same four-state companion vocabulary as the brief when implementing compiler and runtime checks:
+
+| State | Compiler term | Runtime term | Contract impact |
+|---|---|---|---|
+| On-wire/emitted | Finalized pack view will write the section | PRL container contains the section | Resource row is required for emitted/present sections, including valid-empty payloads; absent/withheld sections require no row. |
+| Parsed-valid | Finalized section data decodes under the production codec | Section decoded and passed old validation | Participates in directory dimensions, CSR/dependency checks, ownership, and descriptor-index checks even when later runtime exposure is `None`. |
+| Policy-available | Not suppressed by direct/scatter selection or encoded-size policy | Existing floor/cap and companion policy allow semantic use | Rejected or over-cap companions keep legacy lighting behavior and make the directory unavailable rather than partially validated. |
+| Exposed-runtime | N/A for compiler output | Legacy runtime field remains `Some` after old filtering | Not a validation inventory source; valid-empty id45 can be parsed-valid while exposed as `None`. |
+
+The id-49 descriptor-index rule for ids 27 and 45 is new directory validation only. When id49 is present, every `animation_descriptor_indices` value must be `u32::MAX` or index an id34 animation descriptor. Missing id49 must retain no-directory legacy behavior, including any absence of this check in the old loader. If old companion decoding and policy otherwise accept the data, a descriptor-index violation is a directory `ClusterDirectoryResourceMismatch`; if the companion is rejected or over cap first, follow the unavailable-companion behavior.
+
+Spatial support terms are pinned to id34 probe centers. A probe center is `grid_origin + probe_index * cell_size`. A valid affinity brick starts at `[brick_x*4, brick_y*4, brick_z*4]` and clips its max probe index to `grid_dim - 1`; zero dimensions make the brick invalid/missing rather than wrapping the max bound. Brick support is the closed half-interval around the outer clipped centers, expanded by `0.5 * cell_size` on each side. Member-cell tests expand non-solid, non-exterior cell bounds by exactly `cell_size` per axis and use closed intersections. Entry-bearing bricks with no valid probe and no spatial cover locate their clamped origin probe center through serialized id39 front-on-plane semantics. Adaptive-node closure uses the same half-interval formula for the node's clipped aligned `4 * 2^scale` probe cube and recursively adds intersecting affinity bricks until stable.
+
 ## Lifecycle
 
 Read call sites: pipeline invokes pack; pack invokes `write_and_validate_sections`; output invokes `validate_readback`; runtime `load_prl` invokes the limited loader. New arrows explicitly mark the proposed seams inserted into those grounded calls.
@@ -106,7 +119,7 @@ Most line counts include tests; extraction is justified by distinct responsibili
 | Primitive-heavy single cell; disconnected/solid/zero-face cells | Flagged singleton only for indivisible overage; all cells assigned once | T4; AC1 |
 | Zero-grid id34 with real cells; standalone empty encoding | Real cells still cluster; standalone 40-byte directory parses but cannot bypass real cell completeness | T2/T6; AC5 |
 | CSR entry with zero valid probes | Entry still has an owner; no omission that invalidates id40 coverage | T4/T6; AC3/4/6 |
-| Partial edge brick, scale-1/2/3 node spans clusters | Clipped indices in bounds; full origin/member support; stable owner/halo | T2/T4/T6; AC3/4 |
+| Partial edge brick, scale-1/2/3 node spans clusters | Clipped indices in bounds; half-interval support around outer centers; full origin/member support; stable owner/halo | T2/T4/T6; AC3/4 |
 | Same metadata/CSR, different atlas encoding | Same directory; no dependence on block/byte layout | T4/T7; AC3/8 |
 | Valid empty id45 and id48, present id47 | Retained as parsed companions for validation despite exposed empty direct work | T6; AC6 |
 | Direct-selection suppression or scatter-cap suppression at pack | No directory row for withheld sections; unchanged old presence choices | T4/T7; AC3/6/8 |
@@ -114,7 +127,7 @@ Most line counts include tests; extraction is justified by distinct responsibili
 | Wrong epoch, duplicate directory, unknown resource/domain/flags, NaN bounds | Named reject; no first-entry or unknown-bit acceptance | T2/T6; AC5 |
 | Out-of-range cell/probe/affinity index; checked end overflow; stale grid | Named reject before allocation/indexing | T2/T6; AC5 |
 | Membership gap/duplicate, noncanonical order, overlapping ranges, two owners/no owner/owner not covering | Named reject; no loader repair or owner election | T2/T6; AC1/4/5 |
-| Directory present versus removed from same PRL | Same full-load lighting, SH allocations, same-adapter frame; windowed billboard result unchanged | T6/T7; AC7 |
+| Directory present versus removed from same PRL | Same renderer-visible lighting inputs, SH/GPU allocations, per-frame allocations/work, same-adapter frame; only one-time inert CPU directory storage may differ; windowed billboard result unchanged | T6/T7; AC7 |
 | Cold baseline versus directory bake; warm cache hit | Old section payload/epochs/order preserved; whole-volume SH gates green; no directory cache | T3/T4/T7; AC8 |
 | Large count header / broad overlapping coverage | Checked refusal or finite sparse metadata lifetime; no lighting-family payload copies | T2/T4/T6/T7; AC9 |
 

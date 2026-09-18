@@ -1254,7 +1254,12 @@ fn derive_expected_ranges(
         }
         cluster_ranges.sort_by_key(|range| (range.resource_index, range.start));
         let cluster = &directory.clusters[cluster_id];
-        if cluster.range_start as usize != result.len()
+        let expected_start = if cluster_ranges.is_empty() {
+            0
+        } else {
+            result.len()
+        };
+        if cluster.range_start as usize != expected_start
             || cluster.range_count as usize != cluster_ranges.len()
         {
             return resource_mismatch(format!(

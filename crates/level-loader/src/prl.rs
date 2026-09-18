@@ -23,6 +23,8 @@ use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::cluster_directory::{ClusterDirectoryError, ClusterDirectorySection};
+#[cfg(feature = "load-prl")]
 use postretro_level_format::data_script::DataScriptSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
@@ -92,6 +94,7 @@ pub struct CellVisibility {
 }
 
 impl CellVisibility {
+    #[cfg_attr(not(feature = "load-prl"), allow(dead_code))]
     pub(crate) fn new(component_ids: Vec<u32>, coupled_pairs: Vec<CoupledCellPair>) -> Self {
         Self {
             component_ids,
@@ -134,6 +137,8 @@ pub enum PrlLoadError {
     IoError(#[from] std::io::Error),
     #[error("PRL format error: {0}")]
     FormatError(#[from] prl_format::FormatError),
+    #[error(transparent)]
+    ClusterDirectory(#[from] ClusterDirectoryError),
     #[error(
         "PRL file is missing required {section} section (id {id}) — stale format; recompile with `prl-build`"
     )]
@@ -677,6 +682,10 @@ pub struct LevelWorld {
     /// maps, where the section must be omitted.
     #[cfg(feature = "load-prl")]
     pub cell_draw_index: Option<CellDrawIndex>,
+    /// Validated cell-cluster metadata (PRL section 49). This is inert CPU
+    /// data until the residency slice adds an explicit consumer.
+    #[cfg(feature = "load-prl")]
+    pub cluster_directory: Option<ClusterDirectorySection>,
 }
 
 impl LevelWorld {
@@ -786,6 +795,8 @@ impl LevelWorld {
             navmesh: None,
             #[cfg(feature = "load-prl")]
             cell_draw_index: None,
+            #[cfg(feature = "load-prl")]
+            cluster_directory: None,
         })
     }
 }
@@ -1157,6 +1168,10 @@ mod tests {
     use postretro_level_format::cells::{
         CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
     };
+    use postretro_level_format::cluster_directory::{
+        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
+        ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+    };
     use postretro_level_format::fog_volumes::{
         FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES,
     };
@@ -1299,6 +1314,110 @@ mod tests {
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }
+    }
+
+    fn valid_empty_animated_cluster_directory() -> ClusterDirectorySection {
+        ClusterDirectorySection {
+            runtime_cell_count: 2,
+            primitive_limit: 64,
+            cell_limit: 64,
+            clusters: vec![
+                ClusterRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    member_start: 0,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 1,
+                    flags: 0,
+                },
+                ClusterRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    member_start: 1,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 1,
+                    flags: 0,
+                },
+            ],
+            resources: [
+                (
+                    SectionId::OctahedralShVolume,
+                    ClusterResourceDomain::DenseProbe,
+                ),
+                (
+                    SectionId::AnimatedDirectShDeltaVolumes,
+                    ClusterResourceDomain::AffinityCell,
+                ),
+                (
+                    SectionId::BillboardDirectScatterVolume,
+                    ClusterResourceDomain::DenseProbe,
+                ),
+                (
+                    SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+                    ClusterResourceDomain::AffinityCell,
+                ),
+            ]
+            .into_iter()
+            .map(|(section, domain)| ClusterResourceRecord {
+                section_id: section as u32,
+                domain,
+                dimensions: [1, 1, 1],
+            })
+            .collect(),
+            members: vec![0, 1],
+            ranges: Vec::new(),
+        }
+    }
+
+    fn direct_sh_cluster_directory() -> ClusterDirectorySection {
+        let mut directory = valid_empty_animated_cluster_directory();
+        directory.resources = [
+            (
+                SectionId::OctahedralShVolume,
+                ClusterResourceDomain::DenseProbe,
+            ),
+            (SectionId::DirectShVolume, ClusterResourceDomain::DenseProbe),
+            (
+                SectionId::DirectShDeltaVolumes,
+                ClusterResourceDomain::AffinityCell,
+            ),
+        ]
+        .into_iter()
+        .map(|(section, domain)| ClusterResourceRecord {
+            section_id: section as u32,
+            domain,
+            dimensions: [1, 1, 1],
+        })
+        .collect();
+        directory.ranges = vec![
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 0,
+                count: 1,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+            ClusterRangeRecord {
+                resource_index: 1,
+                start: 0,
+                count: 1,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+            ClusterRangeRecord {
+                resource_index: 2,
+                start: 0,
+                count: 1,
+                owner_cluster_id: 0,
+                role: ClusterRangeRole::Owned,
+            },
+        ];
+        directory.clusters[0].range_count = 3;
+        directory
     }
 
     /// One complete affinity brick at L2: valid metadata but only one stored
@@ -1678,6 +1797,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         }
     }
 
@@ -1774,6 +1894,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         };
         assert_eq!(world.locate_cell(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1824,6 +1945,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         };
 
         let spawn = world.spawn_position();
@@ -2227,6 +2349,14 @@ mod tests {
             section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
             version: 1,
             data: section.to_bytes(),
+        }
+    }
+
+    fn cluster_directory_blob(section: ClusterDirectorySection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::ClusterDirectory as u32,
+            version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            data: section.try_to_bytes().unwrap(),
         }
     }
 
@@ -5749,6 +5879,7 @@ mod tests {
         };
         let animated_scatter =
             animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let directory = valid_empty_animated_cluster_directory();
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -5756,6 +5887,7 @@ mod tests {
             billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
             animated_direct_sh_delta_blob(animated_direct),
             animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            cluster_directory_blob(directory.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -5768,6 +5900,7 @@ mod tests {
             .expect("a valid empty id-45/id-48 pair must keep billboard scatter");
 
         assert!(world.billboard_direct_scatter_volume.is_some());
+        assert_eq!(world.cluster_directory, Some(directory));
         assert_eq!(
             world.animated_billboard_direct_scatter_delta_volumes,
             Some(animated_scatter),
@@ -5792,6 +5925,7 @@ mod tests {
         let animated_scatter =
             animated_billboard_direct_scatter_delta_section_for(&animated_direct);
         let animated_scatter_bytes = animated_scatter.to_bytes();
+        let directory = valid_empty_animated_cluster_directory();
         let test_cap = u64::try_from(animated_scatter_bytes.len() - 1)
             .expect("fixture size must fit the scatter-cap type");
         let sections = vec![
@@ -5805,6 +5939,7 @@ mod tests {
                 version: 1,
                 data: animated_scatter_bytes,
             },
+            cluster_directory_blob(directory),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -5816,6 +5951,7 @@ mod tests {
         let world = load_prl_with_scatter_pack_limit(tmp.to_str().unwrap(), test_cap)
             .expect("oversized optional id 48 must preserve level load");
         assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(world.cluster_directory.is_none());
         assert!(
             world
                 .animated_billboard_direct_scatter_delta_volumes
@@ -6034,6 +6170,7 @@ mod tests {
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
             vec![0],
         );
+        let directory = direct_sh_cluster_directory();
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
@@ -6053,6 +6190,16 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: CellLocatorSection {
+                    root: FormatCellLocatorChild::Cell(0),
+                    nodes: Vec::new(),
+                }
+                .to_bytes(),
+            },
+            cluster_directory_blob(directory.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -6063,6 +6210,7 @@ mod tests {
 
         assert_eq!(world.entity_shadow_lights, vec![0]);
         assert!(world.direct_sh_delta_volumes.is_some());
+        assert_eq!(world.cluster_directory, Some(directory));
         assert!(
             world.shadowmask_atlas.is_none(),
             "missing ShadowmaskAtlas must not clear EntityShadowLights or direct SH deltas"

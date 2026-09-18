@@ -8,6 +8,10 @@ use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 use postretro_render_cpu::sh_volume::BIND_BILLBOARD_DIRECT_SCATTER;
 use wgpu::util::DeviceExt;
 
+use super::sh_allocation::{
+    billboard_scatter_base_allocation, billboard_scatter_composed_allocation,
+    billboard_scatter_dummy_allocation, storage_byte_len, volume_3d_fits,
+};
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Renderer-owned textures for the billboard direct-scatter path. The sampled
@@ -85,20 +89,10 @@ impl BillboardDirectScatterResources {
             let dimensions = base
                 .expect("a usable animated scatter companion requires its base section")
                 .grid_dimensions;
-            let composed = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Billboard Direct Scatter Composed Volume"),
-                size: wgpu::Extent3d {
-                    width: dimensions[0],
-                    height: dimensions[1],
-                    depth_or_array_layers: dimensions[2],
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D3,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
-            });
+            let composed = device.create_texture(
+                &billboard_scatter_composed_allocation(dimensions)
+                    .descriptor(Some("Billboard Direct Scatter Composed Volume")),
+            );
             let sampled = composed.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("Billboard Direct Scatter Composed Sampled View"),
                 dimension: Some(wgpu::TextureViewDimension::D3),
@@ -174,22 +168,10 @@ fn upload_base_texture(
         return (upload_dummy_texture(device, queue), false);
     };
 
+    let allocation = billboard_scatter_base_allocation(section.grid_dimensions);
     let texture = device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Billboard Direct Scatter Base Volume"),
-            size: wgpu::Extent3d {
-                width: section.grid_dimensions[0],
-                height: section.grid_dimensions[1],
-                depth_or_array_layers: section.grid_dimensions[2],
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &allocation.descriptor(Some("Billboard Direct Scatter Base Volume")),
         wgpu::util::TextureDataOrder::LayerMajor,
         &u16_slice_to_bytes(&section.scatter_rgba),
     );
@@ -199,29 +181,15 @@ fn upload_base_texture(
 fn upload_dummy_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Billboard Direct Scatter Dummy Volume"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &billboard_scatter_dummy_allocation()
+            .descriptor(Some("Billboard Direct Scatter Dummy Volume")),
         wgpu::util::TextureDataOrder::LayerMajor,
         &[0; 8],
     )
 }
 
 fn scatter_fits(dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
-    dimensions
-        .iter()
-        .all(|&dimension| dimension > 0 && dimension <= limits.max_texture_dimension_3d)
+    volume_3d_fits(dimensions, limits)
 }
 
 fn scatter_storage_buffers_fit(
@@ -262,10 +230,7 @@ fn padded_slice_bytes(
     element_size: usize,
     empty_minimum: u64,
 ) -> Option<u64> {
-    let bytes = u64::try_from(element_count)
-        .ok()?
-        .checked_mul(element_size as u64)?;
-    Some(if bytes == 0 { empty_minimum } else { bytes })
+    storage_byte_len(element_count, element_size, empty_minimum)
 }
 
 #[cfg(test)]

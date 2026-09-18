@@ -3,10 +3,13 @@
 
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
-use postretro_render_cpu::sh_compose::{pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes};
 use wgpu::util::DeviceExt;
 
 use super::billboard_direct_scatter::BillboardDirectScatterResources;
+use super::sh_allocation::{
+    ShAllocationKind, billboard_scatter_grid_bytes as scatter_grid_bytes,
+    billboard_storage_payloads, buffer_allocation,
+};
 use super::sh_volume::AnimatedLightBuffers;
 
 const BIND_BASE: u32 = 0;
@@ -62,37 +65,44 @@ impl BillboardDirectScatterComposeResources {
             "section-48 CSR must cover the same affinity grid as section 45",
         );
         let grid_bytes = scatter_grid_bytes(grid_dimensions, affinity_dimensions);
-        let delta_bytes = pad_storage_bytes(u16_slice_to_bytes(&delta.delta_rgba), 4);
-        let offset_bytes = pad_storage_bytes(u32_slice_to_bytes(&delta.affinity_offsets), 8);
-        let light_bytes = pad_storage_bytes(u32_slice_to_bytes(&delta.affinity_lights), 4);
-        let descriptor_index_bytes =
-            pad_storage_bytes(u32_slice_to_bytes(&delta.animation_descriptor_indices), 4);
+        let (delta_payload, offset_payload, light_payload, descriptor_index_payload) =
+            billboard_storage_payloads(
+                &delta.delta_rgba,
+                &delta.affinity_offsets,
+                &delta.affinity_lights,
+                &delta.animation_descriptor_indices,
+            );
 
+        let grid_allocation = buffer_allocation(
+            ShAllocationKind::BillboardComposeGrid,
+            &grid_bytes,
+            wgpu::BufferUsages::UNIFORM,
+        );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose Grid"),
             contents: &grid_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: grid_allocation.usage,
         });
         let delta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose Deltas (f16)"),
-            contents: &delta_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &delta_payload.contents,
+            usage: delta_payload.allocation.usage,
         });
         let offset_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose CSR Offsets"),
-            contents: &offset_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &offset_payload.contents,
+            usage: offset_payload.allocation.usage,
         });
         let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose CSR Lights"),
-            contents: &light_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &light_payload.contents,
+            usage: light_payload.allocation.usage,
         });
         let descriptor_index_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Billboard Direct Scatter Compose Descriptor Indices"),
-                contents: &descriptor_index_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &descriptor_index_payload.contents,
+                usage: descriptor_index_payload.allocation.usage,
             });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -225,22 +235,6 @@ fn scatter_compose_should_dispatch(
     last_composed_mask: LightTermMask,
 ) -> bool {
     active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
-}
-
-/// WGSL `ScatterGrid`: grid dimensions followed by one padding u32, then the
-/// derived 4×4×4 affinity dimensions. Kept local because section 48 stores
-/// dense samples rather than the octahedral compose grid contract.
-fn scatter_grid_bytes(grid_dimensions: [u32; 3], affinity_dimensions: [u32; 3]) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    for (index, value) in grid_dimensions.into_iter().enumerate() {
-        let start = index * 4;
-        bytes[start..start + 4].copy_from_slice(&value.to_ne_bytes());
-    }
-    for (index, value) in affinity_dimensions.into_iter().enumerate() {
-        let start = 16 + index * 4;
-        bytes[start..start + 4].copy_from_slice(&value.to_ne_bytes());
-    }
-    bytes
 }
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {

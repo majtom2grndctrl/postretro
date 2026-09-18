@@ -6,7 +6,6 @@
 use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
 use postretro_level_format::sh_reconstruct::{Level, MAX_NODE_SCALE, stored_node_prefix_sum};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_render_cpu::sh_compose::u32_slice_to_bytes;
 
 /// Low two bits name the brick's storage level (L0/L1/L2).
 pub(super) const SH_INDIRECTION_LEVEL_MASK: u32 = 0x0000_0003;
@@ -171,13 +170,6 @@ pub(super) fn build_probe_indirection_words(
         }
     }
     words
-}
-
-/// Exact byte carrier for every compose storage buffer. Keeping conversion
-/// here prevents one pass from accidentally using a different endianness or
-/// padded representation than the other two.
-pub(super) fn probe_indirection_storage_bytes(words: &[u32]) -> Vec<u8> {
-    u32_slice_to_bytes(words)
 }
 
 #[cfg(test)]
@@ -456,9 +448,23 @@ mod tests {
     fn compose_carriers_share_one_word_array_and_moments_pack_the_same_words() {
         let section = fixture();
         let words = build_probe_indirection_words(Some(&section));
-        let indirect_carrier = probe_indirection_storage_bytes(&words);
-        let direct_carrier = probe_indirection_storage_bytes(&words);
-        let animated_direct_carrier = probe_indirection_storage_bytes(&words);
+        use crate::render::sh_allocation::{ShAllocationKind, probe_indirection_storage_payload};
+
+        let indirect_carrier = probe_indirection_storage_payload(
+            ShAllocationKind::IndirectComposeProbeIndirection,
+            &words,
+        )
+        .contents;
+        let direct_carrier = probe_indirection_storage_payload(
+            ShAllocationKind::DirectComposeProbeIndirection,
+            &words,
+        )
+        .contents;
+        let animated_direct_carrier = probe_indirection_storage_payload(
+            ShAllocationKind::AnimatedDirectComposeProbeIndirection,
+            &words,
+        )
+        .contents;
         assert_eq!(indirect_carrier, direct_carrier);
         assert_eq!(direct_carrier, animated_direct_carrier);
 

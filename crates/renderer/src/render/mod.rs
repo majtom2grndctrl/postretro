@@ -24,6 +24,7 @@ mod rigid_occluder_depth;
 mod screen_effects;
 mod sdf_atlas;
 mod sdf_shadow;
+mod sh_allocation;
 mod sh_compose;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;

@@ -7,11 +7,14 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes,
+    ComposeGridParams, build_compose_grid_bytes, build_delta_buffers,
 };
 
-use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
+use super::sh_allocation::{
+    ShAllocationKind, buffer_allocation, compose_origin_bytes, compose_storage_payloads,
+    probe_indirection_storage_payload,
+};
+use super::sh_indirection::WGSL_DECODE_HELPER;
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -92,51 +95,68 @@ impl ShComposeResources {
         // entering the loop, so the empty case must pad to two `u32`s (8 bytes).
         // Both are zero, so `start == end` and the loop skips — but `[0]` and
         // `[1]` are genuinely in bounds rather than relying on OOB clamping.
-        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
-        let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
-        let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
-        let descriptor_index_bytes =
-            pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
-        let compaction_meta_bytes =
-            pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
+        let storage = compose_storage_payloads(
+            ShAllocationKind::IndirectComposeDeltaSubblocks,
+            ShAllocationKind::IndirectComposeCompactionMetadata,
+            ShAllocationKind::IndirectComposeAffinityOffsets,
+            ShAllocationKind::IndirectComposeAffinityLights,
+            Some(ShAllocationKind::IndirectComposeDescriptorIndices),
+            delta_subblocks,
+            &buffers.compaction_meta_words(),
+            &buffers.affinity_offsets,
+            &buffers.affinity_lights,
+            Some(&buffers.animation_descriptor_indices),
+        );
         // ShVolumeResources derives this once from id-34 metadata. The direct
         // compose carriers and B/A moment payload use the exact same words.
-        let probe_indirection_bytes = probe_indirection_storage_bytes(&sh.probe_indirection_words);
+        let probe_indirection = probe_indirection_storage_payload(
+            ShAllocationKind::IndirectComposeProbeIndirection,
+            &sh.probe_indirection_words,
+        );
 
         use wgpu::util::DeviceExt;
         let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Delta Subblocks (f16)"),
-            contents: &subblock_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &storage.delta_subblocks.contents,
+            usage: storage.delta_subblocks.allocation.usage,
         });
         let affinity_offsets_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Affinity Offsets"),
-                contents: &offsets_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &storage.affinity_offsets.contents,
+                usage: storage.affinity_offsets.allocation.usage,
             });
         let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Affinity Lights"),
-            contents: &lights_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &storage.affinity_lights.contents,
+            usage: storage.affinity_lights.allocation.usage,
         });
         let animation_descriptor_indices_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Animation Descriptor Indices"),
-                contents: &descriptor_index_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &storage
+                    .descriptor_indices
+                    .as_ref()
+                    .expect("indirect compose always describes descriptor indices")
+                    .contents,
+                usage: storage
+                    .descriptor_indices
+                    .as_ref()
+                    .expect("indirect compose always describes descriptor indices")
+                    .allocation
+                    .usage,
             });
         let probe_indirection_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Probe Indirection"),
-                contents: &probe_indirection_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &probe_indirection.contents,
+                usage: probe_indirection.allocation.usage,
             });
         let delta_compaction_meta_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Delta Compaction Meta"),
-                contents: &compaction_meta_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &storage.compaction_metadata.contents,
+                usage: storage.compaction_metadata.allocation.usage,
             });
 
         // Report per-binding byte sizes only in development builds. The CSR
@@ -144,11 +164,16 @@ impl ShComposeResources {
         // regardless of animated-light count.
         #[cfg(feature = "dev-tools")]
         let footprint = ComposeStorageFootprint {
-            delta_subblocks_bytes: subblock_bytes.len(),
-            delta_compaction_meta_bytes: compaction_meta_bytes.len(),
-            affinity_offsets_bytes: offsets_bytes.len(),
-            affinity_lights_bytes: lights_bytes.len(),
-            animation_descriptor_indices_bytes: descriptor_index_bytes.len(),
+            delta_subblocks_bytes: storage.delta_subblocks.allocation.byte_len,
+            delta_compaction_meta_bytes: storage.compaction_metadata.allocation.byte_len,
+            affinity_offsets_bytes: storage.affinity_offsets.allocation.byte_len,
+            affinity_lights_bytes: storage.affinity_lights.allocation.byte_len,
+            animation_descriptor_indices_bytes: storage
+                .descriptor_indices
+                .as_ref()
+                .expect("indirect compose always describes descriptor indices")
+                .allocation
+                .byte_len,
         };
         #[cfg(feature = "dev-tools")]
         footprint.log("SH compose @group(1)");
@@ -169,10 +194,15 @@ impl ShComposeResources {
                 .map(|section| section.tiles_per_layer)
                 .unwrap_or(1),
         });
+        let grid_allocation = buffer_allocation(
+            ShAllocationKind::IndirectComposeGrid,
+            &grid_bytes,
+            wgpu::BufferUsages::UNIFORM,
+        );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
             contents: &grid_bytes[..],
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: grid_allocation.usage,
         });
 
         // Grid origin uniform: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
@@ -183,17 +213,16 @@ impl ShComposeResources {
             Some(s) => (s.grid_origin, s.cell_size),
             None => ([0.0; 3], [1.0; 3]),
         };
-        let mut origin_bytes = [0u8; 32];
-        origin_bytes[0..4].copy_from_slice(&grid_origin[0].to_ne_bytes());
-        origin_bytes[4..8].copy_from_slice(&grid_origin[1].to_ne_bytes());
-        origin_bytes[8..12].copy_from_slice(&grid_origin[2].to_ne_bytes());
-        origin_bytes[16..20].copy_from_slice(&cell_size[0].to_ne_bytes());
-        origin_bytes[20..24].copy_from_slice(&cell_size[1].to_ne_bytes());
-        origin_bytes[24..28].copy_from_slice(&cell_size[2].to_ne_bytes());
+        let origin_bytes = compose_origin_bytes(grid_origin, cell_size);
+        let origin_allocation = buffer_allocation(
+            ShAllocationKind::IndirectComposeOrigin,
+            &origin_bytes,
+            wgpu::BufferUsages::UNIFORM,
+        );
         let origin_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Origin"),
             contents: &origin_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: origin_allocation.usage,
         });
 
         // Build the bind group layout + pipeline.

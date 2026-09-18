@@ -745,7 +745,10 @@ mod tests {
     fn sweep_accepts_a_content_complete_bundle_with_baked_levels_and_sources() {
         let root = unique_temp_dir();
         let mod_root = Path::new("content/dev");
-        let levels = [resolved("maps/campaign-test.prl"), resolved("maps/arena.prl")];
+        let levels = [
+            resolved("maps/campaign-test.prl"),
+            resolved("maps/arena.prl"),
+        ];
         assemble_swept_bundle(&root, mod_root, &levels);
 
         assert!(sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels).is_ok());

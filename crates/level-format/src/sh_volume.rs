@@ -7,7 +7,7 @@ use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION, irradiance_atlas_array_layout,
 };
-use crate::sh_reconstruct::{Level, StoredBrickPrefixSum, corner_locals, stored_brick_prefix_sum};
+use crate::sh_reconstruct::{Level, MAX_NODE_SCALE, StoredBrickPrefixSum, stored_node_prefix_sum};
 
 /// Section-internal version written as the first u32 of the `OctahedralShVolume`
 /// section payload. Bumped any time the on-disk layout changes so the loader can
@@ -32,8 +32,9 @@ use crate::sh_reconstruct::{Level, StoredBrickPrefixSum, corner_locals, stored_b
 /// 9 — the base atlas became a valid-probe-only compact payload with its own
 /// geometry and a BC6H/RGBA16F format tag. Version 10 replaces the two v9 atlas
 /// geometry blocks with one metadata-derived stored-tile geometry: L0 stores
-/// valid probes, L1 reserves all corners, and L2 stores one brick mean.
-pub const SH_VOLUME_VERSION: u32 = 10;
+/// valid probes, L1 reserves all corners, and L2 stores one brick mean. Version
+/// 11 assigns one reserved probe byte to the aligned base-node scale.
+pub const SH_VOLUME_VERSION: u32 = 11;
 
 /// Sentinel for "this map light has no animated-light section slot" in
 /// `OctahedralShVolumeSection.slot_for_map_light`. Non-animated lights and any
@@ -41,8 +42,8 @@ pub const SH_VOLUME_VERSION: u32 = 10;
 pub const ANIMATED_SLOT_NONE: u32 = u32::MAX;
 
 /// Byte stride of one serialized octahedral probe metadata record:
-/// `u8 validity` + two f16 depth moments + `u8 density_level` + 2 bytes of
-/// padding.
+/// `u8 validity` + two f16 depth moments + `u8 density_level` + `u8 node_scale`
+/// + one padding byte.
 pub const OCTAHEDRAL_PROBE_STRIDE: u32 = 8;
 
 /// Serialized atlas texel stride for `Rgba16Float`: 4 f16 channels.
@@ -57,15 +58,17 @@ pub struct OctahedralShProbe {
     pub mean_distance: u16,
     /// Mean squared ray distance `E[d²]`, f16 bits.
     pub mean_sq_distance: u16,
-    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. v10 requires
+    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. v11 requires
     /// one shared value per full 4×4×4 brick and L0 on partial edge bricks.
     pub density_level: u8,
+    /// Power-of-two brick-node scale. 0 is one brick; v11 permits 0..=3.
+    pub node_scale: u8,
 }
 
 /// One `Rgba16Float` atlas texel, stored as raw f16 channel bits.
 ///
 /// This remains the compiler's uncompressed tile-packing representation. The
-/// v10 section payload itself is the tagged byte blob on
+/// v11 section payload itself is the tagged byte blob on
 /// [`OctahedralShVolumeSection::compact_atlas`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OctahedralAtlasTexel {
@@ -140,7 +143,8 @@ impl Default for AnimationDescriptor {
 ///     f16      mean_distance          (E[d])
 ///     f16      mean_sq_distance       (E[d²])
 ///     u8       density_level          (0 = L0, 1 = L1, 2 = L2)
-///     u8 × 2   padding
+///     u8       node_scale             (0 = one brick, 1 = 2³ bricks, ...)
+///     u8       padding
 ///
 ///   Compact atlas blob (compact_atlas_len bytes), carrying the stored set in
 ///   brick-major order (affinity bricks x-fastest): L0 valid probes in local
@@ -236,7 +240,7 @@ impl OctahedralShVolumeSection {
             + self.slot_for_map_light.len() * 4)
     }
 
-    /// Encode only a canonical section whose stored payload fits the v10
+    /// Encode only a canonical section whose stored payload fits the v11
     /// `u32` byte-length field.
     pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
         self.validate_wire_contract()?;
@@ -277,7 +281,8 @@ impl OctahedralShVolumeSection {
             buf.extend_from_slice(&probe.mean_distance.to_le_bytes());
             buf.extend_from_slice(&probe.mean_sq_distance.to_le_bytes());
             buf.push(probe.density_level);
-            buf.extend_from_slice(&[0u8; 2]);
+            buf.push(probe.node_scale);
+            buf.push(0);
         }
 
         buf.extend_from_slice(&self.compact_atlas);
@@ -290,7 +295,7 @@ impl OctahedralShVolumeSection {
     fn validate_wire_contract(&self) -> crate::Result<()> {
         if self.probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v10",
+                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11",
                 self.probe_stride,
             )));
         }
@@ -337,7 +342,7 @@ impl OctahedralShVolumeSection {
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "octahedral sh volume section version {version}, expected {SH_VOLUME_VERSION} — \
-                     recompile the .prl with the current `prl-build` for the v10 stored-atlas format"
+                     recompile the .prl with the current `prl-build` for the v11 node-aware stored-atlas format"
                 ),
             )));
         }
@@ -386,7 +391,7 @@ impl OctahedralShVolumeSection {
 
         if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v10"
+                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11"
             )));
         }
 
@@ -418,6 +423,7 @@ impl OctahedralShVolumeSection {
                 mean_distance: read_u16(data, o + 1),
                 mean_sq_distance: read_u16(data, o + 3),
                 density_level: data[o + 5],
+                node_scale: data[o + 6],
             });
             o += probe_stride as usize;
         }
@@ -584,6 +590,7 @@ fn validate_probe_metadata(
             ))
         })?;
     let mut brick_levels = Vec::with_capacity(brick_count);
+    let mut brick_scales = Vec::with_capacity(brick_count);
 
     for brick_z in 0..affinity_dimensions[2] as usize {
         for brick_y in 0..affinity_dimensions[1] as usize {
@@ -596,7 +603,7 @@ fn validate_probe_metadata(
                     && origin[1] + 4 <= grid_dimensions[1] as usize
                     && origin[2] + 4 <= grid_dimensions[2] as usize;
                 let mut brick_level = None;
-                let mut has_valid_corner = false;
+                let mut brick_scale = None;
 
                 for local_z in 0..4usize {
                     for local_y in 0..4usize {
@@ -616,16 +623,28 @@ fn validate_probe_metadata(
                                     * grid_dimensions[0] as usize
                                     * grid_dimensions[1] as usize;
                             let probe = probes[probe_index];
+                            if probe.validity > 1 {
+                                return Err(invalid_data(format!(
+                                    "octahedral sh volume probe {probe_index} validity {} out of range: validity must be binary 0 or 1",
+                                    probe.validity
+                                )));
+                            }
                             let level = Level::from_u8(probe.density_level).ok_or_else(|| {
                                 invalid_data(format!(
                                     "octahedral sh volume probe {probe_index} density_level {} out of range: level must be 0..=2",
                                     probe.density_level
                                 ))
                             })?;
-                            if !full_brick && level != Level::L0 {
+                            if probe.node_scale > MAX_NODE_SCALE {
                                 return Err(invalid_data(format!(
-                                    "octahedral sh volume partial affinity brick {brick_index} density_level {} must be 0",
-                                    probe.density_level
+                                    "octahedral sh volume probe {probe_index} node_scale {} out of range: scale must be 0..={MAX_NODE_SCALE}",
+                                    probe.node_scale
+                                )));
+                            }
+                            if !full_brick && (level != Level::L0 || probe.node_scale != 0) {
+                                return Err(invalid_data(format!(
+                                    "octahedral sh volume partial affinity brick {brick_index} must use density_level 0 and node_scale 0, got level {} scale {}",
+                                    probe.density_level, probe.node_scale
                                 )));
                             }
                             if let Some(previous_level) = brick_level {
@@ -639,33 +658,139 @@ fn validate_probe_metadata(
                             } else {
                                 brick_level = Some(level);
                             }
-
-                            let local = local_x + local_y * 4 + local_z * 16;
-                            if level == Level::L1
-                                && corner_locals().contains(&local)
-                                && probe.validity != 0
-                            {
-                                has_valid_corner = true;
+                            if let Some(previous_scale) = brick_scale {
+                                if full_brick && probe.node_scale != previous_scale {
+                                    return Err(invalid_data(format!(
+                                        "octahedral sh volume affinity brick {brick_index} has disagreeing node_scale values: {previous_scale} and {}",
+                                        probe.node_scale,
+                                    )));
+                                }
+                            } else {
+                                brick_scale = Some(probe.node_scale);
                             }
                         }
                     }
                 }
 
                 let level = brick_level.expect("non-empty affinity brick has at least one probe");
-                if level == Level::L1 && !has_valid_corner {
+                let scale = brick_scale.expect("non-empty affinity brick has at least one probe");
+                if level == Level::L0 && scale != 0 {
                     return Err(invalid_data(format!(
-                        "octahedral sh volume affinity brick {brick_index} uses L1 without a valid corner probe"
+                        "octahedral sh volume affinity brick {brick_index} uses L0 with nonzero node_scale {scale}"
                     )));
                 }
                 brick_levels.push(level);
+                brick_scales.push(scale);
             }
         }
     }
 
-    let probe_validity: Vec<bool> = probes.iter().map(|probe| probe.validity != 0).collect();
-    stored_brick_prefix_sum(grid_dimensions, &brick_levels, &probe_validity).ok_or_else(|| {
+    let probe_validity: Vec<bool> = probes.iter().map(|probe| probe.validity == 1).collect();
+    for brick_z in 0..affinity_dimensions[2] as usize {
+        for brick_y in 0..affinity_dimensions[1] as usize {
+            for brick_x in 0..affinity_dimensions[0] as usize {
+                let brick = brick_x
+                    + brick_y * affinity_dimensions[0] as usize
+                    + brick_z * affinity_dimensions[0] as usize * affinity_dimensions[1] as usize;
+                let level = brick_levels[brick];
+                let scale = brick_scales[brick];
+                let edge = 1usize << scale;
+                let origin = [
+                    brick_x / edge * edge,
+                    brick_y / edge * edge,
+                    brick_z / edge * edge,
+                ];
+                if origin[0] + edge > affinity_dimensions[0] as usize
+                    || origin[1] + edge > affinity_dimensions[1] as usize
+                    || origin[2] + edge > affinity_dimensions[2] as usize
+                    || (scale > 0
+                        && ((origin[0] + edge) * 4 > grid_dimensions[0] as usize
+                            || (origin[1] + edge) * 4 > grid_dimensions[1] as usize
+                            || (origin[2] + edge) * 4 > grid_dimensions[2] as usize))
+                {
+                    return Err(invalid_data(format!(
+                        "octahedral sh volume node containing affinity brick {brick} at scale {scale} reaches outside the full probe grid or over a partial brick"
+                    )));
+                }
+                for member_z in origin[2]..origin[2] + edge {
+                    for member_y in origin[1]..origin[1] + edge {
+                        for member_x in origin[0]..origin[0] + edge {
+                            let member = member_x
+                                + member_y * affinity_dimensions[0] as usize
+                                + member_z
+                                    * affinity_dimensions[0] as usize
+                                    * affinity_dimensions[1] as usize;
+                            if brick_levels[member] != level || brick_scales[member] != scale {
+                                return Err(invalid_data(format!(
+                                    "octahedral sh volume node at aligned origin {origin:?} scale {scale} has disagreeing member brick {member}: level/scale {}/{} vs {}/{}",
+                                    level.to_u8(),
+                                    scale,
+                                    brick_levels[member].to_u8(),
+                                    brick_scales[member]
+                                )));
+                            }
+                        }
+                    }
+                }
+                if scale > 0 && [brick_x, brick_y, brick_z] == origin {
+                    let probe_origin = origin.map(|axis| axis * 4);
+                    let origin_brick_has_valid_probe =
+                        (probe_origin[2]..probe_origin[2] + 4).any(|z| {
+                            (probe_origin[1]..probe_origin[1] + 4).any(|y| {
+                                (probe_origin[0]..probe_origin[0] + 4).any(|x| {
+                                    let index = x
+                                        + y * grid_dimensions[0] as usize
+                                        + z * grid_dimensions[0] as usize
+                                            * grid_dimensions[1] as usize;
+                                    probe_validity[index]
+                                })
+                            })
+                        });
+                    if !origin_brick_has_valid_probe {
+                        return Err(invalid_data(format!(
+                            "octahedral sh volume node at aligned origin {origin:?} scale {scale} has no valid probe in its origin affinity brick"
+                        )));
+                    }
+                }
+                if level == Level::L1 && [brick_x, brick_y, brick_z] == origin {
+                    let probe_origin = origin.map(|axis| axis * 4);
+                    let probe_max = probe_origin.map(|axis| axis + edge * 4 - 1);
+                    let has_valid_corner = [
+                        [probe_origin[0], probe_origin[1], probe_origin[2]],
+                        [probe_max[0], probe_origin[1], probe_origin[2]],
+                        [probe_origin[0], probe_max[1], probe_origin[2]],
+                        [probe_max[0], probe_max[1], probe_origin[2]],
+                        [probe_origin[0], probe_origin[1], probe_max[2]],
+                        [probe_max[0], probe_origin[1], probe_max[2]],
+                        [probe_origin[0], probe_max[1], probe_max[2]],
+                        [probe_max[0], probe_max[1], probe_max[2]],
+                    ]
+                    .into_iter()
+                    .any(|corner| {
+                        let index = corner[0]
+                            + corner[1] * grid_dimensions[0] as usize
+                            + corner[2] * grid_dimensions[0] as usize * grid_dimensions[1] as usize;
+                        probe_validity[index]
+                    });
+                    if !has_valid_corner {
+                        return Err(invalid_data(format!(
+                            "octahedral sh volume node at aligned origin {origin:?} scale {scale} uses L1 without a valid corner probe at node granularity"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    stored_node_prefix_sum(
+        grid_dimensions,
+        &brick_levels,
+        &brick_scales,
+        &probe_validity,
+    )
+    .ok_or_else(|| {
         invalid_data(format!(
-            "octahedral sh volume stored-tile prefix sum over grid_dimensions {grid_dimensions:?} overflowed"
+            "octahedral sh volume node-aware stored-tile prefix sum over grid_dimensions {grid_dimensions:?} overflowed or was malformed"
         ))
     })
 }
@@ -732,6 +857,12 @@ pub fn validate_storage_levels_against_delta(
             + brick_z * 4 * grid_dimensions[0] as usize * grid_dimensions[1] as usize;
         let storage_level = Level::from_u8(probes[probe_index].density_level)
             .expect("metadata validation already checked every density level");
+        let storage_scale = probes[probe_index].node_scale;
+        if storage_scale != 0 {
+            return Err(invalid_data(format!(
+                "octahedral sh volume affinity brick {cell} has delta CSR entries but node_scale {storage_scale}; delta-bearing bricks must use scale 0"
+            )));
+        }
         if storage_level.to_u8() > delta_level.to_u8() {
             return Err(invalid_data(format!(
                 "octahedral sh volume affinity brick {cell} density_level {} exceeds delta cell_level {} with {} CSR entr{}",
@@ -799,7 +930,7 @@ fn expected_compact_atlas_len(
 fn compact_atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "octahedral sh volume stored atlas byte length {len} exceeds the v10 u32 header maximum {}",
+            "octahedral sh volume stored atlas byte length {len} exceeds the v11 u32 header maximum {}",
             u32::MAX,
         ))
     })
@@ -965,6 +1096,7 @@ mod tests {
     use super::*;
     use crate::lightmap::f32_to_f16_bits;
     use crate::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
+    use crate::sh_reconstruct::{corner_locals, stored_brick_prefix_sum};
 
     fn oct_section(grid: [u32; 3]) -> OctahedralShVolumeSection {
         oct_section_with_max_dim(grid, 8192)
@@ -988,6 +1120,7 @@ mod tests {
                 mean_distance: f32_to_f16_bits(i as f32 + 0.5),
                 mean_sq_distance: f32_to_f16_bits(i as f32 + 1.0),
                 density_level: 0,
+                node_scale: 0,
             })
             .collect();
         let affinity_dimensions = grid.map(|dimension| dimension.div_ceil(4));
@@ -1047,6 +1180,42 @@ mod tests {
             )
             .unwrap()
         ];
+    }
+
+    fn node_section(level: Level) -> OctahedralShVolumeSection {
+        let mut section = oct_section([8, 8, 8]);
+        for probe in &mut section.probes {
+            probe.density_level = level.to_u8();
+            probe.node_scale = 1;
+        }
+        repack_stored_geometry(&mut section, 8192);
+        section
+    }
+
+    fn stamp_brick_bytes(
+        bytes: &mut [u8],
+        grid: [u32; 3],
+        brick: [usize; 3],
+        level: Level,
+        scale: u8,
+    ) {
+        for local_z in 0..4usize {
+            for local_y in 0..4usize {
+                for local_x in 0..4usize {
+                    let x = brick[0] * 4 + local_x;
+                    let y = brick[1] * 4 + local_y;
+                    let z = brick[2] * 4 + local_z;
+                    if x >= grid[0] as usize || y >= grid[1] as usize || z >= grid[2] as usize {
+                        continue;
+                    }
+                    let probe = x + y * grid[0] as usize + z * grid[0] as usize * grid[1] as usize;
+                    let record = OctahedralShVolumeSection::HEADER_SIZE
+                        + probe * OCTAHEDRAL_PROBE_STRIDE as usize;
+                    bytes[record + 5] = level.to_u8();
+                    bytes[record + 6] = scale;
+                }
+            }
+        }
     }
 
     #[test]
@@ -1148,6 +1317,150 @@ mod tests {
         assert_eq!(&metadata[6..8], &[0, 0]);
     }
 
+    #[test]
+    fn octahedral_v11_round_trips_l1_and_l2_scale_one_nodes() {
+        for level in [Level::L1, Level::L2] {
+            let section = node_section(level);
+            let bytes = section.to_bytes();
+            let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
+            assert_eq!(restored, section);
+            assert!(restored.probes.iter().all(|probe| probe.node_scale == 1));
+            if level == Level::L1 {
+                assert_eq!(restored.probes[0].validity, 0);
+            }
+            let prefix =
+                validate_probe_metadata(restored.grid_dimensions, &restored.probes).unwrap();
+            assert_eq!(
+                prefix.total_stored_tiles,
+                if level == Level::L1 { 8 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn octahedral_rejects_out_of_range_and_disagreeing_node_scales() {
+        let section = oct_section([4, 4, 4]);
+        let mut bytes = section.to_bytes();
+        bytes[OctahedralShVolumeSection::HEADER_SIZE + 6] = MAX_NODE_SCALE + 1;
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(error.to_string().contains("node_scale 4 out of range"));
+
+        let mut bytes = section.to_bytes();
+        bytes[OctahedralShVolumeSection::HEADER_SIZE + 6] = 1;
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(error.to_string().contains("disagreeing node_scale"));
+    }
+
+    // Regression: v11 declares validity as binary, but accepted any nonzero byte.
+    #[test]
+    fn octahedral_rejects_non_binary_probe_validity() {
+        let section = oct_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        bytes[OctahedralShVolumeSection::HEADER_SIZE] = 2;
+
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            error.to_string().contains("validity 2 out of range")
+                && error.to_string().contains("binary 0 or 1"),
+            "expected named binary-validity error, got {error}"
+        );
+    }
+
+    #[test]
+    fn octahedral_rejects_scaled_l0_misaligned_members_and_partial_nodes() {
+        let section = oct_section([4, 4, 4]);
+        let mut bytes = section.to_bytes();
+        stamp_brick_bytes(&mut bytes, [4, 4, 4], [0, 0, 0], Level::L0, 1);
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(error.to_string().contains("L0 with nonzero node_scale"));
+
+        let section = oct_section([12, 8, 8]);
+        let mut bytes = section.to_bytes();
+        stamp_brick_bytes(&mut bytes, [12, 8, 8], [1, 0, 0], Level::L2, 1);
+        stamp_brick_bytes(&mut bytes, [12, 8, 8], [2, 0, 0], Level::L2, 1);
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            error.to_string().contains("aligned origin")
+                && error.to_string().contains("disagreeing member")
+        );
+
+        let mut bytes = section.to_bytes();
+        stamp_brick_bytes(&mut bytes, [12, 8, 8], [2, 0, 0], Level::L2, 1);
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            error.to_string().contains("reaches outside")
+                && error.to_string().contains("partial brick")
+        );
+    }
+
+    #[test]
+    fn octahedral_rejects_l1_node_without_a_valid_node_corner() {
+        let section = node_section(Level::L1);
+        let mut bytes = section.to_bytes();
+        for z in [0usize, 7] {
+            for y in [0usize, 7] {
+                for x in [0usize, 7] {
+                    let probe = x + y * 8 + z * 64;
+                    let record = OctahedralShVolumeSection::HEADER_SIZE
+                        + probe * OCTAHEDRAL_PROBE_STRIDE as usize;
+                    bytes[record] = 0;
+                }
+            }
+        }
+        let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("valid corner probe at node granularity")
+        );
+    }
+
+    // Regression: compose elects the aligned origin workgroup, which cannot
+    // derive node metadata when its complete 4^3 brick is invalid.
+    #[test]
+    fn octahedral_rejects_scaled_node_with_an_empty_origin_brick() {
+        for level in [Level::L1, Level::L2] {
+            let section = node_section(level);
+            let mut bytes = section.to_bytes();
+            for z in 0..4usize {
+                for y in 0..4usize {
+                    for x in 0..4usize {
+                        let probe = x + y * 8 + z * 64;
+                        let record = OctahedralShVolumeSection::HEADER_SIZE
+                            + probe * OCTAHEDRAL_PROBE_STRIDE as usize;
+                        bytes[record] = 0;
+                    }
+                }
+            }
+
+            let error = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("has no valid probe in its origin affinity brick"),
+                "expected named origin-writer error for {level:?}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_level_delta_validator_rejects_nonzero_node_scale() {
+        let section = node_section(Level::L2);
+        let cell_levels = vec![Level::L2.to_u8(); 8];
+        let offsets = vec![0, 1, 1, 1, 1, 1, 1, 1, 1];
+        let error = validate_storage_levels_against_delta(
+            section.grid_dimensions,
+            &section.probes,
+            &cell_levels,
+            &offsets,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("delta CSR entries")
+                && error.to_string().contains("node_scale 1")
+        );
+    }
+
     // Regression: v9 could accept compact BC6H geometry whose byte length
     // exceeded the u32 payload-length field and would wrap during encoding.
     #[test]
@@ -1170,7 +1483,7 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("exceeds the v10 u32 header maximum"),
+            msg.contains("exceeds the v11 u32 header maximum"),
             "expected compact-atlas header-length error, got: {msg}",
         );
     }
@@ -1182,7 +1495,7 @@ mod tests {
         let err = compact_atlas_len_for_header(u64::from(u32::MAX) + 1).unwrap_err();
         assert!(
             err.to_string()
-                .contains("exceeds the v10 u32 header maximum")
+                .contains("exceeds the v11 u32 header maximum")
         );
     }
 
@@ -1254,7 +1567,8 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         assert!(
             err.to_string().contains("partial affinity brick")
-                && err.to_string().contains("must be 0"),
+                && err.to_string().contains("density_level 0")
+                && err.to_string().contains("node_scale 0"),
             "expected partial-brick error, got: {err}",
         );
     }
@@ -1398,7 +1712,7 @@ mod tests {
     // Regression: v9 accepted oversized probe strides and silently skipped
     // bytes that have no defined record semantics.
     #[test]
-    fn octahedral_rejects_probe_stride_larger_than_v10_record() {
+    fn octahedral_rejects_probe_stride_larger_than_v11_record() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
         bytes[40..44].copy_from_slice(&(OCTAHEDRAL_PROBE_STRIDE + 4).to_le_bytes());
@@ -1406,8 +1720,8 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("probe_stride") && msg.contains("expected exactly 8 for v10"),
-            "expected exact v10 probe-stride error, got: {msg}",
+            msg.contains("probe_stride") && msg.contains("expected exactly 8 for v11"),
+            "expected exact v11 probe-stride error, got: {msg}",
         );
     }
 
@@ -1473,14 +1787,14 @@ mod tests {
     fn octahedral_rejects_previous_section_version() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&9u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&10u32.to_le_bytes());
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version 9")
-                && msg.contains("expected 10")
+            msg.contains("version 10")
+                && msg.contains("expected 11")
                 && msg.contains("recompile")
-                && msg.contains("v10 stored-atlas format"),
+                && msg.contains("v11 node-aware stored-atlas format"),
             "expected version-mismatch error, got: {msg}",
         );
     }

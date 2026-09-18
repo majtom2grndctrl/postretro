@@ -332,6 +332,7 @@ fn decode_group_payload(data: &[u8]) -> Option<Vec<GroupProbeRecord>> {
                 mean_distance,
                 mean_sq_distance,
                 density_level: 0,
+                node_scale: 0,
             },
             tile,
         });
@@ -563,7 +564,8 @@ pub(crate) struct ShVolumeShell {
 
 /// Dense intermediate used only while the grouped path places cached records.
 /// It preserves the v8 dense tile locations so cached values are byte-copied
-/// before the v10 stored-set packaging transform runs.
+/// before the v11 node-aware packaging transform consumes this pre-hierarchy
+/// dense/compact intermediate.
 pub(crate) struct DenseAssembledSection {
     pub(crate) section: OctahedralShVolumeSection,
     pub(crate) dense_atlas: Vec<OctahedralAtlasTexel>,
@@ -923,6 +925,7 @@ mod tests {
                         mean_distance: 0x3c00 + i as u16,
                         mean_sq_distance: 0x4000 + i as u16,
                         density_level: 0,
+                        node_scale: 0,
                     },
                 };
                 let tile = (0..t)

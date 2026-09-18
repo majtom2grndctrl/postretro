@@ -641,6 +641,15 @@ mod tests {
                 && src.contains("unpack2x16float(packed.r | (packed.g << 16u))"),
             "SDF open-space lookup must decode the Uint RG f16 pair",
         );
+        let open_distance = src
+            .split("fn sample_open_distance")
+            .nth(1)
+            .and_then(|tail| tail.split("// Trace the static SDF").next())
+            .expect("sample_open_distance function body");
+        assert!(
+            !open_distance.contains("packed.b") && !open_distance.contains("packed.a"),
+            "SDF E[d] must remain bit-identical when B/A carry adaptive indirection",
+        );
     }
 
     /// The group-2 light buffers the shared K-selection helper reads are

@@ -1,20 +1,5 @@
-//! Intra-brick trilinear reconstruction math for SH probe tiles.
-//!
-//! Relocated verbatim from the level-compiler's measurement-only `sh_analyze`
-//! (behavior-preserving) so the compiler classifier, the CPU compose reference
-//! (`postretro-render-cpu`), and — via the WGSL port — the GPU compose passes
-//! share **one** definition of how a dropped-valid probe is reconstructed from a
-//! coarser kept lattice. See
-//! `context/plans/drafts/lighting-scale--delta-sh-probe-coarsening/` (task G1).
-//!
-//! ## Three candidate stored levels per 4×4×4 brick
-//! - **L0** — every valid base probe, in local x-fastest order.
-//! - **L1** — the 8 corner probes (in-brick local ∈ {0,3}³), trilinear
-//!   reconstruction with per-axis weights `local/3`.
-//! - **L2** — a single brick-mean tile over the brick's VALID probes only.
-//!
-//! Reconstruction is strictly **intra-brick**: an L1 target reads only the
-//! brick's own 8 corners, never a neighbor cell.
+//! Shared base/delta reconstruction: base L1 is scale-aware and node-local; delta L1/L2 are brick-local.
+//! See: context/lib/rendering_pipeline.md §4 "Adaptive base-probe spacing".
 
 use glam::Vec3;
 
@@ -22,6 +7,9 @@ use crate::delta_sh_volumes::{AFFINITY_FACTOR, PROBES_PER_CELL};
 
 /// Affinity factor as `usize` — a 4×4×4 brick edge (= one affinity cell).
 const AF: usize = AFFINITY_FACTOR as usize; // 4
+
+/// Largest power-of-two brick-node scale represented by the v11 base wire.
+pub const MAX_NODE_SCALE: u8 = 3;
 
 /// An octahedral interior tile: `interior*interior` RGB texels.
 pub type Tile = Vec<Vec3>;
@@ -61,6 +49,65 @@ pub fn trilinear_weight(target: (usize, usize, usize), corner: (usize, usize, us
     axis(target.0, corner.0) * axis(target.1, corner.1) * axis(target.2, corner.2)
 }
 
+/// Probe edge length of an aligned hierarchy node at `scale`.
+///
+/// Scale zero is one 4-probe affinity brick; every additional scale doubles
+/// the brick edge while retaining the same eight-corner L1 stored set.
+pub fn node_probe_edge(scale: u8) -> Option<u32> {
+    (scale <= MAX_NODE_SCALE).then(|| u32::from(AFFINITY_FACTOR) << scale)
+}
+
+/// Probe-local coordinate inside the aligned node containing `probe`.
+pub fn node_local_coord(probe: [u32; 3], scale: u8) -> Option<[u32; 3]> {
+    let edge = node_probe_edge(scale)?;
+    Some(probe.map(|axis| axis % edge))
+}
+
+/// Absolute probe coordinate of one L1 node corner in x-fastest corner order.
+pub fn node_corner_coord(probe_origin: [u32; 3], scale: u8, corner: u8) -> Option<[u32; 3]> {
+    if corner >= 8 {
+        return None;
+    }
+    let span = node_probe_edge(scale)? - 1;
+    Some([
+        probe_origin[0] + if corner & 1 == 0 { 0 } else { span },
+        probe_origin[1] + if corner & 2 == 0 { 0 } else { span },
+        probe_origin[2] + if corner & 4 == 0 { 0 } else { span },
+    ])
+}
+
+/// Scale-aware L1 trilinear weight for one node-local target and stored corner.
+///
+/// This is the hierarchy reconstruction definition mirrored by
+/// `sh_sample.wgsl`: the fraction spans the complete `4 * 2^scale` probe edge,
+/// not the target probe's containing brick.
+pub fn node_l1_corner_weight(local: [u32; 3], corner: u8, scale: u8) -> Option<f32> {
+    if corner >= 8 {
+        return None;
+    }
+    let edge = node_probe_edge(scale)?;
+    if local.into_iter().any(|axis| axis >= edge) {
+        return None;
+    }
+    let span = (edge - 1) as f32;
+    let fraction = local.map(|axis| axis as f32 / span);
+    Some(
+        (if corner & 1 == 0 {
+            1.0 - fraction[0]
+        } else {
+            fraction[0]
+        }) * (if corner & 2 == 0 {
+            1.0 - fraction[1]
+        } else {
+            fraction[1]
+        }) * (if corner & 4 == 0 {
+            1.0 - fraction[2]
+        } else {
+            fraction[2]
+        }),
+    )
+}
+
 /// L1 reconstruction of the tile at `target_local` from the brick's valid corner
 /// tiles. Corners that are absent/invalid are dropped and the surviving weights
 /// renormalized. Returns `None` when no valid corner exists.
@@ -72,9 +119,14 @@ pub fn reconstruct_l1_tile(
     let target = local_xyz(target_local);
     let mut acc = zero_tile(texels);
     let mut wsum = 0.0f32;
-    for corner_local in corner_locals() {
+    for (corner, corner_local) in corner_locals().into_iter().enumerate() {
         if let Some(tile) = &tiles[corner_local] {
-            let w = trilinear_weight(target, local_xyz(corner_local));
+            let w = node_l1_corner_weight(
+                [target.0 as u32, target.1 as u32, target.2 as u32],
+                corner as u8,
+                0,
+            )
+            .expect("brick-local L1 coordinates use scale zero");
             if w <= 0.0 {
                 continue;
             }
@@ -252,6 +304,28 @@ pub fn stored_brick_prefix_sum(
     brick_levels: &[Level],
     probe_validity: &[bool],
 ) -> Option<StoredBrickPrefixSum> {
+    stored_node_prefix_sum(
+        grid_dimensions,
+        brick_levels,
+        &vec![0; brick_levels.len()],
+        probe_validity,
+    )
+}
+
+/// Whole-grid stored-tile prefix sum for the node-aware v11 base contract.
+///
+/// Every brick carries its containing node's level and scale. A node is an
+/// aligned cube of `2^scale` bricks. Its stored set is charged to the aligned
+/// origin brick; all other member bricks receive a zero-length range. A scaled
+/// node therefore requires at least one valid probe in that origin brick so
+/// the elected compose workgroup can derive its shared word. Scale 0 is exactly
+/// [`stored_brick_prefix_sum`]'s v10 layout.
+pub fn stored_node_prefix_sum(
+    grid_dimensions: [u32; 3],
+    brick_levels: &[Level],
+    brick_scales: &[u8],
+    probe_validity: &[bool],
+) -> Option<StoredBrickPrefixSum> {
     let probe_count = grid_dimensions
         .iter()
         .try_fold(1usize, |count, &dimension| {
@@ -268,7 +342,7 @@ pub fn stored_brick_prefix_sum(
         .try_fold(1usize, |count, &dimension| {
             count.checked_mul(dimension as usize)
         })?;
-    if brick_levels.len() != brick_count {
+    if brick_levels.len() != brick_count || brick_scales.len() != brick_count {
         return None;
     }
 
@@ -280,6 +354,44 @@ pub fn stored_brick_prefix_sum(
                 let brick_index = brick_x
                     + brick_y * affinity_dimensions[0] as usize
                     + brick_z * affinity_dimensions[0] as usize * affinity_dimensions[1] as usize;
+                let scale = brick_scales[brick_index];
+                if scale > MAX_NODE_SCALE || (scale > 0 && brick_levels[brick_index] == Level::L0) {
+                    return None;
+                }
+                let node_edge = 1usize << scale;
+                let node_origin = [
+                    brick_x / node_edge * node_edge,
+                    brick_y / node_edge * node_edge,
+                    brick_z / node_edge * node_edge,
+                ];
+                if node_origin[0] + node_edge > affinity_dimensions[0] as usize
+                    || node_origin[1] + node_edge > affinity_dimensions[1] as usize
+                    || node_origin[2] + node_edge > affinity_dimensions[2] as usize
+                    || (scale > 0
+                        && ((node_origin[0] + node_edge) * AF > grid_dimensions[0] as usize
+                            || (node_origin[1] + node_edge) * AF > grid_dimensions[1] as usize
+                            || (node_origin[2] + node_edge) * AF > grid_dimensions[2] as usize))
+                {
+                    return None;
+                }
+                for member_z in node_origin[2]..node_origin[2] + node_edge {
+                    for member_y in node_origin[1]..node_origin[1] + node_edge {
+                        for member_x in node_origin[0]..node_origin[0] + node_edge {
+                            let member = member_x
+                                + member_y * affinity_dimensions[0] as usize
+                                + member_z
+                                    * affinity_dimensions[0] as usize
+                                    * affinity_dimensions[1] as usize;
+                            if brick_levels[member] != brick_levels[brick_index]
+                                || brick_scales[member] != scale
+                            {
+                                return None;
+                            }
+                        }
+                    }
+                }
+
+                let is_node_origin = [brick_x, brick_y, brick_z] == node_origin;
                 let mut valid_probe_mask = 0u64;
                 for local_z in 0..AF {
                     for local_y in 0..AF {
@@ -306,10 +418,27 @@ pub fn stored_brick_prefix_sum(
                     }
                 }
 
-                let stored_tile_count = u32::try_from(
-                    stored_tile_set(brick_levels[brick_index], valid_probe_mask).len(),
-                )
-                .ok()?;
+                let stored_tile_count = if scale == 0 {
+                    u32::try_from(
+                        stored_tile_set(brick_levels[brick_index], valid_probe_mask).len(),
+                    )
+                    .ok()?
+                } else if !is_node_origin {
+                    0
+                } else {
+                    // Every compose pass elects this brick's workgroup as the
+                    // sole scaled-node writer and derives node metadata from a
+                    // valid word in the brick. Reject a node whose validity
+                    // exists only in later member bricks.
+                    if valid_probe_mask == 0 {
+                        return None;
+                    }
+                    if brick_levels[brick_index] == Level::L1 {
+                        8
+                    } else {
+                        1
+                    }
+                };
                 bricks.push(StoredBrickRange {
                     base_slot: total_stored_tiles,
                     stored_tile_count,
@@ -379,6 +508,46 @@ mod tests {
                 "trilinear weights must partition unity at local {target_local}"
             );
         }
+    }
+
+    #[test]
+    fn node_l1_weights_and_corners_cover_every_wire_scale() {
+        for scale in 0..=MAX_NODE_SCALE {
+            let edge = node_probe_edge(scale).unwrap();
+            let origin = [17, 29, 41];
+            assert_eq!(node_corner_coord(origin, scale, 0), Some(origin));
+            assert_eq!(
+                node_corner_coord(origin, scale, 7),
+                Some(origin.map(|axis| axis + edge - 1)),
+            );
+            assert_eq!(
+                node_local_coord([edge + 1, edge * 2 + 2, edge * 3 + 3], scale),
+                Some([1, 2, 3]),
+            );
+
+            for z in 0..edge {
+                for y in 0..edge {
+                    for x in 0..edge {
+                        let local = [x, y, z];
+                        let sum: f32 = (0..8)
+                            .map(|corner| node_l1_corner_weight(local, corner, scale).unwrap())
+                            .sum();
+                        assert!(
+                            (sum - 1.0).abs() < 1.0e-5,
+                            "scale {scale} local {local:?} weights summed to {sum}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn node_geometry_rejects_out_of_contract_inputs() {
+        assert_eq!(node_probe_edge(MAX_NODE_SCALE + 1), None);
+        assert_eq!(node_corner_coord([0; 3], 0, 8), None);
+        assert_eq!(node_l1_corner_weight([0; 3], 8, 0), None);
+        assert_eq!(node_l1_corner_weight([4, 0, 0], 0, 0), None);
     }
 
     #[test]
@@ -513,6 +682,63 @@ mod tests {
     fn stored_brick_prefix_sum_rejects_mismatched_input_shapes() {
         assert!(stored_brick_prefix_sum([4, 4, 4], &[], &[true; 64]).is_none());
         assert!(stored_brick_prefix_sum([4, 4, 4], &[Level::L0], &[]).is_none());
+    }
+
+    #[test]
+    fn stored_node_prefix_sum_charges_only_the_aligned_origin() {
+        let grid = [8, 8, 8];
+        let levels = vec![Level::L1; 8];
+        let scales = vec![1; 8];
+        let valid = vec![true; 8 * 8 * 8];
+        let prefix = stored_node_prefix_sum(grid, &levels, &scales, &valid).unwrap();
+        assert_eq!(prefix.total_stored_tiles, 8);
+        assert_eq!(prefix.bricks[0].stored_tile_count, 8);
+        assert!(
+            prefix.bricks[1..]
+                .iter()
+                .all(|range| range.stored_tile_count == 0 && range.base_slot == 8)
+        );
+
+        let l2 = stored_node_prefix_sum(grid, &vec![Level::L2; 8], &scales, &valid).unwrap();
+        assert_eq!(l2.total_stored_tiles, 1);
+        assert_eq!(l2.bricks[0].stored_tile_count, 1);
+    }
+
+    #[test]
+    fn stored_node_prefix_sum_rejects_disagreement_partial_nodes_and_scaled_l0() {
+        let valid = vec![true; 8 * 8 * 8];
+        let mut levels = vec![Level::L1; 8];
+        let mut scales = vec![1; 8];
+        levels[7] = Level::L2;
+        assert!(stored_node_prefix_sum([8, 8, 8], &levels, &scales, &valid).is_none());
+
+        levels.fill(Level::L1);
+        scales[7] = 0;
+        assert!(stored_node_prefix_sum([8, 8, 8], &levels, &scales, &valid).is_none());
+        assert!(
+            stored_node_prefix_sum([7, 8, 8], &levels, &vec![1; 8], &vec![true; 7 * 8 * 8],)
+                .is_none()
+        );
+        assert!(
+            stored_node_prefix_sum([8, 8, 8], &vec![Level::L0; 8], &vec![1; 8], &valid,).is_none()
+        );
+    }
+
+    // Regression: a scaled node with validity only outside its origin brick
+    // allocated stored slots that no elected compose workgroup could write.
+    #[test]
+    fn stored_node_prefix_sum_rejects_empty_scaled_origin_brick() {
+        let grid = [8, 8, 8];
+        let scales = vec![1; 8];
+        let mut valid = vec![false; 8 * 8 * 8];
+        valid[7] = true;
+
+        for level in [Level::L1, Level::L2] {
+            assert!(
+                stored_node_prefix_sum(grid, &vec![level; 8], &scales, &valid).is_none(),
+                "{level:?} must retain a valid word in the elected origin brick"
+            );
+        }
     }
 
     #[test]

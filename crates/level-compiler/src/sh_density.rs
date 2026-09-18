@@ -1,19 +1,21 @@
 // Stored-set packaging for the base indirect and direct SH volumes.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+use glam::Vec3;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
 use postretro_level_format::octahedral::{
     IrradianceAtlasArrayLayout, irradiance_array_tile_location, irradiance_atlas_array_layout,
 };
 use postretro_level_format::sh_reconstruct::{
-    Level, StoredTile, corner_locals, local_xyz, reconstruct_l2_tile, stored_brick_prefix_sum,
-    stored_tile_set,
+    Level, StoredTile, corner_locals, local_xyz, node_corner_coord, node_probe_edge,
+    reconstruct_l2_tile, stored_node_prefix_sum, stored_tile_set,
 };
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 
 use crate::sh_analyze::{
-    AnalyzeInputs, DeltaView, LevelKind, brick_world_aabb, build_brick_tiles, level_errors,
+    AnalyzeInputs, DeltaView, HierarchyTruth, LevelKind, brick_world_aabb, build_brick_tiles,
+    classifier_darkness_floor, evaluate_hierarchy_node, level_errors,
     level_errors_with_l1_zero_fallback, tile_magnitude,
 };
 use crate::sh_bake::MAX_SH_ATLAS_DIMENSION;
@@ -26,17 +28,39 @@ pub(crate) const DEFAULT_SH_DENSITY_FIDELITY: f32 = 1.0;
 
 type PackedTile = Vec<OctahedralAtlasTexel>;
 
+struct CompactHierarchyTruth {
+    valid_rank: Vec<i64>,
+    texels: usize,
+    values: Vec<Vec3>,
+}
+
+impl HierarchyTruth for CompactHierarchyTruth {
+    fn tile(&self, probe: usize) -> Option<&[Vec3]> {
+        let rank = usize::try_from(*self.valid_rank.get(probe)?).ok()?;
+        let start = rank.checked_mul(self.texels)?;
+        let end = start.checked_add(self.texels)?;
+        self.values.get(start..end)
+    }
+}
+
 /// Final base-density selection plus the bake-summary attribution needed to
 /// distinguish classifier choice from storage constraints.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DensityClassification {
     pub levels: Vec<Level>,
+    pub scales: Vec<u8>,
     /// Bricks whose unconstrained candidate exceeded a present delta's level,
     /// in id 27 / id 41 / id 45 order. A brick can deliberately appear in more
     /// than one bucket when multiple sections constrain it.
     pub delta_pins: [u64; 3],
     /// Bricks the mapper/CLI protection union lowered from a non-L0 candidate.
     pub protection_pins: u64,
+    pub hierarchy_blocks: crate::sh_hierarchy::BlockCounts,
+}
+
+pub(crate) struct ForcedScaleClassification {
+    pub scales: Vec<u8>,
+    pub blocks: crate::sh_hierarchy::BlockCounts,
 }
 
 /// Build an explicit fixed-level array for the measurement override. Production
@@ -165,7 +189,7 @@ pub(crate) fn storage_level_ceilings(
 }
 
 /// Apply a previously derived storage ceiling to any level source, including
-/// the measurement-only force-level bypass. The final packer receives only this
+/// the compiler-only force-level bypass. The final packer receives only this
 /// already-clamped array, keeping metadata stamps and stored payload membership
 /// in lockstep.
 pub(crate) fn apply_storage_level_ceilings(levels: &mut [Level], ceilings: &[Level]) {
@@ -274,6 +298,111 @@ pub(crate) fn apply_forced_level_constraints(
     Ok(())
 }
 
+/// Apply the compiler debug override for hierarchy scale while retaining every
+/// representability blocker. Only the composed-error gate is bypassed.
+pub(crate) fn apply_forced_scale_constraints(
+    levels: &mut [Level],
+    base: &OctahedralShVolumeSection,
+    deltas: DeltaSectionsRef<'_>,
+    protect_aabbs: &[[f32; 6]],
+    forced_scale: u8,
+) -> Result<ForcedScaleClassification, String> {
+    let dimensions = base.grid_dimensions;
+    let affinity_dimensions = dimensions.map(|dimension| dimension.div_ceil(4));
+    if levels.len() != checked_probe_count(affinity_dimensions)? {
+        return Err("base SH forced-scale levels do not match the affinity grid".to_string());
+    }
+    let validity: Vec<bool> = base
+        .probes
+        .iter()
+        .map(|probe| probe.validity != 0)
+        .collect();
+    let has_delta_entry = |cell: usize| {
+        [
+            deltas
+                .indirect
+                .map(|section| section.affinity_offsets.as_slice()),
+            deltas
+                .direct
+                .map(|section| section.affinity_offsets.as_slice()),
+            deltas
+                .anim_direct
+                .map(|section| section.affinity_offsets.as_slice()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|offsets| {
+            offsets
+                .get(cell..=cell + 1)
+                .is_some_and(|pair| pair[0] != pair[1])
+        })
+    };
+    let mut bricks = Vec::with_capacity(levels.len());
+    for z in 0..affinity_dimensions[2] as usize {
+        for y in 0..affinity_dimensions[1] as usize {
+            for x in 0..affinity_dimensions[0] as usize {
+                let cell = brick_index(x, y, z, affinity_dimensions);
+                let mut mask = [false; 64];
+                for (local, valid) in mask.iter_mut().enumerate() {
+                    let (lx, ly, lz) = local_xyz(local);
+                    let (px, py, pz) = (x * 4 + lx, y * 4 + ly, z * 4 + lz);
+                    if px < dimensions[0] as usize
+                        && py < dimensions[1] as usize
+                        && pz < dimensions[2] as usize
+                    {
+                        *valid = validity[probe_index(px, py, pz, dimensions)];
+                    }
+                }
+                bricks.push(crate::sh_hierarchy::BrickInput {
+                    level: levels[cell],
+                    participates: mask.iter().any(|&valid| valid),
+                    partial: brick_is_partial(x, y, z, dimensions),
+                    protected: brick_intersects_protection(
+                        x,
+                        y,
+                        z,
+                        dimensions,
+                        base.grid_origin,
+                        base.cell_size,
+                        protect_aabbs,
+                    ),
+                    has_delta_entry: has_delta_entry(cell),
+                    stored_tiles: [
+                        postretro_level_format::sh_reconstruct::stored_tiles(Level::L0, &mask)
+                            as u32,
+                        postretro_level_format::sh_reconstruct::stored_tiles(Level::L1, &mask)
+                            as u32,
+                        postretro_level_format::sh_reconstruct::stored_tiles(Level::L2, &mask)
+                            as u32,
+                    ],
+                });
+            }
+        }
+    }
+    let projection = crate::sh_hierarchy::project(
+        affinity_dimensions,
+        &bricks,
+        forced_scale,
+        |origin, scale, level| crate::sh_hierarchy::NodeEvaluation {
+            passes: level != Level::L0
+                && (level != Level::L1
+                    || node_has_valid_corner(origin, scale, dimensions, &validity)),
+            ..Default::default()
+        },
+    )?;
+    for (level, assignment) in levels.iter_mut().zip(&projection.assignments) {
+        *level = assignment.level;
+    }
+    Ok(ForcedScaleClassification {
+        scales: projection
+            .assignments
+            .iter()
+            .map(|assignment| assignment.scale)
+            .collect(),
+        blocks: projection.blocks,
+    })
+}
+
 fn brick_intersects_protection(
     brick_x: usize,
     brick_y: usize,
@@ -348,6 +477,7 @@ pub(crate) fn classify_base_levels(
     if total_probes == 0 || interior == 0 || brick_count == 0 {
         return Ok(DensityClassification {
             levels: vec![Level::L0; brick_count],
+            scales: vec![0; brick_count],
             ..Default::default()
         });
     }
@@ -405,6 +535,17 @@ pub(crate) fn classify_base_levels(
         affinity_dimensions[2] as usize,
     );
     let mut bricks = Vec::with_capacity(brick_count);
+    // Production emits at most scale 1, so hierarchy evaluation only needs a
+    // compact valid-probe tile field spanning adjacent 2x2x2 bricks. Keep the
+    // exact composed values in one allocation instead of one heap `Tile` per
+    // valid probe.
+    let hierarchy_value_count = (rank as usize)
+        .checked_mul(texels)
+        .ok_or_else(|| "SH density hierarchy truth size overflows usize".to_string())?;
+    let mut hierarchy_values = vec![Vec3::ZERO; hierarchy_value_count];
+    let mut valid_masks = Vec::with_capacity(brick_count);
+    let mut brick_in_bounds = Vec::with_capacity(brick_count);
+    let mut brick_protected = Vec::with_capacity(brick_count);
     for cell_z in 0..az {
         for cell_y in 0..ay {
             for cell_x in 0..ax {
@@ -427,12 +568,39 @@ pub(crate) fn classify_base_levels(
                     &delta_direct,
                     &delta_animated,
                 );
+                let mut valid_mask = [false; 64];
+                let mut in_bounds = 0u32;
+                for (local, valid) in valid_mask.iter_mut().enumerate() {
+                    let (local_x, local_y, local_z) = local_xyz(local);
+                    let probe_x = cell_x * 4 + local_x;
+                    let probe_y = cell_y * 4 + local_y;
+                    let probe_z = cell_z * 4 + local_z;
+                    if probe_x >= nx || probe_y >= ny || probe_z >= nz {
+                        continue;
+                    }
+                    in_bounds += 1;
+                    let probe = probe_x + probe_y * nx + probe_z * nx * ny;
+                    *valid = validity[probe] != 0;
+                    if *valid {
+                        let truth = tiles.composed[local].as_deref().ok_or_else(|| {
+                            format!("SH density composed truth is missing for valid probe {probe}")
+                        })?;
+                        if truth.len() != texels {
+                            return Err(format!(
+                                "SH density composed truth for probe {probe} has {} texels, expected {texels}",
+                                truth.len()
+                            ));
+                        }
+                        let start = valid_rank[probe] as usize * texels;
+                        hierarchy_values[start..start + texels].copy_from_slice(truth);
+                    }
+                }
                 let magnitude = tile_magnitude(&tiles.composed, texels);
                 let l1 =
                     level_errors_with_l1_zero_fallback(&tiles.composed, texels, interior, &weights);
                 let l2 = level_errors(&tiles.composed, LevelKind::L2, texels, interior, &weights);
                 // The zero fallback faithfully scores what reconstruction would
-                // produce for a missing L1 corner lattice, but a v10 base
+                // produce for a missing L1 corner lattice, but a v11 base
                 // brick with no valid corner is not allowed to carry an L1
                 // stamp. Reserve L1 for bricks with an actual valid corner;
                 // otherwise the classifier can still use its always-
@@ -450,6 +618,13 @@ pub(crate) fn classify_base_levels(
                 let l1_has_stored_corner = corner_locals().into_iter().any(local_is_valid);
                 let (world_min, world_max) =
                     brick_world_aabb(&inputs, dimensions, cell_x, cell_y, cell_z);
+                valid_masks.push(valid_mask);
+                brick_in_bounds.push(in_bounds);
+                brick_protected.push(protect_aabbs.iter().any(|aabb| {
+                    (0..3).all(|axis| {
+                        world_min[axis] <= aabb[axis + 3] && world_max[axis] >= aabb[axis]
+                    })
+                }));
                 bricks.push(BrickClass {
                     mag_p95: magnitude.p95,
                     mag_max: magnitude.max,
@@ -476,7 +651,7 @@ pub(crate) fn classify_base_levels(
     let delta_pins = delta_pin_counts(&candidate_levels, dimensions, deltas)?;
     let protection_pins = protection_pin_count(&candidate_levels, base_indirect, protect_aabbs)?;
     let ceiling_bytes: Vec<u8> = ceilings.iter().map(|level| level.to_u8()).collect();
-    let levels = classify_levels_with_ceiling(
+    let levels: Vec<Level> = classify_levels_with_ceiling(
         &bricks,
         affinity_dimensions,
         protect_aabbs,
@@ -486,17 +661,89 @@ pub(crate) fn classify_base_levels(
     .into_iter()
     .map(|level| Level::from_u8(level).expect("classifier only produces supported levels"))
     .collect();
+    let has_delta_entry = |cell: usize| {
+        [&delta_indirect, &delta_direct, &delta_animated]
+            .into_iter()
+            .flatten()
+            .any(|view| {
+                view.offsets
+                    .get(cell..=cell + 1)
+                    .is_some_and(|offsets| offsets[0] != offsets[1])
+            })
+    };
+    let hierarchy_bricks: Vec<crate::sh_hierarchy::BrickInput> = levels
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(cell, level)| crate::sh_hierarchy::BrickInput {
+            level,
+            participates: bricks[cell].has_any_valid,
+            partial: brick_in_bounds[cell] != 64,
+            protected: brick_protected[cell],
+            has_delta_entry: has_delta_entry(cell),
+            stored_tiles: [
+                postretro_level_format::sh_reconstruct::stored_tiles(Level::L0, &valid_masks[cell])
+                    as u32,
+                postretro_level_format::sh_reconstruct::stored_tiles(Level::L1, &valid_masks[cell])
+                    as u32,
+                postretro_level_format::sh_reconstruct::stored_tiles(Level::L2, &valid_masks[cell])
+                    as u32,
+            ],
+        })
+        .collect();
+    let magnitudes: Vec<f32> = bricks
+        .iter()
+        .filter(|brick| brick.has_any_valid)
+        .map(|brick| brick.mag_p95)
+        .collect();
+    let (_, darkness_floor) = classifier_darkness_floor(&magnitudes, params.darkness_frac);
+    let hierarchy_truth = CompactHierarchyTruth {
+        valid_rank,
+        texels,
+        values: hierarchy_values,
+    };
+    // The scale study selected one production hierarchy level. Larger scales
+    // remain wire-supported and are exercised only through the force flag.
+    let projection = crate::sh_hierarchy::project(
+        affinity_dimensions,
+        &hierarchy_bricks,
+        1,
+        |origin, scale, level| {
+            evaluate_hierarchy_node(
+                &hierarchy_truth,
+                dimensions,
+                origin,
+                scale,
+                level,
+                texels,
+                darkness_floor,
+                params,
+            )
+        },
+    )?;
+    let levels = projection
+        .assignments
+        .iter()
+        .map(|assignment| assignment.level)
+        .collect();
+    let scales = projection
+        .assignments
+        .iter()
+        .map(|assignment| assignment.scale)
+        .collect();
     Ok(DensityClassification {
         levels,
+        scales,
         delta_pins,
         protection_pins,
+        hierarchy_blocks: projection.blocks,
     })
 }
 
 /// Count direct ceiling constraints per section for the final bake summary.
 /// `levels` must be the source's candidate array before its ceiling is applied;
 /// this keeps the attribution meaningful for both the adaptive classifier and
-/// the measurement-only forced-level path.
+/// the compiler-only forced-level path.
 pub(crate) fn delta_pin_counts(
     levels: &[Level],
     grid_dimensions: [u32; 3],
@@ -641,7 +888,7 @@ fn count_delta_pins(
 }
 
 /// Repack the indirect bake's legacy valid-probe-order lossless intermediate
-/// into the v10 brick-major stored set. The grouped bake cache remains upstream:
+/// into the v11 node-aware stored set. The grouped bake cache remains upstream:
 /// this is deliberately invoked only after cold and warm assembly converge.
 #[cfg(test)]
 pub(crate) fn pack_indirect_section(
@@ -654,16 +901,18 @@ pub(crate) fn pack_indirect_section(
         .map(|probe| probe.validity != 0)
         .collect();
     let levels = force_levels(section.grid_dimensions, &validity, forced_level)?;
-    pack_indirect_section_with_levels(section, &levels)
+    let scales = vec![0; levels.len()];
+    pack_indirect_section_with_levels(section, &levels, &scales)
 }
 
 /// Repack the dense RGBA16F base bake using a final, already-representable and
 /// delta-clamped per-brick level array. This is deliberately separate from the
-/// legacy force-level wrapper above: Task 6 selects these levels after all
+/// legacy force-level wrapper above: the pipeline selects these levels after all
 /// delta classifiers and the runtime-safe envelope have settled.
 pub(crate) fn pack_indirect_section_with_levels(
     mut section: OctahedralShVolumeSection,
     levels: &[Level],
+    scales: &[u8],
 ) -> Result<(OctahedralShVolumeSection, DensityPackStats), String> {
     require_rgba16f(section.irradiance_format, "indirect")?;
     let validity: Vec<bool> = section
@@ -674,12 +923,20 @@ pub(crate) fn pack_indirect_section_with_levels(
     let affinity_dimensions = section
         .grid_dimensions
         .map(|dimension| dimension.div_ceil(4));
-    if levels.len() != checked_probe_count(affinity_dimensions)? {
-        return Err("SH density final level count does not match the affinity grid".to_string());
+    if levels.len() != checked_probe_count(affinity_dimensions)? || scales.len() != levels.len() {
+        return Err(
+            "SH density final level/scale count does not match the affinity grid".to_string(),
+        );
     }
     let source_tiles = decode_indirect_intermediate_tiles(&section, &validity)?;
-    stamp_levels(&mut section, levels)?;
-    let (tiles, prefix) = stored_tiles(section.grid_dimensions, &validity, levels, &source_tiles)?;
+    stamp_assignments(&mut section, levels, scales)?;
+    let (tiles, prefix) = stored_tiles(
+        section.grid_dimensions,
+        &validity,
+        levels,
+        scales,
+        &source_tiles,
+    )?;
     let layout = stored_layout(prefix.total_stored_tiles, section.tile_dimension)?;
     section.atlas_dimensions = [layout.atlas_width, layout.atlas_height];
     section.layer_count = layout.layer_count;
@@ -690,7 +947,7 @@ pub(crate) fn pack_indirect_section_with_levels(
 
     Ok((
         section,
-        DensityPackStats::from_levels(levels, prefix.total_stored_tiles),
+        DensityPackStats::from_assignments(levels, scales, affinity_dimensions, &prefix),
     ))
 }
 
@@ -723,8 +980,15 @@ pub(crate) fn pack_direct_section(
         .map(|probe| probe.validity != 0)
         .collect();
     let levels = levels_from_base(base)?;
+    let scales = scales_from_base(base)?;
     let source_tiles = decode_dense_tiles(&section, &validity)?;
-    let (tiles, prefix) = stored_tiles(section.grid_dimensions, &validity, &levels, &source_tiles)?;
+    let (tiles, prefix) = stored_tiles(
+        section.grid_dimensions,
+        &validity,
+        &levels,
+        &scales,
+        &source_tiles,
+    )?;
     let layout = stored_layout(prefix.total_stored_tiles, section.tile_dimension)?;
     section.atlas_dimensions = [layout.atlas_width, layout.atlas_height];
     section.layer_count = layout.layer_count;
@@ -738,20 +1002,85 @@ pub(crate) fn pack_direct_section(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DensityPackStats {
     pub(crate) brick_levels: [u32; 3],
+    pub(crate) node_histogram: [[u32; 3]; 4],
     pub(crate) stored_tiles: u32,
 }
 
 impl DensityPackStats {
-    fn from_levels(levels: &[Level], stored_tiles: u32) -> Self {
+    fn from_assignments(
+        levels: &[Level],
+        scales: &[u8],
+        affinity_dimensions: [u32; 3],
+        prefix: &postretro_level_format::sh_reconstruct::StoredBrickPrefixSum,
+    ) -> Self {
         let mut brick_levels = [0; 3];
+        let mut node_histogram = [[0; 3]; 4];
         for level in levels {
             brick_levels[level.to_u8() as usize] += 1;
         }
+        for z in 0..affinity_dimensions[2] as usize {
+            for y in 0..affinity_dimensions[1] as usize {
+                for x in 0..affinity_dimensions[0] as usize {
+                    let brick = brick_index(x, y, z, affinity_dimensions);
+                    let scale = scales[brick];
+                    let edge = 1usize << scale;
+                    if x % edge == 0
+                        && y % edge == 0
+                        && z % edge == 0
+                        && prefix.bricks[brick].stored_tile_count > 0
+                    {
+                        node_histogram[scale as usize][levels[brick].to_u8() as usize] += 1;
+                    }
+                }
+            }
+        }
         Self {
             brick_levels,
-            stored_tiles,
+            node_histogram,
+            stored_tiles: prefix.total_stored_tiles,
         }
     }
+}
+
+pub(crate) fn log_density_summary(
+    stats: DensityPackStats,
+    classification: &DensityClassification,
+    indirect_section_bytes: usize,
+    direct_section_bytes: Option<usize>,
+    irradiance_format: u32,
+) {
+    log::info!(
+        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, delta pins id27/id41/id45 {}/{}/{}, protection pins {}, id34 {} bytes, id35 {}, format tag {}",
+        stats.brick_levels[0],
+        stats.brick_levels[1],
+        stats.brick_levels[2],
+        stats.stored_tiles,
+        classification.delta_pins[0],
+        classification.delta_pins[1],
+        classification.delta_pins[2],
+        classification.protection_pins,
+        indirect_section_bytes,
+        direct_section_bytes
+            .map(|bytes| format!("{bytes} bytes"))
+            .unwrap_or_else(|| "absent".to_owned()),
+        irradiance_format,
+    );
+    for (scale, levels) in stats.node_histogram.iter().enumerate() {
+        log::info!(
+            "[Compiler] SH base-density nodes scale {scale}: L0/L1/L2 {}/{}/{}",
+            levels[0],
+            levels[1],
+            levels[2]
+        );
+    }
+    log::info!(
+        "[Compiler] SH base-density hierarchy pins: delta {}, protection {}, partial {}, shape {}, gate {}",
+        classification.hierarchy_blocks.delta,
+        classification.hierarchy_blocks.protection,
+        classification.hierarchy_blocks.partial,
+        classification.hierarchy_blocks.member_shape,
+        classification.hierarchy_blocks.gate,
+    );
 }
 
 fn require_rgba16f(format: u32, label: &str) -> Result<(), String> {
@@ -811,6 +1140,25 @@ fn brick_has_valid_corner(
     })
 }
 
+fn node_has_valid_corner(
+    brick_origin: [u32; 3],
+    scale: u8,
+    dimensions: [u32; 3],
+    validity: &[bool],
+) -> bool {
+    let probe_origin = brick_origin.map(|axis| axis * 4);
+    (0..8).any(|corner| {
+        let coord = node_corner_coord(probe_origin, scale, corner)
+            .expect("forced hierarchy scale was range-checked")
+            .map(|axis| axis as usize);
+        coord
+            .iter()
+            .zip(dimensions)
+            .all(|(&axis, dimension)| axis < dimension as usize)
+            && validity[probe_index(coord[0], coord[1], coord[2], dimensions)]
+    })
+}
+
 fn brick_has_any_valid(
     brick_x: usize,
     brick_y: usize,
@@ -839,23 +1187,43 @@ fn brick_has_any_valid(
     false
 }
 
-fn stamp_levels(section: &mut OctahedralShVolumeSection, levels: &[Level]) -> Result<(), String> {
+fn stamp_assignments(
+    section: &mut OctahedralShVolumeSection,
+    levels: &[Level],
+    scales: &[u8],
+) -> Result<(), String> {
     let affinity_dimensions = section
         .grid_dimensions
         .map(|dimension| dimension.div_ceil(4));
-    if levels.len() != checked_probe_count(affinity_dimensions)? {
-        return Err("SH density level count does not match the affinity grid".to_string());
+    if levels.len() != checked_probe_count(affinity_dimensions)? || scales.len() != levels.len() {
+        return Err("SH density level/scale count does not match the affinity grid".to_string());
     }
     for z in 0..section.grid_dimensions[2] as usize {
         for y in 0..section.grid_dimensions[1] as usize {
             for x in 0..section.grid_dimensions[0] as usize {
                 let brick = brick_index(x / 4, y / 4, z / 4, affinity_dimensions);
-                section.probes[probe_index(x, y, z, section.grid_dimensions)].density_level =
-                    levels[brick].to_u8();
+                let probe = &mut section.probes[probe_index(x, y, z, section.grid_dimensions)];
+                probe.density_level = levels[brick].to_u8();
+                probe.node_scale = scales[brick];
             }
         }
     }
     Ok(())
+}
+
+fn scales_from_base(base: &OctahedralShVolumeSection) -> Result<Vec<u8>, String> {
+    let affinity_dimensions = base.grid_dimensions.map(|dimension| dimension.div_ceil(4));
+    let mut scales = Vec::with_capacity(checked_probe_count(affinity_dimensions)?);
+    for brick_z in 0..affinity_dimensions[2] as usize {
+        for brick_y in 0..affinity_dimensions[1] as usize {
+            for brick_x in 0..affinity_dimensions[0] as usize {
+                let index =
+                    probe_index(brick_x * 4, brick_y * 4, brick_z * 4, base.grid_dimensions);
+                scales.push(base.probes[index].node_scale);
+            }
+        }
+    }
+    Ok(scales)
 }
 
 fn levels_from_base(base: &OctahedralShVolumeSection) -> Result<Vec<Level>, String> {
@@ -980,6 +1348,7 @@ fn stored_tiles(
     dimensions: [u32; 3],
     validity: &[bool],
     levels: &[Level],
+    scales: &[u8],
     source_tiles: &[Option<PackedTile>],
 ) -> Result<
     (
@@ -988,7 +1357,7 @@ fn stored_tiles(
     ),
     String,
 > {
-    let prefix = stored_brick_prefix_sum(dimensions, levels, validity).ok_or_else(|| {
+    let prefix = stored_node_prefix_sum(dimensions, levels, scales, validity).ok_or_else(|| {
         "SH density stored-set prefix sum rejected its metadata shape".to_string()
     })?;
     if source_tiles.len() != validity.len() {
@@ -1005,6 +1374,44 @@ fn stored_tiles(
         for brick_y in 0..prefix.affinity_dimensions[1] as usize {
             for brick_x in 0..prefix.affinity_dimensions[0] as usize {
                 let brick = brick_index(brick_x, brick_y, brick_z, prefix.affinity_dimensions);
+                if scales[brick] > 0 {
+                    if prefix.bricks[brick].stored_tile_count == 0 {
+                        continue;
+                    }
+                    let probe_origin = [brick_x * 4, brick_y * 4, brick_z * 4];
+                    let probe_edge = node_probe_edge(scales[brick])
+                        .expect("stored-set prefix validated the node scale")
+                        as usize;
+                    match levels[brick] {
+                        Level::L0 => {
+                            return Err("SH density cannot pack a scaled L0 node".to_string());
+                        }
+                        Level::L1 => {
+                            for corner in 0..8 {
+                                let coord = node_corner_coord(
+                                    probe_origin.map(|axis| axis as u32),
+                                    scales[brick],
+                                    corner,
+                                )
+                                .expect("stored-set prefix validated the L1 node corner")
+                                .map(|axis| axis as usize);
+                                let probe = probe_index(coord[0], coord[1], coord[2], dimensions);
+                                output.push(source_tiles[probe].clone().unwrap_or_else(|| {
+                                    vec![OctahedralAtlasTexel::default(); tile_texels]
+                                }));
+                            }
+                        }
+                        Level::L2 => output.push(node_mean_tile(
+                            probe_origin,
+                            probe_edge,
+                            dimensions,
+                            validity,
+                            source_tiles,
+                            tile_texels,
+                        )?),
+                    }
+                    continue;
+                }
                 let (mask, brick_tiles) = brick_tiles(
                     brick_x,
                     brick_y,
@@ -1032,6 +1439,51 @@ fn stored_tiles(
         return Err("SH density packing disagreed with the stored-set prefix sum".to_string());
     }
     Ok((output, prefix))
+}
+
+fn node_mean_tile(
+    origin: [usize; 3],
+    edge: usize,
+    dimensions: [u32; 3],
+    validity: &[bool],
+    source_tiles: &[Option<PackedTile>],
+    tile_texels: usize,
+) -> Result<PackedTile, String> {
+    let mut sums = vec![[0.0f32; 3]; tile_texels];
+    let mut count = 0u32;
+    for z in origin[2]..origin[2] + edge {
+        for y in origin[1]..origin[1] + edge {
+            for x in origin[0]..origin[0] + edge {
+                let probe = probe_index(x, y, z, dimensions);
+                if !validity[probe] {
+                    continue;
+                }
+                let tile = source_tiles[probe].as_ref().ok_or_else(|| {
+                    "valid SH node probe is missing its dense source tile".to_string()
+                })?;
+                for (sum, texel) in sums.iter_mut().zip(tile) {
+                    sum[0] += f16_bits_to_f32(texel.rgba[0]);
+                    sum[1] += f16_bits_to_f32(texel.rgba[1]);
+                    sum[2] += f16_bits_to_f32(texel.rgba[2]);
+                }
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        return Err("L2 stored tile requested for an all-invalid node".to_string());
+    }
+    Ok(sums
+        .into_iter()
+        .map(|sum| OctahedralAtlasTexel {
+            rgba: [
+                f32_to_f16_bits(sum[0] / count as f32),
+                f32_to_f16_bits(sum[1] / count as f32),
+                f32_to_f16_bits(sum[2] / count as f32),
+                f32_to_f16_bits(1.0),
+            ],
+        })
+        .collect())
 }
 
 fn brick_tiles(
@@ -1160,6 +1612,7 @@ fn pack_tiles_into_atlas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level as LogLevel;
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
     use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -1168,6 +1621,7 @@ mod tests {
         DEFAULT_IRRADIANCE_TILE_BORDER, irradiance_atlas_array_layout,
     };
     use postretro_level_format::sh_volume::{OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe};
+    use postretro_test_log_capture::LogCapture;
 
     const TILE_DIMENSION: u32 = 6;
 
@@ -1257,6 +1711,40 @@ mod tests {
         f16_bits_to_f32(u16::from_le_bytes([
             section.compact_atlas[byte],
             section.compact_atlas[byte + 1],
+        ]))
+    }
+
+    fn raw_direct_from_indirect(section: &OctahedralShVolumeSection) -> DirectShVolumeSection {
+        DirectShVolumeSection {
+            grid_origin: section.grid_origin,
+            cell_size: section.cell_size,
+            grid_dimensions: section.grid_dimensions,
+            tile_dimension: section.tile_dimension,
+            tile_border: section.tile_border,
+            atlas_dimensions: section.atlas_dimensions,
+            layer_count: section.layer_count,
+            tiles_per_layer: section.tiles_per_layer,
+            atlas_tiles_per_row: section.atlas_tiles_per_row,
+            irradiance_format: section.irradiance_format,
+            atlas: section.compact_atlas.clone(),
+        }
+    }
+
+    fn direct_slot_value(section: &DirectShVolumeSection, slot: usize) -> f32 {
+        let [layer, tx, ty] = irradiance_array_tile_location(
+            slot,
+            section.tiles_per_layer,
+            section.atlas_tiles_per_row,
+        );
+        let texel = layer as usize
+            * section.atlas_dimensions[0] as usize
+            * section.atlas_dimensions[1] as usize
+            + ty as usize * TILE_DIMENSION as usize * section.atlas_dimensions[0] as usize
+            + tx as usize * TILE_DIMENSION as usize;
+        let byte = texel * 8;
+        f16_bits_to_f32(u16::from_le_bytes([
+            section.atlas[byte],
+            section.atlas[byte + 1],
         ]))
     }
 
@@ -1374,6 +1862,25 @@ mod tests {
     }
 
     #[test]
+    fn scale_zero_node_path_is_byte_identical_to_brick_path() {
+        let raw = raw_indirect([8, 4, 4], |probe| probe % 5 != 0);
+        let (brick_path, brick_stats) = pack_indirect_section(raw.clone(), None).unwrap();
+        let levels = vec![Level::L0; 2];
+        let scales = vec![0; 2];
+        let (node_path, node_stats) =
+            pack_indirect_section_with_levels(raw, &levels, &scales).unwrap();
+
+        assert_eq!(node_path, brick_path);
+        assert_eq!(node_stats, brick_stats);
+        assert!(node_path.probes.iter().all(|probe| probe.node_scale == 0));
+        assert_eq!(
+            node_path.try_to_bytes().unwrap(),
+            brick_path.try_to_bytes().unwrap(),
+            "the v11 scale byte occupies the old zero-reserved byte"
+        );
+    }
+
+    #[test]
     fn l2_packing_synthesizes_the_mean_over_valid_tiles() {
         let raw = raw_indirect([4, 4, 4], |probe| probe != 0);
         let (packed, _) = pack_indirect_section(raw, Some(Level::L2)).unwrap();
@@ -1387,6 +1894,194 @@ mod tests {
         assert_eq!(stats.stored_tiles, 8);
         assert_eq!(slot_value(&packed, 0), 0.0);
         assert_eq!(slot_value(&packed, 1), 3.0);
+    }
+
+    #[test]
+    fn scaled_nodes_pack_one_shared_l1_or_l2_basis() {
+        let levels = vec![Level::L1; 8];
+        let scales = vec![1; 8];
+        let (l1, stats) =
+            pack_indirect_section_with_levels(raw_indirect([8, 8, 8], |_| true), &levels, &scales)
+                .unwrap();
+        assert_eq!(stats.stored_tiles, 8);
+        assert_eq!(stats.node_histogram[1], [0, 1, 0]);
+        assert_eq!(
+            (0..8).map(|slot| slot_value(&l1, slot)).collect::<Vec<_>>(),
+            vec![0.0, 7.0, 56.0, 63.0, 448.0, 455.0, 504.0, 511.0]
+        );
+        assert!(l1.probes.iter().all(|probe| probe.node_scale == 1));
+
+        let levels = vec![Level::L2; 8];
+        let (l2, stats) =
+            pack_indirect_section_with_levels(raw_indirect([8, 8, 8], |_| true), &levels, &scales)
+                .unwrap();
+        assert_eq!(stats.stored_tiles, 1);
+        assert!((slot_value(&l2, 0) - 255.5).abs() < 0.1);
+
+        let raw_direct = raw_direct_from_indirect(&raw_indirect([8, 8, 8], |_| true));
+        let direct = pack_direct_section(raw_direct, &l2).unwrap();
+        assert_eq!(direct.atlas_dimensions, l2.atlas_dimensions);
+        assert_eq!(direct.layer_count, l2.layer_count);
+        assert!((direct_slot_value(&direct, 0) - 255.5).abs() < 0.1);
+        let decoded_l2 =
+            OctahedralShVolumeSection::from_bytes(&l2.try_to_bytes().unwrap()).unwrap();
+        let decoded_direct =
+            DirectShVolumeSection::from_bytes(&direct.try_to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded_l2, l2);
+        assert_eq!(decoded_direct, direct);
+    }
+
+    #[test]
+    fn forced_scale_three_merges_only_a_full_ceiling_free_node() {
+        let base = raw_indirect([32, 32, 32], |_| true);
+        let mut levels = vec![Level::L2; 8 * 8 * 8];
+        let forced =
+            apply_forced_scale_constraints(&mut levels, &base, DeltaSectionsRef::default(), &[], 3)
+                .unwrap();
+        assert!(forced.scales.iter().all(|&scale| scale == 3));
+        assert_eq!(forced.blocks.delta, 0);
+        assert_eq!(forced.blocks.partial, 0);
+        assert_eq!(forced.blocks.protection, 0);
+    }
+
+    #[test]
+    fn forced_scale_keeps_delta_protection_and_partial_bricks_at_zero() {
+        let base = raw_indirect([21, 8, 8], |_| true);
+        let affinity = [6, 2, 2];
+        let mut direct = direct_delta(&vec![Level::L2.to_u8(); 24], &vec![false; 24]);
+        direct.affinity_dims = affinity;
+        direct.affinity_offsets = std::iter::once(0)
+            .chain(std::iter::repeat_n(1, 24))
+            .collect();
+        direct.affinity_lights = vec![0];
+        let mut levels = vec![Level::L2; 24];
+        let forced = apply_forced_scale_constraints(
+            &mut levels,
+            &base,
+            DeltaSectionsRef {
+                direct: Some(&direct),
+                ..Default::default()
+            },
+            &[[8.1, 0.1, 0.1, 8.2, 0.2, 0.2]],
+            1,
+        )
+        .unwrap();
+        assert_eq!(forced.scales[0], 0, "id 41 member must remain scale zero");
+        assert_eq!(
+            forced.scales[2], 0,
+            "protected member must remain scale zero"
+        );
+        assert!(forced.scales.iter().enumerate().all(|(brick, &scale)| {
+            let x = brick % affinity[0] as usize;
+            x < 4 || scale == 0
+        }));
+        assert!(forced.blocks.delta > 0);
+        assert!(forced.blocks.protection > 0);
+        assert!(forced.blocks.partial > 0);
+    }
+
+    #[test]
+    fn forced_scale_keeps_center_only_valid_l1_bricks_separate() {
+        // Regression: every 4^3 child has a valid local corner, but the 8^3
+        // node has no valid node-outer corner and cannot represent scaled L1.
+        let base = raw_indirect([8, 8, 8], |probe| {
+            let x = probe % 8;
+            let y = (probe / 8) % 8;
+            let z = probe / 64;
+            [x, y, z].into_iter().all(|axis| axis == 3 || axis == 4)
+        });
+        let mut levels = vec![Level::L1; 8];
+        let forced =
+            apply_forced_scale_constraints(&mut levels, &base, DeltaSectionsRef::default(), &[], 1)
+                .unwrap();
+
+        assert_eq!(levels, vec![Level::L1; 8]);
+        assert_eq!(forced.scales, vec![0; 8]);
+        assert_eq!(forced.blocks.gate, 1);
+    }
+
+    #[test]
+    fn compact_hierarchy_truth_preserves_exact_node_gate_results() {
+        let dimensions = [8, 8, 8];
+        let texels = 3;
+        let mut heap_truth = Vec::with_capacity(8 * 8 * 8);
+        let mut compact_values = Vec::with_capacity(8 * 8 * 8 * texels);
+        for probe in 0..8 * 8 * 8 {
+            let tile = vec![
+                Vec3::new(probe as f32, 1.0, 2.0),
+                Vec3::new(3.0, probe as f32 * 0.5, 4.0),
+                Vec3::new(5.0, 6.0, probe as f32 * 0.25),
+            ];
+            compact_values.extend_from_slice(&tile);
+            heap_truth.push(Some(tile));
+        }
+        let compact_truth = CompactHierarchyTruth {
+            valid_rank: (0_i64..8 * 8 * 8).collect(),
+            texels,
+            values: compact_values,
+        };
+        let params = CoarsenParams::default();
+
+        for level in [Level::L1, Level::L2] {
+            let heap = evaluate_hierarchy_node(
+                &heap_truth,
+                dimensions,
+                [0, 0, 0],
+                1,
+                level,
+                texels,
+                1.0e-6,
+                &params,
+            );
+            let compact = evaluate_hierarchy_node(
+                &compact_truth,
+                dimensions,
+                [0, 0, 0],
+                1,
+                level,
+                texels,
+                1.0e-6,
+                &params,
+            );
+            assert_eq!(compact.passes, heap.passes);
+            assert_eq!(compact.darkness_bypass, heap.darkness_bypass);
+            assert!((compact.rel_p95 - heap.rel_p95).abs() < f32::EPSILON);
+            assert!((compact.rel_max - heap.rel_max).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn summary_reports_node_histogram_and_scale_zero_pin_attribution() {
+        let capture = LogCapture::start();
+        let stats = DensityPackStats {
+            brick_levels: [5, 6, 7],
+            node_histogram: [[1, 2, 3], [0, 4, 5], [0; 3], [0; 3]],
+            stored_tiles: 42,
+        };
+        let classification = DensityClassification {
+            delta_pins: [8, 9, 10],
+            protection_pins: 11,
+            hierarchy_blocks: crate::sh_hierarchy::BlockCounts {
+                delta: 12,
+                protection: 13,
+                partial: 14,
+                member_shape: 15,
+                gate: 16,
+            },
+            ..Default::default()
+        };
+        log_density_summary(stats, &classification, 100, Some(200), 2);
+
+        capture.assert_logged_once(LogLevel::Info, "nodes scale 0: L0/L1/L2 1/2/3");
+        capture.assert_logged_once(LogLevel::Info, "nodes scale 1: L0/L1/L2 0/4/5");
+        capture.assert_logged_once(
+            LogLevel::Info,
+            "delta pins id27/id41/id45 8/9/10, protection pins 11",
+        );
+        capture.assert_logged_once(
+            LogLevel::Info,
+            "hierarchy pins: delta 12, protection 13, partial 14, shape 15, gate 16",
+        );
     }
 
     #[test]

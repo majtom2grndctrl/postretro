@@ -70,7 +70,7 @@ impl Drop for TempBuildDir {
 }
 
 fn compile_fixture(input: &Path, output: &Path, jobs: usize) -> Output {
-    compile_fixture_with_irradiance_format(input, output, jobs, true)
+    compile_fixture_with_irradiance_format(input, output, jobs, true, None)
 }
 
 fn compile_fixture_with_irradiance_format(
@@ -78,6 +78,7 @@ fn compile_fixture_with_irradiance_format(
     output: &Path,
     jobs: usize,
     uncompressed_irradiance: bool,
+    forced_scale: Option<u8>,
 ) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
     command
@@ -90,6 +91,11 @@ fn compile_fixture_with_irradiance_format(
         .arg(jobs.to_string());
     if uncompressed_irradiance {
         command.arg("--uncompressed-irradiance");
+    }
+    if let Some(scale) = forced_scale {
+        command
+            .arg("--sh-density-force-scale")
+            .arg(scale.to_string());
     }
     command.output().expect("spawn prl-build")
 }
@@ -125,6 +131,178 @@ fn compile_fixture_for_layer_cache_order(
     command.output().expect("spawn prl-build")
 }
 
+#[test]
+fn sh_analysis_is_byte_preserving_for_compiled_prl() {
+    let workspace = workspace_root();
+    let source = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        source.is_file(),
+        "fixture map missing: {}",
+        source.display()
+    );
+
+    let temp = TempBuildDir::new();
+    let input = temp.0.join("analyzed-contract.map");
+    let mut map = std::fs::read_to_string(&source)
+        .expect("read analysis source fixture")
+        .replacen(
+            "\"ambient_color\" \"0 0 0\"",
+            "\"ambient_color\" \"0 0 0\"\n\"_sh_density_fidelity\" \"0.5\"",
+            1,
+        );
+    map.push_str(
+        r#"// analysis-only mapper protection source
+{
+"classname" "sh_protect_volume"
+"dilation" "0"
+{
+( 368 400 112 ) ( 368 336 272 ) ( 368 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 336 272 ) ( 464 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 400 112 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 400 272 ) ( 464 336 272 ) ( 368 336 272 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 400 112 ) ( 368 400 272 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 336 112 ) ( 464 400 272 ) ( 464 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+}
+"#,
+    );
+    std::fs::write(&input, map).expect("write analysis contract fixture");
+    let baseline = temp.0.join("baseline.prl");
+    let analyzed = temp.0.join("analyzed.prl");
+    let analysis_json = temp.0.join("analysis.json");
+    let common = |output: &Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+        command
+            .arg(&input)
+            .arg("-o")
+            .arg(output)
+            .arg("--no-cache")
+            .arg("--no-tui")
+            .arg("--uncompressed-irradiance")
+            .arg("--sh-probe-spacing")
+            .arg("4")
+            .arg("--lightmap-density")
+            .arg("0.25")
+            .arg("--sh-protect-aabb")
+            .arg("0,0,0,1,1,1")
+            .arg("-j")
+            .arg("1");
+        command
+    };
+
+    let baseline_build = common(&baseline)
+        .output()
+        .expect("spawn baseline prl-build");
+    assert_success(&baseline_build, 1);
+    let analyzed_build = common(&analyzed)
+        .arg("--sh-analyze")
+        .arg("--sh-analyze-out")
+        .arg(&analysis_json)
+        .arg("--sh-density-force-scale")
+        .arg("3")
+        .output()
+        .expect("spawn analyzed prl-build");
+    assert_success(&analyzed_build, 1);
+    assert!(analysis_json.is_file(), "analysis JSON was not written");
+    let analysis: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&analysis_json).expect("read analysis JSON"))
+            .expect("parse analysis JSON");
+    let emitted = analysis
+        .get("emitted_reconstruction")
+        .expect("analysis must include the final emitted reconstruction report");
+    assert_eq!(
+        analysis
+            .get("protect_aabbs")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(2),
+        "analysis must use the CLI + mapper protection union",
+    );
+    let rel_p95_limit = emitted
+        .get("rel_p95_limit")
+        .and_then(|value| value.as_f64())
+        .expect("emitted report carries its production p95 limit");
+    let rel_max_limit = emitted
+        .get("rel_max_limit")
+        .and_then(|value| value.as_f64())
+        .expect("emitted report carries its production max limit");
+    assert!((rel_p95_limit - 0.05).abs() < 1.0e-6);
+    assert!((rel_max_limit - 0.125).abs() < 1.0e-6);
+    assert_eq!(
+        emitted
+            .get("failing_nodes")
+            .and_then(|value| value.as_u64()),
+        Some(0),
+        "classified hierarchy nodes must all remain inside the production gate",
+    );
+    assert!(
+        emitted
+            .get("nodes")
+            .and_then(|value| value.as_array())
+            .is_some_and(|nodes| !nodes.is_empty()),
+        "emitted reconstruction JSON must include node-granularity records",
+    );
+    assert_eq!(
+        std::fs::read(&baseline).expect("read baseline PRL"),
+        std::fs::read(&analyzed).expect("read analyzed PRL"),
+        "--sh-analyze and its force-scale measurement must not change emitted bytes",
+    );
+}
+
+#[test]
+fn forced_hierarchy_output_round_trips_through_production_loader() {
+    let workspace = workspace_root();
+    let source = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        source.is_file(),
+        "fixture map missing: {}",
+        source.display()
+    );
+
+    let temp = TempBuildDir::new();
+    let input = temp.0.join("forced-hierarchy.map");
+    let map = std::fs::read_to_string(&source)
+        .expect("read hierarchy source fixture")
+        .replacen(
+            "\"classname\" \"light\"",
+            "\"classname\" \"light_dynamic\"",
+            1,
+        );
+    std::fs::write(&input, map).expect("write hierarchy fixture without static delta lights");
+    let output = temp.0.join("forced-hierarchy.prl");
+    let build = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+        .env("RUST_LOG", "info")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--no-cache")
+        .arg("--no-tui")
+        .arg("--verbose")
+        .arg("--uncompressed-irradiance")
+        .arg("--sh-probe-spacing")
+        .arg("1")
+        .arg("--lightmap-density")
+        .arg("0.25")
+        .arg("--sh-density-force-level")
+        .arg("1")
+        .arg("--sh-density-force-scale")
+        .arg("1")
+        .arg("-j")
+        .arg("1")
+        .output()
+        .expect("spawn forced hierarchy prl-build");
+    assert_success(&build, 1);
+
+    let section = read_sh_volume(&output);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        section.probes.iter().any(|probe| probe.node_scale == 1),
+        "forced hierarchy fixture must emit at least one scale-1 node:\n{stderr}"
+    );
+    postretro_level_loader::load_prl(output.to_str().expect("UTF-8 fixture path"))
+        .expect("production loader must accept forced hierarchy output");
+}
+
 fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let bytes = std::fs::read(output).expect("read compiled PRL");
     let mut cursor = Cursor::new(bytes);
@@ -132,7 +310,7 @@ fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let section = read_section_data(&mut cursor, &metadata, SectionId::OctahedralShVolume as u32)
         .expect("read OctahedralShVolume section")
         .expect("OctahedralShVolume section must be present");
-    OctahedralShVolumeSection::from_bytes(&section).expect("parse v10 OctahedralShVolume")
+    OctahedralShVolumeSection::from_bytes(&section).expect("parse v11 OctahedralShVolume")
 }
 
 fn run_compiler(args: &[&str]) -> Output {
@@ -639,7 +817,7 @@ fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
     );
 }
 
-/// The v10 brick-major stored base atlas must be deterministic at the compiler seam:
+/// The v11 node-aware stored base atlas must be deterministic at the compiler seam:
 /// `--no-cache` selects the monolithic bake and the pipeline then chooses the
 /// uncompressed debug payload or default BC6H payload. `gate-heavily-lit` keeps
 /// the four cold bakes representative without making the regular test target
@@ -658,7 +836,7 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
     let bc6h_b = temp.0.join("bc6h-b.prl");
 
     for output in [&uncompressed_a, &uncompressed_b] {
-        let build = compile_fixture_with_irradiance_format(&input, output, 1, true);
+        let build = compile_fixture_with_irradiance_format(&input, output, 1, true, Some(1));
         assert_success(&build, 1);
     }
     assert_eq!(
@@ -673,7 +851,7 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
     );
 
     for output in [&bc6h_a, &bc6h_b] {
-        let build = compile_fixture_with_irradiance_format(&input, output, 1, false);
+        let build = compile_fixture_with_irradiance_format(&input, output, 1, false, Some(1));
         assert_success(&build, 1);
     }
     let first_bc6h = read_sh_volume(&bc6h_a);

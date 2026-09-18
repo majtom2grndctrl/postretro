@@ -2313,6 +2313,7 @@ fn apply_coarsen_classification(
 /// and JSON. Reads captured pre-BC6H base tiles and the three FINALIZED delta
 /// sections (post static-light selection + exact-zero-drop, i.e. the emitted
 /// set); mutates nothing that reaches the packer.
+#[allow(clippy::too_many_arguments)]
 fn run_sh_analysis(
     args: &Args,
     protect_aabbs: &[[f32; 6]],

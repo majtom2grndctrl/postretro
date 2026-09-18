@@ -1,0 +1,2462 @@
+// Cell-cluster metadata and grid-relative SH resource addressing (PRL id 49).
+// See: context/lib/build_pipeline.md §PRL section IDs
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use thiserror::Error;
+
+use crate::{
+    SectionId,
+    animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection,
+    animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
+    billboard_direct_scatter_volume::{
+        BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16, BillboardDirectScatterVolumeSection,
+    },
+    bvh::BvhSection,
+    cell_locator::{CellLocatorChild, CellLocatorSection},
+    cells::CellsSection,
+    delta_sh_volumes::DeltaShVolumesSection,
+    direct_sh_delta_volumes::DirectShDeltaVolumesSection,
+    direct_sh_volume::DirectShVolumeSection,
+    entity_shadow_lights::EntityShadowLightsSection,
+    portals::PortalsSection,
+    sh_volume::OctahedralShVolumeSection,
+};
+
+pub const CLUSTER_DIRECTORY_VERSION: u32 = 1;
+pub const CLUSTER_DIRECTORY_CONTAINER_VERSION: u16 = 1;
+pub const HEADER_SIZE: usize = 40;
+pub const CLUSTER_RECORD_SIZE: usize = 48;
+pub const RESOURCE_RECORD_SIZE: usize = 24;
+pub const MEMBER_RECORD_SIZE: usize = 4;
+pub const RANGE_RECORD_SIZE: usize = 24;
+
+pub const CLUSTER_FLAG_INDIVISIBLE_OVERSIZE: u32 = 1;
+pub const DENSE_OWNER_SENTINEL: u32 = u32::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ClusterResourceDomain {
+    DenseProbe = 0,
+    AffinityCell = 1,
+}
+
+impl ClusterResourceDomain {
+    fn parse(value: u32) -> Result<Self, ClusterDirectoryError> {
+        match value {
+            0 => Ok(Self::DenseProbe),
+            1 => Ok(Self::AffinityCell),
+            _ => Err(ClusterDirectoryError::InvalidData(format!(
+                "resource domain {value} is unknown"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ClusterRangeRole {
+    Dense = 0,
+    Owned = 1,
+    Halo = 2,
+}
+
+impl ClusterRangeRole {
+    fn parse(value: u32) -> Result<Self, ClusterDirectoryError> {
+        match value {
+            0 => Ok(Self::Dense),
+            1 => Ok(Self::Owned),
+            2 => Ok(Self::Halo),
+            _ => Err(ClusterDirectoryError::InvalidData(format!(
+                "range role {value} is unknown"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterRecord {
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+    pub member_start: u32,
+    pub member_count: u32,
+    pub range_start: u32,
+    pub range_count: u32,
+    pub primitive_count: u32,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterResourceRecord {
+    pub section_id: u32,
+    pub domain: ClusterResourceDomain,
+    pub dimensions: [u32; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterRangeRecord {
+    pub resource_index: u32,
+    pub start: u32,
+    pub count: u32,
+    pub owner_cluster_id: u32,
+    pub role: ClusterRangeRole,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterDirectorySection {
+    pub runtime_cell_count: u32,
+    pub primitive_limit: u32,
+    pub cell_limit: u32,
+    pub clusters: Vec<ClusterRecord>,
+    pub resources: Vec<ClusterResourceRecord>,
+    pub members: Vec<u32>,
+    pub ranges: Vec<ClusterRangeRecord>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ClusterDirectoryError {
+    #[error("ClusterDirectoryVersionMismatch: version {version}, expected {expected}")]
+    VersionMismatch { version: u32, expected: u32 },
+    #[error("ClusterDirectoryInvalidData: {0}")]
+    InvalidData(String),
+    #[error("ClusterDirectoryCellOutOfRange: cluster {cluster}, cell {cell}, cell limit {limit}")]
+    CellOutOfRange { cluster: u32, cell: u32, limit: u32 },
+    #[error(
+        "ClusterDirectoryGridRangeOutOfRange: cluster {cluster}, resource {resource}, start {start}, count {count}, limit {limit}"
+    )]
+    GridRangeOutOfRange {
+        cluster: u32,
+        resource: u32,
+        start: u32,
+        count: u32,
+        limit: u32,
+    },
+    #[error("ClusterDirectorySizeOverflow: {0}")]
+    SizeOverflow(&'static str),
+    #[error("ClusterDirectoryAllocationFailed: {0}")]
+    AllocationFailed(&'static str),
+    #[error("ClusterDirectoryMissingResource: {0}")]
+    MissingResource(String),
+    #[error("ClusterDirectoryResourceMismatch: {0}")]
+    ResourceMismatch(String),
+}
+
+/// Parsed-valid, policy-available SH sections supplied without copying payloads.
+/// Presence in this inventory is the exact emitted/on-wire resource inventory.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ClusterDirectoryShInventory<'a> {
+    pub octahedral: Option<&'a OctahedralShVolumeSection>,
+    pub direct: Option<&'a DirectShVolumeSection>,
+    pub delta: Option<&'a DeltaShVolumesSection>,
+    pub shadow_selection: Option<&'a EntityShadowLightsSection>,
+    pub direct_delta: Option<&'a DirectShDeltaVolumesSection>,
+    pub animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+    pub billboard: Option<&'a BillboardDirectScatterVolumeSection>,
+    pub animated_billboard_delta: Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+}
+
+/// Borrowed cross-section evidence for the shared semantic validator.
+#[derive(Debug, Clone, Copy)]
+pub struct ClusterDirectoryValidationInputs<'a> {
+    pub cells: &'a CellsSection,
+    pub portals: &'a PortalsSection,
+    pub bvh: &'a BvhSection,
+    pub cell_locator: &'a CellLocatorSection,
+    pub sh: ClusterDirectoryShInventory<'a>,
+}
+
+impl ClusterDirectorySection {
+    pub fn byte_len(&self) -> Result<usize, ClusterDirectoryError> {
+        checked_wire_len(
+            self.clusters.len(),
+            self.resources.len(),
+            self.members.len(),
+            self.ranges.len(),
+        )
+    }
+
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>, ClusterDirectoryError> {
+        self.validate_structure()?;
+        let len = self.byte_len()?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(len)
+            .map_err(|_| ClusterDirectoryError::AllocationFailed("encoded section"))?;
+        push_u32(&mut bytes, CLUSTER_DIRECTORY_VERSION);
+        push_u32(&mut bytes, self.runtime_cell_count);
+        push_u32(&mut bytes, u32_len(self.clusters.len(), "cluster count")?);
+        push_u32(&mut bytes, u32_len(self.resources.len(), "resource count")?);
+        push_u32(&mut bytes, u32_len(self.members.len(), "member count")?);
+        push_u32(&mut bytes, u32_len(self.ranges.len(), "range count")?);
+        push_u32(&mut bytes, self.primitive_limit);
+        push_u32(&mut bytes, self.cell_limit);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        for cluster in &self.clusters {
+            for value in cluster.bounds_min.into_iter().chain(cluster.bounds_max) {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            push_u32(&mut bytes, cluster.member_start);
+            push_u32(&mut bytes, cluster.member_count);
+            push_u32(&mut bytes, cluster.range_start);
+            push_u32(&mut bytes, cluster.range_count);
+            push_u32(&mut bytes, cluster.primitive_count);
+            push_u32(&mut bytes, cluster.flags);
+        }
+        for resource in &self.resources {
+            push_u32(&mut bytes, resource.section_id);
+            push_u32(&mut bytes, resource.domain as u32);
+            for dimension in resource.dimensions {
+                push_u32(&mut bytes, dimension);
+            }
+            push_u32(&mut bytes, 0);
+        }
+        for &member in &self.members {
+            push_u32(&mut bytes, member);
+        }
+        for range in &self.ranges {
+            push_u32(&mut bytes, range.resource_index);
+            push_u32(&mut bytes, range.start);
+            push_u32(&mut bytes, range.count);
+            push_u32(&mut bytes, range.owner_cluster_id);
+            push_u32(&mut bytes, range.role as u32);
+            push_u32(&mut bytes, 0);
+        }
+        debug_assert_eq!(bytes.len(), len);
+        Ok(bytes)
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self, ClusterDirectoryError> {
+        if data.len() < HEADER_SIZE {
+            return Err(ClusterDirectoryError::InvalidData(format!(
+                "section too short for 40-byte header: got {}",
+                data.len()
+            )));
+        }
+        let version = read_u32(data, 0);
+        if version != CLUSTER_DIRECTORY_VERSION {
+            return Err(ClusterDirectoryError::VersionMismatch {
+                version,
+                expected: CLUSTER_DIRECTORY_VERSION,
+            });
+        }
+        let runtime_cell_count = read_u32(data, 4);
+        let cluster_count = read_u32(data, 8);
+        let resource_count = read_u32(data, 12);
+        let member_count = read_u32(data, 16);
+        let range_count = read_u32(data, 20);
+        let primitive_limit = read_u32(data, 24);
+        let cell_limit = read_u32(data, 28);
+        if read_u32(data, 32) != 0 || read_u32(data, 36) != 0 {
+            return Err(ClusterDirectoryError::InvalidData(
+                "header reserved fields must be zero".into(),
+            ));
+        }
+        let expected = checked_wire_len(
+            usize_count(cluster_count)?,
+            usize_count(resource_count)?,
+            usize_count(member_count)?,
+            usize_count(range_count)?,
+        )?;
+        if data.len() != expected {
+            return Err(ClusterDirectoryError::InvalidData(format!(
+                "length mismatch: expected {expected}, got {}",
+                data.len()
+            )));
+        }
+
+        let mut clusters = try_vec(cluster_count, "cluster records")?;
+        let mut cursor = HEADER_SIZE;
+        for _ in 0..cluster_count {
+            clusters.push(ClusterRecord {
+                bounds_min: [
+                    read_f32(data, cursor),
+                    read_f32(data, cursor + 4),
+                    read_f32(data, cursor + 8),
+                ],
+                bounds_max: [
+                    read_f32(data, cursor + 12),
+                    read_f32(data, cursor + 16),
+                    read_f32(data, cursor + 20),
+                ],
+                member_start: read_u32(data, cursor + 24),
+                member_count: read_u32(data, cursor + 28),
+                range_start: read_u32(data, cursor + 32),
+                range_count: read_u32(data, cursor + 36),
+                primitive_count: read_u32(data, cursor + 40),
+                flags: read_u32(data, cursor + 44),
+            });
+            cursor += CLUSTER_RECORD_SIZE;
+        }
+        let mut resources = try_vec(resource_count, "resource records")?;
+        for _ in 0..resource_count {
+            let reserved = read_u32(data, cursor + 20);
+            if reserved != 0 {
+                return Err(ClusterDirectoryError::InvalidData(format!(
+                    "resource reserved field must be zero, got {reserved}"
+                )));
+            }
+            resources.push(ClusterResourceRecord {
+                section_id: read_u32(data, cursor),
+                domain: ClusterResourceDomain::parse(read_u32(data, cursor + 4))?,
+                dimensions: [
+                    read_u32(data, cursor + 8),
+                    read_u32(data, cursor + 12),
+                    read_u32(data, cursor + 16),
+                ],
+            });
+            cursor += RESOURCE_RECORD_SIZE;
+        }
+        let mut members = try_vec(member_count, "members")?;
+        for _ in 0..member_count {
+            members.push(read_u32(data, cursor));
+            cursor += MEMBER_RECORD_SIZE;
+        }
+        let mut ranges = try_vec(range_count, "ranges")?;
+        for _ in 0..range_count {
+            let reserved = read_u32(data, cursor + 20);
+            if reserved != 0 {
+                return Err(ClusterDirectoryError::InvalidData(format!(
+                    "range reserved field must be zero, got {reserved}"
+                )));
+            }
+            ranges.push(ClusterRangeRecord {
+                resource_index: read_u32(data, cursor),
+                start: read_u32(data, cursor + 4),
+                count: read_u32(data, cursor + 8),
+                owner_cluster_id: read_u32(data, cursor + 12),
+                role: ClusterRangeRole::parse(read_u32(data, cursor + 16))?,
+            });
+            cursor += RANGE_RECORD_SIZE;
+        }
+        let section = Self {
+            runtime_cell_count,
+            primitive_limit,
+            cell_limit,
+            clusters,
+            resources,
+            members,
+            ranges,
+        };
+        section.validate_structure()?;
+        Ok(section)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), ClusterDirectoryError> {
+        if self.primitive_limit == 0 || self.cell_limit == 0 {
+            return invalid("primitive_limit and cell_limit must be positive");
+        }
+        if self.members.len() != self.runtime_cell_count as usize {
+            return invalid(format!(
+                "member count {} does not equal runtime_cell_count {}",
+                self.members.len(),
+                self.runtime_cell_count
+            ));
+        }
+        if self.runtime_cell_count == 0 {
+            if !self.clusters.is_empty()
+                || !self.members.is_empty()
+                || !self.resources.is_empty()
+                || !self.ranges.is_empty()
+            {
+                return invalid(
+                    "standalone empty directory must contain no clusters, members, resources, or ranges",
+                );
+            }
+            return Ok(());
+        }
+        if self.clusters.is_empty() {
+            return invalid("nonzero runtime_cell_count requires at least one cluster");
+        }
+
+        let mut expected_member_start = 0u32;
+        let mut expected_range_start = 0u32;
+        let mut seen_cells = vec![false; self.runtime_cell_count as usize];
+        for (cluster_id, cluster) in self.clusters.iter().enumerate() {
+            validate_bounds(cluster_id, cluster.bounds_min, cluster.bounds_max)?;
+            if cluster.flags & !CLUSTER_FLAG_INDIVISIBLE_OVERSIZE != 0 {
+                return invalid(format!(
+                    "cluster {cluster_id} has unknown flags {:#x}",
+                    cluster.flags
+                ));
+            }
+            if cluster.member_count == 0 {
+                return invalid(format!("cluster {cluster_id} has no members"));
+            }
+            if cluster.member_count > self.cell_limit {
+                return invalid(format!(
+                    "cluster {cluster_id} member_count {} exceeds cell_limit {}",
+                    cluster.member_count, self.cell_limit
+                ));
+            }
+            let oversize = cluster.primitive_count > self.primitive_limit;
+            if oversize != (cluster.flags == CLUSTER_FLAG_INDIVISIBLE_OVERSIZE)
+                || (oversize && cluster.member_count != 1)
+            {
+                return invalid(format!(
+                    "cluster {cluster_id} oversize flag does not match singleton primitive exception"
+                ));
+            }
+            validate_slice(
+                cluster_id,
+                "member",
+                cluster.member_start,
+                cluster.member_count,
+                expected_member_start,
+                self.members.len(),
+            )?;
+            validate_slice(
+                cluster_id,
+                "range",
+                cluster.range_start,
+                cluster.range_count,
+                expected_range_start,
+                self.ranges.len(),
+            )?;
+            expected_member_start = expected_member_start
+                .checked_add(cluster.member_count)
+                .ok_or(ClusterDirectoryError::SizeOverflow("member slice end"))?;
+            expected_range_start = expected_range_start
+                .checked_add(cluster.range_count)
+                .ok_or(ClusterDirectoryError::SizeOverflow("range slice end"))?;
+
+            let members =
+                &self.members[cluster.member_start as usize..expected_member_start as usize];
+            for pair in members.windows(2) {
+                if pair[0] >= pair[1] {
+                    return invalid(format!(
+                        "cluster {cluster_id} members are not strictly ascending"
+                    ));
+                }
+            }
+            for &cell in members {
+                if cell >= self.runtime_cell_count {
+                    return Err(ClusterDirectoryError::CellOutOfRange {
+                        cluster: cluster_id as u32,
+                        cell,
+                        limit: self.runtime_cell_count,
+                    });
+                }
+                if std::mem::replace(&mut seen_cells[cell as usize], true) {
+                    return invalid(format!("cell {cell} occurs in more than one cluster"));
+                }
+            }
+        }
+        if expected_member_start as usize != self.members.len()
+            || !seen_cells.into_iter().all(|seen| seen)
+        {
+            return invalid("cluster member slices do not consume every runtime cell exactly once");
+        }
+        if expected_range_start as usize != self.ranges.len() {
+            return invalid("cluster range slices do not consume the range table");
+        }
+
+        for (index, resource) in self.resources.iter().enumerate() {
+            let expected_domain = resource_domain(resource.section_id).ok_or_else(|| {
+                ClusterDirectoryError::InvalidData(format!(
+                    "resource {index} names unsupported section {}",
+                    resource.section_id
+                ))
+            })?;
+            if resource.domain != expected_domain {
+                return invalid(format!(
+                    "resource {index} domain disagrees with section {}",
+                    resource.section_id
+                ));
+            }
+            if index > 0 && self.resources[index - 1].section_id >= resource.section_id {
+                return invalid("resource section ids must be strictly ascending");
+            }
+            let zero_axes = resource.dimensions.iter().filter(|&&d| d == 0).count();
+            if zero_axes != 0 && zero_axes != 3 {
+                return invalid(format!(
+                    "resource {index} has mixed-zero dimensions {:?}",
+                    resource.dimensions
+                ));
+            }
+            checked_product(resource.dimensions)?;
+        }
+
+        for (cluster_id, cluster) in self.clusters.iter().enumerate() {
+            let begin = cluster.range_start as usize;
+            let end = begin + cluster.range_count as usize;
+            let mut previous: Option<&ClusterRangeRecord> = None;
+            for range in &self.ranges[begin..end] {
+                let resource = self
+                    .resources
+                    .get(range.resource_index as usize)
+                    .ok_or_else(|| {
+                        ClusterDirectoryError::InvalidData(format!(
+                            "cluster {cluster_id} range names resource {} outside {}",
+                            range.resource_index,
+                            self.resources.len()
+                        ))
+                    })?;
+                if range.count == 0 {
+                    return invalid(format!("cluster {cluster_id} range count must be positive"));
+                }
+                let limit = checked_product(resource.dimensions)?;
+                let range_end = range
+                    .start
+                    .checked_add(range.count)
+                    .ok_or(ClusterDirectoryError::SizeOverflow("grid range end"))?;
+                if range_end > limit {
+                    return Err(ClusterDirectoryError::GridRangeOutOfRange {
+                        cluster: cluster_id as u32,
+                        resource: range.resource_index,
+                        start: range.start,
+                        count: range.count,
+                        limit,
+                    });
+                }
+                match resource.domain {
+                    ClusterResourceDomain::DenseProbe
+                        if range.role != ClusterRangeRole::Dense
+                            || range.owner_cluster_id != DENSE_OWNER_SENTINEL =>
+                    {
+                        return invalid(format!(
+                            "cluster {cluster_id} dense range has affinity ownership fields"
+                        ));
+                    }
+                    ClusterResourceDomain::AffinityCell
+                        if range.role == ClusterRangeRole::Dense
+                            || range.owner_cluster_id >= self.clusters.len() as u32 =>
+                    {
+                        return invalid(format!(
+                            "cluster {cluster_id} affinity range has invalid role/owner"
+                        ));
+                    }
+                    ClusterResourceDomain::AffinityCell
+                        if (range.role == ClusterRangeRole::Owned)
+                            != (range.owner_cluster_id == cluster_id as u32) =>
+                    {
+                        return invalid(format!(
+                            "cluster {cluster_id} affinity range role disagrees with owner {}",
+                            range.owner_cluster_id
+                        ));
+                    }
+                    _ => {}
+                }
+                if let Some(prev) = previous {
+                    if (prev.resource_index, prev.start) >= (range.resource_index, range.start) {
+                        return invalid(format!("cluster {cluster_id} ranges are not sorted"));
+                    }
+                    if prev.resource_index == range.resource_index {
+                        let prev_end = prev
+                            .start
+                            .checked_add(prev.count)
+                            .ok_or(ClusterDirectoryError::SizeOverflow("previous range end"))?;
+                        if prev_end > range.start {
+                            return invalid(format!("cluster {cluster_id} ranges overlap"));
+                        }
+                        if prev_end == range.start
+                            && prev.role == range.role
+                            && prev.owner_cluster_id == range.owner_cluster_id
+                        {
+                            return invalid(format!(
+                                "cluster {cluster_id} adjacent compatible ranges were not coalesced"
+                            ));
+                        }
+                    }
+                }
+                previous = Some(range);
+            }
+        }
+        validate_affinity_ownership(self)
+    }
+
+    pub fn validate_semantics(
+        &self,
+        inputs: ClusterDirectoryValidationInputs<'_>,
+    ) -> Result<(), ClusterDirectoryError> {
+        self.validate_structure()?;
+        validate_cells(self, inputs.cells, inputs.portals, inputs.bvh)?;
+        validate_resources(self, inputs)?;
+        Ok(())
+    }
+}
+
+fn validate_cells(
+    directory: &ClusterDirectorySection,
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    bvh: &BvhSection,
+) -> Result<(), ClusterDirectoryError> {
+    if cells.cells.len() != directory.runtime_cell_count as usize {
+        return invalid(format!(
+            "runtime_cell_count {} disagrees with Cells count {}",
+            directory.runtime_cell_count,
+            cells.cells.len()
+        ));
+    }
+    let mut primitive_counts = vec![0u32; cells.cells.len()];
+    for (leaf_index, leaf) in bvh.leaves.iter().enumerate() {
+        if leaf.cell_id >= directory.runtime_cell_count {
+            return invalid(format!(
+                "BVH leaf {leaf_index} names cell {} outside {}",
+                leaf.cell_id, directory.runtime_cell_count
+            ));
+        }
+        if leaf.index_count != 0 {
+            primitive_counts[leaf.cell_id as usize] = primitive_counts[leaf.cell_id as usize]
+                .checked_add(1)
+                .ok_or(ClusterDirectoryError::SizeOverflow("cell primitive count"))?;
+        }
+    }
+    let mut adjacency = vec![BTreeSet::new(); cells.cells.len()];
+    for (portal_index, portal) in portals.portals.iter().enumerate() {
+        if portal.front_leaf >= directory.runtime_cell_count
+            || portal.back_leaf >= directory.runtime_cell_count
+        {
+            return invalid(format!(
+                "portal {portal_index} endpoint ({}, {}) outside {} cells",
+                portal.front_leaf, portal.back_leaf, directory.runtime_cell_count
+            ));
+        }
+        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
+        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
+    }
+
+    let mut previous_seed: Option<u32> = None;
+    for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+        let member_begin = cluster.member_start as usize;
+        let member_end = member_begin + cluster.member_count as usize;
+        let members = &directory.members[member_begin..member_end];
+        let seed = *members
+            .iter()
+            .min_by(|&&left, &&right| compare_cell_keys(left, right, &cells.cells))
+            .expect("structure validation requires a cluster member");
+        if let Some(previous) = previous_seed {
+            if compare_cell_keys(previous, seed, &cells.cells).is_ge() {
+                return invalid(format!(
+                    "cluster {cluster_id} seed cell {seed} is not in canonical seed-key order"
+                ));
+            }
+        }
+        previous_seed = Some(seed);
+        let mut bounds_min = [f32::INFINITY; 3];
+        let mut bounds_max = [f32::NEG_INFINITY; 3];
+        let mut primitive_count = 0u32;
+        for &cell_id in members {
+            let cell = &cells.cells[cell_id as usize];
+            for axis in 0..3 {
+                bounds_min[axis] = canonical_zero(bounds_min[axis].min(cell.bounds_min[axis]));
+                bounds_max[axis] = canonical_zero(bounds_max[axis].max(cell.bounds_max[axis]));
+            }
+            primitive_count = primitive_count
+                .checked_add(primitive_counts[cell_id as usize])
+                .ok_or(ClusterDirectoryError::SizeOverflow(
+                    "cluster primitive count",
+                ))?;
+        }
+        if !float_array_bits_equal(bounds_min, cluster.bounds_min)
+            || !float_array_bits_equal(bounds_max, cluster.bounds_max)
+        {
+            return invalid(format!(
+                "cluster {cluster_id} bounds do not equal the exact member union"
+            ));
+        }
+        if primitive_count != cluster.primitive_count {
+            return invalid(format!(
+                "cluster {cluster_id} primitive_count {} disagrees with BVH count {primitive_count}",
+                cluster.primitive_count
+            ));
+        }
+        if members.len() > 1 {
+            let member_set: BTreeSet<u32> = members.iter().copied().collect();
+            let mut visited = BTreeSet::new();
+            let mut queue = VecDeque::from([members[0]]);
+            while let Some(cell) = queue.pop_front() {
+                if !visited.insert(cell) {
+                    continue;
+                }
+                for &neighbor in &adjacency[cell as usize] {
+                    if member_set.contains(&neighbor) && !visited.contains(&neighbor) {
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+            if visited.len() != members.len() {
+                return invalid(format!("cluster {cluster_id} is not portal-connected"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn compare_cell_keys(
+    left: u32,
+    right: u32,
+    cells: &[crate::cells::CellRecord],
+) -> std::cmp::Ordering {
+    let left_bounds = cells[left as usize].bounds_min.map(canonical_zero);
+    let right_bounds = cells[right as usize].bounds_min.map(canonical_zero);
+    left_bounds[2]
+        .total_cmp(&right_bounds[2])
+        .then_with(|| left_bounds[1].total_cmp(&right_bounds[1]))
+        .then_with(|| left_bounds[0].total_cmp(&right_bounds[0]))
+        .then_with(|| left.cmp(&right))
+}
+
+fn validate_resources(
+    directory: &ClusterDirectorySection,
+    inputs: ClusterDirectoryValidationInputs<'_>,
+) -> Result<(), ClusterDirectoryError> {
+    let inventory = inputs.sh;
+    if inventory.octahedral.is_none()
+        && (inventory.direct.is_some()
+            || inventory.delta.is_some()
+            || inventory.direct_delta.is_some()
+            || inventory.animated_direct_delta.is_some()
+            || inventory.billboard.is_some()
+            || inventory.animated_billboard_delta.is_some())
+    {
+        return Err(ClusterDirectoryError::ResourceMismatch(
+            "SH companion is present without id 34".into(),
+        ));
+    }
+
+    let base_dims = inventory
+        .octahedral
+        .map_or([0, 0, 0], |base| base.grid_dimensions);
+    let affinity_dims = affinity_dimensions(base_dims)?;
+    let expected = [
+        (
+            SectionId::DeltaShVolumes,
+            inventory.delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::OctahedralShVolume,
+            inventory.octahedral.is_some(),
+            ClusterResourceDomain::DenseProbe,
+            base_dims,
+        ),
+        (
+            SectionId::DirectShVolume,
+            inventory.direct.is_some(),
+            ClusterResourceDomain::DenseProbe,
+            base_dims,
+        ),
+        (
+            SectionId::DirectShDeltaVolumes,
+            inventory.direct_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::AnimatedDirectShDeltaVolumes,
+            inventory.animated_direct_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+        (
+            SectionId::BillboardDirectScatterVolume,
+            inventory.billboard.is_some(),
+            ClusterResourceDomain::DenseProbe,
+            base_dims,
+        ),
+        (
+            SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+            inventory.animated_billboard_delta.is_some(),
+            ClusterResourceDomain::AffinityCell,
+            affinity_dims,
+        ),
+    ];
+    let expected_rows: Vec<_> = expected
+        .iter()
+        .filter(|(_, present, _, _)| *present)
+        .collect();
+    if directory.resources.len() != expected_rows.len() {
+        return Err(ClusterDirectoryError::MissingResource(format!(
+            "directory has {} resource rows, emitted inventory requires {}",
+            directory.resources.len(),
+            expected_rows.len()
+        )));
+    }
+    for (row, (section, _, domain, dimensions)) in directory.resources.iter().zip(expected_rows) {
+        if row.section_id != *section as u32 {
+            return Err(ClusterDirectoryError::MissingResource(format!(
+                "expected section {}, found {}",
+                *section as u32, row.section_id
+            )));
+        }
+        if row.domain != *domain || row.dimensions != *dimensions {
+            return Err(ClusterDirectoryError::ResourceMismatch(format!(
+                "section {} row has domain/dimensions {:?}/{:?}, expected {:?}/{:?}",
+                row.section_id, row.domain, row.dimensions, domain, dimensions
+            )));
+        }
+    }
+
+    let Some(base) = inventory.octahedral else {
+        if !directory.ranges.is_empty() {
+            return Err(ClusterDirectoryError::ResourceMismatch(
+                "directory without id 34 must not contain ranges".into(),
+            ));
+        }
+        return Ok(());
+    };
+    let probe_count = checked_product(base.grid_dimensions)? as usize;
+    if base.probes.len() != probe_count {
+        return resource_mismatch(format!(
+            "id 34 probe metadata count {} disagrees with grid product {probe_count}",
+            base.probes.len()
+        ));
+    }
+    validate_companions(base, inventory, affinity_dims)?;
+    let expected_ranges = derive_expected_ranges(directory, inputs, base, affinity_dims)?;
+    if expected_ranges != directory.ranges {
+        let first = expected_ranges
+            .iter()
+            .zip(&directory.ranges)
+            .position(|(expected, actual)| expected != actual)
+            .unwrap_or(expected_ranges.len().min(directory.ranges.len()));
+        return Err(ClusterDirectoryError::ResourceMismatch(format!(
+            "range table disagrees with cell/grid coverage at range {first}: expected {} ranges, got {}",
+            expected_ranges.len(),
+            directory.ranges.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_companions(
+    base: &OctahedralShVolumeSection,
+    inventory: ClusterDirectoryShInventory<'_>,
+    affinity_dims: [u32; 3],
+) -> Result<(), ClusterDirectoryError> {
+    if let Some(direct) = inventory.direct {
+        if direct.grid_dimensions != base.grid_dimensions
+            || !float_array_bits_equal(direct.grid_origin, base.grid_origin)
+            || !float_array_bits_equal(direct.cell_size, base.cell_size)
+            || direct.tile_dimension != base.tile_dimension
+            || direct.tile_border != base.tile_border
+            || direct.atlas_dimensions != base.atlas_dimensions
+            || direct.atlas_tiles_per_row != base.atlas_tiles_per_row
+            || direct.layer_count != base.layer_count
+            || direct.tiles_per_layer != base.tiles_per_layer
+            || direct.irradiance_format != base.irradiance_format
+        {
+            return resource_mismatch("id 35 grid/stored-node layout disagrees with id 34");
+        }
+    }
+    if let Some(billboard) = inventory.billboard {
+        if billboard.grid_dimensions != base.grid_dimensions
+            || !float_array_bits_equal(billboard.grid_origin, base.grid_origin)
+            || !float_array_bits_equal(billboard.cell_size, base.cell_size)
+        {
+            return resource_mismatch("id 47 grid disagrees with id 34");
+        }
+        let expected_scatter_len =
+            base.probes
+                .len()
+                .checked_mul(4)
+                .ok_or(ClusterDirectoryError::SizeOverflow(
+                    "billboard scatter probe count",
+                ))?;
+        if billboard.scatter_rgba.len() != expected_scatter_len {
+            return resource_mismatch("id 47 payload length disagrees with id 34 probe count");
+        }
+        for (probe_index, probe) in base.probes.iter().enumerate() {
+            let expected = if probe.validity == 0 {
+                0
+            } else {
+                BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16
+            };
+            if billboard.scatter_rgba[probe_index * 4 + 3] != expected {
+                return resource_mismatch(format!(
+                    "id 47 validity for probe {probe_index} disagrees with id 34"
+                ));
+            }
+        }
+    }
+    if let Some(delta) = inventory.delta {
+        validate_sparse_shape(
+            27,
+            delta.affinity_factor,
+            delta.affinity_dims,
+            &delta.affinity_offsets,
+            affinity_dims,
+        )?;
+        validate_descriptor_indices(
+            27,
+            &delta.animation_descriptor_indices,
+            base.animation_descriptors.len(),
+        )?;
+        validate_delta_storage(
+            base,
+            27,
+            delta.tile_dimension,
+            delta.tile_border,
+            &delta.cell_levels,
+            &delta.affinity_offsets,
+        )?;
+    }
+    if let Some(delta) = inventory.direct_delta {
+        validate_sparse_shape(
+            41,
+            delta.affinity_factor,
+            delta.affinity_dims,
+            &delta.affinity_offsets,
+            affinity_dims,
+        )?;
+        let selection_count = inventory
+            .shadow_selection
+            .ok_or_else(|| {
+                ClusterDirectoryError::ResourceMismatch(
+                    "id 41 is present without id 40 selection".into(),
+                )
+            })?
+            .light_indices
+            .len();
+        if let Some(&light) = delta
+            .affinity_lights
+            .iter()
+            .find(|&&light| light as usize >= selection_count)
+        {
+            return resource_mismatch(format!(
+                "id 41 selection index {light} outside id 40 count {selection_count}"
+            ));
+        }
+        validate_delta_storage(
+            base,
+            41,
+            delta.tile_dimension,
+            delta.tile_border,
+            &delta.cell_levels,
+            &delta.affinity_offsets,
+        )?;
+    }
+    if let Some(delta) = inventory.animated_direct_delta {
+        validate_sparse_shape(
+            45,
+            delta.affinity_factor,
+            delta.affinity_dims,
+            &delta.affinity_offsets,
+            affinity_dims,
+        )?;
+        validate_descriptor_indices(
+            45,
+            &delta.animation_descriptor_indices,
+            base.animation_descriptors.len(),
+        )?;
+        validate_delta_storage(
+            base,
+            45,
+            delta.tile_dimension,
+            delta.tile_border,
+            &delta.cell_levels,
+            &delta.affinity_offsets,
+        )?;
+    }
+    if let Some(delta) = inventory.animated_billboard_delta {
+        let source = inventory.animated_direct_delta.ok_or_else(|| {
+            ClusterDirectoryError::ResourceMismatch("id 48 is present without id 45".into())
+        })?;
+        if inventory.billboard.is_none() {
+            return resource_mismatch("id 48 is present without id 47");
+        }
+        validate_sparse_shape(
+            48,
+            delta.affinity_factor,
+            delta.affinity_dims,
+            &delta.affinity_offsets,
+            affinity_dims,
+        )?;
+        if delta.animation_descriptor_indices != source.animation_descriptor_indices
+            || delta.affinity_offsets != source.affinity_offsets
+            || delta.affinity_lights != source.affinity_lights
+        {
+            return resource_mismatch("id 48 descriptor/CSR layout disagrees with id 45");
+        }
+    }
+    Ok(())
+}
+
+fn validate_delta_storage(
+    base: &OctahedralShVolumeSection,
+    section_id: u32,
+    tile_dimension: u32,
+    tile_border: u32,
+    cell_levels: &[u8],
+    affinity_offsets: &[u32],
+) -> Result<(), ClusterDirectoryError> {
+    if tile_dimension != base.tile_dimension || tile_border != base.tile_border {
+        return resource_mismatch(format!(
+            "id {section_id} tile geometry disagrees with id 34"
+        ));
+    }
+    crate::sh_volume::validate_storage_levels_against_delta(
+        base.grid_dimensions,
+        &base.probes,
+        cell_levels,
+        affinity_offsets,
+    )
+    .map_err(|error| {
+        ClusterDirectoryError::ResourceMismatch(format!(
+            "id {section_id} storage metadata disagrees with id 34: {error}"
+        ))
+    })
+}
+
+fn validate_sparse_shape(
+    section_id: u32,
+    affinity_factor: u8,
+    dimensions: [u32; 3],
+    offsets: &[u32],
+    expected: [u32; 3],
+) -> Result<(), ClusterDirectoryError> {
+    if affinity_factor != 4 || dimensions != expected {
+        return resource_mismatch(format!(
+            "id {section_id} affinity factor/dimensions {affinity_factor}/{dimensions:?} disagree with 4/{expected:?}"
+        ));
+    }
+    let cell_count = checked_product(dimensions)? as usize;
+    if offsets.len() != cell_count + 1 {
+        return resource_mismatch(format!(
+            "id {section_id} CSR offset count {} disagrees with affinity cell count {cell_count}",
+            offsets.len()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_descriptor_indices(
+    section_id: u32,
+    indices: &[u32],
+    descriptor_count: usize,
+) -> Result<(), ClusterDirectoryError> {
+    if let Some(&index) = indices
+        .iter()
+        .find(|&&index| index != u32::MAX && index as usize >= descriptor_count)
+    {
+        return resource_mismatch(format!(
+            "id {section_id} descriptor index {index} outside id 34 descriptor count {descriptor_count}"
+        ));
+    }
+    Ok(())
+}
+
+fn derive_expected_ranges(
+    directory: &ClusterDirectorySection,
+    inputs: ClusterDirectoryValidationInputs<'_>,
+    base: &OctahedralShVolumeSection,
+    affinity_dims: [u32; 3],
+) -> Result<Vec<ClusterRangeRecord>, ClusterDirectoryError> {
+    let probe_count = checked_product(base.grid_dimensions)? as usize;
+    if base.probes.len() != probe_count {
+        return resource_mismatch(format!(
+            "id 34 probe metadata count {} disagrees with grid product {probe_count}",
+            base.probes.len()
+        ));
+    }
+    if base.grid_dimensions == [0, 0, 0] {
+        if directory
+            .clusters
+            .iter()
+            .any(|cluster| cluster.range_count != 0)
+        {
+            return resource_mismatch("zero-grid id 34 must have no directory ranges");
+        }
+        return Ok(Vec::new());
+    }
+    if base
+        .cell_size
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return resource_mismatch("id 34 cell_size must be finite and positive");
+    }
+    let affinity_count = checked_product(affinity_dims)? as usize;
+    let mut active = vec![false; affinity_count];
+    let mut entry_bearing = vec![false; affinity_count];
+    for (probe_index, probe) in base.probes.iter().enumerate() {
+        if probe.validity != 0 {
+            active[probe_to_brick_index(probe_index as u32, base.grid_dimensions, affinity_dims)?
+                as usize] = true;
+        }
+    }
+    for offsets in sparse_offsets(inputs.sh) {
+        for (cell, pair) in offsets.windows(2).enumerate() {
+            if pair[0] != pair[1] {
+                active[cell] = true;
+                entry_bearing[cell] = true;
+            }
+        }
+    }
+
+    let cell_to_cluster = cell_to_cluster(directory);
+    let mut coverage = vec![BTreeSet::<u32>::new(); directory.clusters.len()];
+    for (brick_index, &is_active) in active.iter().enumerate() {
+        if !is_active {
+            continue;
+        }
+        let brick_index = brick_index as u32;
+        let (min_probe, max_probe) =
+            brick_probe_bounds(brick_index, affinity_dims, base.grid_dimensions)?;
+        let min_center = probe_position(min_probe, base);
+        let max_center = probe_position(max_probe, base);
+        let support_min = std::array::from_fn(|axis| min_center[axis] - 0.5 * base.cell_size[axis]);
+        let support_max = std::array::from_fn(|axis| max_center[axis] + 0.5 * base.cell_size[axis]);
+        let mut covered_any = false;
+        for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+            let begin = cluster.member_start as usize;
+            let end = begin + cluster.member_count as usize;
+            for &cell_id in &directory.members[begin..end] {
+                let cell = &inputs.cells.cells[cell_id as usize];
+                if cell.is_solid() || cell.is_exterior() {
+                    continue;
+                }
+                let expanded_min =
+                    std::array::from_fn(|axis| cell.bounds_min[axis] - base.cell_size[axis]);
+                let expanded_max =
+                    std::array::from_fn(|axis| cell.bounds_max[axis] + base.cell_size[axis]);
+                if aabb_intersects(support_min, support_max, expanded_min, expanded_max) {
+                    coverage[cluster_id].insert(brick_index);
+                    covered_any = true;
+                    break;
+                }
+            }
+        }
+        for probe in probes_in_brick(min_probe, max_probe, base.grid_dimensions) {
+            if base.probes[probe as usize].validity == 0 {
+                continue;
+            }
+            let cell = locate_cell(
+                inputs.cell_locator,
+                probe_position(probe_coords(probe, base.grid_dimensions), base),
+            )?;
+            coverage[cell_to_cluster[cell as usize] as usize].insert(brick_index);
+            covered_any = true;
+        }
+        if entry_bearing[brick_index as usize] && !covered_any {
+            let origin = std::array::from_fn(|axis| {
+                (brick_coords(brick_index, affinity_dims)[axis] * 4)
+                    .min(base.grid_dimensions[axis] - 1)
+            });
+            let cell = locate_cell(inputs.cell_locator, probe_position(origin, base))?;
+            coverage[cell_to_cluster[cell as usize] as usize].insert(brick_index);
+        }
+    }
+
+    for cluster_coverage in &mut coverage {
+        let mut queue: VecDeque<u32> = cluster_coverage.iter().copied().collect();
+        let mut visited_nodes = BTreeSet::new();
+        while let Some(brick) = queue.pop_front() {
+            let (min_probe, max_probe) =
+                brick_probe_bounds(brick, affinity_dims, base.grid_dimensions)?;
+            for probe_index in probes_in_brick(min_probe, max_probe, base.grid_dimensions) {
+                let scale = base.probes[probe_index as usize].node_scale;
+                if scale > 3 {
+                    return resource_mismatch(format!(
+                        "id 34 probe {probe_index} node_scale {scale} exceeds 3"
+                    ));
+                }
+                let brick_xyz = brick_coords(
+                    probe_to_brick_index(probe_index, base.grid_dimensions, affinity_dims)?,
+                    affinity_dims,
+                );
+                let span = 1u32 << scale;
+                let origin: [u32; 3] = std::array::from_fn(|axis| (brick_xyz[axis] / span) * span);
+                if !visited_nodes.insert((origin, scale)) {
+                    continue;
+                }
+                if scale > 0 {
+                    for axis in 0..3 {
+                        let max_probe = origin[axis]
+                            .checked_add(span)
+                            .and_then(|v| v.checked_mul(4))
+                            .and_then(|v| v.checked_sub(1))
+                            .ok_or(ClusterDirectoryError::SizeOverflow("adaptive node bound"))?;
+                        if max_probe >= base.grid_dimensions[axis] {
+                            return resource_mismatch(format!(
+                                "id 34 adaptive node {origin:?}/scale {scale} exceeds grid {:?}",
+                                base.grid_dimensions
+                            ));
+                        }
+                    }
+                }
+                for z in origin[2]..origin[2] + span {
+                    for y in origin[1]..origin[1] + span {
+                        for x in origin[0]..origin[0] + span {
+                            let member = flatten([x, y, z], affinity_dims)?;
+                            if cluster_coverage.insert(member) {
+                                queue.push_back(member);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut owners = BTreeMap::<u32, u32>::new();
+    for (cluster, bricks) in coverage.iter().enumerate() {
+        for &brick in bricks {
+            owners.entry(brick).or_insert(cluster as u32);
+        }
+    }
+    let mut result = Vec::new();
+    for (cluster_id, bricks) in coverage.iter().enumerate() {
+        let mut cluster_ranges = Vec::new();
+        for (resource_index, resource) in directory.resources.iter().enumerate() {
+            let indices: Vec<u32> = match resource.domain {
+                ClusterResourceDomain::AffinityCell => bricks.iter().copied().collect(),
+                ClusterResourceDomain::DenseProbe => bricks
+                    .iter()
+                    .flat_map(|&brick| {
+                        let (min, max) =
+                            brick_probe_bounds(brick, affinity_dims, base.grid_dimensions)
+                                .expect("validated dimensions");
+                        probes_in_brick(min, max, base.grid_dimensions)
+                    })
+                    .collect(),
+            };
+            let mut indices = indices;
+            indices.sort_unstable();
+            indices.dedup();
+            let mut start = 0;
+            while start < indices.len() {
+                let first = indices[start];
+                let (role, owner) = if resource.domain == ClusterResourceDomain::DenseProbe {
+                    (ClusterRangeRole::Dense, DENSE_OWNER_SENTINEL)
+                } else {
+                    let owner = owners[&first];
+                    (
+                        if owner == cluster_id as u32 {
+                            ClusterRangeRole::Owned
+                        } else {
+                            ClusterRangeRole::Halo
+                        },
+                        owner,
+                    )
+                };
+                let mut end = start + 1;
+                while end < indices.len() && indices[end] == indices[end - 1] + 1 {
+                    if resource.domain == ClusterResourceDomain::AffinityCell
+                        && owners[&indices[end]] != owner
+                    {
+                        break;
+                    }
+                    end += 1;
+                }
+                cluster_ranges.push(ClusterRangeRecord {
+                    resource_index: resource_index as u32,
+                    start: first,
+                    count: (end - start) as u32,
+                    owner_cluster_id: owner,
+                    role,
+                });
+                start = end;
+            }
+        }
+        cluster_ranges.sort_by_key(|range| (range.resource_index, range.start));
+        let cluster = &directory.clusters[cluster_id];
+        if cluster.range_start as usize != result.len()
+            || cluster.range_count as usize != cluster_ranges.len()
+        {
+            return resource_mismatch(format!(
+                "cluster {cluster_id} range slice does not match derived coverage"
+            ));
+        }
+        result.extend(cluster_ranges);
+    }
+    Ok(result)
+}
+
+fn sparse_offsets(inventory: ClusterDirectoryShInventory<'_>) -> Vec<&[u32]> {
+    let mut result = Vec::new();
+    if let Some(section) = inventory.delta {
+        result.push(section.affinity_offsets.as_slice());
+    }
+    if let Some(section) = inventory.direct_delta {
+        result.push(section.affinity_offsets.as_slice());
+    }
+    if let Some(section) = inventory.animated_direct_delta {
+        result.push(section.affinity_offsets.as_slice());
+    }
+    if let Some(section) = inventory.animated_billboard_delta {
+        result.push(section.affinity_offsets.as_slice());
+    }
+    result
+}
+
+fn validate_affinity_ownership(
+    directory: &ClusterDirectorySection,
+) -> Result<(), ClusterDirectoryError> {
+    for (resource_index, resource) in directory.resources.iter().enumerate() {
+        if resource.domain != ClusterResourceDomain::AffinityCell {
+            continue;
+        }
+        let mut boundaries = BTreeSet::new();
+        for cluster in &directory.clusters {
+            let begin = cluster.range_start as usize;
+            let end = begin + cluster.range_count as usize;
+            for range in directory.ranges[begin..end]
+                .iter()
+                .filter(|range| range.resource_index as usize == resource_index)
+            {
+                boundaries.insert(range.start);
+                boundaries.insert(range.start + range.count);
+            }
+        }
+        let boundaries: Vec<u32> = boundaries.into_iter().collect();
+        for pair in boundaries.windows(2) {
+            let start = pair[0];
+            if start == pair[1] {
+                continue;
+            }
+            let mut references = Vec::new();
+            for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+                let begin = cluster.range_start as usize;
+                let end = begin + cluster.range_count as usize;
+                if let Some(range) = directory.ranges[begin..end].iter().find(|range| {
+                    range.resource_index as usize == resource_index
+                        && range.start <= start
+                        && start < range.start + range.count
+                }) {
+                    references.push((cluster_id as u32, range));
+                }
+            }
+            if references.is_empty() {
+                continue;
+            }
+            let owner = references[0].1.owner_cluster_id;
+            if references
+                .iter()
+                .any(|(_, range)| range.owner_cluster_id != owner)
+            {
+                return invalid(format!(
+                    "resource {resource_index} affinity cell {start} has disagreeing owners"
+                ));
+            }
+            let owner_references = references
+                .iter()
+                .filter(|(cluster, range)| {
+                    *cluster == owner && range.role == ClusterRangeRole::Owned
+                })
+                .count();
+            if owner_references != 1 {
+                return invalid(format!(
+                    "resource {resource_index} affinity cell {start} does not have exactly one covering owner"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn locate_cell(
+    locator: &CellLocatorSection,
+    point: [f32; 3],
+) -> Result<u32, ClusterDirectoryError> {
+    let mut child = locator.root;
+    let mut remaining = locator.nodes.len() + 1;
+    loop {
+        if remaining == 0 {
+            return invalid("cell locator traversal did not terminate");
+        }
+        remaining -= 1;
+        match child {
+            CellLocatorChild::Cell(cell) => return Ok(cell),
+            CellLocatorChild::Node(index) => {
+                let node = locator.nodes.get(index as usize).ok_or_else(|| {
+                    ClusterDirectoryError::InvalidData(format!(
+                        "cell locator node {index} is out of range"
+                    ))
+                })?;
+                let signed = node.plane_normal[0] * point[0]
+                    + node.plane_normal[1] * point[1]
+                    + node.plane_normal[2] * point[2]
+                    - node.plane_distance;
+                child = if signed >= 0.0 { node.front } else { node.back };
+            }
+        }
+    }
+}
+
+fn cell_to_cluster(directory: &ClusterDirectorySection) -> Vec<u32> {
+    let mut result = vec![0; directory.runtime_cell_count as usize];
+    for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+        let begin = cluster.member_start as usize;
+        let end = begin + cluster.member_count as usize;
+        for &cell in &directory.members[begin..end] {
+            result[cell as usize] = cluster_id as u32;
+        }
+    }
+    result
+}
+
+fn affinity_dimensions(grid: [u32; 3]) -> Result<[u32; 3], ClusterDirectoryError> {
+    if grid == [0, 0, 0] {
+        return Ok(grid);
+    }
+    if grid.contains(&0) {
+        return resource_mismatch(format!("id 34 has mixed-zero grid dimensions {grid:?}"));
+    }
+    let mut result = [0; 3];
+    for axis in 0..3 {
+        result[axis] = grid[axis]
+            .checked_add(3)
+            .ok_or(ClusterDirectoryError::SizeOverflow(
+                "affinity dimension ceiling",
+            ))?
+            / 4;
+    }
+    Ok(result)
+}
+
+fn brick_probe_bounds(
+    brick: u32,
+    affinity_dims: [u32; 3],
+    grid_dims: [u32; 3],
+) -> Result<([u32; 3], [u32; 3]), ClusterDirectoryError> {
+    let coords = brick_coords(brick, affinity_dims);
+    let min = std::array::from_fn(|axis| coords[axis] * 4);
+    let max = std::array::from_fn(|axis| (min[axis] + 3).min(grid_dims[axis] - 1));
+    Ok((min, max))
+}
+
+fn probes_in_brick(min: [u32; 3], max: [u32; 3], grid_dims: [u32; 3]) -> impl Iterator<Item = u32> {
+    let mut probes = Vec::new();
+    for z in min[2]..=max[2] {
+        for y in min[1]..=max[1] {
+            for x in min[0]..=max[0] {
+                probes.push(x + grid_dims[0] * (y + grid_dims[1] * z));
+            }
+        }
+    }
+    probes.into_iter()
+}
+
+fn probe_to_brick_index(
+    probe: u32,
+    grid_dims: [u32; 3],
+    affinity_dims: [u32; 3],
+) -> Result<u32, ClusterDirectoryError> {
+    let coords = probe_coords(probe, grid_dims);
+    flatten([coords[0] / 4, coords[1] / 4, coords[2] / 4], affinity_dims)
+}
+
+fn probe_coords(index: u32, dimensions: [u32; 3]) -> [u32; 3] {
+    let xy = dimensions[0] * dimensions[1];
+    [
+        index % dimensions[0],
+        (index / dimensions[0]) % dimensions[1],
+        index / xy,
+    ]
+}
+
+fn brick_coords(index: u32, dimensions: [u32; 3]) -> [u32; 3] {
+    probe_coords(index, dimensions)
+}
+
+fn flatten(coords: [u32; 3], dimensions: [u32; 3]) -> Result<u32, ClusterDirectoryError> {
+    coords[0]
+        .checked_add(
+            dimensions[0]
+                .checked_mul(
+                    coords[1]
+                        .checked_add(
+                            dimensions[1]
+                                .checked_mul(coords[2])
+                                .ok_or(ClusterDirectoryError::SizeOverflow("grid flatten"))?,
+                        )
+                        .ok_or(ClusterDirectoryError::SizeOverflow("grid flatten"))?,
+                )
+                .ok_or(ClusterDirectoryError::SizeOverflow("grid flatten"))?,
+        )
+        .ok_or(ClusterDirectoryError::SizeOverflow("grid flatten"))
+}
+
+fn probe_position(coords: [u32; 3], base: &OctahedralShVolumeSection) -> [f32; 3] {
+    std::array::from_fn(|axis| base.grid_origin[axis] + coords[axis] as f32 * base.cell_size[axis])
+}
+
+fn aabb_intersects(a_min: [f32; 3], a_max: [f32; 3], b_min: [f32; 3], b_max: [f32; 3]) -> bool {
+    (0..3).all(|axis| a_min[axis] <= b_max[axis] && b_min[axis] <= a_max[axis])
+}
+
+fn resource_domain(section_id: u32) -> Option<ClusterResourceDomain> {
+    match SectionId::from_u32(section_id)? {
+        SectionId::OctahedralShVolume
+        | SectionId::DirectShVolume
+        | SectionId::BillboardDirectScatterVolume => Some(ClusterResourceDomain::DenseProbe),
+        SectionId::DeltaShVolumes
+        | SectionId::DirectShDeltaVolumes
+        | SectionId::AnimatedDirectShDeltaVolumes
+        | SectionId::AnimatedBillboardDirectScatterDeltaVolumes => {
+            Some(ClusterResourceDomain::AffinityCell)
+        }
+        _ => None,
+    }
+}
+
+fn validate_bounds(
+    cluster: usize,
+    min: [f32; 3],
+    max: [f32; 3],
+) -> Result<(), ClusterDirectoryError> {
+    for axis in 0..3 {
+        if !min[axis].is_finite() || !max[axis].is_finite() || min[axis] > max[axis] {
+            return invalid(format!(
+                "cluster {cluster} has non-finite or inverted bounds"
+            ));
+        }
+        if is_negative_zero(min[axis]) || is_negative_zero(max[axis]) {
+            return invalid(format!(
+                "cluster {cluster} bounds contain noncanonical negative zero"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_slice(
+    cluster: usize,
+    label: &str,
+    start: u32,
+    count: u32,
+    expected_start: u32,
+    total: usize,
+) -> Result<(), ClusterDirectoryError> {
+    if count == 0 && start != 0 {
+        return invalid(format!(
+            "cluster {cluster} zero-count {label} slice must use start zero"
+        ));
+    }
+    if count != 0 && start != expected_start {
+        return invalid(format!(
+            "cluster {cluster} {label} slice starts at {start}, expected {expected_start}"
+        ));
+    }
+    let end = start
+        .checked_add(count)
+        .ok_or(ClusterDirectoryError::SizeOverflow("cluster slice end"))?;
+    if end as usize > total {
+        return invalid(format!(
+            "cluster {cluster} {label} slice ends outside table"
+        ));
+    }
+    Ok(())
+}
+
+fn checked_wire_len(
+    clusters: usize,
+    resources: usize,
+    members: usize,
+    ranges: usize,
+) -> Result<usize, ClusterDirectoryError> {
+    HEADER_SIZE
+        .checked_add(
+            clusters
+                .checked_mul(CLUSTER_RECORD_SIZE)
+                .ok_or(ClusterDirectoryError::SizeOverflow("cluster bytes"))?,
+        )
+        .and_then(|value| value.checked_add(resources.checked_mul(RESOURCE_RECORD_SIZE)?))
+        .and_then(|value| value.checked_add(members.checked_mul(MEMBER_RECORD_SIZE)?))
+        .and_then(|value| value.checked_add(ranges.checked_mul(RANGE_RECORD_SIZE)?))
+        .ok_or(ClusterDirectoryError::SizeOverflow("section byte length"))
+}
+
+fn checked_product(dimensions: [u32; 3]) -> Result<u32, ClusterDirectoryError> {
+    dimensions[0]
+        .checked_mul(dimensions[1])
+        .and_then(|value| value.checked_mul(dimensions[2]))
+        .ok_or(ClusterDirectoryError::SizeOverflow(
+            "resource dimension product",
+        ))
+}
+
+fn try_vec<T>(count: u32, label: &'static str) -> Result<Vec<T>, ClusterDirectoryError> {
+    let count = usize_count(count)?;
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(count)
+        .map_err(|_| ClusterDirectoryError::AllocationFailed(label))?;
+    Ok(result)
+}
+
+fn usize_count(count: u32) -> Result<usize, ClusterDirectoryError> {
+    usize::try_from(count)
+        .map_err(|_| ClusterDirectoryError::SizeOverflow("u32 count does not fit usize"))
+}
+fn u32_len(len: usize, label: &'static str) -> Result<u32, ClusterDirectoryError> {
+    u32::try_from(len).map_err(|_| ClusterDirectoryError::SizeOverflow(label))
+}
+fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+fn read_u32(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(
+        data[offset..offset + 4]
+            .try_into()
+            .expect("validated section length"),
+    )
+}
+fn read_f32(data: &[u8], offset: usize) -> f32 {
+    f32::from_bits(read_u32(data, offset))
+}
+fn canonical_zero(value: f32) -> f32 {
+    if value == 0.0 { 0.0 } else { value }
+}
+fn is_negative_zero(value: f32) -> bool {
+    value.to_bits() == (-0.0f32).to_bits()
+}
+fn float_array_bits_equal(a: [f32; 3], b: [f32; 3]) -> bool {
+    (0..3).all(|axis| a[axis].to_bits() == b[axis].to_bits())
+}
+fn invalid<T>(message: impl Into<String>) -> Result<T, ClusterDirectoryError> {
+    Err(ClusterDirectoryError::InvalidData(message.into()))
+}
+fn resource_mismatch<T>(message: impl Into<String>) -> Result<T, ClusterDirectoryError> {
+    Err(ClusterDirectoryError::ResourceMismatch(message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        animated_direct_sh_delta_volumes::ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION,
+        bvh::BvhLeaf,
+        cells::{CELL_FLAG_DRAWABLE, CellRecord},
+        delta_sh_volumes::AFFINITY_FACTOR,
+        portals::PortalRecord,
+        sh_volume::{OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe},
+    };
+
+    fn empty_directory() -> ClusterDirectorySection {
+        ClusterDirectorySection {
+            runtime_cell_count: 0,
+            primitive_limit: 64,
+            cell_limit: 16,
+            clusters: Vec::new(),
+            resources: Vec::new(),
+            members: Vec::new(),
+            ranges: Vec::new(),
+        }
+    }
+
+    fn one_cell_directory() -> ClusterDirectorySection {
+        ClusterDirectorySection {
+            runtime_cell_count: 1,
+            primitive_limit: 64,
+            cell_limit: 16,
+            clusters: vec![ClusterRecord {
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [1.0, 1.0, 1.0],
+                member_start: 0,
+                member_count: 1,
+                range_start: 0,
+                range_count: 0,
+                primitive_count: 0,
+                flags: 0,
+            }],
+            resources: Vec::new(),
+            members: vec![0],
+            ranges: Vec::new(),
+        }
+    }
+
+    fn cells(count: usize) -> CellsSection {
+        CellsSection {
+            cells: (0..count)
+                .map(|index| CellRecord {
+                    bounds_min: [index as f32, 0.0, 0.0],
+                    bounds_max: [index as f32 + 1.0, 1.0, 1.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                })
+                .collect(),
+            portal_refs: Vec::new(),
+        }
+    }
+
+    fn empty_bvh() -> BvhSection {
+        BvhSection {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            root_node_index: 0,
+        }
+    }
+
+    fn base_volume(
+        dimensions: [u32; 3],
+        probes: Vec<OctahedralShProbe>,
+    ) -> OctahedralShVolumeSection {
+        OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: dimensions,
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
+            atlas_tiles_per_row: 0,
+            probes,
+            irradiance_format: 1,
+            compact_atlas: Vec::new(),
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cluster_directory_empty_and_single_cluster_round_trip_exact_wire() {
+        let empty = empty_directory();
+        let bytes = empty.try_to_bytes().unwrap();
+        assert_eq!(bytes.len(), HEADER_SIZE);
+        assert_eq!(ClusterDirectorySection::from_bytes(&bytes).unwrap(), empty);
+
+        let single = one_cell_directory();
+        let bytes = single.try_to_bytes().unwrap();
+        assert_eq!(
+            bytes.len(),
+            HEADER_SIZE + CLUSTER_RECORD_SIZE + MEMBER_RECORD_SIZE
+        );
+        assert_eq!(ClusterDirectorySection::from_bytes(&bytes).unwrap(), single);
+    }
+
+    #[test]
+    fn cluster_directory_parser_rejects_version_reserved_length_and_unknown_values() {
+        let bytes = empty_directory().try_to_bytes().unwrap();
+        let mut bad = bytes.clone();
+        bad[0..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(matches!(
+            ClusterDirectorySection::from_bytes(&bad),
+            Err(ClusterDirectoryError::VersionMismatch { .. })
+        ));
+        let mut bad = bytes.clone();
+        bad[32..36].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            ClusterDirectorySection::from_bytes(&bad),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        let mut bad = bytes;
+        bad.push(0);
+        assert!(matches!(
+            ClusterDirectorySection::from_bytes(&bad),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+
+        let mut section = one_cell_directory();
+        section.resources.push(ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [1, 1, 1],
+        });
+        section.clusters[0].range_count = 1;
+        section.ranges.push(ClusterRangeRecord {
+            resource_index: 0,
+            start: 0,
+            count: 1,
+            owner_cluster_id: DENSE_OWNER_SENTINEL,
+            role: ClusterRangeRole::Dense,
+        });
+        let mut bytes = section.try_to_bytes().unwrap();
+        let resource_offset = HEADER_SIZE + CLUSTER_RECORD_SIZE;
+        bytes[resource_offset + 4..resource_offset + 8].copy_from_slice(&9u32.to_le_bytes());
+        assert!(matches!(
+            ClusterDirectorySection::from_bytes(&bytes),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_structure_rejects_membership_bounds_flags_order_and_grid_ranges() {
+        let mut section = one_cell_directory();
+        section.members[0] = 1;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::CellOutOfRange { .. })
+        ));
+
+        let mut section = one_cell_directory();
+        section.clusters[0].bounds_min[0] = f32::NAN;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        let mut section = one_cell_directory();
+        section.clusters[0].bounds_min[0] = -0.0;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        let mut section = one_cell_directory();
+        section.clusters[0].flags = 2;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+
+        let mut section = one_cell_directory();
+        section.resources.push(ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [2, 1, 1],
+        });
+        section.clusters[0].range_count = 1;
+        section.ranges.push(ClusterRangeRecord {
+            resource_index: 0,
+            start: u32::MAX,
+            count: 2,
+            owner_cluster_id: DENSE_OWNER_SENTINEL,
+            role: ClusterRangeRole::Dense,
+        });
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::SizeOverflow(_))
+        ));
+
+        let mut section = one_cell_directory();
+        section.resources.push(ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [2, 1, 1],
+        });
+        section.clusters[0].range_count = 1;
+        section.ranges.push(ClusterRangeRecord {
+            resource_index: 0,
+            start: 1,
+            count: 2,
+            owner_cluster_id: DENSE_OWNER_SENTINEL,
+            role: ClusterRangeRole::Dense,
+        });
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::GridRangeOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_structure_rejects_bad_range_order_overlap_coalescing_and_owner() {
+        let mut section = one_cell_directory();
+        section.resources.push(ClusterResourceRecord {
+            section_id: 27,
+            domain: ClusterResourceDomain::AffinityCell,
+            dimensions: [4, 1, 1],
+        });
+        section.clusters[0].range_count = 2;
+        section.ranges = vec![
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 0,
+                count: 1,
+                owner_cluster_id: 0,
+                role: ClusterRangeRole::Owned,
+            },
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 1,
+                count: 1,
+                owner_cluster_id: 0,
+                role: ClusterRangeRole::Owned,
+            },
+        ];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        section.ranges[1].start = 0;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        section.ranges.truncate(1);
+        section.clusters[0].range_count = 1;
+        section.ranges[0].role = ClusterRangeRole::Halo;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_structure_requires_one_affinity_owner_and_halo_agreement() {
+        let mut section = ClusterDirectorySection {
+            runtime_cell_count: 2,
+            primitive_limit: 4,
+            cell_limit: 1,
+            clusters: vec![
+                ClusterRecord {
+                    bounds_min: [0.0; 3],
+                    bounds_max: [1.0; 3],
+                    member_start: 0,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 1,
+                    primitive_count: 0,
+                    flags: 0,
+                },
+                ClusterRecord {
+                    bounds_min: [1.0, 0.0, 0.0],
+                    bounds_max: [2.0, 1.0, 1.0],
+                    member_start: 1,
+                    member_count: 1,
+                    range_start: 1,
+                    range_count: 1,
+                    primitive_count: 0,
+                    flags: 0,
+                },
+            ],
+            resources: vec![ClusterResourceRecord {
+                section_id: 27,
+                domain: ClusterResourceDomain::AffinityCell,
+                dimensions: [1, 1, 1],
+            }],
+            members: vec![0, 1],
+            ranges: vec![
+                ClusterRangeRecord {
+                    resource_index: 0,
+                    start: 0,
+                    count: 1,
+                    owner_cluster_id: 0,
+                    role: ClusterRangeRole::Owned,
+                },
+                ClusterRangeRecord {
+                    resource_index: 0,
+                    start: 0,
+                    count: 1,
+                    owner_cluster_id: 0,
+                    role: ClusterRangeRole::Halo,
+                },
+            ],
+        };
+        section.validate_structure().unwrap();
+        section.ranges[1].owner_cluster_id = 1;
+        section.ranges[1].role = ClusterRangeRole::Owned;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_structure_rejects_membership_gap_and_duplicate() {
+        let mut section = ClusterDirectorySection {
+            runtime_cell_count: 2,
+            primitive_limit: 4,
+            cell_limit: 2,
+            clusters: vec![ClusterRecord {
+                bounds_min: [0.0; 3],
+                bounds_max: [1.0; 3],
+                member_start: 0,
+                member_count: 2,
+                range_start: 0,
+                range_count: 0,
+                primitive_count: 0,
+                flags: 0,
+            }],
+            resources: Vec::new(),
+            members: vec![0, 0],
+            ranges: Vec::new(),
+        };
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        section.members = vec![0];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_structure_rejects_budget_dimension_and_resource_order_violations() {
+        let mut section = one_cell_directory();
+        section.clusters[0].primitive_count = section.primitive_limit + 1;
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        section.clusters[0].flags = CLUSTER_FLAG_INDIVISIBLE_OVERSIZE;
+        section.validate_structure().unwrap();
+
+        section.resources = vec![ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [1, 0, 1],
+        }];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        section.resources = vec![
+            ClusterResourceRecord {
+                section_id: 35,
+                domain: ClusterResourceDomain::DenseProbe,
+                dimensions: [0, 0, 0],
+            },
+            ClusterResourceRecord {
+                section_id: 34,
+                domain: ClusterResourceDomain::DenseProbe,
+                dimensions: [0, 0, 0],
+            },
+        ];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_semantics_validate_partition_connectivity_bounds_and_bvh_counts() {
+        let cells = cells(2);
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 0,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        };
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let mut directory = ClusterDirectorySection {
+            runtime_cell_count: 2,
+            primitive_limit: 4,
+            cell_limit: 4,
+            clusters: vec![ClusterRecord {
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [2.0, 1.0, 1.0],
+                member_start: 0,
+                member_count: 2,
+                range_start: 0,
+                range_count: 0,
+                primitive_count: 1,
+                flags: 0,
+            }],
+            resources: Vec::new(),
+            members: vec![0, 1],
+            ranges: Vec::new(),
+        };
+        let mut bvh = empty_bvh();
+        bvh.leaves.push(BvhLeaf {
+            aabb_min: [0.0; 3],
+            material_bucket_id: 0,
+            aabb_max: [1.0; 3],
+            index_offset: 0,
+            index_count: 3,
+            cell_id: 1,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
+        });
+        let inputs = ClusterDirectoryValidationInputs {
+            cells: &cells,
+            portals: &portals,
+            bvh: &bvh,
+            cell_locator: &locator,
+            sh: ClusterDirectoryShInventory::default(),
+        };
+        directory.validate_semantics(inputs).unwrap();
+
+        let disconnected = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let inputs = ClusterDirectoryValidationInputs {
+            portals: &disconnected,
+            ..inputs
+        };
+        assert!(matches!(
+            directory.validate_semantics(inputs),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+        directory.clusters[0].bounds_max[0] = 3.0;
+        let inputs = ClusterDirectoryValidationInputs {
+            portals: &portals,
+            ..inputs
+        };
+        assert!(matches!(
+            directory.validate_semantics(inputs),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_accepts_valid_empty_sparse_companion_with_nonzero_dimensions() {
+        let dims = [4, 4, 4];
+        let mut probes = vec![OctahedralShProbe::default(); 64];
+        probes[0].validity = 1;
+        let base = base_volume(dims, probes);
+        let sparse = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        let sparse_bytes = sparse.try_to_bytes().unwrap();
+        assert_eq!(sparse_bytes[0], ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION);
+        let sparse = AnimatedDirectShDeltaVolumesSection::from_bytes(&sparse_bytes).unwrap();
+        let cells = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [-1.0; 3],
+                bounds_max: [4.0; 3],
+                flags: CELL_FLAG_DRAWABLE,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = empty_bvh();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let mut directory = one_cell_directory();
+        directory.clusters[0].bounds_min = [-1.0; 3];
+        directory.clusters[0].bounds_max = [4.0; 3];
+        directory.resources = vec![
+            ClusterResourceRecord {
+                section_id: 34,
+                domain: ClusterResourceDomain::DenseProbe,
+                dimensions: dims,
+            },
+            ClusterResourceRecord {
+                section_id: 45,
+                domain: ClusterResourceDomain::AffinityCell,
+                dimensions: [1, 1, 1],
+            },
+        ];
+        directory.clusters[0].range_count = 2;
+        directory.ranges = vec![
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 0,
+                count: 64,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+            ClusterRangeRecord {
+                resource_index: 1,
+                start: 0,
+                count: 1,
+                owner_cluster_id: 0,
+                role: ClusterRangeRole::Owned,
+            },
+        ];
+        directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory {
+                    octahedral: Some(&base),
+                    animated_direct_delta: Some(&sparse),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cluster_directory_scale_zero_closure_stays_local_on_wide_grid() {
+        let dims = [20, 4, 4];
+        let mut probes = vec![OctahedralShProbe::default(); 320];
+        probes[0].validity = 1;
+        let base = base_volume(dims, probes);
+        let cells = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [-0.1; 3],
+                bounds_max: [0.1; 3],
+                flags: CELL_FLAG_DRAWABLE,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = empty_bvh();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let mut directory = one_cell_directory();
+        directory.clusters[0].bounds_min = [-0.1; 3];
+        directory.clusters[0].bounds_max = [0.1; 3];
+        directory.resources = vec![ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: dims,
+        }];
+        for z in 0..4 {
+            for y in 0..4 {
+                directory.ranges.push(ClusterRangeRecord {
+                    resource_index: 0,
+                    start: y * 20 + z * 80,
+                    count: 4,
+                    owner_cluster_id: DENSE_OWNER_SENTINEL,
+                    role: ClusterRangeRole::Dense,
+                });
+            }
+        }
+        directory.clusters[0].range_count = directory.ranges.len() as u32;
+        directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory {
+                    octahedral: Some(&base),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            directory
+                .ranges
+                .iter()
+                .map(|range| range.count)
+                .sum::<u32>(),
+            64
+        );
+    }
+
+    #[test]
+    fn cluster_directory_scaled_node_closure_adds_exact_constituent_cube() {
+        let dims = [8, 8, 8];
+        let mut probes = vec![OctahedralShProbe::default(); 512];
+        for probe in &mut probes {
+            probe.node_scale = 1;
+        }
+        probes[0].validity = 1;
+        let base = base_volume(dims, probes);
+        let cells = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [-0.1; 3],
+                bounds_max: [0.1; 3],
+                flags: CELL_FLAG_DRAWABLE,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = empty_bvh();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let mut directory = one_cell_directory();
+        directory.clusters[0].bounds_min = [-0.1; 3];
+        directory.clusters[0].bounds_max = [0.1; 3];
+        directory.resources = vec![ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: dims,
+        }];
+        directory.ranges = vec![ClusterRangeRecord {
+            resource_index: 0,
+            start: 0,
+            count: 512,
+            owner_cluster_id: DENSE_OWNER_SENTINEL,
+            role: ClusterRangeRole::Dense,
+        }];
+        directory.clusters[0].range_count = 1;
+        directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory {
+                    octahedral: Some(&base),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cluster_directory_partial_edge_scale_zero_uses_clipped_probe_range() {
+        let dims = [5, 1, 1];
+        let mut probes = vec![OctahedralShProbe::default(); 5];
+        probes[4].validity = 1;
+        let base = base_volume(dims, probes);
+        let cells = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [3.9, -0.1, -0.1],
+                bounds_max: [4.1, 0.1, 0.1],
+                flags: CELL_FLAG_DRAWABLE,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = empty_bvh();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let mut directory = one_cell_directory();
+        directory.clusters[0].bounds_min = [3.9, -0.1, -0.1];
+        directory.clusters[0].bounds_max = [4.1, 0.1, 0.1];
+        directory.resources = vec![
+            ClusterResourceRecord {
+                section_id: 27,
+                domain: ClusterResourceDomain::AffinityCell,
+                dimensions: [2, 1, 1],
+            },
+            ClusterResourceRecord {
+                section_id: 34,
+                domain: ClusterResourceDomain::DenseProbe,
+                dimensions: dims,
+            },
+        ];
+        let sparse = DeltaShVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [2, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0, 0],
+            cell_levels: vec![0, 0],
+            affinity_offsets: vec![0, 0, 0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        directory.ranges = vec![
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 1,
+                count: 1,
+                owner_cluster_id: 0,
+                role: ClusterRangeRole::Owned,
+            },
+            ClusterRangeRecord {
+                resource_index: 1,
+                start: 4,
+                count: 1,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+        ];
+        directory.clusters[0].range_count = 2;
+        directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory {
+                    octahedral: Some(&base),
+                    delta: Some(&sparse),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cluster_directory_resource_inventory_and_descriptor_dependencies_are_strict() {
+        let base = base_volume([0, 0, 0], Vec::new());
+        let cells = cells(1);
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = empty_bvh();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let directory = one_cell_directory();
+        let inputs = ClusterDirectoryValidationInputs {
+            cells: &cells,
+            portals: &portals,
+            bvh: &bvh,
+            cell_locator: &locator,
+            sh: ClusterDirectoryShInventory {
+                octahedral: Some(&base),
+                ..Default::default()
+            },
+        };
+        assert!(matches!(
+            directory.validate_semantics(inputs),
+            Err(ClusterDirectoryError::MissingResource(_))
+        ));
+
+        let mut directory = one_cell_directory();
+        directory.resources.push(ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [0, 0, 0],
+        });
+        directory.validate_semantics(inputs).unwrap();
+
+        let delta = DeltaShVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [0, 0, 0],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: vec![0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        directory.resources.insert(
+            0,
+            ClusterResourceRecord {
+                section_id: 27,
+                domain: ClusterResourceDomain::AffinityCell,
+                dimensions: [0, 0, 0],
+            },
+        );
+        let inputs = ClusterDirectoryValidationInputs {
+            sh: ClusterDirectoryShInventory {
+                octahedral: Some(&base),
+                delta: Some(&delta),
+                ..Default::default()
+            },
+            ..inputs
+        };
+        assert!(matches!(
+            directory.validate_semantics(inputs),
+            Err(ClusterDirectoryError::ResourceMismatch(_))
+        ));
+    }
+}

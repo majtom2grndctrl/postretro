@@ -399,6 +399,7 @@ fn read_exact_or_short<R: Read>(reader: &mut R, buf: &mut [u8]) -> io::Result<us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SectionId;
     use std::io::Cursor;
 
     struct MaxLengthReader;

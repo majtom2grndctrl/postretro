@@ -18,7 +18,10 @@ also the lone at-rest asymmetry among the baked atlases: id 22 (lightmap) and id
 35 "Stored BC6H-compressed at rest"; `crates/level-compiler/src/pack.rs` has no
 compression step for id 42), while id 42 alone stays raw. Evolving the header to carry
 both a **block dimension** (more mask slots per texel) and a **codec tag** (compressed
-texel bytes) closes both gaps under one version bump.
+texel bytes) closes both gaps under one version bump. Closing the compression gap at full
+strength (BC7, ≈4:1) requires a BC7-unorm encoder the tree lacks; rather than retreat to a
+weaker codec, this brief builds that encoder as a reusable foundation with the shadowmask as
+its first consumer — the same encoder the blocked `bc7-color-textures` draft needs next.
 
 ## Decisions
 
@@ -38,23 +41,34 @@ texel bytes) closes both gaps under one version bump.
   a soft specular-only visibility signal whose fallback is already "fully lit"
   (`rendering_pipeline.md` §4 World specular shadowmask), so codec error is bounded and
   affects highlights only.
-- **Codec: BC7 and per-channel BC4 trade on opposite axes; the default is an owner call
-  (Open questions).** BC7 gives ≈4:1 and a drop-in **shader** — BC7 unorm samples as `f32`
-  in `[0,1]` identically to `Rgba8Unorm`, so `forward.wgsl`'s
-  `sample_shadowmask_atlas`/`shadowmask_channel_value` are unchanged for the encoding — but
-  its *encoder* is the expensive side: no BC7 **unorm** encoder exists in-tree (the in-tree
-  BC encoders are HDR-RGB BC6H, `crates/level-compiler/src/bc6h.rs`, and BC5, `bc5.rs`;
-  neither is a BC7-unorm), and `bc7-color-textures` already flags a BC7
-  encoder as unresolved heavy work (building or vendoring one, or sequencing after that
-  draft). Per-channel BC4 inverts it: ≈2:1 and it *does* touch the shader (channels become
-  per-channel planes; the `channel` selector becomes a plane index that composes with the
-  block decode), but its encoder is largely in-tree — BC4 is one channel of the existing
-  `bc5.rs` unorm path — and it is the semantic fit for four *independent* per-light masks,
-  where BC7 models a cross-channel correlation the masks do not have. So BC4 lands
-  self-contained with no cross-plan dependency. The fidelity dimension stays delegated (fall
-  back off the chosen codec if it fails the fidelity/visual ACs); the effort/ratio/dependency
-  dimension is the owner question below. (Determinism is not a discriminator — neither codec
-  is held to byte-identical output; see the determinism decision.)
+- **Target BC7 at ≈4:1; build the deterministic BC7-unorm encoder as a shared foundation.**
+  Go for the full footprint cut, not the timid half. BC7 unorm samples as `f32` in `[0,1]`
+  identically to `Rgba8Unorm`, so the shader (`forward.wgsl`
+  `sample_shadowmask_atlas`/`shadowmask_channel_value`) is unchanged. The one obstacle — no
+  BC7-unorm encoder exists in-tree (the in-tree encoders are HDR-RGB BC6H
+  `crates/level-compiler/src/bc6h.rs` and BC5 `bc5.rs`) — is a **foundation to build, not a
+  reason to retreat.** The codebase already has a second waiting consumer: `bc7-color-textures`
+  names a deterministic BC7 encoder as its heaviest task (Task 2) and top risk. So this brief
+  builds a general, pinned-version RGBA8→BC7-block encoder in `postretro-level-compiler`,
+  mirroring the dependency-free in-tree `bc5.rs`/`bc6h.rs` pattern, with the shadowmask atlas
+  as its **first consumer** — proving it on a low-risk signal (graceful fully-lit fallback,
+  GPU-free round-trip testable, no emissive dependency) before color textures ride it.
+- **The encoder is a reusable foundation; this brief unblocks `bc7-color-textures`, not
+  absorbs it.** The same BC7 block codec serves both consumers — `Bc7RgbaUnorm` (linear) for
+  the masks and `Bc7RgbaUnormSrgb` for color slots is a view/format flag, not a different
+  encoder — so design it slot-agnostic. Landing it here retires `bc7-color-textures`'s top
+  risk (encoder cost + cross-platform determinism, resolved with the BC6H cache-exemption
+  precedent) and turns its Task 2 into "consume the existing encoder." That draft stays
+  separate: it keeps its hard dependency on `emissive-surfaces-bloom` and its aesthetic A/B
+  veto and owns the `.prm` color path — folding it in would put this certain win behind
+  emissive's dependency and an art gate. Point its stub here for the encoder at promotion.
+- **BC4 is a measured fidelity floor, not the plan.** BC7 models a cross-channel block
+  correlation four *independent* per-light masks do not have, so its error on masks is a real
+  risk. If BC7 fails the fidelity/visual gate, fall back to per-channel BC4 (≈2:1, reusing the
+  `bc5.rs` unorm path; the shader `channel` selector becomes a plane index that composes with
+  the block decode). The first slice measures BC7-on-masks and decides — build-to-learn
+  (`context/lib/experimental_spikes.md` honesty gate), not a deferral. (Determinism does not
+  discriminate — neither codec is held to byte-identical output; see the determinism decision.)
 - **No new device requirement or alignment constraint.** id 22/35 already require the
   `TEXTURE_COMPRESSION_BC` adapter feature, so BC7 adds none. BC is 4×4-block; the
   shadowmask shares the lightmap atlas dimensions, already BC-aligned because id 22 is
@@ -99,6 +113,10 @@ texel bytes) closes both gaps under one version bump.
   (re-bakeable into cluster-addressable compressed form).
 - **Material / texture residency.** A separate material+mip domain, explicitly excluded
   from the spatial substrate by `sh-probe-streaming`.
+- **BC7 on `.prm` color textures (diffuse / emissive).** `bc7-color-textures` owns it and
+  will consume this brief's encoder; it keeps its `emissive-surfaces-bloom` dependency and
+  aesthetic A/B veto. This brief builds the shared encoder and proves it on the shadowmask,
+  not the color path.
 - **Sparse / empty-region footprint trim.** Subsumed by the streaming epic above.
 - **The shadowmask bake's memory / parallelism / progress.** Owned by
   `shadowmask-bake-scaling` (sibling); this brief changes what the bake emits and how it
@@ -139,9 +157,14 @@ texel bytes) closes both gaps under one version bump.
   shader tests covering `block > 0` pass.
 - [ ] A single-block map (`block_count == 1`) produces a section semantically equivalent
   to the pre-change 4-channel layout (same masks, drop-nothing when ≤4 overlap).
+- [ ] The BC7 encoder is a standalone, slot-agnostic `RGBA8 → BC7-block` function in
+  `postretro-level-compiler`, unit-tested GPU-free (no shadowmask types in its signature),
+  pinned-version and reproducible; round-trip decode error is within a documented bound. It is
+  usable for both a linear-unorm and an sRGB-viewed texture (the shape `bc7-color-textures`
+  consumes).
 - [ ] On a focused fixture carrying a populated atlas, the id-42 on-disk section byte
   count drops by the chosen codec's ratio versus the raw `Rgba8Unorm` baseline (≈4:1 for
-  BC7), measured by the per-section byte accounting in `pack.rs`.
+  BC7, ≈2:1 for the BC4 floor), measured by the per-section byte accounting in `pack.rs`.
 - [ ] The renderer uploads id 42 as the BC texture and the startup per-atlas VRAM
   estimate for the shadowmask drops by the same ratio; an all-visible (255) atlas
   round-trips to fully lit after encode→decode.
@@ -238,19 +261,20 @@ subtraction. Track peak observed per-texel overlap, warn when the forced block c
 the budget, and report peak overlap and final `block_count` under `--verbose`; a
 comfortably-under-budget bake emits no new non-verbose line.
 
-**Task 3 — BC encode at the pack seam + upload format branch + fidelity/determinism.**
-At the shadowmask pack seam (after slot assignment, before section emit), BC-encode the
-raw atlas to the tagged codec's block stream and write the codec tag; this is the emit-side
-analogue of the direct-SH BC6H emit wrapper (see Path). The encoder must be
-order-deterministic and pinned so re-bake is byte-identical. In the renderer, branch the
-upload `TextureFormat` on the codec tag; the D2Array view, LayerMajor upload, and group-4
-binding are otherwise reused, and for BC7 the shader is untouched while per-channel BC4
-restructures the channel select into a plane index that composes with the block decode.
-Use the codec the owner selects (Open questions; recommended per-channel BC4 via the
-in-tree `bc5.rs` path for a self-contained, deterministic landing). Measure and report
-per-channel error. First slice within this task: encode one fixture atlas to the chosen
-codec, upload it, and A/B the specular capture against the raw baseline before wiring the
-CPU-free.
+**Task 3 — build the BC7-unorm encoder foundation, prove it on the shadowmask, wire it in.**
+First build the shared encoder: a standalone, slot-agnostic, pinned-version `RGBA8 → BC7-block`
+function in `postretro-level-compiler`, mirroring the dependency-free in-tree `bc5.rs`/`bc6h.rs`
+pattern and their pad-and-concat emit shape (`encode_direct_section_bc6h`), unit-tested GPU-free
+with round-trip error bounds and reproducibility — no shadowmask types in its signature, so
+`bc7-color-textures` can consume it unchanged. **First slice / build-to-learn gate:** encode one
+fixture shadowmask atlas to BC7, upload it, and A/B the specular capture against the raw baseline
+— if BC7's cross-channel error on independent masks fails the visual gate, fall to per-channel
+BC4 via the `bc5.rs` unorm path (the shader `channel` becomes a plane index). Then wire the chosen
+codec at the pack seam (after slot assignment, before emit): encode the raw atlas to the codec's
+block stream, write the codec tag; the section is length-stable across re-bakes (byte-identity of
+the lossy bytes not required — see the determinism decision). In the renderer, branch the upload
+`TextureFormat` on the codec tag; the D2Array view, LayerMajor upload, and group-4 binding are
+otherwise reused, and for BC7 the shader is untouched. Measure and report per-channel error.
 
 **Task 4 — free the CPU payload after upload.** After `upload_shadowmask_texture` runs,
 drop `LevelWorld.shadowmask_atlas.data`, retaining the `channels` clone. Confirm no other
@@ -264,26 +288,25 @@ math); a shader test that a light on `block > 0` samples the correct layer and c
 both decode paths; a bake test that a >4-overlap texel drops nothing below the budget and
 lowest-intensity only past it; a double-count regression; the on-disk and VRAM byte-delta
 tests; the CPU-free + reload test; the adapter-without-BC and over-budget placeholder
-tests; and the byte-identical-compressed re-bake test. Update the `build_pipeline.md` id-42
-line and the `rendering_pipeline.md` §4 world-specular statement at promotion to describe
-the `(block, channel)` slots, the device-budget drop, and the at-rest codec.
+tests; the standalone BC7-encoder unit tests (round-trip error bound, reproducibility); and the
+deterministic-slot / length-stable re-bake test. Update the `build_pipeline.md` id-42 line and
+the `rendering_pipeline.md` §4 world-specular statement at promotion to describe the
+`(block, channel)` slots, the device-budget drop, and the at-rest codec.
 
 ## Path
 
-- **BC6H encode seam (reuse-shape candidate, not a drop-in).** The compiler's in-tree BC
-  encoders are `encode_bc6h_rgb_from_f32_rgba` (`crates/level-compiler/src/bc6h.rs`,
-  BC6H Mode 11) and `bc5.rs` (BC5 normals); the emit-side wrapper that pads each axis to a
-  4×4 multiple and concatenates per-layer blocks is `encode_direct_section_bc6h`
-  (`crates/level-compiler/src/direct_sh_bake.rs`). Ground the domain before mandating reuse
-  (`context_style_guide.md` §Spec Completeness): BC6H is an **HDR RGB, f16-internal**
-  codec whose decode is `output_f16 = (interp * 31) >> 6` — it does **not** decode to unorm
-  `[0,1]`, and the shadowmask needs a BC7/BC4 **unorm** encoder that is **not present
-  in-tree** (`bc7-color-textures` draft flags the BC7 encoder as unresolved heavy work).
-  So the reuse candidate is the *pattern and the emit seam* — an in-tree, dependency-free,
-  min/max-endpoint, order-deterministic encoder plus `encode_direct_section_bc6h`'s
-  pad-and-concat emit shape — not the BC6H function itself. The determinism-exemption
-  precedent in `build_pipeline.md` §Build Cache (BC6H irradiance) is the analogue this
-  brief deliberately does **not** take: id 42's codec is chosen deterministic.
+- **BC7 encoder — build it, mirroring the in-tree BC pattern.** No BC7-unorm encoder exists
+  in-tree; the encoders to mirror are `encode_bc6h_rgb_from_f32_rgba`
+  (`crates/level-compiler/src/bc6h.rs`, BC6H Mode 11) and `bc5.rs` (BC5 normals), both
+  dependency-free and deterministic, with the pad-to-4×4 + per-layer-concat emit wrapper
+  `encode_direct_section_bc6h` (`crates/level-compiler/src/direct_sh_bake.rs`). BC7 is heavier
+  (8 modes, partition search — an ISPC-texcomp-class algorithm), so a mode subset that meets the
+  fidelity bound is acceptable for v1; the hard requirement is that it be a pinned,
+  cross-platform-reproducible function (`bc7-color-textures` names this as its top risk). Take
+  the `build_pipeline.md` §Build Cache determinism exemption for the lossy bytes (BC6H
+  irradiance precedent) — the section need only be length-stable, not byte-identical. Keep the
+  function slot-agnostic (`RGBA8 → BC7 blocks`) so the sRGB-viewed color path consumes it
+  unchanged. The BC4 floor is one channel of the existing `bc5.rs` unorm path.
 - **Upload seam:** `upload_shadowmask_texture` and `filter_usable_shadowmask_section`
   (`crates/renderer/src/lighting/lightmap.rs`) select the `TextureFormat` from the codec
   tag; the D2Array view, LayerMajor upload, and group-4 binding are otherwise reused.
@@ -311,8 +334,9 @@ streamed composite keeps the slot assignment a change to one well-scoped step.
 
 **Phase 1:** Task 1 — combined-header thin slice (raw encoding); falsifies the wire ↔
 runtime ↔ shader boundary. **Phase 2:** Task 2 — deterministic assignment, device-budget
-cap, graceful degradation. **Phase 3:** Task 3 — BC encode at the pack seam (after slot
-assignment) + upload format branch + fidelity/determinism. **Phase 4:** Task 4 — free CPU
+cap, graceful degradation. **Phase 3:** Task 3 — build the BC7-unorm
+encoder foundation, run the BC7-on-masks fidelity gate, wire the chosen codec at the pack seam
+(after slot assignment) + upload format branch. **Phase 4:** Task 4 — free CPU
 payload. **Phase 5:** Task 5 — round-trip/shader/invariant + compression coverage.
 
 ## Invariants
@@ -339,15 +363,10 @@ would have to re-materialize that term.
 
 ## Open questions
 
-- Which codec is the default, given no in-tree BC7 encoder? — owner: developer —
-  **blocks build**. BC7 (≈4:1, drop-in shader) requires building or vendoring a
-  BC7 **unorm** encoder, or sequencing this brief after `bc7-color-textures` delivers one —
-  a heavy addition or a cross-plan dependency. Per-channel BC4 (≈2:1, shader-touching)
-  reuses the in-tree `bc5.rs` unorm encoder and lands self-contained. Recommendation:
-  **default per-channel BC4** — 2:1 on the largest raw section is a real win, dependency-free
-  and the semantic fit for four independent masks, and it ships now; treat BC7-4:1 as a
-  follow-on that rides `bc7-color-textures`'s encoder. Owner decides ratio-vs-effort/dependency.
-- Fidelity fallback within the chosen codec — **delegated**: the executor confirms the
-  chosen codec passes the fidelity/visual ACs and reports the measured per-channel error in
-  the plan of record; if the higher-ratio codec fails fidelity, it takes the lower-ratio
-  one.
+- BC7-on-independent-masks fidelity — **delegated / build-to-learn** (Task 3 first slice).
+  Does BC7's cross-channel block error on four independent masks hold the specular highlights
+  against a raw capture? Expected yes (soft signal, fully-lit fallback), in which case ship
+  BC7 at ≈4:1. If not, fall to per-channel BC4 at ≈2:1 (the documented floor). The executor
+  reports the measured per-channel error and the pick in the plan of record. The codec
+  *direction* (target BC7, build the encoder) is decided — this resolves only the fidelity
+  outcome, not whether to build the encoder.

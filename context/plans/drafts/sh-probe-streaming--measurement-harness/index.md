@@ -41,7 +41,8 @@ Omitting `measurement` preserves legacy capture behavior and writes no report. U
 measurement fields are rejected. `report` may replace a regular file but not a directory,
 symlink alias, scene, map, or PNG output. The report stays staged until the final PNG is
 published. Any later failure removes the staged report. The visible report is published
-last.
+last. If the report path already names a prior successful report and the new run fails,
+that prior report remains unchanged and still belongs to its earlier run.
 
 Report root:
 
@@ -89,6 +90,7 @@ no per-pass average. If timing is otherwise active and no full sample window com
 | Family | Owner / current source | Source ids | Formula source | Dummy / fallback | Total |
 |---|---|---|---|---|---|
 | Base indirect atlas | `ShVolumeResources`, `sh_volume.rs` | 34 | `compact_base_atlas_allocation` + `base_atlas_allocation_bytes`; BC6H physical 4x4 blocks | Missing/unusable/device-limit fallback binds 1x1 Rgba16Float. Accepted empty BC6H allocates one 4x4 BC6H block. Accepted empty Rgba16Float allocates 1x1 Rgba16Float. | yes |
+| Indirect composed/total atlas | `ShVolumeResources`, `sh_volume.rs` field `total_atlas_texture` | 34/27 | actual `Rgba16Float` texture descriptor; sampled and storage views share one physical texture | Missing/unusable/device-limit fallback binds 1x1 Rgba16Float dummy | yes, once |
 | Depth-moment texture | `ShVolumeResources`, `sh_volume.rs` | 34 | actual `Rgba16Uint` extent | Missing/empty/limit fallback binds 1x1x1 dummy | yes |
 | SH grid info buffer | `ShVolumeResources`, `sh_volume.rs` | 34 | `build_grid_info_bytes` binding size | Always non-empty | yes |
 | Animated-light descriptors and samples | `AnimatedLightBuffers`, `sh_volume.rs` | 34 plus scripted reserve | created buffer contents length, including scripted sample reserve | One dummy record when no animated lights. Ids 27/45/48 may reference descriptor indices but do not own this payload. | yes |
@@ -96,6 +98,9 @@ no per-pass average. If timing is otherwise active and no full sample window com
 | Direct SH base atlas | `DirectShResources`, `direct_sh_resources.rs` | 35 | direct atlas extent/format used for creation | Missing/empty/limit fallback binds 4x4 BC6H dummy | yes |
 | Direct SH dynamic params | `DirectShResources`, `direct_sh_resources.rs` | 35/41/45 | `build_dynamic_direct_params_bytes` length | Always present | yes |
 | Direct SH composed / intermediate atlas | `DirectShResources`, `direct_sh_resources.rs` and `direct_sh_compose.rs` | 35/41 | actual composed texture descriptor | Only when compose path needs it | yes, once |
+| Direct compose probe indirection buffer | `direct_sh_compose.rs` | 35/41 derived from 34 | separately allocated `probe_indirection_storage_bytes` buffer | Present for direct compose path; not shared with indirect compose | yes |
+| Direct compose debug override uniform | `direct_sh_compose.rs` | derived | `DirectShDebugOverride` uniform bytes | Always present with direct compose pipeline | yes |
+| Direct compose light-term-mask uniform | `direct_sh_compose.rs` | derived | `direct_compose_params_bytes` uniform bytes | Always present with direct compose pipeline | yes |
 | Animated direct SH storage, indirection, grid, and scale buffers | `animated_direct_sh_compose.rs` | 45 | exact storage/uniform bytes used for bind groups | Empty payloads padded to valid binding minimums | yes |
 | Billboard direct-scatter base volume | `BillboardDirectScatterResources`, `billboard_direct_scatter.rs` | 47 | `width * height * depth_or_array_layers * Rgba16Float` bytes | Missing/limit fallback binds dummy and clears scatter | yes |
 | Billboard direct-scatter composed volume | `BillboardDirectScatterResources`, `billboard_direct_scatter.rs` and billboard compose module | 47/48 | `width * height * depth_or_array_layers * Rgba16Float` bytes | Only when animated deltas compose | yes, once |
@@ -106,8 +111,10 @@ no per-pass average. If timing is otherwise active and no full sample window com
 | Direct and billboard delta CSR buffers | `direct_sh_compose.rs`, `animated_direct_sh_compose.rs`, billboard compose | 41/45/48 | padded storage bytes: subblock, light, and descriptor-index payloads use minimum nonzero padding; affinity offsets come from affinity grid/cell metadata then pad | Empty buffers padded to valid binding minimums | yes |
 
 Every ledger row cites source section ids when data-backed and `derived` when created only
-to compose another resident resource. Shared compose targets have one owner row with
-multiple source ids; consumers cite the owner and do not add bytes again.
+to compose another resident resource. Count every physical level-owned SH texture or buffer
+allocated by these constructors exactly once. Treat rows as shared only when consumers
+reference the same physical object; matching contents, source ids, or formulas are not
+sharing.
 
 ## Scope
 
@@ -150,8 +157,10 @@ multiple source ids; consumers cite the owner and do not add bytes again.
       reported by number instead of dropped or panicked.
 - [ ] Level install emits one structured SH resident-byte report. It names ids 34, 35,
       27, 41, 45, 47, and 48 separately when present; names shared/derived allocations
-      separately; reports dummies/fallbacks explicitly; and produces a no-double-count
-      total for the allocations it covers.
+      separately; reports dummies/fallbacks explicitly; and covers every level-owned SH
+      texture/buffer allocated in the named constructors. Count each physical allocation
+      once, even when contents or source ids match; share only when consumers reference the
+      same physical object.
 - [ ] Resident-byte formulas share the same format, extent, layer, and device-fallback
       decisions used to create each GPU resource. BC6H uses physical 4x4 block bytes;
       storage/uniform buffers use their allocated binding size, including non-empty dummy
@@ -167,10 +176,14 @@ multiple source ids; consumers cite the owner and do not add bytes again.
       the scene remains inspectable.
 - [ ] The JSON measurement report records revision when available, map path and file
       size, resolution, camera, warmup/sample counts, adapter name/backend/device type,
-      renderer-accounted SH bytes, CPU median/p95, and per-pass GPU samples or a named
-      availability reason from schema v1. JSON stays staged until the PNG is successfully
-      published; the report publishes last. Any later failure cleans the staged report so
-      failure never leaves a valid-looking report.
+      renderer-accounted SH bytes, raw CPU completion samples, CPU median/p95, completion
+      strategy/cadence, and per-pass GPU samples or a named availability reason from schema
+      v1. It records that `frame_timing.rs` warmup state was reset/dropped before samples
+      and that each completed 120-sample GPU window was collected exactly once. JSON stays
+      staged until the PNG is successfully published; the report publishes last. A failed
+      run publishes no new report; any prior successful report at that path remains
+      unchanged and belongs to its previous run. Any later failure cleans only the current
+      staged report.
 - [ ] CPU timing represents completed GPU work rather than command-enqueue time. The
       report names the completion strategy and cadence so two runs use the same method.
 - [ ] CPU-only tests cover section sums, unknown section ids, allocation formulas,
@@ -182,7 +195,10 @@ multiple source ids; consumers cite the owner and do not add bytes again.
       map, map revision/hash, fine/coarse spacing, worker count, cache mode, profile,
       camera, resolution, warmup/samples, machine/adapter/driver, section bytes,
       renderer-accounted SH bytes, CPU median/p95, per-pass GPU values where available,
-      raw report paths, cleanup, and interpretation.
+      raw report paths, cleanup, and interpretation. For `measured`, include automated
+      stats and raw reports. For `manual-observation`, include the listed observation
+      evidence plus precise absence reasons. For `not-yet-evaluable`, include attempts,
+      diagnostics, and precise absence reasons. Retain all obtainable evidence.
 - [ ] A successful representative A/B with negligible delta is recorded as evidence that
       challenges the runtime-performance premise and is surfaced to the owner before
       Slice 2. Failure to obtain a runnable automated harness is recorded as
@@ -221,7 +237,12 @@ sites into a focused renderer-internal module. Current sites include the about-2
 scatter compose code. Direct-SH, animated-direct-SH, billboard-scatter, and compose
 constructors consume the same allocation descriptions rather than re-deriving extents or
 formats. Preserve every dummy, device-limit fallback, texture format, usage, and binding.
-This task adds no logging.
+The orchestrator handoff to this task must include the full SH residency ledger v1 contract.
+Do not omit the easy-to-miss families: indirect `total_atlas_texture`, direct-compose probe
+indirection, direct-compose debug override uniform, direct-compose light-term-mask uniform,
+animated-direct storage/indirection/grid/scale buffers, billboard base/composed volumes,
+delta CSR buffers, compaction metadata, and compose grid/origin buffers. This task adds no
+logging.
 
 ### Task 4: Report PRL section footprint
 
@@ -237,18 +258,37 @@ Add a plain Rust allocation ledger owned by the renderer. Each SH resource const
 records its actual allocation description into the ledger at creation; shared compose
 targets have one owner and may cite multiple source ids without appearing twice in the
 total. `Renderer::install_level_geometry` emits and retains the finished report so capture
-can serialize it after install. Do not estimate by reserializing loaded sections.
+can serialize it after install. The orchestrator handoff to this task must include the full
+SH residency ledger v1 contract. Count every physical level-owned SH texture/buffer once;
+only suppress duplicate bytes when consumers share the same object. Include the omitted
+families named in Task 3, especially `total_atlas_texture` and the separately allocated
+direct-compose probe-indirection/debug-override/light-term-mask buffers. Do not estimate by
+reserializing loaded sections.
 
 ### Task 6: Add repeated offscreen measurement
 
-Extend `CaptureScene` with the schema v1 optional measurement block containing report path,
-warmup frames, and sample frames. Validate positive bounded counts and reject output aliases.
-Render through the extracted capture path without per-sample readback. Add a renderer API
-that submits and completes measurement frames and exposes the existing GPU-timing snapshot
-plus adapter identity as plain report data. Task 6 adds production/plain availability
-reasons even though the current accessor is dev-tools-gated. Write one staged JSON report,
-capture and publish the existing PNG, then publish the JSON report last. Keep
-`POSTRETRO_GPU_TIMING=1` as the sole timestamp feature gate.
+Extend `CaptureScene` with the schema v1 optional measurement block. The orchestrator
+handoff to this task must include the full Measurement schema v1 contract. Repeat the
+load-bearing values in the worker prompt: fields are `report`, `warmup_frames`, and
+`sample_frames`; bounds are `1..=10000` warmup and `1..=100000` samples; report paths are
+non-empty, regular-file targets whose parent exists and that must not alias scene, map, or
+PNG output. Availability strings are `available`, `not-requested`, `unsupported`,
+`plain-build-unavailable`, and `not-yet-windowed`; reason strings are `env-disabled`,
+`adapter-missing-timestamp-features`, `dev-tools-accessor-unavailable`, and
+`window-not-complete`. Availability precedence is `not-requested`, `unsupported`,
+`plain-build-unavailable`, then `not-yet-windowed` only when `FrameTiming` is active but no
+full sample window completes. Record raw CPU completion samples plus median/p95. Completion
+strategy is `device-poll-wait-after-submit`; cadence is `once-per-sample-frame`. Reset/drop
+`FrameTiming` state in `frame_timing.rs` at the warmup-to-sample boundary. Collect each
+120-sample GPU window exactly once from sample frames only; report a trailing partial only
+as `partial_frames`, with no per-pass average. Render through the extracted capture path
+without per-sample readback. Add a renderer API that submits and completes measurement
+frames and exposes the existing GPU-timing snapshot plus adapter identity as plain report
+data. Task 6 adds production/plain availability reasons even though the current accessor is
+dev-tools-gated. Write one staged JSON report, capture and publish the existing PNG, then
+publish the JSON report last. A failed run publishes no new report and leaves any previous
+successful report unchanged. Keep `POSTRETRO_GPU_TIMING=1` as the sole timestamp feature
+gate.
 
 ### Task 7: Run and record the premise read
 
@@ -256,24 +296,29 @@ Create `measurements/premise.md` and retain small JSON reports beside it. Prefer
 same production-quality stress-map source on the GTX 1660 Super, release cold bakes at
 1.0 m and 8.0 m spacing, fixed camera/resolution, 120 warmup frames, 600 sampled frames,
 and three alternating runs per variant. Record median of run medians, p95s, per-pass
-windows, disk bytes, and SH resident bytes.
+windows, disk bytes, and SH resident bytes. Generated fine/coarse PRLs must live under the
+source mod's maps directory with unique session-owned names so `content_root_from_map`
+derives the same content root as a normal map. JSON scenes, PNGs, and measurement reports
+remain under `measurements/sh-probe-streaming/premise/`.
 
 Exact command shape:
 
 ```bash
-RAYON_NUM_THREADS=8 cargo run -p postretro-level-compiler -- <stress.map> -o measurements/sh-probe-streaming/premise/fine-1.0m.prl --release --sh-probe-spacing 1.0 --no-tui
-RAYON_NUM_THREADS=8 cargo run -p postretro-level-compiler -- <stress.map> -o measurements/sh-probe-streaming/premise/coarse-8.0m.prl --release --sh-probe-spacing 8.0 --no-tui
+RAYON_NUM_THREADS=8 cargo run -p postretro-level-compiler -- <source-mod>/maps/<stress.map> -o <source-mod>/maps/.slice1-sh-probe-<session>-fine-1.0m.prl --release --sh-probe-spacing 1.0 --no-tui
+RAYON_NUM_THREADS=8 cargo run -p postretro-level-compiler -- <source-mod>/maps/<stress.map> -o <source-mod>/maps/.slice1-sh-probe-<session>-coarse-8.0m.prl --release --sh-probe-spacing 8.0 --no-tui
 POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- capture measurements/sh-probe-streaming/premise/fine-1.0m.scene.json
 POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- capture measurements/sh-probe-streaming/premise/coarse-8.0m.scene.json
 ```
 
-Scene files point `map` at the matching PRL, `output` at a throwaway PNG under
-`measurements/sh-probe-streaming/premise/`, and `measurement.report` at the matching
-run JSON. `--release` selects the exact cold bake and bypasses cache like `--no-cache`;
-do not claim the Cargo release profile does this. Keep the same input map, revision,
-settings, scene, camera, receiver state, machine, adapter, and driver except for
-`--sh-probe-spacing`. Delete generated PRLs, scratch caches, and unneeded PNGs after
-recording.
+Scene files stay under `measurements/sh-probe-streaming/premise/` and point `map` at the
+matching hidden PRL under `<source-mod>/maps/`. They point `output` at a throwaway PNG under
+`measurements/sh-probe-streaming/premise/`, and `measurement.report` at the matching run
+JSON under `measurements/sh-probe-streaming/premise/`. `--release` selects the exact cold
+bake and bypasses cache like `--no-cache`; do not claim the Cargo release profile does
+this. Keep the same input map, revision, settings, scene, camera, receiver state, machine,
+adapter, and driver except for `--sh-probe-spacing`. Delete generated hidden PRLs from the
+source mod's maps directory, scratch caches, and unneeded PNGs after recording. Retain the
+small JSON reports under `measurements/`.
 
 Bounded fallback order:
 
@@ -289,13 +334,16 @@ Bounded fallback order:
    without naming it.
 
 Terminal status is one of `measured`, `manual-observation`, or `not-yet-evaluable`.
-`measured` requires automated fine/coarse JSON reports. `manual-observation` requires map,
-machine, adapter, driver when known, revision, exact PRL paths or hashes, spacing values,
-camera/pose description, resolution, window-title CPU frame-time windows, GPU timing
-availability, and every diagnostic that blocked automation. `not-yet-evaluable` requires
-the attempted machines, map, commands, failure diagnostics, and why no approved observation
-was possible. The owner has approved the observational fallback for this slice. Do not add
-a new approval gate.
+`measured` requires automated fine/coarse JSON reports with raw CPU samples, computed
+stats, SH residency, PRL section bytes, and GPU timing values or precise absence reasons.
+`manual-observation` requires map, machine, adapter, driver when known, revision, exact PRL
+paths or hashes, spacing values, camera/pose description, resolution, window-title CPU
+frame-time windows, GPU timing availability, every diagnostic that blocked automation, and
+precise absence reasons for missing automated fields. `not-yet-evaluable` requires the
+attempted machines, map, commands, failure diagnostics, why no approved observation was
+possible, and precise absence reasons. Retain all obtainable evidence in every status. The
+owner has approved the observational fallback for this slice. Do not add a new approval
+gate.
 
 The finding distinguishes a successful negligible A/B from unavailable measurement. The
 former triggers an owner go/no-go discussion. The latter retains the owner's stated

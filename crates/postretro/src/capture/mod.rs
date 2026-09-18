@@ -3,6 +3,7 @@
 
 mod driver;
 mod prepared;
+mod report;
 mod scene;
 
 pub(crate) use driver::run_capture;

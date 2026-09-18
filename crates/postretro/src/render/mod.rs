@@ -18,11 +18,14 @@ pub mod debug_ui {
 #[allow(unused_imports)]
 pub use postretro_renderer::{
     BloomRenderProfile, BloomResolution, BvhOverlayBudget, BvhOverlayColorMode,
-    BvhOverlayDepthMode, BvhOverlayState, CameraCullDiagnostics, CameraCullPath, CellOverlayState,
-    ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE,
-    KinematicMoverInstance, LevelGeometry, LightTermMask, LocatorDiagnostics, MoverOccluderAabb,
-    PortalOverlayState, PresentHandle, Renderer, SdfShadowMode, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
+    BvhOverlayDepthMode, BvhOverlayState, CameraCullDiagnostics, CameraCullPath,
+    CaptureAdapterIdentity, CaptureGpuTimingPass, CaptureGpuTimingState, CaptureGpuTimingWindow,
+    CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
+    DEFAULT_INDIRECT_SCALE, KinematicMoverInstance, LevelGeometry, LightTermMask,
+    LocatorDiagnostics, MoverOccluderAabb, PortalOverlayState, PresentHandle, Renderer,
+    SdfShadowMode, ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
+    ShResidencyReport, ShResidencySource, SpatialCellSetDiagnostics, SpatialDiagnostics,
+    SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
     sprite_specular_exponent_is_valid,
 };
 

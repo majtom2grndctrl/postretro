@@ -67,6 +67,10 @@ pub struct FrameTiming {
     /// Most recent averaged-window snapshot. The debug UI reads this to show
     /// per-pass timing; overwritten each averaging boundary.
     last_window: Option<FrameTimingSnapshot>,
+    /// Newly completed window not yet consumed by an offscreen measurement
+    /// report. Kept distinct from `last_window` so diagnostics retain their
+    /// most recent value while capture observes every window once.
+    completed_window: Option<FrameTimingSnapshot>,
 }
 
 impl FrameTiming {
@@ -128,6 +132,7 @@ impl FrameTiming {
             pairs_written: AtomicU64::new(0),
             pairs_written_in_flight: AtomicU64::new(0),
             last_window: None,
+            completed_window: None,
         }
     }
 
@@ -136,6 +141,28 @@ impl FrameTiming {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn last_window(&self) -> Option<&FrameTimingSnapshot> {
         self.last_window.as_ref()
+    }
+
+    /// Consume one newly completed 120-frame window, if it has not already
+    /// been observed by a measurement report.
+    pub fn take_completed_window(&mut self) -> Option<FrameTimingSnapshot> {
+        self.completed_window.take()
+    }
+
+    /// Discard timing state at the capture warmup/sample boundary. The caller
+    /// must complete any in-flight readback before reset.
+    pub fn reset_window_state(&mut self) {
+        debug_assert!(
+            !self.map_pending.load(Ordering::Acquire) && !self.copied_pending,
+            "FrameTiming reset requires completed timing readback"
+        );
+        self.accum_ns.fill(0.0);
+        self.accum_skipped.fill(0);
+        self.accum_frames = 0;
+        self.pairs_written.store(0, Ordering::Relaxed);
+        self.pairs_written_in_flight.store(0, Ordering::Relaxed);
+        self.last_window = None;
+        self.completed_window = None;
     }
 
     /// Render-pass timestamp writes for pair `pair_idx`. The returned
@@ -289,9 +316,11 @@ impl FrameTiming {
                 parts.push(format!("{label} {avg_ms:.2}ms"));
                 snapshot_passes.push((*label, avg_ms as f32, self.accum_skipped[i]));
             }
-            self.last_window = Some(FrameTimingSnapshot {
+            let snapshot = FrameTimingSnapshot {
                 passes: snapshot_passes,
-            });
+            };
+            self.last_window = Some(snapshot.clone());
+            self.completed_window = Some(snapshot);
             let skip_parts: Vec<String> = self
                 .pass_labels
                 .iter()

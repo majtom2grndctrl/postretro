@@ -156,9 +156,10 @@ pub(crate) use renderer_lighting::*;
 pub use renderer_types::AgentOverlayState;
 pub use renderer_types::{
     BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
-    CameraCullDiagnostics, CameraCullPath, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
-    DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry, LocatorDiagnostics,
-    PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer,
+    CameraCullDiagnostics, CameraCullPath, CaptureAdapterIdentity, CaptureGpuTimingPass,
+    CaptureGpuTimingState, CaptureGpuTimingWindow, CellOverlayState, ClearColor,
+    DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry,
+    LocatorDiagnostics, PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer,
     SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};

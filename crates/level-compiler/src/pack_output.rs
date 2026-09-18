@@ -10,7 +10,7 @@ use std::time::Duration;
 use fs4::FileExt;
 
 use postretro_level_format::{
-    read_container, read_section_data, write_prl_header_and_table, SectionDescriptor, SectionId,
+    SectionDescriptor, SectionId, read_container, read_section_data, write_prl_header_and_table,
 };
 use same_file::Handle as FileIdentity;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
@@ -711,9 +711,11 @@ mod tests {
         )
         .expect_err("writer must reject a declared length mismatch");
 
-        assert!(error
-            .to_string()
-            .contains("section Geometry (id 17) wrote 2 bytes but its table declares 3"));
+        assert!(
+            error
+                .to_string()
+                .contains("section Geometry (id 17) wrote 2 bytes but its table declares 3")
+        );
         assert!(
             !output.exists(),
             "a declared-length mismatch must not leave a malformed final PRL"
@@ -780,9 +782,11 @@ mod tests {
         )
         .expect_err("writer must reject a declared length mismatch");
 
-        assert!(error
-            .to_string()
-            .contains("wrote 2 bytes but its table declares 3"));
+        assert!(
+            error
+                .to_string()
+                .contains("wrote 2 bytes but its table declares 3")
+        );
         assert_eq!(
             std::fs::read(&output).expect("previous output must remain readable"),
             previous_bytes,
@@ -940,10 +944,12 @@ mod tests {
         .expect_err("a symlink cannot be replaced with a PRL");
 
         assert!(error.to_string().contains("non-regular output"));
-        assert!(std::fs::symlink_metadata(&output)
-            .expect("output symlink should remain")
-            .file_type()
-            .is_symlink());
+        assert!(
+            std::fs::symlink_metadata(&output)
+                .expect("output symlink should remain")
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             std::fs::read(&target).expect("symlink target should remain readable"),
             b"symlink target"

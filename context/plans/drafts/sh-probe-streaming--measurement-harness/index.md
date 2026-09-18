@@ -335,7 +335,8 @@ Bounded fallback order:
 
 Terminal status is one of `measured`, `manual-observation`, or `not-yet-evaluable`.
 `measured` requires automated fine/coarse JSON reports with raw CPU samples, computed
-stats, SH residency, PRL section bytes, and GPU timing values or precise absence reasons.
+stats, SH residency, and GPU timing values or precise absence reasons, plus separately
+retained compiler section-footprint evidence.
 `manual-observation` requires map, machine, adapter, driver when known, revision, exact PRL
 paths or hashes, spacing values, camera/pose description, resolution, window-title CPU
 frame-time windows, GPU timing availability, every diagnostic that blocked automation, and

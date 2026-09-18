@@ -6,7 +6,6 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
     ComposeGridParams, build_animated_direct_delta_buffers, build_compose_grid_bytes,
-    pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::direct_sh_compose::{
@@ -21,7 +20,11 @@ use super::renderer_types::PromotedShadowPoolKind;
 use super::renderer_types::{
     MAX_ANIMATED_BAKED_LIGHTS, PromotedBakedLightState, animated_baked_promotion_weight,
 };
-use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
+use super::sh_allocation::{
+    ShAllocationKind, buffer_allocation, compose_storage_payloads,
+    probe_indirection_storage_payload,
+};
+use super::sh_indirection::WGSL_DECODE_HELPER;
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
@@ -120,80 +123,114 @@ pub(super) fn build_animated_direct_pass(
 ) -> AnimatedDirectShComposePipeline {
     let delta_subblocks = animated_delta.delta_subblocks.as_slice();
     let buffers = build_animated_direct_delta_buffers(Some(animated_delta), layout.grid_dimensions);
-    let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
-    let compaction_meta_bytes =
-        pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
-    let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
-    let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
-    let descriptor_indices_bytes =
-        pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
+    let storage = compose_storage_payloads(
+        ShAllocationKind::AnimatedDirectComposeDeltaSubblocks,
+        ShAllocationKind::AnimatedDirectComposeCompactionMetadata,
+        ShAllocationKind::AnimatedDirectComposeAffinityOffsets,
+        ShAllocationKind::AnimatedDirectComposeAffinityLights,
+        Some(ShAllocationKind::AnimatedDirectComposeDescriptorIndices),
+        delta_subblocks,
+        &buffers.compaction_meta_words(),
+        &buffers.affinity_offsets,
+        &buffers.affinity_lights,
+        Some(&buffers.animation_descriptor_indices),
+    );
 
     #[cfg(feature = "dev-tools")]
     ComposeStorageFootprint {
-        delta_subblocks_bytes: subblock_bytes.len(),
-        delta_compaction_meta_bytes: compaction_meta_bytes.len(),
-        affinity_offsets_bytes: offsets_bytes.len(),
-        affinity_lights_bytes: lights_bytes.len(),
-        animation_descriptor_indices_bytes: descriptor_indices_bytes.len(),
+        delta_subblocks_bytes: storage.delta_subblocks.allocation.byte_len,
+        delta_compaction_meta_bytes: storage.compaction_metadata.allocation.byte_len,
+        affinity_offsets_bytes: storage.affinity_offsets.allocation.byte_len,
+        affinity_lights_bytes: storage.affinity_lights.allocation.byte_len,
+        animation_descriptor_indices_bytes: storage
+            .descriptor_indices
+            .as_ref()
+            .expect("animated direct compose owns descriptor indices")
+            .allocation
+            .byte_len,
     }
     .log(ANIMATED_DIRECT_FOOTPRINT_LABEL);
 
     use wgpu::util::DeviceExt;
     let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Delta Subblocks (f16)"),
-        contents: &subblock_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &storage.delta_subblocks.contents,
+        usage: storage.delta_subblocks.allocation.usage,
     });
     let delta_compaction_meta_buffer =
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Animated Direct SH Compose Delta Compaction Meta"),
-            contents: &compaction_meta_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &storage.compaction_metadata.contents,
+            usage: storage.compaction_metadata.allocation.usage,
         });
     let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Affinity Offsets"),
-        contents: &offsets_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &storage.affinity_offsets.contents,
+        usage: storage.affinity_offsets.allocation.usage,
     });
     let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Affinity Lights"),
-        contents: &lights_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &storage.affinity_lights.contents,
+        usage: storage.affinity_lights.allocation.usage,
     });
     let descriptor_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Descriptor Indices"),
-        contents: &descriptor_indices_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &storage
+            .descriptor_indices
+            .as_ref()
+            .expect("animated direct compose owns descriptor indices")
+            .contents,
+        usage: storage
+            .descriptor_indices
+            .as_ref()
+            .expect("animated direct compose owns descriptor indices")
+            .allocation
+            .usage,
     });
+    let probe_indirection = probe_indirection_storage_payload(
+        ShAllocationKind::AnimatedDirectComposeProbeIndirection,
+        probe_indirection_words,
+    );
     let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Probe Indirection"),
-        contents: &probe_indirection_storage_bytes(probe_indirection_words),
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &probe_indirection.contents,
+        usage: probe_indirection.allocation.usage,
     });
+    let grid_bytes = build_compose_grid_bytes(ComposeGridParams {
+        grid_dimensions: layout.grid_dimensions,
+        atlas_dimensions: layout.atlas_dimensions,
+        tile_dimension: layout.tile_dimension,
+        tile_border: layout.tile_border,
+        atlas_tiles_per_row: layout.atlas_tiles_per_row,
+        tiles_per_layer: layout.tiles_per_layer,
+        atlas_layer_count: layout.atlas_layer_count,
+        affinity_dims: buffers.affinity_dims,
+        // Retain the existing 64-byte uniform layout: its former compact
+        // tail now repeats the stored atlas geometry.
+        compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
+        compact_atlas_tiles_per_layer: layout.tiles_per_layer,
+    });
+    let grid_allocation = buffer_allocation(
+        ShAllocationKind::AnimatedDirectComposeGrid,
+        &grid_bytes,
+        wgpu::BufferUsages::UNIFORM,
+    );
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Grid Dims"),
-        contents: &build_compose_grid_bytes(ComposeGridParams {
-            grid_dimensions: layout.grid_dimensions,
-            atlas_dimensions: layout.atlas_dimensions,
-            tile_dimension: layout.tile_dimension,
-            tile_border: layout.tile_border,
-            atlas_tiles_per_row: layout.atlas_tiles_per_row,
-            tiles_per_layer: layout.tiles_per_layer,
-            atlas_layer_count: layout.atlas_layer_count,
-            affinity_dims: buffers.affinity_dims,
-            // Retain the existing 64-byte uniform layout: its former compact
-            // tail now repeats the stored atlas geometry.
-            compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
-            compact_atlas_tiles_per_layer: layout.tiles_per_layer,
-        }),
-        usage: wgpu::BufferUsages::UNIFORM,
+        contents: &grid_bytes,
+        usage: grid_allocation.usage,
     });
     let animated_light_scale_bytes = AnimatedDirectShDebugOverride::default().bytes(&[]);
+    let animated_light_scale_allocation = buffer_allocation(
+        ShAllocationKind::AnimatedDirectComposeLightScale,
+        &animated_light_scale_bytes,
+        wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    );
     let animated_light_scale_buffer =
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Animated Direct SH Compose Light Scale"),
             contents: &animated_light_scale_bytes,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: animated_light_scale_allocation.usage,
         });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

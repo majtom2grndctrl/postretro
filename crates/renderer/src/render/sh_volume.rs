@@ -29,6 +29,12 @@ use super::direct_sh_resources::{
     DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
 };
+use super::sh_allocation::{
+    ShAllocationKind, buffer_allocation, depth_moment_allocation, indirect_base_atlas_allocation,
+    indirect_base_atlas_dummy_allocation, indirect_base_atlas_empty_payload,
+    indirect_total_atlas_allocation, scripted_light_descriptor_bytes,
+    scripted_light_sample_reserve_bytes, texture_allocation_bytes, volume_3d_fits,
+};
 use super::sh_indirection::build_probe_indirection_words;
 
 /// Dev-tools marker color while the composed dense-atlas readback has not yet
@@ -446,7 +452,7 @@ impl ShVolumeResources {
         // on-disk payload metric.
         #[cfg(feature = "dev-tools")]
         {
-            let allocation = compact_base_atlas_allocation(usable);
+            let allocation = indirect_base_atlas_allocation(usable);
             let (serialized_bytes, valid_probe_count, probe_count) = section
                 .map(|sec| {
                     (
@@ -465,7 +471,7 @@ impl ShVolumeResources {
                 allocation.extent.width,
                 allocation.extent.height,
                 allocation.extent.depth_or_array_layers,
-                base_atlas_allocation_bytes(allocation),
+                texture_allocation_bytes(allocation),
                 serialized_bytes,
                 valid_probe_count,
                 probe_count,
@@ -483,29 +489,42 @@ impl ShVolumeResources {
         // record, including every raw animated-baked tail row. FGD samples occupy
         // [0, scripted_sample_byte_offset); scripted samples follow.
         let scripted_sample_byte_offset = anim_sample_bytes.len();
-        let scripted_region_bytes = scripted_light_capacity * SCRIPTED_FLOATS_PER_LIGHT * 4;
+        let scripted_region_bytes = scripted_light_sample_reserve_bytes(scripted_light_capacity);
         anim_sample_bytes.extend(std::iter::repeat_n(0u8, scripted_region_bytes));
 
+        let anim_descriptors_allocation = buffer_allocation(
+            ShAllocationKind::AnimatedLightDescriptors,
+            &anim_descriptor_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
         let anim_descriptors_buffer = device.create_buffer_init_helper(
             "SH Animation Descriptors",
             &anim_descriptor_bytes,
+            anim_descriptors_allocation.usage,
+        );
+        let anim_samples_allocation = buffer_allocation(
+            ShAllocationKind::AnimatedLightSamples,
+            &anim_sample_bytes,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
         let anim_samples_buffer = device.create_buffer_init_helper(
             "SH Animation Samples",
             &anim_sample_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            anim_samples_allocation.usage,
         );
 
         // wgpu rejects zero-sized storage buffers; pad to one slot for empty maps.
         // The forward loop has no lights in that case, so the dummy is never read.
-        let scripted_descriptor_slots = scripted_light_capacity.max(1);
-        let scripted_descriptor_bytes =
-            vec![0u8; scripted_descriptor_slots * ANIMATION_DESCRIPTOR_SIZE];
+        let scripted_descriptor_bytes = scripted_light_descriptor_bytes(scripted_light_capacity);
+        let scripted_descriptor_allocation = buffer_allocation(
+            ShAllocationKind::ScriptedLightDescriptors,
+            &scripted_descriptor_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
         let scripted_light_descriptors_buffer = device.create_buffer_init_helper(
             "Scripted Light Descriptors",
             &scripted_descriptor_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            scripted_descriptor_allocation.usage,
         );
 
         let grid_info_bytes = build_grid_info_bytes(ShGridInfoParams {
@@ -521,10 +540,15 @@ impl ShVolumeResources {
             present,
             probe_occlusion_enabled,
         });
+        let grid_info_allocation = buffer_allocation(
+            ShAllocationKind::GridInfo,
+            &grid_info_bytes,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
         let grid_info_buffer = device.create_buffer_init_helper(
             "SH Grid Info Uniform",
             &grid_info_bytes,
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            grid_info_allocation.usage,
         );
 
         let base_atlas_view = base_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -872,116 +896,22 @@ fn dummy_depth_moment_payload() -> [u16; 4] {
 }
 
 fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
-    grid_dimensions[0] > 0
-        && grid_dimensions[1] > 0
-        && grid_dimensions[2] > 0
-        && grid_dimensions[0] <= limits.max_texture_dimension_3d
-        && grid_dimensions[1] <= limits.max_texture_dimension_3d
-        && grid_dimensions[2] <= limits.max_texture_dimension_3d
+    volume_3d_fits(grid_dimensions, limits)
 }
 
 /// Upload v11's node-aware base-volume stored-tile atlas without re-expanding it. BC6H blobs
 /// remain compressed through upload and hardware-decode only in the compose
 /// pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
 ///
-/// A valid section with zero valid probes has zero compact dimensions. Compose
-/// will bind only invalid indirection words, but wgpu still needs a nonzero
-/// texture: BC6H uses its minimum valid 4×4 zero block and the uncompressed
-/// path uses one 1×1 zero texel.
-#[derive(Clone, Copy)]
-struct BaseAtlasAllocation {
-    format: wgpu::TextureFormat,
-    extent: wgpu::Extent3d,
-}
-
-fn compact_base_atlas_allocation(
-    section: Option<&OctahedralShVolumeSection>,
-) -> BaseAtlasAllocation {
-    let Some(section) = section else {
-        return BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Rgba16Float,
-            extent: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        };
-    };
-
-    let empty_compact_atlas = section.atlas_dimensions[0] == 0
-        || section.atlas_dimensions[1] == 0
-        || section.layer_count == 0;
-    match section.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            extent: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-        },
-        IRRADIANCE_FORMAT_BC6H => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            extent: wgpu::Extent3d {
-                width: section.atlas_dimensions[0].div_ceil(4) * 4,
-                height: section.atlas_dimensions[1].div_ceil(4) * 4,
-                depth_or_array_layers: section.layer_count,
-            },
-        },
-        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Rgba16Float,
-            extent: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        },
-        IRRADIANCE_FORMAT_RGBA16F => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Rgba16Float,
-            extent: wgpu::Extent3d {
-                width: section.atlas_dimensions[0],
-                height: section.atlas_dimensions[1],
-                depth_or_array_layers: section.layer_count,
-            },
-        },
-        // `OctahedralShVolumeSection::from_bytes` rejects unknown tags. Keep
-        // this match exhaustive so manually-constructed test data cannot be
-        // uploaded under a silently reinterpreted format.
-        unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
-    }
-}
-
-#[cfg(any(feature = "dev-tools", test))]
-fn base_atlas_allocation_bytes(allocation: BaseAtlasAllocation) -> u64 {
-    let extent = allocation.extent;
-    match allocation.format {
-        wgpu::TextureFormat::Bc6hRgbUfloat => {
-            u64::from(extent.width.div_ceil(4))
-                * u64::from(extent.height.div_ceil(4))
-                * u64::from(extent.depth_or_array_layers)
-                * 16
-        }
-        wgpu::TextureFormat::Rgba16Float => {
-            u64::from(extent.width)
-                * u64::from(extent.height)
-                * u64::from(extent.depth_or_array_layers)
-                * 8
-        }
-        _ => unreachable!("base SH atlas allocation only uses BC6H or Rgba16Float"),
-    }
-}
-
 fn upload_compact_base_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     section: &OctahedralShVolumeSection,
 ) -> wgpu::Texture {
-    let empty_compact_atlas = section.atlas_dimensions[0] == 0
-        || section.atlas_dimensions[1] == 0
-        || section.layer_count == 0;
+    let empty_compact_atlas = indirect_base_atlas_empty_payload(section);
     let zero_bc6h = [0u8; 16];
     let zero_rgba16f = [0u8; 8];
-    let allocation = compact_base_atlas_allocation(Some(section));
+    let allocation = indirect_base_atlas_allocation(Some(section));
     let contents = match section.irradiance_format {
         IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => zero_bc6h.as_slice(),
         IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => zero_rgba16f.as_slice(),
@@ -991,16 +921,7 @@ fn upload_compact_base_atlas_texture(
 
     device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("SH Base Octahedral Atlas"),
-            size: allocation.extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: allocation.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &allocation.descriptor(Some("SH Base Octahedral Atlas")),
         wgpu::util::TextureDataOrder::LayerMajor,
         contents,
     )
@@ -1012,20 +933,7 @@ fn upload_compact_base_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -
     let zero_texel = [0u8; 8];
     device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("SH Base Octahedral Atlas Dummy"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &indirect_base_atlas_dummy_allocation().descriptor(Some("SH Base Octahedral Atlas Dummy")),
         wgpu::util::TextureDataOrder::LayerMajor,
         &zero_texel,
     )
@@ -1046,22 +954,10 @@ fn upload_depth_moment_texture(
     grid: [u32; 3],
     data_u16: &[u16],
 ) -> wgpu::Texture {
-    let size = wgpu::Extent3d {
-        width: grid[0].max(1),
-        height: grid[1].max(1),
-        depth_or_array_layers: grid[2].max(1),
-    };
+    let allocation = depth_moment_allocation(grid);
+    let size = allocation.extent;
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("SH Depth Moments"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D3,
-        format: wgpu::TextureFormat::Rgba16Uint,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
+    let texture = device.create_texture(&allocation.descriptor(Some("SH Depth Moments")));
 
     let byte_slice = u16_slice_to_bytes(data_u16);
     queue.write_texture(
@@ -1091,30 +987,14 @@ fn create_total_atlas_texture(
     layer_count: u32,
     label: &str,
 ) -> wgpu::Texture {
-    // dev-tools reads back the composed atlas for the irradiance probe-marker
-    // overlay, which needs COPY_SRC. The flag is only added under the feature so
-    // release builds — where the readback path is compiled out — keep the
-    // minimal usage.
-    #[allow(unused_mut)]
-    let mut usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
-    #[cfg(feature = "dev-tools")]
-    {
-        usage |= wgpu::TextureUsages::COPY_SRC;
-    }
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: atlas_dimensions[0].max(1),
-            height: atlas_dimensions[1].max(1),
-            depth_or_array_layers: layer_count.max(1),
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
-        usage,
-        view_formats: &[],
-    })
+    device.create_texture(
+        &indirect_total_atlas_allocation(
+            atlas_dimensions,
+            layer_count,
+            cfg!(feature = "dev-tools"),
+        )
+        .descriptor(Some(label)),
+    )
 }
 
 // --- Minor wgpu helper shims (local to this module) ---
@@ -1163,27 +1043,24 @@ mod tests {
 
     #[test]
     fn base_atlas_allocation_bytes_uses_physical_bc6h_blocks() {
-        let allocation = BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            extent: wgpu::Extent3d {
-                width: 12,
-                height: 8,
-                depth_or_array_layers: 3,
-            },
-        };
+        let mut section = OctahedralShVolumeSection::placeholder();
+        section.irradiance_format = IRRADIANCE_FORMAT_BC6H;
+        section.atlas_dimensions = [12, 8];
+        section.layer_count = 3;
+        let allocation = indirect_base_atlas_allocation(Some(&section));
 
-        assert_eq!(base_atlas_allocation_bytes(allocation), 288);
+        assert_eq!(texture_allocation_bytes(allocation), 288);
     }
 
     #[test]
     fn missing_sh_base_atlas_reports_rgba16f_dummy_allocation() {
-        let allocation = compact_base_atlas_allocation(None);
+        let allocation = indirect_base_atlas_allocation(None);
 
         assert_eq!(allocation.format, wgpu::TextureFormat::Rgba16Float);
         assert_eq!(allocation.extent.width, 1);
         assert_eq!(allocation.extent.height, 1);
         assert_eq!(allocation.extent.depth_or_array_layers, 1);
-        assert_eq!(base_atlas_allocation_bytes(allocation), 8);
+        assert_eq!(texture_allocation_bytes(allocation), 8);
     }
 
     #[test]

@@ -66,7 +66,7 @@ use pack_sections::bvh_with_chunk_ranges;
 #[path = "pack_output.rs"]
 mod pack_output;
 
-use pack_output::{PlannedSection, write_and_validate_sections};
+use pack_output::{PlannedSection, report_section_footprint, write_and_validate_sections};
 fn scatter_section_fits_pack_cap(
     section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
 ) -> bool {
@@ -1032,20 +1032,37 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         ));
     }
 
-    let section_count = sections.len();
-    let declared_payload_bytes: u64 = sections
+    let descriptors: Vec<_> = sections
         .iter()
-        .map(|section| section.descriptor.byte_len)
-        .sum();
-    let largest_payload_bytes = sections
+        .map(|section| section.descriptor.clone())
+        .collect();
+    let footprint = report_section_footprint(&descriptors);
+    let largest_payload_bytes = footprint
+        .sections
         .iter()
-        .map(|section| section.descriptor.byte_len)
+        .map(|section| section.payload_bytes)
         .max()
         .unwrap_or(0);
     write_and_validate_sections(output, sections)?;
 
+    for section in &footprint.sections {
+        match section.section_name {
+            Some(section_name) => log::info!(
+                "[Compiler] PRL section footprint: id {} ({section_name:?}), {} payload bytes",
+                section.section_id,
+                section.payload_bytes,
+            ),
+            None => log::info!(
+                "[Compiler] PRL section footprint: id {}, {} payload bytes",
+                section.section_id,
+                section.payload_bytes,
+            ),
+        }
+    }
     log::info!(
-        "[Compiler] Serialize footprint: {section_count} sections, {declared_payload_bytes} payload bytes, {largest_payload_bytes} byte largest payload; writes materialize one payload at a time"
+        "[Compiler] Serialize footprint: {} sections, {} payload bytes, {largest_payload_bytes} byte largest payload; header and section-table bytes excluded; writes materialize one payload at a time",
+        footprint.sections.len(),
+        footprint.payload_bytes,
     );
 
     Ok(())

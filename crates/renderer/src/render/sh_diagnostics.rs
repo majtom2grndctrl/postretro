@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec3;
-use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
-use postretro_level_format::sh_reconstruct::{corner_locals, local_xyz, trilinear_weight};
+use postretro_level_format::sh_reconstruct::{
+    node_corner_coord, node_l1_corner_weight, node_local_coord,
+};
 
 use super::debug_lines::DebugLineRenderer;
 use super::sh_indirection::decode_probe_indirection_word;
@@ -19,7 +20,7 @@ use postretro_render_cpu::sh_compose::f16_bits_to_f32;
 pub enum MarkerMode {
     /// Green for `validity != 0`, red for invalid probes.
     Validity,
-    /// Color each probe from its baked 4×4×4 brick's stored density level.
+    /// Color each probe from its baked density level and hierarchy scale.
     DensityLevel,
     /// All probes drawn with the same neutral color.
     Uniform,
@@ -93,13 +94,18 @@ const COLOR_PROBE_DENSITY_L2: [u8; 4] = [90, 150, 255, 255];
 /// Map an id-34 density-level byte to the marker color. The loader validates
 /// the byte, but rendering an unexpected value as red makes a malformed CPU
 /// mirror obvious without adding any diagnostic work to the frame loop.
-fn density_level_marker_color(level: u8) -> [u8; 4] {
-    match level {
+fn density_level_marker_color(level: u8, scale: u8) -> [u8; 4] {
+    let base = match level {
         0 => COLOR_PROBE_DENSITY_L0,
         1 => COLOR_PROBE_DENSITY_L1,
         2 => COLOR_PROBE_DENSITY_L2,
-        _ => COLOR_PROBE_INVALID,
-    }
+        _ => return COLOR_PROBE_INVALID,
+    };
+    let toward_white = f32::from(scale.min(3)) * 0.18;
+    let brighten = |channel: u8| {
+        (f32::from(channel) + (255.0 - f32::from(channel)) * toward_white).round() as u8
+    };
+    [brighten(base[0]), brighten(base[1]), brighten(base[2]), 255]
 }
 
 /// Map a probe's average irradiance to a marker color. The irradiance is HDR,
@@ -283,6 +289,7 @@ fn emit_markers(
                         // word those probes receive for GPU sampling.
                         density_level_marker_color(
                             sh.density_levels.get(idx).copied().unwrap_or_default(),
+                            sh.node_scales.get(idx).copied().unwrap_or_default(),
                         )
                     }
                     MarkerMode::Irradiance => {
@@ -491,7 +498,7 @@ impl ShProbeReadback {
 /// Decode a mapped stored-atlas readback into per-probe average irradiance RGB,
 /// z-major (`x + y*Nx + z*Nx*Ny`). Each dense-grid probe first resolves through
 /// its load-derived indirection word: L0 reads its stored slot, L1 reconstructs
-/// from the brick's eight canonical corner slots, and L2 reads the brick mean.
+/// from the node's eight canonical corner slots, and L2 reads the node mean.
 ///
 /// The readback averages each stored tile's interior before reconstruction.
 /// That commutes with the shared reconstruction's weighted tile sum, so marker
@@ -555,6 +562,7 @@ fn decode_probe_irradiance_atlas(
                 dims,
                 probe_indirection_words,
                 indirection.slot,
+                indirection.scale as u8,
                 atlas_width,
                 atlas_height,
                 layer_count,
@@ -638,7 +646,8 @@ fn reconstruct_l1_probe_average(
     probe: usize,
     dims: [u32; 3],
     probe_indirection_words: &[u32],
-    brick_base_slot: u32,
+    node_base_slot: u32,
+    node_scale: u8,
     atlas_width: u32,
     atlas_height: u32,
     atlas_layer_count: u32,
@@ -655,43 +664,45 @@ fn reconstruct_l1_probe_average(
     let x = probe % nx;
     let y = (probe / nx) % ny;
     let z = probe / (nx * ny);
-    let factor = AFFINITY_FACTOR as usize;
-    let target_local = (x % factor) + (y % factor) * factor + (z % factor) * factor * factor;
-    let brick_origin = [
-        x / factor * factor,
-        y / factor * factor,
-        z / factor * factor,
-    ];
+    let target = [x as u32, y as u32, z as u32];
+    let Some(local) = node_local_coord(target, node_scale) else {
+        return [0.0; 3];
+    };
+    let node_origin = std::array::from_fn(|axis| target[axis] - local[axis]);
 
     let mut sum = [0.0; 3];
     let mut weight_sum = 0.0f32;
-    for (corner, corner_local) in corner_locals().into_iter().enumerate() {
-        let (corner_x, corner_y, corner_z) = local_xyz(corner_local);
-        let corner_global = [
-            brick_origin[0] + corner_x,
-            brick_origin[1] + corner_y,
-            brick_origin[2] + corner_z,
-        ];
-        if corner_global[0] >= dims[0] as usize
-            || corner_global[1] >= dims[1] as usize
-            || corner_global[2] >= dims[2] as usize
+    for corner in 0..8u8 {
+        let Some(corner_global) = node_corner_coord(node_origin, node_scale, corner) else {
+            continue;
+        };
+        if corner_global[0] >= dims[0] || corner_global[1] >= dims[1] || corner_global[2] >= dims[2]
         {
             continue;
         }
-        let corner_probe = corner_global[0] + corner_global[1] * nx + corner_global[2] * nx * ny;
+        let corner_probe = corner_global[0] as usize
+            + corner_global[1] as usize * nx
+            + corner_global[2] as usize * nx * ny;
         let Some(&corner_word) = probe_indirection_words.get(corner_probe) else {
             continue;
         };
-        if !decode_probe_indirection_word(corner_word).valid {
+        let corner_indirection = decode_probe_indirection_word(corner_word);
+        if !corner_indirection.valid
+            || corner_indirection.level != 1
+            || corner_indirection.scale != u32::from(node_scale)
+            || corner_indirection.slot != node_base_slot
+        {
             continue;
         }
-        let weight = trilinear_weight(local_xyz(target_local), local_xyz(corner_local));
+        let Some(weight) = node_l1_corner_weight(local, corner, node_scale) else {
+            continue;
+        };
         if weight <= 0.0 {
             continue;
         }
         let rgb = read_stored_tile_average(
             bytes,
-            brick_base_slot + corner as u32,
+            node_base_slot + u32::from(corner),
             atlas_width,
             atlas_height,
             atlas_layer_count,
@@ -721,8 +732,8 @@ fn reconstruct_l1_probe_average(
 mod tests {
     use super::*;
 
-    fn indirection_word(level: u32, slot: u32) -> u32 {
-        (slot << 3) | 0b100 | level
+    fn indirection_word(level: u32, scale: u32, slot: u32) -> u32 {
+        (slot << 5) | (scale << 3) | 0b100 | level
     }
 
     #[test]
@@ -760,10 +771,15 @@ mod tests {
         assert!(
             all_l0
                 .into_iter()
-                .all(|level| density_level_marker_color(level) == COLOR_PROBE_DENSITY_L0)
+                .all(|level| density_level_marker_color(level, 0) == COLOR_PROBE_DENSITY_L0)
         );
         assert_ne!(COLOR_PROBE_DENSITY_L0, COLOR_PROBE_DENSITY_L1);
         assert_ne!(COLOR_PROBE_DENSITY_L1, COLOR_PROBE_DENSITY_L2);
+        assert_ne!(
+            density_level_marker_color(1, 0),
+            density_level_marker_color(1, 1),
+            "hierarchy scale must be visible in the density diagnostic",
+        );
     }
 
     #[test]
@@ -807,7 +823,7 @@ mod tests {
             atlas_tiles_per_row,
             2,
             1,
-            &[indirection_word(0, 0), indirection_word(0, 1)],
+            &[indirection_word(0, 0, 0), indirection_word(0, 0, 1)],
             stride as u32,
         );
         assert_eq!(out.len(), 2);
@@ -861,9 +877,9 @@ mod tests {
             tiles_per_layer,
             atlas_layer_count,
             &[
-                indirection_word(0, 0),
-                indirection_word(0, 1),
-                indirection_word(0, 2),
+                indirection_word(0, 0, 0),
+                indirection_word(0, 0, 1),
+                indirection_word(0, 0, 2),
             ],
             stride as u32,
         );
@@ -872,17 +888,17 @@ mod tests {
     }
 
     #[test]
-    fn decode_probe_irradiance_atlas_reconstructs_l1_from_canonical_corner_slots() {
+    fn decode_probe_irradiance_atlas_reconstructs_scaled_l1_from_node_corner_slots() {
         use crate::render::sh_volume::f32_to_f16_bits;
 
-        let dims = [4u32, 4, 4];
+        let dims = [8u32, 8, 8];
         let stride = 256usize;
         let mut bytes = vec![0u8; stride];
         for slot in 0..8usize {
             let offset = slot * 8;
             bytes[offset..offset + 2].copy_from_slice(&f32_to_f16_bits(slot as f32).to_le_bytes());
         }
-        let words = vec![indirection_word(1, 0); 64];
+        let words = vec![indirection_word(1, 1, 0); 8 * 8 * 8];
 
         let out = decode_probe_irradiance_atlas(
             &bytes,
@@ -897,13 +913,9 @@ mod tests {
             stride as u32,
         );
 
-        let target_local = 1 + 4 + 16;
-        let expected: f32 = corner_locals()
-            .into_iter()
-            .enumerate()
-            .map(|(corner, local)| {
-                trilinear_weight(local_xyz(target_local), local_xyz(local)) * corner as f32
-            })
+        let target_local = 1 + 8 + 64;
+        let expected: f32 = (0..8u8)
+            .map(|corner| node_l1_corner_weight([1, 1, 1], corner, 1).unwrap() * f32::from(corner))
             .sum();
         assert!(
             (out[target_local][0] - expected).abs() < 1.0e-6,
@@ -926,7 +938,7 @@ mod tests {
             bytes[channel * 2..channel * 2 + 2]
                 .copy_from_slice(&f32_to_f16_bits(value).to_le_bytes());
         }
-        let words = vec![indirection_word(2, 0); 64];
+        let words = vec![indirection_word(2, 0, 0); 64];
 
         let out = decode_probe_irradiance_atlas(
             &bytes,

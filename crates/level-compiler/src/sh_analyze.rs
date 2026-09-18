@@ -18,8 +18,10 @@
 //! bytes on the production id-41 path. Treat those primitives as producer-facing.
 //!
 //! See `context/lib/experimental_spikes.md`: a spike cuts scope and hardening,
-//! not rigor. This pass runs entirely CPU-side in the compiler, per 4×4×4 brick
-//! incrementally, and never materializes the whole-map dense composed atlas.
+//! not rigor. This pass runs entirely CPU-side in the compiler. The legacy
+//! brick metrics stream per 4×4×4 brick; the hierarchy projection additionally
+//! retains one diagnostic-only composed tile per valid probe because a node may
+//! cross brick boundaries. That copy never reaches the packer.
 //!
 //! ## Three candidate stored levels per 4×4×4 brick
 //! - **L0** — all 64 base probes (dense; ground truth).
@@ -51,6 +53,7 @@
 //!   coarsening-induced discontinuity from the genuine lighting gradient across
 //!   the boundary (a raw reconstructed-value diff is also reported).
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use glam::Vec3;
@@ -60,8 +63,9 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
 use postretro_level_format::sh_reconstruct::{
-    Level, Tile, local_xyz, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles,
-    stored_tiles, zero_tile,
+    Level, Tile, corner_locals, local_xyz, node_corner_coord, node_l1_corner_weight,
+    node_probe_edge, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles, stored_tiles,
+    zero_tile,
 };
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use serde::Serialize;
@@ -69,6 +73,10 @@ use serde::Serialize;
 use crate::affinity_grid::AFFINITY_FACTOR;
 use crate::delta_sections::EmittedDeltaSectionRef;
 use crate::sh_bake::f16_bits_to_f32;
+use crate::sh_coarsen::{
+    BrickClass, CoarsenParams, DeltaSectionsRef, classify_levels_with_ceiling,
+};
+use crate::sh_hierarchy::{self, BrickInput, NodeEvaluation};
 
 const AF: usize = AFFINITY_FACTOR as usize; // 4
 const PROBES_PER_CELL: usize = AF * AF * AF; // 64
@@ -100,7 +108,7 @@ pub(crate) struct DeltaView<'a> {
     pub(crate) affinity_dims: [u32; 3],
     tile_dimension: usize,
     valid_probe_masks: &'a [u64],
-    offsets: &'a [u32],
+    pub(crate) offsets: &'a [u32],
     subblocks: &'a [u16],
     /// Starting f16 offset for every CSR entry, in the final compact payload
     /// order. The trailing value is the total payload length.
@@ -593,6 +601,22 @@ pub struct EmittedReconstructionReport {
     pub rel_max_limit: f32,
     pub failing_bricks: u64,
     pub bricks: Vec<EmittedBrickRecord>,
+    /// Final base-density assignments re-scored over each complete hierarchy
+    /// node with the production composed-receiver gate.
+    pub failing_nodes: u64,
+    pub nodes: Vec<EmittedHierarchyNodeRecord>,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct EmittedHierarchyNodeRecord {
+    pub origin: [u32; 3],
+    pub scale: u8,
+    pub level: u8,
+    pub brick_count: u32,
+    pub passes: bool,
+    pub darkness_bypass: bool,
+    pub relative_p95: f32,
+    pub relative_max: f32,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -664,6 +688,67 @@ pub struct SeamStats {
 }
 
 #[derive(Serialize, Clone, Default)]
+pub struct HierarchyHistogramRow {
+    pub scale: u8,
+    pub l0: u64,
+    pub l1: u64,
+    pub l2: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct HierarchyNodeReport {
+    pub origin: [u32; 3],
+    pub scale: u8,
+    pub level: u8,
+    pub brick_count: u32,
+    pub stored_tiles: u32,
+    pub darkness_bypass: bool,
+    pub relative_p95: f32,
+    pub relative_max: f32,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct HierarchyBlockReport {
+    pub delta: u64,
+    pub protection: u64,
+    pub partial: u64,
+    pub member_shape: u64,
+    pub gate: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct HierarchySeamStats {
+    pub pairs: u64,
+    pub cross_scale_pairs: u64,
+    pub cross_level_pairs: u64,
+    pub residual_max: f32,
+    pub residual_mean: f32,
+    pub raw_max: f32,
+    pub raw_mean: f32,
+    pub cross_scale_residual_max: f32,
+    pub cross_scale_residual_mean: f32,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct HierarchyProjectionReport {
+    pub max_scale: u8,
+    pub shipped_stored_tiles: u64,
+    pub projected_stored_tiles: u64,
+    pub id34_projected_bytes: u64,
+    pub id35_projected_bytes: u64,
+    pub composed_projected_bytes: u64,
+    pub dense_probe_record_bytes: u64,
+    pub saved_l1_tiles: u64,
+    pub saved_l2_tiles: u64,
+    pub merged_by_darkness_bypass: u64,
+    pub smoothing_demotions: u64,
+    pub histogram: Vec<HierarchyHistogramRow>,
+    pub blocks: HierarchyBlockReport,
+    pub nodes: Vec<HierarchyNodeReport>,
+    pub seam: HierarchySeamStats,
+}
+
+#[derive(Serialize, Clone, Default)]
 pub struct AnalysisReport {
     pub grid_dims: [u32; 3],
     pub cell_size: [f32; 3],
@@ -698,6 +783,7 @@ pub struct AnalysisReport {
     pub total_delta_entries: u64,
 
     pub seam: SeamStats,
+    pub hierarchy: HierarchyProjectionReport,
     pub sweep: Vec<SweepRow>,
 
     pub protect_aabbs: Vec<[f32; 6]>,
@@ -859,7 +945,11 @@ pub(crate) struct BrickTiles {
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
+pub(crate) fn run_analysis(
+    inputs: &AnalyzeInputs<'_>,
+    hierarchy_max_scale: u8,
+    hierarchy_params: &CoarsenParams,
+) -> AnalysisReport {
     let dims = inputs.grid_dims;
     let base = inputs.base_indirect;
     let tile_dim = base.tile_dimension as usize;
@@ -938,7 +1028,9 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
     let mut comp_l1_w_agg = AggAcc::default();
     let mut comp_l2_w_agg = AggAcc::default();
 
-    // Sweep counters.
+    // The legacy delta/base sweep is intentionally keyed to its absolute
+    // report thresholds. `hierarchy_params` applies only to the shipped
+    // relative-error hierarchy gate below.
     let thresholds = inputs.thresholds;
 
     // Base and composed atlases are RGBA16F. Delta sections contain RGB16F.
@@ -989,6 +1081,14 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
         vec![[false; PROBES_PER_CELL]; brick_count];
     let mut brick_protected: Vec<bool> = vec![false; brick_count];
     let mut brick_nonempty: Vec<bool> = vec![false; brick_count];
+    let mut brick_in_bounds: Vec<u32> = vec![0; brick_count];
+    let mut hierarchy_classes: Vec<Option<BrickClass>> =
+        std::iter::repeat_with(|| None).take(brick_count).collect();
+    // Hierarchy nodes cross affinity-cell boundaries, so their exact gate needs
+    // a map-wide view of the composed truth. The analyzer owns this diagnostic
+    // copy only; no tile is retained by the emitted pipeline.
+    let mut hierarchy_truth: Vec<Option<Tile>> =
+        std::iter::repeat_with(|| None).take(total_probes).collect();
 
     // Per-brick delta entry count and per-level delta stored tiles (aggregate
     // over the 3 sections) for the sweep byte projection.
@@ -1024,6 +1124,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 let valid_probes = bt.valid_mask.iter().filter(|&&v| v).count() as u32;
                 let in_bounds = bt.in_bounds.iter().filter(|&&v| v).count() as u32;
                 brick_valid_masks[cell_lin] = bt.valid_mask;
+                brick_in_bounds[cell_lin] = in_bounds;
 
                 // World AABB of the brick from its in-bounds probe positions.
                 let (wmin, wmax) = brick_world_aabb(inputs, dims, cx, cy, cz);
@@ -1031,6 +1132,36 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
                 brick_protected[cell_lin] = protected;
                 if protected {
                     protected_bricks += 1;
+                }
+
+                let classifier_l1 =
+                    level_errors_with_l1_zero_fallback(&bt.composed, texels, interior, &weights);
+                let classifier_l2 =
+                    level_errors(&bt.composed, LevelKind::L2, texels, interior, &weights);
+                let classifier_magnitude = tile_magnitude(&bt.composed, texels);
+                hierarchy_classes[cell_lin] = Some(BrickClass {
+                    mag_p95: classifier_magnitude.p95,
+                    mag_max: classifier_magnitude.max,
+                    l1_p95: classifier_l1.p95,
+                    l1_max: classifier_l1.max,
+                    l1_evaluable: classifier_l1.texel_samples > 0
+                        && corner_locals()
+                            .into_iter()
+                            .any(|local| bt.valid_mask[local]),
+                    l2_p95: classifier_l2.p95,
+                    l2_max: classifier_l2.max,
+                    l2_evaluable: classifier_l2.texel_samples > 0,
+                    has_any_valid: valid_probes > 0,
+                    world_min: [wmin.x, wmin.y, wmin.z],
+                    world_max: [wmax.x, wmax.y, wmax.z],
+                });
+                for local in 0..PROBES_PER_CELL {
+                    let (lx, ly, lz) = local_xyz(local);
+                    let (px, py, pz) = (cx * AF + lx, cy * AF + ly, cz * AF + lz);
+                    if px < nx && py < ny && pz < nz {
+                        let probe = px + py * nx + pz * nx * ny;
+                        hierarchy_truth[probe] = bt.composed[local].clone();
+                    }
                 }
 
                 if valid_probes == 0 {
@@ -1310,7 +1441,562 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
         representative_threshold(thresholds),
     );
 
+    let hierarchy_classes: Vec<BrickClass> = hierarchy_classes
+        .into_iter()
+        .map(|class| class.expect("every affinity cell is visited"))
+        .collect();
+    report.hierarchy = project_hierarchy(
+        inputs,
+        expected_affinity,
+        &hierarchy_classes,
+        &brick_valid_masks,
+        &brick_nonempty,
+        &brick_in_bounds,
+        &brick_protected,
+        &hierarchy_truth,
+        texels,
+        base_tile_bytes,
+        &delta_indirect,
+        &delta_direct,
+        &delta_anim,
+        hierarchy_max_scale,
+        hierarchy_params,
+    );
+
     report
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_hierarchy(
+    inputs: &AnalyzeInputs<'_>,
+    affinity_dims: [u32; 3],
+    classes: &[BrickClass],
+    valid_masks: &[[bool; PROBES_PER_CELL]],
+    nonempty: &[bool],
+    in_bounds: &[u32],
+    protected: &[bool],
+    truth: &[Option<Tile>],
+    texels: usize,
+    base_tile_bytes: u64,
+    delta_indirect: &Option<DeltaView<'_>>,
+    delta_direct: &Option<DeltaView<'_>>,
+    delta_anim: &Option<DeltaView<'_>>,
+    max_scale: u8,
+    params: &CoarsenParams,
+) -> HierarchyProjectionReport {
+    let mut report = HierarchyProjectionReport {
+        max_scale,
+        dense_probe_record_bytes: inputs
+            .grid_dims
+            .iter()
+            .map(|&dimension| u64::from(dimension))
+            .product::<u64>()
+            * 8,
+        ..Default::default()
+    };
+    let deltas = DeltaSectionsRef {
+        indirect: inputs.delta_indirect,
+        direct: inputs.delta_direct,
+        anim_direct: inputs.delta_anim_direct,
+    };
+    let ceilings = match crate::sh_density::storage_level_ceilings(inputs.grid_dims, deltas) {
+        Ok(ceilings) => ceilings,
+        Err(error) => {
+            log::warn!("[sh-analyze] hierarchy projection skipped: {error}");
+            return report;
+        }
+    };
+    let protect_aabbs: Vec<[f32; 6]> = inputs
+        .protect_aabbs
+        .iter()
+        .map(|aabb| {
+            [
+                aabb.min[0],
+                aabb.min[1],
+                aabb.min[2],
+                aabb.max[0],
+                aabb.max[1],
+                aabb.max[2],
+            ]
+        })
+        .collect();
+    let levels = classify_levels_with_ceiling(
+        classes,
+        affinity_dims,
+        &protect_aabbs,
+        &ceilings
+            .iter()
+            .map(|level| level.to_u8())
+            .collect::<Vec<_>>(),
+        params,
+    );
+    let has_delta_entry = |cell: usize| {
+        [delta_indirect, delta_direct, delta_anim]
+            .into_iter()
+            .flatten()
+            .any(|view| {
+                view.offsets
+                    .get(cell..=cell + 1)
+                    .is_some_and(|offsets| offsets[0] != offsets[1])
+            })
+    };
+    let bricks: Vec<BrickInput> = levels
+        .into_iter()
+        .enumerate()
+        .map(|(cell, level)| {
+            let level = Level::from_u8(level).expect("classifier emits valid levels");
+            BrickInput {
+                level,
+                participates: nonempty[cell],
+                partial: in_bounds[cell] != PROBES_PER_CELL as u32,
+                protected: protected[cell],
+                has_delta_entry: has_delta_entry(cell),
+                stored_tiles: [
+                    stored_tiles(Level::L0, &valid_masks[cell]) as u32,
+                    stored_tiles(Level::L1, &valid_masks[cell]) as u32,
+                    stored_tiles(Level::L2, &valid_masks[cell]) as u32,
+                ],
+            }
+        })
+        .collect();
+    let magnitudes: Vec<f32> = classes
+        .iter()
+        .filter(|class| class.has_any_valid)
+        .map(|class| class.mag_p95)
+        .collect();
+    let (_, darkness_floor) = classifier_darkness_floor(&magnitudes, params.darkness_frac);
+    let projection =
+        match sh_hierarchy::project(affinity_dims, &bricks, max_scale, |origin, scale, level| {
+            evaluate_hierarchy_node(
+                truth,
+                inputs.grid_dims,
+                origin,
+                scale,
+                level,
+                texels,
+                darkness_floor,
+                params,
+            )
+        }) {
+            Ok(projection) => projection,
+            Err(error) => {
+                log::warn!("[sh-analyze] hierarchy projection skipped: {error}");
+                return report;
+            }
+        };
+
+    report.shipped_stored_tiles = projection.shipped_stored_tiles;
+    report.projected_stored_tiles = projection.projected_stored_tiles;
+    report.id34_projected_bytes = projection.projected_stored_tiles * base_tile_bytes;
+    report.id35_projected_bytes = if inputs.base_direct.is_some() {
+        projection.projected_stored_tiles * base_tile_bytes
+    } else {
+        0
+    };
+    report.composed_projected_bytes = projection.projected_stored_tiles * base_tile_bytes;
+    report.saved_l1_tiles = projection.saved_l1_tiles;
+    report.saved_l2_tiles = projection.saved_l2_tiles;
+    report.merged_by_darkness_bypass = projection.merged_by_darkness_bypass;
+    report.smoothing_demotions = projection.smoothing_demotions;
+    report.blocks = HierarchyBlockReport {
+        delta: projection.blocks.delta,
+        protection: projection.blocks.protection,
+        partial: projection.blocks.partial,
+        member_shape: projection.blocks.member_shape,
+        gate: projection.blocks.gate,
+    };
+    report.histogram = projection
+        .histogram
+        .iter()
+        .enumerate()
+        .map(|(scale, levels)| HierarchyHistogramRow {
+            scale: scale as u8,
+            l0: levels[0],
+            l1: levels[1],
+            l2: levels[2],
+        })
+        .collect();
+    report.nodes = projection
+        .nodes
+        .iter()
+        .map(|node| HierarchyNodeReport {
+            origin: node.origin,
+            scale: node.scale,
+            level: node.level.to_u8(),
+            brick_count: node.brick_count,
+            stored_tiles: node.stored_tiles,
+            darkness_bypass: node.evaluation.darkness_bypass,
+            relative_p95: node.evaluation.rel_p95,
+            relative_max: node.evaluation.rel_max,
+        })
+        .collect();
+    report.seam = compute_hierarchy_seams(
+        truth,
+        inputs.grid_dims,
+        affinity_dims,
+        &bricks,
+        &projection.assignments,
+        texels,
+    );
+    report
+}
+
+pub(crate) trait HierarchyTruth {
+    fn tile(&self, probe: usize) -> Option<&[Vec3]>;
+}
+
+impl HierarchyTruth for [Option<Tile>] {
+    fn tile(&self, probe: usize) -> Option<&[Vec3]> {
+        self.get(probe)?.as_deref()
+    }
+}
+
+impl HierarchyTruth for Vec<Option<Tile>> {
+    fn tile(&self, probe: usize) -> Option<&[Vec3]> {
+        self.as_slice().tile(probe)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_hierarchy_node<T: HierarchyTruth + ?Sized>(
+    truth: &T,
+    grid_dims: [u32; 3],
+    origin: [u32; 3],
+    scale: u8,
+    level: Level,
+    texels: usize,
+    darkness_floor: f32,
+    params: &CoarsenParams,
+) -> NodeEvaluation {
+    if level == Level::L0 {
+        return NodeEvaluation::default();
+    }
+    let mut basis_cache = HashMap::new();
+    let assignment = sh_hierarchy::Assignment {
+        origin,
+        scale,
+        level,
+    };
+    let probe_origin = origin.map(|axis| axis * AFFINITY_FACTOR);
+    let probe_edge = node_probe_edge(scale).expect("validated hierarchy scale");
+    if level == Level::L1 && !node_has_valid_l1_corner(truth, grid_dims, probe_origin, scale) {
+        return NodeEvaluation::default();
+    }
+    let mut errors = ErrAccum::default();
+    let mut magnitudes = ErrAccum::default();
+    for z in probe_origin[2]..probe_origin[2] + probe_edge {
+        for y in probe_origin[1]..probe_origin[1] + probe_edge {
+            for x in probe_origin[0]..probe_origin[0] + probe_edge {
+                let coord = [x, y, z];
+                let Some(target) = probe_tile(truth, grid_dims, coord) else {
+                    continue;
+                };
+                for value in target.iter().take(texels) {
+                    magnitudes.push(value.abs().max_element(), 1.0);
+                }
+                let reconstruction = reconstruct_hierarchy_tile(
+                    truth,
+                    grid_dims,
+                    assignment,
+                    coord,
+                    texels,
+                    &mut basis_cache,
+                )
+                .unwrap_or_else(|| zero_tile(texels));
+                for (reconstruction, target) in reconstruction.iter().zip(target).take(texels) {
+                    errors.push(texel_error(reconstruction, target), 1.0);
+                }
+            }
+        }
+    }
+    if errors.is_empty() || magnitudes.is_empty() {
+        return NodeEvaluation::default();
+    }
+    let mag_p95 = magnitudes.p95();
+    let rel_p95 = errors.p95() / mag_p95.max(darkness_floor);
+    let rel_max = errors.max() / magnitudes.max().max(darkness_floor);
+    let darkness_bypass = mag_p95 < darkness_floor;
+    NodeEvaluation {
+        passes: darkness_bypass || (rel_p95 <= params.rel_p95_max && rel_max <= params.rel_max_max),
+        darkness_bypass,
+        rel_p95,
+        rel_max,
+    }
+}
+
+#[derive(Clone, Default)]
+struct HierarchyBasis {
+    mean: Option<Tile>,
+    corners: [Option<Tile>; 8],
+}
+
+type HierarchyBasisCache = HashMap<([u32; 3], u8), HierarchyBasis>;
+
+fn node_has_valid_l1_corner<T: HierarchyTruth + ?Sized>(
+    truth: &T,
+    grid_dims: [u32; 3],
+    probe_origin: [u32; 3],
+    scale: u8,
+) -> bool {
+    (0..8).any(|corner| {
+        let coord = node_corner_coord(probe_origin, scale, corner)
+            .expect("validated hierarchy node corner");
+        probe_tile(truth, grid_dims, coord).is_some()
+    })
+}
+
+fn hierarchy_basis<T: HierarchyTruth + ?Sized>(
+    truth: &T,
+    grid_dims: [u32; 3],
+    origin: [u32; 3],
+    scale: u8,
+    texels: usize,
+) -> HierarchyBasis {
+    let probe_origin = origin.map(|axis| axis * AFFINITY_FACTOR);
+    let probe_edge = node_probe_edge(scale).expect("validated hierarchy scale");
+    let mut mean = zero_tile(texels);
+    let mut count = 0u32;
+    for z in probe_origin[2]..probe_origin[2] + probe_edge {
+        for y in probe_origin[1]..probe_origin[1] + probe_edge {
+            for x in probe_origin[0]..probe_origin[0] + probe_edge {
+                if let Some(tile) = probe_tile(truth, grid_dims, [x, y, z]) {
+                    for (sum, value) in mean.iter_mut().zip(tile) {
+                        *sum += *value;
+                    }
+                    count += 1;
+                }
+            }
+        }
+    }
+    let mean = (count > 0).then(|| {
+        for value in &mut mean {
+            *value /= count as f32;
+        }
+        mean
+    });
+    let max = probe_origin.map(|axis| axis + probe_edge - 1);
+    let corners = std::array::from_fn(|index| {
+        let coord = [
+            if index & 1 == 0 {
+                probe_origin[0]
+            } else {
+                max[0]
+            },
+            if index & 2 == 0 {
+                probe_origin[1]
+            } else {
+                max[1]
+            },
+            if index & 4 == 0 {
+                probe_origin[2]
+            } else {
+                max[2]
+            },
+        ];
+        probe_tile(truth, grid_dims, coord).map(|tile| tile.to_vec())
+    });
+    HierarchyBasis { mean, corners }
+}
+
+fn reconstruct_hierarchy_tile<T: HierarchyTruth + ?Sized>(
+    truth: &T,
+    grid_dims: [u32; 3],
+    assignment: sh_hierarchy::Assignment,
+    target: [u32; 3],
+    texels: usize,
+    cache: &mut HierarchyBasisCache,
+) -> Option<Tile> {
+    if assignment.level == Level::L0 {
+        return probe_tile(truth, grid_dims, target).map(|tile| tile.to_vec());
+    }
+    let basis = cache
+        .entry((assignment.origin, assignment.scale))
+        .or_insert_with(|| {
+            hierarchy_basis(
+                truth,
+                grid_dims,
+                assignment.origin,
+                assignment.scale,
+                texels,
+            )
+        });
+    if assignment.level == Level::L2 {
+        return basis.mean.clone();
+    }
+    let probe_origin = assignment.origin.map(|axis| axis * AFFINITY_FACTOR);
+    let local = [
+        target[0] - probe_origin[0],
+        target[1] - probe_origin[1],
+        target[2] - probe_origin[2],
+    ];
+    let mut reconstructed = zero_tile(texels);
+    let mut weight_sum = 0.0;
+    for (index, corner) in basis.corners.iter().enumerate() {
+        let Some(corner) = corner else { continue };
+        let weight = node_l1_corner_weight(local, index as u8, assignment.scale)
+            .expect("hierarchy target lies inside its assigned node");
+        if weight <= 0.0 {
+            continue;
+        }
+        for (sum, value) in reconstructed.iter_mut().zip(corner) {
+            *sum += *value * weight;
+        }
+        weight_sum += weight;
+    }
+    if weight_sum <= 0.0 {
+        return None;
+    }
+    for value in &mut reconstructed {
+        *value /= weight_sum;
+    }
+    Some(reconstructed)
+}
+
+fn probe_tile<T: HierarchyTruth + ?Sized>(
+    truth: &T,
+    grid_dims: [u32; 3],
+    coord: [u32; 3],
+) -> Option<&[Vec3]> {
+    if coord
+        .iter()
+        .zip(grid_dims)
+        .any(|(&axis, dimension)| axis >= dimension)
+    {
+        return None;
+    }
+    let index = coord[0] as usize
+        + coord[1] as usize * grid_dims[0] as usize
+        + coord[2] as usize * grid_dims[0] as usize * grid_dims[1] as usize;
+    truth.tile(index)
+}
+
+fn compute_hierarchy_seams(
+    truth: &[Option<Tile>],
+    grid_dims: [u32; 3],
+    affinity_dims: [u32; 3],
+    bricks: &[BrickInput],
+    assignments: &[sh_hierarchy::Assignment],
+    texels: usize,
+) -> HierarchySeamStats {
+    let mut stats = HierarchySeamStats::default();
+    let mut residual_sum = 0.0f64;
+    let mut residual_count = 0u64;
+    let mut raw_sum = 0.0f64;
+    let mut raw_count = 0u64;
+    let mut cross_scale_sum = 0.0f64;
+    let mut cross_scale_count = 0u64;
+    let mut cache = HashMap::new();
+    let brick_index = |coord: [u32; 3]| {
+        coord[0] as usize
+            + coord[1] as usize * affinity_dims[0] as usize
+            + coord[2] as usize * affinity_dims[0] as usize * affinity_dims[1] as usize
+    };
+    for z in 0..affinity_dims[2] {
+        for y in 0..affinity_dims[1] {
+            for x in 0..affinity_dims[0] {
+                let coord = [x, y, z];
+                let a = brick_index(coord);
+                if !bricks[a].participates {
+                    continue;
+                }
+                for axis in 0..3 {
+                    let mut neighbor = coord;
+                    neighbor[axis] += 1;
+                    if neighbor[axis] >= affinity_dims[axis] {
+                        continue;
+                    }
+                    let b = brick_index(neighbor);
+                    if !bricks[b].participates || assignments[a] == assignments[b] {
+                        continue;
+                    }
+                    stats.pairs += 1;
+                    let cross_scale = assignments[a].scale != assignments[b].scale;
+                    let cross_level = assignments[a].level != assignments[b].level;
+                    stats.cross_scale_pairs += u64::from(cross_scale);
+                    stats.cross_level_pairs += u64::from(cross_level);
+                    for v in 0..AFFINITY_FACTOR {
+                        for u in 0..AFFINITY_FACTOR {
+                            let mut probe_a = [
+                                x * AFFINITY_FACTOR,
+                                y * AFFINITY_FACTOR,
+                                z * AFFINITY_FACTOR,
+                            ];
+                            let mut probe_b = [
+                                neighbor[0] * AFFINITY_FACTOR,
+                                neighbor[1] * AFFINITY_FACTOR,
+                                neighbor[2] * AFFINITY_FACTOR,
+                            ];
+                            let axes: Vec<usize> =
+                                (0..3).filter(|candidate| *candidate != axis).collect();
+                            probe_a[axis] += AFFINITY_FACTOR - 1;
+                            probe_a[axes[0]] += u;
+                            probe_a[axes[1]] += v;
+                            probe_b[axes[0]] += u;
+                            probe_b[axes[1]] += v;
+                            let (Some(truth_a), Some(truth_b)) = (
+                                probe_tile(truth, grid_dims, probe_a),
+                                probe_tile(truth, grid_dims, probe_b),
+                            ) else {
+                                continue;
+                            };
+                            let recon_a = reconstruct_hierarchy_tile(
+                                truth,
+                                grid_dims,
+                                assignments[a],
+                                probe_a,
+                                texels,
+                                &mut cache,
+                            )
+                            .unwrap_or_else(|| zero_tile(texels));
+                            let recon_b = reconstruct_hierarchy_tile(
+                                truth,
+                                grid_dims,
+                                assignments[b],
+                                probe_b,
+                                texels,
+                                &mut cache,
+                            )
+                            .unwrap_or_else(|| zero_tile(texels));
+                            for texel in 0..texels {
+                                let residual_a = recon_a[texel] - truth_a[texel];
+                                let residual_b = recon_b[texel] - truth_b[texel];
+                                let residual = (residual_a - residual_b).abs().max_element();
+                                let raw = (recon_a[texel] - recon_b[texel]).abs().max_element();
+                                stats.residual_max = stats.residual_max.max(residual);
+                                stats.raw_max = stats.raw_max.max(raw);
+                                residual_sum += residual as f64;
+                                residual_count += 1;
+                                raw_sum += raw as f64;
+                                raw_count += 1;
+                                if cross_scale {
+                                    stats.cross_scale_residual_max =
+                                        stats.cross_scale_residual_max.max(residual);
+                                    cross_scale_sum += residual as f64;
+                                    cross_scale_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    stats.residual_mean = if residual_count == 0 {
+        0.0
+    } else {
+        (residual_sum / residual_count as f64) as f32
+    };
+    stats.raw_mean = if raw_count == 0 {
+        0.0
+    } else {
+        (raw_sum / raw_count as f64) as f32
+    };
+    stats.cross_scale_residual_mean = if cross_scale_count == 0 {
+        0.0
+    } else {
+        (cross_scale_sum / cross_scale_count as f64) as f32
+    };
+    stats
 }
 
 fn frac(n: u64, d: u64) -> f32 {
@@ -1759,12 +2445,15 @@ fn accumulate_dense_and_emitted_delta(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_emitted_reconstruction_analysis(
     inputs: &AnalyzeInputs<'_>,
+    base_levels: &[Level],
+    base_scales: &[u8],
     dense_indirect: Option<&DeltaShVolumesSection>,
     dense_direct: Option<&DirectShDeltaVolumesSection>,
     dense_anim_direct: Option<&AnimatedDirectShDeltaVolumesSection>,
     emitted_indirect: Option<&DeltaShVolumesSection>,
     emitted_direct: Option<&DirectShDeltaVolumesSection>,
     emitted_anim_direct: Option<&AnimatedDirectShDeltaVolumesSection>,
+    params: &CoarsenParams,
 ) -> anyhow::Result<EmittedReconstructionReport> {
     let base = inputs.base_indirect;
     let dims = inputs.grid_dims;
@@ -1828,6 +2517,7 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         leave_one_dense_errors: [LevelErrStats; 3],
     }
     let mut pending = Vec::new();
+    let mut hierarchy_truth: Vec<Option<Tile>> = vec![None; total_probes];
     for cz in 0..az {
         for cy in 0..ay {
             for cx in 0..ax {
@@ -1913,6 +2603,9 @@ pub(crate) fn run_emitted_reconstruction_analysis(
                         add_tile(&mut truth_tile, &dense_by_section[section][local]);
                         add_tile(&mut emitted_tile, &emitted_by_section[section][local]);
                     }
+                    let (lx, ly, lz) = local_xyz(local);
+                    let probe = (cx * AF + lx) + (cy * AF + ly) * nx + (cz * AF + lz) * nx * ny;
+                    hierarchy_truth[probe] = Some(truth_tile.clone());
                     truth[local] = Some(truth_tile);
                     emitted[local] = Some(emitted_tile);
                 }
@@ -1937,7 +2630,6 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         .iter()
         .map(|pending| pending.record.dense_truth_magnitude.p95)
         .collect();
-    let params = crate::sh_coarsen::CoarsenParams::default();
     let (map_p95, floor) = classifier_darkness_floor(&map_magnitudes, params.darkness_frac);
     let mut failures = 0u64;
     let mut records = Vec::with_capacity(pending.len());
@@ -1947,7 +2639,11 @@ pub(crate) fn run_emitted_reconstruction_analysis(
             record.emitted_error.p95 / record.dense_truth_magnitude.p95.max(floor);
         record.relative_max =
             record.emitted_error.max / record.dense_truth_magnitude.max.max(floor);
-        if record.relative_p95 > params.rel_p95_max || record.relative_max > params.rel_max_max {
+        let darkness_bypass = record.dense_truth_magnitude.p95 < floor;
+        if !darkness_bypass
+            && (record.relative_p95 > params.rel_p95_max
+                || record.relative_max > params.rel_max_max)
+        {
             failures += 1;
             record.attribution = [27u32, 41, 45]
                 .into_iter()
@@ -1962,14 +2658,25 @@ pub(crate) fn run_emitted_reconstruction_analysis(
                         leave_one_dense_error: remaining.clone(),
                         leave_one_dense_relative_p95: relative_p95,
                         leave_one_dense_relative_max: relative_max,
-                        leave_one_dense_passes: relative_p95 <= params.rel_p95_max
-                            && relative_max <= params.rel_max_max,
+                        leave_one_dense_passes: darkness_bypass
+                            || (relative_p95 <= params.rel_p95_max
+                                && relative_max <= params.rel_max_max),
                     }
                 })
                 .collect();
         }
         records.push(pending.record);
     }
+    let (failing_nodes, nodes) = evaluate_emitted_hierarchy_nodes(
+        &hierarchy_truth,
+        dims,
+        affinity_dims,
+        base_levels,
+        base_scales,
+        texels,
+        floor,
+        params,
+    )?;
     Ok(EmittedReconstructionReport {
         dense_truth_map_p95: map_p95,
         darkness_floor: floor,
@@ -1977,7 +2684,109 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         rel_max_limit: params.rel_max_max,
         failing_bricks: failures,
         bricks: records,
+        failing_nodes,
+        nodes,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_emitted_hierarchy_nodes(
+    truth: &[Option<Tile>],
+    grid_dims: [u32; 3],
+    affinity_dims: [u32; 3],
+    levels: &[Level],
+    scales: &[u8],
+    texels: usize,
+    darkness_floor: f32,
+    params: &CoarsenParams,
+) -> anyhow::Result<(u64, Vec<EmittedHierarchyNodeRecord>)> {
+    let brick_count = affinity_dims
+        .iter()
+        .map(|&dimension| dimension as usize)
+        .product::<usize>();
+    anyhow::ensure!(
+        levels.len() == brick_count && scales.len() == brick_count,
+        "emitted SH hierarchy assignment count disagrees with the affinity grid"
+    );
+
+    let index = |coord: [u32; 3]| {
+        coord[0] as usize
+            + coord[1] as usize * affinity_dims[0] as usize
+            + coord[2] as usize * affinity_dims[0] as usize * affinity_dims[1] as usize
+    };
+    let mut keys = BTreeSet::new();
+    for z in 0..affinity_dims[2] {
+        for y in 0..affinity_dims[1] {
+            for x in 0..affinity_dims[0] {
+                let brick = index([x, y, z]);
+                let scale = scales[brick];
+                anyhow::ensure!(
+                    scale <= sh_hierarchy::MAX_NODE_SCALE,
+                    "emitted SH node scale {scale} exceeds the supported maximum"
+                );
+                let edge = 1u32 << scale;
+                let origin = [x / edge * edge, y / edge * edge, z / edge * edge];
+                keys.insert((origin, scale, levels[brick].to_u8()));
+            }
+        }
+    }
+
+    let mut failures = 0u64;
+    let mut records = Vec::with_capacity(keys.len());
+    for (origin, scale, level_byte) in keys {
+        let level = Level::from_u8(level_byte).expect("level came from the typed assignment array");
+        let edge = 1u32 << scale;
+        anyhow::ensure!(
+            origin
+                .iter()
+                .zip(affinity_dims)
+                .all(|(&axis, dimension)| axis + edge <= dimension),
+            "emitted SH hierarchy node {origin:?} scale {scale} is partial"
+        );
+        for z in origin[2]..origin[2] + edge {
+            for y in origin[1]..origin[1] + edge {
+                for x in origin[0]..origin[0] + edge {
+                    let member = index([x, y, z]);
+                    anyhow::ensure!(
+                        levels[member] == level && scales[member] == scale,
+                        "emitted SH hierarchy node {origin:?} scale {scale} has disagreeing members"
+                    );
+                }
+            }
+        }
+
+        let evaluation = if level == Level::L0 {
+            NodeEvaluation {
+                passes: true,
+                ..Default::default()
+            }
+        } else {
+            evaluate_hierarchy_node(
+                truth,
+                grid_dims,
+                origin,
+                scale,
+                level,
+                texels,
+                darkness_floor,
+                params,
+            )
+        };
+        if !evaluation.passes {
+            failures += 1;
+        }
+        records.push(EmittedHierarchyNodeRecord {
+            origin,
+            scale,
+            level: level_byte,
+            brick_count: edge * edge * edge,
+            passes: evaluation.passes,
+            darkness_bypass: evaluation.darkness_bypass,
+            relative_p95: evaluation.rel_p95,
+            relative_max: evaluation.rel_max,
+        });
+    }
+    Ok((failures, records))
 }
 
 // ---------------------------------------------------------------------------
@@ -2338,8 +3147,9 @@ pub fn log_summary(report: &AnalysisReport) {
     if let Some(emitted) = &report.emitted_reconstruction {
         log::info!("[sh-analyze] === final emitted reconstruction (dense post-drop truth) ===");
         log::info!(
-            "[sh-analyze] emitted: {} failing brick(s), truth map-p95 {:.6}, floor {:.6}, limits p95 {:.3} max {:.3}",
+            "[sh-analyze] emitted: {} failing delta brick(s), {} failing hierarchy node(s), truth map-p95 {:.6}, floor {:.6}, limits p95 {:.3} max {:.3}",
             emitted.failing_bricks,
+            emitted.failing_nodes,
             emitted.dense_truth_map_p95,
             emitted.darkness_floor,
             emitted.rel_p95_limit,
@@ -2359,6 +3169,50 @@ pub fn log_summary(report: &AnalysisReport) {
         report.seam.raw_mean,
         report.seam.cross_level_residual_max,
         report.seam.cross_level_residual_mean,
+    );
+
+    let hierarchy = &report.hierarchy;
+    log::info!(
+        "[sh-analyze] === hierarchy projection (max scale {}) ===",
+        hierarchy.max_scale
+    );
+    for row in &hierarchy.histogram {
+        log::info!(
+            "[sh-analyze] hierarchy scale {}: L0/L1/L2 {}/{}/{}",
+            row.scale,
+            row.l0,
+            row.l1,
+            row.l2
+        );
+    }
+    log::info!(
+        "[sh-analyze] hierarchy tiles: shipped {} projected {}; id34 {} B id35 {} B composed {} B; dense probe records {} B",
+        hierarchy.shipped_stored_tiles,
+        hierarchy.projected_stored_tiles,
+        hierarchy.id34_projected_bytes,
+        hierarchy.id35_projected_bytes,
+        hierarchy.composed_projected_bytes,
+        hierarchy.dense_probe_record_bytes,
+    );
+    log::info!(
+        "[sh-analyze] hierarchy blocks: delta {} protection {} partial {} shape {} gate {}; darkness merges {} smoothing demotions {}",
+        hierarchy.blocks.delta,
+        hierarchy.blocks.protection,
+        hierarchy.blocks.partial,
+        hierarchy.blocks.member_shape,
+        hierarchy.blocks.gate,
+        hierarchy.merged_by_darkness_bypass,
+        hierarchy.smoothing_demotions,
+    );
+    log::info!(
+        "[sh-analyze] hierarchy seams: {} pairs ({} cross-scale, {} cross-level); residual max {:.5} mean {:.5}; cross-scale residual max {:.5} mean {:.5}",
+        hierarchy.seam.pairs,
+        hierarchy.seam.cross_scale_pairs,
+        hierarchy.seam.cross_level_pairs,
+        hierarchy.seam.residual_max,
+        hierarchy.seam.residual_mean,
+        hierarchy.seam.cross_scale_residual_max,
+        hierarchy.seam.cross_scale_residual_mean,
     );
 
     log::info!("[sh-analyze] === byte accounting (three independent lines) ===");
@@ -2654,19 +3508,23 @@ mod tests {
         };
         let validity = [1];
         let thresholds = [0.0];
-        let report = run_analysis(&AnalyzeInputs {
-            grid_origin: [0.0; 3],
-            cell_size: [1.0; 3],
-            grid_dims: [1, 1, 1],
-            validity: &validity,
-            base_indirect: &base,
-            base_direct: None,
-            delta_indirect: None,
-            delta_direct: Some(&direct),
-            delta_anim_direct: None,
-            protect_aabbs: &[],
-            thresholds: &thresholds,
-        });
+        let report = run_analysis(
+            &AnalyzeInputs {
+                grid_origin: [0.0; 3],
+                cell_size: [1.0; 3],
+                grid_dims: [1, 1, 1],
+                validity: &validity,
+                base_indirect: &base,
+                base_direct: None,
+                delta_indirect: None,
+                delta_direct: Some(&direct),
+                delta_anim_direct: None,
+                protect_aabbs: &[],
+                thresholds: &thresholds,
+            },
+            0,
+            &CoarsenParams::default(),
+        );
 
         let direct_bytes = report
             .section_bytes
@@ -2686,6 +3544,11 @@ mod tests {
         assert_eq!(base_bytes.compacted_bytes, 8);
         assert_eq!(report.composed_atlas.compacted_bytes, 8);
         assert_eq!(report.sweep[0].projected_bytes, 22);
+        assert_eq!(report.hierarchy.max_scale, 0);
+        assert_eq!(
+            report.hierarchy.shipped_stored_tiles,
+            report.hierarchy.projected_stored_tiles,
+        );
     }
 
     #[test]
@@ -2746,6 +3609,81 @@ mod tests {
             "linear ramp L1 error must be ~0, got {}",
             err.max
         );
+    }
+
+    #[test]
+    fn emitted_hierarchy_report_scores_one_complete_scale_one_node() {
+        let grid_dims = [8, 8, 8];
+        let affinity_dims = [2, 2, 2];
+        let truth = vec![Some(vec![Vec3::splat(2.0)]); 8 * 8 * 8];
+        let levels = vec![Level::L2; 8];
+        let scales = vec![1; 8];
+        let params = CoarsenParams::default();
+
+        let (failures, nodes) = evaluate_emitted_hierarchy_nodes(
+            &truth,
+            grid_dims,
+            affinity_dims,
+            &levels,
+            &scales,
+            1,
+            1.0e-6,
+            &params,
+        )
+        .expect("complete classified node must be reportable");
+
+        assert_eq!(failures, 0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].origin, [0, 0, 0]);
+        assert_eq!(nodes[0].scale, 1);
+        assert_eq!(nodes[0].level, Level::L2.to_u8());
+        assert_eq!(nodes[0].brick_count, 8);
+        assert!(nodes[0].passes);
+        assert_eq!(nodes[0].relative_p95, 0.0);
+        assert_eq!(nodes[0].relative_max, 0.0);
+    }
+
+    #[test]
+    fn scaled_l1_requires_a_valid_node_outer_corner() {
+        // Regression: {3,4}^3 are local corners of the eight child bricks but
+        // none are corners of their shared 8^3 node.
+        let grid_dims = [8, 8, 8];
+        let mut truth = vec![None; 8 * 8 * 8];
+        for z in [3usize, 4] {
+            for y in [3usize, 4] {
+                for x in [3usize, 4] {
+                    truth[x + y * 8 + z * 64] = Some(vec![Vec3::splat(2.0)]);
+                }
+            }
+        }
+
+        let bricks = vec![
+            BrickInput {
+                level: Level::L1,
+                participates: true,
+                partial: false,
+                protected: false,
+                has_delta_entry: false,
+                stored_tiles: [1, 1, 1],
+            };
+            8
+        ];
+        let projection = sh_hierarchy::project([2, 2, 2], &bricks, 1, |origin, scale, level| {
+            evaluate_hierarchy_node(
+                &truth,
+                grid_dims,
+                origin,
+                scale,
+                level,
+                1,
+                1.0e-6,
+                &CoarsenParams::default(),
+            )
+        })
+        .unwrap();
+
+        assert!(projection.assignments.iter().all(|node| node.scale == 0));
+        assert_eq!(projection.blocks.gate, 1);
     }
 
     // The pure trilinear-weight / corner-index tests moved with the math into

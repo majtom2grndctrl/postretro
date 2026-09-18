@@ -781,7 +781,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         "CellDrawIndex section must be omitted when Bvh has no leaves"
     );
     let sh_volume_len = sh_volume.try_byte_len().map_err(|error| {
-        anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
+        anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
     })?;
     let entity_shadow_light_count = entity_shadow_lights
         .map(|section| section.light_indices.len())
@@ -859,7 +859,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         sh_volume_len,
         || {
             sh_volume.try_to_bytes().map_err(|error| {
-                anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
+                anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
             })
         },
     ));

@@ -364,9 +364,9 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
 /// in x-fastest order.
 ///
 /// The intermediate deliberately remains `Rgba16Float` here. The pipeline's
-/// downstream density pack converts it into the v10 brick-major stored set after
-/// grouped and monolithic assembly converge, so the group cache never stores an
-/// output-format-specific value.
+/// downstream density pack emits the v11 node-aware stored set after hierarchy
+/// classification and grouped and monolithic assembly converge, so the group cache
+/// never stores an output-format-specific value.
 pub(crate) fn compact_section_from_dense_atlas(
     mut section: OctahedralShVolumeSection,
     dense_atlas: &[OctahedralAtlasTexel],
@@ -475,7 +475,7 @@ pub(crate) fn encode_sh_volume_section_bc6h(
 
     for layer in 0..section.layer_count as usize {
         // BC6H consumes f32 RGBA input but encodes RGB only. The valid-probe
-        // metadata, not alpha, defines stored payload membership in v10.
+        // metadata, not alpha, defines stored payload membership in v11.
         let mut rgba_f32 = vec![0.0f32; padded_width as usize * padded_height as usize * 4];
         let source_layer = layer * source_layer_stride;
         for y in 0..height {
@@ -1218,6 +1218,7 @@ pub(crate) fn bake_probe(
             mean_distance: f32_to_f16_bits(mean_distance),
             mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
             density_level: 0,
+            node_scale: 0,
         },
     }
 }
@@ -1490,18 +1491,21 @@ mod tests {
                     mean_distance: 0,
                     mean_sq_distance: 0,
                     density_level: 0,
+                    node_scale: 0,
                 },
                 OctahedralShProbe {
                     validity: 0,
                     mean_distance: 0,
                     mean_sq_distance: 0,
                     density_level: 0,
+                    node_scale: 0,
                 },
                 OctahedralShProbe {
                     validity: 1,
                     mean_distance: 0,
                     mean_sq_distance: 0,
                     density_level: 0,
+                    node_scale: 0,
                 },
             ],
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,

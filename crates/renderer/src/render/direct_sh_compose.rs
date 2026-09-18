@@ -1110,7 +1110,14 @@ mod tests {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
         assert!(
             source.contains("let output_is_stored = stored_slot.write;")
-                && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection"),
+                && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection")
+                && source.contains("let node_edge = 1u << brick_indirection.scale;")
+                && source.contains("fn l1_node_corner_probe")
+                && source.contains("stored_indirection = decode_sh_probe_indirection")
+                && source.matches("&& node_origin_writer").count() >= 2
+                && source.contains(
+                    "brick_indirection.level == 2u && local_probe == 0u && node_origin_writer"
+                ),
             "direct SH compose must derive stored-slot writes from id-34 indirection"
         );
         assert!(
@@ -1206,7 +1213,8 @@ mod tests {
         assert!(
             source.contains("fn slot_tile_origin(slot: u32)")
                 && !source.contains("fn atlas_tile_origin(")
-                && source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
+                && source.contains("fn l1_node_corner_probe")
+                && source.matches("&& node_origin_writer").count() >= 2
                 && source.contains("brick_indirection.level == 2u && local_probe == 0u")
                 && source.contains("select(0.0, 1.0, stored_slot.valid)"),
             "Pass A must read and write only id-34 shared stored slots"

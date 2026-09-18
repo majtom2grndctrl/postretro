@@ -14,7 +14,8 @@ use crate::octahedral::{
 /// indirect `OctahedralShVolume` section's version line. Version 2 adds
 /// layer-aware atlas metadata for 2D array texture uploads. Version 3 changes
 /// that geometry from the dense grid to id-34's metadata-derived stored tiles.
-pub const DIRECT_SH_VOLUME_VERSION: u32 = 3;
+/// Version 4 shares id 34 v11's node-aware stored-set geometry.
+pub const DIRECT_SH_VOLUME_VERSION: u32 = 4;
 
 /// Direct-light octahedral irradiance volume section (ID 35).
 ///
@@ -174,7 +175,7 @@ impl DirectShVolumeSection {
         if version != DIRECT_SH_VOLUME_VERSION {
             return Err(invalid_data(format!(
                 "direct sh volume section version {version}, expected {DIRECT_SH_VOLUME_VERSION} — \
-                 recompile the .prl with the current `prl-build` for the v3 stored-atlas format"
+                 recompile the .prl with the current `prl-build` for the v4 node-aware stored-atlas format"
             )));
         }
         if data.len() < Self::HEADER_SIZE {
@@ -459,7 +460,7 @@ fn validate_irradiance_format(irradiance_format: u32) -> crate::Result<()> {
 fn atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "direct sh volume stored atlas byte length {len} exceeds the v3 u32 header maximum {}",
+            "direct sh volume stored atlas byte length {len} exceeds the v4 u32 header maximum {}",
             u32::MAX,
         ))
     })
@@ -679,13 +680,13 @@ mod tests {
     fn direct_sh_volume_rejects_previous_section_version() {
         let section = direct_section([1, 1, 1], IRRADIANCE_FORMAT_BC6H);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&3u32.to_le_bytes());
         let err = DirectShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version 2")
-                && msg.contains("expected 3")
-                && msg.contains("v3 stored-atlas"),
+            msg.contains("version 3")
+                && msg.contains("expected 4")
+                && msg.contains("v4 node-aware stored-atlas"),
             "expected version-mismatch error, got: {msg}",
         );
     }

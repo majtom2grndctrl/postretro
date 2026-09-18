@@ -2,6 +2,8 @@
 
 Brief · resumable · reads: `context/lib/rendering_pipeline.md` §4 "Variable base-probe density", `context/lib/build_pipeline.md` §PRL section IDs (ids 34/35), `context/lib/experimental_spikes.md` · read at 2441b87 · symbols re-grounded against `main` at 2441b87 through `/validate-plan` + `/review-brief`
 
+> **Status:** landed-with-gaps. Implementation, automated acceptance, review/fix loops, and full preflight pass. Windows M1, M3, and M4 passed. M5 is recorded as not-yet-evaluable because `POSTRETRO_GPU_TIMING=1` device-loses NVIDIA driver 616.92 before a timing window; no CPU result is substituted.
+
 > **Build order (lighting-scale footprint track):** both `sh-delta-cone-reach-cull` (Phase 1) and `sh-delta-tile-alpha-drop` have **shipped to `main`** (alpha-drop landed the delta ids 27/41/45 at section versions 6/4/4 via PR #506); this brief is the **next and last** item on the footprint chain. Its Phase-1 measurement runs against the **landed** post-cull, post-alpha-drop delta footprint: the cull set which bricks carry a delta entry, and the alpha-drop's RGB re-stride **preserved that entry set** (verified — `validate_storage_levels_against_delta` reads `affinity_offsets` presence, never texel layout), so the bricks this brief pins to scale 0 ("The delta ceiling extends to scale") are exactly the landed ones. Independent of both siblings on the wire (base id-34/35 vs delta id-27/41/45, no version merge); the only shared surface is the SH compose/sampler code, and alpha-drop touched only its delta-read arm (`read_delta_texel`), not the base writer election (`stored_slot_for_invocation`) or the sampler this brief extends.
 
 ## Problem
@@ -28,35 +30,35 @@ Phase 1 rows are honesty gates (pass/fail) or measured findings (measure-and-rep
 
 ### Automated
 Phase 1
-- [ ] With the projection enabled, the emitted `.prl` of a gate fixture is byte-identical to a bake without `--sh-analyze` (regression guard on the byte-preserving analyzer).
-- [ ] On a constructed brick field: eight aligned same-level bricks whose node reconstruction passes the gate merge; a group with one failing member, one member holding a delta entry, one partial brick, a protected brick, or a misaligned origin does not; after merging, no face-adjacent participating bricks differ by more than one level; with the maximum scale set to 0 the projection equals the shipped classification histogram.
-- [ ] On a constructed field of eight aligned scale-1 nodes (each already merged from bricks) whose combined reconstruction passes the gate: they merge into one scale-2 node; a block with one member pinned to scale 0 by a delta entry, protection, or a failed gate does not merge to scale 2, exercising the merge recursion beyond the single brick-to-node pass (research `R-DIR2`).
-- [ ] On the R-DIR2 no-merge field (one member left at scale 0 by a k=1 ceiling amid seven scale-1 nodes), the seam re-smoothing after the k=2 pass leaves no face-adjacent participating bricks differing by more than one level, and no merge raised any brick's level (research `R-DIR2`).
-- [ ] The `--sh-density-force-scale <0..3>` flag exists beside `--sh-density-force-level`, rejects a value outside `0..3`, and (grep gate: negative existence) appears in no FGD entity definition and no player-options schema.
+- [x] With the projection enabled, the emitted `.prl` of a gate fixture is byte-identical to a bake without `--sh-analyze` (regression guard on the byte-preserving analyzer).
+- [x] On a constructed brick field: eight aligned same-level bricks whose node reconstruction passes the gate merge; a group with one failing member, one member holding a delta entry, one partial brick, a protected brick, or a misaligned origin does not; after merging, no face-adjacent participating bricks differ by more than one level; with the maximum scale set to 0 the projection equals the shipped classification histogram.
+- [x] On a constructed field of eight aligned scale-1 nodes (each already merged from bricks) whose combined reconstruction passes the gate: they merge into one scale-2 node; a block with one member pinned to scale 0 by a delta entry, protection, or a failed gate does not merge to scale 2, exercising the merge recursion beyond the single brick-to-node pass (research `R-DIR2`).
+- [x] On the R-DIR2 no-merge field (one member left at scale 0 by a k=1 ceiling amid seven scale-1 nodes), the seam re-smoothing after the k=2 pass leaves no face-adjacent participating bricks differing by more than one level, and no merge raised any brick's level (research `R-DIR2`).
+- [x] The `--sh-density-force-scale <0..3>` flag exists beside `--sh-density-force-level`, rejects a value outside `0..3`, and (grep gate: negative existence) appears in no FGD entity definition and no player-options schema.
 Phase 2
-- [ ] id 34 v11 and id 35 v4 round-trip; each rejects with its own named error: scale above the maximum, members of one node disagreeing on level or scale, a node origin not aligned to its scale, a node reaching outside the grid or over a partial brick, L0 with nonzero scale, an L1 node with no valid corner, and a brick with a delta entry at nonzero scale (loader and compiler share the validator).
-- [ ] A v10 id 34 or v3 id 35 aborts the load with the named recompile error; no degrade.
-- [ ] `--sh-density-force-scale 3` on a fixture with delta entries, a partial edge brick, and a protection AABB pins those bricks to scale 0 (clamped like `--sh-density-force-level`), and the forced-scale bake round-trips through the loader with no nonzero-scale-on-delta / nonzero-scale-on-partial / protected-scale reject (research `R-FORCE`).
-- [ ] A bake with maximum scale 0 emits probe records and atlas blobs byte-identical to the prior version's on a gate fixture apart from the version words; two `--no-cache` runs of a scale-≥1 bake are byte-identical.
-- [ ] One builder yields the word with scale; the moments B/A halves and every compose carrier decode to the same word per probe; the compose slot election writes each node slot exactly once per dispatch (source-shape tests extended).
-- [ ] No sampler pipeline gains a binding; the forward fragment texture inventory is unchanged; every compose BGL stays ≤ 8 storage buffers (regression guard on the budget tests).
-- [ ] Every brick with an id-41 entry is stamped scale 0 (the crossfade guard), asserted on a fixture with selected static lights.
-- [ ] An animated directional light (`light_sun` with `style`/`*_curve`/`_animated`) is normalized to static with a build warning naming the entity, and the bake then coarsens identically to its static equivalent; asserted on a fixture pairing a static and an animated `light_sun` over an open volume.
-- [ ] The bake summary reports the node histogram by scale and level and the bricks pinned to scale 0 by delta entries and by protection.
+- [x] id 34 v11 and id 35 v4 round-trip; each rejects with its own named error: scale above the maximum, members of one node disagreeing on level or scale, a node origin not aligned to its scale, a node reaching outside the grid or over a partial brick, L0 with nonzero scale, an L1 node with no valid corner, and a brick with a delta entry at nonzero scale (loader and compiler share the validator).
+- [x] A v10 id 34 or v3 id 35 aborts the load with the named recompile error; no degrade.
+- [x] `--sh-density-force-scale 3` on a fixture with delta entries, a partial edge brick, and a protection AABB pins those bricks to scale 0 (clamped like `--sh-density-force-level`), and the forced-scale bake round-trips through the loader with no nonzero-scale-on-delta / nonzero-scale-on-partial / protected-scale reject (research `R-FORCE`).
+- [x] A bake with maximum scale 0 emits probe records and atlas blobs byte-identical to the prior version's on a gate fixture apart from the version words; two `--no-cache` runs of a scale-≥1 bake are byte-identical.
+- [x] One builder yields the word with scale; the moments B/A halves and every compose carrier decode to the same word per probe; the compose slot election writes each node slot exactly once per dispatch (source-shape tests extended).
+- [x] No sampler pipeline gains a binding; the forward fragment texture inventory is unchanged; every compose BGL stays ≤ 8 storage buffers (regression guard on the budget tests).
+- [x] Every brick with an id-41 entry is stamped scale 0 (the crossfade guard), asserted on a fixture with selected static lights.
+- [x] An animated directional light (`light_sun` with `style`/`*_curve`/`_animated`) is normalized to static with a build warning naming the entity, and the bake then coarsens identically to its static equivalent; asserted on a fixture pairing a static and an animated `light_sun` over an open volume.
+- [x] The bake summary reports the node histogram by scale and level and the bricks pinned to scale 0 by delta entries and by protection.
 Phase 3
-- [ ] For constructed level/scale/validity fields, the sampler's node-local corner slots and weights at every scale equal the shared reconstruction definition; a cell with all eight corners in one L1 node takes the whole-cell path with ≤ 8 taps; no cell touches more than 8 distinct tiles.
-- [ ] The SDF shadow moments decode reads the same E[d] bits before and after (regression guard).
-- [ ] The emitted-reconstruction analysis of a classified hierarchy bake reports zero bricks over the gate at node granularity.
+- [x] For constructed level/scale/validity fields, the sampler's node-local corner slots and weights at every scale equal the shared reconstruction definition; a cell with all eight corners in one L1 node takes the whole-cell path with ≤ 8 taps; no cell touches more than 8 distinct tiles.
+- [x] The SDF shadow moments decode reads the same E[d] bits before and after (regression guard).
+- [x] The emitted-reconstruction analysis of a classified hierarchy bake reports zero bricks over the gate at node granularity.
 
 ### Manual
 Phase 1 (recorded in `research.md`; fixture, spacing, machine class, cache mode, and cleanup pinned per `testing_guide.md` §Resource bounds)
-- [ ] On `content/dev/maps/stress-warren-mini.map`, `campaign-test.map`, and `kinematic-platform.map` at 1.0 m: stored tiles and id 34/35 bytes for shipped classification, the hierarchy projection, and the all-L2 structural floor, beside the dense per-probe record bytes; node histogram by scale and level; per-level attribution of the saving; node-level composed error (rel p95/max); seam residuals across faces separating nodes of different scale or level. Full `stress-warren.map` at 1.0 m is attempted and recorded as not-yet-evaluable if the box cannot bake it.
-- [ ] The Phase 3 build decision (a soft measure-and-record check, not a hard gate) is made from Phase 1's per-level attribution and recorded in the plan of record, weighed by resource: build the L1 nodes + scale-aware sampler on any net-positive L1 contribution in a scarce resource (disk `.prl`; constrained live VRAM), or when the only net cost falls in an abundant, underutilized resource (marginal counts); refuse Phase 3 only on a clear unoffset net loss in a resource we are actually constrained on.
+- [x] At 1.0 m, retain the completed exact `kinematic-platform.map` local control and bounded hallway-mini feasibility result, then run the owner-preferred `stress-warren-hallway-inspection.map` on Windows (hallway mini fallback): stored tiles and id 34/35 bytes for shipped classification, hierarchy projection, and the all-L2 structural floor beside dense record bytes; node histogram and per-level saving; node error; seam residuals; blockers; machine/workers/wall/RSS/hash/cleanup. Full hallway completed in 11.15 h with zero reconstruction failures.
+- [x] The Phase 3 build decision (a soft measure-and-record check, not a hard gate) is made from Phase 1's per-level attribution and recorded in the plan of record, weighed by resource: build the L1 nodes + scale-aware sampler on any net-positive L1 contribution in a scarce resource (disk `.prl`; constrained live VRAM), or when the only net cost falls in an abundant, underutilized resource (marginal counts); refuse Phase 3 only on a clear unoffset net loss in a resource we are actually constrained on.
 Phase 2
-- [ ] Scale-≥1 L2-node bakes of the Phase 1 fixtures boot with no wgpu validation errors and render indirect on world, movers, skinned meshes, billboards, and fog.
+- [x] Scale-≥1 bakes boot with no wgpu validation errors and render indirect on every named receiver. Windows used runnable kinematic and campaign fixtures because the 2.22 GiB Warren PRL exceeds the owner box's practical runtime envelope.
 Phase 3
-- [ ] Manual-visual hunt at node faces, open volumes crossed by movers, and lit pools on the Phase 1 fixtures at default fidelity plus a forced-scale worst case, from a content root; recorded as a read, never as parity.
-- [ ] Per-pass GPU time (`POSTRETRO_GPU_TIMING=1`) before and after on the named adapter; not-yet-evaluable without `TIMESTAMP_QUERY`, never inferred from CPU time.
+- [x] Manual-visual hunt at node faces, open volumes crossed by movers, and lit pools at default fidelity plus a forced-scale-1 worst case, from a content root; both Windows reads passed with no seams or unexpected pops.
+- [x] Per-pass GPU timing was attempted on the named GTX 1660 SUPER/Vulkan adapter and recorded as not-yet-evaluable: enabling `POSTRETRO_GPU_TIMING=1` device-loses driver 616.92 before the 120-frame window. No CPU-time result was substituted.
 
 ## Path
 
@@ -69,8 +71,8 @@ Non-binding.
 ## Open questions
 
 - Landing order against the sibling delta-payload wire breaks — **resolved** (both siblings landed; this brief is the last of the chain). See the Build-order note and the Wire-format ids 27/41/45 row for the baseline and the entry-set/ceiling argument.
-- Maximum node scale actually adopted (≤ 3 on the wire) and whether a 2:1 scale-balance rule is needed — **delegated**: from Phase 1's node histogram and seam metric, reported in the plan of record
-- Whether full `stress-warren.map` at 1.0 m is bakeable on the measurement box — **delegated**: attempted, recorded either way
+- Maximum node scale and 2:1 balance — **resolved**: emit through scale 1; no additional balance rule. Local and Windows seam measurements agree.
+- Windows stress feasibility — **resolved**: `stress-warren-hallway-inspection.map` completed at 1.0 m in 11.15 h with 4.82 GiB peak RSS; suitable for unattended measurement, not interactive iteration.
 
 ## Boundary inventory
 

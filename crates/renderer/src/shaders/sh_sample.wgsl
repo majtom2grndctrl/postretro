@@ -114,15 +114,21 @@ fn sample_probe_atlas_slot(atlas: texture_2d_array<f32>, slot: u32, dir: vec3<f3
     return textureSampleLevel(atlas, sh_atlas_sampler, uv, i32(location.layer), 0.0);
 }
 
-fn sh_l1_local(idx: vec3<i32>) -> vec3<u32> {
-    let probe = vec3<u32>(u32(idx.x), u32(idx.y), u32(idx.z));
-    return probe - (probe / vec3<u32>(SH_AFFINITY_FACTOR)) * vec3<u32>(SH_AFFINITY_FACTOR);
+fn sh_node_probe_edge(scale: u32) -> u32 {
+    return SH_AFFINITY_FACTOR << scale;
 }
 
-// Exact WGSL mirror of `sh_reconstruct::trilinear_weight`. `corner` follows
-// `corner_locals`' x-fastest order, and a zero-alpha stored tile is absent.
-fn sh_l1_corner_weight(local_coord: vec3<u32>, corner: u32) -> f32 {
-    let fraction = vec3<f32>(local_coord) / f32(SH_AFFINITY_FACTOR - 1u);
+fn sh_l1_local(idx: vec3<i32>, scale: u32) -> vec3<u32> {
+    let probe = vec3<u32>(u32(idx.x), u32(idx.y), u32(idx.z));
+    let node_probe_edge = sh_node_probe_edge(scale);
+    return probe - (probe / vec3<u32>(node_probe_edge)) * vec3<u32>(node_probe_edge);
+}
+
+// Exact WGSL mirror of `sh_reconstruct::node_l1_corner_weight`. `corner`
+// follows x-fastest order, and a zero-alpha stored tile is absent.
+fn sh_l1_corner_weight(local_coord: vec3<u32>, corner: u32, scale: u32) -> f32 {
+    let node_probe_edge = sh_node_probe_edge(scale);
+    let fraction = vec3<f32>(local_coord) / f32(node_probe_edge - 1u);
     let high = sh_corner_offset(corner) != vec3<u32>(0u);
     let axis = select(vec3<f32>(1.0) - fraction, fraction, high);
     return axis.x * axis.y * axis.z;
@@ -132,13 +138,14 @@ fn sample_l1_probe_atlas(
     atlas: texture_2d_array<f32>,
     idx: vec3<i32>,
     slot: u32,
+    scale: u32,
     dir: vec3<f32>,
 ) -> vec4<f32> {
-    let local = sh_l1_local(idx);
+    let local = sh_l1_local(idx, scale);
     var sum = vec3<f32>(0.0);
     var weight_sum = 0.0;
     for (var corner: u32 = 0u; corner < 8u; corner = corner + 1u) {
-        let weight = sh_l1_corner_weight(local, corner);
+        let weight = sh_l1_corner_weight(local, corner, scale);
         if (weight <= 0.0) {
             continue;
         }
@@ -163,7 +170,7 @@ fn sample_probe_atlas_resolved(
         return vec4<f32>(0.0);
     }
     if (indirection.level == 1u) {
-        return sample_l1_probe_atlas(atlas, idx, indirection.slot, dir);
+        return sample_l1_probe_atlas(atlas, idx, indirection.slot, indirection.scale, dir);
     }
     if (indirection.level == 0u || indirection.level == 2u) {
         return sample_probe_atlas_slot(atlas, indirection.slot, dir);
@@ -225,41 +232,55 @@ fn sh_probe_weight(
 struct ShWholeCellResolution {
     available: bool,
     level: u32,
+    scale: u32,
     slot: u32,
 };
 
 // The whole-cell path is legal only when all eight base lattice corners stay
-// within one 4x4x4 brick. Face/edge/corner straddles use the per-corner path:
-// its L1 subface property limits it to 32 taps and eight distinct tiles.
+// within one aligned node. Face/edge/corner straddles use the per-corner path:
+// node-face weights still cap the union at eight distinct tiles.
 fn sh_whole_cell_resolution(gi: vec3<u32>) -> ShWholeCellResolution {
-    let first = sh_corner_index(gi, vec3<u32>(0u));
-    let first_probe = vec3<u32>(u32(first.x), u32(first.y), u32(first.z));
-    let brick = first_probe / vec3<u32>(SH_AFFINITY_FACTOR);
     var found = false;
     var level = 0u;
+    var scale = 0u;
     var slot = 0u;
     for (var c: u32 = 0u; c < 8u; c = c + 1u) {
         let idx = sh_corner_index(gi, sh_corner_offset(c));
-        let probe = vec3<u32>(u32(idx.x), u32(idx.y), u32(idx.z));
-        if (any(probe / vec3<u32>(SH_AFFINITY_FACTOR) != brick)) {
-            return ShWholeCellResolution(false, 0u, 0u);
-        }
         let indirection = sh_probe_indirection(idx);
         if (!indirection.valid) {
             continue;
         }
         if (indirection.level != 1u && indirection.level != 2u) {
-            return ShWholeCellResolution(false, 0u, 0u);
+            return ShWholeCellResolution(false, 0u, 0u, 0u);
         }
         if (!found) {
             found = true;
             level = indirection.level;
+            scale = indirection.scale;
             slot = indirection.slot;
-        } else if (indirection.level != level || indirection.slot != slot) {
-            return ShWholeCellResolution(false, 0u, 0u);
+        } else if (
+            indirection.level != level
+                || indirection.scale != scale
+                || indirection.slot != slot
+        ) {
+            return ShWholeCellResolution(false, 0u, 0u, 0u);
         }
     }
-    return ShWholeCellResolution(found, level, slot);
+    if (!found) {
+        return ShWholeCellResolution(false, 0u, 0u, 0u);
+    }
+    let node_probe_edge = sh_node_probe_edge(scale);
+    let first = sh_corner_index(gi, vec3<u32>(0u));
+    let first_probe = vec3<u32>(u32(first.x), u32(first.y), u32(first.z));
+    let node = first_probe / vec3<u32>(node_probe_edge);
+    for (var c: u32 = 1u; c < 8u; c = c + 1u) {
+        let idx = sh_corner_index(gi, sh_corner_offset(c));
+        let probe = vec3<u32>(u32(idx.x), u32(idx.y), u32(idx.z));
+        if (any(probe / vec3<u32>(node_probe_edge) != node)) {
+            return ShWholeCellResolution(false, 0u, 0u, 0u);
+        }
+    }
+    return ShWholeCellResolution(true, level, scale, slot);
 }
 
 fn sh_whole_cell_weight_sum(
@@ -317,11 +338,11 @@ fn sample_l1_whole_cell_atlas(
         if (outer_weight <= 0.0) {
             continue;
         }
-        let local = sh_l1_local(idx);
+        let local = sh_l1_local(idx, resolution.scale);
         var reconstructed = vec3<f32>(0.0);
         var reconstruction_weight = 0.0;
         for (var corner: u32 = 0u; corner < 8u; corner = corner + 1u) {
-            let w = sh_l1_corner_weight(local, corner) * stored[corner].a;
+            let w = sh_l1_corner_weight(local, corner, resolution.scale) * stored[corner].a;
             reconstructed = reconstructed + w * max(stored[corner].rgb, vec3<f32>(0.0));
             reconstruction_weight = reconstruction_weight + w;
         }

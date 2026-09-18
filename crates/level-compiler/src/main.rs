@@ -49,6 +49,7 @@ pub mod sh_bake;
 pub mod sh_coarsen;
 pub mod sh_density;
 pub mod sh_group;
+pub mod sh_hierarchy;
 pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
 pub mod size_options;
@@ -731,8 +732,8 @@ pub struct Args {
     /// after all base + delta SH bakes are available. Measurement only — it
     /// emits log/JSON diagnostics and changes no emitted `.prl` bytes.
     sh_analyze: bool,
-    /// Destination path for the machine-readable per-brick + aggregate SH
-    /// analysis JSON. `None` with `sh_analyze` set defaults to
+    /// Destination path for the machine-readable per-brick, per-node, and
+    /// aggregate SH analysis JSON. `None` with `sh_analyze` set defaults to
     /// `<output>.sh-analysis.json`. Ignored when `sh_analyze` is false.
     sh_analyze_out: Option<PathBuf>,
     /// Protection-volume stand-in for SH coarsening and analysis. Each entry is a
@@ -741,10 +742,13 @@ pub struct Args {
     /// id-41 classifier and the analysis's protected projection. Repeatable.
     /// Compiler-only measurement input; never stored.
     sh_protect_aabbs: Vec<[f32; 6]>,
-    /// Measurement-only override for base SH stored density. The classifier and
-    /// delta ceilings land in Task 6; this interim flag exists to exercise the
-    /// L1/L2 pack and runtime paths before that classifier is wired.
+    /// Compiler-only debug override for base SH stored density. Delta,
+    /// protection, partial-brick, and seam constraints still apply.
     sh_density_force_level: Option<postretro_level_format::sh_reconstruct::Level>,
+    /// Compiler-only hierarchy scale override. Analysis consumes it without
+    /// changing output; without analysis it forces emitted nodes subject to
+    /// the same storage/protection constraints as production classification.
+    sh_density_force_scale: Option<u8>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -786,7 +790,8 @@ fn help_text() -> String {
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
-         --sh-density-force-level <0|1|2> Measurement-only base SH brick level override; partial bricks and L1 bricks with no valid corner remain L0 (default: none)\n    \
+         --sh-density-force-level <0|1|2> Debug base SH brick level override; storage/protection ceilings still apply (default: none)\n    \
+         --sh-density-force-scale <0..3> Debug base SH hierarchy scale override; with --sh-analyze it affects analysis only, otherwise it affects emitted nodes after storage/protection clamping (default: none)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -831,6 +836,7 @@ where
     let mut sh_analyze_out: Option<PathBuf> = None;
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
     let mut sh_density_force_level = None;
+    let mut sh_density_force_scale = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1033,6 +1039,18 @@ where
                     })?;
                 sh_density_force_level = Some(level);
             }
+            "--sh-density-force-scale" => {
+                let value = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--sh-density-force-scale requires a value from 0 through 3")
+                })?;
+                let parsed: u8 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("--sh-density-force-scale must be a value from 0 through 3")
+                })?;
+                if parsed > 3 {
+                    anyhow::bail!("--sh-density-force-scale must be a value from 0 through 3");
+                }
+                sh_density_force_scale = Some(parsed);
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1078,6 +1096,7 @@ where
         sh_analyze_out,
         sh_protect_aabbs,
         sh_density_force_level,
+        sh_density_force_scale,
     })
 }
 
@@ -2374,6 +2393,7 @@ mod tests {
         assert!(parsed.sh_analyze_out.is_none());
         assert!(parsed.sh_protect_aabbs.is_empty());
         assert!(parsed.sh_density_force_level.is_none());
+        assert!(parsed.sh_density_force_scale.is_none());
     }
 
     #[test]
@@ -2404,6 +2424,45 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn parse_args_sh_density_force_scale_accepts_only_zero_through_three() {
+        for value in 0..=3u8 {
+            let parsed = parse_args_from(
+                [
+                    "input.map".to_owned(),
+                    "--sh-density-force-scale".to_owned(),
+                    value.to_string(),
+                ]
+                .into_iter(),
+            )
+            .unwrap();
+            assert_eq!(parsed.sh_density_force_scale, Some(value));
+        }
+        for value in ["4", "-1", "coarse"] {
+            assert!(
+                parse_args_from(
+                    [
+                        "input.map".to_owned(),
+                        "--sh-density-force-scale".to_owned(),
+                        value.to_owned(),
+                    ]
+                    .into_iter(),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn sh_density_force_scale_has_no_mapper_or_player_surface() {
+        let fgd = include_str!("../../../sdk/TrenchBroom/postretro.fgd");
+        let player_options = include_str!("../../../context/lib/player_options.md");
+        for spelling in ["sh_density_force_scale", "sh-density-force-scale"] {
+            assert!(!fgd.contains(spelling));
+            assert!(!player_options.contains(spelling));
         }
     }
 

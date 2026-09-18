@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use glam::Vec3;
+use postretro_level_format::SectionId;
 use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
     AlphaLightsSection, AlphaShadowType,
@@ -44,7 +45,8 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
-use postretro_level_format::{SectionId, read_container, read_section_data};
+#[cfg(test)]
+use postretro_level_format::{read_container, read_section_data};
 use std::path::Path;
 
 use std::collections::{HashMap, HashSet};

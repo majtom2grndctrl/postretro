@@ -1,7 +1,7 @@
 # lighting-scale--adaptive-probe-spacing — plan of record
 
 mode: resumable
-status: test-ready
+status: landed-with-gaps
 read at: c269dd906
 
 ## Corrections
@@ -61,7 +61,7 @@ read at: c269dd906
 | 8 | Extend emitted-reconstruction analysis and dev diagnostics to node scale; complete automated AC coverage and update durable lighting/build-pipeline contracts to the implemented wire and runtime definitions | integrating executor | 6, 7 | complete — emitted JSON re-scores final node assignments and reports zero failures; dev readback and density markers expose node scale; compiler fixture and scaled diagnostic tests pass; durable v11/v4 build and rendering contracts updated |
 | 9 | Run review-readiness (`cargo fmt --check`, touched-crate checks, focused tests), then `/review-panel` -> `/fix-review-findings` -> focused retest until no concrete finding remains | integrating executor | 8 | complete — three-slice panel plus cross-slice seam pass; representability, analyzer parity, savings, wire validation, origin-writer, working-set, and drift findings fixed; correctness/contract re-review clean; final touched-crate gate passed 153 tests with no warnings; Task 10 mechanically formatted the pre-existing `xtask` drift |
 | 10 | Run `/preflight` once, finalize the AC result column, and publish the external M3-M5 runbook; set `status: test-ready` until blocking owner results arrive | integrating executor | 9 | complete — workspace fmt and Clippy with `-D warnings` pass; full `cargo test` passes; M3-M5 Windows Warren, supplemental campaign receiver, forced-scale visual, and before/after GPU procedures are published in `research.md`; status is `test-ready` with no manual result inferred |
-| 11 | Apply only the reported manual results, move the brief to `done/`, set the final landed status, and commit the plan, brief move, and durable context updates together | integrating executor | 10 and blocking manual proof | in progress — 2026-09-18 manual results recorded (M1 passed; M3/M4 passed on runnable substitutes; M5 not-yet-evaluable on driver 616.92); research.md + this plan committed. Remaining owner-directed steps: move brief to `done/` and set landed status; optional M5 retry after an NVIDIA driver change; file the two pre-existing engine bugs separately |
+| 11 | Apply only the reported manual results, move the brief to `done/`, set the final landed status, and commit the plan, brief move, and durable context updates together | integrating executor | 10 and blocking manual proof | complete — owner accepted the recorded Windows results; M1 and M3/M4 passed, M5 remains explicitly not-yet-evaluable on driver 616.92, and the brief landed with that infrastructure gap documented |
 
 ## Implementation ownership and checkpoints
 

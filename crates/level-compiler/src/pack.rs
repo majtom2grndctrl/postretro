@@ -65,27 +65,20 @@ mod pack_sections;
 
 use pack_sections::bvh_with_chunk_ranges;
 
+mod finalized_sections;
+pub(crate) use finalized_sections::{
+    direct_sh_delta_covers_selection, direct_sh_delta_has_valid_csr_shape,
+    direct_sh_delta_is_usable_for_selection,
+};
+use finalized_sections::{scatter_section_fits_pack_cap, scatter_section_fits_pack_cap_with_limit};
+
+mod spatial;
+pub use spatial::{encode_cell_locator, encode_cells, encode_portals};
+
 #[path = "pack_output.rs"]
 mod pack_output;
 
 use pack_output::{PlannedSection, report_section_footprint, write_and_validate_sections};
-fn scatter_section_fits_pack_cap(
-    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
-) -> bool {
-    scatter_section_fits_pack_cap_with_limit(
-        section,
-        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
-    )
-}
-
-fn scatter_section_fits_pack_cap_with_limit(
-    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
-    max_encoded_bytes: u64,
-) -> bool {
-    section
-        .encoded_len()
-        .is_some_and(|bytes| bytes <= max_encoded_bytes)
-}
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves; the direct lighting path uses the static
@@ -187,79 +180,6 @@ pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSecti
         .collect();
 
     LightInfluenceSection { records }
-}
-
-pub(crate) fn direct_sh_delta_covers_selection(
-    section: &DirectShDeltaVolumesSection,
-    selected_light_count: usize,
-) -> bool {
-    if selected_light_count == 0 {
-        return false;
-    }
-
-    let mut seen = vec![false; selected_light_count];
-    for &selection_index in &section.affinity_lights {
-        let Some(slot) = seen.get_mut(selection_index as usize) else {
-            return false;
-        };
-        *slot = true;
-    }
-
-    seen.into_iter().all(|has_delta| has_delta)
-}
-
-pub(crate) fn direct_sh_delta_has_valid_csr_shape(section: &DirectShDeltaVolumesSection) -> bool {
-    let Some(affinity_cell_count) = (section.affinity_dims[0] as usize)
-        .checked_mul(section.affinity_dims[1] as usize)
-        .and_then(|n| n.checked_mul(section.affinity_dims[2] as usize))
-    else {
-        return false;
-    };
-    let Some(expected_offsets_len) = affinity_cell_count.checked_add(1) else {
-        return false;
-    };
-    if section.affinity_offsets.len() != expected_offsets_len {
-        return false;
-    }
-    if section.affinity_offsets.first().copied() != Some(0) {
-        return false;
-    }
-    if !section
-        .affinity_offsets
-        .windows(2)
-        .all(|window| window[0] <= window[1])
-    {
-        return false;
-    }
-    if section
-        .affinity_offsets
-        .last()
-        .and_then(|&offset| usize::try_from(offset).ok())
-        != Some(section.affinity_lights.len())
-    {
-        return false;
-    }
-
-    section.expected_delta_subblock_f16_count() == Some(section.delta_subblocks.len())
-}
-
-pub(crate) fn direct_sh_delta_is_usable_for_selection(
-    section: &DirectShDeltaVolumesSection,
-    direct: &DirectShVolumeSection,
-    selected_light_count: usize,
-) -> bool {
-    let expected_affinity_dims = [
-        direct.grid_dimensions[0].div_ceil(AFFINITY_FACTOR as u32),
-        direct.grid_dimensions[1].div_ceil(AFFINITY_FACTOR as u32),
-        direct.grid_dimensions[2].div_ceil(AFFINITY_FACTOR as u32),
-    ];
-
-    section.affinity_factor == AFFINITY_FACTOR
-        && section.affinity_dims == expected_affinity_dims
-        && section.tile_dimension == direct.tile_dimension
-        && section.tile_border == direct.tile_border
-        && direct_sh_delta_has_valid_csr_shape(section)
-        && direct_sh_delta_covers_selection(section, selected_light_count)
 }
 
 /// Encode the collected non-light, non-worldspawn map entities into a
@@ -371,181 +291,6 @@ pub fn encode_data_script(compiled_bytes: Vec<u8>, source_path: String) -> DataS
     DataScriptSection {
         compiled_bytes,
         source_path,
-    }
-}
-
-/// Convert compiler portal data into a `PortalsSection` for the format crate.
-pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
-    let mut vertices = Vec::new();
-    let mut records = Vec::new();
-
-    for portal in portals {
-        let vertex_start = vertices.len() as u32;
-        let vertex_count = portal.polygon.len() as u32;
-
-        // Output precision boundary: narrow portal vertices from f64 to f32
-        // at the PRL format write site.
-        for v in &portal.polygon {
-            vertices.push([v.x as f32, v.y as f32, v.z as f32]);
-        }
-
-        records.push(PortalRecord {
-            vertex_start,
-            vertex_count,
-            front_leaf: portal.front_leaf as u32,
-            back_leaf: portal.back_leaf as u32,
-        });
-    }
-
-    PortalsSection {
-        vertices,
-        portals: records,
-    }
-}
-
-/// Encode runtime cells from BSP leaf records plus explicit exterior
-/// classification. Cell ids stay one-to-one with BSP leaf ids. The one-to-one
-/// mapping avoids remapping portal endpoints, BVH leaf `cell_id`, fog masks,
-/// and diagnostics — all downstream consumers index by leaf id directly.
-pub fn encode_cells(
-    leaves: &BspLeavesSection,
-    portals: &PortalsSection,
-    exterior_leaves: &HashSet<usize>,
-) -> anyhow::Result<CellsSection> {
-    if leaves.leaves.is_empty() {
-        anyhow::bail!("cannot encode Cells: source BspLeavesSection is empty");
-    }
-
-    let mut portal_refs_by_cell: Vec<Vec<u32>> = vec![Vec::new(); leaves.leaves.len()];
-    for (portal_idx, portal) in portals.portals.iter().enumerate() {
-        let portal_idx = portal_idx as u32;
-        let front = portal.front_leaf as usize;
-        let back = portal.back_leaf as usize;
-        if front >= leaves.leaves.len() || back >= leaves.leaves.len() {
-            anyhow::bail!(
-                "Cells portal adjacency references leaf out of range: portal {portal_idx} \
-                 front={} back={} leaf_count={}",
-                portal.front_leaf,
-                portal.back_leaf,
-                leaves.leaves.len()
-            );
-        }
-        portal_refs_by_cell[front].push(portal_idx);
-        portal_refs_by_cell[back].push(portal_idx);
-    }
-    for refs in &mut portal_refs_by_cell {
-        refs.sort_unstable();
-        refs.dedup();
-    }
-
-    let mut portal_refs = Vec::new();
-    let mut cells = Vec::with_capacity(leaves.leaves.len());
-    for (cell_idx, leaf) in leaves.leaves.iter().enumerate() {
-        validate_cell_bounds(cell_idx, leaf)?;
-
-        let solid = leaf.is_solid != 0;
-        let exterior = exterior_leaves.contains(&cell_idx);
-        if solid && exterior {
-            anyhow::bail!("Cells cell {cell_idx} cannot be both solid and exterior");
-        }
-        if (solid || exterior) && leaf.face_count != 0 {
-            anyhow::bail!(
-                "Cells cell {cell_idx} is solid/exterior but has face_count {}",
-                leaf.face_count
-            );
-        }
-
-        let drawable = !solid && !exterior && leaf.face_count > 0;
-        let flags = (u32::from(solid) * CELL_FLAG_SOLID)
-            | (u32::from(exterior) * CELL_FLAG_EXTERIOR)
-            | (u32::from(drawable) * CELL_FLAG_DRAWABLE);
-
-        let refs = &portal_refs_by_cell[cell_idx];
-        let (portal_ref_start, portal_ref_count) = if refs.is_empty() {
-            (0, 0)
-        } else {
-            let start = portal_refs.len() as u32;
-            portal_refs.extend_from_slice(refs);
-            (start, refs.len() as u32)
-        };
-
-        cells.push(CellRecord {
-            bounds_min: leaf.bounds_min,
-            bounds_max: leaf.bounds_max,
-            flags,
-            face_start: if leaf.face_count == 0 {
-                0
-            } else {
-                leaf.face_start
-            },
-            face_count: leaf.face_count,
-            portal_ref_start,
-            portal_ref_count,
-        });
-    }
-
-    let section = CellsSection { cells, portal_refs };
-    CellsSection::from_bytes(&section.to_bytes())?;
-    Ok(section)
-}
-
-fn validate_cell_bounds(
-    cell_idx: usize,
-    leaf: &postretro_level_format::bsp::BspLeafRecord,
-) -> anyhow::Result<()> {
-    for axis in 0..3 {
-        let min = leaf.bounds_min[axis];
-        let max = leaf.bounds_max[axis];
-        if !min.is_finite() || !max.is_finite() {
-            anyhow::bail!(
-                "Cells cell {cell_idx} has non-finite bounds on axis {axis}: min {min}, max {max}"
-            );
-        }
-        if min > max {
-            anyhow::bail!(
-                "Cells cell {cell_idx} has inverted bounds on axis {axis}: min {min} > max {max}"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Encode the point-to-cell locator from the final BSP tree. Cell ids preserve
-/// the BSP leaf id space, but the wire format names them as cells rather than
-/// using the legacy negative leaf sentinel.
-pub fn encode_cell_locator(tree: &BspTree) -> anyhow::Result<CellLocatorSection> {
-    if tree.leaves.is_empty() {
-        anyhow::bail!("cannot encode CellLocator: source BspLeavesSection is empty");
-    }
-
-    let root = if tree.nodes.is_empty() {
-        CellLocatorChild::Cell(0)
-    } else {
-        CellLocatorChild::Node(0)
-    };
-    let mut nodes = Vec::with_capacity(tree.nodes.len());
-    for node in &tree.nodes {
-        nodes.push(CellLocatorNodeRecord {
-            plane_normal: [
-                node.plane_normal.x as f32,
-                node.plane_normal.y as f32,
-                node.plane_normal.z as f32,
-            ],
-            plane_distance: node.plane_distance as f32,
-            front: locator_child(&node.front),
-            back: locator_child(&node.back),
-        });
-    }
-
-    let section = CellLocatorSection { root, nodes };
-    CellLocatorSection::from_bytes(&section.to_bytes(), tree.leaves.len() as u32)?;
-    Ok(section)
-}
-
-fn locator_child(child: &BspChild) -> CellLocatorChild {
-    match child {
-        BspChild::Node(index) => CellLocatorChild::Node(*index as u32),
-        BspChild::Leaf(index) => CellLocatorChild::Cell(*index as u32),
     }
 }
 

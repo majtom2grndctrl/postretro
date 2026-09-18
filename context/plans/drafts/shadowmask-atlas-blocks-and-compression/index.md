@@ -53,15 +53,19 @@ its first consumer — the same encoder the blocked `bc7-color-textures` draft n
   mirroring the dependency-free in-tree `bc5.rs`/`bc6h.rs` pattern, with the shadowmask atlas
   as its **first consumer** — proving it on a low-risk signal (graceful fully-lit fallback,
   GPU-free round-trip testable, no emissive dependency) before color textures ride it.
-- **The encoder is a reusable foundation; this brief unblocks `bc7-color-textures`, not
-  absorbs it.** The same BC7 block codec serves both consumers — `Bc7RgbaUnorm` (linear) for
-  the masks and `Bc7RgbaUnormSrgb` for color slots is a view/format flag, not a different
-  encoder — so design it slot-agnostic. Landing it here retires `bc7-color-textures`'s top
-  risk (encoder cost + cross-platform determinism, resolved with the BC6H cache-exemption
-  precedent) and turns its Task 2 into "consume the existing encoder." That draft stays
-  separate: it keeps its hard dependency on `emissive-surfaces-bloom` and its aesthetic A/B
-  veto and owns the `.prm` color path — folding it in would put this certain win behind
-  emissive's dependency and an art gate. Point its stub here for the encoder at promotion.
+- **The encoder is a genuine foundation, but the 4:1 shadowmask win justifies it on its
+  own — the second consumer is a bonus, not the load-bearing case.** The same BC7 block codec
+  serves both consumers (`Bc7RgbaUnorm` linear for the masks, `Bc7RgbaUnormSrgb` for color is
+  a view/format flag, not a different encoder), so design it slot-agnostic. Be precise about
+  what transfers: landing it here retires `bc7-color-textures`'s *core-codec + cross-platform
+  determinism* risk (the "does an in-tree deterministic BC7 encoder exist" question,
+  resolved with the BC6H cache-exemption precedent), but **not** its whole Task 2 — the color
+  path still owns a BC7 **mip chain** and a **magnification** aesthetic bar the shadowmask
+  (no mips, soft signal, uncorrelated channels) never exercises, so the shadowmask fidelity
+  gate is not a substitute for color's A/B veto. That draft stays separate: it keeps its hard
+  dependency on `emissive-surfaces-bloom` and its aesthetic gate and owns the `.prm` color
+  path. Point its stub here for the shared encoder core at promotion, with its residual
+  mip/quality work intact.
 - **BC4 is a measured fidelity floor, not the plan.** BC7 models a cross-channel block
   correlation four *independent* per-light masks do not have, so its error on masks is a real
   risk. If BC7 fails the fidelity/visual gate, fall back to per-channel BC4 (≈2:1, reusing the
@@ -326,11 +330,11 @@ the `rendering_pipeline.md` §4 world-specular statement at promotion to describ
 
 ## Sequencing
 
-**Cross-plan dependency:** land `shadowmask-bake-scaling` first. That plan restructures the
-shadowmask composite into a streaming membership → assignment → fill shape; this brief
-changes the *assignment* step (slots instead of 4-color drops), adds a BC-encode phase at
-the pack seam after slot assignment, and changes the emitted format. Building on the
-streamed composite keeps the slot assignment a change to one well-scoped step.
+**Cross-plan dependency (satisfied):** `shadowmask-bake-scaling` has landed (`done/`); it
+restructured the shadowmask composite into a streaming membership → assignment → fill shape.
+Build on that landed composite: this brief changes the *assignment* step (slots instead of
+4-color drops), adds the BC-encode phase at the pack seam after slot assignment, and changes
+the emitted format — the composite restructure it depended on is already in place.
 
 **Phase 1:** Task 1 — combined-header thin slice (raw encoding); falsifies the wire ↔
 runtime ↔ shader boundary. **Phase 2:** Task 2 — deterministic assignment, device-budget
@@ -351,11 +355,11 @@ payload. **Phase 5:** Task 5 — round-trip/shader/invariant + compression cover
 
 ## Re-anchor before building
 
-`lighting-scale--shadowmask-cold-working-set` (promoted to `ready/`) restructures the
+`lighting-scale--shadowmask-cold-working-set` has landed (`done/`) and restructured the
 assignment seam this brief targets: it deletes the per-(light, texel) membership record and
 derives the overlap graph analytically, so the adjacency this brief consumes arrives on a
 cheaper footing — but `assign_channels_with_drops` and the membership type its Task 2 slots
-into both change shape. Re-anchor against the landed restructure before building. One
+into both changed shape. Re-anchor against the landed restructure before building. One
 foreclosure to weigh: the deleted record is the only structure where per-texel visibility
 values and cross-light adjacency coexist; intensity-ordered retention (which reads light
 parameters only) is unaffected, but a contribution- or coverage-weighted retention priority

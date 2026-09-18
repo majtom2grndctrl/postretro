@@ -1,0 +1,16 @@
+{
+  "map": "content/dev/maps/.slice1-sh-probe-20260918-fine-1.0m.prl",
+  "camera": {
+    "position": [-65.8368, 1.8288, -45.9232],
+    "yaw_deg": 0.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [1280, 720],
+  "output": "measurements/sh-probe-streaming/premise/fine-1.0m.throwaway.png",
+  "measurement": {
+    "report": "measurements/sh-probe-streaming/premise/fine-1.0m.report.json",
+    "warmup_frames": 120,
+    "sample_frames": 600
+  }
+}

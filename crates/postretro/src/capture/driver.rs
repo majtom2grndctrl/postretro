@@ -12,29 +12,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
+use postretro_entities::EntityRegistry;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
-use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
-use postretro_visibility::{CameraCullVisibility, VisibleCells};
 
-use crate::camera;
-use crate::render::{ClearColor, LevelGeometry, Renderer, level_world_to_geometry};
-use crate::runtime_movers::{
-    ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
-};
-use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
-use crate::scripting::map_entity::MapEntity;
-use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::scripting_systems::light_bridge::LightBridge;
-use crate::scripting_systems::mesh_anim::MeshClipTables;
-use crate::scripting_systems::mesh_render::MeshRenderCollector;
-use crate::startup::session::content_root_from_map;
-use crate::startup::worker::derive_prm_root_dev_layout;
-
+use super::prepared::PreparedCapture;
 use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion, parse_scene};
+use crate::camera;
+use crate::render::Renderer;
+use crate::scripting_systems::light_bridge::LightBridge;
 
-/// Portal-walk capture controls diagnostics only; capture has no diagnostic
-/// consumer, so avoid allocating a one-frame trace.
-const CAPTURE_PORTAL_WALK: bool = false;
+#[cfg(test)]
+use super::prepared::{
+    capture_mesh_models, collect_capture_receiver_draws, spawn_capture_receiver_registry,
+};
+#[cfg(test)]
+use crate::runtime_movers::KinematicMoverRenderCollector;
+#[cfg(test)]
+use crate::scripting_systems::mesh_render::MeshRenderCollector;
+#[cfg(test)]
+use postretro_entities::{ComponentKind, ComponentValue};
+#[cfg(test)]
+use postretro_visibility::VisibleCells;
 const MAX_UNIQUE_FILE_ATTEMPTS: usize = 1024;
 static NEXT_UNIQUE_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -67,121 +65,9 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     reject_output_source_aliases(output_path, map_path, scene_path)?;
     preflight_output_path(output_path)?;
 
-    // Load synchronously: capture creates no worker thread or event loop.
-    let mut world = postretro_level_loader::load_prl(&scene.map)
-        .with_context(|| format!("failed to load `{}`", scene.map))?;
-
-    let [width, height] = scene.resolution;
-    let mut renderer = Renderer::new_offscreen(width, height)
-        .context("failed to initialize offscreen frame capture renderer")?;
-
-    let texture_materials = derive_texture_materials(&world.texture_names);
-    let content_root = content_root_from_map(Some(&scene.map));
-    let prm_cache_root = derive_prm_root_dev_layout(&content_root);
-    renderer.install_textures(
-        &world.texture_names,
-        &world.texture_cache_keys,
-        &prm_cache_root,
-        &texture_materials,
-    );
-    renderer.normalize_world_uvs(&mut world);
-    let (static_lights, static_light_influences, static_entity_shadow_lights) =
-        capture_static_lights_and_shadow_selection(
-            &world.lights,
-            &world.light_influences,
-            &world.entity_shadow_lights,
-        );
-    let geometry = LevelGeometry {
-        lights: &static_lights,
-        light_influences: &static_light_influences,
-        entity_shadow_lights: &static_entity_shadow_lights,
-        ..level_world_to_geometry(&world, &texture_materials)
-    };
-    renderer.install_level_geometry(&geometry);
-    let forced_active_writes = install_forced_active_animation_descriptors(
-        &mut renderer,
-        &world.lights,
-        scene.force_active.as_deref(),
-    )?;
-    let forced_promotion_weights = resolve_forced_animated_promotion_rows(
-        &world.lights,
-        world.animated_direct_sh_delta_volumes.as_ref(),
-        scene.force_promotion.as_deref(),
-    )?;
-
-    let eye = Vec3::from_array(scene.camera.position);
-    let view_proj = capture_view_projection(&scene.camera, width, height);
-    let mut scratch = Vec::new();
-    let (visibility, _frustum) = postretro_visibility::determine_visible_cells(
-        eye,
-        view_proj,
-        &world,
-        &[],
-        CAPTURE_PORTAL_WALK,
-        &mut scratch,
-    );
-    let visible_cells = visibility.visible_cells;
-    let fog_reachable = visibility.fog_reachable;
-    let stats = visibility.stats;
-    let light_reachable_cell_mask = light_reachable_cell_mask(&world, &fog_reachable);
-    let reachable_cell_aabbs = reachable_cell_aabbs(&world, &fog_reachable);
-
-    // Capture has no script context or levelLoad event. Stand up only the
-    // VM-free map-authored receiver state the windowed render frame collects.
-    let mut registry = spawn_capture_receiver_registry(&world)?;
-    if !forced_promotion_weights.is_empty() {
-        install_capture_animated_promotion_bridge(
-            &mut renderer,
-            &world,
-            &static_lights,
-            &static_light_influences,
-            &mut registry,
-            &forced_active_writes,
-        )?;
-    }
-    for model in capture_mesh_models(&registry)? {
-        renderer
-            .load_skinned_model(&model, &content_root, &prm_cache_root)
-            .ok_or_else(|| anyhow!("failed to load capture receiver model `{model}`"))?;
-    }
-    let mut mover_collector = KinematicMoverRenderCollector::new();
-    let mut mesh_collector = MeshRenderCollector::new();
-    collect_capture_receiver_draws(
-        &registry,
-        &world,
-        &visible_cells,
-        eye,
-        &mut mover_collector,
-        &mut mesh_collector,
-    );
-    renderer.set_kinematic_mover_draws(
-        mover_collector.instances(),
-        mover_collector.shadow_instances(),
-    );
-    renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
-    renderer.set_mesh_draws(mesh_collector.instances());
-
-    let rgba = renderer.capture_frame_indirect(
-        CameraCullVisibility {
-            cells: &visible_cells,
-            path: stats.path,
-        },
-        &light_reachable_cell_mask,
-        &reachable_cell_aabbs,
-        &fog_reachable,
-        Some(stats.camera_cell),
-        view_proj,
-        eye,
-        &[],
-        &forced_promotion_weights,
-        ClearColor {
-            r: 0.05,
-            g: 0.05,
-            b: 0.08,
-            a: 1.0,
-        },
-        true,
-    )?;
+    let mut prepared = PreparedCapture::prepare(&scene)?;
+    let [width, height] = prepared.resolution();
+    let rgba = prepared.capture_frame()?;
 
     // `scene_color` readback is already RGBA8 sRGB. Write only after all
     // rendering succeeded, so invalid input or GPU failures never touch output.
@@ -190,79 +76,10 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Materialize just the VM-free receivers capture can render at a loaded
-/// instant. This deliberately does not call `install_world_cpu`: that path
-/// also runs data scripts and fires `levelLoad`.
-fn spawn_capture_receiver_registry(
-    world: &postretro_level_loader::LevelWorld,
-) -> Result<EntityRegistry> {
-    let mut registry = EntityRegistry::new();
-    spawn_loaded_kinematic_movers(&mut registry, world, ENGINE_AUTO_CLOSE_MS)
-        .context("failed to spawn capture kinematic movers")?;
-
-    // `MapEntity` is the scripting-facing adapter over PRL records. Built-in
-    // dispatch is VM-free, so this gives capture the exact map-authored
-    // `prop_mesh` spawn contract without admitting the data-script sweep.
-    let map_entities: Vec<MapEntity> = world.map_entities.iter().cloned().map(Into::into).collect();
-    let mut dispatch = ClassnameDispatch::new();
-    register_builtins(&mut dispatch);
-    apply_classname_dispatch(&map_entities, &dispatch, &mut registry);
-
-    Ok(registry)
-}
-
-/// Validate model handles placed by capture's built-in map dispatch. An empty
-/// prop handle must fail capture instead of silently removing its draw.
-/// The renderer cache key is this verbatim string, so
-/// load it before the mesh collector submits an instance using the same handle.
-fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<String>> {
-    let mut seen = HashSet::new();
-    let mut models = Vec::new();
-    for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
-        let ComponentValue::Mesh(mesh) = value else {
-            continue;
-        };
-        if mesh.model.is_empty() {
-            bail!("capture prop_mesh receiver {id:?} has an absent or empty `model` key");
-        }
-        if seen.insert(mesh.model.clone()) {
-            models.push(mesh.model.clone());
-        }
-    }
-    Ok(models)
-}
-
-/// Mirror the windowed render-frame collector calls for capture's spawned
-/// receivers. A single-instant capture has no tick history or animation clock:
-/// alpha is therefore 1.0 and animation time is 0.0.
-fn collect_capture_receiver_draws(
-    registry: &EntityRegistry,
-    world: &postretro_level_loader::LevelWorld,
-    visible_cells: &VisibleCells,
-    eye: Vec3,
-    mover_collector: &mut KinematicMoverRenderCollector,
-    mesh_collector: &mut MeshRenderCollector,
-) {
-    mover_collector.collect(registry, world, visible_cells, 1.0);
-
-    let clip_tables = MeshClipTables::new();
-    let hit_zones = HitZoneStore::new();
-    mesh_collector.collect_with_hit_zones(
-        registry,
-        world,
-        visible_cells,
-        1.0,
-        0.0,
-        &clip_tables,
-        eye,
-        &hit_zones,
-    );
-}
-
 /// Seed capture-only authored active states after the level install has restored
 /// the baked descriptor mirror. `capture_frame_indirect` flushes these writes
 /// in its first `update_per_frame_uniforms` call.
-fn install_forced_active_animation_descriptors(
+pub(super) fn install_forced_active_animation_descriptors(
     renderer: &mut Renderer,
     lights: &[postretro_level_loader::MapLight],
     forced_lights: Option<&[ForcedAnimLight]>,
@@ -283,7 +100,7 @@ fn install_forced_active_animation_descriptors(
 /// descriptor, rest cone, slot, and depth-cache seams. The bridge still starts
 /// from capture's compact static-only list; the raw section-45 roster supplies
 /// promotion identity without restoring the authored dynamic tier.
-fn install_capture_animated_promotion_bridge(
+pub(super) fn install_capture_animated_promotion_bridge(
     renderer: &mut Renderer,
     world: &postretro_level_loader::LevelWorld,
     capture_lights: &[postretro_level_loader::MapLight],
@@ -449,7 +266,7 @@ fn resolve_forced_active_animation_slots(
 /// renderer's promotion state is keyed by the roster position, so never pass
 /// the slot itself to the capture override. Duplicate slots use the runtime
 /// bridge's first-static-light identity.
-fn resolve_forced_animated_promotion_rows(
+pub(super) fn resolve_forced_animated_promotion_rows(
     lights: &[postretro_level_loader::MapLight],
     section: Option<
         &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
@@ -586,7 +403,7 @@ fn forced_active_animation_descriptor(
 /// Preserve capture's static-only light input while translating global PRL
 /// selection indices into the same compact static-light index space. Keep one
 /// output selection entry per input entry so shadowmask channels stay aligned.
-fn capture_static_lights_and_shadow_selection(
+pub(super) fn capture_static_lights_and_shadow_selection(
     lights: &[postretro_level_loader::MapLight],
     influences: &[postretro_render_data::influence::LightInfluence],
     entity_shadow_lights: &[u32],
@@ -629,7 +446,7 @@ fn capture_static_lights_and_shadow_selection(
     )
 }
 
-fn derive_texture_materials(
+pub(super) fn derive_texture_materials(
     texture_names: &[String],
 ) -> Vec<postretro_render_data::material::Material> {
     let mut warned = HashSet::new();
@@ -656,7 +473,7 @@ fn derive_texture_materials(
 
 /// Build the static capture camera directly so the scene's independently
 /// authored FOV is honored rather than adding a transient presentation offset.
-fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4 {
+pub(super) fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4 {
     let aspect = width as f32 / height as f32;
     let fov = camera.fov_deg.to_radians();
     let vfov = 2.0 * ((fov / 2.0).tan() / aspect).atan();
@@ -674,7 +491,7 @@ fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4
 
 /// Mirror `App::redraw`: an empty fog-reachable list is the DrawAll sentinel,
 /// so an empty mask keeps every cell-assigned light eligible.
-fn light_reachable_cell_mask(
+pub(super) fn light_reachable_cell_mask(
     world: &postretro_level_loader::LevelWorld,
     fog_reachable: &[u32],
 ) -> Vec<bool> {
@@ -693,7 +510,7 @@ fn light_reachable_cell_mask(
 
 /// Mirror `App::redraw`: shadow eligibility follows the wider fog/light
 /// reachability set, including empty but portal-reachable cells.
-fn reachable_cell_aabbs(
+pub(super) fn reachable_cell_aabbs(
     world: &postretro_level_loader::LevelWorld,
     fog_reachable: &[u32],
 ) -> Vec<(Vec3, Vec3)> {

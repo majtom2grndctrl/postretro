@@ -15,6 +15,7 @@ pub mod cell_locator;
 pub mod cell_visibility;
 pub mod cells;
 pub mod chunk_light_list;
+pub mod cluster_directory;
 pub mod data_script;
 pub mod delta_sh_volumes;
 pub mod direct_sh_delta_volumes;

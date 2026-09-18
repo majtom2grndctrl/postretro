@@ -206,6 +206,10 @@ pub enum SectionId {
     /// mapping and CSR layout mirror `AnimatedDirectShDeltaVolumes` (id 45).
     /// See `animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection`.
     AnimatedBillboardDirectScatterDeltaVolumes = 48,
+
+    /// Inert cell-cluster metadata and grid-relative SH resource addressing.
+    /// See `cluster_directory::ClusterDirectorySection`.
+    ClusterDirectory = 49,
 }
 
 impl SectionId {
@@ -247,6 +251,7 @@ impl SectionId {
             46 => Some(Self::CellVisibility),
             47 => Some(Self::BillboardDirectScatterVolume),
             48 => Some(Self::AnimatedBillboardDirectScatterDeltaVolumes),
+            49 => Some(Self::ClusterDirectory),
             _ => None,
         }
     }
@@ -295,6 +300,7 @@ mod tests {
             SectionId::CellVisibility,
             SectionId::BillboardDirectScatterVolume,
             SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+            SectionId::ClusterDirectory,
         ];
 
         for section_id in registered {
@@ -302,6 +308,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(49), None);
+        assert_eq!(SectionId::from_u32(50), None);
     }
 }

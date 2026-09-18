@@ -130,7 +130,6 @@ pub(super) fn scripted_light_descriptor_bytes(capacity: usize) -> Vec<u8> {
 
 /// Requested texture bytes for the formats used by level-owned SH resources.
 /// Compressed sizes use the physical 4×4 block footprint, not logical texels.
-#[cfg(any(feature = "dev-tools", test))]
 pub(super) fn texture_allocation_bytes(allocation: TextureAllocation) -> u64 {
     let extent = allocation.extent;
     match allocation.format {

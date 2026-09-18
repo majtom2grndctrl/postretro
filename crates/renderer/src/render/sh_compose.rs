@@ -15,6 +15,7 @@ use super::sh_allocation::{
     probe_indirection_storage_payload,
 };
 use super::sh_indirection::WGSL_DECODE_HELPER;
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -77,7 +78,10 @@ impl ShComposeResources {
         sh: &ShVolumeResources,
         sh_section: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
         delta: Option<&DeltaShVolumesSection>,
+        sh_section_present: bool,
+        delta_section_present: bool,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         // Build the sparse CSR metadata. Probes stay in the format-owned f16
         // payload until this renderer stages its verbatim bytes for upload.
@@ -112,6 +116,68 @@ impl ShComposeResources {
         let probe_indirection = probe_indirection_storage_payload(
             ShAllocationKind::IndirectComposeProbeIndirection,
             &sh.probe_indirection_words,
+        );
+        let delta_sources = source_ids([delta_section_present.then_some(27)]);
+        let compose_sources = source_ids([
+            sh_section_present.then_some(34),
+            delta_section_present.then_some(27),
+        ]);
+        let delta_state = match (delta_section_present, delta.is_some()) {
+            (true, true) => ShResidencyAllocationState::Data,
+            (true, false) => ShResidencyAllocationState::Fallback,
+            (false, _) => ShResidencyAllocationState::Dummy,
+        };
+        let sh_state = match (sh_section_present, sh.present) {
+            (true, true) => ShResidencyAllocationState::Data,
+            (true, false) => ShResidencyAllocationState::Fallback,
+            (false, _) => ShResidencyAllocationState::Dummy,
+        };
+        let compose_state = if sh.present {
+            ShResidencyAllocationState::Data
+        } else if sh_section_present || delta_section_present {
+            ShResidencyAllocationState::Fallback
+        } else {
+            ShResidencyAllocationState::Dummy
+        };
+        ledger.record_buffer(
+            storage.delta_subblocks.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage.compaction_metadata.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage.affinity_offsets.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage.affinity_lights.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage
+                .descriptor_indices
+                .as_ref()
+                .expect("indirect compose always describes descriptor indices")
+                .allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            probe_indirection.allocation,
+            &source_ids([sh_section_present.then_some(34)]),
+            !sh_section_present,
+            sh_state,
         );
 
         use wgpu::util::DeviceExt;
@@ -199,6 +265,12 @@ impl ShComposeResources {
             &grid_bytes,
             wgpu::BufferUsages::UNIFORM,
         );
+        ledger.record_buffer(
+            grid_allocation,
+            &compose_sources,
+            compose_sources.is_empty(),
+            compose_state,
+        );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
             contents: &grid_bytes[..],
@@ -218,6 +290,12 @@ impl ShComposeResources {
             ShAllocationKind::IndirectComposeOrigin,
             &origin_bytes,
             wgpu::BufferUsages::UNIFORM,
+        );
+        ledger.record_buffer(
+            origin_allocation,
+            &compose_sources,
+            compose_sources.is_empty(),
+            compose_state,
         );
         let origin_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Origin"),

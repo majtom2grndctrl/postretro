@@ -22,6 +22,7 @@ use super::sh_allocation::{
     probe_indirection_storage_payload,
 };
 use super::sh_indirection::WGSL_DECODE_HELPER;
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
@@ -177,7 +178,10 @@ impl DirectShComposeResources {
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        sh_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
+        let direct_delta_present = delta.is_some();
         match animated_delta {
             // Case 2 is selected only at level load from section presence.
             Some(animated_delta) => Self::new_case2(
@@ -189,6 +193,9 @@ impl DirectShComposeResources {
                 animated_delta,
                 weights_buffer,
                 uniform_bind_group_layout,
+                direct_delta_present,
+                sh_section_present,
+                ledger,
             ),
             // Section 45 absent: Pass A still performs base copy-through so
             // the static-direct mask works even without promotion deltas.
@@ -198,6 +205,9 @@ impl DirectShComposeResources {
                 probe_indirection_words,
                 delta,
                 weights_buffer,
+                direct_delta_present,
+                sh_section_present,
+                ledger,
             ),
         }
     }
@@ -208,6 +218,9 @@ impl DirectShComposeResources {
         probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
+        direct_delta_present: bool,
+        sh_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         if !direct.has_direct_base {
             return Self::disabled();
@@ -227,6 +240,9 @@ impl DirectShComposeResources {
             delta,
             weights_buffer,
             composed_storage_view,
+            direct_delta_present,
+            sh_section_present,
+            ledger,
         );
 
         log::info!(
@@ -251,6 +267,9 @@ impl DirectShComposeResources {
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        direct_delta_present: bool,
+        sh_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         let Some(intermediate_storage_view) = direct.intermediate_storage_view.as_ref() else {
             return Self::disabled();
@@ -276,6 +295,9 @@ impl DirectShComposeResources {
             delta,
             weights_buffer,
             intermediate_storage_view,
+            direct_delta_present,
+            sh_section_present,
+            ledger,
         );
         pass_a.animated_add = Some(build_animated_direct_pass(
             device,
@@ -288,6 +310,8 @@ impl DirectShComposeResources {
                 output_storage: composed_storage_view,
             },
             uniform_bind_group_layout,
+            sh_section_present,
+            ledger,
         ));
 
         log::info!(
@@ -389,6 +413,9 @@ fn build_promotion_pass(
     delta: Option<&DirectShDeltaVolumesSection>,
     weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
+    direct_delta_present: bool,
+    sh_section_present: bool,
+    ledger: &mut ShAllocationLedger,
 ) -> DirectShComposePipeline {
     let storage = DirectPromotionStorage::new(delta, layout.grid_dimensions);
     // The instrumentation covers both cases. The promotion pass binds only
@@ -423,6 +450,63 @@ fn build_promotion_pass(
         ShAllocationKind::DirectComposeProbeIndirection,
         probe_indirection_words,
     );
+    let delta_sources = source_ids([direct_delta_present.then_some(41)]);
+    let probe_sources = source_ids([sh_section_present.then_some(34)]);
+    let grid_sources = source_ids([
+        direct.has_direct_base.then_some(35),
+        (!direct.has_direct_base && sh_section_present).then_some(34),
+        direct_delta_present.then_some(41),
+    ]);
+    ledger.record_buffer(
+        payloads.delta_subblocks.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        payloads.compaction_metadata.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        payloads.affinity_offsets.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        payloads.affinity_lights.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        probe_indirection.allocation,
+        &probe_sources,
+        true,
+        if sh_section_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
     let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Probe Indirection"),
         contents: &probe_indirection.contents,
@@ -448,6 +532,12 @@ fn build_promotion_pass(
         &grid_bytes,
         wgpu::BufferUsages::UNIFORM,
     );
+    ledger.record_buffer(
+        grid_allocation,
+        &grid_sources,
+        grid_sources.is_empty(),
+        ShResidencyAllocationState::Data,
+    );
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Grid Dims"),
         contents: &grid_bytes,
@@ -459,6 +549,12 @@ fn build_promotion_pass(
         &debug_override_bytes,
         wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     );
+    ledger.record_buffer(
+        debug_override_allocation,
+        &[],
+        true,
+        ShResidencyAllocationState::Data,
+    );
     let debug_override_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Debug Override"),
         contents: &debug_override_bytes,
@@ -469,6 +565,12 @@ fn build_promotion_pass(
         ShAllocationKind::DirectComposeLightTermMask,
         &initial_light_term_mask_bytes,
         wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    );
+    ledger.record_buffer(
+        light_term_mask_allocation,
+        &[],
+        true,
+        ShResidencyAllocationState::Data,
     );
     let light_term_mask_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Frame Light-Term Mask"),

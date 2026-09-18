@@ -17,6 +17,7 @@ use super::sh_allocation::{
     direct_base_atlas_allocation, direct_base_atlas_dummy_allocation,
     direct_composed_atlas_allocation,
 };
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Renderer-owned direct-SH textures and mesh-only dynamic-direct parameters.
@@ -46,6 +47,8 @@ impl DirectShResources {
         direct_delta_section: Option<&DirectShDeltaVolumesSection>,
         animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
         fallback_layout: Option<DirectAtlasLayout>,
+        direct_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         let direct_usage = resolve_direct_atlas_usage(
             direct_section,
@@ -53,11 +56,21 @@ impl DirectShResources {
             animated_direct_delta_section,
             fallback_layout,
         );
-        let (base_atlas_texture, has_direct_base) =
-            upload_direct_atlas_texture(device, queue, direct_section);
+        let (base_atlas_texture, has_direct_base) = upload_direct_atlas_texture(
+            device,
+            queue,
+            direct_section,
+            direct_section_present,
+            ledger,
+        );
         let has_animated_direct =
             animated_direct_delta_section.is_some() && fallback_layout.is_some();
         let has_direct = direct_atlas_present(has_direct_base, has_animated_direct);
+        let direct_sources = source_ids([
+            direct_section_present.then_some(35),
+            direct_delta_section.map(|_| 41),
+            animated_direct_delta_section.map(|_| 45),
+        ]);
         let base_atlas_view = base_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("SH Direct Octahedral Base Atlas View"),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -75,6 +88,8 @@ impl DirectShResources {
                 direct_usage.atlas_dimensions,
                 direct_usage.layer_count,
                 "SH Direct Composed Octahedral Atlas",
+                &direct_sources,
+                ledger,
             );
             let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
@@ -93,6 +108,8 @@ impl DirectShResources {
                     direct_usage.atlas_dimensions,
                     direct_usage.layer_count,
                     "SH Direct Compose Intermediate Atlas",
+                    &direct_sources,
+                    ledger,
                 );
                 let intermediate_storage = intermediate.create_view(&wgpu::TextureViewDescriptor {
                     label: Some("SH Direct Compose Intermediate Atlas Storage View"),
@@ -122,6 +139,12 @@ impl DirectShResources {
             ShAllocationKind::DirectDynamicParams,
             &dynamic_direct_params_bytes,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        ledger.record_buffer(
+            dynamic_direct_params_allocation,
+            &direct_sources,
+            direct_sources.is_empty(),
+            ShResidencyAllocationState::Data,
         );
         let dynamic_direct_params_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -199,6 +222,8 @@ fn upload_direct_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     section: Option<&DirectShVolumeSection>,
+    direct_section_present: bool,
+    ledger: &mut ShAllocationLedger,
 ) -> (wgpu::Texture, bool) {
     let limits = device.limits();
     let usable = section.filter(|section| {
@@ -217,10 +242,22 @@ fn upload_direct_atlas_texture(
     });
 
     let Some(section) = usable else {
-        return (upload_direct_atlas_dummy(device, queue), false);
+        let allocation = direct_base_atlas_dummy_allocation();
+        ledger.record_texture(
+            allocation,
+            &source_ids([direct_section_present.then_some(35)]),
+            false,
+            if direct_section_present {
+                ShResidencyAllocationState::Fallback
+            } else {
+                ShResidencyAllocationState::Dummy
+            },
+        );
+        return (upload_direct_atlas_dummy(device, queue, allocation), false);
     };
 
     let allocation = direct_base_atlas_allocation(section);
+    ledger.record_texture(allocation, &[35], false, ShResidencyAllocationState::Data);
 
     let texture = device.create_texture_with_data(
         queue,
@@ -231,11 +268,15 @@ fn upload_direct_atlas_texture(
     (texture, true)
 }
 
-fn upload_direct_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+fn upload_direct_atlas_dummy(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    allocation: super::sh_allocation::TextureAllocation,
+) -> wgpu::Texture {
     let zero_block = [0u8; 16];
     device.create_texture_with_data(
         queue,
-        &direct_base_atlas_dummy_allocation().descriptor(Some("SH Direct Octahedral Atlas Dummy")),
+        &allocation.descriptor(Some("SH Direct Octahedral Atlas Dummy")),
         wgpu::util::TextureDataOrder::LayerMajor,
         &zero_block,
     )
@@ -271,11 +312,12 @@ fn create_direct_composed_atlas_texture(
     atlas_dimensions: [u32; 2],
     layer_count: u32,
     label: &str,
+    sources: &[u16],
+    ledger: &mut ShAllocationLedger,
 ) -> wgpu::Texture {
-    device.create_texture(
-        &direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count)
-            .descriptor(Some(label)),
-    )
+    let allocation = direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count);
+    ledger.record_texture(allocation, sources, false, ShResidencyAllocationState::Data);
+    device.create_texture(&allocation.descriptor(Some(label)))
 }
 
 #[cfg(test)]

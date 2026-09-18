@@ -10,6 +10,7 @@ use super::sh_allocation::{
     ShAllocationKind, billboard_scatter_grid_bytes as scatter_grid_bytes,
     billboard_storage_payloads, buffer_allocation,
 };
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
 
 const BIND_BASE: u32 = 0;
@@ -46,6 +47,7 @@ impl BillboardDirectScatterComposeResources {
         delta: Option<&AnimatedBillboardDirectScatterDeltaVolumesSection>,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
         grid_dimensions: [u32; 3],
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         if !scatter.has_animated_deltas {
             return Self { pipeline: None };
@@ -77,6 +79,37 @@ impl BillboardDirectScatterComposeResources {
             ShAllocationKind::BillboardComposeGrid,
             &grid_bytes,
             wgpu::BufferUsages::UNIFORM,
+        );
+        let scatter_sources = source_ids([Some(47), Some(48)]);
+        ledger.record_buffer(
+            grid_allocation,
+            &scatter_sources,
+            false,
+            ShResidencyAllocationState::Data,
+        );
+        ledger.record_buffer(
+            delta_payload.allocation,
+            &[48],
+            false,
+            ShResidencyAllocationState::Data,
+        );
+        ledger.record_buffer(
+            offset_payload.allocation,
+            &[48],
+            false,
+            ShResidencyAllocationState::Data,
+        );
+        ledger.record_buffer(
+            light_payload.allocation,
+            &[48],
+            false,
+            ShResidencyAllocationState::Data,
+        );
+        ledger.record_buffer(
+            descriptor_index_payload.allocation,
+            &[48],
+            false,
+            ShResidencyAllocationState::Data,
         );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose Grid"),

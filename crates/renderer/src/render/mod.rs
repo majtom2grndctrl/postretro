@@ -29,6 +29,7 @@ mod sh_compose;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
 mod sh_indirection;
+mod sh_residency;
 mod sh_volume;
 mod shadowmask;
 mod smoke;
@@ -114,6 +115,10 @@ use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
+pub use sh_residency::{
+    ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
+    ShResidencyReport, ShResidencySource,
+};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};

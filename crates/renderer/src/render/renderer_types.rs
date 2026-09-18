@@ -669,6 +669,9 @@ pub(super) struct FullRenderer {
     /// Absent/disabled OctahedralShVolume → dummy 1×1 atlas resources;
     /// `has_sh_volume == 0` skips indirect sampling.
     pub(super) sh_volume_resources: ShVolumeResources,
+    /// Finished, plain-Rust accounting for the most recently installed level.
+    /// It is absent until `install_level_geometry` crosses the level boundary.
+    pub(super) sh_residency_report: Option<ShResidencyReport>,
 
     /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
     /// bind-group layout is consumed only by the SDF shadow pass — NOT
@@ -1087,6 +1090,16 @@ pub(super) struct FullRenderer {
 }
 
 impl Renderer {
+    /// The renderer-accounted SH residency report for the installed level.
+    ///
+    /// This exposes allocation descriptions only, never GPU handles or wgpu
+    /// types, so capture can serialize it without crossing the GPU boundary.
+    pub fn sh_residency_report(&self) -> Option<&ShResidencyReport> {
+        self.full
+            .as_ref()
+            .and_then(|full| full.sh_residency_report.as_ref())
+    }
+
     /// Borrow the full-phase state. Panics if called before `finish_full_init`
     /// — every caller is on a full-ready-gated path (Frontend/Loading/Running/
     /// UI/scene), so reaching here boot-only is a logic error, not a runtime case.

@@ -428,11 +428,16 @@ impl Renderer {
         });
 
         // --- SH volume, sh_compose, lightmap, animated lightmap ---
+        // This ledger is intentionally scoped to one level install. Every SH
+        // constructor records the exact descriptor it sends to wgpu, and the
+        // completed plain-Rust report stays with the renderer for capture.
+        let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
         full.sh_volume_resources = ShVolumeResources::new(
             device,
             queue,
             ShVolumeSections {
                 sh: geometry.sh_volume,
+                indirect_delta_present: geometry.delta_sh_volumes.is_some(),
                 direct: geometry.direct_sh_volume,
                 direct_delta: geometry.direct_sh_delta_volumes,
                 animated_direct_delta: geometry.animated_direct_sh_delta_volumes,
@@ -446,6 +451,7 @@ impl Renderer {
                 animated_baked_descriptor_indices,
             ),
             full.probe_occlusion_enabled,
+            &mut sh_allocation_ledger,
         );
 
         // Rebuild the mesh group-2 dynamic-direct light bind group over the
@@ -510,7 +516,10 @@ impl Renderer {
             &full.sh_volume_resources,
             compose_sh_volume,
             compose_delta_sh_volumes,
+            geometry.sh_volume.is_some(),
+            geometry.delta_sh_volumes.is_some(),
             &full.uniform_bind_group_layout,
+            &mut sh_allocation_ledger,
         );
         full.direct_sh_compose = DirectShComposeResources::new(
             device,
@@ -521,6 +530,8 @@ impl Renderer {
             geometry.animated_direct_sh_delta_volumes,
             &full.promoted_static_weight_buffer,
             &full.uniform_bind_group_layout,
+            geometry.sh_volume.is_some(),
+            &mut sh_allocation_ledger,
         );
         full.billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::new(
             device,
@@ -529,7 +540,10 @@ impl Renderer {
             geometry.animated_billboard_direct_scatter_delta_volumes,
             &full.uniform_bind_group_layout,
             full.sh_volume_resources.grid_dimensions,
+            &mut sh_allocation_ledger,
         );
+        let sh_residency_report = sh_allocation_ledger.finish();
+        full.sh_residency_report = Some(sh_residency_report);
         #[cfg(feature = "dev-tools")]
         {
             full.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);

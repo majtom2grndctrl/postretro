@@ -149,6 +149,53 @@ Get-FileHash -Algorithm SHA256 $Prl, $Json
 
 Record the JSON hierarchy table, projected/shipped/all-L2 bytes, node errors, blocker attribution, seam residuals, worker count, exact command, machine fields, wall/RSS, hashes, and whether every required receiver renders without wgpu validation errors. If the full map is infeasible, repeat the same script with `stress-warren-hallway-inspection-mini.map` and record the full-map stopping stage/limit. Keep `$Run` for the M3-M5 steps below; clean it only after all evidence is copied.
 
+### Windows Warren hallway result — M1 — 2026-09-18 (owner run)
+
+The **full** `stress-warren-hallway-inspection.map` completed on Windows; no fallback to the mini map was needed. RAM was never the constraint (peak 4.82 GiB of 15.94 GiB); the cost is entirely compute (11.15 h wall). Interactive-feasibility snapshot before letting it run to completion: 2% SH after ~130 s with a ~90-min-and-climbing tool ETA — the same infeasible-for-a-manageable-iteration signature as the Mac hallway-mini attempt, so this is an unattended overnight run, not an interactive one.
+
+Measurement identity:
+
+- source checkpoint: `78ca68ba` (`prepare adaptive SH owner validation`), branch `codex/lighting-scale--adaptive-probe-spacing`
+- machine class: Windows 11 Home 10.0.26200, Intel64 Family 6 Model 158 Stepping 10 (6 logical CPUs), 15.94 GiB RAM
+- command: `target/release/prl-build.exe content/dev/maps/stress-warren-hallway-inspection.map -o <$Run>/hallway.prl --release --no-tui --sh-probe-spacing 1.0 --sh-analyze --sh-analyze-out <$Run>/hallway.analysis.json -j 4`
+- cache/quality: exact `--release`; `--no-cache` was **not** passed (the published runbook omits it), but this was a first build of this map at 1.0 m on this machine, so it was effectively cold
+- workers: 4 (`logical − 2`)
+- wall time: 40,150.63 s (11.15 h); exit code 0
+- maximum resident set (Win32 `PeakWorkingSet64`, dual-tracked, both trackers agree): 5,174,296,576 B (4.819 GiB)
+- grid: 197×47×239 = 2,212,901 probes, 962,636 valid; 36,000 bricks, 25,130 non-empty, 0 protected
+- output sizes/hashes: PRL 2,385,765,523 B (2.22 GiB) SHA-256 `f7b70ae68c0071485090b3378ca6387b91ed8d6224a24c9453eaa4fcd0211471`; analysis JSON 68,569,217 B SHA-256 `0152907db293bfa5d911a1cfd9fb3e88f1d78c3b81ae74b0a187d01f5e60bd93`
+- cleanup: outputs retained under `%TEMP%\postretro-adaptive-warren-hallway\` for the M3-M5 steps; remove only after all evidence is copied
+
+This is a delta-saturated open map: id 27/41/45 all present, 24,009 total delta entries across 25,130 non-empty bricks (near-zero entry fraction 0.863). The id-34/id-35/composed carriers share one stored-tile geometry at 288 B raw per tile:
+
+| measure | stored tiles | bytes per carrier |
+|---|---:|---:|
+| shipped scale-0 classification | 717,988 | 206,780,544 |
+| hierarchy projection | 717,855 | 206,742,240 |
+| all-L2 structural floor | 25,130 | 7,237,440 |
+| dense id-34 probe records | n/a | 17,703,208 |
+
+The hierarchy saves **133 tiles (0.0185% of shipped stored tiles)**, or 38,304 raw bytes per carrier — 76,608 B across the two on-disk base carriers plus 38,304 B of composed live atlas. All 133 saved tiles come from L2 merges; **L1 saved 0 tiles here** (contrast the kinematic control's 224 L1 tiles). As the ceiling analysis predicted for an open map, the dense record (17.70 MB) already exceeds the all-L2 tile floor (7.24 MB), so id 34 cannot fall below its record regardless of merging; the win on this map is negligible and lands only in the abundant composed-atlas VRAM and a trivial slice of disk. This is the known cost, not a defect — and it is harmless (bandwidth-neutral, zero node failures).
+
+Node histogram by (scale, level):
+
+| node scale | L0 | L1 | L2 |
+|---:|---:|---:|---:|
+| 0 | 16,522 | 6,435 | 2,021 |
+| 1 | 0 | 0 | 19 |
+| 2 | 0 | 0 | 0 |
+| 3 | 0 | 0 | 0 |
+
+All 19 merged nodes are scale-1 L2. One passed the relative gate directly (rel p95 0.09936 / rel max 0.17530); 18 used the darkness bypass (rel p95 max 0.09467 / rel max max 0.37036, expected because the relative comparison is skipped below the absolute darkness floor 0.019514). No smoothing demotions. Merge candidates were blocked by: member shape/level/validity mismatch 2,639, delta entries 1,606, partial edge bricks 747, gate 71, protection 0 — i.e. the pervasive delta coverage and mixed member state pin almost everything to scale 0, which is exactly why an animated/directional-lit open stress map coarsens far less than the theatrical control.
+
+Hierarchy seam pass: 64,877 differing-node brick faces (144 cross-scale, 16,436 cross-level); residual max/mean 0.36478 / 0.001867 overall, 0.032602 / 0.002609 on cross-scale faces (raw max 1.6155). Since only scale 1 participates, adjacent scale differences cannot exceed one, and the cross-scale max (0.0326) stays below the overall max — consistent with the control. **Confirms adopted maximum emitted scale 1 and no separate 2:1 scale-balance rule on the real stress map.**
+
+Emitted-reconstruction gate over the finalized bake: **failing_bricks = 0 and failing_nodes = 0** across 25,130 bricks and 35,867 node records (dense-truth map p95 0.97572). This satisfies P3-A3's zero-node-failure requirement on the production stress map, not only the compiler fixture.
+
+Stress-map-characteristic warnings (not SH-density defects, expected for this authored content): many `AlphaLights: light N … inside a solid leaf; marking unassigned`, and `AnimatedLightChunks: 1,987,009 chunks exceeded cap 4 at the min-extent floor; 3,574,363 extra light entries retained beyond the cap`.
+
+**M1 outcome:** the preferred full-map stress proof is feasible on Windows and correct — the bake completes cleanly with bounded RAM, the hierarchy is validator-clean end to end with zero reconstruction failures, and the open-map coarsening floor is quantified (≈0.02% here vs the control's 0.76%). M3-M5 (receiver coverage, visual hunt, GPU timing) remain blocking owner reads and are not inferred from this compile result.
+
 ## Phase 2 local runtime seam and receiver checklist — 2026-09-17
 
 The manageable local runtime proof used `content/dev/maps/kinematic-platform.map` at the pinned 1.0 m spacing. Two exact, cache-bypassed builds — one ordinary emission and one with the byte-preserving analysis sidecar — produced byte-identical 101,508,408-byte PRLs (SHA-256 `28d42e106387aaa7eb2619e5b1b421e56fd7d53845be22a7c64eee3fc57f9943`). The ordinary build completed in 30.16 s and the analyzed build in 33.15 s. The emitted summary contained four scale-1 L1 nodes and one scale-1 L2 node; the sidecar retained the Phase 1 SHA-256 `38dcfbd70d576c8c759d38987cf5670a04f9ed4b6faa75efca2338bf041260ac`. This proves the runtime input is a real hierarchy bake, not only a constructed in-memory section.
@@ -239,6 +286,32 @@ Hold each run long enough to emit at least one complete 120-frame timing window.
 - Review panel and post-fix re-review: no remaining concrete finding. The focused final gate before preflight passed 153 tests with no warnings.
 
 Automated acceptance is complete. M1's Windows stress measurement and M3-M5 remain blocking external evidence, so the brief is `test-ready`, not landed or done.
+
+## Windows M3-M5 owner results — 2026-09-18
+
+Context correction to the published runbook: the M3-M5 procedures assumed the full Warren hallway PRL would boot on the owner's Windows box. It does not (see below). The receiver, visual, and timing reads were therefore taken on runnable fixtures — `kinematic-platform`, `campaign-test`, and a forced-scale-1 kinematic bake — that exercise the same adaptive hierarchy and the full receiver set. This is a faithful substitution: M3 requires that "scale>=1 L2 bakes boot and cover every named receiver," not that the stress map specifically render. M1 (the footprint/error/seam measurement) still used the full Warren bake and stands.
+
+Machine/adapter: Windows 11 (10.0.26200), Intel 6 logical CPUs, 15.94 GiB RAM; NVIDIA GeForce GTX 1660 SUPER, backend Vulkan, driver 616.92 (Windows 32.0.16.1692). TIMESTAMP_QUERY is exposed. ReShade is installed as a global Vulkan implicit layer (`VK_LAYER_reshade`).
+
+**Harness finding (root cause of an early false alarm).** `POSTRETRO_GPU_TIMING=1` device-loses this NVIDIA driver on the first presented frame. Every launch that set it hit `GPU device lost (Unknown): Device is lost` at `first_level_frame`, then a wgpu-hal Vulkan swapchain teardown panic (`Trying to destroy a SwapchainAcquireSemaphore that is still in use by a SurfaceTexture`). Re-running identically **without** the flag renders cleanly and indefinitely (confirmed: kinematic up ~4 min, campaign ~75 s, forced-scale-1 ~2.5 min, all graceful exit 0). The device loss is thus an artifact of enabling timestamp queries on driver 616.92 — not the adaptive feature; not VRAM/scale (a 1.36 MB-SH campaign bake and a 1.74 MB-SH kinematic bake, the latter proven clean on Metal, both crashed with the flag); and not ReShade (the crash reproduced with `VK_LOADER_LAYERS_DISABLE=~implicit~` confirming the ReShade layer disabled). The DX12 backend (`WGPU_BACKEND=dx12`) fails earlier and separately: FXC cannot compile the SDF Shadow compute pipeline (`error X3511: forced to unroll loop, but unrolling failed`) — a pre-existing, never-exercised DX12 path.
+
+**M3 — receiver coverage: pass.** All runs plain (no gpu-timing), Vulkan, driver 616.92, GTX 1660 SUPER:
+- `kinematic-platform.prl` (23×65×89, 133,055 probes; the adaptive hierarchy bake with scale-1 nodes): world, movers, skinned mesh, and node-face transitions all visually correct; clean start to finish, no wgpu validation error or panic, graceful exit 0.
+- `campaign-test.prl` (74×23×114, 194,028 probes; 5 fog volumes + billboard scatter): fog and billboards render as expected under both static and animated (SH-delta / dynamic) lighting; clean validation log, graceful exit 0.
+- Receiver rows: world pass, movers pass, skinned pass, node-faces pass (kinematic); fog pass, billboards pass (campaign). No wgpu validation errors on either map.
+- Pre-existing, separate caveat: on maps whose animated-light chunk count exceeds the wgpu `max_compute_workgroups_per_dimension` (65,535) 1-D dispatch limit, the baked animated-lightmap install fails and disables that one contribution (campaign 96,823; Warren 2,419,938 tiles). Animated indirect (SH-delta) and dynamic lighting are unaffected. This is an engine-scale limit in the animated-lightmap dispatch path, independent of adaptive probe spacing.
+
+**M4 — visual hunt: pass**, default and forced worst case, both on kinematic, plain:
+- Default fidelity: no seams or pops (few scale-1 nodes; near per-brick density).
+- `--sh-density-force-scale 1` (scale-1 nodes forced everywhere ceiling-free/unprotected — the coarsest legal representation, i.e. lowest effective stored density; stored-tile atlas 1320×1314 vs the default 1320×1320): no lit-pool seams, no unexpected pops. The physical probe lattice is identical between the two runs (both 1.0 m, 133,055 probes); only the stored/reconstructed granularity is coarser in the forced bake. The deliberately-coarsened worst case shows no node-boundary artifacts.
+
+**M5 — before/after GPU timing: not-yet-evaluable on this hardware.** `POSTRETRO_GPU_TIMING=1` device-loses driver 616.92 before a 120-frame window can complete (harness finding above). TIMESTAMP_QUERY is present, so this is a driver defect, not a missing feature; a stable/rolled-back NVIDIA driver is expected to recover M5. Per the plan, `not-yet-evaluable` is an allowed recorded M5 result; no CPU-time substitute is recorded.
+
+**Feature attribution.** Across every map (Warren load, campaign, kinematic, forced-scale-1) the adaptive SH hierarchy sections load, validate, install, and compose without error, and render correctly on runnable maps. No crash or artifact in this session is attributable to adaptive probe spacing.
+
+**Separate pre-existing bugs surfaced (out of scope for this brief; file individually):**
+1. Animated-lightmap 1-D dispatch ceiling (>65,535 workgroups) disables the baked animated-lightmap contribution on dense maps; no 2-D dispatch fallback exists.
+2. DX12/FXC cannot compile the SDF Shadow compute shader (X3511 unroll failure); the DX12 backend is unusable until addressed (it had never previously been exercised on this box).
 
 ## Pinned orderings
 

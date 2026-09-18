@@ -126,27 +126,51 @@ both gaps under one version bump.
 - [ ] A mask is dropped only when adding its plane would push `plane_count × layer_count` past
   `max_texture_array_layers`; at or below the budget, no drop. The drop, when it happens, is
   the lowest-intensity mask, matching the pre-change policy.
+- [ ] The plane assignment is collision-free: for every overlap edge in the selection graph,
+  the two lights receive different planes (or one is the dropped sentinel) — a unit assertion
+  over the assignment output, independent of any rendered texel.
+- [ ] The no-drop-below-budget property is proven on a fixture large enough to exercise the
+  budget-exhausted greedy fallback (not only the exact-search path): the greedy path also
+  grows to `plane_count` planes and drops only where the Decisions' drop rule permits (see the
+  search-budget carve-out, if the owner keeps that fallback).
 - [ ] `ShadowmaskAtlasSection::to_bytes` → `from_bytes` round-trips the plane table, the codec
   tag, and the layer-major payload for `plane_count > 1`; `from_bytes` rejects an out-of-range
   plane index and a payload whose length disagrees with the codec's per-plane block size ×
   `width × height × layer_count × plane_count`.
+- [ ] Round-trip holds at the format edges: `plane_count == 1`; an empty selection
+  (`selected_light_count == 0`, `plane_count == 0`); and both codec tags (raw `R8` and BC4) —
+  each `to_bytes` → `from_bytes` reproduces the header, plane table, and payload.
 - [ ] A section whose `plane_count × layer_count` exceeds the device budget is rejected by
   `filter_usable_shadowmask_section` with a `[Renderer]` error and the all-visible placeholder
   (fully lit), no panic.
+- [ ] Boundary: a section with `plane_count × layer_count == max_texture_array_layers` is
+  retained (no drop, no degrade); `== max_texture_array_layers + 1` is rejected to the
+  all-visible placeholder. `filter_usable_shadowmask_section` compares the
+  `layer_count × plane_count` product, not `layer_count` alone.
+- [ ] A sentinel (dropped) plane index reads fully lit in both decode paths (world-specular
+  and promoted-union); and a baked plane `> 0` index samples fully lit (not out-of-range) when
+  the atlas is the 1-layer all-visible placeholder — the layer `lightmap_layer + plane × layer_count`
+  is clamped to the bound texture's last layer.
 - [ ] Static→static world shadowing stays exactly zero: adding a light that lands on a plane
   `> 0` does not change world-specular output for surfaces already covered by plane-0 lights
   (the pool-shadow union dead-zone is unaffected).
 - [ ] Both shader decode paths (world-specular, promoted-union) sample the correct array layer
   `lightmap_layer + plane × layer_count` for a light on any plane; shader tests covering
   `plane > 0` pass.
-- [ ] ≤4 overlap carries every mask with no drop (the common case is unaffected by the plane
-  restructure).
+- [ ] Source-inspection gate: `forward.wgsl` contains no RGBA channel-select for the shadowmask
+  (`shadowmask_channel_value` and the `mask.r/.g/.b/.a` switch are gone) and does contain the
+  single-layer formula `lightmap_layer + plane × layer_count`, in both decode paths — proving
+  the 4-channel path was removed, not shadowed by a new one.
+- [ ] (Control, not a fix gate) ≤4 overlap carries every mask with no drop — a regression guard
+  for the common case; the defect-catching rows are the 5–8-overlap and collision-free rows
+  above.
 - [ ] On a focused fixture carrying a populated atlas, the id-42 on-disk section byte count
   drops ≈2:1 versus the raw single-channel-plane (`R8`) baseline, measured by the per-section
   byte accounting in `pack.rs`.
-- [ ] The renderer uploads id 42 as the BC4 texture and the startup per-atlas VRAM estimate for
-  the shadowmask drops ≈2:1; an all-visible (255) atlas round-trips to fully lit after
-  encode→decode.
+- [ ] The renderer uploads id 42 as the BC4 texture and the computed resident byte count
+  (`width × height × layer_count × plane_count × bytes_per_block(codec)`) drops ≈2:1 R8→BC4
+  (optionally logged like the animated atlas' estimate); an all-visible (255) atlas round-trips
+  to fully lit after encode→decode.
 - [ ] After upload, the shadowmask CPU payload is released — the level holds no
   `width × height × layer_count × plane_count` shadowmask buffer resident — and a subsequent
   level reload still installs a correct atlas.
@@ -154,6 +178,9 @@ both gaps under one version bump.
   (fully lit), no panic.
 - [ ] Re-baking the same fixture twice yields a byte-identical plane-assigned (pre-compression)
   atlas and a section-length-stable compressed id-42 section, so the build cache stays valid.
+  Byte-identity holds across differing worker-thread counts, and the plane-open order is a pure
+  function of a stable ordering key (selection index / per-light layer), not chart-worker or
+  iteration order.
 - [ ] Fidelity, measure-and-report: the max and mean per-channel absolute error of the BC4
   encode versus the raw masks, on the fixture, recorded in the landing note.
 

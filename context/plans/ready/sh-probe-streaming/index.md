@@ -403,17 +403,17 @@ Pinned scenarios the Slice 3 brief's tests cite:
   so the substrate generalizes; only the threshold is measured. The threshold is additionally
   held at or below the residency floor minus always-resident overhead (Orderings row 3a), so
   no single non-degenerate cluster can exceed the floor.
-- **Residency budget floor (owner).** Recommend sizing to the 6 GB GTX 1660 as the desktop
-  floor (matches the existing lighting perf-floor hardware); confirm with the owner. Whether
-  the cap is a player option or a build constant is a Slice 3 decision. The floor is a relief
-  target, not a hard cap (Orderings row 3a): a degenerate working set that cannot fit —
-  whole-map = one cluster, or authored always-resident pins plus the visible set exceeding
-  the floor — overshoots rather than evict a visible cluster or fail a structurally valid
-  map. Owner to confirm that overshoot-over-reject choice against the 6 GB ceiling, since it
-  is the one case where residency can exceed the floor.
-- **Miss policy default.** Recommend a designed seam-gate at authored streaming seams
-  (fits the theatrical set-piece ethos) plus a conservative placeholder (ambient-floor SH)
-  elsewhere. Owner-confirmable; it is player-visible pacing, not purely technical.
+- **Residency budget floor — decided (owner-accepted).** The floor is a relief target, not
+  a hard cap (Orderings row 3a): a working set that cannot fit — whole-map = one cluster,
+  authored always-resident pins plus the visible set exceeding the floor, or eviction-pinned
+  boundary owners — overshoots rather than evict a visible cluster or reject a structurally
+  valid map. Sized to the 6 GB GTX 1660 desktop floor (matches the existing lighting
+  perf-floor hardware). The floor *number* and whether the cap is a player option or a build
+  constant remain Slice 3 decisions.
+- **Miss policy default — decided (owner-accepted).** A designed seam-gate at authored
+  streaming seams (fits the theatrical set-piece ethos) plus a conservative ambient-floor SH
+  placeholder elsewhere. The exact seam-gate presentation and any per-seam authoring are
+  Slice 3/4 details.
 - **v11/v4 per-cluster byte-slice mechanics (Slice 3).** The cluster directory addresses
   SH data by grid-relative cell/probe index, so the directory itself is unaffected by the
   v11/v4 byte layout. What remains for Slice 3 is resolving those index ranges to

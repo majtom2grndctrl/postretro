@@ -176,7 +176,7 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
   carried ("how do the two share the header") is resolved by this merge and removed. The
   two axes are orthogonal (blocks add layers, compression changes texel bytes) and share the
   header, `from_bytes` cross-check, and upload/filter path.
-- `lighting-scale--shadowmask-cold-working-set` (`ready/`) restructures the assignment seam
+- `lighting-scale--shadowmask-cold-working-set` (landed, `done/`) restructured the assignment seam
   (deletes the per-(light,texel) membership record, derives the overlap graph analytically);
   its output is byte-identical, compile-time RAM only, with the explicit non-goal "bounding
   the output below its on-disk size — a format question." Confirms the gap is open, not

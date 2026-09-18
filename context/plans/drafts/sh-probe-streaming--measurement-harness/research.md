@@ -22,7 +22,13 @@ sequenceDiagram
     Capture->>Renderer: install textures and LevelGeometry once
     Renderer->>Renderer: create SH resources and allocation ledger
     Renderer->>Capture: plain SH resident-byte report
-    loop warmup then samples
+    loop warmup
+        Capture->>Renderer: render prepared static scene
+        Renderer->>Timing: write/resolve existing pass timestamps when available
+        Renderer->>Renderer: submit and wait for completed GPU work by named cadence
+    end
+    Capture->>Timing: reset/drop warmup FrameTiming state
+    loop samples
         Capture->>Renderer: render prepared static scene
         Renderer->>Timing: write/resolve existing pass timestamps when available
         Renderer->>Renderer: submit and wait for completed GPU work by named cadence
@@ -38,7 +44,8 @@ Every arrow above has a current or planned call site. PRL reporting reads
 constructors and read after `Renderer::install_level_geometry`. Timing writes remain in
 the existing pass recorders and are read through `FrameTiming::last_window` after
 submission drives `FrameTiming::post_submit`. CPU samples use a renderer-owned wait after
-submit, not enqueue duration.
+submit, not enqueue duration. Report publication is two-phase for a run: the staged JSON
+stays invisible until PNG publication succeeds, then the JSON report publishes last.
 
 ## Current source anchors
 
@@ -88,15 +95,23 @@ submit, not enqueue duration.
 - `ShVolumeResources` currently logs only the physical base-atlas allocation behind
   `dev-tools`. It already has `compact_base_atlas_allocation` and
   `base_atlas_allocation_bytes`; no complete id-attributed resident tally exists.
+- `ShVolumeResources` also owns `total_atlas_texture`, one physical `Rgba16Float` texture
+  with sampled and storage views. Ledger accounting must count that allocation once and not
+  hide it behind compose.
 - SH allocation decisions are spread across `sh_volume.rs`, `direct_sh_resources.rs`,
   `billboard_direct_scatter.rs`, `sh_compose.rs`, direct compose, animated-direct compose,
   and billboard scatter compose. `sh_volume.rs` does not own all allocation formulas.
+- Direct compose allocates its own probe-indirection buffer, debug-override uniform, and
+  light-term-mask uniform. Matching id-34 inputs do not make these shared with indirect
+  compose.
 - Animated-light descriptor/sample buffers are sourced from id 34 metadata plus scripted
   reserve. Ids 27, 45, and 48 may reference descriptor indices but do not own that payload.
 - Billboard direct-scatter base/composed volumes are Rgba16Float volumes; ledger bytes are
   `width * height * depth_or_array_layers * Rgba16Float`.
 - Staged measurement JSON must remain unpublished until the PNG is successfully published.
-  On a later failure, staged JSON is removed; the visible report publishes last.
+  On a later failure, staged JSON for that run is removed; any preexisting successful
+  report at the target path remains unchanged and belongs to its previous run. The visible
+  report publishes last.
 - IDs and loaded types are current: 27 `DeltaShVolumes`, 34
   `OctahedralShVolume`, 35 `DirectShVolume`, 41 `DirectShDeltaVolumes`, 45
   `AnimatedDirectShDeltaVolumes`, 47 `BillboardDirectScatterVolume`, and 48
@@ -108,6 +123,9 @@ submit, not enqueue duration.
 - `prl-build --release` selects the exact cold ship bake and bypasses the stage cache like
   `--no-cache`. The Cargo release profile is unrelated. Passing both flags is accepted but
   redundant.
+- Capture derives content root from the PRL map path. Slice 1 fine/coarse generated PRLs
+  therefore live under the source mod's maps directory with hidden unique session-owned
+  names; scenes, PNGs, and measurement JSON stay under `measurements/`.
 
 ## Oversized-file flags
 
@@ -134,6 +152,8 @@ Task 7 records one terminal status:
 
 | Status | Required evidence |
 |---|---|
-| `measured` | Automated fine/coarse JSON reports and exact build/capture commands. |
-| `manual-observation` | Fine/coarse build identity, map, machine, adapter/driver when known, pose, resolution, at least three settled frame-time windows per variant, GPU timing availability, and automation diagnostics. |
-| `not-yet-evaluable` | Attempted machines, commands, map, failure diagnostics, and why no approved observation could run. |
+| `measured` | Automated fine/coarse JSON reports with raw CPU samples, computed stats, SH residency, PRL section bytes, GPU timing values or absence reasons, and exact build/capture commands. |
+| `manual-observation` | Fine/coarse build identity, map, machine, adapter/driver when known, pose, resolution, at least three settled frame-time windows per variant, GPU timing availability, automation diagnostics, and precise absence reasons for missing automated fields. |
+| `not-yet-evaluable` | Attempted machines, commands, map, failure diagnostics, why no approved observation could run, and precise absence reasons. |
+
+Retain all obtainable evidence for every status.

@@ -26,6 +26,7 @@ use postretro_level_format::cells::{
     CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
 };
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::cluster_directory::CLUSTER_DIRECTORY_CONTAINER_VERSION;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -63,12 +64,12 @@ const NAVMESH_CONTAINER_VERSION: u16 = 1;
 #[path = "pack_sections.rs"]
 mod pack_sections;
 
-use pack_sections::bvh_with_chunk_ranges;
+pub(crate) use pack_sections::bvh_with_chunk_ranges;
 
 mod finalized_sections;
+pub(crate) use finalized_sections::FinalizedShEmissionView;
 #[cfg(test)]
 pub(crate) use finalized_sections::direct_sh_delta_has_valid_csr_shape;
-use finalized_sections::scatter_section_fits_pack_cap;
 #[cfg(test)]
 use finalized_sections::scatter_section_fits_pack_cap_with_limit;
 pub(crate) use finalized_sections::{
@@ -422,6 +423,86 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
     trigger_volumes: Option<&TriggerVolumesSection>,
+    cell_draw_index_section: Option<&CellDrawIndexSection>,
+    cell_visibility_section: Option<&CellVisibilitySection>,
+    animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
+    billboard_direct_scatter_volume: Option<&BillboardDirectScatterVolumeSection>,
+    animated_billboard_direct_scatter_delta_volumes: Option<
+        &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    >,
+) -> anyhow::Result<()> {
+    pack_and_write_portals_with_billboard_scatter_finalized(
+        output,
+        geo_result,
+        texture_cache_keys,
+        leaves,
+        tree,
+        portals,
+        exterior_leaves,
+        bvh,
+        bvh_chunk_ranges,
+        alpha_lights,
+        light_influence,
+        sh_volume,
+        direct_sh_volume,
+        entity_shadow_lights,
+        direct_sh_delta_volumes,
+        shadowmask_atlas,
+        lightmap,
+        chunk_light_list,
+        animated_light_chunks,
+        animated_light_weight_maps,
+        light_tags,
+        delta_sh_volumes,
+        data_script,
+        map_entities,
+        fog_volumes,
+        fog_cell_masks,
+        sdf_atlas,
+        navmesh,
+        kinematic_geometry,
+        trigger_volumes,
+        cell_draw_index_section,
+        cell_visibility_section,
+        animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
+    output: &Path,
+    geo_result: &GeometryResult,
+    texture_cache_keys: &HashMap<String, [u8; 32]>,
+    leaves: &BspLeavesSection,
+    tree: &BspTree,
+    portals: &PortalsSection,
+    exterior_leaves: &HashSet<usize>,
+    bvh: &BvhSection,
+    bvh_chunk_ranges: &[(u32, u32)],
+    alpha_lights: &AlphaLightsSection,
+    light_influence: &LightInfluenceSection,
+    sh_volume: &OctahedralShVolumeSection,
+    direct_sh_volume: Option<&DirectShVolumeSection>,
+    entity_shadow_lights: Option<&EntityShadowLightsSection>,
+    direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+    shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+    lightmap: &LightmapSection,
+    chunk_light_list: &ChunkLightListSection,
+    animated_light_chunks: Option<&AnimatedLightChunksSection>,
+    animated_light_weight_maps: Option<&AnimatedLightWeightMapsSection>,
+    light_tags: Option<&LightTagsSection>,
+    delta_sh_volumes: Option<&DeltaShVolumesSection>,
+    data_script: Option<&DataScriptSection>,
+    map_entities: Option<&MapEntitySection>,
+    fog_volumes: &FogVolumesSection,
+    fog_cell_masks: Option<&FogCellMasksSection>,
+    sdf_atlas: Option<&SdfAtlasSection>,
+    navmesh: Option<&NavMeshSection>,
+    kinematic_geometry: Option<&KinematicGeometrySection>,
+    trigger_volumes: Option<&TriggerVolumesSection>,
     // CellDrawIndex (id 37), or `None` for zero-leaf maps. Emission is
     // independent of portal presence.
     cell_draw_index_section: Option<&CellDrawIndexSection>,
@@ -433,43 +514,11 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     animated_billboard_direct_scatter_delta_volumes: Option<
         &AnimatedBillboardDirectScatterDeltaVolumesSection,
     >,
+    prebuilt_cluster: Option<(
+        FinalizedShEmissionView<'_>,
+        &crate::cluster_directory_bake::ClusterDirectoryBake,
+    )>,
 ) -> anyhow::Result<()> {
-    let scatter_pair_required =
-        billboard_direct_scatter_volume.is_some() && animated_direct_sh_delta_volumes.is_some();
-    anyhow::ensure!(
-        animated_billboard_direct_scatter_delta_volumes.is_some() == scatter_pair_required,
-        "BillboardDirectScatterVolume requires AnimatedBillboardDirectScatterDeltaVolumes exactly when AnimatedDirectShDeltaVolumes is present"
-    );
-    if let (Some(direct), Some(scatter)) = (
-        animated_direct_sh_delta_volumes,
-        animated_billboard_direct_scatter_delta_volumes,
-    ) {
-        anyhow::ensure!(
-            scatter.animation_descriptor_indices == direct.animation_descriptor_indices
-                && scatter.affinity_factor == direct.affinity_factor
-                && scatter.affinity_dims == direct.affinity_dims
-                && scatter.affinity_offsets == direct.affinity_offsets
-                && scatter.affinity_lights == direct.affinity_lights,
-            "AnimatedBillboardDirectScatterDeltaVolumes must duplicate AnimatedDirectShDeltaVolumes descriptor and CSR layout"
-        );
-    }
-    let scatter_pair_fits_pack_cap =
-        animated_billboard_direct_scatter_delta_volumes.is_none_or(scatter_section_fits_pack_cap);
-    if !scatter_pair_fits_pack_cap {
-        log::warn!(
-            "[Compiler] Billboard direct scatter sections 47/48 withheld during packing: section 48 exceeds the {} byte encoded pack cap",
-            MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
-        );
-    }
-    let (billboard_direct_scatter_volume, animated_billboard_direct_scatter_delta_volumes) =
-        if scatter_pair_fits_pack_cap {
-            (
-                billboard_direct_scatter_volume,
-                animated_billboard_direct_scatter_delta_volumes,
-            )
-        } else {
-            (None, None)
-        };
     let texture_cache_keys_section = TextureCacheKeysSection {
         keys: geo_result
             .texture_names
@@ -490,18 +539,55 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         !bvh.leaves.is_empty() || cell_draw_index_section.is_none(),
         "CellDrawIndex section must be omitted when Bvh has no leaves"
     );
+    let finalized_sh = match prebuilt_cluster {
+        Some((view, _)) => view,
+        None => FinalizedShEmissionView::new(
+            sh_volume,
+            direct_sh_volume,
+            delta_sh_volumes,
+            entity_shadow_lights,
+            direct_sh_delta_volumes,
+            animated_direct_sh_delta_volumes,
+            billboard_direct_scatter_volume,
+            animated_billboard_direct_scatter_delta_volumes,
+        )?,
+    };
+    let direct_sh_volume = finalized_sh.direct;
+    let delta_sh_volumes = finalized_sh.delta;
+    let entity_shadow_lights = finalized_sh.shadow_selection;
+    let direct_sh_delta_volumes = finalized_sh.direct_delta;
+    let animated_direct_sh_delta_volumes = finalized_sh.animated_direct_delta;
+    let billboard_direct_scatter_volume = finalized_sh.billboard;
+    let animated_billboard_direct_scatter_delta_volumes = finalized_sh.animated_billboard_delta;
+    let owned_cluster_bake;
+    let cluster_bake = match prebuilt_cluster {
+        Some((_, bake)) => bake,
+        None => {
+            owned_cluster_bake = crate::cluster_directory_bake::bake_cluster_directory(
+                &cells_section,
+                portals,
+                &bvh_section,
+                &locator_section,
+                finalized_sh,
+            )?;
+            &owned_cluster_bake
+        }
+    };
+    log::info!(
+        "[Compiler] SH cluster directory: {} clusters, {} ranges, {} active affinity cells, {} covering references, max {} adaptive nodes visited/cluster, {} bytes, <= {} bytes construction metadata, {:.3} ms",
+        cluster_bake.stats.cluster_count,
+        cluster_bake.stats.range_count,
+        cluster_bake.stats.active_affinity_cells,
+        cluster_bake.stats.covering_references,
+        cluster_bake.stats.maximum_visited_nodes_per_cluster,
+        cluster_bake.stats.directory_bytes,
+        cluster_bake.stats.construction_metadata_bytes,
+        cluster_bake.stats.elapsed.as_secs_f64() * 1000.0,
+    );
     let sh_volume_len = sh_volume.try_byte_len().map_err(|error| {
         anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
     })?;
-    let entity_shadow_light_count = entity_shadow_lights
-        .map(|section| section.light_indices.len())
-        .unwrap_or(0);
-    let has_usable_direct_sh_deltas =
-        if let (Some(direct), Some(deltas)) = (direct_sh_volume, direct_sh_delta_volumes) {
-            direct_sh_delta_is_usable_for_selection(deltas, direct, entity_shadow_light_count)
-        } else {
-            false
-        };
+    let has_usable_direct_sh_deltas = direct_sh_delta_volumes.is_some();
     let mut sections = Vec::new();
     sections.push(PlannedSection::new(
         SectionId::Geometry as u32,
@@ -781,6 +867,17 @@ pub fn pack_and_write_portals_with_billboard_scatter(
             },
         ));
     }
+    let cluster_directory_len = cluster_bake.directory.byte_len()?;
+    sections.push(PlannedSection::new(
+        SectionId::ClusterDirectory as u32,
+        CLUSTER_DIRECTORY_CONTAINER_VERSION,
+        cluster_directory_len,
+        || {
+            cluster_bake.directory.try_to_bytes().map_err(|error| {
+                anyhow::anyhow!("ClusterDirectory violates its wire contract: {error}")
+            })
+        },
+    ));
 
     let descriptors: Vec<_> = sections
         .iter()
@@ -1104,6 +1201,44 @@ mod tests {
         }
     }
 
+    fn minimal_sh_volume() -> OctahedralShVolumeSection {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+        use postretro_level_format::octahedral::{
+            DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            irradiance_atlas_array_layout,
+        };
+        use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShProbe};
+
+        let grid = [1, 1, 1];
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let atlas_layout = irradiance_atlas_array_layout(grid, tile_dimension, 8192).unwrap();
+        let atlas_dimensions = [atlas_layout.atlas_width, atlas_layout.atlas_height];
+        let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
+        let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
+        let atlas_len =
+            atlas_layout.layer_count as usize * (padded_w / 4 * padded_h / 4) as usize * 16;
+        OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: grid,
+            probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions,
+            layer_count: atlas_layout.layer_count,
+            tiles_per_layer: atlas_layout.tiles_per_layer,
+            atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
+            probes: vec![OctahedralShProbe {
+                validity: 1,
+                ..OctahedralShProbe::default()
+            }],
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            compact_atlas: vec![0; atlas_len],
+            animation_descriptors: vec![AnimationDescriptor::default()],
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
     fn minimal_direct_sh_delta_volumes() -> DirectShDeltaVolumesSection {
         use postretro_level_format::delta_sh_volumes::{
             AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
@@ -1126,21 +1261,17 @@ mod tests {
     }
 
     fn minimal_animated_direct_sh_delta_volumes() -> AnimatedDirectShDeltaVolumesSection {
-        use postretro_level_format::delta_sh_volumes::{
-            DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
-        };
-
         AnimatedDirectShDeltaVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
-            affinity_dims: [1, 1, 1],
+            affinity_dims: [0, 0, 0],
             tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
-            animation_descriptor_indices: vec![0],
-            valid_probe_masks: vec![u64::MAX],
-            cell_levels: vec![0u8; 1],
-            affinity_offsets: vec![0, 1],
-            affinity_lights: vec![0],
-            delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: vec![0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
         }
     }
 
@@ -1398,7 +1529,11 @@ mod tests {
         let meta = read_container(&mut cursor).expect("should read container");
         // Baseline modern sections plus CellVisibility, section 45,
         // always-emitted FogVolumes, and the required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 16);
+        assert_eq!(meta.header.section_count, 17);
+        assert!(
+            meta.find_section(SectionId::ClusterDirectory as u32)
+                .is_some()
+        );
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -1525,7 +1660,7 @@ mod tests {
                 &[],
                 &empty_alpha_lights(),
                 &empty_light_influence(),
-                &empty_sh_volume(),
+                &minimal_sh_volume(),
                 direct_sh_volume,
                 entity_shadow_lights,
                 direct_sh_delta_volumes,
@@ -1637,7 +1772,7 @@ mod tests {
                 &[],
                 &empty_alpha_lights(),
                 &empty_light_influence(),
-                &empty_sh_volume(),
+                &minimal_sh_volume(),
                 direct_sh_volume,
                 entity_shadow_lights,
                 direct_sh_delta_volumes,
@@ -1754,7 +1889,7 @@ mod tests {
                 &[],
                 &empty_alpha_lights(),
                 &empty_light_influence(),
-                &empty_sh_volume(),
+                &minimal_sh_volume(),
                 direct_sh_volume,
                 entity_shadow_lights,
                 direct_sh_delta_volumes,
@@ -1848,7 +1983,7 @@ mod tests {
                 &[],
                 &empty_alpha_lights(),
                 &empty_light_influence(),
-                &empty_sh_volume(),
+                &minimal_sh_volume(),
                 Some(&direct),
                 Some(&selected),
                 Some(delta),
@@ -2198,7 +2333,11 @@ mod tests {
         let meta = read_container(&mut cursor).expect("should read container");
 
         // Baseline modern sections plus always-emitted FogVolumes and required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 14);
+        assert_eq!(meta.header.section_count, 15);
+        assert!(
+            meta.find_section(SectionId::ClusterDirectory as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(

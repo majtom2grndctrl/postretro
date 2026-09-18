@@ -1,7 +1,7 @@
 # lighting-scale--adaptive-probe-spacing — plan of record
 
 mode: resumable
-status: approved
+status: test-ready
 read at: c269dd906
 
 ## Corrections
@@ -58,8 +58,8 @@ read at: c269dd906
 | 6 | Produce focused scale>=1 fixture bakes and automated loader/runtime seam proof; prepare the Phase 2 receiver boot checklist without inferring the external visual result | integrating executor | 4, 5 | complete — byte-identical analyzed/plain exact kinematic bakes emitted scale-1 L1/L2 nodes; production load plus Metal offscreen capture passed; Windows Warren and supplemental receiver rows remain explicitly manual |
 | 7 | Apply Task 2's Phase 3 ruling: when selected, add L1 node packing, scale-aware compose arithmetic and sampler fast path with <=8 distinct tiles; otherwise record the measured refusal without changing Decisions | integrating executor | 2, 5 | complete — shared scale-aware node corners/weights drive packing and analysis; sampler whole-node resolution and all three compose paths honor node scale; constructed/property, SDF decode, writer-election, packing, and WGSL validation proofs pass |
 | 8 | Extend emitted-reconstruction analysis and dev diagnostics to node scale; complete automated AC coverage and update durable lighting/build-pipeline contracts to the implemented wire and runtime definitions | integrating executor | 6, 7 | complete — emitted JSON re-scores final node assignments and reports zero failures; dev readback and density markers expose node scale; compiler fixture and scaled diagnostic tests pass; durable v11/v4 build and rendering contracts updated |
-| 9 | Run review-readiness (`cargo fmt --check`, touched-crate checks, focused tests), then `/review-panel` -> `/fix-review-findings` -> focused retest until no concrete finding remains | integrating executor | 8 | complete — three-slice panel plus cross-slice seam pass; representability, analyzer parity, savings, wire validation, origin-writer, working-set, and drift findings fixed; correctness/contract re-review clean; final touched-crate gate passed 153 tests with no warnings (workspace-only fmt remains blocked by unrelated `xtask` baseline drift for Task 10) |
-| 10 | Run `/preflight` once, finalize the AC result column, and publish the external M3-M5 runbook; set `status: test-ready` until blocking owner results arrive | integrating executor | 9 | pending |
+| 9 | Run review-readiness (`cargo fmt --check`, touched-crate checks, focused tests), then `/review-panel` -> `/fix-review-findings` -> focused retest until no concrete finding remains | integrating executor | 8 | complete — three-slice panel plus cross-slice seam pass; representability, analyzer parity, savings, wire validation, origin-writer, working-set, and drift findings fixed; correctness/contract re-review clean; final touched-crate gate passed 153 tests with no warnings; Task 10 mechanically formatted the pre-existing `xtask` drift |
+| 10 | Run `/preflight` once, finalize the AC result column, and publish the external M3-M5 runbook; set `status: test-ready` until blocking owner results arrive | integrating executor | 9 | complete — workspace fmt and Clippy with `-D warnings` pass; full `cargo test` passes; M3-M5 Windows Warren, supplemental campaign receiver, forced-scale visual, and before/after GPU procedures are published in `research.md`; status is `test-ready` with no manual result inferred |
 | 11 | Apply only the reported manual results, move the brief to `done/`, set the final landed status, and commit the plan, brief move, and durable context updates together | integrating executor | 10 and blocking manual proof | pending |
 
 ## Implementation ownership and checkpoints

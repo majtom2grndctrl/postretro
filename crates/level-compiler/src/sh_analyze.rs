@@ -1852,11 +1852,11 @@ fn reconstruct_hierarchy_tile<T: HierarchyTruth + ?Sized>(
     Some(reconstructed)
 }
 
-fn probe_tile<'a, T: HierarchyTruth + ?Sized>(
-    truth: &'a T,
+fn probe_tile<T: HierarchyTruth + ?Sized>(
+    truth: &T,
     grid_dims: [u32; 3],
     coord: [u32; 3],
-) -> Option<&'a [Vec3]> {
+) -> Option<&[Vec3]> {
     if coord
         .iter()
         .zip(grid_dims)

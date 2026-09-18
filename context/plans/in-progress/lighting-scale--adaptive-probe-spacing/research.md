@@ -123,7 +123,9 @@ New-Item -ItemType Directory -Force $Run | Out-Null
 $Map = "content/dev/maps/stress-warren-hallway-inspection.map"
 $Prl = Join-Path $Run "hallway.prl"
 $Json = Join-Path $Run "hallway.analysis.json"
-$Args = @($Map, "-o", $Prl, "--release", "--no-tui", "--sh-probe-spacing", "1.0", "--sh-analyze", "--sh-analyze-out", $Json, "-j", "14")
+$Machine = Get-CimInstance Win32_ComputerSystem
+$Jobs = [Math]::Max(1, $Machine.NumberOfLogicalProcessors - 2)
+$Args = @($Map, "-o", $Prl, "--release", "--no-tui", "--sh-probe-spacing", "1.0", "--sh-analyze", "--sh-analyze-out", $Json, "-j", "$Jobs")
 $Clock = [Diagnostics.Stopwatch]::StartNew()
 $Process = Start-Process -FilePath ".\target\release\prl-build.exe" -ArgumentList $Args -NoNewWindow -PassThru
 $Peak = 0L
@@ -138,13 +140,14 @@ $Clock.Stop()
     WallSeconds = $Clock.Elapsed.TotalSeconds
     PeakWorkingSetBytes = $Peak
     Processor = $env:PROCESSOR_IDENTIFIER
-    LogicalProcessors = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
-    PhysicalMemoryBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+    Workers = $Jobs
+    LogicalProcessors = $Machine.NumberOfLogicalProcessors
+    PhysicalMemoryBytes = $Machine.TotalPhysicalMemory
 }
 Get-FileHash -Algorithm SHA256 $Prl, $Json
 ```
 
-Record the JSON hierarchy table, projected/shipped/all-L2 bytes, node errors, blocker attribution, seam residuals, worker count, exact command, machine fields, wall/RSS, hashes, and whether every required receiver renders without wgpu validation errors. If the full map is infeasible, repeat the same script with `stress-warren-hallway-inspection-mini.map` and record the full-map stopping stage/limit. After copying the measurements, clean up with `Remove-Item -Recurse -Force $Run`.
+Record the JSON hierarchy table, projected/shipped/all-L2 bytes, node errors, blocker attribution, seam residuals, worker count, exact command, machine fields, wall/RSS, hashes, and whether every required receiver renders without wgpu validation errors. If the full map is infeasible, repeat the same script with `stress-warren-hallway-inspection-mini.map` and record the full-map stopping stage/limit. Keep `$Run` for the M3-M5 steps below; clean it only after all evidence is copied.
 
 ## Phase 2 local runtime seam and receiver checklist — 2026-09-17
 
@@ -175,6 +178,67 @@ Close the engine normally after walking the fixture, then record adapter/backend
 - log: the `Select-String` command returns no wgpu validation error or panic.
 
 The Warren hallway does not author `fog_volume` or `billboard_emitter`, so it cannot honestly close those two receiver rows. The final Task-10 runbook will retain a short `campaign-test` follow-up for billboard and fog coverage; Warren remains the requested stress-map step and its result is never substituted by that supplemental fixture.
+
+### Task 10 external M3-M5 completion runbook (owner action)
+
+Keep the Warren `$Run`, `$Prl`, `$Log`, and machine record until all rows below are copied into this research file. These are blocking owner reads; a clean command exit or the local Mac capture does not substitute for them.
+
+**M3 — complete receiver coverage.** Use the Warren run above for world, movers, skinned meshes, node faces, and the validation log. Then compile and run the supplemental campaign fixture for the two receiver types Warren does not contain:
+
+```powershell
+$CampaignPrl = Join-Path $Run "campaign-test.prl"
+& .\target\release\prl-build.exe content/dev/maps/campaign-test.map -o $CampaignPrl --release --no-tui --sh-probe-spacing 1.0 -j $Jobs
+$CampaignLog = Join-Path $Run "campaign-runtime.log"
+$env:RUST_LOG = "info"
+cargo run -p xtask -- run --features dev-tools -- --content-root content/dev $CampaignPrl 2>&1 | Tee-Object $CampaignLog
+Remove-Item Env:RUST_LOG
+Select-String -Path $CampaignLog -Pattern "validation error|wgpu.*error|panic" -CaseSensitive:$false
+```
+
+Walk through at least one authored `fog_volume` and inspect at least one `billboard_emitter` from multiple angles under indirect light. Record `pass`, `fail`, or `n/a` separately for world, movers, skinned meshes, billboards, fog, and the clean validation log, plus adapter and backend. Do not collapse these into a single boot result.
+
+**M4 — default and forced-scale visual hunt.** The analyzed Warren `$Prl` is the default-fidelity read. Build a deliberately dense scale-1-node case from the same source, then repeat the same route:
+
+```powershell
+$ForcedPrl = Join-Path $Run "hallway-forced-scale-1.prl"
+& .\target\release\prl-build.exe $Map -o $ForcedPrl --release --no-tui --sh-probe-spacing 1.0 --sh-density-force-scale 1 -j $Jobs
+$ForcedLog = Join-Path $Run "hallway-forced-runtime.log"
+$env:RUST_LOG = "info"
+cargo run -p xtask -- run --features dev-tools -- --content-root content/dev $ForcedPrl 2>&1 | Tee-Object $ForcedLog
+Remove-Item Env:RUST_LOG
+Select-String -Path $ForcedLog -Pattern "validation error|wgpu.*error|panic" -CaseSensitive:$false
+```
+
+For both PRLs, inspect node faces in the open rooms and long corridor, cross open volumes while looking for lighting pops, ride/cross mover paths, and inspect lit pools on world, mover, and skinned receivers. Record the route, visible seam/pop result, and any screenshot or timestamp. This is a visual read, never a parity claim.
+
+**M5 — 120-frame before/after GPU timing.** Use the same Windows adapter, resolution, camera route, and scene state for both builds. The grounded pre-feature baseline is commit `c269dd906`; create a separate worktree so neither result overwrites the other build or PRL:
+
+```powershell
+$BaselineRoot = Join-Path $env:TEMP "postretro-adaptive-baseline"
+git worktree add $BaselineRoot c269dd906
+Push-Location $BaselineRoot
+cargo build -p postretro-level-compiler --release
+$BaselinePrl = Join-Path $Run "hallway-baseline.prl"
+& .\target\release\prl-build.exe content/dev/maps/stress-warren-hallway-inspection.map -o $BaselinePrl --release --no-tui --sh-probe-spacing 1.0 -j $Jobs
+$env:RUST_LOG = "info"
+$env:POSTRETRO_GPU_TIMING = "1"
+cargo run -p xtask -- run --features dev-tools -- --content-root content/dev $BaselinePrl 2>&1 | Tee-Object (Join-Path $Run "gpu-before.log")
+Pop-Location
+cargo run -p xtask -- run --features dev-tools -- --content-root content/dev $Prl 2>&1 | Tee-Object (Join-Path $Run "gpu-after.log")
+Remove-Item Env:POSTRETRO_GPU_TIMING
+Remove-Item Env:RUST_LOG
+```
+
+Hold each run long enough to emit at least one complete 120-frame timing window. Record the adapter/backend, resolution, route, `forward`, `sh_compose`, `direct_sh_compose`, and `animated_direct_sh_compose` averages from matched windows. If either log says timing is unavailable because timestamp-query features are missing, record M5 as `not-yet-evaluable`; do not substitute CPU frame time. After the measurements are copied, remove the baseline worktree with `git worktree remove $BaselineRoot`, then remove `$Run`.
+
+## Task 10 automated preflight — 2026-09-17
+
+- `cargo fmt --check`: passed after applying `cargo fmt` to one pre-existing formatting-only array literal in `crates/xtask/src/sdk_dist/mod.rs`.
+- `cargo clippy --target-dir target/preflight-clippy -- -D warnings`: passed after the feature-owned analysis driver documented its cohesive argument surface and one helper lifetime was elided.
+- `cargo test`: passed across the workspace, including doc tests. The test profile emitted two existing test-only dead-code warnings (`MapData::{assemblies, brush_assembly}` and `install_connected_client_trigger_pool_fixture_for_test`); neither is a Clippy failure or part of this feature.
+- Review panel and post-fix re-review: no remaining concrete finding. The focused final gate before preflight passed 153 tests with no warnings.
+
+Automated acceptance is complete. M1's Windows stress measurement and M3-M5 remain blocking external evidence, so the brief is `test-ready`, not landed or done.
 
 ## Pinned orderings
 

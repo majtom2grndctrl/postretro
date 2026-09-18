@@ -1,4 +1,4 @@
-# Shadowmask Atlas — Blocks and Compression — Research
+# Shadowmask Atlas — Planes and BC4 Compression — Research
 
 Grounding for `index.md`. Read at `a097035`. Facts cited by symbol; the brief holds the
 decisions, this file holds the investigation. No line numbers (they stale). Merges the
@@ -25,86 +25,90 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
   dimmest (`assign_channels_with_drops` in `shadowmask_bake/assignment.rs`), and a dropped
   light frees **zero** bytes — the buffer stays `vec![255; data_len]`.
 
-## Block dimension (the >4-overlap axis)
+## Plane dimension (the >4-overlap axis)
 
 - Today's per-texel ceiling is exactly four (the RGBA channels of one texel); the array
   layer is the receiver's `lightmap_layer`, a spatial axis, not a per-light one. >4
   overlapping selected lights force a mask drop and a missing runtime shadow.
-- The block dimension stacks in the same `texture_2d_array`
-  (`depth_or_array_layers = layer_count × block_count`), so a texel carries `4 ×
-  block_count` masks addressed by slot `s = block * 4 + channel`; block headroom is
-  `floor(256 / layer_count)`.
-- **Budget coupling.** Blocks stack into the same `max_texture_array_layers = 256` pool
-  the lightmap array atlas occupies. `static-light-shadowmask-world-receipt` banked a
-  "lightmap array-consolidation refactor" as the fallback if a feature needs array-layer
-  headroom; this is that feature. A later consolidation that shrinks `layer_count` frees
-  block headroom; a finer `_lightmap_density` that grows `layer_count` spends it. This
-  brief does not trigger consolidation but names the coupling so whoever lands it weighs
-  shadowmask blocks in the layer budget.
+- The masks are **independent single-channel scalars**, so the natural representation is a
+  stack of single-channel **planes** — one mask per plane — not RGBA packing. The plane
+  dimension stacks in the same `texture_2d_array`
+  (`depth_or_array_layers = layer_count × plane_count`); a texel carries `plane_count` masks
+  addressed by a flat plane index, and the mask for plane *p* is at array layer
+  `lightmap_layer + p × layer_count`. This collapses the old `(block, channel)` two-level
+  slot to one plane index and deletes the shader's RGBA channel select.
+- **Plane headroom is `floor(256 / layer_count)` — a quarter of an RGBA-packed block
+  layout's.** Single-channel planes spend the `max_texture_array_layers = 256` budget four
+  times faster than RGBA (one mask per layer, not four). Accepted: still materially more
+  than four on realistic layer counts, >4 overlap is rare/unmeasured build-ahead, and the
+  single-index single-sample layout is simpler than four bindings. Escape hatch if a real
+  map binds it: a channel-grouped layout (four BC4 planes per group) preserves RGBA-era
+  density at four bindings — noted in the brief Path, not built.
+- **Budget coupling.** Planes stack into the same `max_texture_array_layers = 256` pool the
+  lightmap array atlas occupies. `static-light-shadowmask-world-receipt` banked a "lightmap
+  array-consolidation refactor" as the fallback if a feature needs array-layer headroom;
+  this is that feature (and it spends the budget faster than the RGBA design it replaces). A
+  later consolidation that shrinks `layer_count` frees plane headroom; a finer
+  `_lightmap_density` that grows `layer_count` spends it. This brief does not trigger
+  consolidation but names the coupling so whoever lands it weighs shadowmask planes in the
+  layer budget.
 - **Frequency is a decision input, not a measured fact.** Per-texel >4 overlap on today's
-  content is unmeasured; `static-light-shadowmask-world-receipt` judged it rare enough for
-  a compiler warning + global drop, and `stress-warren-lit`'s 157 lights is a map-wide
-  count. The block ceiling is a deliberate build-ahead owner decision (materially more
-  headroom than four), stated plainly. Task 2 still emits a per-texel overlap histogram
-  under `--verbose` — the number exists, it is just not a gate.
+  content is unmeasured; `static-light-shadowmask-world-receipt` judged it rare enough for a
+  compiler warning + global drop, and `stress-warren-lit`'s 157 lights is a map-wide count.
+  The plane ceiling is a deliberate build-ahead owner decision (materially more headroom than
+  four), stated plainly. Task 2 still emits a per-texel overlap histogram under `--verbose`.
 
-## Compression (the bytes-per-texel axis)
+## Compression (the bytes-per-texel axis) — why BC4, not BC7
 
 - **Basis is the raw-vs-BC-sibling asymmetry, verified in source** — not an unverified
   "~half the file" magnitude (no `.prl` was measured this session). `crates/level-format/
   src/lib.rs` doc-notes `DirectShVolume = 35` "Stored BC6H-compressed at rest"; id 22
-  lightmap likewise (`build_pipeline.md` §PRL, id 22: irradiance BC6H at rest). id 42 is
-  the lone raw atlas — the asymmetry the brief closes.
-- **BC7 is a drop-in encoding swap; BC4 is not.** `forward.wgsl` binds
+  lightmap likewise (`build_pipeline.md` §PRL, id 22: irradiance BC6H at rest). id 42 is the
+  lone raw atlas — the asymmetry the brief closes.
+- **The data selects the codec.** `forward.wgsl` binds
   `@group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;`, sampled by
-  `sample_shadowmask_atlas` via `textureSample`; `shadowmask_channel_value` selects
-  `mask.r/g/b/a` by the channel index (≥ sentinel → 1.0 fully lit). Each RGBA channel is an
-  **independent** per-light `[0,1]` visibility scalar, never a correlated color tuple. BC7
-  unorm decodes to `f32 [0,1]` under the same binding and `textureSample`, so the shader is
-  unchanged for BC7. Per-channel BC4 (single-channel, high fidelity) splits the atlas into
-  4 planes, changing the binding/layout and the channel selection — hence the fallback.
-  Both lossy; specular-only + fully-lit-fallback semantics bound the visible cost.
+  `sample_shadowmask_atlas`; `shadowmask_channel_value` selects `mask.r/g/b/a` by channel
+  index (≥ sentinel → 1.0 fully lit). Each channel is an **independent** per-light `[0,1]`
+  visibility scalar, spatially smooth, never a correlated colour tuple. That is exactly BC4's
+  home case (two min/max endpoints + 3-bit indices per 4×4 block, single channel). BC7 was
+  rejected: it models a cross-channel block correlation the masks do not have (its weak
+  case), and at 8 bpp for four channels it gives ~2 bits/channel vs BC4's 4 — structurally
+  wrong *and* lower per-channel precision. Its only edge (≈4:1 vs BC4's ≈2:1) is bought with
+  that mismatch, and the only full-res 4:1 alternative (halving spatial resolution) is a
+  different, out-of-scope lever. So ≈2:1 via BC4 is the correct ceiling for the compression
+  lever, banked without a fidelity gate. The single-channel plane restructure makes the
+  shader read one array layer's `.r` (the `shadowmask_channel_value` RGBA select disappears).
 - **No new device feature or alignment.** BC6H at rest for id 22/35 means
-  `TEXTURE_COMPRESSION_BC` is already a required adapter feature; BC7 is in the same wgpu
-  feature. BC 4×4 alignment already holds — the shadowmask shares the lightmap dims and id
-  22 is BC6H, so those dims are BC-aligned.
+  `TEXTURE_COMPRESSION_BC` is already a required adapter feature; BC4 is in the same wgpu
+  feature. BC 4×4 alignment already holds — the shadowmask shares the lightmap dims and id 22
+  is BC6H, so those dims are BC-aligned.
 
-## BC encode seam (grounded: pattern candidate, not a drop-in)
+## BC4 encode seam (reuse, no new encoder)
 
-- **In-tree encoders:** `encode_bc6h_rgb_from_f32_rgba` (`crates/level-compiler/src/
-  bc6h.rs`, BC6H Mode 11, single-subset non-delta) and `bc5.rs` (BC5 normals). Both are
-  dependency-free, min/max-endpoint, order-deterministic (per the lean northstar). The
-  emit-side wrapper `encode_direct_section_bc6h` (`crates/level-compiler/src/
-  direct_sh_bake.rs`) pads each atlas axis up to a 4×4 multiple (`bc6h_padded_atlas_
-  dimensions`), decodes the lossless RGBA16F section into the padded buffer, encodes each
-  layer, and concatenates per-layer blocks — the pad-and-concat emit shape a compressed id
-  42 mirrors.
-- **Why the brief BUILDS the encoder rather than retreating:** BC6H is an **HDR RGB,
-  f16-internal** codec; decode is `output_f16 = (interp * 31) >> 6`, and it drops alpha — it
-  does **not** produce unorm `[0,1]`, so it is a *pattern to mirror*, not the function. No
-  BC7/BC4-unorm encoder is in-tree today. Rather than fall back to a weaker codec to dodge
-  that, the brief builds a deterministic BC7-unorm encoder as a shared foundation (mirroring
-  the dependency-free, pad-and-concat `bc5.rs`/`bc6h.rs` pattern) with the shadowmask as first
-  consumer. This is the "lay the foundation, ship its first consumer in the same unit" doctrine:
-  `bc7-color-textures` (draft, stub) names the *same* deterministic BC7 encoder as its heaviest
-  task (Task 2) and top risk, and is itself blocked on `emissive-surfaces-bloom` — so the
-  shadowmask (no such dependency, graceful fallback, GPU-free testable) is the ideal proving
-  ground, and landing the encoder here retires that draft's top risk. BC7 is heavier than BC5
-  (8 modes, partition search); a mode subset meeting the fidelity bound is acceptable for v1,
-  the hard requirement being cross-platform reproducibility. Per-channel BC4 (one channel of
-  the `bc5.rs` unorm path) is the measured fidelity floor if BC7's cross-channel error on
-  independent masks fails the visual gate.
-- **Determinism (split to match the invariant).** `build_pipeline.md` §Build Cache keys the
-  `"shadowmask_atlas"` memo on inputs, not outputs, and its **Determinism invariant** exempts
-  lossy compressed output (BC6H irradiance) from byte-identity; `sh-base-atlas-at-rest-slimming`
-  sets the posture (exact/raw stage byte-identical, BC path section-length-stable only). id 42
-  takes that exemption: the `(block, channel)` slot assignment must be order-deterministic so
-  the *logical* pre-compression atlas re-bakes byte-identically (what the source briefs' "byte
-  stable" AC actually required), but the lossy BC bytes need only be section-length-stable — no
-  runtime or cache path compares two independently produced id-42 blobs for equality. Byte-
-  identity of the BC bytes was an over-tight constraint in the first merged draft that
-  manufactured a false determinism objection to BC7; corrected. The encoder is still a pinned
-  version for hygiene.
+- **In-tree encoders:** `bc5.rs` (BC5 normals — two BC4 channels) and
+  `encode_bc6h_rgb_from_f32_rgba` (`crates/level-compiler/src/bc6h.rs`, BC6H Mode 11). Both
+  dependency-free, min/max-endpoint, order-deterministic. The emit-side wrapper
+  `encode_direct_section_bc6h` (`crates/level-compiler/src/direct_sh_bake.rs`) pads each
+  atlas axis up to a 4×4 multiple (`bc6h_padded_atlas_dimensions`), encodes each layer, and
+  concatenates per-layer blocks — the pad-and-concat emit shape a compressed id 42 mirrors.
+- **BC4 = one channel of the existing BC5 path**, unorm, deterministic — so the shadowmask
+  reuses in-tree machinery and lands self-contained, with **no encoder to build**. Path
+  grounds that the `bc5.rs` path exposes (or trivially yields) a single-channel BC4 block and
+  that its precision holds a smooth `[0,1]` mask within the fidelity bound.
+- **BC7 is not this brief's to build.** No BC7-unorm encoder exists in-tree, and
+  `bc7-color-textures` (draft, stub) owns BC7 — the right tool for correlated sRGB colour,
+  with its own mip chain, magnification aesthetic gate, and `emissive-surfaces-bloom`
+  dependency. Forcing BC7 onto the shadowmask (BC7's weak, uncorrelated-channel case, no
+  mips) to serve as a proving ground for the colour path was the rejected over-reach: the
+  proof would not transfer where it matters, and it would make the shadowmask worse to
+  benefit a different, blocked feature.
+- **Determinism.** `build_pipeline.md` §Build Cache keys the `"shadowmask_atlas"` memo on
+  inputs, not outputs, and its determinism invariant exempts lossy compressed output (BC6H
+  irradiance) from byte-identity; `sh-base-atlas-at-rest-slimming` sets the posture (exact/raw
+  stage byte-identical, BC path section-length-stable only). The plane assignment must be
+  order-deterministic so the logical pre-compression atlas re-bakes byte-identically; the BC4
+  encode is deterministic by construction (the `bc5.rs` min/max path), so the section re-bakes
+  byte-identically in practice, but only section-length stability is a hard requirement.
 
 ## Runtime lifecycle (the double residency, the CPU-free)
 
@@ -117,35 +121,34 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
   lighting/lightmap.rs`) does one `create_texture_with_data`: `Rgba8Unorm`,
   `depth_or_array_layers = layer_count`, `mip_level_count: 1`, LayerMajor,
   `TEXTURE_BINDING | COPY_DST`; view D2Array, bound at group 4. No mips, no streaming.
-- **Renderer keeps only `channels`.** Renderer init clones `section.channels`; `.data` is
-  never copied there — but the `LevelWorld` source is not freed. Freeing `.data` after
-  upload removes the RAM half at zero quality cost; the executor confirms no post-upload
+- **Renderer keeps only the plane/channel table.** Renderer init clones `section.channels`;
+  `.data` is never copied there — but the `LevelWorld` source is not freed. Freeing `.data`
+  after upload removes the RAM half at zero quality cost; the executor confirms no post-upload
   `.data` reader; level reload re-reads a fresh world (not a reuse consumer).
 
 ## Shader consumption and the runtime linchpin
 
 - The slot crosses into the runtime via the `SpecLight` shadowmask field and the promoted
   record's `meta1.z`, written by `build_spec_light_shadowmask_channels` /
-  `pack_forward_shadowmask_metadata` as `slot as f32` (sentinel preserved). `forward.wgsl`
-  decodes `block = slot / 4`, `channel = slot % 4`, samples array layer `lightmap_layer +
-  block × layer_count` via a generalized `sample_shadowmask_atlas`, selects the channel via
-  `shadowmask_channel_value`, in both the world-specular and promoted-union paths.
-- BC7 leaves this untouched (same `texture_2d_array<f32>` sample). BC4-per-channel would
-  make `channel` a plane index rather than an RGBA component — this is where the codec axis
-  and the block axis interact (see brief Task 3 / Boundary).
+  `pack_forward_shadowmask_metadata` as a float (sentinel preserved). Today `forward.wgsl`
+  decodes an RGBA channel index and selects `mask.r/g/b/a` via `shadowmask_channel_value`.
+- Under the plane restructure the field carries a **plane index**; `forward.wgsl` samples
+  array layer `lightmap_layer + plane × layer_count` via `sample_shadowmask_atlas` and reads
+  `.r`, in both the world-specular and promoted-union paths — `shadowmask_channel_value` is
+  deleted. BC4 decodes to `.r` under the same `texture_2d_array<f32>` binding, so the sample
+  is unchanged by the codec once the atlas is single-channel.
 
 ## Prior commitments preserved
 
 - `rendering_pipeline.md` §4 World specular shadowmask: "absent, rejected, or dropped
-  shadowmask data is fully lit, and this world-only signal remains independent of
-  pool-shadow promotion and its crossfade." Preserved and extended to over-budget and
-  no-BC-adapter causes.
+  shadowmask data is fully lit, and this world-only signal remains independent of pool-shadow
+  promotion and its crossfade." Preserved and extended to over-budget and no-BC-adapter causes.
 - Static→static world shadowing stays exactly zero via the pool-shadow union-subtraction
-  dead-zone (double-count invariant). The slot/codec generalization changes mask *location*
+  dead-zone (double-count invariant). The plane/codec generalization changes mask *location*
   and *encoding*, not the union term.
 - `build_pipeline.md` id-42 line ("packed into RGBA channels, with 0xFF ... for globally
-  dropped masks") is revised at promotion: masks in `(block, channel)` slots, drop only
-  past the device layer budget, payload BC-compressed at rest.
+  dropped masks") is revised at promotion: masks in single-channel planes addressed by a plane
+  index, drop only past the device layer budget, payload BC4-compressed at rest.
 
 ## Streaming — why a separate epic, not this brief
 
@@ -155,17 +158,17 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
   riding the per-frame visible-cell signal (`determine_visible_cells` → `VisibleCells::Culled`
   → `ComputeCull::write_bitmask_from_cells`).
 - **The substrate is in-flight and general.** `sh-probe-streaming` (in-progress) builds a
-  cluster-of-cells residency substrate (resource-agnostic key = cell adjacency + byte
-  budget, LRU eviction, prefetch/hysteresis), names lightmap-layer / shadowmask as future
-  subscribers but wires only SH; id 49 (cluster directory) reserved, unemitted.
+  cluster-of-cells residency substrate (resource-agnostic key = cell adjacency + byte budget,
+  LRU eviction, prefetch/hysteresis), names lightmap-layer / shadowmask as future subscribers
+  but wires only SH; id 49 (cluster directory) reserved, unemitted.
 - **The shadowmask is co-keyed with the lightmap** (same `lightmap_uv` + `lightmap_layer`,
   baked per-vertex `lightmap_layer: u16` in `crates/level-format/src/geometry.rs`), so its
   streamability couples to the lightmap's; the natural streamed unit is "cell-keyed baked
-  atlas data (lightmap + shadowmask) together." No code assembles the visible-layer set
-  today. Material/texture residency (material+mip key) is a different domain, excluded from
-  the spatial substrate.
-- Compression composes with streaming (bytes-per-resident-texel vs which texels resident)
-  and does not foreclose it: re-baking into cluster-addressable compressed form is cheap
+  atlas data (lightmap + shadowmask) together." No code assembles the visible-layer set today.
+  Material/texture residency (material+mip key) is a different domain, excluded from the
+  spatial substrate.
+- Compression composes with streaming (bytes-per-resident-texel vs which texels resident) and
+  does not foreclose it: re-baking into cluster-addressable compressed form is cheap
   (pre-stable, no external `.prl` consumers per `development_guide.md` §1.6).
 
 ## Prior-art / collision map
@@ -173,31 +176,29 @@ the two-drafts-coordination question is resolved — this is one id-42 format ch
 - **No plan owns id-42 size/RAM/VRAM reduction** — open gap this brief closes.
 - The two source drafts (`shadowmask-no-drop-atlas`, `shadowmask-compress-at-rest`) are
   **merged here** into one id-42 format change; the coordination open question they each
-  carried ("how do the two share the header") is resolved by this merge and removed. The
-  two axes are orthogonal (blocks add layers, compression changes texel bytes) and share the
-  header, `from_bytes` cross-check, and upload/filter path.
-- `lighting-scale--shadowmask-cold-working-set` (landed, `done/`) restructured the assignment seam
-  (deletes the per-(light,texel) membership record, derives the overlap graph analytically);
-  its output is byte-identical, compile-time RAM only, with the explicit non-goal "bounding
-  the output below its on-disk size — a format question." Confirms the gap is open, not
-  owned; **re-anchor against it before building** (brief §Re-anchor).
-- `lighting-scale--sh-base-atlas-at-rest-slimming` (done) — BC6H-at-rest precedent for id
-  34/35; the BC-at-rest discipline generalizes.
-- `shadowmask-array-atlas` (done) — closed "no action"; id 42 is already a
-  `texture_2d_array` within device limits.
-- `bc7-color-textures` (draft, stub) — the only prior mention of BC7 in the compiler; it
-  targets `.prm` color slots and leaves the BC7 encoder unresolved. Confirms no in-tree BC7
-  encoder exists yet.
+  carried is resolved by the merge and removed.
+- `lighting-scale--shadowmask-cold-working-set` (landed, `done/`) restructured the assignment
+  seam (deletes the per-(light,texel) membership record, derives the overlap graph
+  analytically); compile-time RAM only, byte-identical output, with the explicit non-goal
+  "bounding the output below its on-disk size — a format question." Confirms the gap is open,
+  not owned; **re-anchor against it before building** (brief §Re-anchor).
+- `lighting-scale--sh-base-atlas-at-rest-slimming` (done) — BC-at-rest precedent for id 34/35;
+  the BC-at-rest discipline and section-length-stable posture generalize.
+- `shadowmask-array-atlas` (done) — closed "no action"; id 42 is already a `texture_2d_array`
+  within device limits.
+- `bc7-color-textures` (draft, stub) — owns BC7 for `.prm` colour slots; blocked on
+  `emissive-surfaces-bloom` and an aesthetic A/B veto. Out of this brief's scope; not a
+  dependency in either direction.
 
 ## Proof shape (resource-bound + capacity; `testing_guide.md` §Resource bounds)
 
 Proof covers both axes across the full lifetime (`development_guide.md` §1.4): production
-(slot assignment + BC encode), serialization (`to_bytes`/`from_bytes` round-trip + codec
-length check + slot-range rejection), persistence (on-disk byte delta by codec ratio), the
-GPU return (VRAM estimate delta, upload format, >4-overlap renders all masks), cleanup (CPU
-`.data` freed + reload). The fidelity/visual pair is the codec gate; the graceful-degradation
-pair (over-budget, no-BC-adapter) and the deterministic-slot / length-stable re-bake close the
-invariants. Focused fixtures only — no `stress-warren*` bake (ratio is codec-intrinsic, error
-texel-local, and a small fixture can force >4 overlap). Tests are `cargo test`, no GPU
-context; the BC upload and visual A/B are the thin GPU layer verified by running the engine /
-offscreen capture (`capture_frame_indirect`).
+(plane assignment + BC4 encode), serialization (`to_bytes`/`from_bytes` round-trip + codec
+length check + plane-range rejection), persistence (on-disk byte delta ≈2:1), the GPU return
+(VRAM estimate delta, upload format, >4-overlap renders all masks), cleanup (CPU `.data` freed
++ reload). BC4 needs no codec-selection gate; a measured error report plus a visual regression
+check confirm it. The graceful-degradation pair (over-budget, no-BC-adapter) and the
+deterministic-plane / length-stable re-bake close the invariants. Focused fixtures only — no
+`stress-warren*` bake (ratio is codec-intrinsic, error texel-local, and a small fixture can
+force >4 overlap). Tests are `cargo test`, no GPU context; the BC4 upload and visual A/B are the
+thin GPU layer verified by running the engine / offscreen capture (`capture_frame_indirect`).

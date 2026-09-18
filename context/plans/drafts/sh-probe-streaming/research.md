@@ -52,7 +52,7 @@ per-fragment compute.
   face.leaf_index` (`crates/level-compiler/src/bvh_build.rs:93`); doc
   (`geometry.rs:48-53`); corroborated `cell_draw_index_bake.rs`, `pack.rs`.
 - Per-frame visible-cell set: portal traversal `determine_visible_cells` →
-  `VisibleCells::Culled(Vec<usize>)` (`crates/visibility/src/visibility.rs`); renderer
+  `VisibleCells::Culled(Vec<u32>)` (`crates/visibility/src/visibility.rs`); renderer
   converts to a fixed 4096-word bitmask, `ComputeCull::write_bitmask_from_cells`
   (`crates/renderer/src/compute_cull.rs:264`), `MAX_VISIBLE_CELLS` = 131072, consumed by
   the GPU BVH-traversal cull. Residency rides this signal (plus a wider prefetch set).
@@ -72,7 +72,7 @@ validation, not a blank slate.
 
 Ready brief `plans/ready/lighting-scale--adaptive-probe-spacing/`. Within-chunk stored
 density over the same octahedral atlas; **bandwidth-neutral by construction** — no new
-binding, no per-fragment locate-read, ≤ 8 taps; id 34 v10→v11, id 35 v3→v4, 8-byte probe
+binding, no per-fragment locate-read, fixed 8-corner stencil (≤ 32 taps in the straddle fallback); id 34 v10→v11, id 35 v3→v4, 8-byte probe
 record keeps stride, node scale in reserved bytes, slots by prefix sum, no node table.
 Streaming layers residency addressing *over* v11/v4 and must not violate the
 bandwidth-neutral contract. Orthogonal by the epic docs: "coarsening reduces data inside a

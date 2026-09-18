@@ -16,9 +16,9 @@ sequenceDiagram
 
     Frame->>Plan: read VisibleCells and monotonic render time
     Plan->>Plan: map cells to clusters; close two-hop prefetch and owner pins
-    Plan->>Worker: enqueue target cluster with level identity + generation
-    Worker->>Worker: seek one id-50 chunk; hash; decode plain CPU payload
-    Worker-->>Plan: ready completion with identity + generation + cluster id
+    Plan->>Worker: enqueue target cluster with content tag + residency generation
+    Worker->>Worker: positional-read one id-50 chunk; hash; decode owned CPU payload
+    Worker-->>Plan: ready completion retaining permit + tag + generation + cluster id
     Frame->>Plan: take at most two ready completions, visible-first
     Plan->>Drain: target snapshot + ready batch + eviction requests
     Drain->>Drain: reject stale/non-target; invalidate evictions; install compose data
@@ -42,7 +42,7 @@ runs later in the same command buffer. The plan adds the sole drain before those
 |---|---|
 | Cell clusters and owned/halo ranges | `level-format/src/cluster_directory.rs` |
 | Loaded inert directory | `LevelWorld.cluster_directory` in `level-loader/src/prl.rs` |
-| Whole-file load | `load_prl_with_section_limits` in `level-loader/src/prl_loader.rs` |
+| Whole-file load | `load_prl_with_section_limits` in `level-loader/src/prl_loader.rs` (`std::fs::read` today) |
 | v11 metadata and atlas bytes | `OctahedralShVolumeSection` in `level-format/src/sh_volume.rs` |
 | v4 direct stored atlas | `DirectShVolumeSection` in `level-format/src/direct_sh_volume.rs` |
 | Canonical stored-node prefix | `stored_node_prefix_sum` in `level-format/src/sh_reconstruct.rs` |
@@ -56,6 +56,21 @@ runs later in the same command buffer. The plan adds the sole drain before those
 | Indirect compose | `record_pre_scene_compute` in `renderer/src/render/renderer_shadow_passes.rs` |
 | SH allocation report | `renderer/src/render/sh_residency.rs` |
 | Capture setup | `postretro/src/capture/prepared.rs` |
+
+Relevant exact anchors for the Slice 3 storage seam:
+
+- Finalized SH publication and source availability: `level-compiler/src/pipeline.rs`
+  lines 1051-1057, 1524-1536, and 2000-2008; `level-compiler/src/pack/finalized_sections.rs`
+  lines 9-18.
+- Legacy whole-section loader shape: `level-loader/src/prl.rs` lines 602-634.
+- Container-v4 identity fields: `level-format/src/container.rs` (`MAGIC`,
+  `CURRENT_VERSION`, `Header`, and ordered `SectionEntry` id/offset/size/version fields).
+- Current whole-file ownership and cursor model: `level-loader/src/prl_loader.rs`
+  `load_prl_with_section_limits` reads a path into one `Vec<u8>` and constructs a cursor;
+  there is no retained file handle or positional-read seam yet.
+- World-to-renderer/capture whole-body assumptions: `renderer/src/render/renderer_geometry.rs`
+  lines 81-94; `renderer/src/render/renderer_types.rs` lines 388-424;
+  `postretro/src/capture/prepared.rs` lines 83-89.
 
 ## Actual v11/v4 gather mechanics
 
@@ -78,7 +93,9 @@ whole atlas. Adjacent tiles can share physical compression blocks. Arbitrary clu
 gathers therefore are not independent byte ranges. The runtime also has no BC6 decoder.
 An independently encoded cluster companion is required unless the whole source atlas stays
 resident, which would defeat the goal. Id 50 supplies that companion while ids 34/35 remain
-unchanged.
+unchanged. Therefore the id-50 encoder must run while borrowed pre-BC6H packed id 34/id 35
+sources and the finalized presence inventory are still available; encoded global BC6H
+bytes alone are not enough to create independent 8x8 residency cells.
 
 ## Existing companion shapes
 
@@ -102,6 +119,47 @@ buffers containing the same derived words, while fragment consumers read words p
 the depth-moment texture. Keeping the sample-side word invalid for one frame lets compose
 write a newly installed cluster without exposing it early. Queue ordering then permits
 promotion at the next drain with no GPU readback.
+
+## Stale identity and file ownership
+
+Reopening a pathname per job is not a stable file identity: an editor or build can replace
+the directory entry while an old level session is still alive. File metadata alone is also
+not a sufficient content identity across supported filesystems. The manifest therefore
+retains the exact `Arc<File>` opened and validated at level load. Its stored path exists
+only to make diagnostics useful. Unix `FileExt::read_at` and Windows
+`FileExt::seek_read` provide cursor-independent positional reads against that handle; this
+avoids a mutexed shared seek cursor and permits the four workers to read independently.
+
+Stale-result rejection has two independent axes. A process-monotonic nonzero checked
+`u64` residency generation distinguishes load sessions; it never resets or wraps. A
+BLAKE3 streaming content tag distinguishes validated bytes. Its domain-separated input is
+the exact container-v4 magic/version/count and ordered section-table tuples, exact id 49,
+and validated id-50 header/source/index. Per-chunk hashes in that index bind the omitted
+payload blob. This tag is intentionally not the co-op/network content identity: streaming
+lifetime policy must not silently redefine multiplayer compatibility. Cooperative worker
+cancellation saves work, but generation + tag + current target + freshly verified chunk
+hash is the authoritative install predicate.
+
+## GPU and CPU lifetime accounting
+
+The portable renderer report measures requested allocations, not opaque driver VRAM. The
+256 MiB engineering floor therefore contains fixed GPU metadata and active physical pool
+capacity only. Logical occupied ranges are a sub-ledger of that capacity. Encoded,
+decoding, and ready host bytes are separate checked phase ledgers with independent high
+waters; adding them to the GPU floor would mix unlike resources and double-count resident
+data. Four lifecycle permits cover read through install/drop, including time spent ready,
+so a two-install frame cap cannot create an unbounded ready queue. Moving one owned
+payload between phases avoids full clones, and installation retains no full decoded host
+copy.
+
+Pool growth must not depend on that discarded CPU representation. The selected design
+allocates a geometrically larger active resource and copies live ranges GPU-to-GPU at the
+same offsets, preserving installed indirection. The former active resource becomes the
+single retiring generation until queue completion proves it unreferenced. Each family may
+hold at most active plus one retiring generation, and another growth waits. This makes two
+different costs explicit: bytes required above the effective floor are non-evictable
+overshoot; simultaneous active-plus-retiring capacity is a temporary replacement peak.
+Calling both simply "overshoot" would hide the actual allocation high water.
 
 ## Oversized-file flags
 
@@ -131,6 +189,13 @@ The report distinguishes physical pool capacity from logical occupied bytes. The
 the requested GPU allocation and is the relevant whole-load comparison. Logical occupancy
 explains policy behavior but is not mislabeled as driver VRAM. Opaque driver padding remains
 outside the portable report, matching the existing SH residency ledger.
+
+GPU failures or unavailable adapters remain `not-yet-evaluable`; they are never proof for
+or against the streaming result. They also are not a hard rollout gate: valid ids 49+50
+default to bounded async streaming. `POSTRETRO_SH_STREAMING=off` remains a developer/test
+compatibility escape and `sync-proof` remains deterministic proof machinery; neither is a
+player-facing mode. Task 13 measures and tunes the engineering floor when the relevant
+adapter is available.
 
 ## Resource and disk lifecycle
 

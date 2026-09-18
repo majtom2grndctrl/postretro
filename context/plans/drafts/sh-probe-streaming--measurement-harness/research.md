@@ -28,8 +28,9 @@ sequenceDiagram
         Renderer->>Renderer: submit and wait for completed GPU work by named cadence
         Renderer->>Capture: CPU completion sample / optional GPU window
     end
+    Capture->>Report: keep staged metadata unpublished
     Capture->>Renderer: render final PNG frame and read back once
-    Capture->>Report: atomically publish metadata and statistics
+    Capture->>Report: publish JSON report last after PNG publication
 ```
 
 Every arrow above has a current or planned call site. PRL reporting reads
@@ -58,6 +59,7 @@ submit, not enqueue duration.
 | Billboard scatter resources | `BillboardDirectScatterResources` in `crates/renderer/src/render/billboard_direct_scatter.rs` |
 | Indirect compose resources | `ShComposeResources` in `crates/renderer/src/render/sh_compose.rs` |
 | Direct compose resources | direct compose code in `crates/renderer/src/render/direct_sh_compose.rs` |
+| Animated direct compose resources | animated-direct compose code in `crates/renderer/src/render/animated_direct_sh_compose.rs` |
 | Billboard scatter compose resources | billboard compose code in `crates/renderer/src/render/billboard_direct_scatter_compose.rs` |
 | Timing accumulator | `FrameTiming` / `FrameTimingSnapshot` in `crates/renderer/src/render/frame_timing.rs` |
 | Windowed fallback | `FrameRateMeter` in `crates/sim/src/sim/frame_timing.rs`; title read in `crates/postretro/src/main.rs` |
@@ -75,19 +77,26 @@ submit, not enqueue duration.
   readback and would not represent the normal scene workload.
 - `FrameTiming` exists only when `POSTRETRO_GPU_TIMING=1` and the adapter supports
   `TIMESTAMP_QUERY` plus `TIMESTAMP_QUERY_INSIDE_ENCODERS`. Unsupported requests log a
-  warning and continue with `None`; disabled and unsupported are indistinguishable from
-  the accessor today unless Task 6 records a plain availability reason.
+  warning and continue with `None`; disabled, unsupported, and plain-build-unavailable
+  states must be reported before any `not-yet-windowed` decision.
 - `FrameTiming` averages 120 completed readback samples. `encode_resolve` belongs before
   submission and `post_submit` drives the non-blocking map after submission. Capture does
-  neither today. Partial windows do not produce pass averages.
+  neither today. Partial windows do not produce pass averages. Measurement must drop/reset
+  any warmup window state before sample collection.
 - `request_renderer_device_with_capabilities` logs `wgpu::AdapterInfo`, but the renderer
   does not retain plain adapter identity for capture serialization.
 - `ShVolumeResources` currently logs only the physical base-atlas allocation behind
   `dev-tools`. It already has `compact_base_atlas_allocation` and
   `base_atlas_allocation_bytes`; no complete id-attributed resident tally exists.
 - SH allocation decisions are spread across `sh_volume.rs`, `direct_sh_resources.rs`,
-  `billboard_direct_scatter.rs`, `sh_compose.rs`, direct compose, and billboard scatter
-  compose. `sh_volume.rs` does not own all allocation formulas.
+  `billboard_direct_scatter.rs`, `sh_compose.rs`, direct compose, animated-direct compose,
+  and billboard scatter compose. `sh_volume.rs` does not own all allocation formulas.
+- Animated-light descriptor/sample buffers are sourced from id 34 metadata plus scripted
+  reserve. Ids 27, 45, and 48 may reference descriptor indices but do not own that payload.
+- Billboard direct-scatter base/composed volumes are Rgba16Float volumes; ledger bytes are
+  `width * height * depth_or_array_layers * Rgba16Float`.
+- Staged measurement JSON must remain unpublished until the PNG is successfully published.
+  On a later failure, staged JSON is removed; the visible report publishes last.
 - IDs and loaded types are current: 27 `DeltaShVolumes`, 34
   `OctahedralShVolume`, 35 `DirectShVolume`, 41 `DirectShDeltaVolumes`, 45
   `AnimatedDirectShDeltaVolumes`, 47 `BillboardDirectScatterVolume`, and 48

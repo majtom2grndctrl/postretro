@@ -33,13 +33,15 @@ Capture JSON adds an optional `measurement` block:
 
 | Field | Type | Bounds | Notes |
 |---|---|---|---|
-| `report` | string path | non-empty; must not alias scene, map, or PNG output | Path is resolved like `output`: relative to the current working directory. Parent must exist. Staged sibling rename publishes it. |
+| `report` | string path | non-empty; must not alias scene, map, or PNG output | Path is resolved like `output`: relative to the current working directory. Parent must exist. Staged sibling rename publishes it last. |
 | `warmup_frames` | integer | `1..=10000` | Warmup frames prepare timing state. They never enter sample statistics. |
 | `sample_frames` | integer | `1..=100000` | Number of completed sample frames recorded for CPU timing. |
 
 Omitting `measurement` preserves legacy capture behavior and writes no report. Unknown
 measurement fields are rejected. `report` may replace a regular file but not a directory,
-symlink alias, scene, map, or PNG output.
+symlink alias, scene, map, or PNG output. The report stays staged until the final PNG is
+published. Any later failure removes the staged report. The visible report is published
+last.
 
 Report root:
 
@@ -58,7 +60,10 @@ Report root:
 | `gpu_timing` | object | `availability`, optional `reason`, optional 120-frame windows. |
 
 Timing availability strings are exact: `available`, `not-requested`, `unsupported`,
-`plain-build-unavailable`, `not-yet-windowed`. Reasons are exact:
+`plain-build-unavailable`, `not-yet-windowed`. Availability precedence is strict:
+`not-requested`, `unsupported`, and `plain-build-unavailable` win before window analysis.
+Use `not-yet-windowed` only when `FrameTiming` is active but no full sample window
+completes. Reasons are exact:
 `env-disabled`, `adapter-missing-timestamp-features`, `dev-tools-accessor-unavailable`,
 `window-not-complete`. Optional numeric values are omitted until present, never encoded as
 zero. Optional SH allocation rows are either absent because the source section is absent
@@ -72,31 +77,33 @@ the renderer-owned API, then record elapsed wall time. It must not measure comma
 time.
 
 Warmup and samples are isolated. Warmup frames may drive `FrameTiming` state but their CPU
-samples are discarded. GPU windows are 120 completed `FrameTiming` samples. Report every
+samples are discarded. Drop/reset `FrameTiming` window state at the warmup-to-sample
+boundary. GPU windows are 120 completed sample-frame `FrameTiming` samples. Report every
 full window that completes during samples with pass labels, average milliseconds, and
 skip counts. A partial trailing window is reported only as `partial_frames`; it contributes
-no per-pass average. If no full sample window completes, `gpu_timing.availability` is
-`not-yet-windowed` with reason `window-not-complete`.
+no per-pass average. If timing is otherwise active and no full sample window completes,
+`gpu_timing.availability` is `not-yet-windowed` with reason `window-not-complete`.
 
 ## SH residency ledger v1
 
 | Family | Owner / current source | Source ids | Formula source | Dummy / fallback | Total |
 |---|---|---|---|---|---|
-| Base indirect atlas | `ShVolumeResources`, `sh_volume.rs` | 34 | `compact_base_atlas_allocation` + `base_atlas_allocation_bytes`; BC6H physical 4x4 blocks | Missing/empty/limit fallback binds 1x1 RGBA16F dummy | yes |
+| Base indirect atlas | `ShVolumeResources`, `sh_volume.rs` | 34 | `compact_base_atlas_allocation` + `base_atlas_allocation_bytes`; BC6H physical 4x4 blocks | Missing/unusable/device-limit fallback binds 1x1 Rgba16Float. Accepted empty BC6H allocates one 4x4 BC6H block. Accepted empty Rgba16Float allocates 1x1 Rgba16Float. | yes |
 | Depth-moment texture | `ShVolumeResources`, `sh_volume.rs` | 34 | actual `Rgba16Uint` extent | Missing/empty/limit fallback binds 1x1x1 dummy | yes |
 | SH grid info buffer | `ShVolumeResources`, `sh_volume.rs` | 34 | `build_grid_info_bytes` binding size | Always non-empty | yes |
-| Animated-light descriptors and samples | `AnimatedLightBuffers`, `sh_volume.rs` | 45 plus scripted reserve | created buffer contents length, including scripted sample reserve | One dummy record when no animated lights | yes |
+| Animated-light descriptors and samples | `AnimatedLightBuffers`, `sh_volume.rs` | 34 plus scripted reserve | created buffer contents length, including scripted sample reserve | One dummy record when no animated lights. Ids 27/45/48 may reference descriptor indices but do not own this payload. | yes |
 | Scripted-light descriptors | `ShVolumeResources`, `sh_volume.rs` | runtime reserve | created buffer contents length | One dummy descriptor when empty | yes |
 | Direct SH base atlas | `DirectShResources`, `direct_sh_resources.rs` | 35 | direct atlas extent/format used for creation | Missing/empty/limit fallback binds 4x4 BC6H dummy | yes |
 | Direct SH dynamic params | `DirectShResources`, `direct_sh_resources.rs` | 35/41/45 | `build_dynamic_direct_params_bytes` length | Always present | yes |
-| Direct SH composed / intermediate atlas | `DirectShResources`, `direct_sh_resources.rs` and `direct_sh_compose.rs` | 35/41/45 | actual composed texture descriptor | Only when compose path needs it | yes, once |
-| Billboard direct-scatter base atlas | `BillboardDirectScatterResources`, `billboard_direct_scatter.rs` | 47 | actual scatter texture descriptor | Missing/limit fallback binds dummy and clears scatter | yes |
-| Billboard direct-scatter composed atlas | `BillboardDirectScatterResources`, `billboard_direct_scatter.rs` and compose module | 47/48 | actual composed texture descriptor | Only when animated deltas compose | yes, once |
-| Indirect delta buffers | `ShComposeResources`, `sh_compose.rs` | 27 | padded storage bytes for subblocks, offsets, lights, descriptor indices | Empty buffers padded to valid binding minimums | yes |
+| Direct SH composed / intermediate atlas | `DirectShResources`, `direct_sh_resources.rs` and `direct_sh_compose.rs` | 35/41 | actual composed texture descriptor | Only when compose path needs it | yes, once |
+| Animated direct SH storage, indirection, grid, and scale buffers | `animated_direct_sh_compose.rs` | 45 | exact storage/uniform bytes used for bind groups | Empty payloads padded to valid binding minimums | yes |
+| Billboard direct-scatter base volume | `BillboardDirectScatterResources`, `billboard_direct_scatter.rs` | 47 | `width * height * depth_or_array_layers * Rgba16Float` bytes | Missing/limit fallback binds dummy and clears scatter | yes |
+| Billboard direct-scatter composed volume | `BillboardDirectScatterResources`, `billboard_direct_scatter.rs` and billboard compose module | 47/48 | `width * height * depth_or_array_layers * Rgba16Float` bytes | Only when animated deltas compose | yes, once |
+| Indirect delta buffers | `ShComposeResources`, `sh_compose.rs` | 27 | padded storage bytes: subblock, light, and descriptor-index payloads use minimum nonzero padding; affinity offsets come from affinity grid/cell metadata then pad | Empty buffers padded to valid binding minimums | yes |
 | Probe indirection buffer | `ShComposeResources`, `sh_compose.rs` / `sh_indirection` | 34 | `probe_indirection_storage_bytes` | Invalid probes still encoded as sentinel words | yes |
-| Delta compaction metadata buffer | `ShComposeResources`, `sh_compose.rs` | 27 | `compaction_meta_words` padded storage bytes | Empty metadata padded to valid binding minimum | yes |
-| Compose grid/origin buffers | `ShComposeResources`, direct compose, billboard compose | 27/41/45/48 | exact uniform bytes used for bind groups | Always non-empty when owning compose resource exists | yes |
-| Direct and billboard delta CSR buffers | `direct_sh_compose.rs`, `billboard_direct_scatter.rs`, billboard compose | 41/45/48 | padded storage bytes for dense deltas, CSR offsets/lights, descriptor indices | Empty buffers padded to valid binding minimums | yes |
+| Delta compaction metadata buffer | `ShComposeResources`, `sh_compose.rs` | 27 | `compaction_meta_words` generated from affinity grid/cell metadata, then padded | Empty metadata padded to valid binding minimum | yes |
+| Compose grid/origin buffers | `ShComposeResources`, direct compose, animated direct compose, billboard compose | 27/41/45/48 | exact uniform bytes used for bind groups | Always non-empty when owning compose resource exists | yes |
+| Direct and billboard delta CSR buffers | `direct_sh_compose.rs`, `animated_direct_sh_compose.rs`, billboard compose | 41/45/48 | padded storage bytes: subblock, light, and descriptor-index payloads use minimum nonzero padding; affinity offsets come from affinity grid/cell metadata then pad | Empty buffers padded to valid binding minimums | yes |
 
 Every ledger row cites source section ids when data-backed and `derived` when created only
 to compose another resident resource. Shared compose targets have one owner row with
@@ -161,8 +168,9 @@ multiple source ids; consumers cite the owner and do not add bytes again.
 - [ ] The JSON measurement report records revision when available, map path and file
       size, resolution, camera, warmup/sample counts, adapter name/backend/device type,
       renderer-accounted SH bytes, CPU median/p95, and per-pass GPU samples or a named
-      availability reason from schema v1. Partial output is staged so failure never leaves a
-      valid-looking report.
+      availability reason from schema v1. JSON stays staged until the PNG is successfully
+      published; the report publishes last. Any later failure cleans the staged report so
+      failure never leaves a valid-looking report.
 - [ ] CPU timing represents completed GPU work rather than command-enqueue time. The
       report names the completion strategy and cadence so two runs use the same method.
 - [ ] CPU-only tests cover section sums, unknown section ids, allocation formulas,
@@ -209,10 +217,11 @@ mode.
 Move the existing SH allocation decisions and byte formulas out of their current decision
 sites into a focused renderer-internal module. Current sites include the about-2,000-line
 `render/sh_volume.rs`, `direct_sh_resources.rs`, `billboard_direct_scatter.rs`,
-`sh_compose.rs`, `direct_sh_compose.rs`, and billboard scatter compose code. Direct-SH,
-billboard-scatter, and compose constructors consume the same allocation descriptions rather
-than re-deriving extents or formats. Preserve every dummy, device-limit fallback, texture
-format, usage, and binding. This task adds no logging.
+`sh_compose.rs`, `direct_sh_compose.rs`, `animated_direct_sh_compose.rs`, and billboard
+scatter compose code. Direct-SH, animated-direct-SH, billboard-scatter, and compose
+constructors consume the same allocation descriptions rather than re-deriving extents or
+formats. Preserve every dummy, device-limit fallback, texture format, usage, and binding.
+This task adds no logging.
 
 ### Task 4: Report PRL section footprint
 
@@ -238,8 +247,8 @@ Render through the extracted capture path without per-sample readback. Add a ren
 that submits and completes measurement frames and exposes the existing GPU-timing snapshot
 plus adapter identity as plain report data. Task 6 adds production/plain availability
 reasons even though the current accessor is dev-tools-gated. Write one staged JSON report,
-then capture the existing PNG. Keep `POSTRETRO_GPU_TIMING=1` as the sole timestamp feature
-gate.
+capture and publish the existing PNG, then publish the JSON report last. Keep
+`POSTRETRO_GPU_TIMING=1` as the sole timestamp feature gate.
 
 ### Task 7: Run and record the premise read
 

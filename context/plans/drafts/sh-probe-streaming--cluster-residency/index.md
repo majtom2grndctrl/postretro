@@ -52,22 +52,33 @@ block rows, so a 6x6 logical tile shares 4x4 compression blocks with adjacent ti
 cannot be gathered into an arbitrary residency slot without decoding/re-encoding or
 retaining the whole source atlas. The sparse companions are likewise monolithic codecs.
 
-Branch selection is exact: valid ids 49 and 50 select streaming; id 49 alone, or neither
-id 49 nor id 50, selects the existing whole-load path. Id 50 without id 49 rejects at
-level load with a named
-`ClusterShPayloads*` error. Mismatched cluster counts/resource inventory/source versions,
-or a malformed index, also reject at level load. Unknown id 50 remains skippable to older
-loaders, preserving one PRL container-v4 artifact. Id 50 is built after
-finalized section selection, uncached, from borrowed final outputs. The encoder receives
-the finalized presence inventory plus the borrowed pre-BC6H packed id 34/id 35 sources;
-encoded global BC6H bytes alone cannot create independent 8x8 cells. It changes no bake
-result or existing cache key/epoch.
+Branch selection is exact. The loader validates id 50 structurally before consulting the
+developer/test mode. Id 50 without id 49 rejects. Malformed id 50 rejects. Id 50 whose
+resource inventory, source versions, cluster counts, or index do not match id 49 rejects.
+`POSTRETRO_SH_STREAMING=off` bypasses streaming only after a valid id 49 + id 50 pair has
+passed that validation. Unknown id 50 remains skippable to older loaders, preserving one
+PRL container-v4 artifact. Id 50 is built after finalized section selection, uncached,
+from borrowed final outputs. The encoder receives the finalized presence inventory plus
+the borrowed pre-BC6H packed id 34/id 35 sources; encoded global BC6H bytes alone cannot
+create independent 8x8 cells. It changes no bake result or existing cache key/epoch.
+
+| Sections present | Id-50 validation result | `POSTRETRO_SH_STREAMING` | Runtime path |
+|---|---|---|---|
+| No 49, no 50 | n/a | any | legacy whole-load |
+| 49 only | n/a | any | legacy whole-load |
+| 50 only | invalid pair | any, including `off` | reject `ClusterShPayloads*` |
+| 49 + malformed/mismatched 50 | invalid id 50 | any, including `off` | reject `ClusterShPayloads*` |
+| 49 + valid 50 | valid | `off` | legacy whole-load |
+| 49 + valid 50 | valid | unset | bounded async streaming |
+| 49 + valid 50 | valid | `sync-proof` | synchronous no-eviction proof |
+| 49 + valid 50 | valid | `async` | bounded async streaming |
 
 Runtime has explicit developer/test controls: `POSTRETRO_SH_STREAMING=off`
 forces legacy whole-load, `sync-proof` selects the thin synchronous/no-eviction path,
 and `async` selects the complete policy. A valid id-50 PRL defaults to `async`; a PRL
 without id 50 ignores the variable and stays legacy. The variable is a developer/test
-gate, not a player option or stable content surface.
+gate, not a player option or stable content surface, and cannot suppress id-50 structural,
+version, inventory, or index validation failures.
 
 The loader does not retain whole SH-family bodies in streaming mode. It opens the PRL
 once, validates the container plus ids 49/50 metadata, and stores that same `Arc<File>` in
@@ -115,10 +126,14 @@ Sparse ids 27/41/45/48 are sliced by final affinity-cell rows. A chunk stores ow
 and the halo rows needed by its directory coverage. Only the baked owner row may enter
 compose CSR; halo rows establish an owner dependency and provide an independently
 loadable copy, never another accumulation. Id 47 stores dense global-probe patches.
-Global animation descriptors, samples, descriptor-index maps, light-selection maps,
-grid metadata, and CSR offset tables stay in a small always-resident metadata floor.
-Missing CSR rows encode equal start/end offsets. Chunk-local payloads carry no wgpu
-types.
+Ids 27/41/45 keep `valid_probe_masks` and `cell_levels` as always-resident metadata
+parallel to their global affinity rows; row payloads reference those metadata rows and do
+not duplicate masks or levels. Id 48 mirrors id 45's descriptor map and CSR topology but
+has no mask/level stream; each CSR entry stores one dense 64-probe RGBA16F block. Global
+animation descriptors, samples, descriptor-index maps, light-selection maps, grid
+metadata, valid masks, cell levels, and CSR offset tables stay in a small
+always-resident metadata floor. Missing CSR rows encode equal start/end offsets.
+Chunk-local payloads carry no wgpu types.
 
 ### Residency policy
 
@@ -143,7 +158,11 @@ coalescing. They never compact live slots.
 Eviction first considers departed, non-hysteresis clusters, then prefetch-only clusters.
 Within a tier use `(last_visible_time, last_target_time, cluster_id)` ascending. Never
 evict visible clusters, a cluster installed during the current drain, or an owner needed
-by any installed/sampleable halo cluster. A pressure-evicted prefetch cluster is
+by any installed/sampleable halo cluster. Owner-pin closure makes owner clusters targets
+before queueing. Install drain sorts and installs owners before dependent halo clusters.
+A halo cluster cannot be installed, promoted, or sampled until every baked owner for its
+halo ranges is installed, composed, and sampleable. Missing owners defer the halo instead
+of transferring ownership or composing halo rows. A pressure-evicted prefetch cluster is
 suppressed until the two-hop horizon changes or pressure clears. If non-evictable demand
 exceeds a pool, grow that family geometrically at the drain boundary. Growth allocates a
 larger active generation, copies retained ranges GPU-to-GPU without relocation-visible
@@ -171,9 +190,13 @@ and return the permit without charging logical occupancy.
 The renderer drains residency once, at the start of `record_scene_passes`, before direct,
 billboard, and indirect SH compose. Drain first invalidates evicted probes in the sampled
 depth-moment texture, then installs ready base/delta/scatter data and compose-side
-indirection into pool slots. All three compose paths receive the dirty ranges for every
-present family: dense probe/stored-node ranges for ids 34/35/47 and affinity-row ranges
-for ids 27/41/45/48, including base/static-only maps. Compose uses the installed set.
+indirection into pool slots. All three compose shader families dispatch by
+affinity-cell-row ranges because current compose entry points are affinity-brick based.
+Dirty rows derive from the installed cluster's dense/stored-node closure and sparse CSR
+rows. Base-only and static-only copy-through still coalesces to affected affinity rows;
+it never dispatches arbitrary dense indices directly. Indirect compose covers ids 34 and
+27. Direct compose covers ids 35, 41, and 45. Billboard compose covers ids 47 and 48.
+Compose uses the installed set.
 World forward, billboards, fog, skinned meshes, and kinematic brushes sample the prior
 installed-and-composed atlases. SDF consumes only sample-side depth moments.
 
@@ -190,23 +213,37 @@ same SH-validity weights. Slice 4 owns authored seam gates; this slice supplies 
 conservative placeholder everywhere.
 
 Compose dispatches only dirty ranges. Reuse each pass's existing grid uniform binding
-number/count, but its bind-group-layout entry may change from `has_dynamic_offset=false`
-to `true`; current BGL entries are false. The dynamic-offset record contains the existing
-grid fields plus `range_start/range_count`. Record starts align to the adapter's
-`min_uniform_buffer_offset_alignment`. Dispatch one-dimensional workgroups. WGSL converts
-the flattened range index back to xyz where the family is affinity-backed. This prevents
-compose cost from scaling with the whole map when only a few clusters change. Add
-layout/budget tests covering the dynamic-offset descriptor and alignment.
+number/count, but its bind-group-layout entry changes from `has_dynamic_offset=false` to
+`true`; current BGL entries are false. The dynamic-offset record starts with the existing
+64-byte `GridDims` layout produced by `build_compose_grid_bytes`:
+`grid_dimensions[3]`, `tile_dimension`, `atlas_dimensions[2]`, `tile_border`,
+`delta_probe_f16_stride`, `affinity_dims[3]`, `atlas_tiles_per_row`,
+`tiles_per_layer`, `atlas_layer_count`, and the two compact-atlas tail words. Append
+`u32 range_start`, `u32 range_count`, and `u32[2]` padding for an 80-byte record. Record
+stride is `align_up(80, adapter.limits.min_uniform_buffer_offset_alignment)`. Every
+dynamic offset and range is checked to fit `u32`, the record slice must stay within the
+uniform buffer, and each corresponding BGL entry sets `min_binding_size = 80`. Each
+distinct existing `GridDims` bind-group layout receives its matching dynamic record
+without changing binding number or bind-group entry count. Dispatch one-dimensional
+workgroups over `range_count`. WGSL converts `range_start + local_index` back to affinity
+xyz. This prevents compose cost from scaling with the whole map when only a few clusters
+change. Add layout/budget tests covering descriptor dynamic flags, record size/stride,
+offsets, min binding size, adapter-limit bounds, and binding number/count preservation.
 
 ## Acceptance criteria
 
 - [ ] **AC1 — Preserved contracts:** existing ids 27/34/35/41/45/47/48, id 49 v1,
       container v4, binding numbers/counts, shader sample stencil, and cache epochs remain
       unchanged. Legacy PRLs without id 50 load and render through the prior whole path.
+      Invalid id 50 rejects before mode selection, including when the developer/test mode
+      is `off`.
 - [ ] **AC2 — Payload wire:** id 50 round-trips deterministically; its source-version and
       inventory cross-check rejects drift; each cluster chunk is independently seekable,
       hash-checked, bounded before allocation, and contains the exact v11/v4 node closure,
-      dense scatter patches, and owned/halo sparse rows named by id 49.
+      deterministic 8x8 local atlas layout, dense scatter patches, and owned/halo sparse
+      rows named by id 49. Header validation, decoded-byte formulas, per-family logical
+      resident bytes, requested-resident-byte aggregation, and all four sparse families
+      are covered by tests.
 - [ ] **AC3 — Thin proof:** a hard-gated synchronous no-eviction mode targets clusters
       from real visible cells, installs zero/one/many clusters generation-safely, composes
       all applicable families, and exposes each cluster only on the next frame. The
@@ -228,8 +265,10 @@ layout/budget tests covering the dynamic-offset descriptor and alignment.
       prevents adjacent-frame doorway thrash at 30/60/144 Hz. Departed-first LRU eviction,
       persistent prefetch suppression, and just-installed protection follow the pinned key.
 - [ ] **AC8 — Ownership and continuity:** every resident halo cluster retains its baked
-      owner. Only owned sparse rows accumulate. Owner eviction cannot darken a resident
-      boundary, and L0/L1/L2 reconstruction stays self-consistent across cluster seams.
+      owner. Only owned sparse rows accumulate. Owner install/promotion precedes every
+      dependent halo, missing owners defer halo install, owner eviction cannot darken a
+      resident boundary, and L0/L1/L2 reconstruction stays self-consistent across cluster
+      seams.
 - [ ] **AC9 — Budget:** the default/effective GPU floor charges only fixed GPU metadata
       plus active physical capacity; logical occupancy is a sub-ledger. Reports separate
       active and retiring capacity, replacement peak, non-evictable overshoot, and checked
@@ -239,8 +278,9 @@ layout/budget tests covering the dynamic-offset descriptor and alignment.
       and logs once per overshoot onset.
 - [ ] **AC10 — Sampler and compose:** forward sampled-texture/BGL budget tests stay green;
       grep/review finds no fragment-stage residency locate read. Dirty-range compose uses
-      existing binding numbers/counts, dynamic-offset grid records, and does not dispatch
-      over unrelated whole-map dense or affinity cells.
+      existing binding numbers/counts, dynamic-offset grid records, and affinity-row
+      dispatch for indirect, direct, and billboard families. It does not dispatch over
+      unrelated whole-map dense or affinity cells, nor arbitrary dense indices.
 - [ ] **AC11 — Determinism and resource lifetime:** two cold worker-count variants emit
       identical id 49/id 50 and unchanged legacy section bodies. Teleport stress proves
       permit count and every CPU phase high-water stay bounded, payload ownership moves
@@ -267,7 +307,7 @@ No JS, TS, Luau, FGD, network, or player-option boundary is added.
 | Budget | internal desktop default | 256 MiB native desktop requested SH GPU floor; no CLI/KVP in this slice |
 | Timing | monotonic render seconds | prefetch depth 2; hysteresis 2.0 s |
 | Caps | internal constants | 4 lifecycle permits; 2 installs/frame; active + at most 1 retiring pool generation/family |
-| Mode gate | `POSTRETRO_SH_STREAMING` | `off`, `sync-proof`, `async`; valid id 50 defaults to `async` |
+| Mode gate | `POSTRETRO_SH_STREAMING` | `off`, `sync-proof`, `async`; validation precedes mode; valid id 49 + id 50 defaults to `async` |
 
 ## Wire format
 
@@ -290,6 +330,7 @@ payload blob, and every completion rechecks its selected chunk before decode/ins
 **Header (72 bytes):** `u32 epoch=1`, `cluster_count`, `source_count`, `flags=0`,
 `grid_dimensions[3]`, `affinity_dimensions[3]`, `tile_dimension=6`, `tile_border=1`,
 `physical_tile_stride=8`, `reserved=0`, `u64 payload_bytes`, `u64 reserved=0`.
+Validate the complete header and source table before allocating any payload buffer.
 
 **Source record (16 bytes):** `u32 section_id`, `u32 internal_version`, `u32 kind`,
 `u32 reserved=0`. Records are unique and sorted by section id. Kinds are 0 dense-base
@@ -304,7 +345,9 @@ the current source codec and cross-checked at load, not inferred from id 50.
 `u32 flags=0`, then `blake3[32]` over the exact chunk bytes. Records are implicit cluster
 id order and must consume non-overlapping, ascending payload ranges exactly. Empty
 clusters have zero blocks, zero counts, zero length, the BLAKE3 empty hash, and no payload
-bytes.
+bytes. `decoded_bytes` equals the checked sum of every decoded block body using the
+formulas below. Per-family logical resident bytes are checked separately, then summed into
+`requested_resident_bytes`; fixed metadata is not included in this per-cluster field.
 
 **Chunk header (16 bytes):** `u32 chunk_version=1`, `u32 cluster_id`, `u32 block_count`,
 `u32 reserved=0`. **Block record (32 bytes):** `u32 section_id`, `u32 block_kind`,
@@ -317,18 +360,30 @@ after the complete block table. Required block kinds:
 | 0 probe patches | `element_count × 16`: global dense index, local indirection word, mean-distance f16, mean-square f16, reserved u32 |
 | 1 isolated atlas | u32 format (1 BC6H, 0 RGBA16F), u32 local slot count, u32 width, u32 height, u32 layers, then tagged layer-major bytes; dimensions derive from local slots |
 | 2 dense scatter patches | `element_count × 12`: global dense index + RGBA f16 |
-| 3 sparse rows | u32 row count, u32 entry count, u32 tile-f16 count, u32 reserved; row records `4xu32 = 16B` as `(global affinity index, first entry, entry count, role)`; entry records `4xu32 = 16B` as `(light/descriptor index, level, first tile-f16, tile-f16 count)`; then raw f16 tiles |
+| 3 sparse rows for ids 27/41/45 | u32 row count, u32 entry count, u32 tile-f16 count, u32 reserved; row records `4xu32 = 16B` as `(global affinity index, first entry, entry count, role)`; entry records `4xu32 = 16B` as `(light/descriptor index, first tile-f16, tile-f16 count, reserved=0)`; then raw f16 tiles |
+| 4 billboard scatter rows for id 48 | u32 row count, u32 entry count, u32 rgba16f_sample_count, u32 reserved; row records `4xu32 = 16B` as `(global affinity index, first entry, entry count, role)`; entry records `4xu32 = 16B` as `(descriptor index, first rgba16f sample, sample count=64, reserved=0)`; then `entry_count * 64` RGBA16F samples |
 
 Role is 1 owned or 2 halo, matching id 49. Base/direct atlas blocks share identical
-local slot counts and geometry. Isolated atlas payload length is
+local slot counts and geometry. Their deterministic local layout is exactly
+`irradiance_atlas_array_layout([local_slot_count, 1, 1], 8, MAX_SH_ATLAS_DIMENSION)`;
+the block's width, height, layers, tiles-per-layer, and tiles-per-row must equal the
+derived layout. Isolated atlas payload length is
 `layers * (width / 4) * (height / 4) * 16` for BC6H with 4-aligned dimensions, and
 `layers * width * height * 8` for RGBA16F. Pack each logical 6x6 tile at the origin of
 its 8x8 physical cell, dilate the right and bottom two texels before encoding, store
-cells row-major inside each layer, and store bytes layer-major. Validate dimensions from
-local slots. Dense indices are strictly ascending. Sparse rows are strictly ascending and
+cells row-major inside each layer, and store bytes layer-major. Probe patch bytes are
+`dense_patch_count * 16`. Dense scatter bytes are `dense_patch_count * 12`. Sparse
+27/41/45 row bytes are `16 + row_count * 16 + entry_count * 16 + tile_f16_count * 2`,
+with tile counts derived from always-resident `valid_probe_masks` and `cell_levels`.
+Id-48 row bytes are `16 + row_count * 16 + entry_count * 16 + entry_count * 64 * 8`.
+Per-family logical resident bytes are: base id 34 isolated-atlas bytes; direct id 35
+isolated-atlas bytes; id 47 dense scatter bytes; ids 27/41/45 sparse f16 tile bytes plus
+their installed CSR entry/row bytes; and id 48 dense RGBA16F sample bytes plus installed
+CSR entry/row bytes. `requested_resident_bytes` is the checked sum for the chunk's present
+families. Dense indices are strictly ascending. Sparse rows are strictly ascending and
 entries retain their source CSR order. Blocks are present only when the cluster has
-cluster-local elements for that family. Counts, levels, payload lengths, node closure,
-owner, and halo status validate against ids 49 and source metadata.
+cluster-local elements for that family. Counts, payload lengths, node closure, owner, and
+halo status validate against ids 49 and source metadata.
 
 ## Runtime states and failure behavior
 
@@ -352,6 +407,7 @@ owner, and halo status validate against ids 49 and source metadata.
 | Chunk hash mismatch after positional read | named hash failure; release phase bytes and permit; never install |
 | Pool fragmentation with enough total free bytes | evict eligible ranges, coalesce, retry; grow only when remaining demand is non-evictable |
 | Growth while prior generation is retiring | defer the second growth/install until retirement completes; never allocate a third generation |
+| Halo completion without every baked owner installed, composed, and sampleable | defer halo install/promotion; keep ownership with baked owner |
 | Device loss/submit failure | existing renderer fatal path; never promote sampleability |
 | DrawAll or non-evictable set over floor | grow, edge-log overshoot, preserve correctness |
 | Id 49 only, or neither id 49 nor id 50 | legacy whole-load path; no partial streaming |
@@ -369,7 +425,9 @@ the existing errors for source ids 27/34/35/41/45/47/48.
 |---|---|---|---|
 | Frame samples only generation/tag/target/hash-matched, composed data | Tasks 7–11 | positional read, completion drain, slot reuse, reload | AC3, AC4, AC6 |
 | Physical light accumulates once | Tasks 6, 9, 12 | owner/halo duplication | AC2, AC8 |
-| Boundary reconstruction keeps baked owner | Tasks 8, 12 | owner eviction | AC7, AC8 |
+| Boundary reconstruction keeps baked owner | Tasks 8, 9, 12 | owner eviction, halo install ordering | AC7, AC8 |
+| Dirty compose dispatches by affinity rows only | Tasks 2, 9, 13 | dense-index dispatch shortcut, base-only copy-through | AC10 |
+| Id-50 mode cannot mask invalid wire | Tasks 5, 7, 10 | developer/test `off` escape | AC1, AC2, AC3 |
 | Sampler keeps bindings and fixed taps | Tasks 2, 9 | pool indirection | AC1, AC10 |
 | I/O/decode stays off frame path | Task 11 | sync fallback leaking to production | AC5 |
 | GPU floor, logical occupancy, and CPU phases are separate checked ledgers | Tasks 8, 9, 11, 12 | ready backlog, growth, retirement | AC5, AC9, AC11 |
@@ -384,7 +442,11 @@ the existing errors for source ids 27/34/35/41/45/47/48.
 Behavior-preserving split of `prl.rs` and `prl_loader.rs`: move LevelWorld lighting data
 and accessors into a focused module; move container inventory/section-read helpers out of
 the production assembly function. Preserve feature gates, constructors, exports, optional
-fallback order, and every current caller. No id-50 behavior.
+fallback order, and every current caller. Inventory all direct `LevelWorld` SH/global
+selection consumers that must migrate later, explicitly including startup install,
+`level_world_to_geometry`, `LevelGeometry`, capture preparation, and
+`crates/postretro/src/scripting/frame_systems/mesh_render.rs` `entity_shadow_lights`.
+No id-50 behavior.
 
 ### Task 2: Split renderer SH resources before pools
 
@@ -415,6 +477,7 @@ encoder. No id 50 behavior.
 
 Implement the exact wire above in level-format, register id 50, and add overflow,
 ordering, range, checksum, source-version, resource-inventory, owner/halo, node-closure,
+mode-precedence, hostile-header-before-allocation, per-family byte-formula, sparse-family,
 and empty/single-cluster tests. Expose metadata/index parsing separately from chunk decode
 so loader startup never reads the payload blob.
 
@@ -433,39 +496,47 @@ body/version/epoch. Add worker-count determinism and legacy-body identity tests.
 
 Consume Tasks 1 and 5. Add bounded positional container reads and `ShStreamManifest`;
 streaming mode decodes only global metadata and id-50 indexes, while legacy mode remains
-byte-for-byte behavior-compatible. Add the explicit legacy-vs-streaming SH storage enum, content
-tag, cluster adjacency, accessors for startup animation/selection metadata,
-`level_world_to_geometry`/`LevelGeometry`/capture adapters that do not require whole SH
-section bodies in stream mode, named rejection, and chunk read/decode APIs. Open and
-validate once, retain the exact `Arc<File>` plus a diagnostic-only path, and implement
-cursor-independent positional `FileExt` reads on Unix and Windows. Hash the fixed domain,
-exact container-v4 identity fields, exact id 49, and validated id-50 header/source/index;
-prove table/path replacement cannot redirect a manifest and chunk hashes bind payload.
+byte-for-byte behavior-compatible. Add the explicit legacy-vs-streaming SH storage enum,
+content tag, cluster adjacency, and accessors for startup animation/selection metadata.
+Migrate every direct `LevelWorld` SH/global-selection consumer to legacy/stream accessors:
+startup, `level_world_to_geometry`, `LevelGeometry`, capture preparation, and
+`crates/postretro/src/scripting/frame_systems/mesh_render.rs` `entity_shadow_lights`.
+Tests cover legacy and streaming variants for each migrated boundary. Add named
+rejection and chunk read/decode APIs. Open and validate once, retain the exact `Arc<File>`
+plus a diagnostic-only path, and implement cursor-independent positional `FileExt` reads
+on Unix and Windows. Hash the fixed domain, exact container-v4 identity fields, exact id
+49, and validated id-50 header/source/index; prove table/path replacement cannot redirect
+a manifest and chunk hashes bind payload.
 
 ### Task 8: Build the pure residency planner and synchronous gate
 
 Add the state machine, cell→cluster map, two-hop horizon, 2.0-second hysteresis, target
 membership, a process-monotonic nonzero checked `u64` residency generation, content-tag
-matching, ready priority, owner-pin closure, suppression, LRU key, separate checked GPU
+matching, ready priority, owner-pin closure that makes owners targets, owner-before-halo
+ready ordering, missing-owner deferral, suppression, LRU key, separate checked GPU
 floor/logical-occupancy/CPU-phase charging from id 49/source metadata and fixed format
 formulas, and four-permit/two-install caps as plain Rust. Generation exhaustion rejects
 the next streaming session rather than resetting or wrapping. The hard-gated synchronous
-source reads one chunk at target time and never evicts; unit tests prove visible drive and
-zero/one/many lifecycle transitions before GPU work exists.
+source reads one chunk at target time and never evicts; unit tests prove visible drive,
+owner-before-halo ordering, missing-owner deferral, and zero/one/many lifecycle
+transitions before GPU work exists.
 
 ### Task 9: Add renderer pools and atomic compose lifecycle
 
 Consume Tasks 2, 5, 7, and 8. Build renderer-owned atlas/buffer pools, sampled and compose
 indirection mirrors, id-47 patches, CSR offset patching, first-fit allocation, dirty-range
 dynamic uniforms, all-three-pass compose for every present family, next-frame sample
-promotion, miss invalidation, and requested-byte ledger rows. Dirty work covers dense
-probe/stored-node ranges for ids 34/35/47 and affinity-row ranges for ids 27/41/45/48,
-including base/static-only maps. Keep every binding number/count and all wgpu inside the
-renderer; same binding numbers may use dynamic-offset descriptors and aligned records.
-Implement growth as append-preserving GPU-to-GPU copy with one active and at most one
-retiring generation per family, deferring further growth until retirement. Install moves
-decoded ownership into uploads and retains no full host copy. Expose fixed metadata,
-active capacity, logical occupancy, retiring capacity, and replacement peak separately.
+promotion, miss invalidation, and requested-byte ledger rows. Dirty work is dispatched as
+coalesced affinity-cell-row ranges for all three shader families: indirect ids 34 + 27,
+direct ids 35 + 41 + 45, and billboard ids 47 + 48, including base/static-only
+copy-through. Derive affected rows from dense/stored-node closure for base-only sources;
+never dispatch arbitrary dense indices directly. Keep every binding number/count and all
+wgpu inside the renderer; same binding numbers use dynamic-offset descriptors and aligned
+records with checked `u32` offsets/ranges. Implement growth as append-preserving
+GPU-to-GPU copy with one active and at most one retiring generation per family, deferring
+further growth until retirement. Install moves decoded ownership into uploads and retains
+no full host copy. Expose fixed metadata, active capacity, logical occupancy, retiring
+capacity, and replacement peak separately.
 
 ### Task 10: Connect visible cells and prove the thin path
 

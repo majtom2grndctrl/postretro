@@ -16,6 +16,7 @@ pub mod cell_visibility_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 mod cli;
+pub mod cluster_directory_bake;
 pub mod delta_drop_policy;
 pub mod delta_sections;
 pub mod delta_sh_bake;

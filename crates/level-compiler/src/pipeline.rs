@@ -1988,10 +1988,42 @@ fn run_after_parsing(
         true,
     );
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
-
     let portals_section = pack::encode_portals(&generated_portals);
-    pack::pack_and_write_portals_with_billboard_scatter(
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ClusterDirectory);
+    let cells_section = pack::encode_cells(
+        &vis_result.leaves_section,
+        &portals_section,
+        &exterior_leaves,
+    )?;
+    let locator_section = pack::encode_cell_locator(&result.tree)?;
+    let finalized_bvh = pack::bvh_with_chunk_ranges(&bvh_section, &bvh_chunk_ranges);
+    let finalized_sh = pack::FinalizedShEmissionView::new(
+        &sh_volume_section,
+        direct_sh_volume_section.as_ref(),
+        delta_sections.indirect.as_ref(),
+        delta_sections.entity_shadow_lights.as_ref(),
+        delta_sections.direct.as_ref(),
+        delta_sections.animated_direct.as_ref(),
+        billboard_direct_scatter_volume_section.as_ref(),
+        animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+    )?;
+    let cluster_directory = crate::cluster_directory_bake::bake_cluster_directory(
+        &cells_section,
+        &portals_section,
+        &finalized_bvh,
+        &locator_section,
+        finalized_sh,
+    )?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ClusterDirectory,
+        stage_start,
+        true,
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
+    pack::pack_and_write_portals_with_billboard_scatter_finalized(
         &args.output,
         &geo_result,
         &name_to_key,
@@ -2027,6 +2059,7 @@ fn run_after_parsing(
         delta_sections.animated_direct.as_ref(),
         billboard_direct_scatter_volume_section.as_ref(),
         animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        Some((finalized_sh, &cluster_directory)),
     )?;
     finish_stage(
         &mut timings,
@@ -2727,8 +2760,8 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 25);
-        assert_eq!(with_sdf.len(), 25);
+        assert_eq!(without_sdf.len(), 26);
+        assert_eq!(with_sdf.len(), 26);
         assert_eq!(
             without_sdf
                 .iter()
@@ -2762,6 +2795,7 @@ mod tests {
                 (StageId::AnimatedWeightMaps, "AnimWeightMaps"),
                 (StageId::SdfAtlasBake, "SDF Atlas Bake"),
                 (StageId::TextureMips, "TextureMips"),
+                (StageId::ClusterDirectory, "ClusterDirectory"),
                 (StageId::Packing, "Packing"),
             ]
         );

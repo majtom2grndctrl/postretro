@@ -66,11 +66,14 @@ mod pack_sections;
 use pack_sections::bvh_with_chunk_ranges;
 
 mod finalized_sections;
+#[cfg(test)]
+pub(crate) use finalized_sections::direct_sh_delta_has_valid_csr_shape;
+use finalized_sections::scatter_section_fits_pack_cap;
+#[cfg(test)]
+use finalized_sections::scatter_section_fits_pack_cap_with_limit;
 pub(crate) use finalized_sections::{
-    direct_sh_delta_covers_selection, direct_sh_delta_has_valid_csr_shape,
-    direct_sh_delta_is_usable_for_selection,
+    direct_sh_delta_covers_selection, direct_sh_delta_is_usable_for_selection,
 };
-use finalized_sections::{scatter_section_fits_pack_cap, scatter_section_fits_pack_cap_with_limit};
 
 mod spatial;
 pub use spatial::{encode_cell_locator, encode_cells, encode_portals};

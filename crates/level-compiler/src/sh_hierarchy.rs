@@ -1,7 +1,6 @@
 //! Pointer-free hierarchy projection over the base SH affinity grid.
 //!
-//! Phase 1 uses this module only for analysis: it changes no emitted bytes.
-//! The merge topology is deliberately independent from tile math; callers
+//! Production classification and analysis share this merge topology. Callers
 //! provide the exact node-level reconstruction gate used by their data window.
 
 use postretro_level_format::sh_reconstruct::Level;
@@ -62,6 +61,8 @@ pub(crate) struct Projection {
     pub projected_stored_tiles: u64,
     pub saved_l1_tiles: u64,
     pub saved_l2_tiles: u64,
+    #[cfg(test)]
+    pub saved_tiles_by_scale: [[u64; 3]; (MAX_NODE_SCALE as usize) + 1],
     pub merged_by_darkness_bypass: u64,
     pub blocks: BlockCounts,
     pub smoothing_demotions: u64,
@@ -188,7 +189,7 @@ where
         )?;
     }
 
-    let shipped_stored_tiles = bricks
+    let shipped_stored_tiles: u64 = bricks
         .iter()
         .filter(|brick| brick.participates)
         .map(|brick| u64::from(brick.stored_tiles[brick.level.to_u8() as usize]))
@@ -196,8 +197,7 @@ where
     let mut nodes = Vec::new();
     let mut histogram = [[0u64; 3]; (MAX_NODE_SCALE as usize) + 1];
     let mut projected_stored_tiles = 0u64;
-    let mut saved_l1_tiles = 0u64;
-    let mut saved_l2_tiles = 0u64;
+    let mut saved_tiles_by_scale = [[0u64; 3]; (MAX_NODE_SCALE as usize) + 1];
 
     for z in 0..dimensions[2] {
         for y in 0..dimensions[1] {
@@ -212,7 +212,6 @@ where
                     continue;
                 }
                 let edge = 1u32 << assignment.scale;
-                let members = member_indices(assignment.origin, edge, dimensions);
                 let stored_tiles = if assignment.scale == 0 {
                     bricks[brick_index].stored_tiles[assignment.level.to_u8() as usize]
                 } else {
@@ -224,19 +223,15 @@ where
                         Level::L2 => 1,
                     }
                 };
-                let before: u64 = members
-                    .iter()
-                    .map(|&member| {
-                        u64::from(
-                            bricks[member].stored_tiles[bricks[member].level.to_u8() as usize],
-                        )
-                    })
-                    .sum();
-                let saved = before.saturating_sub(u64::from(stored_tiles));
-                match assignment.level {
-                    Level::L1 => saved_l1_tiles += saved,
-                    Level::L2 => saved_l2_tiles += saved,
-                    Level::L0 => {}
+                if assignment.scale > 0 {
+                    attribute_incremental_savings(
+                        bricks,
+                        dimensions,
+                        assignment.origin,
+                        assignment.scale,
+                        assignment.level,
+                        &mut saved_tiles_by_scale,
+                    )?;
                 }
                 histogram[assignment.scale as usize][assignment.level.to_u8() as usize] += 1;
                 projected_stored_tiles += u64::from(stored_tiles);
@@ -252,6 +247,22 @@ where
         }
     }
 
+    let saved_l1_tiles = saved_tiles_by_scale
+        .iter()
+        .map(|levels| levels[Level::L1.to_u8() as usize])
+        .sum();
+    let saved_l2_tiles = saved_tiles_by_scale
+        .iter()
+        .map(|levels| levels[Level::L2.to_u8() as usize])
+        .sum();
+    if let Some(net_savings) = shipped_stored_tiles.checked_sub(projected_stored_tiles) {
+        debug_assert_eq!(
+            saved_l1_tiles + saved_l2_tiles,
+            net_savings,
+            "incremental hierarchy savings must telescope from shipped to projected storage"
+        );
+    }
+
     Ok(Projection {
         assignments,
         nodes,
@@ -260,10 +271,62 @@ where
         projected_stored_tiles,
         saved_l1_tiles,
         saved_l2_tiles,
+        #[cfg(test)]
+        saved_tiles_by_scale,
         merged_by_darkness_bypass,
         blocks,
         smoothing_demotions,
     })
+}
+
+fn attribute_incremental_savings(
+    bricks: &[BrickInput],
+    dimensions: [u32; 3],
+    origin: [u32; 3],
+    scale: u8,
+    level: Level,
+    savings: &mut [[u64; 3]; (MAX_NODE_SCALE as usize) + 1],
+) -> Result<u64, String> {
+    debug_assert!(scale > 0);
+    let child_scale = scale - 1;
+    let child_edge = 1u32 << child_scale;
+    let mut child_tiles = 0u64;
+    for child_z in 0..2 {
+        for child_y in 0..2 {
+            for child_x in 0..2 {
+                let child_origin = [
+                    origin[0] + child_x * child_edge,
+                    origin[1] + child_y * child_edge,
+                    origin[2] + child_z * child_edge,
+                ];
+                child_tiles += if child_scale == 0 {
+                    let child = index(child_origin, dimensions);
+                    u64::from(bricks[child].stored_tiles[bricks[child].level.to_u8() as usize])
+                } else {
+                    attribute_incremental_savings(
+                        bricks,
+                        dimensions,
+                        child_origin,
+                        child_scale,
+                        level,
+                        savings,
+                    )?
+                };
+            }
+        }
+    }
+    let stored_tiles = match level {
+        Level::L1 => 8,
+        Level::L2 => 1,
+        Level::L0 => return Err("SH hierarchy produced L0 at nonzero scale".to_string()),
+    };
+    let saved = child_tiles.checked_sub(stored_tiles).ok_or_else(|| {
+        format!(
+            "SH hierarchy scale-{scale} {level:?} node at {origin:?} stores more tiles than its immediate children"
+        )
+    })?;
+    savings[scale as usize][level.to_u8() as usize] += saved;
+    Ok(stored_tiles)
 }
 
 fn smooth_levels<F>(
@@ -466,6 +529,19 @@ mod tests {
         let bricks = vec![brick(Level::L2); 64];
         let merged = project([4, 4, 4], &bricks, 2, passing).unwrap();
         assert_eq!(merged.histogram[2][Level::L2.to_u8() as usize], 1);
+        assert_eq!(
+            merged.saved_tiles_by_scale[1][Level::L2.to_u8() as usize],
+            56
+        );
+        assert_eq!(
+            merged.saved_tiles_by_scale[2][Level::L2.to_u8() as usize],
+            7
+        );
+        assert_eq!(merged.saved_l2_tiles, 63);
+        assert_eq!(
+            merged.saved_l1_tiles + merged.saved_l2_tiles,
+            merged.shipped_stored_tiles - merged.projected_stored_tiles,
+        );
 
         for blocker in 0..3 {
             let mut blocked = bricks.clone();
@@ -505,6 +581,35 @@ mod tests {
             assert!(assignment.level.to_u8() <= original);
         }
         assert_face_level_bound([4, 4, 4], &bricks, &projection.assignments);
+    }
+
+    #[test]
+    fn smoothing_splits_scaled_l2_when_l1_is_not_representable() {
+        // Regression: an L2 node beside L0 was demoted to scaled L1 even when
+        // its node-outer corners were all invalid.
+        let mut bricks = vec![brick(Level::L0); 12];
+        for z in 0..2 {
+            for y in 0..2 {
+                for x in 0..2 {
+                    bricks[index([x, y, z], [3, 2, 2])] = brick(Level::L2);
+                }
+            }
+        }
+        let projection = project([3, 2, 2], &bricks, 1, |_, _, level| NodeEvaluation {
+            passes: level == Level::L2,
+            ..Default::default()
+        })
+        .unwrap();
+
+        for z in 0..2 {
+            for y in 0..2 {
+                for x in 0..2 {
+                    let assignment = projection.assignments[index([x, y, z], [3, 2, 2])];
+                    assert_eq!(assignment.scale, 0);
+                    assert_eq!(assignment.level, Level::L0);
+                }
+            }
+        }
     }
 
     fn assert_face_level_bound(

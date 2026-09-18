@@ -366,7 +366,7 @@ pub struct LevelGeometry<'a> {
     /// `None` → compose pass falls back to a base→total copy.
     pub delta_sh_volumes:
         Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
-    /// V3 metadata-derived stored-tile atlas of baked static-light direct SH,
+    /// V4 node-aware stored-tile atlas of baked static-light direct SH,
     /// sampled by dynamic pipelines (mesh + billboard). `None` → renderer binds
     /// a 4×4 BC6H zero dummy and dynamic shaders skip the direct sample
     /// (indirect-only).

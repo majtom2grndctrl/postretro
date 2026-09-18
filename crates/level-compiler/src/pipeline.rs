@@ -1519,6 +1519,11 @@ fn run_after_parsing(
     // payloads here. The map opt-out is a hard all-L0 short-circuit even when a
     // measurement force flag is present.
     let protect_aabbs = combined_protect_aabbs(&args.sh_protect_aabbs, &map_data.sh_protect_aabbs);
+    let density_fidelity =
+        resolve_sh_density_fidelity(args.sh_density_fidelity, map_data.sh_density_fidelity);
+    let mut density_params = sh_coarsen::CoarsenParams::default();
+    density_params.rel_p95_max *= density_fidelity;
+    density_params.rel_max_max *= density_fidelity;
     let all_deltas = sh_coarsen::DeltaSectionsRef {
         indirect: delta_sections.indirect.as_ref(),
         direct: delta_sections.direct.as_ref(),
@@ -1584,17 +1589,12 @@ fn run_after_parsing(
             hierarchy_blocks: forced.blocks,
         }
     } else {
-        let fidelity =
-            resolve_sh_density_fidelity(args.sh_density_fidelity, map_data.sh_density_fidelity);
-        let mut params = sh_coarsen::CoarsenParams::default();
-        params.rel_p95_max *= fidelity;
-        params.rel_max_max *= fidelity;
         let mut classification = sh_density::classify_base_levels(
             &sh_volume_section,
             direct_sh_volume_section.as_ref(),
             all_deltas,
             &protect_aabbs,
-            &params,
+            &density_params,
         )
         .map_err(|error| anyhow::anyhow!("base SH density classification failed: {error}"))?;
         // Phase-1 analysis owns the scale override when `--sh-analyze` is
@@ -1639,6 +1639,8 @@ fn run_after_parsing(
     if args.sh_analyze {
         run_sh_analysis(
             args,
+            &protect_aabbs,
+            &density_params,
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
             &density_classification,
@@ -2313,6 +2315,8 @@ fn apply_coarsen_classification(
 /// set); mutates nothing that reaches the packer.
 fn run_sh_analysis(
     args: &Args,
+    protect_aabbs: &[[f32; 6]],
+    density_params: &sh_coarsen::CoarsenParams,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     density_classification: &sh_density::DensityClassification,
@@ -2334,8 +2338,7 @@ fn run_sh_analysis(
         return;
     }
     let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
-    let protect: Vec<sh_analyze::ProtectAabb> = args
-        .sh_protect_aabbs
+    let protect: Vec<sh_analyze::ProtectAabb> = protect_aabbs
         .iter()
         .map(|a| sh_analyze::ProtectAabb {
             min: [a[0], a[1], a[2]],
@@ -2359,6 +2362,7 @@ fn run_sh_analysis(
         &inputs,
         args.sh_density_force_scale
             .unwrap_or(crate::sh_hierarchy::MAX_NODE_SCALE),
+        density_params,
     );
     if let Some(dense) = dense_deltas {
         match sh_analyze::run_emitted_reconstruction_analysis(
@@ -2371,6 +2375,7 @@ fn run_sh_analysis(
             delta_indirect,
             delta_direct,
             delta_anim_direct,
+            density_params,
         ) {
             Ok(emitted) => report.emitted_reconstruction = Some(emitted),
             Err(error) => {

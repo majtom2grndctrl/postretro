@@ -1,19 +1,20 @@
 // Stored-set packaging for the base indirect and direct SH volumes.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+use glam::Vec3;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
 use postretro_level_format::octahedral::{
     IrradianceAtlasArrayLayout, irradiance_array_tile_location, irradiance_atlas_array_layout,
 };
 use postretro_level_format::sh_reconstruct::{
-    Level, StoredTile, Tile, corner_locals, local_xyz, node_corner_coord, node_probe_edge,
+    Level, StoredTile, corner_locals, local_xyz, node_corner_coord, node_probe_edge,
     reconstruct_l2_tile, stored_node_prefix_sum, stored_tile_set,
 };
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 
 use crate::sh_analyze::{
-    AnalyzeInputs, DeltaView, LevelKind, brick_world_aabb, build_brick_tiles,
+    AnalyzeInputs, DeltaView, HierarchyTruth, LevelKind, brick_world_aabb, build_brick_tiles,
     classifier_darkness_floor, evaluate_hierarchy_node, level_errors,
     level_errors_with_l1_zero_fallback, tile_magnitude,
 };
@@ -26,6 +27,21 @@ use crate::sh_coarsen::{
 pub(crate) const DEFAULT_SH_DENSITY_FIDELITY: f32 = 1.0;
 
 type PackedTile = Vec<OctahedralAtlasTexel>;
+
+struct CompactHierarchyTruth {
+    valid_rank: Vec<i64>,
+    texels: usize,
+    values: Vec<Vec3>,
+}
+
+impl HierarchyTruth for CompactHierarchyTruth {
+    fn tile(&self, probe: usize) -> Option<&[Vec3]> {
+        let rank = usize::try_from(*self.valid_rank.get(probe)?).ok()?;
+        let start = rank.checked_mul(self.texels)?;
+        let end = start.checked_add(self.texels)?;
+        self.values.get(start..end)
+    }
+}
 
 /// Final base-density selection plus the bake-summary attribution needed to
 /// distinguish classifier choice from storage constraints.
@@ -363,13 +379,17 @@ pub(crate) fn apply_forced_scale_constraints(
             }
         }
     }
-    let projection =
-        crate::sh_hierarchy::project(affinity_dimensions, &bricks, forced_scale, |_, _, level| {
-            crate::sh_hierarchy::NodeEvaluation {
-                passes: level != Level::L0,
-                ..Default::default()
-            }
-        })?;
+    let projection = crate::sh_hierarchy::project(
+        affinity_dimensions,
+        &bricks,
+        forced_scale,
+        |origin, scale, level| crate::sh_hierarchy::NodeEvaluation {
+            passes: level != Level::L0
+                && (level != Level::L1
+                    || node_has_valid_corner(origin, scale, dimensions, &validity)),
+            ..Default::default()
+        },
+    )?;
     for (level, assignment) in levels.iter_mut().zip(&projection.assignments) {
         *level = assignment.level;
     }
@@ -515,7 +535,14 @@ pub(crate) fn classify_base_levels(
         affinity_dimensions[2] as usize,
     );
     let mut bricks = Vec::with_capacity(brick_count);
-    let mut hierarchy_truth: Vec<Option<Tile>> = vec![None; total_probes];
+    // Production emits at most scale 1, so hierarchy evaluation only needs a
+    // compact valid-probe tile field spanning adjacent 2x2x2 bricks. Keep the
+    // exact composed values in one allocation instead of one heap `Tile` per
+    // valid probe.
+    let hierarchy_value_count = (rank as usize)
+        .checked_mul(texels)
+        .ok_or_else(|| "SH density hierarchy truth size overflows usize".to_string())?;
+    let mut hierarchy_values = vec![Vec3::ZERO; hierarchy_value_count];
     let mut valid_masks = Vec::with_capacity(brick_count);
     let mut brick_in_bounds = Vec::with_capacity(brick_count);
     let mut brick_protected = Vec::with_capacity(brick_count);
@@ -555,7 +582,17 @@ pub(crate) fn classify_base_levels(
                     let probe = probe_x + probe_y * nx + probe_z * nx * ny;
                     *valid = validity[probe] != 0;
                     if *valid {
-                        hierarchy_truth[probe] = tiles.composed[local].clone();
+                        let truth = tiles.composed[local].as_deref().ok_or_else(|| {
+                            format!("SH density composed truth is missing for valid probe {probe}")
+                        })?;
+                        if truth.len() != texels {
+                            return Err(format!(
+                                "SH density composed truth for probe {probe} has {} texels, expected {texels}",
+                                truth.len()
+                            ));
+                        }
+                        let start = valid_rank[probe] as usize * texels;
+                        hierarchy_values[start..start + texels].copy_from_slice(truth);
                     }
                 }
                 let magnitude = tile_magnitude(&tiles.composed, texels);
@@ -660,6 +697,11 @@ pub(crate) fn classify_base_levels(
         .map(|brick| brick.mag_p95)
         .collect();
     let (_, darkness_floor) = classifier_darkness_floor(&magnitudes, params.darkness_frac);
+    let hierarchy_truth = CompactHierarchyTruth {
+        valid_rank,
+        texels,
+        values: hierarchy_values,
+    };
     // The scale study selected one production hierarchy level. Larger scales
     // remain wire-supported and are exercised only through the force flag.
     let projection = crate::sh_hierarchy::project(
@@ -1095,6 +1137,25 @@ fn brick_has_valid_corner(
         }
         let index = probe_index(x, y, z, dimensions);
         validity[index]
+    })
+}
+
+fn node_has_valid_corner(
+    brick_origin: [u32; 3],
+    scale: u8,
+    dimensions: [u32; 3],
+    validity: &[bool],
+) -> bool {
+    let probe_origin = brick_origin.map(|axis| axis * 4);
+    (0..8).any(|corner| {
+        let coord = node_corner_coord(probe_origin, scale, corner)
+            .expect("forced hierarchy scale was range-checked")
+            .map(|axis| axis as usize);
+        coord
+            .iter()
+            .zip(dimensions)
+            .all(|(&axis, dimension)| axis < dimension as usize)
+            && validity[probe_index(coord[0], coord[1], coord[2], dimensions)]
     })
 }
 
@@ -1917,6 +1978,76 @@ mod tests {
         assert!(forced.blocks.delta > 0);
         assert!(forced.blocks.protection > 0);
         assert!(forced.blocks.partial > 0);
+    }
+
+    #[test]
+    fn forced_scale_keeps_center_only_valid_l1_bricks_separate() {
+        // Regression: every 4^3 child has a valid local corner, but the 8^3
+        // node has no valid node-outer corner and cannot represent scaled L1.
+        let base = raw_indirect([8, 8, 8], |probe| {
+            let x = probe % 8;
+            let y = (probe / 8) % 8;
+            let z = probe / 64;
+            [x, y, z].into_iter().all(|axis| axis == 3 || axis == 4)
+        });
+        let mut levels = vec![Level::L1; 8];
+        let forced =
+            apply_forced_scale_constraints(&mut levels, &base, DeltaSectionsRef::default(), &[], 1)
+                .unwrap();
+
+        assert_eq!(levels, vec![Level::L1; 8]);
+        assert_eq!(forced.scales, vec![0; 8]);
+        assert_eq!(forced.blocks.gate, 1);
+    }
+
+    #[test]
+    fn compact_hierarchy_truth_preserves_exact_node_gate_results() {
+        let dimensions = [8, 8, 8];
+        let texels = 3;
+        let mut heap_truth = Vec::with_capacity(8 * 8 * 8);
+        let mut compact_values = Vec::with_capacity(8 * 8 * 8 * texels);
+        for probe in 0..8 * 8 * 8 {
+            let tile = vec![
+                Vec3::new(probe as f32, 1.0, 2.0),
+                Vec3::new(3.0, probe as f32 * 0.5, 4.0),
+                Vec3::new(5.0, 6.0, probe as f32 * 0.25),
+            ];
+            compact_values.extend_from_slice(&tile);
+            heap_truth.push(Some(tile));
+        }
+        let compact_truth = CompactHierarchyTruth {
+            valid_rank: (0_i64..8 * 8 * 8).collect(),
+            texels,
+            values: compact_values,
+        };
+        let params = CoarsenParams::default();
+
+        for level in [Level::L1, Level::L2] {
+            let heap = evaluate_hierarchy_node(
+                &heap_truth,
+                dimensions,
+                [0, 0, 0],
+                1,
+                level,
+                texels,
+                1.0e-6,
+                &params,
+            );
+            let compact = evaluate_hierarchy_node(
+                &compact_truth,
+                dimensions,
+                [0, 0, 0],
+                1,
+                level,
+                texels,
+                1.0e-6,
+                &params,
+            );
+            assert_eq!(compact.passes, heap.passes);
+            assert_eq!(compact.darkness_bypass, heap.darkness_bypass);
+            assert!((compact.rel_p95 - heap.rel_p95).abs() < f32::EPSILON);
+            assert!((compact.rel_max - heap.rel_max).abs() < f32::EPSILON);
+        }
     }
 
     #[test]

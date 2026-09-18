@@ -134,10 +134,39 @@ fn compile_fixture_for_layer_cache_order(
 #[test]
 fn sh_analysis_is_byte_preserving_for_compiled_prl() {
     let workspace = workspace_root();
-    let input = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
-    assert!(input.is_file(), "fixture map missing: {}", input.display());
+    let source = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        source.is_file(),
+        "fixture map missing: {}",
+        source.display()
+    );
 
     let temp = TempBuildDir::new();
+    let input = temp.0.join("analyzed-contract.map");
+    let mut map = std::fs::read_to_string(&source)
+        .expect("read analysis source fixture")
+        .replacen(
+            "\"ambient_color\" \"0 0 0\"",
+            "\"ambient_color\" \"0 0 0\"\n\"_sh_density_fidelity\" \"0.5\"",
+            1,
+        );
+    map.push_str(
+        r#"// analysis-only mapper protection source
+{
+"classname" "sh_protect_volume"
+"dilation" "0"
+{
+( 368 400 112 ) ( 368 336 272 ) ( 368 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 336 272 ) ( 464 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 400 112 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 400 272 ) ( 464 336 272 ) ( 368 336 272 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 400 112 ) ( 368 400 272 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 336 112 ) ( 464 400 272 ) ( 464 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+}
+"#,
+    );
+    std::fs::write(&input, map).expect("write analysis contract fixture");
     let baseline = temp.0.join("baseline.prl");
     let analyzed = temp.0.join("analyzed.prl");
     let analysis_json = temp.0.join("analysis.json");
@@ -154,6 +183,8 @@ fn sh_analysis_is_byte_preserving_for_compiled_prl() {
             .arg("4")
             .arg("--lightmap-density")
             .arg("0.25")
+            .arg("--sh-protect-aabb")
+            .arg("0,0,0,1,1,1")
             .arg("-j")
             .arg("1");
         command
@@ -179,6 +210,24 @@ fn sh_analysis_is_byte_preserving_for_compiled_prl() {
     let emitted = analysis
         .get("emitted_reconstruction")
         .expect("analysis must include the final emitted reconstruction report");
+    assert_eq!(
+        analysis
+            .get("protect_aabbs")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(2),
+        "analysis must use the CLI + mapper protection union",
+    );
+    let rel_p95_limit = emitted
+        .get("rel_p95_limit")
+        .and_then(|value| value.as_f64())
+        .expect("emitted report carries its production p95 limit");
+    let rel_max_limit = emitted
+        .get("rel_max_limit")
+        .and_then(|value| value.as_f64())
+        .expect("emitted report carries its production max limit");
+    assert!((rel_p95_limit - 0.05).abs() < 1.0e-6);
+    assert!((rel_max_limit - 0.125).abs() < 1.0e-6);
     assert_eq!(
         emitted
             .get("failing_nodes")

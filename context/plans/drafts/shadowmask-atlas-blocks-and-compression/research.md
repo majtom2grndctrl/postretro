@@ -202,3 +202,14 @@ deterministic-plane / length-stable re-bake close the invariants. Focused fixtur
 `stress-warren*` bake (ratio is codec-intrinsic, error texel-local, and a small fixture can
 force >4 overlap). Tests are `cargo test`, no GPU context; the BC4 upload and visual A/B are the
 thin GPU layer verified by running the engine / offscreen capture (`capture_frame_indirect`).
+
+## Acceptance pin table
+
+Orderings/edges pinned by `/review-brief`, each cited by an Acceptance row.
+
+| id | scenario | ordering / mechanism | expected outcome |
+|---|---|---|---|
+| collision-free-planes | ≥2 selected lights share a lightmap texel | assignment writes each light's plane index into the per-selection table before payload fill | no overlap edge has both endpoints on the same non-sentinel plane |
+| budget-boundary | product hits the array-layer ceiling exactly | renderer filter evaluates `layer_count × plane_count` vs max before texture creation | `==256` kept, `==257` degrades to placeholder; no off-by-one device breach |
+| format-edges | single-plane / empty-selection / each codec tag | header encodes `plane_count` and codec tag; `from_bytes` recomputes payload length from the tagged block size | `plane_count ∈ {0,1}` and both tags round-trip byte-exact |
+| dropped-and-placeholder-fully-lit | sentinel plane index, or `plane>0` index against the 1-layer placeholder | shader clamps computed array layer, then applies the per-path sentinel guard | both paths return fully-lit; no sample outside the bound texture in either |

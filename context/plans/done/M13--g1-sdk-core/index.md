@@ -1,6 +1,6 @@
 # M13 G1a — UI SDK core: typed handles, factory layer, ingestion bridge
 
-> Wave plan 1 of 2 (precedes **G1b**; both ship in one /orchestrate).
+> Wave plan 1 of 2 (precedes **G1b**; both ship in one /build-spec).
 > Prereqs: B/C/D/E/F/TW shipped (`done/M13--*`). Grounding: `research/ui-layer.md` §15, `lib/ui.md`, `render/ui/descriptor.rs`, `sdk/lib/entities/emitters.ts`, `scripting/data_descriptors.rs`, `done/mod-state-store/`.
 
 ## Goal

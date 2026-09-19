@@ -17,8 +17,6 @@ Two moves: settle the design with the owner, then orchestrate the build.
 
 Process is yours to choose. Wave shape, agent count, slice boundaries, how much you verify between waves — judgment calls, and you have better information than this file does. The rules below are the ones that cost real work when broken.
 
-This skill assumes current-generation agents. Most of what it forbids is orchestration written for weaker ones: step lists, starved context, work sliced small enough to be checked. `/orchestrate` still carries those habits — it was written for an older roster. Don't read it into this session.
-
 **You coordinate. Agents produce.** Every tool call spent building is context not spent holding the whole file map.
 
 ## 1. Conversation

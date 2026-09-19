@@ -1,7 +1,7 @@
 # Large-Map Spatial Residency
 
 > **Status:** Epic seed. Research-backed but not a draft or ready implementation
-> plan. Do not orchestrate. A future planning session turns this into scoped
+> plan. Not ready for `/build-spec`. A future planning session turns this into scoped
 > specs after the listed measurements exist.
 > **Supporting research:** `context/research/spatial-streaming.md`.
 

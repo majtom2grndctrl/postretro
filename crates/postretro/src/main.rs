@@ -5293,7 +5293,7 @@ impl App {
     /// Closing flushes only after those writes settle, so a change and Back in
     /// the same frame cannot strand a pending value behind the debounce.
     fn update_player_options(&mut self, frame_dt: f32, options_menu_was_open: bool) {
-        let fog_quality = {
+        let effects = {
             let Some(session) = self.session.as_mut() else {
                 return;
             };
@@ -5306,19 +5306,24 @@ impl App {
                 ..
             } = session;
             let slot_table = scripting.script_ctx.slot_table.borrow();
-            options_bridge
-                .update(
-                    frame_dt,
-                    &slot_table,
-                    player_options,
-                    input_system,
-                    settings_path.as_deref(),
-                )
-                .fog_quality
+            options_bridge.update(
+                frame_dt,
+                &slot_table,
+                player_options,
+                input_system,
+                settings_path.as_deref(),
+            )
         };
 
-        if let Some(quality) = fog_quality {
+        if let Some(quality) = effects.fog_quality {
             self.apply_player_fog_quality(quality);
+        }
+
+        // Live: the renderer rewrites every installed material's uniform
+        // buffer, so this takes effect on the next frame with no level reload
+        // and is a safe no-op when no level (or no renderer) is present.
+        if let Some(quality) = effects.surface_depth_quality {
+            self.apply_player_surface_depth_quality(quality);
         }
 
         if options_menu_was_open && !self.options_menu_is_top() {
@@ -13775,8 +13780,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            18,
-            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + six options slots appear",
+            19,
+            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + seven options slots appear",
         );
     }
 

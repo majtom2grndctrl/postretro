@@ -1207,6 +1207,7 @@ declare module "postretro" {
       readonly invertY: Ref<boolean>;
       readonly mouseSensitivity: Ref<number>;
       readonly shadowQuality: Ref<"low" | "medium" | "high">;
+      readonly surfaceDepthQuality: Ref<"off" | "low" | "high">;
       readonly viewFeelScale: Ref<number>;
     };
     readonly player: {

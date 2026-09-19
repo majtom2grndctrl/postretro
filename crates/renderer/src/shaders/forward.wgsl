@@ -1195,8 +1195,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let light_count = select(0u, uniforms.light_count, use_dynamic);
     // Surface Depth self-shadowing is budgeted: at most
-    // SURFACE_DEPTH_SHADOW_LIGHT_BUDGET marches per fragment, spent on the
-    // first contributing lights in loop order.
+    // `depth.shadow_light_budget` marches per fragment, spent on the first
+    // contributing lights in loop order. The budget rides the per-material
+    // uniform because the player's quality tier switches it off by rewriting
+    // that buffer — `Low` and `Off` send zero, and so does every flat fragment.
     var depth_shadow_marches: u32 = 0u;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.
@@ -1344,7 +1346,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // static light: the lightmap owns static-onto-static occlusion at
         // 4 cm/texel and competing with it would risk no-double-counting.
         var depth_visibility = 1.0;
-        if depth.carved && NdotL > 0.0 && depth_shadow_marches < SURFACE_DEPTH_SHADOW_LIGHT_BUDGET {
+        if depth.carved && NdotL > 0.0 && depth_shadow_marches < depth.shadow_light_budget {
             depth_shadow_marches = depth_shadow_marches + 1u;
             depth_visibility = surface_depth_light_visibility(depth, L);
         }

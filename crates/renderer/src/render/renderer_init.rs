@@ -101,6 +101,10 @@ impl Renderer {
             bloom_render_profile: BloomRenderProfile::default(),
             spot_shadow_map_resolution:
                 crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION,
+            // The feature ships on; the tier is an escape hatch. The app
+            // overwrites this from `PlayerOptions` during boot.
+            surface_depth_quality:
+                postretro_render_cpu::surface_depth::SurfaceDepthQuality::default(),
             boot_splash: Some(boot_splash),
             // Full renderer is built on the first `finish_full_init` /
             // `ensure_full_ready`, after the boot splash has presented.
@@ -135,6 +139,10 @@ impl Renderer {
         let bloom_render_profile = BloomRenderProfile::default();
         let spot_shadow_map_resolution =
             crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION;
+        // Offscreen capture is deterministic and has no player: it always
+        // renders the default (full) tier.
+        let surface_depth_quality =
+            postretro_render_cpu::surface_depth::SurfaceDepthQuality::default();
         let full = build_full_renderer(
             &device,
             &queue,
@@ -145,6 +153,7 @@ impl Renderer {
             cube_array_supported,
             bloom_render_profile,
             spot_shadow_map_resolution,
+            surface_depth_quality,
         )?;
         Ok(Self {
             device,
@@ -168,6 +177,7 @@ impl Renderer {
             cube_array_supported,
             bloom_render_profile,
             spot_shadow_map_resolution,
+            surface_depth_quality,
             boot_splash: None,
             full: Some(Box::new(full)),
         })
@@ -193,6 +203,7 @@ impl Renderer {
             self.cube_array_supported,
             self.bloom_render_profile,
             self.spot_shadow_map_resolution,
+            self.surface_depth_quality,
         )?;
         self.full = Some(Box::new(full));
         log::info!("[Renderer] Full renderer initialization complete");

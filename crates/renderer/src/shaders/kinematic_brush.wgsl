@@ -251,7 +251,9 @@ fn accumulate_dynamic_direct(
 ) -> vec3<f32> {
     var total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
-    // Surface Depth self-shadowing is budgeted per fragment and applies to the
+    // Surface Depth self-shadowing is budgeted per fragment by
+    // `depth.shadow_light_budget` (the player's quality tier, carried in the
+    // per-material uniform; zero at `Low` and `Off`) and applies to the
     // DYNAMIC prefix only — the animated-baked tail and the selected-static
     // suffix are baked-tier records whose occlusion the bake already owns.
     var depth_shadow_marches: u32 = 0u;
@@ -387,7 +389,7 @@ fn accumulate_dynamic_direct(
         if depth.carved
             && n_dot_l > 0.0
             && i < kinematic_light_params.dynamic_light_count
-            && depth_shadow_marches < SURFACE_DEPTH_SHADOW_LIGHT_BUDGET {
+            && depth_shadow_marches < depth.shadow_light_budget {
             depth_shadow_marches = depth_shadow_marches + 1u;
             depth_visibility = surface_depth_light_visibility(depth, L);
         }

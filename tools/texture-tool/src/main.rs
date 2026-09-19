@@ -75,6 +75,8 @@ impl ProcessCommand {
             .optional_f32("--normal-strength")?
             .unwrap_or(DEFAULT_NORMAL_STRENGTH);
         let quantize_levels = parser.optional_quantize_levels("--quantize-levels")?;
+        let height_strength = parser.optional_f32("--height-strength")?;
+        let height_quantize_levels = parser.optional_quantize_levels("--height-quantize-levels")?;
         parser.finish()?;
 
         let job = TextureJob {
@@ -90,6 +92,8 @@ impl ProcessCommand {
             spec_edge_damping,
             normal_strength,
             quantize_levels,
+            height_strength,
+            height_quantize_levels,
         };
         job.validate().map_err(invalid_input)?;
 
@@ -238,7 +242,7 @@ impl ArgParser {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  imgproc process --src <png> --stem <name> --out-dir <dir> [--size <N|WxH>] [--tileable] [--spec-profile <name>] [--spec-scale <f32>] [--spec-base <0..1>] [--spec-gamma <f32>] [--spec-edge-damping <0..1>] [--normal-strength <f32>] [--quantize-levels <u8>]\n  imgproc batch --manifest <path> --out-dir <dir>"
+        "Usage:\n  imgproc process --src <png> --stem <name> --out-dir <dir> [--size <N|WxH>] [--tileable] [--spec-profile <name>] [--spec-scale <f32>] [--spec-base <0..1>] [--spec-gamma <f32>] [--spec-edge-damping <0..1>] [--normal-strength <f32>] [--quantize-levels <u8>] [--height-strength <f32>] [--height-quantize-levels <u8>]\n  imgproc batch --manifest <path> --out-dir <dir>"
     );
 }
 

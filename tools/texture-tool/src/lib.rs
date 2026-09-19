@@ -27,6 +27,8 @@ pub struct TextureJob {
     pub spec_edge_damping: Option<f32>,
     pub normal_strength: f32,
     pub quantize_levels: Option<u8>,
+    pub height_strength: Option<f32>,
+    pub height_quantize_levels: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +57,21 @@ struct SpecProfileDefaults {
     response: f32,
     luma_weight: f32,
     max_value: f32,
+}
+
+/// Per-profile defaults for `_h.png` height-map generation. Mirrors
+/// `SpecProfileDefaults`: the material profile that shapes how a surface
+/// reflects light also shapes how pronounced its authored depth should read.
+/// A cobblestone/stone-like profile wants pronounced, plateau-like steps; a
+/// smooth glass or metal profile wants almost none.
+#[derive(Clone, Copy, Debug)]
+struct HeightProfileDefaults {
+    /// Contrast multiplier applied to the diffuse luminance signal around its
+    /// mean before quantization. `1.0` passes the luminance signal through
+    /// unmodified; values above `1.0` exaggerate high/low texels away from
+    /// the mean (pronounced relief); values below `1.0` pull texels back
+    /// toward the mean (a nearly flat read).
+    strength: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -152,6 +169,24 @@ impl SpecProfile {
             },
         }
     }
+
+    /// Per-profile default height/depth strength. See `HeightProfileDefaults`.
+    fn height_defaults(self) -> HeightProfileDefaults {
+        match self {
+            // Backward-compatible/neutral: pass the luminance signal through.
+            Self::Luminance => HeightProfileDefaults { strength: 1.0 },
+            Self::Matte => HeightProfileDefaults { strength: 0.5 },
+            Self::Concrete => HeightProfileDefaults { strength: 1.1 },
+            // Cobblestone/masonry-style profile: pronounced, plateau-like steps.
+            Self::PolishedStone => HeightProfileDefaults { strength: 1.5 },
+            // Smooth metal panel: almost no authored depth.
+            Self::PaintedMetal => HeightProfileDefaults { strength: 0.25 },
+            Self::Glass => HeightProfileDefaults { strength: 0.1 },
+            Self::Screen => HeightProfileDefaults { strength: 0.15 },
+            // A liquid plane reads as flat.
+            Self::Water => HeightProfileDefaults { strength: 0.05 },
+        }
+    }
 }
 
 impl FromStr for SpecProfile {
@@ -193,6 +228,22 @@ impl SpecConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct HeightConfig {
+    strength: f32,
+    quantize_levels: u8,
+}
+
+impl HeightConfig {
+    fn from_job(job: &TextureJob) -> Result<Self, String> {
+        let defaults = job.spec_profile.height_defaults();
+        Ok(Self {
+            strength: job.height_strength.unwrap_or(defaults.strength),
+            quantize_levels: job.resolved_height_quantize_levels()?,
+        })
+    }
+}
+
 impl TextureJob {
     pub fn resolved_quantize_levels(&self) -> Result<u8, String> {
         let levels = self.quantize_levels.unwrap_or_else(|| {
@@ -204,6 +255,22 @@ impl TextureJob {
         if levels < 2 {
             return Err(format!(
                 "quantize_levels must be blank, 0, or at least 2 for {}",
+                self.stem
+            ));
+        }
+        Ok(levels)
+    }
+
+    pub fn resolved_height_quantize_levels(&self) -> Result<u8, String> {
+        let levels = self.height_quantize_levels.unwrap_or_else(|| {
+            default_quantize_levels(TextureDimensions {
+                width: self.width,
+                height: self.height,
+            })
+        });
+        if levels < 2 {
+            return Err(format!(
+                "height_quantize_levels must be blank, 0, or at least 2 for {}",
                 self.stem
             ));
         }
@@ -229,6 +296,8 @@ impl TextureJob {
         validate_optional_unit("spec_edge_damping", self.spec_edge_damping)?;
         validate_non_negative_finite("normal_strength", self.normal_strength)?;
         self.resolved_quantize_levels()?;
+        validate_optional_non_negative_finite("height_strength", self.height_strength)?;
+        self.resolved_height_quantize_levels()?;
         Ok(())
     }
 }
@@ -321,15 +390,24 @@ pub fn process_texture(job: &TextureJob, out_dir: &Path) -> Result<(), Box<dyn E
         &job.stem,
         "_n",
     )?;
+    save_image(
+        &height_map(
+            &diffuse,
+            HeightConfig::from_job(job).map_err(invalid_input)?,
+        ),
+        out_dir,
+        &job.stem,
+        "_h",
+    )?;
 
     Ok(())
 }
 
 fn parse_manifest_line(line: &str, base_dir: &Path) -> Result<TextureJob, String> {
     let fields: Vec<&str> = line.split('|').map(str::trim).collect();
-    if !(7..=11).contains(&fields.len()) {
+    if !(7..=13).contains(&fields.len()) {
         return Err(format!(
-            "expected 7 to 11 pipe-separated fields, found {}",
+            "expected 7 to 13 pipe-separated fields, found {}",
             fields.len()
         ));
     }
@@ -345,6 +423,9 @@ fn parse_manifest_line(line: &str, base_dir: &Path) -> Result<TextureJob, String
     let spec_base = parse_optional_f32(optional_field(&fields, 8), "spec_base")?;
     let spec_gamma = parse_optional_f32(optional_field(&fields, 9), "spec_gamma")?;
     let spec_edge_damping = parse_optional_f32(optional_field(&fields, 10), "spec_edge_damping")?;
+    let height_strength = parse_optional_f32(optional_field(&fields, 11), "height_strength")?;
+    let height_quantize_levels =
+        parse_optional_quantize_levels(optional_field(&fields, 12).unwrap_or(""))?;
 
     let job = TextureJob {
         src,
@@ -359,6 +440,8 @@ fn parse_manifest_line(line: &str, base_dir: &Path) -> Result<TextureJob, String
         spec_edge_damping,
         normal_strength,
         quantize_levels,
+        height_strength,
+        height_quantize_levels,
     };
     job.validate()?;
     Ok(job)
@@ -470,6 +553,15 @@ fn validate_optional_positive_finite(name: &str, value: Option<f32>) -> Result<(
     Ok(())
 }
 
+fn validate_optional_non_negative_finite(name: &str, value: Option<f32>) -> Result<(), String> {
+    if let Some(value) = value {
+        if !value.is_finite() || value < 0.0 {
+            return Err(format!("{name} must be a finite non-negative number"));
+        }
+    }
+    Ok(())
+}
+
 fn save_image(
     image: &ImageBuffer<Rgba<u8>, Vec<u8>>,
     out_dir: &Path,
@@ -489,6 +581,17 @@ fn save_image(
 
 fn luminance(p: Rgba<u8>) -> f32 {
     (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0
+}
+
+/// Sample diffuse luminance at `(x, y)`, wrapping at the edges so tiling
+/// textures stay seamless. Shared by the normal map (a Sobel derivative of
+/// this same field), the specular edge-damping term, and the height map
+/// (this field one derivative step earlier, i.e. undifferentiated).
+fn wrapped_luma(diffuse: &ImageBuffer<Rgba<u8>, Vec<u8>>, x: i32, y: i32) -> f32 {
+    let (w, h) = diffuse.dimensions();
+    let px = x.rem_euclid(w as i32) as u32;
+    let py = y.rem_euclid(h as i32) as u32;
+    luminance(*diffuse.get_pixel(px, py))
 }
 
 fn clamp_u8(v: f32) -> u8 {
@@ -633,12 +736,7 @@ fn edge_damping_factor(
         return 1.0;
     }
 
-    let (w, h) = diffuse.dimensions();
-    let sx = |xx: i32, yy: i32| -> f32 {
-        let px = xx.rem_euclid(w as i32) as u32;
-        let py = yy.rem_euclid(h as i32) as u32;
-        luminance(*diffuse.get_pixel(px, py))
-    };
+    let sx = |xx: i32, yy: i32| -> f32 { wrapped_luma(diffuse, xx, yy) };
     let xi = x as i32;
     let yi = y as i32;
     let gx = (sx(xi + 1, yi) - sx(xi - 1, yi)).abs();
@@ -659,11 +757,7 @@ fn normal(
 ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     let (w, h) = diffuse.dimensions();
     ImageBuffer::from_fn(w, h, |x, y| {
-        let sx = |xx: i32, yy: i32| -> f32 {
-            let px = xx.rem_euclid(w as i32) as u32;
-            let py = yy.rem_euclid(h as i32) as u32;
-            luminance(*diffuse.get_pixel(px, py))
-        };
+        let sx = |xx: i32, yy: i32| -> f32 { wrapped_luma(diffuse, xx, yy) };
         let xi = x as i32;
         let yi = y as i32;
         let gx = (-sx(xi - 1, yi - 1) + sx(xi + 1, yi - 1) - 2.0 * sx(xi - 1, yi)
@@ -690,6 +784,44 @@ fn normal(
             255,
         ])
     })
+}
+
+/// Derive a conventional height map from diffuse luminance: white = raised,
+/// black = recessed. This is authoring-facing and intentionally NOT inverted
+/// to depth here — see `tools/texture-tool/README.md`; `prl-build` performs
+/// `depth = 255 - height` at bake time so authors keep thinking in familiar
+/// height-map terms.
+///
+/// Height is the same luminance signal `normal()` differentiates (via Sobel)
+/// one derivative step earlier, so it shares `wrapped_luma` rather than
+/// re-deriving luminance sampling.
+fn height_map(
+    diffuse: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+    config: HeightConfig,
+) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let (w, h) = diffuse.dimensions();
+
+    // Pivot contrast around the mean luminance rather than 0.5 so a dark or
+    // bright material still gets meaningful relief instead of being clipped
+    // against one rail.
+    let mut sum = 0.0f32;
+    for p in diffuse.pixels() {
+        sum += luminance(*p);
+    }
+    let mean = sum / (w * h).max(1) as f32;
+
+    let mut img = ImageBuffer::from_fn(w, h, |x, y| {
+        let l = wrapped_luma(diffuse, x as i32, y as i32);
+        let contrasted = (mean + (l - mean) * config.strength).clamp(0.0, 1.0);
+        let v = clamp_u8(contrasted * 255.0);
+        Rgba([v, v, v, 255])
+    });
+
+    // Reuse the exact posterization used for the diffuse map: the engine's
+    // aesthetic dial is terraced depth, so plateaus in the height map should
+    // read the same way plateaus in the diffuse map do.
+    quantize_chunks(&mut img, config.quantize_levels);
+    img
 }
 
 fn aspect_crop(
@@ -790,6 +922,44 @@ mod tests {
         assert_eq!(job.spec_base, None);
         assert_eq!(job.spec_gamma, None);
         assert_eq!(job.spec_edge_damping, None);
+    }
+
+    #[test]
+    fn manifest_line_parses_trailing_height_controls() {
+        let job = parse_manifest_line(
+            "/tmp/source.png|cobble_floor_01|128|true|0.24|0.5|24|polished-stone||||1.6|6",
+            Path::new("/tmp"),
+        )
+        .expect("manifest line should parse");
+
+        assert_eq!(job.spec_profile, SpecProfile::PolishedStone);
+        assert_eq!(job.height_strength, Some(1.6));
+        assert_eq!(job.height_quantize_levels, Some(6));
+    }
+
+    #[test]
+    fn manifest_line_treats_blank_trailing_height_controls_as_defaults() {
+        let job = parse_manifest_line(
+            "/tmp/source.png|default_panel|128|false|0.1|0.4||||||",
+            Path::new("/tmp"),
+        )
+        .expect("manifest line should parse");
+
+        assert_eq!(job.height_strength, None);
+        assert_eq!(job.height_quantize_levels, None);
+        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 24);
+    }
+
+    #[test]
+    fn manifest_line_omitting_height_controls_still_parses() {
+        let job = parse_manifest_line(
+            "/tmp/source.png|legacy_panel|128|false|0.1|0.4|24|glass|||",
+            Path::new("/tmp"),
+        )
+        .expect("manifest line should parse");
+
+        assert_eq!(job.height_strength, None);
+        assert_eq!(job.height_quantize_levels, None);
     }
 
     #[test]
@@ -894,5 +1064,223 @@ mod tests {
         assert!(parse_size("x128").is_err());
         assert!(parse_size("128x64x32").is_err());
         assert!(parse_size("big").is_err());
+    }
+
+    fn base_job(src: PathBuf, stem: &str) -> TextureJob {
+        TextureJob {
+            src,
+            stem: stem.to_string(),
+            width: 32,
+            height: 32,
+            tileable: false,
+            spec_scale: DEFAULT_SPEC_SCALE,
+            spec_profile: SpecProfile::Luminance,
+            spec_base: None,
+            spec_gamma: None,
+            spec_edge_damping: None,
+            normal_strength: DEFAULT_NORMAL_STRENGTH,
+            quantize_levels: Some(24),
+            height_strength: None,
+            height_quantize_levels: Some(8),
+        }
+    }
+
+    fn height_test_temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("imgproc-height-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_test_diffuse_source(path: &Path, w: u32, h: u32) {
+        // Deterministic pattern with varying luminance so height derivation
+        // has real signal to work with.
+        let img = ImageBuffer::from_fn(w, h, |x, y| {
+            let v = ((x * 37 + y * 91) % 256) as u8;
+            Rgba([v, v, v, 255])
+        });
+        img.save(path).unwrap();
+    }
+
+    /// Reads back a PNG's color-space metadata the same way
+    /// `crates/level-compiler/src/texture_validation.rs` does, so this test
+    /// exercises the exact guarantee `prl-build` will enforce.
+    fn png_color_chunks(path: &Path) -> (bool, bool, bool) {
+        let file = fs::File::open(path).unwrap();
+        let decoder = png::Decoder::new(io::BufReader::new(file));
+        let reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        let has_srgb = info.srgb.is_some();
+        let has_iccp = info.icc_profile.is_some();
+        let has_non_linear_gama = info
+            .gama_chunk
+            .map(|gama| {
+                let gamma: f32 = gama.into_value();
+                (gamma - 1.0).abs() > 0.01
+            })
+            .unwrap_or(false);
+        (has_srgb, has_non_linear_gama, has_iccp)
+    }
+
+    #[test]
+    fn height_map_output_has_no_color_management_chunks() {
+        let dir = height_test_temp_dir("linear");
+        let src = dir.join("source.png");
+        write_test_diffuse_source(&src, 32, 32);
+        let out_dir = dir.join("out");
+        let job = base_job(src, "stone_test");
+        process_texture(&job, &out_dir).expect("process_texture should succeed");
+
+        let h_path = out_dir.join("stone_test_h.png");
+        let (has_srgb, has_non_linear_gama, has_iccp) = png_color_chunks(&h_path);
+        assert!(!has_srgb, "_h.png must not carry an sRGB chunk");
+        assert!(
+            !has_non_linear_gama,
+            "_h.png must not carry a non-linear gAMA chunk"
+        );
+        assert!(!has_iccp, "_h.png must not carry an iCCP chunk");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn height_map_dimensions_match_diffuse() {
+        let dir = height_test_temp_dir("dims");
+        let src = dir.join("source.png");
+        write_test_diffuse_source(&src, 40, 24);
+        let out_dir = dir.join("out");
+        let mut job = base_job(src, "dims_test");
+        job.width = 40;
+        job.height = 24;
+        process_texture(&job, &out_dir).expect("process_texture should succeed");
+
+        let diffuse = image::open(out_dir.join("dims_test.png")).unwrap();
+        let height = image::open(out_dir.join("dims_test_h.png")).unwrap();
+        assert_eq!(diffuse.dimensions(), height.dimensions());
+        assert_eq!(height.dimensions(), (40, 24));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn height_quantization_reduces_distinct_values() {
+        let dir = height_test_temp_dir("quant");
+        let src = dir.join("source.png");
+        write_test_diffuse_source(&src, 48, 48);
+        let out_dir = dir.join("out");
+
+        let mut low_job = base_job(src.clone(), "quant_low");
+        low_job.width = 48;
+        low_job.height = 48;
+        low_job.height_quantize_levels = Some(2);
+        process_texture(&low_job, &out_dir).expect("process_texture should succeed");
+
+        let mut high_job = base_job(src, "quant_high");
+        high_job.width = 48;
+        high_job.height = 48;
+        high_job.height_quantize_levels = Some(24);
+        process_texture(&high_job, &out_dir).expect("process_texture should succeed");
+
+        let low = image::open(out_dir.join("quant_low_h.png"))
+            .unwrap()
+            .to_rgba8();
+        let high = image::open(out_dir.join("quant_high_h.png"))
+            .unwrap()
+            .to_rgba8();
+
+        fn distinct_values(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> usize {
+            let mut values: Vec<u8> = img.pixels().map(|p| p[0]).collect();
+            values.sort_unstable();
+            values.dedup();
+            values.len()
+        }
+
+        let low_distinct = distinct_values(&low);
+        let high_distinct = distinct_values(&high);
+        assert!(
+            low_distinct <= 2,
+            "2-level quantization should produce at most 2 plateaus, got {low_distinct}"
+        );
+        assert!(
+            low_distinct < high_distinct,
+            "low quantize levels ({low_distinct}) should produce fewer distinct height \
+             values than high quantize levels ({high_distinct})"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn height_strength_differs_by_profile() {
+        // polished-stone (pronounced relief) should produce a wider spread of
+        // height values than painted-metal (almost none) for the same source.
+        let diffuse = ImageBuffer::from_fn(16, 16, |x, y| {
+            let v = ((x * 53 + y * 17) % 256) as u8;
+            Rgba([v, v, v, 255])
+        });
+
+        let stone_config = HeightConfig {
+            strength: SpecProfile::PolishedStone.height_defaults().strength,
+            quantize_levels: 24,
+        };
+        let metal_config = HeightConfig {
+            strength: SpecProfile::PaintedMetal.height_defaults().strength,
+            quantize_levels: 24,
+        };
+
+        let stone = height_map(&diffuse, stone_config);
+        let metal = height_map(&diffuse, metal_config);
+
+        fn spread(img: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> i32 {
+            let min = img.pixels().map(|p| p[0]).min().unwrap() as i32;
+            let max = img.pixels().map(|p| p[0]).max().unwrap() as i32;
+            max - min
+        }
+
+        let stone_spread = spread(&stone);
+        let metal_spread = spread(&metal);
+        assert!(
+            stone_spread > metal_spread,
+            "polished-stone height strength should read more pronounced than \
+             painted-metal: stone={stone_spread} metal={metal_spread}"
+        );
+    }
+
+    #[test]
+    fn height_strength_override_takes_precedence_over_profile_default() {
+        let mut job = base_job(PathBuf::from("unused.png"), "override_test");
+        job.spec_profile = SpecProfile::PolishedStone;
+        job.height_strength = Some(0.05);
+
+        let config = HeightConfig::from_job(&job).unwrap();
+        assert_eq!(config.strength, 0.05);
+    }
+
+    #[test]
+    fn resolved_height_quantize_levels_uses_size_based_default_when_unset() {
+        let mut job = base_job(PathBuf::from("unused.png"), "default_levels_test");
+        job.height_quantize_levels = None;
+        job.width = 64;
+        job.height = 64;
+        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 18);
+
+        job.width = 128;
+        job.height = 128;
+        assert_eq!(job.resolved_height_quantize_levels().unwrap(), 24);
+    }
+
+    #[test]
+    fn validate_rejects_height_quantize_levels_of_one() {
+        let mut job = base_job(PathBuf::from("unused.png"), "bad_levels_test");
+        job.height_quantize_levels = Some(1);
+        assert!(job.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_finite_height_strength() {
+        let mut job = base_job(PathBuf::from("unused.png"), "bad_strength_test");
+        job.height_strength = Some(f32::NAN);
+        assert!(job.validate().is_err());
     }
 }

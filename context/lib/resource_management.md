@@ -83,6 +83,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 |----------|--------|
 | **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
+| **Surface Depth carve** | Implemented — per-prefix carve depth (meters), terrace count, march step cap, and fade distance for the texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -106,10 +107,10 @@ Optional sibling textures provide per-texel surface properties. Suffixes are app
 Per-texel specular intensity modulates the direct lighting highlight.
 
 - **Naming:** `{name}_s.png` suffix.
-- **Format:** R8Unorm (sampled as `.r` in shader).
+- **Format:** R8Unorm (sampled as `.r` in shader). The slot widens to two-channel `Rg8Unorm` when a `{name}_h.png` height sibling is present — §4.6 owns that form; specular is still `.r` either way.
 - **Color Space:** Linear.
 - **Dimensions:** Must match the diffuse texture.
-- **Fallback:** Absent or missing sibling bakes to `NotPresent` in the `.prm`; the runtime substitutes a shared 1×1 black texture (zero specular response).
+- **Fallback:** Absent or missing sibling bakes to `NotPresent` in the `.prm`; the runtime substitutes a shared 1×1 black texture (zero specular response). A `_h.png` with no `_s.png` still bakes the slot, with R all zero — same zero specular response, but the slot is present because it carries depth.
 
 ### 4.2 Generation Tool
 
@@ -175,8 +176,9 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 "surface map" (`PrmFormat::Rg8Unorm`, wire tag 4): R specular, G depth.
 
 - **Naming:** `{name}_h.png` suffix.
-- **Format:** single channel read from R. Authored as a **conventional height
-  map — white = raised**, the familiar convention.
+- **Format:** the authored PNG is grayscale; the baker reads its R channel.
+  Authored as a **conventional height map — white = raised**, the familiar
+  convention.
 - **Color Space:** Linear. An `sRGB`, `gAMA`, or `iCCP` tag fails the build,
   exactly like `_s` and `_n`.
 - **Dimensions:** Must match the diffuse, and must match `_s.png` when that

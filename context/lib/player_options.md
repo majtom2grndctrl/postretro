@@ -41,7 +41,7 @@ The runtime options bridge saves accepted menu changes after a deterministic 250
 
 ## 4. E13 Settings Menu Seam
 
-`PlayerOptions` is the store the settings menu reads and writes. The dev title screen opens `frontend.options`, whose six controls cover mouse sensitivity, invert-Y, view-feel scale, crouch mode, shadow quality, and fog quality. `surface_depth_quality` has its full engine seam — field, `options.surfaceDepthQuality` slot, bridge observation, render-profile chokepoint, live renderer apply — but no dev-mod menu control yet, so it is reached by hand-editing `settings.toml` until one is authored.
+`PlayerOptions` is the store the settings menu reads and writes. The dev title screen opens `frontend.options`, whose seven controls cover mouse sensitivity, invert-Y, view-feel scale, crouch mode, shadow quality, fog quality, and Surface Depth quality.
 
 **Seam mechanism.** The menu never writes `PlayerOptions` directly — the UI module originates no store write (`ui.md` §3). The engine exposes writable, non-persisted `options.*` slots on `getGameState()`, seeded from the current in-memory `PlayerOptions` when the menu opens. Controls write them via `setState` at the game-logic stage; the session-owned options bridge observes write generations once per app frame, updates only the matching `PlayerOptions` field, applies live input/fog/Surface-Depth effects through their owners, and schedules the settled atomic save. The slots are UI-facing working copies; `PlayerOptions` / `settings.toml` remains the authoritative persisted home, re-seeded into the slots on every open rather than maintained as a continuous two-way sync.
 

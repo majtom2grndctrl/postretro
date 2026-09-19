@@ -61,10 +61,23 @@ candidate, semantics to confirm. Charts are 1:1 with faces; the packer (`pack_la
 `choose_layer_dim`, MaxRects) already handles heterogeneous chart sizes, so smaller charts repack
 with no packer change.
 
+## Direction review outcome (reshape)
+
+`/validate-plan` returned *Not a spec (yet)* → owner took the **Reshape**: the mechanism, placement,
+and supersession are sound and precedented, but the artifact over-built ahead of the measurement the
+repo's own method runs first (`sh-probe-density-coarsenability-spike` gated `sh-adaptive-coarsening-v2`
+on a findings note). Two gaps drove it: the payoff is unquantified, and — the sharper point — the
+irradiance atlas may be a **minor VRAM term**. Floor numbers the reviewer cited: full stress-warren
+irradiance ≈ 9.4 MB BC6H, while the SH composed atlas ≈ 55.9 MB and streams ≈ 2.4 GiB/frame — so the
+term binding a 1660 may live in a different subsystem. Phase 1 must therefore report recovered
+irradiance VRAM *in context of total lightmap + SH VRAM*, so the owner can judge materiality before
+committing any shipping surface. The FGD `lightmap_protect_volume` entity was dropped as premature.
+
 ## Signal taxonomy (context for scope)
 
 - Reconstruction-error gate (this brief) — the unifying signal; darkness/empty are sub-cases.
-- Force-fine artist hatch (this brief) — override for intended-crisp regions.
+- Force-fine escape valve — DROPPED as a new FGD entity; if Phase 2 needs one it reuses the shipped
+  `_lightmap_scale` lever or a CLI-only protect flag, not a new content surface.
 - Per-surface material opt-out flag — not built; `BrushSide` has no surface flags. Cheap future add.
 - Occlusion-cull never-seen faces — not built; bake already culls solid-facing (`face_extract.rs`)
   and sealed-exterior (`find_exterior_leaves`) leaves, but not occluded interior faces. Larger,

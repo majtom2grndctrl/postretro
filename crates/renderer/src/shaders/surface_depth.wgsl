@@ -84,6 +84,10 @@ const SURFACE_DEPTH_FADE_DISTANCE_FRACTION: f32 = 0.25;
 const SURFACE_DEPTH_AO_STRENGTH: f32 = 0.75;
 const SURFACE_DEPTH_SHADOW_BIAS_M: f32 = 1.0e-4;
 const SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS: f32 = 0.5;
+// Unit of `material.surface_depth_meters`: 0 = world meters, 1 = albedo texels.
+// Mirrors `postretro_render_data::material::SURFACE_DEPTH_TEXEL_MODE`, which
+// selects the matching authoring table; the two are pinned against each other.
+const SURFACE_DEPTH_TEXEL_MODE: u32 = 0u;
 
 // `LightTermMask::DEPTH_AMBIENT_OCCLUSION`. Bit 8 — bit 7 stays reserved for
 // the intentionally unwired emissive category.
@@ -268,8 +272,11 @@ fn surface_depth_resolve(
     if !(fade > 0.0) {
         return flat_result;
     }
-    let depth_scale_m = material.surface_depth_meters * fade;
-    if !(depth_scale_m > SURFACE_DEPTH_EPS) {
+    // Whatever unit the field carries, a non-positive value — or a NaN, which
+    // fails this the same way — means this material does not carve. Taking the
+    // early-out here keeps the degenerate-chart work below off a flat material.
+    let carve_request = material.surface_depth_meters * fade;
+    if !(carve_request > SURFACE_DEPTH_EPS) {
         return flat_result;
     }
 
@@ -299,6 +306,31 @@ fn surface_depth_resolve(
     let tangent = normalize(t_raw);
     let bitangent = normalize(b_raw);
     let uv_per_m = vec2<f32>(1.0 / scale_u, 1.0 / scale_v);
+
+    // Carve depth, in meters, whichever unit it was authored in.
+    //
+    // In TEXEL mode the authored value is a count of albedo texels and is
+    // converted with THIS fragment's texel rate, so the carve is a fixed depth
+    // in the texel lattice rather than in the world: a 2048px texture on a
+    // small brush carves the same number of texels as a 256px one on a large
+    // brush. The geometric mean is the neutral reading of a rate that differs
+    // per axis — on the square-texel faces this engine's brushes normally
+    // produce, either axis gives the same answer.
+    //
+    // It also bounds the march. Horizontal travel through the carve is
+    // `depth_m * dir`, and `dir` is texels per meter of descent, so the texel
+    // rate cancels: travel is `N * tan(theta)` texels regardless of texture
+    // resolution or brush scale. In meters mode it does not cancel, which is
+    // why a high-resolution texture on a small brush can exhaust the budget.
+    var depth_scale_m = carve_request;
+    if SURFACE_DEPTH_TEXEL_MODE == 1u {
+        let texels_per_m = uv_per_m * dims;
+        let texel_rate = sqrt(max(texels_per_m.x * texels_per_m.y, SURFACE_DEPTH_EPS));
+        depth_scale_m = carve_request / texel_rate;
+    }
+    if !(depth_scale_m > SURFACE_DEPTH_EPS) {
+        return flat_result;
+    }
 
     // Descent rate along the view ray. An edge-on fragment never descends.
     let descent = dot(view_to_eye, geo_normal);

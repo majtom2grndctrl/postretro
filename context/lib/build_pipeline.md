@@ -390,6 +390,9 @@ Per-texture mip-chain sidecars are **runtime-required compiled output** living u
 **`.prm` files.** Each sidecar bundles up to four material slots — diffuse,
 specular, normal, and emissive — each optional. Multi-slot filenames use the
 canonical bundle hash over slot mask and every present slot's raw PNG bytes.
+A `{name}_h.png` height sibling folds into that hash as an additional tagged
+input **only when present** — when absent nothing at all is folded in, so every
+bundle authored before height existed keeps its address and does not rebake.
 A diffuse-only bundle uses `blake3(diffuse PNG content)` so world and model
 diffuse-only materials share one sidecar. Other single-slot bundles use
 `blake3(tag_byte || PNG content)`; the tag distinguishes specular, normal, and
@@ -428,6 +431,16 @@ counts so tools and future device-specific consumers can inspect them. Any uploa
 must still validate against its active adapter before allocation. The current renderer
 does this for decoded-PNG sprite collection frame counts before creating its `D2Array`;
 parsed array-backed `.prm` upload is downstream work and has no renderer path yet.
+
+**Surface map (specular slot).** The specular slot has two forms. Without a
+`{name}_h.png` sibling it is single-channel `R8Unorm` (wire tag 2), exactly as
+before. With one it is two-channel `Rg8Unorm` (wire tag 4): R specular (0 when
+`_s.png` is absent), G depth below the surface, baked as `255 - height` from
+the author's conventional white-is-raised height map. `STAGE_VERSION` stays 3 —
+the widening is additive and every pre-existing `.prm` parses unchanged — and
+`PrmSlots` bits 4-7 stay reserved: height is not a fifth slot. The SPECULAR
+slot-mask bit is set if either sibling is present. See
+`resource_management.md` §4.6.
 
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
 space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT

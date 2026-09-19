@@ -13,6 +13,10 @@ pub(super) fn build_specular_chain(r8: &[u8], width: u32, height: u32) -> Vec<u8
     super::build_specular_chain_impl(r8, width, height)
 }
 
+pub(super) fn build_surface_chain(rg: &[u8], width: u32, height: u32) -> Vec<u8> {
+    super::build_surface_chain_impl(rg, width, height)
+}
+
 pub(super) fn build_normal_bc5_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     super::build_normal_bc5_chain_impl(rgba, width, height)
 }

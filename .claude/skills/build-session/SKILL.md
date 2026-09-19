@@ -69,7 +69,9 @@ Verification is the expensive part. An agent iterating until a named set of chec
 
 **Slice whole, not small.** One agent per coherent vertical slice with its own acceptance. Not one per file, not one per step. Handoff overhead between micro-tasks costs more than the tasks do.
 
-**Never ask an agent to double-check its work.** That buys over-verification, not coverage. Name the specific assertion that would catch the failure you actually fear — an offset assert, a rejected stale input — or ask for nothing.
+**Do not ask for verification — `opus` already does it.** It verifies its own work unprompted. Telling it to verify, re-check, or confirm buys over-verification with no gain in coverage, so delete that scaffolding rather than rewording it. This inverts the usual self-check advice and is a per-model carve-out: `fable` is the opposite and wants an explicit checking harness run on a cadence.
+
+What still belongs in a brief is the **gate**, not the instruction to be careful: the named checks the work must pass, as commands with expected output. "Iterate until these greps return empty" is a task. "Double-check your work" is a tax.
 
 ### Reports
 
@@ -92,11 +94,15 @@ Split on blast radius, never on size. Does the slice **establish** a contract th
 | `haiku` | Read-only scouting, call-site sweeps, fact-finding. |
 | `fable` | A reasoning slice that genuinely exceeds `opus`. Rare; costs accordingly. |
 
-The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it.
+The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it. Verification posture rides on this choice: see **Briefing** for what each tier wants.
 
 ### Standing rules
 
 **Only you spawn agents that write files.** Workers may spawn read-only agents freely; a worker fanning out to find call sites is good. Workers never spawn writers. You cannot see your grandchildren — only an aggregate report from the parent. So you cannot partition file ownership among agents you did not create, and you cannot stop one misbehaving agent without killing its parent. Depth 2 for writes, unlimited for reads.
+
+**In-flight verification stays in your loop.** Never spawn an agent to check a wave's work while the wave is running. A verifier subagent re-establishes context from nothing, re-explores, and returns a judgment formed without your history — which is how a reviewer produces confident findings on a file it never opened. The landing review in §5 is the one sanctioned exception, and it carries that cost; nothing mid-wave does. Keep spawn counts low throughout — `opus` over-delegates left to itself.
+
+**Commit to the delegation.** Once a worker reports, do not redo its work or re-derive its findings. Reading source to settle a load-bearing fact is not redoing the work — that is a two-line check, not a re-implementation.
 
 **Two scouts on load-bearing facts. You resolve conflicts from source.** Any fact the design turns on — a budget, a limit, a capability, an asserted invariant — gets two independent reads. When they disagree, open the file yourself. Do not trust the more recent report, or the more confident one. A stale comment sitting directly above the assert it describes reads exactly like the truth.
 
@@ -125,6 +131,8 @@ Record only what survives refactoring. A sentence that breaks when a file is ren
 
 `/review-panel` → `/fix-review-findings` → `/preflight` once, as the single full-suite gate. Report findings to the owner before acting on the ambiguous ones.
 
+A review panel is subagents judging code they did not write, so it fails in a known way: a confident finding about a file the reviewer never opened. Require every finding to quote the line it concerns and name the file and symbol. Drop any finding whose quote you cannot locate in the tree — that is verifying a citation, not re-deriving the work. Fix what survives; do not re-argue it.
+
 Record each acceptance row's result and any outstanding manual proof in the PR body. Then move the contract to `context/plans/done/`, or delete it once `context/lib/` fully absorbs it.
 
 ## Never
@@ -133,7 +141,9 @@ Record each acceptance row's result and any outstanding manual proof in the PR b
 - Never give an instruction without the constraint that would catch it if it is wrong.
 - Never withhold the contract to save an agent's context.
 - Never split a coherent slice to make the pieces smaller.
-- Never ask an agent to double-check its work.
+- Never ask an agent to verify, re-check, or confirm its own work.
+- Never spawn an agent to review another agent's output.
+- Never redo a worker's work after it reports.
 - Never hand an agent a file and line for a defect you have not reproduced.
 - Never state a preference in the register of a hard constraint.
 - Never accept a report with no "could not verify" section.

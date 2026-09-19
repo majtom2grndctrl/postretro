@@ -56,7 +56,9 @@ Amend the file when a track changes a decision — before the next dispatch, not
 
 **Do the work yourself by default.** A subagent re-establishes context from nothing, re-explores, reports back, and then you read the report. Anything you could finish in a handful of tool calls is cheaper and more reliable done directly — a few file reads, a handful of edits, a focused search, a check.
 
-**Dispatch for genuinely independent, sizeable tracks.** Separate modules, a wide multi-file investigation, work that does not touch what you are touching. There the parallelism is real and the overhead is repaid. Give each track a whole vertical slice with its own acceptance, never one agent per file or per step.
+**Dispatch along the workspace's seams.** This engine is 23 crates with an enforced layering direction, so one feature routinely spans several of them — a bake stage in `level-compiler`, a section in `level-format`, its `level-loader` read side, a CPU reference in `render-cpu`, the shader in `renderer`. Those are real tracks: different crates, different expertise, a pinned contract between them, and the compiler enforcing the boundary. That is what makes the parallelism real and the overhead repaid.
+
+Size alone is not the signal. A large change living inside one crate is one track, however many lines it runs to. Two crates on opposite sides of a contract you have already pinned are two tracks, even when each is small. Give every track a whole vertical slice with its own acceptance — never one agent per file or per step.
 
 **Keep the count low, and send them together.** One agent beats several on the same job. Launch independent tracks in a single message so they run concurrently. Never split one modest job across parallel agents.
 
@@ -74,7 +76,7 @@ Amend the file when a track changes a decision — before the next dispatch, not
 
 **Hard constraints marked apart from preferences.** A hard constraint breaks the build or the design when violated. Name it as one, justify it, and expect the agent to turn it into a test assertion that binds every future change. A preference stated in the same register gets enforced just as hard, and costs the flexibility you wanted.
 
-**The acceptance gate as commands with expected output.** "Iterate until these greps return empty" is a task.
+**The acceptance gate as commands with expected output.** This is what makes a track self-correcting: given a gate it can run, an agent loops until the gate is green without being told to be careful. "Iterate until these greps return empty, and `git diff --stat context/lib/` stays empty" is a task with a built-in stopping condition. Name the check that would catch the failure you actually fear — an offset assert, a rejected stale input, a directory that must not change.
 
 **No instruction to verify.** `opus` verifies its own work unprompted; telling it to verify, re-check, or confirm buys extra work and no coverage. Delete that scaffolding rather than rewording it. This inverts the usual self-check advice and rides on the tier — `fable` is the opposite and wants an explicit checking harness on a cadence.
 
@@ -83,6 +85,7 @@ Amend the file when a track changes a decision — before the next dispatch, not
 ### What to require back
 
 - **What the agent could not verify, and where it would look first.** Asking what it *couldn't* reach is not asking it to verify. A track's most valuable output is often the edge it could not test — a GPU-only behavior, a timing window, a path with no fixture. That list is your first stop when the thing runs.
+- **A report you can read once.** Your context is spent reading reports, not writing briefs, and that is the budget that decides how long you can hold the whole picture. Ask for what changed, what the gate returned, what could not be verified, and what surprised them — not a replay of how the work went. Take it as given and move on; re-deriving a track's findings costs your context twice and buys nothing.
 - **Environment findings, forwarded.** A lint that already fails on unmodified HEAD, a missing system package, a target dir that fills the disk. Carry each into the next brief. Otherwise every agent rediscovers the same pothole at full price.
 - **Artifacts, not only tests.** Tests prove the code does what it says; an artifact proves the thing works. When the artifact is an image, require the agent to look at it — a generated depth map that merely traces albedo passes every distribution check.
 - **Compile-forced spillover, reported.** Adding an enum variant breaks exhaustive matches elsewhere. The minimal change that keeps the workspace compiling is allowed outside a brief, and must be flagged. A strict lane that leaves the tree uncompilable is worse.

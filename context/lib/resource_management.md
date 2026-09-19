@@ -26,7 +26,7 @@ TrenchBroom requires the collection subdirectory structure for texture browsing.
 
 PRL stores a deduplicated texture name list (`TextureNames` section) plus a parallel `TextureCacheKeys` section — one 32-byte `blake3` hash per name entry, same ordering. No pixel data.
 
-**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), and `{name}_e.png` (emissive) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its four slots exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All four are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
+**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), `{name}_e.png` (emissive), and `{name}_h.png` (height, packed into the specular slot — see §4.6) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its five sibling forms exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All five are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; a two-channel `Rg8Unorm` surface map (specular plus height, §4.6) filters both channels through the same path with per-output-texel clamping; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
 
 **Level load.** For each `TextureCacheKeys[i]`, the engine opens `<hex>.prm` under the materials root it derives from the content root (`build_pipeline.md` §Baked texture mips) and parses it with `PrmFile::from_bytes_partial`. Legacy world and model loaders upload present slot mip chains only from single-layer sidecars. A valid layered sidecar logs a `warn!` and replaces the full material with placeholders until a `D2Array` PRM upload path exists. A zero key produces a silent placeholder. A corrupt or missing single-layer sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use diffuse-only addressing and share sidecars only with diffuse-only world bundles. They consume only diffuse; specular and normal remain neutral and emissive remains black.
 
@@ -166,6 +166,34 @@ an author places a separate light entity.
 `tools/gen_emissive.py` creates a bright-texel starting point from a diffuse
 texture. Its output is deliberately untagged: PNG metadata does not determine
 the authored sRGB-content convention for this sibling.
+
+### 4.6 Height Maps (Surface Depth)
+
+Per-texel depth for texel-space parallax. Height does **not** get a `.prm` slot
+of its own — the forward pass is at its 16/16 sampled-texture budget — so it
+rides in the **G channel of the specular slot**, which becomes a two-channel
+"surface map" (`PrmFormat::Rg8Unorm`, wire tag 4): R specular, G depth.
+
+- **Naming:** `{name}_h.png` suffix.
+- **Format:** single channel read from R. Authored as a **conventional height
+  map — white = raised**, the familiar convention.
+- **Color Space:** Linear. An `sRGB`, `gAMA`, or `iCCP` tag fails the build,
+  exactly like `_s` and `_n`.
+- **Dimensions:** Must match the diffuse, and must match `_s.png` when that
+  sibling exists. Both are hard compile-time bails — unlike `_s`/`_n` versus
+  diffuse, which is documented but unenforced — because `_h` and `_s` are
+  interleaved into one texture.
+- **Inversion at bake time:** `prl-build` stores `G = 255 - height`, i.e. depth
+  *below* the true surface plane, not height above it. Authors never think in
+  inverted terms; the baker does it. This is what makes an absent height map a
+  true no-op: sampling a single-channel `R8Unorm` specular in WGSL yields
+  `(r, 0, 0, 1)`, so `.g == 0`, and depth 0 means flat.
+- **Slot mask:** the SPECULAR bit is set if **either** `_s.png` or `_h.png` is
+  present. With `_h` and no `_s`, R bakes to 0 — the same zero specular
+  response the shared black placeholder gives.
+- **Fallback:** no `_h.png` bakes the historical single-channel `R8Unorm`
+  specular slot, byte-identical to before. Content addressing folds height in
+  only when it is present, so no existing `baked/materials/` sidecar rebakes.
 
 ---
 

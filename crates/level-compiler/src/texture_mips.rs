@@ -16,7 +16,9 @@ mod bake;
 mod cache;
 mod resolution;
 
-use bake::{build_diffuse_chain, build_normal_bc5_chain, build_specular_chain};
+use bake::{
+    build_diffuse_chain, build_normal_bc5_chain, build_specular_chain, build_surface_chain,
+};
 use cache::{bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for};
 use resolution::{
     build_name_to_path_map, normalize_map_texture_name, resolve_texture_bundle_paths,
@@ -267,6 +269,45 @@ pub(super) fn build_specular_chain_impl(r8: &[u8], width: u32, height: u32) -> V
 
     let mut linear: Vec<f32> = r8.iter().map(|b| (*b as f32) / 255.0).collect();
     let mut payload: Vec<u8> = Vec::with_capacity(r8.len() * 2);
+    for &v in &linear {
+        payload.push(linear_to_unorm_u8(v));
+    }
+
+    let mut cw = width;
+    let mut ch = height;
+    for _ in 1..level_count {
+        let (next, nw, nh) = downsample_2x_f32(&linear, cw, ch, channels);
+        for &v in &next {
+            payload.push(linear_to_unorm_u8(v));
+        }
+        linear = next;
+        cw = nw;
+        ch = nh;
+    }
+
+    payload
+}
+
+/// Build a two-channel surface-map mip chain (`PrmFormat::Rg8Unorm`).
+///
+/// `rg` is interleaved `[specular, depth]` per texel at `width * height`
+/// texels. Both channels are already linear and already in their stored
+/// sense — in particular the caller has inverted the authored height map to
+/// depth (`255 - height`) before interleaving, so mip 0 is a straight copy.
+///
+/// Filtering is the same Mitchell-Netravali (B = C = 1/3) separable path the
+/// single-channel specular chain uses, applied to both channels at once, so a
+/// surface map's R channel filters identically to the `R8Unorm` chain it
+/// replaces. Mitchell-Netravali has negative lobes and can overshoot outside
+/// `[0, 1]`; `linear_to_unorm_u8` clamps every output texel, which is what
+/// keeps an overshoot near a hard mortar edge from wrapping to the opposite
+/// extreme.
+pub(super) fn build_surface_chain_impl(rg: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let channels = 2;
+    let level_count = expected_level_count(width as u16, height as u16) as u32;
+
+    let mut linear: Vec<f32> = rg.iter().map(|b| (*b as f32) / 255.0).collect();
+    let mut payload: Vec<u8> = Vec::with_capacity(rg.len() * 2);
     for &v in &linear {
         payload.push(linear_to_unorm_u8(v));
     }
@@ -779,8 +820,8 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
             diffuse_path.display()
         )
     })?;
-    let filename_key = filename_key_for(Some(&diffuse_bytes), None, None, None);
-    let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None, None);
+    let filename_key = filename_key_for(Some(&diffuse_bytes), None, None, None, None);
+    let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None, None, None);
     let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
     // A legacy richer world bundle may still occupy this pre-change
@@ -873,6 +914,7 @@ pub fn bake_texture_mips(
         let spec_path = resolved.specular;
         let norm_path = resolved.normal;
         let emissive_path = resolved.emissive;
+        let height_path = resolved.height;
 
         // Read raw bytes (needed for both filename key and bundle hash).
         let diff_bytes = match diff_path.as_ref() {
@@ -899,12 +941,19 @@ pub fn bake_texture_mips(
             })?),
             None => None,
         };
+        let height_bytes = match height_path.as_ref() {
+            Some(p) => Some(std::fs::read(p).map_err(|e| {
+                anyhow::anyhow!("failed to read height {} for '{name}': {e}", p.display())
+            })?),
+            None => None,
+        };
 
         let filename_key = filename_key_for(
             diff_bytes.as_deref(),
             spec_bytes.as_deref(),
             norm_bytes.as_deref(),
             emissive_bytes.as_deref(),
+            height_bytes.as_deref(),
         );
 
         // All-absent: nothing to bake.
@@ -912,6 +961,7 @@ pub fn bake_texture_mips(
             && spec_bytes.is_none()
             && norm_bytes.is_none()
             && emissive_bytes.is_none()
+            && height_bytes.is_none()
         {
             out.insert(name.clone(), [0u8; 32]);
             continue;
@@ -934,11 +984,43 @@ pub fn bake_texture_mips(
             }
         }
 
+        // `_h.png` is packed into the specular slot's G channel, so its
+        // dimensions are load-bearing twice over: they must match the diffuse
+        // the shader marches against, and they must match `_s.png` or the two
+        // channels cannot be interleaved at all. Both are hard bails, the way
+        // `_e` already is. (`_s`/`_n` versus diffuse remains documented-only
+        // and unenforced — out of scope here.)
+        if let (Some(height), Some(height_path)) = (height_bytes.as_deref(), height_path.as_ref()) {
+            let (height_width, height_height) = png_dimensions(height, height_path)?;
+            if let (Some(diffuse), Some(diffuse_path)) = (diff_bytes.as_deref(), diff_path.as_ref())
+            {
+                let (diffuse_width, diffuse_height) = png_dimensions(diffuse, diffuse_path)?;
+                if (height_width, height_height) != (diffuse_width, diffuse_height) {
+                    anyhow::bail!(
+                        "height texture {} is {height_width}x{height_height}, but diffuse texture {} for '{name}' is {diffuse_width}x{diffuse_height}; _h.png dimensions must match diffuse",
+                        height_path.display(),
+                        diffuse_path.display(),
+                    );
+                }
+            }
+            if let (Some(specular), Some(spec_path)) = (spec_bytes.as_deref(), spec_path.as_ref()) {
+                let (spec_width, spec_height) = png_dimensions(specular, spec_path)?;
+                if (height_width, height_height) != (spec_width, spec_height) {
+                    anyhow::bail!(
+                        "height texture {} is {height_width}x{height_height}, but specular texture {} for '{name}' is {spec_width}x{spec_height}; _h.png and _s.png share one Rg8Unorm slot and must have identical dimensions",
+                        height_path.display(),
+                        spec_path.display(),
+                    );
+                }
+            }
+        }
+
         let bundle_hash = bundle_hash_for(
             diff_bytes.as_deref(),
             spec_bytes.as_deref(),
             norm_bytes.as_deref(),
             emissive_bytes.as_deref(),
+            height_bytes.as_deref(),
         );
 
         let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
@@ -976,20 +1058,61 @@ pub fn bake_texture_mips(
             });
             slot_mask |= PrmSlots::DIFFUSE;
         }
-        if let (Some(b), Some(p)) = (spec_bytes.as_deref(), spec_path.as_ref()) {
-            // Decode as RGBA; flatten to R8 (PNG authoring is typically L8 or
-            // RGBA8 with the spec data in R). We accept either.
-            let (rgba, w, h) = decode_png_rgba(b, p)?;
-            let r8: Vec<u8> = rgba.chunks_exact(4).map(|c| c[0]).collect();
-            let payload = build_specular_chain(&r8, w, h);
-            slots_arr[1] = Some(PrmSlot {
-                format: PrmFormat::R8Unorm,
-                width: w as u16,
-                height: h as u16,
-                level_count: expected_level_count(w as u16, h as u16),
-                payload,
-            });
-            slot_mask |= PrmSlots::SPECULAR;
+        // Slot 1 is the specular slot in both of its forms. Without a height
+        // sibling it stays single-channel `R8Unorm`, byte-identical to what it
+        // has always baked. With one it becomes the two-channel surface map:
+        // R specular (or 0 when `_s.png` is absent), G depth. The SPECULAR
+        // slot-mask bit is set if EITHER sibling is present.
+        match (height_bytes.as_deref(), height_path.as_ref()) {
+            (Some(hb), Some(hp)) => {
+                let (height_rgba, w, h) = decode_png_rgba(hb, hp)?;
+                // Authors write a conventional height map: white = raised.
+                // The stored channel is depth BELOW the surface, so invert
+                // here — that is what makes "no height sibling" and "depth 0"
+                // the same thing at sample time.
+                let depth: Vec<u8> = height_rgba.chunks_exact(4).map(|c| 255 - c[0]).collect();
+
+                let specular: Vec<u8> = match spec_bytes.as_deref().zip(spec_path.as_ref()) {
+                    Some((sb, sp)) => {
+                        let (spec_rgba, _, _) = decode_png_rgba(sb, sp)?;
+                        spec_rgba.chunks_exact(4).map(|c| c[0]).collect()
+                    }
+                    None => vec![0u8; depth.len()],
+                };
+
+                let mut rg: Vec<u8> = Vec::with_capacity(depth.len() * 2);
+                for (s, d) in specular.iter().zip(depth.iter()) {
+                    rg.push(*s);
+                    rg.push(*d);
+                }
+
+                let payload = build_surface_chain(&rg, w, h);
+                slots_arr[1] = Some(PrmSlot {
+                    format: PrmFormat::Rg8Unorm,
+                    width: w as u16,
+                    height: h as u16,
+                    level_count: expected_level_count(w as u16, h as u16),
+                    payload,
+                });
+                slot_mask |= PrmSlots::SPECULAR;
+            }
+            _ => {
+                if let (Some(b), Some(p)) = (spec_bytes.as_deref(), spec_path.as_ref()) {
+                    // Decode as RGBA; flatten to R8 (PNG authoring is typically L8 or
+                    // RGBA8 with the spec data in R). We accept either.
+                    let (rgba, w, h) = decode_png_rgba(b, p)?;
+                    let r8: Vec<u8> = rgba.chunks_exact(4).map(|c| c[0]).collect();
+                    let payload = build_specular_chain(&r8, w, h);
+                    slots_arr[1] = Some(PrmSlot {
+                        format: PrmFormat::R8Unorm,
+                        width: w as u16,
+                        height: h as u16,
+                        level_count: expected_level_count(w as u16, h as u16),
+                        payload,
+                    });
+                    slot_mask |= PrmSlots::SPECULAR;
+                }
+            }
         }
         if let (Some(b), Some(p)) = (norm_bytes.as_deref(), norm_path.as_ref()) {
             let (rgba, w, h) = decode_png_rgba(b, p)?;
@@ -1432,12 +1555,12 @@ mod tests {
         let source_bytes = png_bytes(4, 4);
         std::fs::write(&diffuse_path, &source_bytes).unwrap();
 
-        let key = filename_key_for(Some(&source_bytes), None, None, None);
+        let key = filename_key_for(Some(&source_bytes), None, None, None, None);
         let cached = PrmFile {
             header: PrmHeader {
                 stage_version: STAGE_VERSION,
                 slot_mask: PrmSlots::DIFFUSE,
-                bundle_hash: bundle_hash_for(Some(&source_bytes), None, None, None),
+                bundle_hash: bundle_hash_for(Some(&source_bytes), None, None, None, None),
                 total_body_bytes: 0,
                 layer_count: 1,
             },
@@ -1913,8 +2036,8 @@ mod tests {
     /// (0x00/0x01/0x02) tags which slot the bytes belong to.
     #[test]
     fn bundle_hash_distinguishes_slot_assignment() {
-        let a = bundle_hash_for(None, Some(b"alpha"), Some(b"beta"), None);
-        let b = bundle_hash_for(None, Some(b"beta"), Some(b"alpha"), None);
+        let a = bundle_hash_for(None, Some(b"alpha"), Some(b"beta"), None, None);
+        let b = bundle_hash_for(None, Some(b"beta"), Some(b"alpha"), None, None);
         assert_ne!(a, b);
     }
 
@@ -1945,12 +2068,12 @@ mod tests {
         let emissive = std::fs::read(collection.join("neon_panel_e.png")).unwrap();
         assert_ne!(
             header.bundle_hash,
-            bundle_hash_for(Some(&diffuse), None, None, None),
+            bundle_hash_for(Some(&diffuse), None, None, None, None),
             "the emissive sibling must participate in the bundle hash",
         );
         assert_eq!(
             header.bundle_hash,
-            bundle_hash_for(Some(&diffuse), None, None, Some(&emissive)),
+            bundle_hash_for(Some(&diffuse), None, None, Some(&emissive), None),
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2077,20 +2200,481 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A height-only material is a real bundle: `_h` joins the suffix list the
+    /// resolver uses to decide a qualified base exists, so it neither falls
+    /// back to a bare stem nor collapses to the all-absent zero key.
+    #[test]
+    fn qualified_height_only_material_resolves_and_bakes() {
+        let root = unique_temp_dir("qualified-height-only");
+        let texture_root = root.join("textures");
+        let alpha = texture_root.join("alpha");
+        let beta = texture_root.join("beta");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(
+            alpha.join("cobble_h.png"),
+            solid_png_bytes(2, 2, [10, 10, 10, 255]),
+        )
+        .unwrap();
+        // A same-stem diffuse in another collection must not be picked up.
+        std::fs::write(beta.join("cobble.png"), png_bytes(2, 2)).unwrap();
+
+        let map = build_name_to_path_map(&texture_root);
+        let paths = resolve_texture_bundle_paths(&map, "alpha/cobble");
+        assert_eq!(paths.height, Some(alpha.join("cobble_h.png")));
+        assert_eq!(paths.diffuse, None, "the bare-stem fallback must stay off");
+
+        let keys =
+            bake_texture_mips(&["alpha/cobble".to_string()], &texture_root, &cache_root).unwrap();
+        let key = keys["alpha/cobble"];
+        assert_ne!(
+            key, [0u8; 32],
+            "a height-only bundle is not 'no source PNG'"
+        );
+
+        let path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+        let (header, slots) = PrmFile::from_bytes_partial(&std::fs::read(&path).unwrap());
+        assert_eq!(header.expect("header parses").slot_mask, PrmSlots::SPECULAR);
+        let slot = slots[1].as_ref().expect("surface-map slot parses");
+        assert_eq!(slot.format, PrmFormat::Rg8Unorm);
+        for texel in slot.payload[..2 * 2 * 2].chunks_exact(2) {
+            assert_eq!(texel[0], 0);
+            assert_eq!(texel[1], 245, "depth = 255 - 10");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The bundle-hash inputs for a height-less bundle must be *exactly* what
+    /// they were before the height sibling existed. This replays the
+    /// pre-surface-depth algorithm — 4-bit mask, tags 0x00..0x03, nothing else
+    /// — and demands equality across every combination of present slots.
+    ///
+    /// This is the no-rebake property: `baked/materials/` is content-addressed
+    /// on these bytes, so a single changed byte here would silently invalidate
+    /// and re-bake every `.prm` already on disk.
+    #[test]
+    fn height_absent_bundle_hash_matches_the_pre_height_algorithm() {
+        fn pre_height_bundle_hash(
+            diffuse: Option<&[u8]>,
+            specular: Option<&[u8]>,
+            normal: Option<&[u8]>,
+            emissive: Option<&[u8]>,
+        ) -> [u8; 32] {
+            let mut mask: u8 = 0;
+            if diffuse.is_some() {
+                mask |= 0b001;
+            }
+            if specular.is_some() {
+                mask |= 0b010;
+            }
+            if normal.is_some() {
+                mask |= 0b100;
+            }
+            if emissive.is_some() {
+                mask |= 0b1000;
+            }
+            let mut h = blake3::Hasher::new();
+            h.update(&[mask]);
+            for (tag, bytes) in [
+                (0x00u8, diffuse),
+                (0x01, specular),
+                (0x02, normal),
+                (0x03, emissive),
+            ] {
+                if let Some(b) = bytes {
+                    h.update(&[tag]);
+                    h.update(b);
+                }
+            }
+            *h.finalize().as_bytes()
+        }
+
+        let d: &[u8] = b"diffuse-png";
+        let sp: &[u8] = b"specular-png";
+        let n: &[u8] = b"normal-png";
+        let e: &[u8] = b"emissive-png";
+
+        for bits in 0u8..16 {
+            let diffuse = (bits & 1 != 0).then_some(d);
+            let specular = (bits & 2 != 0).then_some(sp);
+            let normal = (bits & 4 != 0).then_some(n);
+            let emissive = (bits & 8 != 0).then_some(e);
+            assert_eq!(
+                bundle_hash_for(diffuse, specular, normal, emissive, None),
+                pre_height_bundle_hash(diffuse, specular, normal, emissive),
+                "height-less bundle {bits:04b} must hash exactly as it did before \
+                 the height sibling existed"
+            );
+        }
+    }
+
+    /// The same promise for the `.prm` filename stem: without a height
+    /// sibling, every bundle keeps the address it already has on disk, so no
+    /// existing sidecar is orphaned or rewritten.
+    #[test]
+    fn height_absent_filename_key_is_unchanged() {
+        let d: &[u8] = b"diffuse-png";
+        let sp: &[u8] = b"specular-png";
+        let n: &[u8] = b"normal-png";
+        let e: &[u8] = b"emissive-png";
+
+        // Diffuse-only keeps the bare content hash that model loading derives
+        // at runtime — the one address that is not a bundle hash.
+        assert_eq!(
+            filename_key_for(Some(d), None, None, None, None),
+            *blake3::hash(d).as_bytes(),
+        );
+        // Every multi-slot height-less bundle keeps the bundle-hash address.
+        for bits in 0u8..16 {
+            let diffuse = (bits & 1 != 0).then_some(d);
+            let specular = (bits & 2 != 0).then_some(sp);
+            let normal = (bits & 4 != 0).then_some(n);
+            let emissive = (bits & 8 != 0).then_some(e);
+            if bits.count_ones() > 1 {
+                assert_eq!(
+                    filename_key_for(diffuse, specular, normal, emissive, None),
+                    bundle_hash_for(diffuse, specular, normal, emissive, None),
+                    "height-less bundle {bits:04b}"
+                );
+            }
+        }
+        // And a present height sibling does move the address — otherwise two
+        // different bundles would share one `.prm`.
+        assert_ne!(
+            filename_key_for(Some(d), Some(sp), None, None, Some(b"height-png")),
+            filename_key_for(Some(d), Some(sp), None, None, None),
+        );
+    }
+
+    /// End-to-end no-rebake proof. A `.prm` written by the pre-surface-depth
+    /// baker — placed at its historical address, carrying its historical
+    /// bundle hash and a payload nothing here could reproduce — must be
+    /// recognised as a cache hit and left byte-for-byte alone.
+    #[test]
+    fn heightless_bundle_is_a_cache_hit_and_is_not_rewritten() {
+        let root = unique_temp_dir("heightless-no-rebake");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        let diffuse = png_bytes(4, 4);
+        let specular = solid_png_bytes(4, 4, [90, 90, 90, 255]);
+        std::fs::write(collection.join("cobble.png"), &diffuse).unwrap();
+        std::fs::write(collection.join("cobble_s.png"), &specular).unwrap();
+
+        let key = filename_key_for(Some(&diffuse), Some(&specular), None, None, None);
+        // A deliberately wrong-but-structurally-valid payload: if the baker
+        // rebaked, these bytes would be replaced by real mip chains.
+        let sentinel = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR,
+                bundle_hash: bundle_hash_for(Some(&diffuse), Some(&specular), None, None, None),
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8UnormSrgb,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                }),
+                Some(PrmSlot {
+                    format: PrmFormat::R8Unorm,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: vec![0x5A],
+                }),
+                None,
+                None,
+            ],
+        }
+        .to_bytes()
+        .unwrap();
+        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+        atomic_write(&cache_path, &sentinel).unwrap();
+
+        let keys =
+            bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root).unwrap();
+
+        assert_eq!(keys["stone/cobble"], key, "the address must not move");
+        assert_eq!(
+            std::fs::read(&cache_path).unwrap(),
+            sentinel,
+            "a height-less bundle must not rebake"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A height sibling turns the specular slot into the two-channel surface
+    /// map: R is the authored specular, G is depth — the *inverse* of the
+    /// authored height, because the stored channel measures how far the
+    /// surface is carved below its true plane.
+    #[test]
+    fn height_sibling_bakes_inverted_depth_into_the_specular_green_channel() {
+        let root = unique_temp_dir("height-inverts-to-depth");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        std::fs::write(collection.join("cobble.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(
+            collection.join("cobble_s.png"),
+            solid_png_bytes(4, 4, [200, 0, 0, 255]),
+        )
+        .unwrap();
+        // Authored height: 60 = mostly recessed. Depth must read 255 - 60.
+        std::fs::write(
+            collection.join("cobble_h.png"),
+            solid_png_bytes(4, 4, [60, 60, 60, 255]),
+        )
+        .unwrap();
+
+        let keys =
+            bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root).unwrap();
+        let path = cache_root.join(format!(
+            "{}.prm",
+            cache_filename_for_key(&keys["stone/cobble"])
+        ));
+        let bytes = std::fs::read(&path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("surface-map header parses");
+        assert!(
+            header.slot_mask.contains(PrmSlots::SPECULAR),
+            "the SPECULAR bit carries the surface map"
+        );
+        // Reserved slot-mask bits stay reserved: height is not a fifth slot.
+        assert_eq!(
+            header.slot_mask,
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR,
+            "height must not claim a slot-mask bit of its own"
+        );
+
+        let slot = slots[1].as_ref().expect("surface-map slot parses");
+        assert_eq!(slot.format, PrmFormat::Rg8Unorm);
+        assert_eq!((slot.width, slot.height), (4, 4));
+        assert_eq!(slot.level_count, expected_level_count(4, 4));
+
+        // Mip 0 is the source interleave, untouched by filtering.
+        for texel in slot.payload[..4 * 4 * 2].chunks_exact(2) {
+            assert_eq!(texel[0], 200, "R keeps the authored specular");
+            assert_eq!(texel[1], 255 - 60, "G is depth = 255 - authored height");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A height sibling with no `_s.png` still bakes the surface map; the
+    /// specular channel reads zero, matching the shared black placeholder a
+    /// specular-less material gets today.
+    #[test]
+    fn height_without_specular_bakes_zero_red_and_still_sets_the_specular_bit() {
+        let root = unique_temp_dir("height-without-specular");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        std::fs::write(collection.join("cobble.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(
+            collection.join("cobble_h.png"),
+            solid_png_bytes(4, 4, [255, 255, 255, 255]),
+        )
+        .unwrap();
+
+        let keys =
+            bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root).unwrap();
+        let path = cache_root.join(format!(
+            "{}.prm",
+            cache_filename_for_key(&keys["stone/cobble"])
+        ));
+        let (header, slots) = PrmFile::from_bytes_partial(&std::fs::read(&path).unwrap());
+        assert!(
+            header
+                .expect("header parses")
+                .slot_mask
+                .contains(PrmSlots::SPECULAR),
+            "the SPECULAR bit is set if EITHER _s or _h is present"
+        );
+        let slot = slots[1].as_ref().expect("surface-map slot parses");
+        assert_eq!(slot.format, PrmFormat::Rg8Unorm);
+        for texel in slot.payload[..4 * 4 * 2].chunks_exact(2) {
+            assert_eq!(texel[0], 0, "absent _s.png reads as zero specular");
+            // Fully white height (raised) carves to zero depth: flat.
+            assert_eq!(texel[1], 0, "white height is depth 0 — a true no-op");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Without a height sibling the specular slot must stay exactly what it
+    /// was: single-channel `R8Unorm`, same payload bytes. Adding the format
+    /// must not perturb any material that does not use it.
+    #[test]
+    fn specular_without_height_still_bakes_single_channel_r8() {
+        let root = unique_temp_dir("specular-stays-r8");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        std::fs::write(collection.join("cobble.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(
+            collection.join("cobble_s.png"),
+            solid_png_bytes(4, 4, [200, 0, 0, 255]),
+        )
+        .unwrap();
+
+        let keys =
+            bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root).unwrap();
+        let path = cache_root.join(format!(
+            "{}.prm",
+            cache_filename_for_key(&keys["stone/cobble"])
+        ));
+        let (_, slots) = PrmFile::from_bytes_partial(&std::fs::read(&path).unwrap());
+        let slot = slots[1].as_ref().expect("specular slot parses");
+        assert_eq!(slot.format, PrmFormat::R8Unorm);
+        assert_eq!(
+            slot.payload,
+            build_specular_chain(&[200u8; 16], 4, 4),
+            "the R8 chain is unchanged by the surface-map addition"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `_h.png` shares one texture with `_s.png` and is marched against the
+    /// diffuse, so a dimension mismatch is a hard compile-time bail rather
+    /// than a silently wrong surface.
+    #[test]
+    fn height_dimensions_must_match_diffuse_at_compile_time() {
+        let root = unique_temp_dir("height-dimension-mismatch-diffuse");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+        std::fs::write(collection.join("cobble.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("cobble_h.png"), png_bytes(2, 4)).unwrap();
+
+        let error = bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root)
+            .expect_err("mismatched height dimensions must fail the map build");
+        let message = error.to_string();
+        assert!(message.contains("cobble_h.png"), "{message}");
+        assert!(message.contains("2x4"), "{message}");
+        assert!(message.contains("4x4"), "{message}");
+        assert!(
+            message.contains("_h.png dimensions must match diffuse"),
+            "{message}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same bail when the mismatch is against `_s.png`: the two siblings
+    /// are interleaved into one `Rg8Unorm` texture, so unequal dimensions
+    /// have no meaning at all.
+    #[test]
+    fn height_dimensions_must_match_specular_at_compile_time() {
+        let root = unique_temp_dir("height-dimension-mismatch-specular");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+        std::fs::write(collection.join("cobble_s.png"), png_bytes(2, 2)).unwrap();
+        std::fs::write(collection.join("cobble_h.png"), png_bytes(4, 4)).unwrap();
+
+        let error = bake_texture_mips(&["stone/cobble".to_string()], &texture_root, &cache_root)
+            .expect_err("a height/specular dimension mismatch must fail the map build");
+        let message = error.to_string();
+        assert!(message.contains("cobble_h.png"), "{message}");
+        assert!(message.contains("cobble_s.png"), "{message}");
+        assert!(
+            message.contains("must have identical dimensions"),
+            "{message}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Both channels of the surface map go through the same
+    /// Mitchell-Netravali path the single-channel specular chain uses, so the
+    /// R channel of a surface map must equal the `R8Unorm` chain built from
+    /// the same R data, level for level.
+    #[test]
+    fn surface_chain_filters_red_identically_to_the_specular_chain() {
+        let (w, h) = (8u32, 8u32);
+        // High-contrast checkerboards on both channels: this is where
+        // Mitchell-Netravali's negative lobes overshoot hardest.
+        let mut r8 = Vec::new();
+        let mut rg = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let r = if (x + y) % 2 == 0 { 255u8 } else { 0 };
+                let g = if x % 2 == 0 { 0u8 } else { 255 };
+                r8.push(r);
+                rg.push(r);
+                rg.push(g);
+            }
+        }
+
+        let specular_chain = build_specular_chain_impl(&r8, w, h);
+        let surface_chain = build_surface_chain_impl(&rg, w, h);
+
+        assert_eq!(surface_chain.len(), specular_chain.len() * 2);
+        let reds: Vec<u8> = surface_chain.chunks_exact(2).map(|t| t[0]).collect();
+        assert_eq!(
+            reds, specular_chain,
+            "the surface map's R channel must filter exactly as R8 specular does"
+        );
+    }
+
+    /// Mitchell-Netravali (B = C = 1/3) has negative lobes that overshoot
+    /// outside [0, 1]. A one-texel bright spike is the worst case: the ringing
+    /// around it must clamp to 0 rather than wrap to 255.
+    #[test]
+    fn surface_chain_clamps_filter_overshoot_per_texel() {
+        let (w, h) = (8u32, 8u32);
+        let mut rg = vec![0u8; (w * h) as usize * 2];
+        // Single white spike in both channels.
+        let centre = ((3 * w + 3) * 2) as usize;
+        rg[centre] = 255;
+        rg[centre + 1] = 255;
+
+        let chain = build_surface_chain_impl(&rg, w, h);
+        // Mip 0 is a verbatim copy.
+        assert_eq!(&chain[..(w * h) as usize * 2], &rg[..]);
+        // Ringing is negative around the spike; unclamped it would wrap high.
+        // Every byte outside mip 0 must stay well below the spike.
+        let mip_rest = &chain[(w * h) as usize * 2..];
+        assert!(!mip_rest.is_empty(), "an 8x8 source has mips below level 0");
+        assert!(
+            mip_rest.iter().all(|&b| b < 200),
+            "clamped ringing must not wrap to the top of the range"
+        );
+    }
+
     /// Filename key falls back to specular when diffuse is missing, but the
     /// 0x01 prefix prevents a collision with a diffuse PNG whose bytes
     /// happen to equal the specular bytes.
     #[test]
     fn filename_key_specular_fallback_does_not_collide_with_diffuse() {
         let bytes: &[u8] = b"identical-payload";
-        let diff_only = filename_key_for(Some(bytes), None, None, None);
-        let spec_only = filename_key_for(None, Some(bytes), None, None);
+        let diff_only = filename_key_for(Some(bytes), None, None, None, None);
+        let spec_only = filename_key_for(None, Some(bytes), None, None, None);
         assert_ne!(diff_only, spec_only);
     }
 
     #[test]
     fn all_absent_key_is_zero() {
-        assert_eq!(filename_key_for(None, None, None, None), [0u8; 32]);
+        assert_eq!(filename_key_for(None, None, None, None, None), [0u8; 32]);
     }
 
     /// Resolver coverage: a collection subdir with a diffuse and all optional
@@ -2119,10 +2703,12 @@ mod tests {
         let spec = collection.join("concrete_pavement_036_s.png");
         let norm = collection.join("concrete_pavement_036_n.png");
         let emissive = collection.join("concrete_pavement_036_e.png");
+        let height = collection.join("concrete_pavement_036_h.png");
         std::fs::write(&diff, png_bytes(1)).unwrap();
         std::fs::write(&spec, png_bytes(2)).unwrap();
         std::fs::write(&norm, png_bytes(3)).unwrap();
         std::fs::write(&emissive, png_bytes(4)).unwrap();
+        std::fs::write(&height, png_bytes(5)).unwrap();
 
         let map = build_name_to_path_map(&root);
 
@@ -2145,6 +2731,10 @@ mod tests {
         assert_eq!(
             map.get("50-free-textures/concrete_pavement_036_e"),
             Some(&emissive)
+        );
+        assert_eq!(
+            map.get("50-free-textures/concrete_pavement_036_h"),
+            Some(&height)
         );
 
         // All three incoming name forms normalize to the relative key and
@@ -2178,6 +2768,11 @@ mod tests {
                 paths.emissive.as_ref(),
                 Some(&emissive),
                 "emissive sibling for '{incoming}' should resolve from the same collection"
+            );
+            assert_eq!(
+                paths.height.as_ref(),
+                Some(&height),
+                "height sibling for '{incoming}' should resolve from the same collection"
             );
         }
 
@@ -2251,7 +2846,7 @@ mod tests {
             0xd0, 0x01, 0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb, 0x57, 0xc8, 0xb2, 0x04,
             0x7c, 0xc1, 0x7b, 0xbe,
         ];
-        let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None, None);
+        let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None, None, None);
         assert_eq!(got, expected);
     }
 }

@@ -6,6 +6,7 @@ use postretro_level_format::prm::{PrmFormat, PrmReadError, PrmSlot, PrmSlots};
 pub fn level_byte_size(format: PrmFormat, w: u32, h: u32) -> usize {
     match format {
         PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => (4 * w * h) as usize,
+        PrmFormat::Rg8Unorm => (2 * w * h) as usize,
         PrmFormat::R8Unorm => (w * h) as usize,
         PrmFormat::Bc5RgUnorm => (w.div_ceil(4) * h.div_ceil(4) * 16) as usize,
     }

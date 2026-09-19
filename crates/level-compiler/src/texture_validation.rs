@@ -8,6 +8,7 @@
 // |------------|----------------------|---------------------|
 // | `_n.png`   | Linear               | Fail build          |
 // | `_s.png`   | Linear               | Fail build          |
+// | `_h.png`   | Linear               | Fail build          |
 // | `_e.png`   | sRGB color (no enforcement) | —            |
 // | (diffuse)  | sRGB (no enforcement)| —                   |
 //
@@ -17,6 +18,10 @@
 // A misconfigured `_n.png` is the worst case — sRGB gamma applied to raw XYZ
 // normals shifts directions non-linearly and silently breaks shading. This
 // pass turns the silent bug into a compile-time diagnostic.
+//
+// `_h.png` is a height field, not color: a gamma curve on it warps the depth
+// ramp, so mortar carves to the wrong depth and the parallax march reads a
+// surface the author never drew. Same policy as `_s` and `_n`.
 //
 // The `image` crate (used elsewhere) does not surface PNG `sRGB` / `gAMA` /
 // `iCCP` chunks through its public API. The lower-level `png` crate exposes
@@ -101,7 +106,7 @@ fn detect_color_space(path: &Path) -> anyhow::Result<DetectedColorSpace> {
 }
 
 /// Build a flat list of PNG file paths under `texture_root` whose stem
-/// matches one of the surface-map suffixes (`_s`, `_n`, `_e`).
+/// matches one of the surface-map suffixes (`_s`, `_n`, `_e`, `_h`).
 ///
 /// Walks one collection level deep (`<root>/<collection>/<file>.png`),
 /// matching the authoring convention described in
@@ -144,6 +149,8 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
                 "_s.png"
             } else if stem_lower.ends_with("_e") {
                 "_e.png"
+            } else if stem_lower.ends_with("_h") {
+                "_h.png"
             } else {
                 continue;
             };
@@ -153,9 +160,10 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
     Ok(out)
 }
 
-/// Validate `_n.png` and `_s.png` under `texture_root` for linear color-space
-/// metadata. `_e.png` is discovered and logged but deliberately exempt: emissive
-/// is authored as color and validly arrives either untagged or sRGB-tagged.
+/// Validate `_n.png`, `_s.png`, and `_h.png` under `texture_root` for linear
+/// color-space metadata. `_e.png` is discovered and logged but deliberately
+/// exempt: emissive is authored as color and validly arrives either untagged
+/// or sRGB-tagged.
 ///
 /// Returns an aggregate error naming every offender. The validator surfaces
 /// every violation at once rather than failing on the first, so a single
@@ -202,8 +210,8 @@ pub fn validate_sibling_color_spaces(texture_root: &Path) -> anyhow::Result<()> 
 
     Err(anyhow::anyhow!(
         "PNG color-space validation failed for {} surface-map sibling(s):\n{}\n\
-         `_s.png` (specular) and `_n.png` (normal) textures must be authored \
-         in linear color space (no sRGB chunk, no iCCP chunk, gAMA ≈ 1.0). \
+         `_s.png` (specular), `_n.png` (normal), and `_h.png` (height) textures \
+         must be authored in linear color space (no sRGB chunk, no iCCP chunk, gAMA ≈ 1.0). \
          Re-export the offending files as linear PNG. \
          See context/lib/resource_management.md §4.",
         violations.len(),
@@ -365,6 +373,7 @@ mod tests {
         std::fs::write(coll.join("wall_s.png"), &png).unwrap();
         std::fs::write(coll.join("wall_n.png"), &png).unwrap();
         std::fs::write(coll.join("wall_e.png"), &png).unwrap();
+        std::fs::write(coll.join("wall_h.png"), &png).unwrap();
         validate_sibling_color_spaces(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -400,6 +409,53 @@ mod tests {
         let srgb = build_test_png(&[(b"sRGB", vec![0u8])]);
         std::fs::write(coll.join("wall.png"), &srgb).unwrap();
         validate_sibling_color_spaces(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `_h.png` is a height field, not color. A gamma curve on it warps the
+    /// depth ramp the parallax march reads, so it gets the same hard rejection
+    /// `_s` and `_n` get — sRGB chunk, ICC profile, or non-linear gAMA alike.
+    #[test]
+    fn validate_rejects_non_linear_height_siblings() {
+        for (label, bad) in [
+            ("srgb", build_test_png(&[(b"sRGB", vec![0u8])])),
+            (
+                "gama",
+                build_test_png(&[(b"gAMA", 45455u32.to_be_bytes().to_vec())]),
+            ),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "prl-build-tex-validate-height-{label}-{}",
+                std::process::id()
+            ));
+            let coll = dir.join("collection");
+            std::fs::create_dir_all(&coll).unwrap();
+            std::fs::write(coll.join("cobble_h.png"), &bad).unwrap();
+
+            let err = validate_sibling_color_spaces(&dir)
+                .expect_err("a non-linear _h.png must fail the build");
+            let msg = format!("{err}");
+            assert!(msg.contains("cobble_h.png"), "missing path: {msg}");
+            assert!(
+                msg.contains("_h.png"),
+                "missing suffix in policy text: {msg}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// A linear (untagged) `_h.png` passes, so the common authoring case is
+    /// not a build failure.
+    #[test]
+    fn validate_accepts_linear_height_siblings() {
+        let dir = std::env::temp_dir().join(format!(
+            "prl-build-tex-validate-height-ok-{}",
+            std::process::id()
+        ));
+        let coll = dir.join("collection");
+        std::fs::create_dir_all(&coll).unwrap();
+        std::fs::write(coll.join("cobble_h.png"), build_test_png(&[])).unwrap();
+        validate_sibling_color_spaces(&dir).expect("an untagged _h.png is linear and must pass");
         std::fs::remove_dir_all(&dir).ok();
     }
 

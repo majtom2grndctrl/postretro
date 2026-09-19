@@ -17,6 +17,8 @@ Two moves: settle the design with the owner, then orchestrate the build.
 
 Process is yours to choose. Wave shape, agent count, slice boundaries, how much you verify between waves — judgment calls, and you have better information than this file does. The rules below are the ones that cost real work when broken.
 
+This skill assumes current-generation agents. Most of what it forbids is orchestration written for weaker ones: step lists, starved context, work sliced small enough to be checked. `/orchestrate` still carries those habits — it was written for an older roster. Don't read it into this session.
+
 **You coordinate. Agents produce.** Every tool call spent building is context not spent holding the whole file map.
 
 ## 1. Conversation
@@ -51,7 +53,32 @@ Written once, before dispatch. Amended in the file when a wave changes a decisio
 
 ## 3. Waves
 
-Standard dispatch mechanics — model sizing, worktrees and the cap of 3, what each agent gets, focused tests — live in `/orchestrate` §3. Follow them; don't restate them.
+### Briefing
+
+**Brief for intent, not procedure.** Give the whole slice up front: outcome, constraints that must hold, acceptance, and the contract. Then stop. Ordered step lists, prescribed search strategies, and told-you-how decomposition lower the quality of a current agent — the capability they were compensating for is no longer missing.
+
+**Give the whole contract.** Withholding it to save context is a false economy at current window sizes, and an agent that infers a decision guesses differently than the one next to it. Other agents' briefs stay out — irrelevant, not expensive.
+
+**Slice whole, not small.** One agent per coherent vertical slice with its own acceptance. Not one per file, not one per step. Handoff overhead between micro-tasks now costs more than the tasks do.
+
+**Never ask an agent to double-check its work.** That buys over-verification, not coverage. Name the specific assertion that would catch the failure you actually fear — an offset assert, a rejected stale input — or ask for nothing.
+
+### Sizing
+
+Set `model:` on every Agent call. Omitting it inherits the session model: top tier spent on plumbing, or a contract slice handed to a scout.
+
+Split on blast radius, never on size. Does the slice **establish** a contract that other code consumes — a format, a binding layout, a cache key, a cross-crate seam? Or does it **execute inside** one already settled?
+
+| `model:` | Use for |
+|---|---|
+| `opus` | Establishing contracts, seams, layouts. Ambiguity resolved by reading code. |
+| `sonnet` | Execution inside a settled contract, however large. Tests for specified behavior. |
+| `haiku` | Read-only scouting, call-site sweeps, fact-finding. |
+| `fable` | A reasoning slice that genuinely exceeds `opus`. Rare; costs accordingly. |
+
+The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it.
+
+### The rules that hold regardless
 
 **Only you spawn agents that write files.** Workers may spawn read-only agents freely; a worker fanning out to find call sites is good. Workers never spawn writers. You cannot see your grandchildren — only an aggregate report from the parent. So you cannot partition file ownership among agents you did not create, and you cannot stop one misbehaving agent without killing its parent. Depth 2 for writes, unlimited for reads.
 
@@ -60,6 +87,14 @@ Standard dispatch mechanics — model sizing, worktrees and the cap of 3, what e
 **Compile-forced spillover is allowed, and must be reported.** Adding an enum variant breaks exhaustive matches elsewhere. An agent makes the minimal change that keeps the workspace compiling, even outside its brief, and flags it in its report. A strict lane rule that leaves the tree uncompilable is worse. Use those reports to narrow the next wave's briefs.
 
 **Every agent reads `context/lib/context_style_guide.md`.** It governs code comments and any prose the agent writes.
+
+### Repo physics
+
+Not model-generational — these are the machine's limits.
+
+- Concurrent agents in isolated worktrees cap at **3** (`development_guide.md`, "Concurrent agents in isolated worktrees"). Beyond that, parallel engine builds exhaust CPU and disk, and correct work fails on linker errors. Need more width? Batch the next group after the first merges.
+- A fresh worktree's first build is the engine's most expensive compile. Concurrent agents skip `cargo check` and tests entirely; verification lands once, after merge, against the integration branch's warm target. Sequential agents work on the branch directly and test as they go.
+- Focused tests only: `cargo test -p <crate> <filter>`, narrowed to one target (`--lib`, or `--bin prl-build` for `postretro-level-compiler`). Require the test count in the report — a filter matching nothing prints `0 passed` and exits `ok`. Never `-- --ignored` in a routine pass; those are the ~5–7 min cold bakes.
 
 ## 4. Context maintenance, per wave
 
@@ -77,6 +112,11 @@ Record each acceptance row's result and any outstanding manual proof in the PR b
 
 ## Never
 
+- Never write a step-by-step procedure into an agent brief.
+- Never withhold the contract to save an agent's context.
+- Never split a coherent slice to make the pieces smaller.
+- Never ask an agent to double-check its work.
+- Never omit `model:` on an Agent call.
 - Never let a worker spawn a writing agent.
 - Never design against a single scout's read of a load-bearing fact.
 - Never resolve a scout conflict by picking a report. Open the source.
@@ -88,4 +128,3 @@ Record each acceptance row's result and any outstanding manual proof in the PR b
 - Never make a product or architectural decision on the owner's behalf. Surface it.
 - Never delegate the integration — contracts, merges, and commits stay yours.
 - Never batch all context updates to the end of the session.
-- Never widen an agent's scope past its acceptance criteria, compile breakage aside.

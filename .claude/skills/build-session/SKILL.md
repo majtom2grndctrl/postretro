@@ -47,19 +47,37 @@ Contents:
 
 Pin every convention with two plausible readings, even the ones obvious to you: height vs. depth, 0- vs. 1-based, units, byte order, which side of a seam owns a clamp. Two agents guessing opposite ways is a silent integration bug.
 
+A prompt drifts as you retype it across waves. A file does not.
+
 Written once, before dispatch. Amended in the file when a wave changes a decision — and amended *before* the next dispatch, not after.
 
 ## 3. Waves
 
+Verification is the expensive part. An agent iterating until a named set of checks passes can run several hundred thousand tokens. That price is worth paying for a wire format, a GPU path, or a cache key. For lower-stakes work shorten the check list — never swap it for "make sure it's right," which costs nearly as much and proves nothing.
+
 ### Briefing
 
 **Brief for intent, not procedure.** Give the whole slice up front: outcome, constraints that must hold, acceptance, and the contract. Then stop. Ordered step lists, prescribed search strategies, and told-you-how decomposition lower output quality. They compensate for a weakness the agent does not have.
+
+**State constraints alongside instructions, even when the instruction already satisfies them.** This redundancy is what lets an agent catch you. "Put byte accounting in `render-cpu`" paired with "no upward crate edges, `layering_invariants_hold` enforces it" gets refused and corrected. The same instruction alone gets followed, and the breakage surfaces later as a mysterious regression. An unstated constraint turns the agent into an amplifier of your errors instead of a check on them.
+
+**Describe a defect by its symptom and how you found it** — never by file and line. A location inherited from another report is a hypothesis you are laundering into a fact. An agent told "the defect is at `smoke.rs:263`" looks there. An agent told "a surface-map `.prm` renders as a placeholder, and here is why I believe that" reproduces first, and finds the real fault next door.
+
+**Mark hard constraints apart from preferences.** A hard constraint breaks the build or the design when violated. Name it as one, justify it, and expect the agent to turn it into a test assertion that binds every future change. A preference stated in the same register gets enforced just as hard, and costs the flexibility you wanted.
 
 **Give the whole contract.** Withholding it to save context is a false economy, and an agent that infers a decision guesses differently than the one next to it. Other agents' briefs stay out — irrelevant, not expensive.
 
 **Slice whole, not small.** One agent per coherent vertical slice with its own acceptance. Not one per file, not one per step. Handoff overhead between micro-tasks costs more than the tasks do.
 
 **Never ask an agent to double-check its work.** That buys over-verification, not coverage. Name the specific assertion that would catch the failure you actually fear — an offset assert, a rejected stale input — or ask for nothing.
+
+### Reports
+
+What you require back is as load-bearing as what you dispatch.
+
+- **What the agent could not verify, and where it would look first.** Require this section. A wave's most valuable output is often the edge it could not reach — a GPU-only behavior, a timing window, a path with no fixture. That list is your first stop when the thing finally runs.
+- **Environment findings, forwarded.** A lint that already fails on unmodified HEAD, a missing system package, a target dir that fills the disk. Carry each into the next wave's brief. Otherwise every agent rediscovers the same pothole at full price.
+- **Artifacts, not only tests.** Tests prove the code does what it says; an artifact proves the thing works. Ask for both, separately. When the artifact is an image, require the agent to look at it — a generated depth map that merely traces albedo passes every distribution check.
 
 ### Sizing
 
@@ -90,6 +108,7 @@ The aliases are durable; what backs them is not. When one stops resolving, fix t
 
 Not model-generational — these are the machine's limits.
 
+- Parallelism is bounded by the build graph, not the file list. Two agents editing disjoint files in one workspace still share a target dir: they contend on its lock and can compile against each other's half-written edits. Isolated worktrees with separate target dirs are the fix; a separate workspace (`tools/`) or a directory with no build at all (`content/`) parallelizes freely.
 - Concurrent agents in isolated worktrees cap at **3** (`development_guide.md`, "Concurrent agents in isolated worktrees"). Beyond that, parallel engine builds exhaust CPU and disk, and correct work fails on linker errors. Need more width? Batch the next group after the first merges.
 - A fresh worktree's first build is the engine's most expensive compile. Concurrent agents skip `cargo check` and tests entirely; verification lands once, after merge, against the integration branch's warm target. Sequential agents work on the branch directly and test as they go.
 - Focused tests only: `cargo test -p <crate> <filter>`, narrowed to one target (`--lib`, or `--bin prl-build` for `postretro-level-compiler`). Require the test count in the report — a filter matching nothing prints `0 passed` and exits `ok`. Never `-- --ignored` in a routine pass; those are the ~5–7 min cold bakes.
@@ -111,9 +130,14 @@ Record each acceptance row's result and any outstanding manual proof in the PR b
 ## Never
 
 - Never write a step-by-step procedure into an agent brief.
+- Never give an instruction without the constraint that would catch it if it is wrong.
 - Never withhold the contract to save an agent's context.
 - Never split a coherent slice to make the pieces smaller.
 - Never ask an agent to double-check its work.
+- Never hand an agent a file and line for a defect you have not reproduced.
+- Never state a preference in the register of a hard constraint.
+- Never accept a report with no "could not verify" section.
+- Never let a wave's environment findings die in its report.
 - Never omit `model:` on an Agent call.
 - Never let a worker spawn a writing agent.
 - Never design against a single scout's read of a load-bearing fact.

@@ -8,6 +8,7 @@ use postretro_level_format::prm::{
     PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots,
     STAGE_VERSION, bc5_level_count, cache_filename_for_key, expected_level_count,
 };
+use postretro_level_format::prm_accounting::{MaterialBytes, TextureByteSummary};
 use postretro_level_format::sprite_collection::{
     SpriteSlot, collection_frame_paths, sprite_collection_key_from_frame_bytes,
 };
@@ -898,6 +899,12 @@ pub fn bake_texture_mips(
     let lut = build_srgb_to_linear_lut();
 
     let mut out: HashMap<String, [u8; 32]> = HashMap::with_capacity(texture_names.len());
+    // Per-material, per-slot, per-mip byte accounting for the stage report.
+    // `out` is a HashMap, so the summary keeps its own name-sorted ordering
+    // rather than borrowing hash iteration order — the report has to be
+    // identical across runs for identical inputs, like everything else
+    // `prl-build` emits.
+    let mut byte_summary = TextureByteSummary::new();
 
     for name in texture_names {
         // Normalize the incoming map name: lowercase, backslashes → forward
@@ -1034,6 +1041,12 @@ pub fn bake_texture_mips(
                         && hdr.bundle_hash == bundle_hash
                         && cache_entry_has_valid_declared_slots(&hdr, &slots)
                     {
+                        // Account the reused sidecar too: the report describes
+                        // what this level costs, not what this run rebaked.
+                        byte_summary.record(
+                            name.clone(),
+                            MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
+                        );
                         out.insert(name.clone(), filename_key);
                         continue;
                     }
@@ -1168,10 +1181,31 @@ pub fn bake_texture_mips(
             .map_err(|e| anyhow::anyhow!("encoding .prm for texture {name:?}: {e}"))?;
         atomic_write(&prm_path, &encoded)?;
 
+        byte_summary.record(
+            name.clone(),
+            MaterialBytes::from_slots(&prm.slots, prm.header.layer_count),
+        );
         out.insert(name.clone(), filename_key);
     }
 
+    log_texture_byte_summary(&byte_summary);
+
     Ok(out)
+}
+
+/// How many of the heaviest materials the stage report names individually.
+const BYTE_REPORT_LARGEST: usize = 5;
+
+/// Report the `TextureMips` stage's texture-memory accounting.
+///
+/// This is the only texture byte report the engine has; an asset streaming
+/// system is the anticipated consumer of the underlying per-mip primitive
+/// (`postretro_level_format::prm_accounting`). Reporting only — no budget, no
+/// cap, no eviction.
+fn log_texture_byte_summary(summary: &TextureByteSummary) {
+    for line in summary.report_lines(BYTE_REPORT_LARGEST) {
+        log::info!("[prl-build] {line}");
+    }
 }
 
 // -- Tests ----------------------------------------------------------------
@@ -2848,5 +2882,109 @@ mod tests {
         ];
         let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None, None, None);
         assert_eq!(got, expected);
+    }
+
+    /// The `TextureMips` stage reports texture memory, and the report must
+    /// reconcile with the bytes actually written to disk. This is the engine's
+    /// only texture byte accounting; a report that drifts from the `.prm` it
+    /// describes is worse than none.
+    #[test]
+    fn stage_byte_report_reconciles_with_the_baked_prm_on_disk() {
+        let root = unique_temp_dir("byte-accounting-report");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        // One plain bundle and one carrying a height sibling, so the report
+        // spans both specular slot formats.
+        std::fs::write(collection.join("plain.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(
+            collection.join("plain_s.png"),
+            solid_png_bytes(8, 8, [128, 0, 0, 255]),
+        )
+        .unwrap();
+        std::fs::write(collection.join("carved.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(
+            collection.join("carved_h.png"),
+            solid_png_bytes(8, 8, [90, 90, 90, 255]),
+        )
+        .unwrap();
+
+        let names = vec!["stone/carved".to_string(), "stone/plain".to_string()];
+        // One capture at a time per thread: scope the cold-build capture so the
+        // warm rebuild below can start its own.
+        let (keys, logged) = {
+            let capture = LogCapture::start();
+            let keys = bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+            let records = capture.records();
+            let logged: Vec<String> = records
+                .iter()
+                .filter(|record| record.message.contains("texture bytes"))
+                .map(|record| record.message.clone())
+                .collect();
+            (keys, logged)
+        };
+
+        // Rebuild the accounting from the sidecars the stage just wrote.
+        let mut expected = TextureByteSummary::new();
+        for name in &names {
+            let path = cache_root.join(format!("{}.prm", cache_filename_for_key(&keys[name])));
+            let bytes = std::fs::read(&path).unwrap();
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            let header = header.unwrap();
+            expected.record(
+                name.clone(),
+                MaterialBytes::from_parsed_slots(&slots, header.layer_count),
+            );
+
+            // Every slot's accounting must equal its real payload length.
+            for index in 0..4u8 {
+                let accounted = expected
+                    .entries()
+                    .find(|(entry, _)| *entry == name.as_str())
+                    .map(|(_, material)| material)
+                    .and_then(|material| material.slot(index))
+                    .map(|slot| slot.total_bytes());
+                let actual = slots[usize::from(index)]
+                    .as_ref()
+                    .ok()
+                    .map(|slot| slot.payload.len() as u64);
+                assert_eq!(accounted, actual, "{name} slot {index}");
+            }
+        }
+
+        // An 8x8 chain: 4bpp diffuse = 340, 2bpp surface map = 170, 1bpp
+        // specular = 85.
+        assert_eq!(expected.slot_totals(), [680, 255, 0, 0]);
+        assert_eq!(expected.total_bytes(), 935);
+        assert_eq!(
+            expected.mip_totals().iter().sum::<u64>(),
+            expected.total_bytes(),
+        );
+
+        // The logged report must be exactly that summary, in name order.
+        assert_eq!(
+            logged,
+            vec![format!(
+                "[prl-build] {}",
+                expected.report_lines(BYTE_REPORT_LARGEST)[0]
+            )],
+            "the stage must report the same totals the sidecars carry"
+        );
+
+        // A warm rebuild takes the cache-hit path but must report identically —
+        // the report describes the level, not what this run happened to rebake.
+        let warm = LogCapture::start();
+        bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+        let warm_records = warm.records();
+        let warm_logged: Vec<String> = warm_records
+            .iter()
+            .filter(|record| record.message.contains("texture bytes"))
+            .map(|record| record.message.clone())
+            .collect();
+        assert_eq!(warm_logged, logged, "warm and cold reports must agree");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

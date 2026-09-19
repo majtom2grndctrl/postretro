@@ -84,8 +84,8 @@ committing any shipping surface. The FGD `lightmap_protect_volume` entity was dr
   riskier (a false cull is a black surface).
 - True section-skip / zero-static runtime path — deferred. The runtime static-direct term is added
   unconditionally when its light-term bit is set, and the no-static-lights placeholder is WHITE
-  (full light), with no present-gate wired today (forward.wgsl static_direct; the `present` flag is
-  documented unused). So dropping a black atlas to the placeholder would brighten it — coarsen-to-
+  (full light), with no present-gate wired today (forward.wgsl static_direct; the `present` flag and
+  white placeholder are documented-unused fields in `lighting/lightmap.rs`). So dropping a black atlas to the placeholder would brighten it — coarsen-to-
   minimum avoids that entirely and reaches the same footprint end state.
 
 ## Illustrative measurements (NOT a gate)

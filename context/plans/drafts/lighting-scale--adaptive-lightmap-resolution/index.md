@@ -8,16 +8,19 @@ density — every chart is full-resolution regardless of how much high-frequency
 carries. The goal is a style-agnostic default that stores each sector's irradiance at the coarsest
 resolution whose bilinear reconstruction stays within an imperceptible error of the full bake,
 recovering VRAM where lighting is smooth or absent while leaving sharp static shadows and hard
-spotlight edges pixel-crisp. Two things are unproven and must gate the shippable surface: whether
-the recovered irradiance VRAM is material to the low-end-GPU (GTX 1660) goal at all — the irradiance
-atlas is BC6H-compact and may be a minor term beside the SH volume — and whether the post-hoc
-downsample+repack survives the cache-key/layout inversion. So this lands in two phases: a
-build-to-learn gate first, the shippable coarsening only if the gate returns green.
+spotlight edges pixel-crisp. The gating risk is whether the post-hoc downsample+repack survives the
+cache-key/layout inversion; the size of the win is also unproven — the irradiance atlas is
+BC6H-compact and may be a minor term beside the SH volume — so it is measured before shipping surface
+is committed. The gate is net-positive recovery plus a clean inversion, not a magnitude threshold:
+any improvement counts, since what content this engine will be asked to render is unknown. So this
+lands in two phases: a build-to-learn gate first, the shippable coarsening only if the gate returns
+green.
 
 ## Decisions
 - **Two-phase, gated execution.** Phase 1 is build-to-learn: an output-preserving `--lightmap-analyze`
   pass + a one-leaf inversion proof, delivered as a findings note. Phase 2 (the coarsening repack,
-  boundary grading, escape valve) builds only if the note shows a material win and a clean inversion.
+  boundary grading, escape valve) builds only if the note shows a net-positive win (any improvement
+  counts) and a clean inversion.
   The owner decides how much surface to commit at the phase boundary — the note characterizes, it is
   not an automated threshold.
 - **Supersede the authored-only stance, on a new premise.** `plans/done/lighting-scale--lightmap-bake-scaling`
@@ -28,27 +31,36 @@ build-to-learn gate first, the shippable coarsening only if the gate returns gre
   superseding stance in `context/lib` at promotion. Undo cost: the prior decision is a done record.
 - **Signal = post-hoc reconstruction error, gated on the sharpest feature.** Bake full-res, then per
   sector pick the coarsest candidate level whose downsample→bilinear-reconstruct error vs the full
-  bake stays under tolerance (mirrors `sh_coarsen.rs::classify_levels` rel_p95/rel_max; darkness/empty
-  is the trivial-pass sub-case). Any sector with a sharp static-shadow terminator or hard spotlight
+  bake stays under tolerance (rel_p95/rel_max, harmonized with the SH measured classifier;
+  darkness/empty is the trivial-pass sub-case). Any sector with a sharp static-shadow terminator or hard spotlight
   cutoff fails the gate and stays full-res — the two failure modes the owner named are refused by
   construction. Layer: compiler, post-hoc over the finished dense bake; never a runtime change.
 - **Downsample with a linear-space low-pass prefilter before decimation** (irradiance is linear HDR
   f32; the compiler's Mitchell-Netravali texture-mip downsample is a reuse candidate). Runtime
   reconstruction is the existing irradiance linear sampler — no runtime or format change.
+- **Coarsening level set = a fixed power-of-two ladder to a floor.** Levels are 2× downsample steps
+  from full-res (the 2× `downsample_2x_f32` filter) down to a defined coarsest floor — a fixed ladder
+  like the SH L0/L1/L2 track, not a free minimum chart dimension; fewer candidate layouts keep the
+  cache fingerprint simple and deterministic. The floor and step count are the Phase-1/2 tunable.
 - **≤1-level boundary grading** between adjacent sectors (`sh_coarsen.rs::smooth_pair`).
-- **Sector unit = per-BVH-leaf** (the packer groups charts by leaf, sizes a shared layer via
-  `choose_layer_dim`); per-chart is the finer alternative (Path).
+- **Sector unit = per-BVH-leaf** — the grain at which atlas footprint is banked, since the packer
+  sizes each shared layer per leaf. Per-chart is a finer alternative measured against per-leaf in
+  Phase 1, not an executor choice.
 - **No new content-facing surface this brief.** The `lightmap_protect_volume` FGD entity is dropped —
-  the automatic gate protects measurable hardness by construction, and a force-fine escape valve, if
-  Phase 2 needs one, reuses the shipped `_lightmap_scale` lever or a CLI-only protect flag, not a new
-  modder one-way door. The `_lightmap_scale` KVP and the post-hoc gate **compose**: the author sets a
-  region's starting density, the gate then coarsens from whatever that bake produced.
+  the automatic gate protects measurable hardness by construction. A force-fine escape valve is built
+  only if Phase 2 surfaces a near-threshold miss, and then as a CLI-only protect flag mirroring the
+  shipped `--sh-protect-aabb` — not `_lightmap_scale`, which is a density lever the gate coarsens
+  *from* and so cannot force a region fine, and not a new modder one-way door. The `_lightmap_scale`
+  KVP and the post-hoc gate still **compose**: the author sets a region's starting density, the gate
+  then coarsens from whatever that bake produced.
 - **Measurement characterizes, never gates the concept.** `--lightmap-analyze` is output-preserving
   (measure-and-report); it sizes the win and shows where coarsening acts. It is never a user setting.
 - **Non-goals:** true section-skip / a zero-static runtime path (coarsen-to-minimum reaches the empty
   case; a black atlas stays correct — the no-static placeholder is white and ungated, so a runtime
   zero-static path is deferred and riskier); occlusion-culling never-seen faces; a per-surface opt-out
-  flag; the direction and shadowmask atlases (irradiance only); denoise (analytic + deterministic bake).
+  flag; the direction and shadowmask atlases (irradiance only — irradiance is the BC6H-compact term
+under test and shares the SH gate's structure; the other atlases differ in format and frequency and
+have their own track); denoise (analytic + deterministic bake).
 
 ## Acceptance
 
@@ -67,8 +79,10 @@ Manual (measured findings — gate the Phase 2 decision, not thresholds):
 - [ ] Findings note (resource-bounds proof): recovered irradiance VRAM per map in MiB (BC6H at-rest
   id-22 irradiance blob) against the uncoarsened bake of the same map as baseline, from a `--release`
   cold bake, fixture set and machine class stated; AND its share of total lightmap + SH at-rest VRAM
-  (the exact section-id denominator pinned before the run); the inversion's cleanliness; a promote /
-  adjust / stop recommendation for the owner.
+  (the exact section-id denominator pinned before the run — reported for context, not a threshold);
+  the inversion's cleanliness; and a promote / adjust / stop recommendation, where **stop means only
+  a net regression (the change costs more than it saves) or an inversion that cannot be made clean** —
+  any net-positive recovery, however small, promotes.
 
 ### Phase 2 — shippable coarsening (gated on the Phase 1 note)
 Automated:
@@ -122,6 +136,7 @@ Manual:
   isn't knowable pre-bake, and a warm-approximate predictor breaks determinism.
 
 ## Open questions
-- Sector unit per-leaf vs per-chart — **delegated**.
-- Error-tolerance default and metric (rel_p95/rel_max vs perceptual) — **delegated**: conservative default; analyze pass + A/B tune it.
-- Phase 2 force-fine escape valve, if needed: reuse `_lightmap_scale`, a CLI-only protect flag, or none — **delegated** to the Phase 2 decision, informed by the Phase 1 note.
+- Per-chart vs per-leaf recovery — **measured in Phase 1**: the analyze pass reports recoverable per grain; per-leaf is committed, per-chart earns its place only if it recovers materially more.
+- Error-tolerance **default value** — **measured**: conservative start, A/B-tuned. (Metric is settled — rel_p95/rel_max, harmonized with SH; the A/B is the perceptual validation, not a rival metric.)
+- Level count and coarsest floor on the fixed power-of-two ladder — **measured** in Phase 1/2.
+- Force-fine escape valve — none unless Phase 2 surfaces a near-threshold miss, then the SH-style CLI protect flag.

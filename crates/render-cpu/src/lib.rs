@@ -14,6 +14,7 @@ pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
 pub mod sh_volume;
+pub mod surface_depth;
 
 pub mod fx {
     pub mod fog_volume;

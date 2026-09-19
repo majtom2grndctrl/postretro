@@ -10,27 +10,82 @@ pub fn mip_lod_max_clamp(mip_count: u32) -> f32 {
 
 pub const MATERIAL_UNIFORM_SIZE: usize = 32;
 
+/// Byte layout of the per-material uniform, mirrored EXACTLY by the
+/// `MaterialUniform` struct in both `forward.wgsl` and `kinematic_brush.wgsl`
+/// (`material_uniform_layout_is_mirrored_by_both_world_shaders` pins it):
+///
+/// ```text
+///   0..4   shininess                       16..20  surface_depth_meters
+///   4..8   emissive_strength               20..24  surface_depth_fade_distance
+///   8..16  _pad (vec2<f32>)                24..28  surface_depth_quantize_levels
+///                                          28..32  surface_depth_march (packed)
+/// ```
+///
+/// The second 16-byte row was already allocated and already zeroed before
+/// Surface Depth existed (`MATERIAL_UNIFORM_SIZE` has been 32 while the WGSL
+/// struct was 16), which is why this feature needs no buffer resize, no new
+/// binding, and no change to the 128-byte group-0 `Uniforms` ABI.
+///
+/// An all-zero second row is the flat material: depth 0, no fade, no steps,
+/// has-depth clear.
 pub fn build_material_uniform(
     shininess: f32,
     emissive_strength: f32,
+    surface_depth: crate::surface_depth::SurfaceDepthUniform,
 ) -> [u8; MATERIAL_UNIFORM_SIZE] {
     let mut bytes = [0u8; MATERIAL_UNIFORM_SIZE];
     bytes[0..4].copy_from_slice(&shininess.to_le_bytes());
     bytes[4..8].copy_from_slice(&emissive_strength.to_le_bytes());
+    bytes[16..20].copy_from_slice(&surface_depth.depth.depth_meters.to_le_bytes());
+    bytes[20..24].copy_from_slice(&surface_depth.depth.fade_distance_meters.to_le_bytes());
+    bytes[24..28].copy_from_slice(&(surface_depth.depth.quantize_levels as f32).to_le_bytes());
+    bytes[28..32].copy_from_slice(&surface_depth.march_word().to_le_bytes());
     bytes
 }
 
 #[cfg(test)]
 mod material_uniform_tests {
     use super::*;
+    use crate::surface_depth::{SURFACE_DEPTH_HAS_DEPTH_BIT, SurfaceDepthUniform};
+    use postretro_render_data::material::SurfaceDepth;
 
     #[test]
     fn material_uniform_packs_shininess_and_emissive_strength_in_first_row() {
-        let bytes = build_material_uniform(32.0, 4.0);
+        let bytes = build_material_uniform(32.0, 4.0, SurfaceDepthUniform::FLAT);
         assert_eq!(bytes.len(), MATERIAL_UNIFORM_SIZE);
         assert_eq!(&bytes[0..4], &32.0f32.to_le_bytes());
         assert_eq!(&bytes[4..8], &4.0f32.to_le_bytes());
+        assert!(bytes[8..16].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn a_flat_material_leaves_the_second_row_all_zero() {
+        // The pre-Surface-Depth contents of this buffer, byte for byte: an
+        // existing material must upload exactly what it used to.
+        let bytes = build_material_uniform(32.0, 4.0, SurfaceDepthUniform::FLAT);
         assert!(bytes[8..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn material_uniform_packs_surface_depth_in_the_second_row() {
+        let resolved = SurfaceDepthUniform::resolve(
+            SurfaceDepth {
+                depth_meters: 0.02,
+                quantize_levels: 12,
+                max_steps: 24,
+                fade_distance_meters: 14.0,
+            },
+            true,
+            11,
+            crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP,
+        );
+        let bytes = build_material_uniform(4.0, 0.0, resolved);
+        assert_eq!(&bytes[16..20], &0.02f32.to_le_bytes());
+        assert_eq!(&bytes[20..24], &14.0f32.to_le_bytes());
+        assert_eq!(&bytes[24..28], &12.0f32.to_le_bytes());
+        let march = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
+        assert_ne!(march & SURFACE_DEPTH_HAS_DEPTH_BIT, 0);
+        assert_eq!(march & 0xFF, 24);
     }
 }
 

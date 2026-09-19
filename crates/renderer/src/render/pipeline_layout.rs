@@ -26,6 +26,17 @@ use super::*;
 // name — all already declared in `forward.wgsl` for the static-light loop — and
 // declares no buffers of its own. Never reimplement the selection here.
 //
+// `surface_depth.wgsl` owns the Surface Depth texel-space parallax DDA. It is
+// the LOAD-BEARING parity seam between static world geometry and kinematic
+// brush movers: the SAME source string is concatenated into
+// `kinematic_brush.rs`, so the two passes cannot drift the way their duplicated
+// `sample_post_retro` bodies can. It declares no bindings — it resolves
+// `spec_texture` and `material` (group 1, bindings 2 and 3) by lexical name,
+// both already declared by each consumer, and takes camera-dependent inputs as
+// arguments because forward and the mover pass name their camera uniform
+// differently. It calls no derivative function: the consumer hoists `dpdx`/
+// `dpdy` and hands them in. Never reimplement the march in a consumer.
+//
 // `light_falloff.wgsl` owns model-aware distance attenuation. It is composed
 // independently because SDF K-selection needs only that helper.
 // `light_eval.wgsl` owns the remaining dynamic-tier per-light helpers
@@ -68,6 +79,8 @@ pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
+    "\n",
+    include_str!("../shaders/surface_depth.wgsl"),
     "\n",
 );
 

@@ -48,9 +48,11 @@ pub struct LoadedTexture {
     pub diffuse_texture: wgpu::Texture,
     pub diffuse_view: wgpu::TextureView,
     /// Owned alongside `specular_view`; views borrow the texture, so dropping
-    /// the texture invalidates the view. The renderer never reads
-    /// `specular_texture` directly — it samples via `specular_view`.
-    #[allow(dead_code)]
+    /// the texture invalidates the view. Shading samples through
+    /// `specular_view`; the texture itself is read only for its METADATA, by
+    /// `build_material_bind_group`, which decides Surface Depth's has-depth
+    /// flag from the slot's format (`Rg8Unorm` = a two-channel surface map) and
+    /// clamps the DDA's base mip to this slot's own uploaded chain.
     pub specular_texture: wgpu::Texture,
     pub specular_view: wgpu::TextureView,
     /// Owned alongside `normal_view`; same rationale as `specular_texture`.

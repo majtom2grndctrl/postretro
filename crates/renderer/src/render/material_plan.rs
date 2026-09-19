@@ -3,6 +3,7 @@
 
 use super::*;
 use postretro_render_cpu::material_plan::{build_material_uniform, mip_lod_max_clamp};
+use postretro_render_cpu::surface_depth::{SURFACE_DEPTH_RESIDENT_BASE_MIP, SurfaceDepthUniform};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MipSamplerFiltering {
@@ -77,6 +78,18 @@ fn create_mip_sampler(
     })
 }
 
+/// Whether a loaded specular slot carries Surface Depth's second channel.
+///
+/// `Rg8Unorm` is the surface map the level compiler bakes when a material has
+/// an `_h.png` sibling (R = specular, G = depth below the surface). Every other
+/// legal specular format is single-channel, and WGSL expands those to
+/// `(r, 0, 0, 1)` — `.g == 0`, i.e. flat — so the flag is belt-and-braces over
+/// a degradation that is already a no-op. It exists so a material without a
+/// height map skips the march instead of paying for an all-zero one.
+pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool {
+    matches!(format, wgpu::TextureFormat::Rg8Unorm)
+}
+
 pub(crate) fn build_material_bind_group(
     device: &wgpu::Device,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
@@ -85,7 +98,24 @@ pub(crate) fn build_material_bind_group(
     material: Material,
     label_prefix: &str,
 ) -> wgpu::BindGroup {
-    let uniform_bytes = build_material_uniform(material.shininess(), material.emissive_strength());
+    // Surface Depth's has-depth flag is decided HERE, from what actually
+    // loaded, not from the material prefix: only a two-channel `Rg8Unorm`
+    // specular slot is a surface map. A prefix that wants depth but whose
+    // `.prm` has no `_h.png` sibling binds the single-channel specular (or the
+    // 1x1 black placeholder) and must skip the march entirely rather than walk
+    // an all-zero field. The base mip is clamped to the slot's own uploaded
+    // chain so the shader's `textureLoad` level can never go out of range.
+    let surface_depth = SurfaceDepthUniform::resolve(
+        material.surface_depth(),
+        specular_slot_is_surface_map(loaded.specular_texture.format()),
+        loaded.specular_texture.mip_level_count(),
+        SURFACE_DEPTH_RESIDENT_BASE_MIP,
+    );
+    let uniform_bytes = build_material_uniform(
+        material.shininess(),
+        material.emissive_strength(),
+        surface_depth,
+    );
     let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),
         contents: &uniform_bytes,
@@ -129,6 +159,23 @@ pub(crate) fn build_material_bind_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_two_channel_surface_map_sets_the_has_depth_flag() {
+        assert!(specular_slot_is_surface_map(wgpu::TextureFormat::Rg8Unorm));
+        for other in [
+            wgpu::TextureFormat::R8Unorm,
+            wgpu::TextureFormat::Bc4RUnorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureFormat::Bc5RgUnorm,
+        ] {
+            assert!(
+                !specular_slot_is_surface_map(other),
+                "{other:?} is not a Surface Depth surface map"
+            );
+        }
+    }
 
     #[test]
     fn character_model_sampler_uses_nearest_magnification_and_linear_minification() {

@@ -194,6 +194,14 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 - **Fallback:** no `_h.png` bakes the historical single-channel `R8Unorm`
   specular slot, byte-identical to before. Content addressing folds height in
   only when it is present, so no existing `baked/materials/` sidecar rebakes.
+- **Runtime:** the absent-specular placeholder is unchanged and needs no
+  change — it is the same 1×1 black `R8Unorm` texel it always was, and WGSL's
+  `(r, 0, 0, 1)` expansion of a single-channel sample makes its depth channel
+  read 0, i.e. flat. Both slot formats bind through the same group-1 texture
+  entry (`Float { filterable: true }`), so no bind-group layout changes. The
+  surface map costs exactly twice the single-channel specular slot it replaces
+  and nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101
+  to 2,796,202 bytes across its 11 mip levels.
 
 ---
 

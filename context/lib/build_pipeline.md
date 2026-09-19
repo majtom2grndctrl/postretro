@@ -442,6 +442,21 @@ the widening is additive and every pre-existing `.prm` parses unchanged — and
 slot-mask bit is set if either sibling is present. See
 `resource_management.md` §4.6.
 
+**Byte accounting.** The `TextureMips` stage reports the texture memory a level
+costs, at `info` level: a grand total, a per-slot breakdown, a per-mip-level
+breakdown, and the largest few material bundles. The accounting primitive is
+`postretro-level-format::prm_accounting` — per material, per slot, per mip,
+derived from each slot's declared `(format, width, height, level_count)`
+without reading payload bytes, so it needs no wire-format change. It lives in
+`level-format` rather than beside `render-cpu`'s `level_byte_size` because
+`prl-build` and the renderer sit on opposite sides of the layering and
+`level-format` is the only crate below both; `level_byte_size` delegates to it
+so the format → bytes table has one definition. Reporting is deterministic
+(ordered by material name, never by hash-map iteration) and covers cache hits
+as well as fresh bakes, so a warm and a cold build report identically. This is
+accounting only — no budget, cap, or eviction — and is the intended foundation
+for asset streaming's per-mip residency decisions.
+
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
 space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT
 before filtering and re-encode via IEC 61966-2-1. Specular filters as linear

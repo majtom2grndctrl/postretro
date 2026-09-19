@@ -65,8 +65,34 @@ pub const RUNTIME_DYNAMIC_LIGHT_RESERVE: usize = 256;
 /// their full baked delta and are never promotion candidates.
 pub(crate) const MAX_ANIMATED_BAKED_LIGHTS: usize = 256;
 
+/// One installed world/mover material: its group-1 bind group plus the uniform
+/// buffer behind binding 3 and the GPU-free plan that fills it.
+///
+/// The buffer handle is RETAINED (Wave 3 dropped it) so the player's Surface
+/// Depth tier can be applied live by rewriting buffer contents rather than
+/// rebuilding bind groups. Ownership follows the level: this vector is replaced
+/// wholesale by `install_textures` and dropped with the level, so there is
+/// still no reference counting and nothing to release by hand
+/// (`resource_management.md` §8.2).
+///
+/// Skinned models deliberately do NOT flow through here: they are out of
+/// Surface Depth's scope (design D3), they bind `Material::Default` against a
+/// neutral single-channel specular placeholder, and their bind groups are
+/// owned by the mesh pass.
 pub(crate) struct GpuTexture {
     pub(super) bind_group: wgpu::BindGroup,
+    pub(super) uniform_buffer: wgpu::Buffer,
+    pub(super) uniform_plan: postretro_render_cpu::material_plan::MaterialUniformPlan,
+}
+
+impl From<super::material_plan::MaterialBinding> for GpuTexture {
+    fn from(binding: super::material_plan::MaterialBinding) -> Self {
+        Self {
+            bind_group: binding.bind_group,
+            uniform_buffer: binding.uniform_buffer,
+            uniform_plan: binding.uniform_plan,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -547,6 +573,16 @@ pub struct Renderer {
     /// affect the next full-renderer construction or level install; they never
     /// rebuild live GPU resources from the setter.
     pub(super) spot_shadow_map_resolution: u32,
+
+    /// Player-facing Surface Depth tier (design D5). Boot state, like the
+    /// bloom profile, so a full-renderer rebuild after surface recovery keeps
+    /// the player's choice instead of silently returning to the default.
+    ///
+    /// Unlike the shadow tier this DOES apply live: the setter rewrites every
+    /// installed material's uniform buffer. Holding it here is also what makes
+    /// a change with no level loaded correct — `install_textures` reads it when
+    /// the next level's materials are built.
+    pub(super) surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
 
     /// Renderer-owned boot splash pass: clears the swapchain and draws the
     /// decoded logo as a single textured quad. Independent of the UI pass — the

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
-use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality};
+use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality};
 use crate::input::InputSystem;
 
 pub(crate) const MOUSE_SENSITIVITY_SLOT: &str = "options.mouseSensitivity";
@@ -15,6 +15,7 @@ pub(crate) const VIEW_FEEL_SCALE_SLOT: &str = "options.viewFeelScale";
 pub(crate) const CROUCH_MODE_SLOT: &str = "options.crouchMode";
 pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
 pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
+pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
 
 const SAVE_DEBOUNCE_SECONDS: f32 = 0.250;
 
@@ -26,18 +27,21 @@ struct ObservedGenerations {
     crouch_mode: u64,
     shadow_quality: u64,
     fog_quality: u64,
+    surface_depth_quality: u64,
 }
 
 /// Live subsystem effects produced by accepted option-slot changes.
 ///
 /// Input effects are applied by the bridge before this report is returned.
-/// Fog stays typed until the app-side render-profile chokepoint translates the
-/// tier into renderer parameters. Shadow intentionally has no live effect.
+/// Fog and Surface Depth stay typed until the app-side render-profile
+/// chokepoint translates the tier into renderer parameters. Shadow
+/// intentionally has no live effect.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct OptionsApplyEffects {
     pub(crate) mouse_sensitivity: Option<f32>,
     pub(crate) invert_y: Option<bool>,
     pub(crate) fog_quality: Option<FogQuality>,
+    pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
 }
 
 /// Deterministic, session-lifetime synchronization state for `options.*`.
@@ -82,6 +86,11 @@ impl OptionsBridge {
             table,
             FOG_QUALITY_SLOT,
             SlotValue::Enum(options.fog_quality.slot_value().to_string()),
+        );
+        self.observed.surface_depth_quality = seed_slot(
+            table,
+            SURFACE_DEPTH_QUALITY_SLOT,
+            SlotValue::Enum(options.surface_depth_quality.slot_value().to_string()),
         );
     }
 
@@ -241,6 +250,21 @@ impl OptionsBridge {
             self.observed.fog_quality = generation;
         }
 
+        if let Some((generation, SlotValue::Enum(value))) = changed_value(
+            table,
+            SURFACE_DEPTH_QUALITY_SLOT,
+            &mut self.observed.surface_depth_quality,
+        ) {
+            if let Some(quality) = SurfaceDepthQuality::from_slot_value(value) {
+                if options.surface_depth_quality != quality {
+                    options.surface_depth_quality = quality;
+                    effects.surface_depth_quality = Some(quality);
+                    changed = true;
+                }
+            }
+            self.observed.surface_depth_quality = generation;
+        }
+
         changed
     }
 
@@ -332,6 +356,7 @@ mod tests {
             crouch_mode: CrouchMode::Toggle,
             shadow_quality: ShadowQuality::Low,
             fog_quality: FogQuality::High,
+            surface_depth_quality: SurfaceDepthQuality::Off,
             ..PlayerOptions::default()
         };
         let mut bridge = OptionsBridge::new();
@@ -361,6 +386,10 @@ mod tests {
         assert_eq!(
             table.get(FOG_QUALITY_SLOT).unwrap().value,
             Some(SlotValue::Enum("high".into()))
+        );
+        assert_eq!(
+            table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
+            Some(SlotValue::Enum("off".into()))
         );
     }
 
@@ -393,6 +422,13 @@ mod tests {
             table.get(FOG_QUALITY_SLOT).unwrap().value,
             Some(SlotValue::Enum(options.fog_quality.slot_value().into()))
         );
+        assert_eq!(
+            table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
+            Some(SlotValue::Enum(
+                options.surface_depth_quality.slot_value().into()
+            )),
+            "the slot default must agree with PlayerOptions' default (High)",
+        );
     }
 
     #[test]
@@ -405,6 +441,7 @@ mod tests {
         write(&ctx, CROUCH_MODE_SLOT, json!("toggle"));
         write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
         write(&ctx, FOG_QUALITY_SLOT, json!("high"));
+        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
 
         let table = ctx.slot_table.borrow();
         assert!(
@@ -430,11 +467,17 @@ mod tests {
             table.get(FOG_QUALITY_SLOT).unwrap().value,
             Some(SlotValue::Enum("high".into()))
         );
+        assert_eq!(
+            table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
+            Some(SlotValue::Enum("off".into()))
+        );
         drop(table);
 
         assert!(write_state_slot_json(&ctx, CROUCH_MODE_SLOT, &json!("invalid")).is_err());
         assert!(write_state_slot_json(&ctx, SHADOW_QUALITY_SLOT, &json!("ultra")).is_err());
         assert!(write_state_slot_json(&ctx, FOG_QUALITY_SLOT, &json!("ultra")).is_err());
+        // Surface Depth has no `medium`: the tiers are off/low/high.
+        assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("medium")).is_err());
         assert!(write_state_slot_json(&ctx, INVERT_Y_SLOT, &json!(1)).is_err());
         assert!(write_state_slot_json(&ctx, VIEW_FEEL_SCALE_SLOT, &json!(true)).is_err());
         assert!(write_state_slot_json(&ctx, "options.unknown", &json!(true)).is_err());
@@ -468,6 +511,8 @@ mod tests {
         assert_eq!(effects.mouse_sensitivity, Some(0.006));
         assert_eq!(effects.invert_y, None);
         assert_eq!(effects.fog_quality, None);
+        assert_eq!(options.surface_depth_quality, before.surface_depth_quality);
+        assert_eq!(effects.surface_depth_quality, None);
     }
 
     #[test]
@@ -542,6 +587,43 @@ mod tests {
         assert_eq!(options.fog_quality, FogQuality::High);
         assert_eq!(effects.fog_quality, Some(FogQuality::High));
         assert_eq!(options.shadow_quality, ShadowQuality::Low);
+        assert_eq!(
+            options.surface_depth_quality,
+            SurfaceDepthQuality::High,
+            "untouched slots keep their value",
+        );
+
+        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
+        let effects = bridge.update(
+            0.0,
+            &ctx.slot_table.borrow(),
+            &mut options,
+            &mut input,
+            None,
+        );
+        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::Off);
+        assert_eq!(
+            effects.surface_depth_quality,
+            Some(SurfaceDepthQuality::Off),
+            "the tier must be reported so the app can apply it live",
+        );
+        assert_eq!(effects.fog_quality, None);
+        assert_eq!(options.fog_quality, FogQuality::High);
+
+        // Returning to a richer tier reports too: the live path is two-way.
+        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("low"));
+        let effects = bridge.update(
+            0.0,
+            &ctx.slot_table.borrow(),
+            &mut options,
+            &mut input,
+            None,
+        );
+        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::Low);
+        assert_eq!(
+            effects.surface_depth_quality,
+            Some(SurfaceDepthQuality::Low)
+        );
     }
 
     #[test]

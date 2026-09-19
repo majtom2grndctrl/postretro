@@ -43,11 +43,82 @@ pub fn build_material_uniform(
     bytes
 }
 
+/// Everything needed to rebuild ONE material's uniform bytes at any quality
+/// tier, with no GPU access.
+///
+/// The renderer retains this beside each material's uniform buffer so the
+/// player-facing Surface Depth tier (design D5) can be applied live by
+/// rewriting the buffer — `queue.write_buffer`, not a bind-group rebuild
+/// (`resource_management.md` §8.2: handles are stable, nothing allocates during
+/// gameplay) and not a new group-0 uniform field (that struct is exactly 128
+/// bytes under a 4-way ABI contract).
+///
+/// The two texture facts are recorded at bind-group build time from the slot
+/// that ACTUALLY loaded, not from the material prefix, so a later rewrite
+/// cannot resurrect a carve for a material whose `.prm` has no height sibling.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialUniformPlan {
+    pub shininess: f32,
+    pub emissive_strength: f32,
+    /// The material prefix's own tuning, BEFORE any quality tier is applied.
+    /// Storing the untiered value is what lets a rewrite move up as well as
+    /// down: `Off` is not a one-way door.
+    pub surface_depth: postretro_render_data::material::SurfaceDepth,
+    /// The bound specular slot is a two-channel `Rg8Unorm` surface map.
+    pub specular_is_surface_map: bool,
+    /// Mip levels actually uploaded to that slot; clamps the DDA's base mip.
+    pub specular_mip_count: u32,
+    /// Residency's requested base mip (D6.2), today always
+    /// [`crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP`].
+    pub requested_base_mip: u32,
+}
+
+impl MaterialUniformPlan {
+    /// Plan one material against the slot that actually loaded.
+    pub fn new(
+        material: postretro_render_data::material::Material,
+        specular_is_surface_map: bool,
+        specular_mip_count: u32,
+    ) -> Self {
+        Self {
+            shininess: material.shininess(),
+            emissive_strength: material.emissive_strength(),
+            surface_depth: material.surface_depth(),
+            specular_is_surface_map,
+            specular_mip_count,
+            requested_base_mip: crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP,
+        }
+    }
+
+    /// The exact 32 bytes this material uploads at `quality`.
+    ///
+    /// Deterministic and total: the same plan and tier always produce the same
+    /// bytes, so a live rewrite and a fresh level install agree byte for byte.
+    pub fn uniform_bytes(
+        self,
+        quality: crate::surface_depth::SurfaceDepthQuality,
+    ) -> [u8; MATERIAL_UNIFORM_SIZE] {
+        build_material_uniform(
+            self.shininess,
+            self.emissive_strength,
+            crate::surface_depth::SurfaceDepthUniform::resolve(
+                self.surface_depth,
+                quality,
+                self.specular_is_surface_map,
+                self.specular_mip_count,
+                self.requested_base_mip,
+            ),
+        )
+    }
+}
+
 #[cfg(test)]
 mod material_uniform_tests {
     use super::*;
-    use crate::surface_depth::{SURFACE_DEPTH_HAS_DEPTH_BIT, SurfaceDepthUniform};
-    use postretro_render_data::material::SurfaceDepth;
+    use crate::surface_depth::{
+        SURFACE_DEPTH_HAS_DEPTH_BIT, SurfaceDepthQuality, SurfaceDepthUniform,
+    };
+    use postretro_render_data::material::{Material, SurfaceDepth};
 
     #[test]
     fn material_uniform_packs_shininess_and_emissive_strength_in_first_row() {
@@ -75,6 +146,7 @@ mod material_uniform_tests {
                 max_steps: 24,
                 fade_distance_meters: 14.0,
             },
+            SurfaceDepthQuality::High,
             true,
             11,
             crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP,
@@ -86,6 +158,137 @@ mod material_uniform_tests {
         let march = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
         assert_ne!(march & SURFACE_DEPTH_HAS_DEPTH_BIT, 0);
         assert_eq!(march & 0xFF, 24);
+    }
+
+    // -- Player quality tier (D5): the bytes a live rewrite uploads --
+
+    /// A carving material with a real surface map: the plan the renderer keeps
+    /// for a `.prm` whose specular slot baked to `Rg8Unorm`.
+    fn carving_plan() -> MaterialUniformPlan {
+        MaterialUniformPlan::new(Material::Concrete, true, 11)
+    }
+
+    #[test]
+    fn off_uploads_bytes_identical_to_a_material_with_no_surface_map() {
+        let plan = carving_plan();
+        // The same material as it would load with NO `_h.png` sibling: the
+        // pre-Surface-Depth bytes, byte for byte.
+        let flat_material_bytes = build_material_uniform(
+            Material::Concrete.shininess(),
+            Material::Concrete.emissive_strength(),
+            SurfaceDepthUniform::FLAT,
+        );
+
+        assert_eq!(
+            plan.uniform_bytes(SurfaceDepthQuality::Off),
+            flat_material_bytes,
+            "Off must be bit-identical to the flat path",
+        );
+        assert!(
+            plan.uniform_bytes(SurfaceDepthQuality::Off)[16..]
+                .iter()
+                .all(|&byte| byte == 0),
+            "Off must upload the historical all-zero second row",
+        );
+    }
+
+    #[test]
+    fn off_never_alters_the_first_row_any_tier_uploads() {
+        let plan = carving_plan();
+        let high = plan.uniform_bytes(SurfaceDepthQuality::High);
+        for quality in SurfaceDepthQuality::ALL {
+            assert_eq!(
+                plan.uniform_bytes(quality)[..16],
+                high[..16],
+                "{quality:?} must not disturb shininess/emissive_strength",
+            );
+        }
+    }
+
+    #[test]
+    fn each_tier_uploads_distinct_second_row_bytes() {
+        let plan = carving_plan();
+        let off = plan.uniform_bytes(SurfaceDepthQuality::Off);
+        let low = plan.uniform_bytes(SurfaceDepthQuality::Low);
+        let high = plan.uniform_bytes(SurfaceDepthQuality::High);
+        assert_ne!(off[16..], low[16..]);
+        assert_ne!(low[16..], high[16..]);
+        assert_ne!(off[16..], high[16..]);
+
+        // Low keeps the carve depth and the terracing, shortens the fade, and
+        // clears the self-shadow budget.
+        assert_eq!(low[16..20], high[16..20], "carve depth is unchanged at Low");
+        assert_eq!(
+            low[24..28],
+            high[24..28],
+            "quantization is unchanged at Low"
+        );
+        let low_fade = f32::from_le_bytes(low[20..24].try_into().unwrap());
+        let high_fade = f32::from_le_bytes(high[20..24].try_into().unwrap());
+        assert!(low_fade < high_fade && low_fade > 0.0);
+
+        let low_march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
+            low[28..32].try_into().unwrap(),
+        ));
+        let high_march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
+            high[28..32].try_into().unwrap(),
+        ));
+        assert!(low_march.has_depth && high_march.has_depth);
+        assert!(low_march.max_steps < high_march.max_steps);
+        assert_eq!(low_march.shadow_light_budget, 0);
+        assert!(high_march.shadow_light_budget > 0);
+        assert_eq!(low_march.base_mip, high_march.base_mip);
+    }
+
+    #[test]
+    fn a_material_with_no_surface_map_is_tier_independent() {
+        // The whole point of deciding has-depth from the LOADED slot: no
+        // quality tier may make a material without an `_h.png` sibling march.
+        let plan = MaterialUniformPlan::new(Material::Concrete, false, 11);
+        for quality in SurfaceDepthQuality::ALL {
+            assert!(
+                plan.uniform_bytes(quality)[16..].iter().all(|&b| b == 0),
+                "{quality:?} must leave a map-less material on the flat path",
+            );
+        }
+    }
+
+    #[test]
+    fn a_tier_change_is_reversible_byte_for_byte() {
+        // `Off` must not be a one-way door: the plan retains the material's own
+        // untiered tuning, so returning to High restores the exact bytes.
+        let plan = carving_plan();
+        let high = plan.uniform_bytes(SurfaceDepthQuality::High);
+        let _ = plan.uniform_bytes(SurfaceDepthQuality::Off);
+        let _ = plan.uniform_bytes(SurfaceDepthQuality::Low);
+        assert_eq!(plan.uniform_bytes(SurfaceDepthQuality::High), high);
+    }
+
+    #[test]
+    fn the_plan_records_the_first_row_from_the_material_prefix() {
+        let plan = MaterialUniformPlan::new(Material::Metal, true, 4);
+        let bytes = plan.uniform_bytes(SurfaceDepthQuality::High);
+        assert_eq!(&bytes[0..4], &Material::Metal.shininess().to_le_bytes());
+        assert_eq!(
+            &bytes[4..8],
+            &Material::Metal.emissive_strength().to_le_bytes()
+        );
+        assert_eq!(plan.surface_depth, Material::Metal.surface_depth());
+    }
+
+    #[test]
+    fn the_plan_clamps_the_base_mip_to_the_uploaded_chain() {
+        // A one-level chain (the placeholder shape) can only ever load level 0.
+        let plan = MaterialUniformPlan {
+            requested_base_mip: 9,
+            ..MaterialUniformPlan::new(Material::Concrete, true, 1)
+        };
+        let march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
+            plan.uniform_bytes(SurfaceDepthQuality::High)[28..32]
+                .try_into()
+                .unwrap(),
+        ));
+        assert_eq!(march.base_mip, 0);
     }
 }
 

@@ -656,6 +656,7 @@ pub(crate) fn build_placeholder_textures(
     queue: &wgpu::Queue,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     mip_count_aniso_samplers: &std::collections::HashMap<u32, wgpu::Sampler>,
+    surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
 ) -> (Vec<LoadedTexture>, Vec<GpuTexture>) {
     let mut loaded_textures: Vec<LoadedTexture> = Vec::new();
     let mut gpu_textures: Vec<GpuTexture> = Vec::new();
@@ -664,16 +665,21 @@ pub(crate) fn build_placeholder_textures(
         let aniso_sampler = mip_count_aniso_samplers
             .get(&1)
             .expect("mip_count 1 aniso seeded above");
-        let bind_group = build_material_bind_group(
+        // The placeholder's specular slot is the single-channel black 1x1, so
+        // this material is flat at every tier. The tier is still threaded in
+        // rather than defaulted, so there is exactly one rule for how a
+        // material's uniform bytes are produced.
+        let binding = build_material_bind_group(
             device,
             texture_bind_group_layout,
             &placeholder,
             aniso_sampler,
             Material::Default,
+            surface_depth_quality,
             "Placeholder Material",
         );
         loaded_textures.push(placeholder);
-        gpu_textures.push(GpuTexture { bind_group });
+        gpu_textures.push(binding.into());
     }
     (loaded_textures, gpu_textures)
 }

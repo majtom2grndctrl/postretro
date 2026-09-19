@@ -21,6 +21,7 @@ pub(crate) fn build_full_renderer(
     cube_array_supported: bool,
     bloom_render_profile: BloomRenderProfile,
     spot_shadow_map_resolution: u32,
+    surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
 ) -> Result<FullRenderer> {
     // Dummy buffers until `install_level_geometry` replaces them.
     let geometry: Option<&LevelGeometry> = None;
@@ -151,6 +152,7 @@ pub(crate) fn build_full_renderer(
         queue,
         &texture_bind_group_layout,
         &mip_count_aniso_samplers,
+        surface_depth_quality,
     );
 
     let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> =

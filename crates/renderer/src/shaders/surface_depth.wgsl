@@ -70,12 +70,18 @@ const SURFACE_DEPTH_MAX_STEPS_MASK: u32 = 0xFFu;
 const SURFACE_DEPTH_BASE_MIP_SHIFT: u32 = 8u;
 const SURFACE_DEPTH_BASE_MIP_MASK: u32 = 0xFu;
 const SURFACE_DEPTH_HAS_DEPTH_BIT: u32 = 0x1000u;
+// Per-fragment dynamic-light self-shadow budget. It rides the uniform rather
+// than a `const` because the player-facing quality tier (design D5) is applied
+// by rewriting this BUFFER — this engine has no shader-variant system, so a
+// tier that must switch the shadow march off has to reach the shader as data.
+// Zero means the second (shadow) DDA never runs.
+const SURFACE_DEPTH_SHADOW_BUDGET_SHIFT: u32 = 16u;
+const SURFACE_DEPTH_SHADOW_BUDGET_MASK: u32 = 0xFu;
 
 const SURFACE_DEPTH_FADE_LOD_START: f32 = 1.0;
 const SURFACE_DEPTH_FADE_LOD_RANGE: f32 = 2.0;
 const SURFACE_DEPTH_FADE_DISTANCE_FRACTION: f32 = 0.25;
 const SURFACE_DEPTH_AO_STRENGTH: f32 = 0.75;
-const SURFACE_DEPTH_SHADOW_LIGHT_BUDGET: u32 = 2u;
 const SURFACE_DEPTH_SHADOW_BIAS_M: f32 = 1.0e-4;
 const SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS: f32 = 0.5;
 
@@ -109,6 +115,10 @@ struct SurfaceDepthResult {
     depth_scale_m: f32,
     quantize_levels: f32,
     shadow_steps: u32,
+    // How many DYNAMIC lights this fragment may self-shadow, from the player's
+    // quality tier. Zero at `Low` and `Off`, and zero whenever `carved` is
+    // false, so the consumer's budget test also covers the flat path.
+    shadow_light_budget: u32,
     base_mip: u32,
     // UV axes in world space, and UV units per world meter along each. Derived
     // from the SAME Jacobian the meters->UV conversion uses, so the march's
@@ -131,6 +141,7 @@ fn surface_depth_flat(uv: vec2<f32>, world_position: vec3<f32>, geo_normal: vec3
     out.depth_scale_m = 0.0;
     out.quantize_levels = 0.0;
     out.shadow_steps = 0u;
+    out.shadow_light_budget = 0u;
     out.base_mip = 0u;
     out.tangent = vec3<f32>(1.0, 0.0, 0.0);
     out.bitangent = vec3<f32>(0.0, 1.0, 0.0);
@@ -385,6 +396,8 @@ fn surface_depth_resolve(
     // A shorter march than the view ray: self-shadow rays travel at most the
     // hit depth, and the budget is spent on the primary hit, not on lighting.
     out.shadow_steps = max(max_steps / 2u, 1u);
+    out.shadow_light_budget =
+        (packed >> SURFACE_DEPTH_SHADOW_BUDGET_SHIFT) & SURFACE_DEPTH_SHADOW_BUDGET_MASK;
     out.base_mip = base_mip;
     out.tangent = tangent;
     out.bitangent = bitangent;

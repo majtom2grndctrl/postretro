@@ -19,6 +19,7 @@ impl Renderer {
         prm_cache_root: &Path,
         texture_materials: &[Material],
     ) {
+        let surface_depth_quality = self.surface_depth_quality;
         let Self {
             device,
             queue,
@@ -62,15 +63,16 @@ impl Renderer {
                 .get(idx)
                 .copied()
                 .unwrap_or(postretro_render_data::material::Material::Default);
-            let bind_group = build_material_bind_group(
+            let binding = build_material_bind_group(
                 device,
                 &full.texture_bind_group_layout,
                 tex,
                 aniso_sampler,
                 material,
+                surface_depth_quality,
                 &format!("Material {idx}"),
             );
-            gpu_textures.push(GpuTexture { bind_group });
+            gpu_textures.push(binding.into());
         }
 
         if gpu_textures.is_empty() {
@@ -81,16 +83,17 @@ impl Renderer {
                 .mip_count_aniso_samplers
                 .get(&1)
                 .expect("mip_count 1 aniso sampler is seeded at Renderer::new");
-            let bind_group = build_material_bind_group(
+            let binding = build_material_bind_group(
                 device,
                 &full.texture_bind_group_layout,
                 &placeholder,
                 aniso_sampler,
                 postretro_render_data::material::Material::Default,
+                surface_depth_quality,
                 "Placeholder Material",
             );
             full.loaded_textures = vec![placeholder];
-            full.gpu_textures = vec![GpuTexture { bind_group }];
+            full.gpu_textures = vec![binding.into()];
             log::info!("[Renderer] Textures installed: 1 (placeholder fallback)");
             return;
         }
@@ -319,6 +322,7 @@ impl Renderer {
     ) -> Vec<(wgpu::BindGroup, std::ops::Range<u32>)> {
         let plan = plan_submesh_materials(&model.submeshes);
 
+        let surface_depth_quality = self.surface_depth_quality;
         let Self {
             device,
             queue,
@@ -342,14 +346,23 @@ impl Renderer {
                     .mip_count_character_model_samplers
                     .entry(tex.mip_count)
                     .or_insert_with(|| create_mip_character_model_sampler(device, tex.mip_count));
+                // Skinned models are outside Surface Depth's scope (design
+                // D3): they never bind the world material bundle's surface
+                // map — `load_model_diffuse_texture` binds the neutral
+                // single-channel specular placeholder — so their uniform is
+                // flat at every tier. The uniform buffer handle is therefore
+                // deliberately not retained; the bind group keeps the buffer
+                // alive and nothing will ever rewrite it.
                 build_material_bind_group(
                     device,
                     &full.texture_bind_group_layout,
                     &tex,
                     character_model_sampler,
                     Material::Default,
+                    surface_depth_quality,
                     &format!("Skinned Model Material {key_hex}"),
                 )
+                .bind_group
             })
             .collect();
 

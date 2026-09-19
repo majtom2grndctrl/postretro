@@ -347,6 +347,10 @@ fn sdk_path_string(path: &[&str]) -> String {
 const INPUT_MODE_VALUES: &[&str] = &["pointer", "focus"];
 const CROUCH_MODE_VALUES: &[&str] = &["hold", "toggle"];
 const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
+/// Surface Depth's tiers are off/low/high, not low/medium/high: the
+/// meaningful choices are "no march", "the primary march only", and "the full
+/// effect". See `context/lib/player_options.md` §4.
+const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "low", "high"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
@@ -618,6 +622,18 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "options.surfaceDepthQuality",
+        sdk_path: &["options", "surfaceDepthQuality"],
+        value_type: EngineStateValueType::Enum {
+            values: SURFACE_DEPTH_QUALITY_VALUES,
+        },
+        default: EngineStateDefault::Enum("high"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
         sdk_path: &["ui", "textEntry"],
         value_type: EngineStateValueType::String,
@@ -800,6 +816,7 @@ mod tests {
                 "options.invertY",
                 "options.mouseSensitivity",
                 "options.shadowQuality",
+                "options.surfaceDepthQuality",
                 "options.viewFeelScale",
                 "player.ammo",
                 "player.ammoReserve",
@@ -834,6 +851,7 @@ mod tests {
             "options.crouchMode",
             "options.shadowQuality",
             "options.fogQuality",
+            "options.surfaceDepthQuality",
         ] {
             let entry = entries
                 .iter()

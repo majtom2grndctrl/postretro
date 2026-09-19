@@ -119,6 +119,46 @@ impl FogQuality {
     }
 }
 
+/// Surface Depth (texel-space parallax) tier. Applies live: the renderer
+/// rewrites every installed material's uniform buffer, with no level reload.
+///
+/// Three tiers rather than the low/medium/high used by shadows and fog,
+/// because the meaningful choices here are "no march at all", "the primary
+/// march only", and "the full effect" — design D5.
+///
+/// Defaults to `High`. The feature is on by default; this setting exists as an
+/// escape hatch for hardware that struggles, not as an opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceDepthQuality {
+    /// Force flat — byte-identical to the pre-Surface-Depth render, zero cost.
+    Off,
+    /// The primary march only: side-face shading and depth AO are kept, with a
+    /// tighter step cap, a shorter fade, and no dynamic self-shadow march.
+    Low,
+    #[default]
+    High,
+}
+
+impl SurfaceDepthQuality {
+    fn slot_value(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::High => "high",
+        }
+    }
+
+    fn from_slot_value(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "low" => Some(Self::Low),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
 /// Per-human runtime preferences, persisted as TOML.
 ///
 /// Wire format is deliberately snake_case (serde default, no `rename_all`):
@@ -165,6 +205,11 @@ pub struct PlayerOptions {
     #[serde(default)]
     pub fog_quality: FogQuality,
 
+    /// Surface Depth (texel-space parallax) tier, applied live by rewriting the
+    /// per-material uniform buffers, and re-applied on renderer full-init.
+    #[serde(default)]
+    pub surface_depth_quality: SurfaceDepthQuality,
+
     /// Optional local override for the mod's cycle-selection dwell. `None`
     /// preserves the mod policy; an explicit zero selects immediately.
     #[serde(default)]
@@ -203,6 +248,7 @@ impl Default for PlayerOptions {
             crouch_mode: CrouchMode::default(),
             shadow_quality: ShadowQuality::default(),
             fog_quality: FogQuality::default(),
+            surface_depth_quality: SurfaceDepthQuality::default(),
             switch_cycle_dwell_ms: None,
             scroll_notch_pixels: default_scroll_notch_pixels(),
         }
@@ -349,6 +395,7 @@ mod tests {
         assert_eq!(a.crouch_mode, b.crouch_mode);
         assert_eq!(a.shadow_quality, b.shadow_quality);
         assert_eq!(a.fog_quality, b.fog_quality);
+        assert_eq!(a.surface_depth_quality, b.surface_depth_quality);
         assert_eq!(a.switch_cycle_dwell_ms, b.switch_cycle_dwell_ms);
         assert!(
             (a.scroll_notch_pixels - b.scroll_notch_pixels).abs() < EPSILON,
@@ -368,6 +415,7 @@ mod tests {
             crouch_mode: CrouchMode::Toggle,
             shadow_quality: ShadowQuality::Low,
             fog_quality: FogQuality::High,
+            surface_depth_quality: SurfaceDepthQuality::Off,
             switch_cycle_dwell_ms: Some(250),
             scroll_notch_pixels: 96.0,
         };
@@ -402,6 +450,7 @@ mod tests {
             crouch_mode: CrouchMode::Toggle,
             shadow_quality: ShadowQuality::Medium,
             fog_quality: FogQuality::Low,
+            surface_depth_quality: SurfaceDepthQuality::Low,
             switch_cycle_dwell_ms: Some(400),
             scroll_notch_pixels: 100.0,
         };
@@ -423,6 +472,52 @@ mod tests {
         assert!((loaded.mouse_sensitivity - DEFAULT_MOUSE_SENSITIVITY).abs() < EPSILON);
         assert!((loaded.view_feel_scale - 1.0).abs() < EPSILON);
         assert_eq!(loaded.player_id, None, "an absent key stays absent on load");
+        // Schema evolution: a settings.toml written before Surface Depth
+        // shipped must load with the feature ON, not silently disabled.
+        assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::High);
+    }
+
+    #[test]
+    fn surface_depth_quality_persists_as_a_snake_case_tier_name() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        for (tier, wire) in [
+            (SurfaceDepthQuality::Off, "off"),
+            (SurfaceDepthQuality::Low, "low"),
+            (SurfaceDepthQuality::High, "high"),
+        ] {
+            let options = PlayerOptions {
+                surface_depth_quality: tier,
+                ..PlayerOptions::default()
+            };
+            options.save(&path).unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains(&format!("surface_depth_quality = \"{wire}\"")),
+                "{tier:?} must persist as `{wire}`; got:\n{text}"
+            );
+            assert_eq!(PlayerOptions::load(&path).surface_depth_quality, tier);
+            assert_eq!(tier.slot_value(), wire);
+            assert_eq!(SurfaceDepthQuality::from_slot_value(wire), Some(tier));
+        }
+        assert_eq!(SurfaceDepthQuality::from_slot_value("ultra"), None);
+    }
+
+    #[test]
+    fn an_out_of_vocabulary_surface_depth_tier_falls_back_to_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "surface_depth_quality = \"medium\"\n").unwrap();
+
+        // A value outside the tier vocabulary is a parse failure, which the
+        // documented degradation turns into in-memory defaults with the file
+        // left untouched for the human to fix.
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::High);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "surface_depth_quality = \"medium\"\n"
+        );
     }
 
     #[test]
@@ -453,6 +548,7 @@ mod tests {
             crouch_mode: CrouchMode::Toggle,
             shadow_quality: ShadowQuality::Low,
             fog_quality: FogQuality::High,
+            surface_depth_quality: SurfaceDepthQuality::High,
             switch_cycle_dwell_ms: Some(500),
             scroll_notch_pixels: 80.0,
         };

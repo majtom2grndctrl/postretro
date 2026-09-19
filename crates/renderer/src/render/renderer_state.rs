@@ -21,6 +21,57 @@ impl Renderer {
         self.spot_shadow_map_resolution
     }
 
+    /// Apply the player's Surface Depth tier (design D5).
+    ///
+    /// Live and allocation-free: every installed world/mover material's uniform
+    /// BUFFER is rewritten in place with `queue.write_buffer`. Bind groups,
+    /// bindings, and the 128-byte group-0 `Uniforms` ABI are all untouched, so
+    /// nothing allocates during gameplay (`resource_management.md` §8.2) and
+    /// the change needs no level reload.
+    ///
+    /// Movers are covered by construction: kinematic brushes draw through the
+    /// same `gpu_textures` bundle the static world does.
+    ///
+    /// Also retained in boot state, which covers the two cases a live rewrite
+    /// cannot: a change made with no level loaded (or before full init), which
+    /// `install_textures` picks up when the next level's materials are built,
+    /// and a full-renderer rebuild after surface recreation.
+    pub fn set_surface_depth_quality(
+        &mut self,
+        quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
+    ) {
+        if self.surface_depth_quality == quality {
+            return;
+        }
+        self.surface_depth_quality = quality;
+        let Self { queue, full, .. } = self;
+        // No full renderer yet (boot splash phase): there are no material
+        // buffers to rewrite, and `build_full_renderer` reads the retained
+        // value when it builds them.
+        let Some(full) = full.as_mut() else {
+            return;
+        };
+        for gpu_texture in &full.gpu_textures {
+            rewrite_material_surface_depth(
+                queue,
+                &gpu_texture.uniform_buffer,
+                gpu_texture.uniform_plan,
+                quality,
+            );
+        }
+        log::info!(
+            "[Renderer] Surface Depth quality: {quality:?} ({} materials)",
+            full.gpu_textures.len()
+        );
+    }
+
+    /// The Surface Depth tier currently applied to every installed material.
+    pub fn surface_depth_quality(
+        &self,
+    ) -> postretro_render_cpu::surface_depth::SurfaceDepthQuality {
+        self.surface_depth_quality
+    }
+
     /// Update the static bloom style used by the next scene frame. The value is
     /// retained in boot state so a later full-renderer rebuild keeps the active
     /// profile rather than silently returning to the default.

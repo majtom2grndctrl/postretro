@@ -12456,7 +12456,7 @@ mod tests {
         );
         assert!(options_grids.iter().all(|grid| grid.cols == 2));
         assert_eq!(options_grids[0].children.len(), 8);
-        assert_eq!(options_grids[1].children.len(), 4);
+        assert_eq!(options_grids[1].children.len(), 6);
         assert!(
             options_grids
                 .iter()

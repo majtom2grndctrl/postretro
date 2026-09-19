@@ -151,16 +151,18 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
 ## Docs and tools in the bundle
 
 - `docs/level_design.md` — TrenchBroom entities, lights, fog volumes,
-  textures, map sealing.
+  textures (including specular and Surface Depth height maps), map sealing.
 - `docs/scripting-reference.md` — the scripting API surface.
 - `docs/weapon-mounts.md` — rigid weapon mount authoring workflow.
 - `docs/diagnostics.md` — runtime diagnostic keyboard chords.
 - `docs/distribution.md` — this same guide, for when you're ready to ship a
   player build.
-- `tools/` — Python asset helpers (specular/normal/emissive map generation,
-  model rebaking, etc.). These need Python plus a small virtual environment;
-  see `tools/README.md`'s "Python tool setup" section in the bundle before
-  running them.
+- `tools/` — asset helpers. The Python ones (specular/normal/emissive map
+  generation, model rebaking, etc.) need Python plus a small virtual
+  environment; see `tools/README.md`'s "Python tool setup" section in the
+  bundle before running them. `tools/texture-tool` is a Rust tool that writes
+  a whole diffuse/specular/normal/height bundle in one run and needs `cargo`;
+  see `tools/texture-tool/README.md`.
 
 ## Shipping a finished mod
 

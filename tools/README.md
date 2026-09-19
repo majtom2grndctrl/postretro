@@ -1,7 +1,7 @@
 # tools/
 
-Developer-side helpers for the Postretro project. These are not shipped with the engine
-and are not built by `cargo`.
+Developer-side helpers for the Postretro project. The Python scripts here are not built
+by `cargo`; `texture-tool/` is a Cargo crate and is the one exception.
 
 ## Contents
 
@@ -47,6 +47,17 @@ Then bake the atlas into the runtime `.prm` cache:
 ```sh
 cargo run -p xtask -- bake-model-textures <out.gltf>
 ```
+
+### `texture-tool/`
+
+Rust PNG processor that writes a whole world-material bundle — diffuse, `_s`
+specular, `_n` normal, and `_h` height (Surface Depth) — from one source image,
+at a chosen size and quantization. Unlike the scripts above it is Cargo-built,
+not Python:
+`cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- --help`.
+Flags, spec profiles, and the batch-manifest format:
+`tools/texture-tool/README.md`. Author-facing height-map guidance:
+`docs/level_design.md` §Surface Depth.
 
 ### `scripts/`
 

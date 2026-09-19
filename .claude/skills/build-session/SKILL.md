@@ -1,160 +1,158 @@
 ---
 name: build-session
 description: >
-  Runs a feature conversation, then orchestrates agents to build it in the
-  same session. Surfaces the owner's blind spots on details that change the
+  Runs a feature conversation, then builds it in the same session — working
+  directly, and dispatching parallel agents for tracks that are genuinely
+  independent. Surfaces the owner's blind spots on details that change the
   details they care about, writes a design contract every agent reads before
-  dispatch, runs implementation waves, and folds durable decisions into
-  context/lib as each wave lands. Use when the user wants to talk a feature
-  through and have it built now, without a spec.
+  dispatch, and folds durable decisions into context/lib as each track lands.
+  Use when the user wants to talk a feature through and have it built now,
+  without a spec.
 disable-model-invocation: true
 argument-hint: "[feature]"
 ---
 
 # Build Session
 
-Two moves: settle the design with the owner, then orchestrate the build.
+Two moves: settle the design with the owner, then build it.
 
-Process is yours to choose. Wave shape, agent count, slice boundaries, how much you verify between waves — judgment calls, and you have better information than this file does. The rules below are the ones that cost real work when broken.
-
-**You coordinate. Agents produce.** Every tool call spent building is context not spent holding the whole file map.
+Process is yours to choose. Track boundaries, how wide to go, when to stop — judgment calls, and you have better information than this file does. The rules below are the ones that cost real work when broken.
 
 ## 1. Conversation
 
-The owner cares about a few details. Not all of them. Your job is to get up to speed from the repo, not from their turns.
+The owner cares about a few details. Not all of them. Get up to speed from the repo, not from their turns.
 
 - Route through `context/lib/index.md`, read the two or three docs that matter, then read source. Grounding is yours.
-- **Find the blind spots.** Name the unraised details that change the details they *did* raise. Carry each one as a recommendation with its consequence — "X means Y; I'd do Z" — not as an open question. Two or three, not a questionnaire.
+- **Find the blind spots.** Name the unraised details that change the details they *did* raise. Carry each as a recommendation with its consequence — "X means Y; I'd do Z" — not as an open question. Two or three, not a questionnaire.
 - Ask only what the repo cannot answer: product behavior, policy, a modder-facing surface, a one-way door. Recommend a direction with every question.
 - Everything else: decide from project context, state the call in one line, keep moving.
 
 A detail the owner never raised, touching nothing they did raise, is yours to settle silently.
 
+End the conversation with the whole specification settled. Long-horizon work goes best when the complete task spec exists in one place before execution starts, rather than accumulating across interactive turns.
+
 ## 2. Design contract
 
 Before any dispatch, write `context/plans/in-progress/<slug>-contract.md`. Every agent reads this file first, before its own brief.
 
-Agents that share a written contract build compatible pieces with zero communication; agents inferring the design from their own prompt do not.
+Agents that share a written contract build compatible pieces with zero communication; agents inferring the design from their own prompt do not. A prompt also drifts as you retype it across tracks. A file does not.
 
 Contents:
 
 - Goal — one orienting paragraph.
 - Decisions from the conversation, each with the consequence that makes it load-bearing.
 - Invariants no agent may break: names, units, orderings, budgets, conventions.
-- File ownership per slice.
-- Acceptance per slice.
+- File ownership per track.
+- Acceptance per track, as commands with expected output wherever it can be one.
 - Open questions, marked as open.
 
 Pin every convention with two plausible readings, even the ones obvious to you: height vs. depth, 0- vs. 1-based, units, byte order, which side of a seam owns a clamp. Two agents guessing opposite ways is a silent integration bug.
 
-A prompt drifts as you retype it across waves. A file does not.
+Match the contract's length to the decisions it carries. Padding it with restated background, redundant summaries, or boilerplate sections costs every agent that reads it.
 
-Written once, before dispatch. Amended in the file when a wave changes a decision — and amended *before* the next dispatch, not after.
+Amend the file when a track changes a decision — before the next dispatch, not after.
 
-## 3. Waves
+## 3. Build
 
-Verification is the expensive part. An agent iterating until a named set of checks passes can run several hundred thousand tokens. That price is worth paying for a wire format, a GPU path, or a cache key. For lower-stakes work shorten the check list — never swap it for "make sure it's right," which costs nearly as much and proves nothing.
+**Do the work yourself by default.** A subagent re-establishes context from nothing, re-explores, reports back, and then you read the report. Anything you could finish in a handful of tool calls is cheaper and more reliable done directly — a few file reads, a handful of edits, a focused search, a check.
 
-### Briefing
+**Dispatch for genuinely independent, sizeable tracks.** Separate modules, a wide multi-file investigation, work that does not touch what you are touching. There the parallelism is real and the overhead is repaid. Give each track a whole vertical slice with its own acceptance, never one agent per file or per step.
 
-**Brief for intent, not procedure.** Give the whole slice up front: outcome, constraints that must hold, acceptance, and the contract. Then stop. Ordered step lists, prescribed search strategies, and told-you-how decomposition lower output quality. They compensate for a weakness the agent does not have.
+**Keep the count low, and send them together.** One agent beats several on the same job. Launch independent tracks in a single message so they run concurrently. Never split one modest job across parallel agents.
 
-**State constraints alongside instructions, even when the instruction already satisfies them.** This redundancy is what lets an agent catch you. "Put byte accounting in `render-cpu`" paired with "no upward crate edges, `layering_invariants_hold` enforces it" gets refused and corrected. The same instruction alone gets followed, and the breakage surfaces later as a mysterious regression. An unstated constraint turns the agent into an amplifier of your errors instead of a check on them.
+**Brief precisely the first time.** Launching, waiting, and re-briefing costs a full context rebuild each round. Give the whole slice up front — outcome, constraints, acceptance, the contract — then let it run.
 
-**Describe a defect by its symptom and how you found it** — never by file and line. A location inherited from another report is a hypothesis you are laundering into a fact. An agent told "the defect is at `smoke.rs:263`" looks there. An agent told "a surface-map `.prm` renders as a placeholder, and here is why I believe that" reproduces first, and finds the real fault next door.
+**Commit to the dispatch.** When a track reports, do not redo its work or re-derive its findings.
 
-**Mark hard constraints apart from preferences.** A hard constraint breaks the build or the design when violated. Name it as one, justify it, and expect the agent to turn it into a test assertion that binds every future change. A preference stated in the same register gets enforced just as hard, and costs the flexibility you wanted.
+### What goes in a brief
 
-**Give the whole contract.** Withholding it to save context is a false economy, and an agent that infers a decision guesses differently than the one next to it. Other agents' briefs stay out — irrelevant, not expensive.
+**Intent, not procedure.** Ordered step lists, prescribed search strategies, and told-you-how decomposition lower output quality. They compensate for a weakness the agent does not have.
 
-**Slice whole, not small.** One agent per coherent vertical slice with its own acceptance. Not one per file, not one per step. Handoff overhead between micro-tasks costs more than the tasks do.
+**Constraints alongside instructions, even when the instruction already satisfies them.** This redundancy is what lets an agent catch you. "Put byte accounting in `render-cpu`" paired with "no upward crate edges, `layering_invariants_hold` enforces it" gets refused and corrected. The same instruction alone gets followed, and the breakage surfaces later as a mysterious regression. An unstated constraint turns the agent into an amplifier of your errors instead of a check on them.
 
-**Do not ask for verification — `opus` already does it.** It verifies its own work unprompted. Telling it to verify, re-check, or confirm buys over-verification with no gain in coverage, so delete that scaffolding rather than rewording it. This inverts the usual self-check advice and is a per-model carve-out: `fable` is the opposite and wants an explicit checking harness run on a cadence.
+**A defect by its symptom and how you found it** — never by file and line. A location inherited from another report is a hypothesis you are laundering into a fact. An agent told "the defect is at `smoke.rs:263`" looks there. An agent told "a surface-map `.prm` renders as a placeholder, and here is why I believe that" reproduces first, and finds the real fault next door.
 
-What still belongs in a brief is the **gate**, not the instruction to be careful: the named checks the work must pass, as commands with expected output. "Iterate until these greps return empty" is a task. "Double-check your work" is a tax.
+**Hard constraints marked apart from preferences.** A hard constraint breaks the build or the design when violated. Name it as one, justify it, and expect the agent to turn it into a test assertion that binds every future change. A preference stated in the same register gets enforced just as hard, and costs the flexibility you wanted.
 
-### Reports
+**The acceptance gate as commands with expected output.** "Iterate until these greps return empty" is a task.
 
-What you require back is as load-bearing as what you dispatch.
+**No instruction to verify.** `opus` verifies its own work unprompted; telling it to verify, re-check, or confirm buys extra work and no coverage. Delete that scaffolding rather than rewording it. This inverts the usual self-check advice and rides on the tier — `fable` is the opposite and wants an explicit checking harness on a cadence.
 
-- **What the agent could not verify, and where it would look first.** Require this section. A wave's most valuable output is often the edge it could not reach — a GPU-only behavior, a timing window, a path with no fixture. That list is your first stop when the thing finally runs.
-- **Environment findings, forwarded.** A lint that already fails on unmodified HEAD, a missing system package, a target dir that fills the disk. Carry each into the next wave's brief. Otherwise every agent rediscovers the same pothole at full price.
-- **Artifacts, not only tests.** Tests prove the code does what it says; an artifact proves the thing works. Ask for both, separately. When the artifact is an image, require the agent to look at it — a generated depth map that merely traces albedo passes every distribution check.
+**Scope discipline, when a track has room to wander.** Deliver what was asked at the scope intended; make routine judgment calls; say so in a sentence and keep going if the ask looks mistaken, rather than quietly narrowing or widening it; report completion only when it is actually done.
+
+### What to require back
+
+- **What the agent could not verify, and where it would look first.** Asking what it *couldn't* reach is not asking it to verify. A track's most valuable output is often the edge it could not test — a GPU-only behavior, a timing window, a path with no fixture. That list is your first stop when the thing runs.
+- **Environment findings, forwarded.** A lint that already fails on unmodified HEAD, a missing system package, a target dir that fills the disk. Carry each into the next brief. Otherwise every agent rediscovers the same pothole at full price.
+- **Artifacts, not only tests.** Tests prove the code does what it says; an artifact proves the thing works. When the artifact is an image, require the agent to look at it — a generated depth map that merely traces albedo passes every distribution check.
+- **Compile-forced spillover, reported.** Adding an enum variant breaks exhaustive matches elsewhere. The minimal change that keeps the workspace compiling is allowed outside a brief, and must be flagged. A strict lane that leaves the tree uncompilable is worse.
 
 ### Sizing
 
-Set `model:` on every Agent call. Omitting it inherits the session model: top tier spent on plumbing, or a contract slice handed to a scout.
+Set `model:` on every Agent call. Omitting it inherits the session model: top tier spent on plumbing, or a contract track handed to a scout.
 
-Split on blast radius, never on size. Does the slice **establish** a contract that other code consumes — a format, a binding layout, a cache key, a cross-crate seam? Or does it **execute inside** one already settled?
+Split on blast radius, never on size. Does the track **establish** a contract that other code consumes — a format, a binding layout, a cache key, a cross-crate seam? Or does it **execute inside** one already settled?
 
 | `model:` | Use for |
 |---|---|
 | `opus` | Establishing contracts, seams, layouts. Ambiguity resolved by reading code. |
 | `sonnet` | Execution inside a settled contract, however large. Tests for specified behavior. |
-| `haiku` | Read-only scouting, call-site sweeps, fact-finding. |
-| `fable` | A reasoning slice that genuinely exceeds `opus`. Rare; costs accordingly. |
+| `haiku` | Read-only sweeps too wide to run yourself. |
+| `fable` | A reasoning track that genuinely exceeds `opus`. Rare; costs accordingly. |
 
-The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it. Verification posture rides on this choice: see **Briefing** for what each tier wants.
+The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it.
 
-### Standing rules
+### Load-bearing facts
 
-**Only you spawn agents that write files.** Workers may spawn read-only agents freely; a worker fanning out to find call sites is good. Workers never spawn writers. You cannot see your grandchildren — only an aggregate report from the parent. So you cannot partition file ownership among agents you did not create, and you cannot stop one misbehaving agent without killing its parent. Depth 2 for writes, unlimited for reads.
-
-**In-flight verification stays in your loop.** Never spawn an agent to check a wave's work while the wave is running. A verifier subagent re-establishes context from nothing, re-explores, and returns a judgment formed without your history — which is how a reviewer produces confident findings on a file it never opened. The landing review in §5 is the one sanctioned exception, and it carries that cost; nothing mid-wave does. Keep spawn counts low throughout — `opus` over-delegates left to itself.
-
-**Commit to the delegation.** Once a worker reports, do not redo its work or re-derive its findings. Reading source to settle a load-bearing fact is not redoing the work — that is a two-line check, not a re-implementation.
-
-**Two scouts on load-bearing facts. You resolve conflicts from source.** Any fact the design turns on — a budget, a limit, a capability, an asserted invariant — gets two independent reads. When they disagree, open the file yourself. Do not trust the more recent report, or the more confident one. A stale comment sitting directly above the assert it describes reads exactly like the truth.
-
-**Compile-forced spillover is allowed, and must be reported.** Adding an enum variant breaks exhaustive matches elsewhere. An agent makes the minimal change that keeps the workspace compiling, even outside its brief, and flags it in its report. A strict lane rule that leaves the tree uncompilable is worse. Use those reports to narrow the next wave's briefs.
-
-**Every agent reads `context/lib/context_style_guide.md` and `development_guide.md` §2.** Style governs code comments and any prose the agent writes; §2 governs file size and splitting. Slicing whole makes god files the likely failure — a worker authoring new modules never edits an already-large file, so nothing trips the usual threshold.
+Read them from source yourself. A budget, a limit, an asserted invariant — anything the design turns on is two tool calls, and you are the one who has to hold it. Dispatch a scout only when *finding* the fact needs a wide sweep, and open the file yourself before designing against what it returns. A stale comment sitting directly above the assert it describes reads exactly like the truth.
 
 ### Repo physics
 
-Not model-generational — these are the machine's limits.
+The machine's limits, not the roster's.
 
-- Parallelism is bounded by the build graph, not the file list. Two agents editing disjoint files in one workspace still share a target dir: they contend on its lock and can compile against each other's half-written edits. Isolated worktrees with separate target dirs are the fix; a separate workspace (`tools/`) or a directory with no build at all (`content/`) parallelizes freely.
-- Concurrent agents in isolated worktrees cap at **3** (`development_guide.md`, "Concurrent agents in isolated worktrees"). Beyond that, parallel engine builds exhaust CPU and disk, and correct work fails on linker errors. Need more width? Batch the next group after the first merges.
-- A fresh worktree's first build is the engine's most expensive compile. Concurrent agents skip `cargo check` and tests entirely; verification lands once, after merge, against the integration branch's warm target. Sequential agents work on the branch directly and test as they go.
-- Focused tests only: `cargo test -p <crate> <filter>`, narrowed to one target (`--lib`, or `--bin prl-build` for `postretro-level-compiler`). Require the test count in the report — a filter matching nothing prints `0 passed` and exits `ok`. Never `-- --ignored` in a routine pass; those are the ~5–7 min cold bakes.
+- Parallelism is bounded by the build graph, not the file list. Two agents editing disjoint files in one workspace still share a target dir: they contend on its lock and can compile against each other's half-written edits. Isolated worktrees with separate target dirs are the fix; a separate workspace (`tools/`) or a directory with no build (`content/`) parallelizes freely.
+- Concurrent agents in isolated worktrees cap at **3** (`development_guide.md`, "Concurrent agents in isolated worktrees"). Beyond that, parallel engine builds exhaust CPU and disk, and correct work fails on linker errors. Batch the next group after the first merges.
+- A fresh worktree's first build is the engine's most expensive compile. Worktree agents skip `cargo check` and tests; verification lands once, after merge, against the integration branch's warm target. Work on the branch directly and you inherit the warm target and test as you go.
+- Focused tests only: `cargo test -p <crate> <filter>`, narrowed to one target (`--lib`, or `--bin prl-build` for `postretro-level-compiler`). Require the test count — a filter matching nothing prints `0 passed` and exits `ok`. Never `-- --ignored` in a routine pass; those are the ~5–7 min cold bakes.
 
-## 4. Context maintenance, per wave
+**Every agent reads `context/lib/context_style_guide.md` and `development_guide.md` §2.** Style governs code comments and any prose; §2 governs file size and splitting. Whole-slice tracks make god files the likely failure — an agent authoring new modules never edits an already-large file, so nothing trips the usual threshold.
 
-When a wave lands: merge, verify, then fold what it made durable into `context/lib/` — before the next dispatch.
+## 4. Context maintenance
 
-Deferring every context edit to the end has two costs: the next wave reads a stale library, and you finish writing from memory instead of from code.
+When a track lands: merge, then fold what it made durable into `context/lib/` before the next dispatch. Defer it all to the end and the next agent reads a stale library, while you write from memory instead of from code.
 
-Record only what survives refactoring. A sentence that breaks when a file is renamed belongs in a code comment, not in `context/`. Update the `index.md` router when a wave adds a concept someone would search for. Amend the contract with anything the wave changed.
+Record only what survives refactoring. A sentence that breaks when a file is renamed belongs in a code comment. Update the `index.md` router when the work adds a concept someone would search for. Amend the contract with anything that changed.
 
 ## 5. Landing
 
-`/review-panel` → `/fix-review-findings` → `/preflight` once, as the single full-suite gate. Report findings to the owner before acting on the ambiguous ones.
+`/review-panel` → `/fix-review-findings` → `/preflight` once, as the single full-suite gate.
 
-A review panel is subagents judging code they did not write, so it fails in a known way: a confident finding about a file the reviewer never opened. Require every finding to quote the line it concerns and name the file and symbol. Drop any finding whose quote you cannot locate in the tree — that is verifying a citation, not re-deriving the work. Fix what survives; do not re-argue it.
+Ask the panel for everything it finds with a confidence and severity on each, and filter afterwards. A review brief that says "only report what's important" gets followed literally, and real findings go unreported.
 
-Record each acceptance row's result and any outstanding manual proof in the PR body. Then move the contract to `context/plans/done/`, or delete it once `context/lib/` fully absorbs it.
+Require each finding to quote the line and name the file and symbol. Drop any finding whose quote you cannot locate in the tree — checking a citation is not re-deriving the work. Report the survivors to the owner before acting on the ambiguous ones.
+
+Record each acceptance row's result and any outstanding manual proof in the PR body. Move the contract to `context/plans/done/`, or delete it once `context/lib/` absorbs it.
+
+## Reporting to the owner
+
+The owner reads your text between tool calls and sees neither your thinking nor the raw results. Lead with the outcome — what happened, what you found — then the detail. Say what you are about to do before a long dispatch, and speak up mid-track when you hit something load-bearing or change direction. Write in complete sentences, spelled out, without shorthand or labels they would have to cross-reference.
 
 ## Never
 
-- Never write a step-by-step procedure into an agent brief.
-- Never give an instruction without the constraint that would catch it if it is wrong.
-- Never withhold the contract to save an agent's context.
-- Never split a coherent slice to make the pieces smaller.
+- Never dispatch an agent for work you could finish in a handful of tool calls.
+- Never split one modest job across parallel agents.
+- Never launch, wait, then re-brief — the whole slice goes in the first brief.
+- Never redo a track's work after it reports.
 - Never ask an agent to verify, re-check, or confirm its own work.
-- Never spawn an agent to review another agent's output.
-- Never redo a worker's work after it reports.
+- Never write a step-by-step procedure into a brief.
+- Never give an instruction without the constraint that would catch it if it is wrong.
 - Never hand an agent a file and line for a defect you have not reproduced.
 - Never state a preference in the register of a hard constraint.
-- Never accept a report with no "could not verify" section.
-- Never let a wave's environment findings die in its report.
-- Never omit `model:` on an Agent call.
-- Never let a worker spawn a writing agent.
-- Never design against a single scout's read of a load-bearing fact.
-- Never resolve a scout conflict by picking a report. Open the source.
+- Never tell a reviewer to report only what matters.
+- Never design against a fact you have not read in source.
 - Never dispatch before the contract file exists.
 - Never let an agent infer a decision that belongs in the contract.
-- Never dispatch a wave against a contract an earlier wave invalidated.
+- Never dispatch against a contract an earlier track invalidated.
 - Never interrogate the owner on details the repo already settles.
 - Never present a blind spot as an open question when you have a recommendation.
 - Never make a product or architectural decision on the owner's behalf. Surface it.

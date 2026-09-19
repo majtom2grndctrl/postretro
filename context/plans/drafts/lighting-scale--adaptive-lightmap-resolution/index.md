@@ -54,30 +54,56 @@ build-to-learn gate first, the shippable coarsening only if the gate returns gre
 
 ### Phase 1 — gate (committed)
 Automated (honesty gates):
-- [ ] `--lightmap-analyze` runs on `campaign-test`, `closet-reveal`, and a hard-spotlight fixture and
-  emits, per sector, the coarsest level passing the reconstruction-error gate, its error, and
-  recovered texels/bytes.
+- [ ] `--lightmap-analyze` runs on `campaign-test`, `closet-reveal`, and a hard-spotlight fixture
+  (fixture to author — no hard-spotlight map exists in `content/` today) and emits, per sector, the
+  coarsest level passing the reconstruction-error gate, its error, and recovered texels/bytes.
 - [ ] Output-preserving: emitted PRL bytes identical with and without the flag.
-- [ ] One-leaf inversion proof: a full-bake→downsample-one-leaf→repack path yields a correct atlas
-  whose cache key reflects the final (post-coarsen) layout; two `--no-cache` runs are byte-identical.
+- [ ] One-leaf inversion proof (ordering pin R1): a full-bake→downsample-one-leaf→repack path, on a
+  leaf that coarsens ≥1 level, yields a correct atlas whose cache key reflects the final
+  (post-coarsen) layout AND differs from the pre-coarsen fingerprint, so a stale pre-coarsen entry is
+  never reused; two `--no-cache` runs are byte-identical.
 
 Manual (measured findings — gate the Phase 2 decision, not thresholds):
-- [ ] Findings note: recovered irradiance VRAM per map AND its share of total lightmap + SH VRAM (so
-  materiality against the 1660 goal is visible, per the reviewer's L1 concern); the inversion's
-  cleanliness; a promote / adjust / stop recommendation for the owner.
+- [ ] Findings note (resource-bounds proof): recovered irradiance VRAM per map in MiB (BC6H at-rest
+  id-22 irradiance blob) against the uncoarsened bake of the same map as baseline, from a `--release`
+  cold bake, fixture set and machine class stated; AND its share of total lightmap + SH at-rest VRAM
+  (the exact section-id denominator pinned before the run); the inversion's cleanliness; a promote /
+  adjust / stop recommendation for the owner.
 
 ### Phase 2 — shippable coarsening (gated on the Phase 1 note)
 Automated:
-- [ ] Hard static shadow preserved: a sharp static-geometry terminator keeps its sector(s) full-res.
-- [ ] Hard spotlight edge preserved: a hard-edged spotlight pool keeps its edge sector(s) full-res.
+- [ ] Hard static shadow preserved AND surround coarsened: on a fixture with a sharp static-geometry
+  terminator, the terminator sector(s) stay full-res while a smooth-lit region of the same scene
+  coarsens ≥1 level.
+- [ ] Hard spotlight edge preserved AND pool interior coarsened: the hard edge sector(s) stay
+  full-res while the smooth pool interior / falloff surround of the same scene coarsens ≥1 level.
 - [ ] Smooth sector coarsened (permit side): a soft-gradient lit region coarsens ≥1 level, error under tolerance.
-- [ ] Empty collapse: an all-black atlas coarsens to the minimum; sampled irradiance stays zero.
-- [ ] Determinism: warm and cold bakes produce the identical coarsened atlas; two `--no-cache` runs byte-identical.
+- [ ] Empty collapse: an all-black atlas coarsens to the minimum coarsening level; sampled irradiance
+  stays zero AND the atlas does not degrade to the white no-static placeholder.
+- [ ] Determinism: on a fixture that coarsens ≥1 leaf, warm and cold bakes produce the identical
+  coarsened atlas; two `--no-cache` runs byte-identical.
 - [ ] ≤1-level grading: no two adjacent sectors differ by more than one level.
+- [ ] Seam preserves the sharp side (ordering pin R3): on a fixture with a collapsed/dark leaf
+  adjacent to a hard-feature leaf, the hard-feature leaf stays full-res and the ≤1-level bound holds
+  by refining the dark neighbour, not the sharp leaf.
+- [ ] Grading fixpoint resolves a chain (ordering pin R4): a run of coarsenable leaves next to a
+  pinned full-res leaf converges so every adjacent pair differs ≤1 level, protection applied before
+  smoothing, the fixpoint terminating.
+- [ ] Gutter valid at reduced resolution (ordering pin R2): a coarsened chart keeps a ≥1-texel gutter
+  of its own dilated irradiance after repack; edge texels show no cross-chart bleed.
+- [ ] No-op when nothing coarsens (ordering pin R5): on an all-full-res map the two-stage repack
+  produces a pre-BC6H atlas byte-identical to the uniform bake (encoded id-22 section round-trips
+  within BC6H tolerance); the atlas layout fingerprint is unchanged.
+- [ ] Prefilter necessity (ordering pin R6): a mid-frequency gradient fixture coarsens within
+  tolerance with the linear-space prefilter, and a decimate-without-prefilter (or gamma-space) path
+  exceeds tolerance / shifts mean irradiance.
+- [ ] Scale-region compose: a leaf inside a `_lightmap_scale` region bakes at the region's density,
+  then the gate coarsens from that scaled bake (composition, not override or re-scale).
 
 Manual:
 - [ ] Visual A/B (campaign-test, closet-reveal, hard-spotlight scene): no perceptible smudging of
-  static shadows or spotlight edges at default tolerance; VRAM recovered recorded per map.
+  static shadows or spotlight edges at default tolerance; VRAM recovered recorded per map in MiB
+  against the uncoarsened bake baseline, from a `--release` bake, machine class stated.
 
 ## Path
 - **Phase 1 is the first slice, and it is the make-or-break.** Coarsening needs the baked atlas, but

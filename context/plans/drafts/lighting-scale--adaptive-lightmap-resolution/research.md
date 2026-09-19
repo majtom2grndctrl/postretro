@@ -106,3 +106,17 @@ large fraction. Recoverable % is optimistic (ignores chart padding, leaf-cohesio
 inflates coverage). Static direct is often near-black here because the engine leans on SH indirect +
 dynamic light — expected, and a reason the feature must behave across the whole spectrum, not just
 this content.
+
+## Ordering pins
+
+Proof orderings the Acceptance rows cite by id. Added by `/review-brief` (rows lens); the brief's
+Acceptance rows reference these by id, not by location.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| R1 | full-res dense bake finished, one leaf classifies coarsenable | classify runs on the composited post-dilate `CompositedAtlas` → per-leaf level chosen → downsample+repack → `atlas_layout_fingerprint` recomputed over the POST-coarsen `SharedAtlas` | the layer/section cache keys hash the post-coarsen chart extents + placements; a pre-coarsen fingerprint is never written or read |
+| R2 | a leaf coarsened ≥1 level, adjacent to a different chart in the same atlas layer | downsample-then-dilate (re-establish ≥ `CHART_PADDING_TEXELS` gutter at reduced resolution) vs dilate-then-downsample | coarsened chart's edge/gutter texels carry only its own irradiance; a bilinear sample at the chart edge shows no neighbour-chart bleed |
+| R3 | a leaf at the darkness floor / collapsed-to-minimum, face-adjacent to a leaf holding a sharp shadow terminator or hard spotlight edge (kept full-res) | protection/full-res pin applied before the ≤1-level fixpoint; the fixpoint refines the coarse/dark endpoint toward the pinned full-res one, never coarsens the pinned one | the sharp leaf stays full-res AND the ≤1-level bound holds — the dark neighbour is graded up, not the sharp leaf down |
+| R4 | a row of leaves gating to (…,L2,L2,L2,L0) with one full-res pin | protection/pin before a monotone (levels only decrease) fixpoint sweep repeated to zero demotions; the coarser endpoint of any ≥2-gap pair demotes one step | fixpoint terminates; no adjacent pair differs by >1 level; a leaf demoted only by the seam is still a gate-valid representation |
+| R5 | a leaf/map where every leaf classifies full-res (nothing coarsenable) | classify → every leaf at the finest level → downsample is identity → repack | the repacked pre-BC6H atlas is byte-identical to the current uniform-density bake, the encoded id-22 section round-trips within BC6H tolerance, and the atlas layout fingerprint is unchanged |
+| R6 | a leaf carrying a mid-frequency band-limited gradient that coarsens ≥1 level | linear-space low-pass prefilter applied before decimation (not decimate-then-filter, not gamma-space) | emitted coarsened chart reconstructs the gradient within tolerance with no aliasing/banding; mean irradiance preserved (no gamma-space darkening) |

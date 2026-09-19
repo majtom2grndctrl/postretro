@@ -68,7 +68,7 @@ pub(crate) const MAX_ANIMATED_BAKED_LIGHTS: usize = 256;
 /// One installed world/mover material: its group-1 bind group plus the uniform
 /// buffer behind binding 3 and the GPU-free plan that fills it.
 ///
-/// The buffer handle is RETAINED (Wave 3 dropped it) so the player's Surface
+/// The buffer handle is RETAINED (an earlier revision dropped it) so the player's Surface
 /// Depth tier can be applied live by rewriting buffer contents rather than
 /// rebuilding bind groups. Ownership follows the level: this vector is replaced
 /// wholesale by `install_textures` and dropped with the level, so there is

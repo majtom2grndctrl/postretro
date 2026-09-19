@@ -244,7 +244,10 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     }
 
     let snippet_code = strip_line_comments(SNIPPET);
-    for derivative in ["dpdx", "dpdy", "fwidth", "dpdxFine", "dpdyFine"] {
+    for derivative in [
+        "dpdx", "dpdy", "fwidth", "dpdxFine", "dpdyFine", "dpdxCoarse", "dpdyCoarse",
+        "fwidthFine", "fwidthCoarse",
+    ] {
         assert!(
             !snippet_code.contains(&format!("{derivative}(")),
             "the march must consume pre-computed gradients: a {derivative} call inside it \
@@ -263,16 +266,59 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     );
 
     // `lightmap_uv` is offset nowhere. Charts carry only CHART_PADDING_TEXELS = 2
-    // of gutter, so a parallax offset would pull a neighbouring chart.
-    for (label, consumer) in [("forward", FORWARD), ("kinematic brush", KINEMATIC)] {
-        for line in strip_line_comments(consumer).lines() {
+    // of gutter, so a parallax offset would pull a neighbouring chart across it.
+    //
+    // Asserted POSITIVELY, per call site, because the negative form this
+    // replaced — no line contains both `lightmap_uv` and `depth.` — was vacuous
+    // against the one refactor that actually breaks the constraint:
+    // `sample_lightmap_irradiance(shade_uv, in.lightmap_layer)` contains
+    // neither token, so the test stayed green while the atlas was sampled at
+    // the marched UV. The shadowmask path is the worse half of that hole, since
+    // it is a layered atlas and `shadowmask_union_subtraction` forwards one
+    // UV to every promoted light on the fragment.
+    let forward_code = strip_line_comments(FORWARD);
+    for call in [
+        "sample_lightmap_irradiance(",
+        "sample_lightmap_animated(",
+        "sample_shadowmask_atlas(",
+        "shadowmask_union_subtraction(",
+    ] {
+        let mut cursor = forward_code.as_str();
+        let mut call_sites = 0usize;
+        while let Some(at) = cursor.find(call) {
+            let is_definition = cursor[..at].trim_end().ends_with("fn");
+            cursor = &cursor[at + call.len()..];
+            if is_definition {
+                continue;
+            }
+            call_sites += 1;
+            let args = &cursor[..cursor.find(')').unwrap_or(cursor.len())];
+            // Either the interpolated `in.lightmap_uv` or, inside a helper that
+            // forwards it, the parameter of that name.
             assert!(
-                !(line.contains("lightmap_uv") && line.contains("depth.")),
-                "{label}: parallax must shift base_uv only — `{}`",
-                line.trim(),
+                args.contains("lightmap_uv"),
+                "forward: `{call}` must sample the atlas at the interpolated lightmap UV —                  got `{}`",
+                args.trim(),
+            );
+            assert!(
+                !args.contains("shade_uv") && !args.contains("depth."),
+                "forward: `{call}` must never receive a marched UV — got `{}`",
+                args.trim(),
             );
         }
+        assert!(
+            call_sites > 0,
+            "forward: no call site for `{call}`, so this guard asserts nothing —              the call was renamed or removed and the assertion list is stale",
+        );
     }
+
+    // The mover has no lightmap path at all, so it has nothing to offset. Pin
+    // that fact rather than looping the checks above over it, which is what the
+    // previous form did — vacuously, since the token never appears there.
+    assert!(
+        !strip_line_comments(KINEMATIC).contains("lightmap_uv"),
+        "the mover grew a lightmap path — extend the per-call-site assertions to it",
+    );
 
     // Shadow-map receiver bias keeps the GEOMETRIC normal. The DDA face normal
     // is far bumpier than a normal map and would wobble shadow boundaries.
@@ -321,9 +367,10 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
 }
 
 /// The SH indirect lookup is biased along the surface normal to reduce bleed
-/// through thin walls. Surface Depth's side-wall normal is PERPENDICULAR to the
-/// surface, so biasing along it would slide the lookup sideways across the face
-/// instead of lifting it off — the opposite of what the bias is for. The two
+/// through thin walls. Surface Depth's side-wall normal points ALONG the surface
+/// (perpendicular to the surface NORMAL, lying in the tangent plane), so biasing
+/// along it would slide the lookup sideways across the face instead of lifting
+/// it off — the opposite of what the bias is for. The two
 /// normals must therefore stay separate arguments.
 #[test]
 fn the_sh_lookup_bias_never_uses_the_dda_face_normal() {
@@ -413,12 +460,50 @@ fn self_shadowing_is_budgeted_and_dynamic_only() {
         forward.contains("depth_shadow_marches < depth.shadow_light_budget"),
         "forward must budget its self-shadow marches from the per-material word",
     );
-    assert!(
-        forward.contains("NdotL > 0.0 && depth_shadow_marches"),
-        "forward must skip the march when the face is not lit",
-    );
-
     let kinematic = strip_line_comments(KINEMATIC);
+
+    // The march is skipped unless the light actually REACHES the fragment.
+    //
+    // Asserted on the `contributes` binding rather than on one inlined
+    // expression, because the gate has to cover attenuation and color as well
+    // as the Lambert term: a spot in range but aimed elsewhere, or a scripted
+    // light whose descriptor is present but inactive, would otherwise burn one
+    // of the two budget slots on a march whose result is multiplied by zero,
+    // leaving the light that genuinely casts the shadow unshadowed.
+    for (label, code, n_dot_l) in [
+        ("forward", &forward, "NdotL > 0.0"),
+        ("kinematic brush", &kinematic, "n_dot_l > 0.0"),
+    ] {
+        assert!(
+            code.contains("contributes && depth_shadow_marches")
+                || code.contains("&& contributes"),
+            "{label}: the self-shadow march must be gated on the light contributing",
+        );
+        let at = code
+            .find("let contributes =")
+            .unwrap_or_else(|| panic!("{label}: no `contributes` gate for the march"));
+        let rest = &code[at..];
+        let gate = &rest[..rest.find(';').unwrap_or(rest.len())];
+        for term in [n_dot_l, "attenuation > 0.0", "effective_color"] {
+            assert!(
+                gate.contains(term),
+                "{label}: the march gate must account for `{term}` — `{}`",
+                gate.split_whitespace().collect::<Vec<_>>().join(" "),
+            );
+        }
+    }
+
+    // A side hit's normal lies IN the tangent plane, so the Lambert term alone
+    // admits a light behind the brush. Both consumers must also gate on the
+    // geometric plane, and must leave TOP hits alone so an uncarved fragment
+    // (and every fragment at `Off`) stays byte-identical.
+    for (label, code) in [("forward", &forward), ("kinematic brush", &kinematic)] {
+        assert!(
+            code.contains("depth.hit_top || dot(mesh_n, L) > 0.0"),
+            "{label}: a side hit must be gated on the geometric plane too, or a light \
+             behind opaque brush geometry lights its carved side walls at full strength",
+        );
+    }
     assert!(
         kinematic.contains("&& i < kinematic_light_params.dynamic_light_count"),
         "the mover must self-shadow the DYNAMIC prefix only — the animated-baked tail \

@@ -850,11 +850,16 @@ mod tests {
     use super::*;
     use postretro_level_format::geometry::{FaceMeta, Vertex};
 
+    // `abs` replaced `fwidth` here: the seam width now comes from the
+    // pre-march ddx/ddy the caller already passes, because under Surface Depth
+    // `uv` is the marched UV and its fwidth measures the parallax step rather
+    // than the pixel footprint. Tracking the call that actually runs is what
+    // keeps this fingerprint a real parity check.
     const POST_RETRO_SAMPLING_CALLS: &[&str] = &[
         "textureDimensions",
         "floor",
         "max",
-        "fwidth",
+        "abs",
         "clamp",
         "textureSampleGrad",
     ];

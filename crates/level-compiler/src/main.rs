@@ -75,6 +75,7 @@ use anyhow::Context as _;
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::light_membership::LightMembershipManifest;
+use postretro_level_format::prm_accounting::TextureByteSummary;
 
 static DATA_SCRIPT_TEMP_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -207,13 +208,23 @@ fn bake_model_textures(
     entities: &[map_data::MapEntityRecord],
     content_root: &Path,
     prm_root: &Path,
+    byte_summary: &mut TextureByteSummary,
 ) {
     bake_model_textures_with(
         entities,
         content_root,
         prm_root,
         postretro_level_format::gltf_resolve::resolve_document_base_color_paths,
-        texture_mips::bake_diffuse_texture,
+        |texture_path, cache_root| {
+            let key = texture_mips::bake_diffuse_texture(texture_path, cache_root)?;
+            texture_mips::account_baked_sidecar(
+                byte_summary,
+                format!("model:{}", texture_path.display()),
+                cache_root,
+                &key,
+            );
+            anyhow::Ok(key)
+        },
     );
 }
 
@@ -266,12 +277,22 @@ fn bake_sprite_textures(
     entities: &[map_data::MapEntityRecord],
     texture_root: &Path,
     prm_cache_root: &Path,
+    byte_summary: &mut TextureByteSummary,
 ) {
     bake_sprite_textures_with(
         entities,
         texture_root,
         prm_cache_root,
-        texture_mips::bake_sprite_collection,
+        |root, collection, cache_root| {
+            let key = texture_mips::bake_sprite_collection(root, collection, cache_root)?;
+            texture_mips::account_baked_sidecar(
+                byte_summary,
+                format!("sprite:{collection}"),
+                cache_root,
+                &key,
+            );
+            Some(key)
+        },
     );
 }
 
@@ -1858,16 +1879,31 @@ mod tests {
         let expected_sidecar =
             cache_root.join(format!("{}.prm", blake3::hash(&texture_bytes).to_hex()));
 
-        bake_model_textures(&entities, &content_root, &cache_root);
+        bake_model_textures(
+            &entities,
+            &content_root,
+            &cache_root,
+            &mut TextureByteSummary::new(),
+        );
         assert!(expected_sidecar.is_file());
 
         std::fs::remove_file(&expected_sidecar).unwrap();
-        bake_model_textures(&entities, &content_root, &cache_root);
+        bake_model_textures(
+            &entities,
+            &content_root,
+            &cache_root,
+            &mut TextureByteSummary::new(),
+        );
         assert!(expected_sidecar.is_file());
 
         let no_prop_cache_root = root.join("no-prop-prm-cache");
         let no_prop_entities = vec![map_entity("light", &[("model", "models/fixture.gltf")])];
-        bake_model_textures(&no_prop_entities, &content_root, &no_prop_cache_root);
+        bake_model_textures(
+            &no_prop_entities,
+            &content_root,
+            &no_prop_cache_root,
+            &mut TextureByteSummary::new(),
+        );
         assert!(!no_prop_cache_root.exists());
 
         std::fs::remove_dir_all(&root).unwrap();

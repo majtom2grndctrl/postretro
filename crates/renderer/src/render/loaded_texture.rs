@@ -658,7 +658,7 @@ mod tests {
     /// stores depth-below-surface so that 0 means flat. Nothing about the
     /// placeholder needed to change for the feature — but widening it to two
     /// channels, or filling its G byte, would push every un-mapped material
-    /// off its true plane the moment the Wave 3 shader lands.
+    /// off its true plane the moment the march reads it.
     #[test]
     fn absent_specular_placeholder_is_a_flat_surface_map() {
         assert_eq!(
@@ -687,7 +687,7 @@ mod tests {
     }
 
     /// The renderer must be able to upload every format a `.prm` may legally
-    /// carry. `Rg8Unorm` became legal on the specular slot in Wave 1, but the
+    /// carry. `Rg8Unorm` is legal on the specular slot, but for a while the
     /// uploaders' row-layout table did not know it — a world material with an
     /// `_h.png` sibling panicked at level load instead of uploading.
     #[test]

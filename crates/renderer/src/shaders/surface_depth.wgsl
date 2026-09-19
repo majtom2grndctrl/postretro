@@ -113,6 +113,11 @@ struct SurfaceDepthResult {
     depth_m: f32,
     // Post-fade carve depth for this fragment, in meters.
     depth_scale_m: f32,
+    // The distance/LOD fade that produced `depth_scale_m`, in [0, 1]. Carried
+    // out of the resolve because depth-derived terms whose inputs are BOTH
+    // post-fade cancel it out and would pop at the fade boundary instead of
+    // degrading. See `surface_depth_indirect_ao`.
+    fade: f32,
     quantize_levels: f32,
     shadow_steps: u32,
     // How many DYNAMIC lights this fragment may self-shadow, from the player's
@@ -139,6 +144,7 @@ fn surface_depth_flat(uv: vec2<f32>, world_position: vec3<f32>, geo_normal: vec3
     out.hit_top = true;
     out.depth_m = 0.0;
     out.depth_scale_m = 0.0;
+    out.fade = 0.0;
     out.quantize_levels = 0.0;
     out.shadow_steps = 0u;
     out.shadow_light_budget = 0u;
@@ -202,7 +208,15 @@ fn surface_depth_indirect_ao(depth: SurfaceDepthResult, light_terms: u32) -> f32
     if depth.depth_scale_m <= SURFACE_DEPTH_EPS {
         return 1.0;
     }
-    return 1.0 - SURFACE_DEPTH_AO_STRENGTH * clamp(depth.depth_m / depth.depth_scale_m, 0.0, 1.0);
+    // Scale by the fade. `depth_m` and `depth_scale_m` are both post-fade, so
+    // their ratio is the raw texel value at EVERY fade — without this factor a
+    // surface one epsilon inside the fade boundary still occludes at full
+    // strength and then snaps to 1.0 the moment it crosses, which reads as a
+    // moving arc of brightness as the LOD isoline sweeps the floor.
+    return 1.0
+        - SURFACE_DEPTH_AO_STRENGTH
+            * depth.fade
+            * clamp(depth.depth_m / depth.depth_scale_m, 0.0, 1.0);
 }
 
 // Resolve the fragment's carve: derive the surface frame, fade, march, and
@@ -337,14 +351,7 @@ fn surface_depth_resolve(
 
     loop {
         let solid = surface_depth_texel(cell, dims_i, base_mip, levels) * depth_scale_m;
-        // On the last permitted iteration the texel is treated as unbounded, so
-        // one of the two hit rules always fires and the loop terminates. The
-        // budget only bites at grazing angles: D <= depth_scale_m everywhere,
-        // so once z_enter reaches the scale the side rule fires regardless.
-        var z_exit = min(t_max.x, t_max.y);
-        if walked + 1u >= max_steps {
-            z_exit = SURFACE_DEPTH_FAR;
-        }
+        let z_exit = min(t_max.x, t_max.y);
         // The ray was already inside this texel's solid when it entered: it hit
         // the SIDE wall it came through.
         if z_enter >= solid {
@@ -358,6 +365,31 @@ fn surface_depth_resolve(
             hit_depth = solid;
             hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
             hit_bias = vec2<f32>(0.0, 0.0);
+            break;
+        }
+        // Budget exhausted with the ray still in open space. Resolve HERE, at
+        // the last boundary the walk actually crossed.
+        //
+        // The obvious alternative — treating this texel as unbounded so the TOP
+        // rule fires — resolves at its full `solid` depth, and the sample point
+        // is `p0 + dir * hit_depth` where `dir` is texels per METER OF DESCENT.
+        // At a grazing angle that lands the albedo, normal and specular samples
+        // tens of texels past anything the march visited, so a tighter budget
+        // produced a LARGER artifact: `Low` cuts the cap to 8 while only halving
+        // the fade that would have hidden it. Stopping at `z_enter` keeps the
+        // sample inside the walked region, and on the first iteration it IS the
+        // flat result (depth 0, geometric normal, original UV), so a budget too
+        // small to march degrades toward flat rather than toward an arbitrary
+        // texel.
+        //
+        // This is also what makes termination structural rather than a property
+        // of the sampled values: the test is INTEGER, so the loop exits after
+        // `max_steps` iterations whatever `solid` is — including a NaN, which
+        // compares false against both hit rules.
+        if walked + 1u >= max_steps {
+            hit_depth = z_enter;
+            hit_normal_ts = entry_normal_ts;
+            hit_bias = entry_bias;
             break;
         }
         if t_max.x <= t_max.y {
@@ -392,6 +424,7 @@ fn surface_depth_resolve(
     out.hit_top = hit_normal_ts.z > 0.5;
     out.depth_m = hit_depth;
     out.depth_scale_m = depth_scale_m;
+    out.fade = fade;
     out.quantize_levels = levels;
     // A shorter march than the view ray: self-shadow rays travel at most the
     // hit depth, and the budget is spent on the primary hit, not on lighting.
@@ -425,7 +458,10 @@ fn surface_depth_light_visibility(depth: SurfaceDepthResult, to_light: vec3<f32>
         return 1.0;
     }
     let rise = dot(to_light, depth.geo_normal);
-    if rise <= SURFACE_DEPTH_EPS {
+    // Written `!(x > lo)` like every other degenerate gate in this file, so a
+    // NaN falls out to "lit" by construction rather than by the accident of a
+    // downstream sentinel. Mirrors `surface_depth_light_ray`'s `above()`.
+    if !(rise > SURFACE_DEPTH_EPS) {
         return 1.0;
     }
 

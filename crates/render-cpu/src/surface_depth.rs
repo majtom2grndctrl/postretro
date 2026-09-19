@@ -152,10 +152,22 @@ pub fn unpack_surface_depth_march(packed: u32) -> SurfaceDepthMarch {
 }
 
 /// Step cap the `Low` tier allows the view-ray DDA, whatever a material prefix
-/// asks for. The march resolves its last permitted iteration as if that texel
-/// extended forever, so a tighter cap never runs off — it only stops the walk
-/// early at grazing angles, which is exactly where the per-fragment cost is.
+/// asks for. A cap that runs out resolves the hit at the last boundary the walk
+/// crossed, so a tighter cap samples a SHALLOWER carve rather than a displaced
+/// one — it only stops the walk early at grazing angles, which is exactly where
+/// the per-fragment cost is.
 pub const SURFACE_DEPTH_LOW_MAX_STEPS: u32 = 8;
+
+/// Hard ceiling on a material's carve depth, in meters.
+///
+/// The prefix table's deepest entry is 0.020 m and the design caps authored
+/// depth at 0.05 m. Clamping here makes that cap a real constraint on the value
+/// that reaches the GPU rather than an assertion about one hardcoded table:
+/// `SurfaceDepth::depth_meters` is a public field and `is_enabled()` only tests
+/// `> 0.0`, which admits `+inf`. An infinite scale makes `solid` a NaN on every
+/// zero-depth texel — the most common texel in a cobblestone map — and a NaN
+/// compares false against both hit rules.
+pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.05;
 
 /// Fraction of a material's authored fade distance the `Low` tier keeps.
 /// Shortening the fade is the other half of the tier's saving: the march is
@@ -190,7 +202,14 @@ pub enum SurfaceDepthQuality {
 }
 
 impl SurfaceDepthQuality {
-    /// Every tier, in presentation order. Pinned by the option-slot enum set.
+    /// Every tier, in presentation order.
+    ///
+    /// This crate carries no serde and does not depend on `postretro-entities`,
+    /// so nothing here can pin the list against the `options.surfaceDepthQuality`
+    /// enum set that `engine_state_catalog` declares. The two are kept in step by
+    /// `postretro`, which depends on both — see the chokepoint in
+    /// `startup/render_profile.rs`, whose `match` has no `_` arm so a new tier is
+    /// a compile error there rather than a silent degrade.
     pub const ALL: [Self; 3] = [Self::Off, Self::Low, Self::High];
 
     /// Per-fragment dynamic-light self-shadow budget this tier allows.
@@ -262,10 +281,15 @@ impl SurfaceDepthUniform {
         specular_mip_count: u32,
         requested_base_mip: u32,
     ) -> Self {
-        let tuned = quality.apply(depth);
+        let mut tuned = quality.apply(depth);
         if !specular_is_surface_map || !tuned.is_enabled() {
             return Self::FLAT;
         }
+        // `is_enabled()` rejects NaN, zero and negative but admits `+inf`.
+        if !tuned.depth_meters.is_finite() {
+            return Self::FLAT;
+        }
+        tuned.depth_meters = tuned.depth_meters.min(SURFACE_DEPTH_MAX_METERS);
         let top_level = specular_mip_count.saturating_sub(1);
         Self {
             depth: tuned,
@@ -319,11 +343,22 @@ pub fn surface_depth_fade(distance_meters: f32, fade_distance_meters: f32, lod: 
 }
 
 /// Ambient occlusion factor for the SH indirect term from a hit's depth.
-pub fn surface_depth_ambient_occlusion(hit_depth_meters: f32, depth_scale_meters: f32) -> f32 {
+///
+/// `fade` is the same value `surface_depth_fade` returned for this fragment.
+/// Both depth arguments are already post-fade, so their ratio is the raw texel
+/// value at every fade and the factor is what actually makes the occlusion
+/// degrade with the carve instead of popping at the fade boundary.
+pub fn surface_depth_ambient_occlusion(
+    hit_depth_meters: f32,
+    depth_scale_meters: f32,
+    fade: f32,
+) -> f32 {
     if depth_scale_meters <= SURFACE_DEPTH_EPS {
         return 1.0;
     }
-    1.0 - SURFACE_DEPTH_AO_STRENGTH * (hit_depth_meters / depth_scale_meters).clamp(0.0, 1.0)
+    1.0 - SURFACE_DEPTH_AO_STRENGTH
+        * fade
+        * (hit_depth_meters / depth_scale_meters).clamp(0.0, 1.0)
 }
 
 /// Orthonormal surface frame derived from screen-space derivatives rather than
@@ -521,10 +556,16 @@ pub struct SurfaceDepthHit {
 /// iteration at depth 0 with the geometric normal and the original UV — the
 /// exact no-op a material without an `_h` sibling must produce.
 ///
-/// Termination is structural, not just budgeted: `D <= depth_scale_meters`
-/// everywhere, so once `z_enter` reaches the scale the first rule always fires.
-/// `max_steps` only bites at grazing angles, where the last iteration is
-/// resolved as if the texel extended forever.
+/// Termination is structural: the budget test is an integer comparison on the
+/// iteration count, so the loop exits after at most `max_steps` iterations
+/// whatever the field samples to — including a NaN, which compares false
+/// against both hit rules. The depth bound is a separate guarantee:
+/// `D <= depth_scale_meters` everywhere, so once `z_enter` reaches the scale the
+/// first rule fires on its own and the budget never comes into it.
+///
+/// `max_steps` therefore only bites at grazing angles, and when it does the hit
+/// resolves at `z_enter` — the last crossed boundary — so the reported UV stays
+/// inside the region the march actually walked.
 pub fn march_surface_depth(
     field: &SurfaceDepthField<'_>,
     uv0: [f32; 2],
@@ -565,18 +606,34 @@ pub fn march_surface_depth(
 
     let (depth_meters, face, bias) = loop {
         let solid = field.sample(cell[0], cell[1]) * depth_scale_meters;
-        // On the final permitted iteration the texel is treated as unbounded,
-        // so one of the two hit rules always fires and the loop terminates.
-        let z_exit = if walked + 1 >= steps_allowed {
-            FAR
-        } else {
-            t_max[0].min(t_max[1])
-        };
+        let z_exit = t_max[0].min(t_max[1]);
         if z_enter >= solid {
             break (z_enter, entry_face, entry_bias);
         }
         if z_exit > solid {
             break (solid, SurfaceDepthFace::Top, [0.0, 0.0]);
+        }
+        // Budget exhausted with the ray still in open space. Resolve HERE, at
+        // the last boundary the walk actually crossed.
+        //
+        // The obvious alternative — treating this texel as unbounded so the TOP
+        // rule fires — resolves at its full `solid` depth, and the sample point
+        // is `p0 + dir * hit_depth` where `dir` is texels per METER OF DESCENT.
+        // At a grazing angle that lands the albedo, normal and specular samples
+        // tens of texels past anything the march visited, so a tighter budget
+        // produced a LARGER artifact: `Low` cuts the cap to 8 while only halving
+        // the fade that would have hidden it. Stopping at `z_enter` keeps the
+        // sample inside the walked region, and on the first iteration it IS the
+        // flat result (depth 0, geometric normal, original UV), so a budget too
+        // small to march degrades toward flat rather than toward an arbitrary
+        // texel.
+        //
+        // This is also what makes termination structural rather than a property
+        // of the sampled values: the test is INTEGER, so the loop exits after
+        // `max_steps` iterations whatever `solid` is — including a NaN, which
+        // compares false against both hit rules.
+        if walked + 1 >= steps_allowed {
+            break (z_enter, entry_face, entry_bias);
         }
         if t_max[0] <= t_max[1] {
             cell[0] += step[0];
@@ -1076,6 +1133,48 @@ mod tests {
         }
     }
 
+    /// A starved march must sample inside the region it actually walked.
+    ///
+    /// Budget exhaustion used to resolve as a TOP hit at the current texel's
+    /// full `solid` depth. The sample point is `p0 + dir * depth` and `dir` is
+    /// texels per meter of DESCENT, so at a grazing angle that landed the
+    /// albedo, normal and specular samples tens of texels past anything the
+    /// march had visited — and `Low`, which cuts the budget to 8, made the
+    /// artifact larger rather than smaller.
+    #[test]
+    fn a_starved_march_samples_inside_the_walked_region() {
+        let values = [0.4, 0.9, 0.2, 1.0, 0.55, 0.05, 0.7, 0.3, 0.85];
+        let f = field(3, 3, &values);
+        let uv0 = [0.13, 0.77];
+        let dims = [f.width as f32, f.height as f32];
+        let budget = 12u32;
+        let mut starved = 0u32;
+        for i in 0..200 {
+            let angle = i as f32 * 0.0314;
+            // Deliberately grazing: thousands of texels per meter of descent,
+            // so a full-depth resolve would be ~100 texels out on a 3x3 field.
+            let dir = [angle.cos() * 5000.0, angle.sin() * 5000.0];
+            let hit = march_surface_depth(&f, uv0, dir, 0.02, budget);
+            // The DDA advances one axis per step, so after `steps` crossings the
+            // hit is at most that many texels away in L1, plus the partial cell
+            // a legitimate top hit resolves inside.
+            let away = (hit.march_uv[0] - uv0[0]).abs() * dims[0]
+                + (hit.march_uv[1] - uv0[1]).abs() * dims[1];
+            assert!(
+                away <= hit.steps as f32 + 2.0,
+                "sampled {away} texels away after {} steps (budget {budget})",
+                hit.steps
+            );
+            if hit.steps + 1 >= budget {
+                starved += 1;
+            }
+        }
+        assert!(
+            starved > 0,
+            "no ray in the sweep exhausted the budget, so this proves nothing"
+        );
+    }
+
     #[test]
     fn the_march_terminates_within_the_step_budget_at_any_angle() {
         let values = [0.4, 0.9, 0.2, 1.0, 0.55, 0.05, 0.7, 0.3, 0.85];
@@ -1231,13 +1330,52 @@ mod tests {
 
     #[test]
     fn ambient_occlusion_darkens_only_with_depth() {
-        assert_eq!(surface_depth_ambient_occlusion(0.0, 0.02), 1.0);
+        assert_eq!(surface_depth_ambient_occlusion(0.0, 0.02, 1.0), 1.0);
         assert!(
-            (surface_depth_ambient_occlusion(0.02, 0.02) - (1.0 - SURFACE_DEPTH_AO_STRENGTH)).abs()
+            (surface_depth_ambient_occlusion(0.02, 0.02, 1.0)
+                - (1.0 - SURFACE_DEPTH_AO_STRENGTH))
+                .abs()
                 < 1e-6
         );
         // A flat material can never darken anything.
-        assert_eq!(surface_depth_ambient_occlusion(0.0, 0.0), 1.0);
+        assert_eq!(surface_depth_ambient_occlusion(0.0, 0.0, 1.0), 1.0);
+    }
+
+    /// The occlusion must reach its flat value CONTINUOUSLY as the fade closes.
+    ///
+    /// Both depth arguments are post-fade, so their ratio is fade-invariant: a
+    /// fragment at the deepest texel reports the same ratio at every fade. Left
+    /// unscaled, occlusion stayed at full strength right up to the boundary and
+    /// then snapped to 1.0 when the resolve returned the flat result — up to a
+    /// 4x step in the indirect term, sweeping across the floor with the camera
+    /// because the LOD half of the fade is a moving isoline.
+    #[test]
+    fn ambient_occlusion_fades_out_with_the_carve() {
+        let full = surface_depth_ambient_occlusion(0.02, 0.02, 1.0);
+        assert!(full < 1.0, "a fully faded-in deep hit must occlude");
+
+        // Walking the fade to zero must walk the occlusion to 1.0, monotonically.
+        let mut previous = full;
+        for step in 1..=10u8 {
+            let fade = 1.0 - f32::from(step) / 10.0_f32;
+            // Post-fade inputs: the hit stays at the bottom of a shallower carve.
+            let scale = 0.02 * fade;
+            let ao = surface_depth_ambient_occlusion(scale, scale, fade);
+            assert!(
+                ao >= previous - 1e-6,
+                "occlusion must weaken as the carve fades: {ao} < {previous} at fade {fade}"
+            );
+            previous = ao;
+        }
+
+        // And it must ARRIVE at the flat value, not merely approach it, so there
+        // is no step where the resolve hands off to `surface_depth_flat`.
+        assert_eq!(surface_depth_ambient_occlusion(0.0, 0.0, 0.0), 1.0);
+        let nearly_gone = surface_depth_ambient_occlusion(0.02 * 1e-4, 0.02 * 1e-4, 1e-4);
+        assert!(
+            (nearly_gone - 1.0).abs() < 1e-3,
+            "occlusion at the fade boundary must be within a hair of flat, got {nearly_gone}"
+        );
     }
 
     #[test]

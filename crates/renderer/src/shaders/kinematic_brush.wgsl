@@ -39,7 +39,9 @@ struct MaterialUniform {
     // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
     // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because
     // streaming will move it), bit 12 = the has-depth flag the bind-group
-    // builder sets from the loaded specular slot's format.
+    // builder sets from the loaded specular slot's format, bits 13..15 unused,
+    // bits 16..19 = how many dynamic lights this fragment may self-shadow (the
+    // player's quality tier rides here; zero at Low and Off), bits 20..31 unused.
     surface_depth_march: u32,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
@@ -191,9 +193,9 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
 }
 
 // `offset_normal` biases the lookup; `shading_normal` evaluates the irradiance.
-// See the same split in `forward.wgsl`: Surface Depth's side-wall normal is
-// perpendicular to the surface, so biasing along it would slide the lookup
-// sideways instead of lifting it off the surface.
+// See the same split in `forward.wgsl`: Surface Depth's side-wall normal points
+// ALONG the surface (perpendicular to the surface NORMAL), so biasing along it
+// would slide the lookup sideways instead of lifting it off the surface.
 fn sample_sh_indirect(
     world_pos: vec3<f32>,
     shading_normal: vec3<f32>,
@@ -384,10 +386,27 @@ fn accumulate_dynamic_direct(
                 attenuation = 1.0;
             }
         }
-        let n_dot_l = dot(n, L);
+        // Gate a SIDE hit on the geometric plane as well as on its shading
+        // normal. A side-wall normal is an exact +/-U or +/-V axis lying IN the
+        // tangent plane, so `dot(N_shade, L) > 0` holds across half the
+        // sub-plane hemisphere — a light behind opaque brush geometry would
+        // otherwise light the carved face at full strength, with no shadow map
+        // to stop it when the light won no slot. Top hits are left exactly as
+        // they were: their normal is the normal-mapped one, which is what keeps
+        // an uncarved fragment (and every fragment at `Off`) byte-identical.
+        let plane_lit = depth.hit_top || dot(mesh_n, L) > 0.0;
+        let n_dot_l = select(0.0, dot(n, L), plane_lit);
         var depth_visibility = 1.0;
+        // Spend the self-shadow budget only on lights that actually reach this
+        // fragment. A spot in range but aimed elsewhere, or a scripted light
+        // whose descriptor is present but inactive, has zero attenuation or
+        // zero color: marching for it burns one of the two slots on a result
+        // that is then multiplied by zero, and leaves the light that genuinely
+        // casts the shadow unshadowed.
+        let contributes =
+            n_dot_l > 0.0 && attenuation > 0.0 && dot(effective_color, vec3<f32>(1.0)) > 0.0;
         if depth.carved
-            && n_dot_l > 0.0
+            && contributes
             && i < kinematic_light_params.dynamic_light_count
             && depth_shadow_marches < depth.shadow_light_budget {
             depth_shadow_marches = depth_shadow_marches + 1u;
@@ -414,10 +433,17 @@ fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
     let dims = vec2<f32>(textureDimensions(tex, 0));
     let uv_tex = uv * dims;
     let seam = floor(uv_tex + 0.5);
-    // Floor the seam-width divisor: a constant-UV fragment (edge-on face,
-    // degenerate UV chart, vanishing derivatives) gives fwidth == 0, and
-    // clamp() does not reliably sanitize the resulting NaN/Inf in WGSL.
-    let seam_width = max(fwidth(uv_tex), vec2<f32>(1.0e-6));
+    // Seam width comes from the ORIGINAL screen-space derivatives, not from
+    // fwidth() of `uv_tex`. Under Surface Depth `uv` is the MARCHED UV, which
+    // jumps between adjacent pixels that hit different texel faces, so its
+    // fwidth measures the parallax step rather than the pixel footprint and
+    // would widen the AA band into a multi-texel blur along every carved edge.
+    // fwidth(uv * dims) == (abs(dpdx(uv)) + abs(dpdy(uv))) * dims for a smooth
+    // uv, so this is the same quantity the un-marched path always computed.
+    // Floor the divisor: a constant-UV fragment (edge-on face, degenerate UV
+    // chart, vanishing derivatives) gives zero, and clamp() does not reliably
+    // sanitize the resulting NaN/Inf in WGSL.
+    let seam_width = max((abs(ddx) + abs(ddy)) * dims, vec2<f32>(1.0e-6));
     let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
     let uv_recon = (seam + aa) / dims;
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
@@ -439,7 +465,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let mesh_n = normalize(in.world_normal);
     let view_vector = camera.camera_position - in.world_position;
     let view_distance = length(view_vector);
-    let V = view_vector / max(view_distance, 1.0e-6);
+    // normalize(), not a divide by `view_distance`: this runs at EVERY quality
+    // tier including Off, and v/sqrt(dot(v,v)) is not required to round to the
+    // same bits as the rsqrt normalize() lowers to. Keeping it exact is what
+    // makes Off byte-identical to the pre-Surface-Depth render.
+    let V = normalize(view_vector);
 
     // Surface Depth, through the SAME shared march the static world forward
     // pass uses (see `surface_depth.wgsl`) — movers must not drift from world

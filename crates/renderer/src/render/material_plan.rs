@@ -93,7 +93,7 @@ pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool 
 /// One material's group-1 bind group together with the uniform buffer behind
 /// its binding 3, and the GPU-free plan that produced that buffer's contents.
 ///
-/// Wave 3 built the buffer and dropped the handle, which left no way to reach
+/// An earlier revision built the buffer and dropped the handle, leaving no way to reach
 /// the per-material parameters again. The player-facing Surface Depth tier
 /// needs exactly that reach: it is applied by REWRITING these buffers
 /// (`Renderer::set_surface_depth_quality`), never by rebuilding bind groups —

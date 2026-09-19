@@ -890,11 +890,17 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
 /// `TextureCacheKeysSection`. The runtime treats zero keys as 'no source PNG'
 /// and substitutes placeholders silently by design — missing PNGs are not an
 /// error in maps that don't use every named texture slot.
-pub fn bake_texture_mips(
+/// Bake the world's material bundles and report what they cost.
+///
+/// The byte summary is handed back rather than logged, because the compiler's
+/// TextureMips stage bakes model sidecars and sprite collections too and the
+/// report has to cover all three. `bake_texture_mips` is the standalone form
+/// for callers that own no other bakes.
+pub fn bake_texture_mips_with_byte_summary(
     texture_names: &[String],
     texture_root: &Path,
     cache_root: &Path,
-) -> anyhow::Result<HashMap<String, [u8; 32]>> {
+) -> anyhow::Result<(HashMap<String, [u8; 32]>, TextureByteSummary)> {
     let name_to_path = build_name_to_path_map(texture_root);
     let lut = build_srgb_to_linear_lut();
 
@@ -1188,9 +1194,45 @@ pub fn bake_texture_mips(
         out.insert(name.clone(), filename_key);
     }
 
-    log_texture_byte_summary(&byte_summary);
+    Ok((out, byte_summary))
+}
 
+/// Bake the world's material bundles, logging the byte report for them alone.
+pub fn bake_texture_mips(
+    texture_names: &[String],
+    texture_root: &Path,
+    cache_root: &Path,
+) -> anyhow::Result<HashMap<String, [u8; 32]>> {
+    let (out, byte_summary) =
+        bake_texture_mips_with_byte_summary(texture_names, texture_root, cache_root)?;
+    log_texture_byte_summary(&byte_summary);
     Ok(out)
+}
+
+/// Account a sidecar another bake path just wrote.
+///
+/// The model and sprite bakes write their own `.prm` files and hand back only
+/// the cache key, so the stage report reads the file back rather than threading
+/// a slot table out of each one. The read is cheap next to the bake, and it
+/// keeps the accounting honest about what actually landed on disk.
+pub fn account_baked_sidecar(
+    summary: &mut TextureByteSummary,
+    name: impl Into<String>,
+    cache_root: &Path,
+    key: &[u8; 32],
+) {
+    let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(key)));
+    let Ok(bytes) = std::fs::read(&prm_path) else {
+        return;
+    };
+    let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+    let Ok(header) = header else {
+        return;
+    };
+    summary.record(
+        name,
+        MaterialBytes::from_parsed_slots(&slots, header.layer_count),
+    );
 }
 
 /// How many of the heaviest materials the stage report names individually.
@@ -1202,7 +1244,7 @@ const BYTE_REPORT_LARGEST: usize = 5;
 /// system is the anticipated consumer of the underlying per-mip primitive
 /// (`postretro_level_format::prm_accounting`). Reporting only — no budget, no
 /// cap, no eviction.
-fn log_texture_byte_summary(summary: &TextureByteSummary) {
+pub fn log_texture_byte_summary(summary: &TextureByteSummary) {
     for line in summary.report_lines(BYTE_REPORT_LARGEST) {
         log::info!("[prl-build] {line}");
     }

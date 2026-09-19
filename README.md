@@ -118,7 +118,7 @@ The lifecycle is supported by Claude Code skills:
 | Skill | Role |
 |-------|------|
 | `plan` | Creates feature specs with task breakdown, sequencing, and acceptance criteria |
-| `orchestrate` | Coordinates plan execution — spawns agents, tracks progress, moves plans through stages |
+| `build-spec` | Executes a drafted spec — spawns agents, tracks progress, moves plans through stages |
 | `code-review` | Reviews implementations against specs, architecture, and conventions |
 | `review-panel` | Spawns 3 reviewer agents that approach review from different angles |
 | `preflight` | Pre-commit quality gate: fmt, clippy, test |

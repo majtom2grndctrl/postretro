@@ -5,7 +5,7 @@ description: >
   agent given only its own task paragraph plus the AC list build the right
   thing, and is each AC realistically achievable and a sound metric? Run
   after structural review is clean (review-draft-spec recommends promote),
-  or a la carte on a ready/ spec before /orchestrate.
+  or a la carte on a ready/ spec before /build-spec.
 argument-hint: "[plan-name]"
 ---
 
@@ -15,9 +15,9 @@ One Opus agent, one lens: execution. Not a general spec review — run it only a
 
 ## Premise
 
-`/orchestrate` gives each task agent ONLY: its own task paragraph, the plan's Goal, the plan's AC list, the plan's Invariants table (when present), the `context/lib/` router, and source access. No Scope section, no other tasks' text, no full plan document. This review simulates that contract.
+`/build-spec` gives each task agent ONLY: its own task paragraph, the plan's Goal, the plan's AC list, the plan's Invariants table (when present), the `context/lib/` router, and source access. No Scope section, no other tasks' text, no full plan document. This review simulates that contract.
 
-The contract is defined normatively in `/orchestrate`. If the two disagree, `/orchestrate` wins — update this skill to match.
+The contract is defined normatively in `/build-spec`. If the two disagree, `/build-spec` wins — update this skill to match.
 
 ## Process
 
@@ -43,15 +43,15 @@ The agent answers two questions, exhaustively:
 - Flag ACs that are untestable as stated, over-specified (would fail a correct implementation), or under-specified (would pass a wrong one).
 - Negative-existence claims ("no X is added") are review/grep gates, not runnable tests — mark them so.
 
-**Output format:** per task, a one-line verdict (Sets up success / Needs tightening) plus findings as `{ location, problem, fix, severity: Blocker | Complicates | Nit }`. Per AC, a verdict (Achievable+sound / Problem) plus findings. Per-spec summary line: ready to orchestrate, or what to tighten first.
+**Output format:** per task, a one-line verdict (Sets up success / Needs tightening) plus findings as `{ location, problem, fix, severity: Blocker | Complicates | Nit }`. Per AC, a verdict (Achievable+sound / Problem) plus findings. Per-spec summary line: ready for `/build-spec`, or what to tighten first.
 
 ### 3. Triage and apply
 
-The reviewer reports; the orchestrating session owns fixes. Apply determinate fixes directly — completions of the stated design, plumbing enumeration, fixture/type corrections. Surface genuine path choices and anything touching a locked decision to the human. Commit applied fixes.
+The reviewer reports; the build-spec session owns fixes. Apply determinate fixes directly — completions of the stated design, plumbing enumeration, fixture/type corrections. Surface genuine path choices and anything touching a locked decision to the human. Commit applied fixes.
 
 ### 4. Report
 
-Verdicts per spec, blocker count and disposition (fixed vs. surfaced), and the recommendation: orchestrate as-is, tighten first, or escalate.
+Verdicts per spec, blocker count and disposition (fixed vs. surfaced), and the recommendation: build-spec as-is, tighten first, or escalate.
 
 ## Working rules
 

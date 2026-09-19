@@ -14,9 +14,33 @@ struct CameraUniforms {
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
+    // Blinn-Phong specular exponent; constant per-material variant.
     shininess: f32,
+    // Prefix-driven static multiplier for the emissive texture.
     emissive_strength: f32,
     _pad: vec2<f32>,
+    // --- Surface Depth (second 16-byte row) ---
+    // Already-allocated, already-zeroed slack: `MATERIAL_UNIFORM_SIZE` has been
+    // 32 on the CPU while this struct was 16, so the feature needs no buffer
+    // resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
+    // ABI. An all-zero row is the flat material.
+    //
+    // Inward carve below the true surface plane, in METERS. There is no
+    // texel-density convention for world materials — brush UV scale is authored
+    // freely in TrenchBroom — so a texture-space scale would give the same
+    // material a different physical depth on differently scaled brushes. 0
+    // disables the march entirely.
+    surface_depth_meters: f32,
+    // Distance at which the carve has faded fully flat, in meters.
+    surface_depth_fade_distance: f32,
+    // Plateau count for the in-shader quantization `floor(h * levels) / levels`;
+    // 0 leaves the stored 8-bit value alone.
+    surface_depth_quantize_levels: f32,
+    // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
+    // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because
+    // streaming will move it), bit 12 = the has-depth flag the bind-group
+    // builder sets from the loaded specular slot's format.
+    surface_depth_march: u32,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
 @group(1) @binding(4) var t_normal: texture_2d<f32>;
@@ -166,12 +190,21 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     return out;
 }
 
-fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
+// `offset_normal` biases the lookup; `shading_normal` evaluates the irradiance.
+// See the same split in `forward.wgsl`: Surface Depth's side-wall normal is
+// perpendicular to the surface, so biasing along it would slide the lookup
+// sideways instead of lifting it off the surface.
+fn sample_sh_indirect(
+    world_pos: vec3<f32>,
+    shading_normal: vec3<f32>,
+    offset_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
     const SH_NORMAL_OFFSET_M: f32 = 0.1;
-    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let offset_world = world_pos + offset_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (offset_world - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
@@ -183,12 +216,17 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
     );
 }
 
-fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
+fn sample_sh_direct(
+    world_pos: vec3<f32>,
+    shading_normal: vec3<f32>,
+    offset_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
     const SH_NORMAL_OFFSET_M: f32 = 0.1;
-    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let offset_world = world_pos + offset_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (offset_world - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
@@ -209,9 +247,14 @@ fn accumulate_dynamic_direct(
     spec_int: f32,
     use_dynamic: bool,
     use_specular: bool,
+    depth: SurfaceDepthResult,
 ) -> vec3<f32> {
     var total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
+    // Surface Depth self-shadowing is budgeted per fragment and applies to the
+    // DYNAMIC prefix only — the animated-baked tail and the selected-static
+    // suffix are baked-tier records whose occlusion the bake already owns.
+    var depth_shadow_marches: u32 = 0u;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         var cache_layer = -1i;
         // Animated tails retain descriptors through `scripted_light_count`,
@@ -274,7 +317,10 @@ fn accumulate_dynamic_direct(
         var attenuation: f32;
         switch light_type {
             case 0u: {
-                let to_light = light.position_and_type.xyz - world_pos;
+                // The DISPLACED hit position feeds direction and attenuation;
+                // the shadow-map lookups below stay on the true plane, which is
+                // the geometry the depth maps hold and their bias is tuned for.
+                let to_light = light.position_and_type.xyz - depth.world_position;
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
                 attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
@@ -301,7 +347,9 @@ fn accumulate_dynamic_direct(
                 }
             }
             case 1u: {
-                let to_light = light.position_and_type.xyz - world_pos;
+                // Displaced for direction and attenuation, true plane for the
+                // shadow map — same split as the point case above.
+                let to_light = light.position_and_type.xyz - depth.world_position;
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
                 let dist_falloff = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
@@ -335,7 +383,15 @@ fn accumulate_dynamic_direct(
             }
         }
         let n_dot_l = dot(n, L);
-        total = total + effective_color * attenuation * max(n_dot_l, 0.0);
+        var depth_visibility = 1.0;
+        if depth.carved
+            && n_dot_l > 0.0
+            && i < kinematic_light_params.dynamic_light_count
+            && depth_shadow_marches < SURFACE_DEPTH_SHADOW_LIGHT_BUDGET {
+            depth_shadow_marches = depth_shadow_marches + 1u;
+            depth_visibility = surface_depth_light_visibility(depth, L);
+        }
+        total = total + effective_color * attenuation * max(n_dot_l, 0.0) * depth_visibility;
 
         // Animated direct tails are diffuse-only. Selected-static records begin
         // after the descriptor-bearing prefix and retain their existing mover
@@ -371,15 +427,45 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // handed to textureSampleGrad explicitly, matching the world forward pass.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
+    // World-space footprint of the same fragment. Surface Depth carves in
+    // METERS and needs world-units-per-UV-unit to reach UV space; taking it
+    // here keeps every derivative in uniform control flow. The march itself
+    // calls no derivative.
+    let ddx_world = dpdx(in.world_position);
+    let ddy_world = dpdy(in.world_position);
 
-    let base_color = sample_post_retro(base_texture, aniso_sampler, in.uv, ddx, ddy);
     let mesh_n = normalize(in.world_normal);
-    let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
-    let n = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
-    let indirect = sample_sh_indirect(in.world_position, n, mesh_n);
+    let view_vector = camera.camera_position - in.world_position;
+    let view_distance = length(view_vector);
+    let V = view_vector / max(view_distance, 1.0e-6);
+
+    // Surface Depth, through the SAME shared march the static world forward
+    // pass uses (see `surface_depth.wgsl`) — movers must not drift from world
+    // geometry the way the duplicated `sample_post_retro` bodies can. Inactive
+    // returns the interpolated UV, position and geometric normal unchanged.
+    let depth = surface_depth_resolve(
+        in.uv,
+        in.world_position,
+        mesh_n,
+        V,
+        view_distance,
+        ddx,
+        ddy,
+        ddx_world,
+        ddy_world,
+    );
+    let shade_uv = depth.uv;
+
+    let base_color = sample_post_retro(base_texture, aniso_sampler, shade_uv, ddx, ddy);
+    let n_ts = sample_normal(t_normal, shade_uv, ddx, ddy);
+    let n_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
+    // The normal map still applies on TOP faces; a side wall uses the exact
+    // axis normal. `mesh_n` stays geometric for shadow-map receiver bias.
+    let n = select(depth.normal, n_bump, depth.hit_top);
+    var indirect = sample_sh_indirect(in.world_position, n, n_bump, mesh_n);
     var direct = vec3<f32>(0.0);
     if dynamic_direct.has_direct != 0u {
-        direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, mesh_n);
+        direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n_bump, mesh_n);
     }
 
     // SH indirect and baked-direct isolation happens in their respective atlas
@@ -389,9 +475,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let use_ambient_floor = (light_terms & 0x01u) != 0u;
     let use_dynamic = (light_terms & 0x20u) != 0u;
     let use_specular = (light_terms & 0x40u) != 0u;
-    let V = normalize(camera.camera_position - in.world_position);
+    // Depth-derived ambient occlusion, INDIRECT term only, behind its own
+    // LightTermMask bit. The baked direct SH term is untouched.
+    indirect = indirect * surface_depth_indirect_ao(depth, light_terms);
     let spec_exp = max(material.shininess, 1.0);
-    let spec_int = sample_post_retro(spec_texture, aniso_sampler, in.uv, ddx, ddy).r;
+    // The surface map's R channel; the march read its G channel.
+    let spec_int = sample_post_retro(spec_texture, aniso_sampler, shade_uv, ddx, ddy).r;
     let dynamic = accumulate_dynamic_direct(
         in.world_position,
         n,
@@ -401,6 +490,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         spec_int,
         use_dynamic,
         use_specular,
+        depth,
     );
 
     var lighting = indirect + direct;
@@ -410,7 +500,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     lighting = lighting + dynamic;
     var emissive = vec3<f32>(0.0);
     if material.emissive_strength > 0.0 {
-        emissive = sample_post_retro(emissive_texture, aniso_sampler, in.uv, ddx, ddy).rgb;
+        emissive = sample_post_retro(emissive_texture, aniso_sampler, shade_uv, ddx, ddy).rgb;
     }
     return vec4<f32>(base_color.rgb * lighting + emissive * material.emissive_strength, base_color.a);
 }

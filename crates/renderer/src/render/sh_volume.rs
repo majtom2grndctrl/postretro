@@ -1633,6 +1633,11 @@ mod tests {
             // composed source mirrors the runtime `SHADER_SOURCE`.
             include_str!("../shaders/shadow_sample.wgsl"),
             "\n",
+            // Surface Depth Wave 3: forward calls the shared texel-space
+            // parallax march (`surface_depth_resolve`), so the composed source
+            // mirrors the runtime `SHADER_SOURCE`.
+            include_str!("../shaders/surface_depth.wgsl"),
+            "\n",
         );
         const BILLBOARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/billboard.wgsl"),

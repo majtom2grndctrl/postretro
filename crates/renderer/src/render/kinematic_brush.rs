@@ -105,7 +105,19 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/shadow_sample_static_cache.wgsl"),
     "\n",
+    // Surface Depth shares ONE march with the static world forward pass; see
+    // the snippet inventory in `pipeline_layout.rs`.
+    include_str!("../shaders/surface_depth.wgsl"),
+    "\n",
 );
+
+/// The mover pass's composed WGSL, for GPU-free shader-contract tests. The
+/// Surface Depth parity test reads it here so it compares the REAL composed
+/// source rather than a second hand-maintained concat.
+#[cfg(test)]
+pub(crate) fn composed_shader_source() -> &'static str {
+    SHADER_SOURCE
+}
 
 fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
     if cube_array_supported {

@@ -27,6 +27,54 @@ pub struct MaterialProperties {
     pub ricochet: bool,
 }
 
+/// Surface Depth (texel-space parallax) tuning for one material prefix.
+///
+/// Prefix-driven exactly like [`Material::shininess`] and
+/// [`Material::emissive_strength`]: this engine has no author-facing material
+/// descriptor file and this feature deliberately does not introduce one.
+///
+/// `depth_meters` is a WORLD distance, not a texture-space fraction. World
+/// brush UV scale is set per-face in TrenchBroom and is unconstrained, so a
+/// texture-space scale would give the same material a different physical
+/// depth on differently scaled brushes. The shader converts meters to UV
+/// space per fragment from `dpdx(world_position) / dpdx(uv)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceDepth {
+    /// How far below the true surface plane a fully-black depth texel carves,
+    /// in meters. `0.0` disables the effect for this material.
+    pub depth_meters: f32,
+    /// Plateau count for the in-shader quantization `floor(h * levels) / levels`.
+    /// `0` leaves the stored 8-bit value untouched. This is an aesthetic dial:
+    /// fewer levels read as larger, more deliberately retro terraces. The DDA
+    /// is exact either way — exactness comes from the field being constant per
+    /// texel, not from the value being quantized.
+    pub quantize_levels: u32,
+    /// Hard cap on texels the view-ray DDA may walk. Grazing angles traverse
+    /// many texels per fragment; this is the per-fragment budget, not a
+    /// quality knob.
+    pub max_steps: u32,
+    /// Distance in meters at which the effect has faded fully flat. Beyond it
+    /// the march is skipped entirely. Also a straight perf win: at range the
+    /// texels are sub-pixel and the parallax is invisible.
+    pub fade_distance_meters: f32,
+}
+
+impl SurfaceDepth {
+    /// The flat material: no carve, no march, byte-identical shading to the
+    /// pre-Surface-Depth path.
+    pub const FLAT: Self = Self {
+        depth_meters: 0.0,
+        quantize_levels: 0,
+        max_steps: 0,
+        fade_distance_meters: 0.0,
+    };
+
+    /// Whether this material asks for any carve at all.
+    pub const fn is_enabled(self) -> bool {
+        self.depth_meters > 0.0
+    }
+}
+
 impl Material {
     /// Blinn-Phong specular exponent for this material.
     ///
@@ -58,6 +106,61 @@ impl Material {
             | Material::Glass
             | Material::Wood
             | Material::Default => 0.0,
+        }
+    }
+
+    /// Surface Depth tuning for this material prefix.
+    ///
+    /// Depths are chosen against the aesthetic, not a measurement: cobblestone
+    /// and pavement (`concrete`) carve the deepest because that is the look the
+    /// feature exists for; panel and plank seams are shallow; `glass` and
+    /// `neon` are flat because a carved light source or pane reads as a defect.
+    ///
+    /// A material whose baked `.prm` has no height sibling stays flat whatever
+    /// this returns — the bind group clears the has-depth flag (see
+    /// `postretro_render_cpu::surface_depth`).
+    pub fn surface_depth(self) -> SurfaceDepth {
+        match self {
+            // Cobblestone / pavement: the motivating case. 12 plateaus matches
+            // the quantization the texture tool's stone profile authors.
+            Material::Concrete => SurfaceDepth {
+                depth_meters: 0.020,
+                quantize_levels: 12,
+                max_steps: 24,
+                fade_distance_meters: 14.0,
+            },
+            // Panel seams and rivets: shallow, tight terracing.
+            Material::Metal => SurfaceDepth {
+                depth_meters: 0.006,
+                quantize_levels: 8,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            // Open grating reads as depth even at a glance; keep it modest so
+            // the carve does not fight the alpha-free retro silhouette.
+            Material::Grate => SurfaceDepth {
+                depth_meters: 0.010,
+                quantize_levels: 6,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            // Plank gaps.
+            Material::Wood => SurfaceDepth {
+                depth_meters: 0.008,
+                quantize_levels: 8,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            // Flat by intent, not by omission.
+            Material::Glass | Material::Neon => SurfaceDepth::FLAT,
+            // Unknown prefixes get a conservative carve rather than nothing, so
+            // a modder's `_h.png` shows up without needing an engine change.
+            Material::Default => SurfaceDepth {
+                depth_meters: 0.010,
+                quantize_levels: 8,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
         }
     }
 
@@ -333,6 +436,75 @@ mod tests {
     #[test]
     fn metal_has_ricochet() {
         assert!(Material::Metal.properties().ricochet);
+    }
+
+    // -- Surface Depth --
+
+    #[test]
+    fn surface_depth_is_prefix_driven_and_carves_concrete_deepest() {
+        let concrete = Material::Concrete.surface_depth();
+        assert!(concrete.is_enabled());
+        for other in [
+            Material::Metal,
+            Material::Grate,
+            Material::Wood,
+            Material::Default,
+        ] {
+            assert!(
+                other.surface_depth().depth_meters < concrete.depth_meters,
+                "{other:?} must carve shallower than the cobblestone case"
+            );
+        }
+    }
+
+    #[test]
+    fn glass_and_neon_are_deliberately_flat() {
+        for mat in [Material::Glass, Material::Neon] {
+            assert_eq!(mat.surface_depth(), SurfaceDepth::FLAT);
+            assert!(!mat.surface_depth().is_enabled());
+        }
+    }
+
+    #[test]
+    fn every_carving_material_bounds_its_march() {
+        for mat in [
+            Material::Metal,
+            Material::Concrete,
+            Material::Grate,
+            Material::Wood,
+            Material::Glass,
+            Material::Neon,
+            Material::Default,
+        ] {
+            let depth = mat.surface_depth();
+            if !depth.is_enabled() {
+                continue;
+            }
+            assert!(
+                depth.max_steps >= 1,
+                "{mat:?}: a carving material needs at least one DDA step"
+            );
+            assert!(
+                depth.fade_distance_meters > 0.0,
+                "{mat:?}: a carving material needs a finite fade distance"
+            );
+            // Depth in METERS: a carve deeper than a few centimeters would
+            // read as a hole and would diverge visibly from collision, which
+            // still uses the true plane.
+            assert!(
+                depth.depth_meters <= 0.05,
+                "{mat:?}: {} m is deeper than the inward-carve contract allows",
+                depth.depth_meters
+            );
+        }
+    }
+
+    #[test]
+    fn flat_surface_depth_is_the_all_zero_default() {
+        assert_eq!(SurfaceDepth::FLAT.depth_meters, 0.0);
+        assert_eq!(SurfaceDepth::FLAT.quantize_levels, 0);
+        assert_eq!(SurfaceDepth::FLAT.max_steps, 0);
+        assert_eq!(SurfaceDepth::FLAT.fade_distance_meters, 0.0);
     }
 
     #[test]

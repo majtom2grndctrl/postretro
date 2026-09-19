@@ -202,6 +202,20 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   surface map costs exactly twice the single-channel specular slot it replaces
   and nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101
   to 2,796,202 bytes across its 11 mip levels.
+- **Shading:** the forward and kinematic-mover passes march the G channel with
+  an exact texel-grid DDA before sampling any other slot; see
+  `rendering_pipeline.md` §7.3 (Surface Depth) for the algorithm, the lighting
+  integration, and the hard renderer constraints it honors.
+- **Per-material tuning:** carve depth (in **meters**), quantization plateau
+  count, march step cap, and fade distance are derived from the material name
+  **prefix**, exactly like `shininess` and `emissive_strength`
+  (`postretro-render-data::material::Material::surface_depth`). This engine has
+  no author-facing material descriptor file and Surface Depth deliberately does
+  not introduce one: authoring is still "drop a correctly-named PNG". The four
+  values ride in the per-material uniform's second 16-byte row, which was
+  already allocated and already zeroed, so nothing about the binding layout or
+  buffer size changed. A material whose loaded specular slot is not `Rg8Unorm`
+  gets an all-zero row and skips the march entirely.
 
 ---
 

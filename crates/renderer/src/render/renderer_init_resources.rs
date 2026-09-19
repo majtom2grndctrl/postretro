@@ -70,10 +70,14 @@ pub(crate) fn request_renderer_device(
     // every targeted backend reports far higher (Metal/AMD = 128) — the
     // adapter pre-check below confirms the granted maximum still covers it.
     //
-    // Derived (15 when CUBE_ARRAY is supported, 14 without) from the actual
+    // Derived (16 when CUBE_ARRAY is supported, 15 without) from the actual
     // BGLs that compose the forward pipeline layout, so it can never drift from
-    // the real binding count:
-    //   Group 1 — material (3): diffuse, specular, normal
+    // the real binding count. The per-group inventory is [0, 4, 0, 3, 5, 4]
+    // (or [0, 4, 0, 3, 5, 3] without CUBE_ARRAY), pinned by
+    // `pipeline_budget_tests::forward_pipeline_sampled_texture_request_matches_bgl_definitions`:
+    //   Group 1 — material (4): diffuse, emissive, specular (the two-channel
+    //                           Surface Depth map when a material has an
+    //                           `_h.png` sibling), normal
     //   Group 3 — SH volume (3): octahedral atlas + depth-moments
     //                            + direct static-light atlas (billboard samples it in
     //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it

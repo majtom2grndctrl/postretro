@@ -33,15 +33,28 @@ pub struct MaterialProperties {
 /// [`Material::emissive_strength`]: this engine has no author-facing material
 /// descriptor file and this feature deliberately does not introduce one.
 ///
-/// `depth_meters` is a WORLD distance, not a texture-space fraction. World
-/// brush UV scale is set per-face in TrenchBroom and is unconstrained, so a
-/// texture-space scale would give the same material a different physical
-/// depth on differently scaled brushes. The shader converts meters to UV
-/// space per fragment from `dpdx(world_position) / dpdx(uv)`.
+/// `depth_meters` carries whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects,
+/// and the two readings trade against each other rather than one being right.
+///
+/// METERS (the default) makes the carve a WORLD distance. Brush UV scale is set
+/// per-face in TrenchBroom and is unconstrained, so the same material keeps the
+/// same physical depth however a mapper scaled the face — a stone is a stone.
+/// The cost is that the number of TEXELS that depth spans varies with
+/// resolution and scale, and the march's step budget has to absorb it.
+///
+/// TEXELS makes the carve a fixed depth in the albedo lattice instead. That is
+/// the lattice the retro look is built on, so edges land on it by construction,
+/// and the march's worst case stops depending on resolution or brush scale. The
+/// cost is the mirror image: the same material carves a different physical
+/// depth on differently scaled brushes.
+///
+/// Either way the shader works in meters internally, converting per fragment
+/// from `dpdx(world_position) / dpdx(uv)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceDepth {
-    /// How far below the true surface plane a fully-black depth texel carves,
-    /// in meters. `0.0` disables the effect for this material.
+    /// How far below the true surface plane a fully-black `_h` texel carves.
+    /// Meters, or a count of albedo texels — see [`SURFACE_DEPTH_TEXEL_MODE`].
+    /// `0.0` disables the effect for this material in either unit.
     pub depth_meters: f32,
     /// Plateau count for the in-shader quantization `floor(h * levels) / levels`.
     /// `0` leaves the stored 8-bit value untouched. This is an aesthetic dial:
@@ -57,6 +70,57 @@ pub struct SurfaceDepth {
     /// the march is skipped entirely. Also a straight perf win: at range the
     /// texels are sub-pixel and the parallax is invisible.
     pub fade_distance_meters: f32,
+}
+
+/// Which unit `SurfaceDepth::depth_meters` carries. **This is the switch.**
+///
+/// `0` — METERS. The authored depth is a world-space distance, straight
+/// through to the shader. A 2048px texture on a small brush carves far more
+/// texels than a 256px one on a large brush, and the step budget has to absorb
+/// the difference.
+///
+/// `1` — TEXELS. The authored depth is a count of albedo texels, converted to
+/// meters per-fragment from that fragment's own texel rate. The carve is then a
+/// fixed depth in the texel lattice the retro look is built on, independent of
+/// texture resolution and brush scale. Horizontal travel through the carve
+/// works out to `N * tan(theta)` texels with the rate cancelling, so the march's
+/// worst case stops depending on either.
+///
+/// Flipping this selects the matching table in [`Material::surface_depth`] and
+/// the matching cap in `SurfaceDepthUniform::resolve`. The shader mirrors it as
+/// `SURFACE_DEPTH_TEXEL_MODE` in `surface_depth.wgsl`, pinned by
+/// `shader_constants_match_the_cpu_reference` — change one and that test fails
+/// rather than the two silently disagreeing.
+pub const SURFACE_DEPTH_TEXEL_MODE: u32 = 0;
+
+/// Whether the authored depth is a texel count rather than meters.
+pub const fn surface_depth_is_texel_relative() -> bool {
+    SURFACE_DEPTH_TEXEL_MODE == 1
+}
+
+/// Hard ceiling on an authored carve depth in METERS.
+///
+/// A carve deeper than a few centimeters reads as a hole and diverges visibly
+/// from collision, which still uses the true plane.
+pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.05;
+
+/// Hard ceiling on an authored carve depth in TEXELS.
+///
+/// Horizontal travel through the carve is `N * tan(theta)` texels, so 32 is
+/// already past what a 24-step budget resolves at a grazing angle.
+pub const SURFACE_DEPTH_MAX_TEXELS: f32 = 32.0;
+
+/// The ceiling for whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects.
+///
+/// Capping a texel count at the METERS ceiling would shrink every carve by
+/// ~80x with no error, which is the quiet failure this exists to prevent — so
+/// the cap and the unit are chosen together, in one place.
+pub const fn surface_depth_max_authored() -> f32 {
+    if surface_depth_is_texel_relative() {
+        SURFACE_DEPTH_MAX_TEXELS
+    } else {
+        SURFACE_DEPTH_MAX_METERS
+    }
 }
 
 impl SurfaceDepth {
@@ -120,6 +184,57 @@ impl Material {
     /// this returns — the bind group clears the has-depth flag (see
     /// `postretro_render_cpu::surface_depth`).
     pub fn surface_depth(self) -> SurfaceDepth {
+        if surface_depth_is_texel_relative() {
+            return self.surface_depth_texels();
+        }
+        self.surface_depth_meters()
+    }
+
+    /// Carve tuning when depth is authored in TEXELS.
+    ///
+    /// The counts are the meters table re-expressed at the ~512 texels/m the
+    /// shipped stone assets sit at, so flipping the mode is a change of unit
+    /// rather than a change of look — then tune from there. `quantize_levels`
+    /// is set equal to the texel depth so every plateau lands exactly one texel
+    /// down, which is the terracing the albedo lattice can actually express.
+    fn surface_depth_texels(self) -> SurfaceDepth {
+        match self {
+            Material::Concrete => SurfaceDepth {
+                depth_meters: 10.0,
+                quantize_levels: 10,
+                max_steps: 24,
+                fade_distance_meters: 14.0,
+            },
+            Material::Metal => SurfaceDepth {
+                depth_meters: 3.0,
+                quantize_levels: 3,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            Material::Grate => SurfaceDepth {
+                depth_meters: 5.0,
+                quantize_levels: 5,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            Material::Wood => SurfaceDepth {
+                depth_meters: 4.0,
+                quantize_levels: 4,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            Material::Glass | Material::Neon => SurfaceDepth::FLAT,
+            Material::Default => SurfaceDepth {
+                depth_meters: 5.0,
+                quantize_levels: 8,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+        }
+    }
+
+    /// Carve tuning when depth is authored in METERS.
+    fn surface_depth_meters(self) -> SurfaceDepth {
         match self {
             // Cobblestone / pavement: the motivating case. 12 plateaus matches
             // the quantization the texture tool's stone profile authors.
@@ -457,6 +572,61 @@ mod tests {
         }
     }
 
+    /// Flipping the depth unit must not change WHICH materials carve.
+    ///
+    /// The two tables are hand-maintained in parallel. A material that carves in
+    /// one unit and is FLAT in the other would appear or disappear when the
+    /// switch moves, which is a change of content rather than a change of unit —
+    /// and it would show up as a rendering difference nobody asked for.
+    #[test]
+    fn both_depth_unit_tables_agree_on_which_materials_carve() {
+        for mat in [
+            Material::Concrete,
+            Material::Metal,
+            Material::Grate,
+            Material::Wood,
+            Material::Glass,
+            Material::Neon,
+            Material::Default,
+        ] {
+            let meters = mat.surface_depth_meters();
+            let texels = mat.surface_depth_texels();
+            assert_eq!(
+                meters.is_enabled(),
+                texels.is_enabled(),
+                "{mat:?} carves in one unit but is flat in the other",
+            );
+            // The step budget and the fade are costs, not units: converting one
+            // to the other must not quietly re-tune them.
+            assert_eq!(
+                meters.max_steps, texels.max_steps,
+                "{mat:?}: the step budget is a cost decision, not a unit decision",
+            );
+            assert_eq!(
+                meters.fade_distance_meters, texels.fade_distance_meters,
+                "{mat:?}: the fade distance is in meters in BOTH modes",
+            );
+        }
+    }
+
+    /// Concrete stays the deepest carve in whichever unit is selected.
+    #[test]
+    fn the_texel_table_keeps_concrete_deepest() {
+        let concrete = Material::Concrete.surface_depth_texels();
+        assert!(concrete.is_enabled());
+        for other in [
+            Material::Metal,
+            Material::Grate,
+            Material::Wood,
+            Material::Default,
+        ] {
+            assert!(
+                other.surface_depth_texels().depth_meters < concrete.depth_meters,
+                "{other:?} must carve shallower than the cobblestone case in texels too",
+            );
+        }
+    }
+
     #[test]
     fn glass_and_neon_are_deliberately_flat() {
         for mat in [Material::Glass, Material::Neon] {
@@ -488,13 +658,15 @@ mod tests {
                 depth.fade_distance_meters > 0.0,
                 "{mat:?}: a carving material needs a finite fade distance"
             );
-            // Depth in METERS: a carve deeper than a few centimeters would
-            // read as a hole and would diverge visibly from collision, which
-            // still uses the true plane.
+            // Against the cap the uniform resolve actually clamps to, in
+            // whichever unit is selected — not a literal, which would silently
+            // become the wrong unit's number the moment the switch moves.
             assert!(
-                depth.depth_meters <= 0.05,
-                "{mat:?}: {} m is deeper than the inward-carve contract allows",
-                depth.depth_meters
+                depth.depth_meters <= surface_depth_max_authored(),
+                "{mat:?}: {} is deeper than the inward-carve contract allows ({} max, {})",
+                depth.depth_meters,
+                surface_depth_max_authored(),
+                if surface_depth_is_texel_relative() { "texels" } else { "meters" },
             );
         }
     }

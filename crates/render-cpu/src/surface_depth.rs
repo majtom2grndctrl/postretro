@@ -167,7 +167,12 @@ pub const SURFACE_DEPTH_LOW_MAX_STEPS: u32 = 8;
 /// `> 0.0`, which admits `+inf`. An infinite scale makes `solid` a NaN on every
 /// zero-depth texel — the most common texel in a cobblestone map — and a NaN
 /// compares false against both hit rules.
-pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.05;
+/// Re-exported so the shader-parity test and the uniform resolve read the mode
+/// and its cap from one place. Both live beside the tables they select.
+pub use postretro_render_data::material::{
+    SURFACE_DEPTH_MAX_METERS, SURFACE_DEPTH_MAX_TEXELS, SURFACE_DEPTH_TEXEL_MODE,
+    surface_depth_is_texel_relative, surface_depth_max_authored,
+};
 
 /// Fraction of a material's authored fade distance the `Low` tier keeps.
 /// Shortening the fade is the other half of the tier's saving: the march is
@@ -289,7 +294,8 @@ impl SurfaceDepthUniform {
         if !tuned.depth_meters.is_finite() {
             return Self::FLAT;
         }
-        tuned.depth_meters = tuned.depth_meters.min(SURFACE_DEPTH_MAX_METERS);
+        // Cap against whichever unit the field is carrying.
+        tuned.depth_meters = tuned.depth_meters.min(surface_depth_max_authored());
         let top_level = specular_mip_count.saturating_sub(1);
         Self {
             depth: tuned,

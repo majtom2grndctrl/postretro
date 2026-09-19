@@ -173,6 +173,15 @@ fn shader_constants_match_the_cpu_reference() {
         declared_u32("SURFACE_DEPTH_SHADOW_BUDGET_SHIFT"),
         sd::SURFACE_DEPTH_SHADOW_BUDGET_SHIFT
     );
+    // The unit the authored depth carries. The shader converts a texel count
+    // with the fragment's own texel rate; the CPU picks the matching authoring
+    // table and the matching cap. A mismatch would make every material carve in
+    // one unit and be tuned in the other, so pin it rather than trusting two
+    // hand-edits to stay together.
+    assert_eq!(
+        declared_u32("SURFACE_DEPTH_TEXEL_MODE"),
+        sd::SURFACE_DEPTH_TEXEL_MODE
+    );
     assert_eq!(
         declared_u32("SURFACE_DEPTH_SHADOW_BUDGET_MASK"),
         sd::SURFACE_DEPTH_SHADOW_BUDGET_MASK
@@ -550,9 +559,10 @@ fn an_inactive_march_restores_the_pre_feature_inputs() {
     // Every early-out in the resolver returns that same flat result.
     assert_eq!(
         code.matches("return flat_result;").count(),
-        7,
-        "each degenerate case (no map, faded out, zero depth, singular Jacobian, \
-         zero UV scale, collapsed tangent plane, edge-on) must return the flat result",
+        8,
+        "each degenerate case (no map, faded out, zero authored depth, singular \
+         Jacobian, zero UV scale, collapsed tangent plane, a resolved carve depth \
+         that is not positive, edge-on) must return the flat result",
     );
 
     for (label, consumer) in [("forward", FORWARD), ("kinematic brush", KINEMATIC)] {

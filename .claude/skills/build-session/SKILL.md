@@ -28,13 +28,13 @@ The owner cares about a few details. Not all of them. Your job is to get up to s
 - Ask only what the repo cannot answer: product behavior, policy, a modder-facing surface, a one-way door. Recommend a direction with every question.
 - Everything else: decide from project context, state the call in one line, keep moving.
 
-A detail the owner never asked about and that touches nothing they asked about is yours to settle silently.
+A detail the owner never raised, touching nothing they did raise, is yours to settle silently.
 
 ## 2. Design contract
 
 Before any dispatch, write `context/plans/in-progress/<slug>-contract.md`. Every agent reads this file first, before its own brief.
 
-This is the highest-leverage thing in the skill. Agents that share a written contract build compatible pieces with zero communication; agents inferring the design from their own prompt do not.
+Agents that share a written contract build compatible pieces with zero communication; agents inferring the design from their own prompt do not.
 
 Contents:
 
@@ -53,11 +53,11 @@ Written once, before dispatch. Amended in the file when a wave changes a decisio
 
 ### Briefing
 
-**Brief for intent, not procedure.** Give the whole slice up front: outcome, constraints that must hold, acceptance, and the contract. Then stop. Ordered step lists, prescribed search strategies, and told-you-how decomposition lower the quality of a current agent — the capability they were compensating for is no longer missing.
+**Brief for intent, not procedure.** Give the whole slice up front: outcome, constraints that must hold, acceptance, and the contract. Then stop. Ordered step lists, prescribed search strategies, and told-you-how decomposition lower output quality. They compensate for a weakness the agent does not have.
 
-**Give the whole contract.** Withholding it to save context is a false economy at current window sizes, and an agent that infers a decision guesses differently than the one next to it. Other agents' briefs stay out — irrelevant, not expensive.
+**Give the whole contract.** Withholding it to save context is a false economy, and an agent that infers a decision guesses differently than the one next to it. Other agents' briefs stay out — irrelevant, not expensive.
 
-**Slice whole, not small.** One agent per coherent vertical slice with its own acceptance. Not one per file, not one per step. Handoff overhead between micro-tasks now costs more than the tasks do.
+**Slice whole, not small.** One agent per coherent vertical slice with its own acceptance. Not one per file, not one per step. Handoff overhead between micro-tasks costs more than the tasks do.
 
 **Never ask an agent to double-check its work.** That buys over-verification, not coverage. Name the specific assertion that would catch the failure you actually fear — an offset assert, a rejected stale input — or ask for nothing.
 
@@ -76,7 +76,7 @@ Split on blast radius, never on size. Does the slice **establish** a contract th
 
 The aliases are durable; what backs them is not. When one stops resolving, fix this table — don't route around it.
 
-### The rules that hold regardless
+### Standing rules
 
 **Only you spawn agents that write files.** Workers may spawn read-only agents freely; a worker fanning out to find call sites is good. Workers never spawn writers. You cannot see your grandchildren — only an aggregate report from the parent. So you cannot partition file ownership among agents you did not create, and you cannot stop one misbehaving agent without killing its parent. Depth 2 for writes, unlimited for reads.
 
@@ -84,7 +84,7 @@ The aliases are durable; what backs them is not. When one stops resolving, fix t
 
 **Compile-forced spillover is allowed, and must be reported.** Adding an enum variant breaks exhaustive matches elsewhere. An agent makes the minimal change that keeps the workspace compiling, even outside its brief, and flags it in its report. A strict lane rule that leaves the tree uncompilable is worse. Use those reports to narrow the next wave's briefs.
 
-**Every agent reads `context/lib/context_style_guide.md`.** It governs code comments and any prose the agent writes.
+**Every agent reads `context/lib/context_style_guide.md` and `development_guide.md` §2.** Style governs code comments and any prose the agent writes; §2 governs file size and splitting. Slicing whole makes god files the likely failure — a worker authoring new modules never edits an already-large file, so nothing trips the usual threshold.
 
 ### Repo physics
 
@@ -98,7 +98,7 @@ Not model-generational — these are the machine's limits.
 
 When a wave lands: merge, verify, then fold what it made durable into `context/lib/` — before the next dispatch.
 
-Deferring every context edit to the end has two costs. The next wave reads a stale library. And by the end you are writing from memory instead of from the code.
+Deferring every context edit to the end has two costs: the next wave reads a stale library, and you finish writing from memory instead of from code.
 
 Record only what survives refactoring. A sentence that breaks when a file is renamed belongs in a code comment, not in `context/`. Update the `index.md` router when a wave adds a concept someone would search for. Amend the contract with anything the wave changed.
 

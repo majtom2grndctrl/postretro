@@ -219,6 +219,7 @@ Split along natural boundaries:
 ### 2.5 Split timing
 
 - **Proactively**: when adding significant new functionality to an already-large file. You have full context; the split is cheapest now.
+- **At authoring**: a new file is sized as it is written. §2.1's thresholds bind the file you create, not only the one you edit. A feature that lands as one oversized module was never split — the rule below protects existing files, not new ones.
 - **Not retroactively** just to meet a number. Only when the file actively causes pain (hard to navigate, too many responsibilities).
 - **Never during a bugfix.** Don't mix structural refactoring with behavior changes in one changeset.
 

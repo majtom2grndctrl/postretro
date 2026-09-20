@@ -101,8 +101,15 @@ pub const fn surface_depth_is_texel_relative() -> bool {
 
 /// Hard ceiling on an authored carve depth in METERS.
 ///
-/// A carve deeper than a few centimeters reads as a hole and diverges visibly
-/// from collision, which still uses the true plane.
+/// This bounds how far the SHADED surface may sit below the real one. Collision
+/// still uses the true plane — the player walks on the stone tops — so the
+/// ceiling is the budget for how much visual/physical mismatch the look is
+/// worth. Past it a carve stops reading as relief and starts reading as a hole.
+///
+/// Tuned by eye on hardware, not derived. In TEXEL mode this is also the only
+/// bound on the resolved depth, since the authored cap is a texel count there
+/// and the per-fragment divide by the texel rate can turn a legal count into an
+/// arbitrarily deep carve on a coarsely-scaled face.
 pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.2;
 
 /// Hard ceiling on an authored carve depth in TEXELS.

@@ -130,13 +130,23 @@ Record only what survives refactoring. A sentence that breaks when a file is ren
 
 ## 5. Landing
 
-`/review-panel`, then fixes, then `/preflight` once as the single full-suite gate.
+**One review track, not a panel.** `opus` finds real bugs at high recall in a single pass, so several reviewers on one diff is one modest job split across parallel agents. A panel also returns claims you then have to re-verify, which spends the context you spent the whole session protecting.
 
-Ask the panel for everything it finds with a confidence and severity on each, and filter afterwards. A review brief that says "only report what's important" gets followed literally, and real findings go unreported.
+Dispatch one agent to review the diff and fix what it finds. Keep three stages distinct in its brief.
 
-Require each finding to quote the line and name the file and symbol. Drop any finding whose quote you cannot locate in the tree — checking a citation is not re-deriving the work. Report the survivors to the owner before acting on the ambiguous ones.
+**Find.** Several lenses in one pass — correctness, the contract's invariants, layering and crate direction, test coverage, resource bounds, and prose against `context_style_guide.md`. Coverage is the job at this stage:
 
-Apply the local fixes yourself. A nit, a stale comment, a missing error case is one edit, and an agent per finding costs more than the finding. Dispatch only what crosses a crate or contract boundary, and send it as one track with a gate it can run.
+> Report every issue you find, including ones you are uncertain about or consider low-severity. Do not filter for importance here — a later stage does that. For each finding, give a confidence and a severity, and quote the line with its file and symbol.
+
+**Filter.** Rank the findings and drop what does not hold: a quote that cannot be located in the tree, a finding the contract already answers, a preference dressed as a defect.
+
+**Fix.** Apply what survives. Stop at anything that would change a decision in the contract — those come back to you, unfixed, with the reasoning.
+
+Require back what it found, what it changed, and what it left for a decision. Read the first and last; take the middle as given and let `/preflight` judge it.
+
+A track that lands mid-session can take the same brief on `sonnet` as a cheap early pass. Accuracy holds at lower cost, so a quick pass per track and a thorough one at landing is worth more than a single review at the end.
+
+Then `/preflight` once, as the single full-suite gate.
 
 Record each acceptance row's result and any outstanding manual proof in the PR body. Move the contract to `context/plans/done/`, or delete it once `context/lib/` absorbs it.
 
@@ -157,7 +167,7 @@ The owner reads your text between tool calls and sees neither your thinking nor 
 - Never give an instruction without the constraint that would catch it if it is wrong.
 - Never hand an agent a file and line for a defect you have not reproduced.
 - Never state a preference in the register of a hard constraint.
-- Never tell a reviewer to report only what matters.
+- Never tell a reviewer to report only what matters, or to skip the nits.
 - Never design against a fact you have not read in source.
 - Never dispatch before the contract file exists.
 - Never let an agent infer a decision that belongs in the contract.

@@ -29,9 +29,9 @@ pub(crate) const fn renderer_fog_step_size(quality: FogQuality) -> f32 {
     }
 }
 
-/// Translate the persisted Surface Depth tier into the renderer's own tier
-/// vocabulary. The `match` is exhaustive with no `_` arm on purpose: a new tier
-/// must fail to compile here rather than silently degrade.
+/// Translate the persisted Surface Depth state into the renderer's own
+/// vocabulary. The `match` is exhaustive with no `_` arm on purpose: a new
+/// state must fail to compile here rather than silently degrade.
 ///
 /// The two enums are separate because `PlayerOptions` is a serde TOML type and
 /// `postretro-render-cpu` carries no serde dependency — the same split the
@@ -42,8 +42,7 @@ pub(crate) const fn renderer_surface_depth_quality(
 ) -> RendererSurfaceDepthQuality {
     match quality {
         SurfaceDepthQuality::Off => RendererSurfaceDepthQuality::Off,
-        SurfaceDepthQuality::Low => RendererSurfaceDepthQuality::Low,
-        SurfaceDepthQuality::High => RendererSurfaceDepthQuality::High,
+        SurfaceDepthQuality::On => RendererSurfaceDepthQuality::On,
     }
 }
 
@@ -192,14 +191,16 @@ mod tests {
     }
 
     #[test]
-    fn every_surface_depth_tier_maps_to_its_renderer_tier() {
+    fn every_surface_depth_state_maps_to_its_renderer_state() {
         for (persisted, expected) in [
             (SurfaceDepthQuality::Off, RendererSurfaceDepthQuality::Off),
-            (SurfaceDepthQuality::Low, RendererSurfaceDepthQuality::Low),
-            (SurfaceDepthQuality::High, RendererSurfaceDepthQuality::High),
+            (SurfaceDepthQuality::On, RendererSurfaceDepthQuality::On),
         ] {
             assert_eq!(renderer_surface_depth_quality(persisted), expected);
         }
+        // Both sides of the chokepoint carry the same number of states, so a
+        // future addition on one side cannot quietly fold into an existing arm.
+        assert_eq!(RendererSurfaceDepthQuality::ALL.len(), 2);
     }
 
     #[test]
@@ -207,11 +208,11 @@ mod tests {
         // The feature ships on; the setting is an escape hatch, not an opt-in.
         assert_eq!(
             renderer_surface_depth_quality(SurfaceDepthQuality::default()),
-            RendererSurfaceDepthQuality::High,
+            RendererSurfaceDepthQuality::On,
         );
         assert_eq!(
             RendererSurfaceDepthQuality::default(),
-            RendererSurfaceDepthQuality::High,
+            RendererSurfaceDepthQuality::On,
         );
     }
 

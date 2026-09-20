@@ -192,12 +192,8 @@ const optionReactions: NamedReactionDescriptor[] = [
     updateState(options.surfaceDepthQuality, "off"),
   ),
   defineReaction(
-    "frontend.options.surfaceDepthQuality.low",
-    updateState(options.surfaceDepthQuality, "low"),
-  ),
-  defineReaction(
-    "frontend.options.surfaceDepthQuality.high",
-    updateState(options.surfaceDepthQuality, "high"),
+    "frontend.options.surfaceDepthQuality.on",
+    updateState(options.surfaceDepthQuality, "on"),
   ),
 ];
 
@@ -368,16 +364,10 @@ export const optionsMenu = defineUiTree({
                 "frontend.options.surfaceDepthQuality.off",
               ),
               radioChoice(
-                "optionsSurfaceDepthLow",
-                "LOW",
-                stateEquals(options.surfaceDepthQuality, "low"),
-                "frontend.options.surfaceDepthQuality.low",
-              ),
-              radioChoice(
-                "optionsSurfaceDepthHigh",
-                "HIGH",
-                stateEquals(options.surfaceDepthQuality, "high"),
-                "frontend.options.surfaceDepthQuality.high",
+                "optionsSurfaceDepthOn",
+                "ON",
+                stateEquals(options.surfaceDepthQuality, "on"),
+                "frontend.options.surfaceDepthQuality.on",
               ),
             ]),
           ]),

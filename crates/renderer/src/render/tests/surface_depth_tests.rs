@@ -167,7 +167,7 @@ fn shader_constants_match_the_cpu_reference() {
         sd::SURFACE_DEPTH_HAS_DEPTH_BIT
     );
     // The self-shadow budget is NOT a shader constant: it rides the packed
-    // march word so the player's quality tier can zero it by rewriting the
+    // march word so the player's on/off switch (D5) can zero it by rewriting the
     // material uniform buffer. Pin the field's position instead.
     assert_eq!(
         declared_u32("SURFACE_DEPTH_SHADOW_BUDGET_SHIFT"),
@@ -195,7 +195,7 @@ fn shader_constants_match_the_cpu_reference() {
     assert!(
         !SNIPPET.contains("const SURFACE_DEPTH_SHADOW_LIGHT_BUDGET"),
         "the budget must reach the shader as data, not as a constant the \
-         player's quality tier cannot change",
+         player's on/off switch cannot change",
     );
     // The AO gate is the `LightTermMask` bit, which skips the reserved
     // emissive bit 7.
@@ -634,12 +634,12 @@ fn both_world_pipelines_pass_naga_validation() {
     }
 }
 
-/// The player's quality tier (design D5) reaches the shader as DATA in the
-/// per-material uniform, because the tier is applied by rewriting that buffer
-/// — this engine has no shader-variant system, so anything a tier must switch
-/// off has to be decodable from the packed march word.
+/// The player's Surface Depth switch (design D5) reaches the shader as DATA in
+/// the per-material uniform, because the switch is applied by rewriting that
+/// buffer — this engine has no shader-variant system, so anything the switch
+/// must turn off has to be decodable from the packed march word.
 #[test]
-fn the_quality_tier_reaches_the_shader_through_the_packed_march_word() {
+fn the_player_switch_reaches_the_shader_through_the_packed_march_word() {
     let code = strip_line_comments(SNIPPET);
     assert!(
         code.contains(
@@ -652,19 +652,10 @@ fn the_quality_tier_reaches_the_shader_through_the_packed_march_word() {
         "the flat result must zero the budget, so a flat fragment never marches",
     );
 
-    // The packed fields must not overlap: has-depth is one bit, the budget is
-    // a nibble above it, and neither may disturb steps or base mip.
     let concrete = Material::Concrete.surface_depth();
-    let high = sd::SurfaceDepthUniform::resolve(
+    let on = sd::SurfaceDepthUniform::resolve(
         concrete,
-        sd::SurfaceDepthQuality::High,
-        true,
-        11,
-        sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
-    );
-    let low = sd::SurfaceDepthUniform::resolve(
-        concrete,
-        sd::SurfaceDepthQuality::Low,
+        sd::SurfaceDepthQuality::On,
         true,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
@@ -676,13 +667,26 @@ fn the_quality_tier_reaches_the_shader_through_the_packed_march_word() {
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
     );
-    let decoded_high = sd::unpack_surface_depth_march(high.march_word());
-    let decoded_low = sd::unpack_surface_depth_march(low.march_word());
-    assert!(decoded_high.has_depth && decoded_low.has_depth);
-    assert!(decoded_high.shadow_light_budget > 0);
-    assert_eq!(decoded_low.shadow_light_budget, 0);
-    assert!(decoded_low.max_steps < decoded_high.max_steps);
+    let decoded_on = sd::unpack_surface_depth_march(on.march_word());
+    assert!(decoded_on.has_depth);
+    assert!(
+        decoded_on.shadow_light_budget > 0,
+        "On must budget the self-shadow march",
+    );
     assert_eq!(off.march_word(), 0, "Off must pack the all-zero march word");
+
+    // The packed fields must not overlap: has-depth is one bit and the budget
+    // is a nibble above it, so zeroing the budget must leave the step count,
+    // the base mip and the has-depth flag exactly where they were.
+    let without_budget =
+        sd::unpack_surface_depth_march(sd::pack_surface_depth_march(sd::SurfaceDepthMarch {
+            shadow_light_budget: 0,
+            ..decoded_on
+        }));
+    assert_eq!(without_budget.shadow_light_budget, 0);
+    assert_eq!(without_budget.max_steps, decoded_on.max_steps);
+    assert_eq!(without_budget.base_mip, decoded_on.base_mip);
+    assert_eq!(without_budget.has_depth, decoded_on.has_depth);
 }
 
 /// The prefix-driven parameters reach the shader through the already-zeroed
@@ -695,7 +699,7 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
 
     let with_map = sd::SurfaceDepthUniform::resolve(
         concrete,
-        sd::SurfaceDepthQuality::High,
+        sd::SurfaceDepthQuality::On,
         true,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,
@@ -703,7 +707,7 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
     assert!(with_map.has_depth);
     let without_map = sd::SurfaceDepthUniform::resolve(
         concrete,
-        sd::SurfaceDepthQuality::High,
+        sd::SurfaceDepthQuality::On,
         false,
         11,
         sd::SURFACE_DEPTH_RESIDENT_BASE_MIP,

@@ -60,8 +60,8 @@ pub const SURFACE_DEPTH_FADE_DISTANCE_FRACTION: f32 = 0.25;
 /// self-occlusion is a fact no other source owns — this is not double-counting
 /// a light.
 pub const SURFACE_DEPTH_AO_STRENGTH: f32 = 0.75;
-/// Per-fragment cap on dynamic-light self-shadow marches at the `High` tier.
-/// `Low` and `Off` drop it to zero — see [`SurfaceDepthQuality`].
+/// Per-fragment cap on dynamic-light self-shadow marches while the feature is
+/// `On`. `Off` drops it to zero — see [`SurfaceDepthQuality`].
 pub const SURFACE_DEPTH_SHADOW_LIGHT_BUDGET: u32 = 2;
 /// Depth slack, in meters, before a self-shadow march calls a texel occluding.
 /// Plateaus share exact quantized values, so equality must read as lit.
@@ -151,13 +151,6 @@ pub fn unpack_surface_depth_march(packed: u32) -> SurfaceDepthMarch {
     }
 }
 
-/// Step cap the `Low` tier allows the view-ray DDA, whatever a material prefix
-/// asks for. A cap that runs out resolves the hit at the last boundary the walk
-/// crossed, so a tighter cap samples a SHALLOWER carve rather than a displaced
-/// one — it only stops the walk early at grazing angles, which is exactly where
-/// the per-fragment cost is.
-pub const SURFACE_DEPTH_LOW_MAX_STEPS: u32 = 8;
-
 /// Re-exported so the shader-parity test and the uniform resolve read the depth
 /// unit and its ceiling from one place. Both live in `render-data`, beside the
 /// authoring tables they select; see [`SURFACE_DEPTH_TEXEL_MODE`] for which unit
@@ -168,14 +161,15 @@ pub use postretro_render_data::material::{
     surface_depth_is_texel_relative, surface_depth_max_authored,
 };
 
-/// Fraction of a material's authored fade distance the `Low` tier keeps.
-/// Shortening the fade is the other half of the tier's saving: the march is
-/// skipped entirely beyond it.
-pub const SURFACE_DEPTH_LOW_FADE_DISTANCE_SCALE: f32 = 0.5;
-
-/// Player-facing Surface Depth quality tier (design D5).
+/// Player-facing Surface Depth switch (design D5).
 ///
-/// The tier is applied by rewriting the per-material uniform BUFFER
+/// Two states, not a graded tier ladder: the feature is a per-fragment cost a
+/// weak GPU either can or cannot afford, and a middle setting that kept the
+/// march but capped its budget never changed the carve DEPTH — it only made the
+/// march resolve short at grazing angles. That is a cost lever priced in
+/// artifacts, so the ladder collapsed to on/off.
+///
+/// The state is applied by rewriting the per-material uniform BUFFER
 /// (`queue.write_buffer`) — never by rebuilding bind groups (which would
 /// allocate during gameplay, against `resource_management.md` §8.2) and never
 /// by growing the 128-byte group-0 `Uniforms` ABI. That is why every knob it
@@ -189,52 +183,43 @@ pub enum SurfaceDepthQuality {
     /// the uniform's second row is the historical all-zero and the render is
     /// byte-identical to the pre-Surface-Depth engine at zero cost.
     Off,
-    /// Keep the cheap parts that carry most of the visual read — side-face
-    /// shading and depth AO both fall out of the primary march — and drop the
-    /// expensive part: a tighter step cap, a shorter fade, and NO dynamic
-    /// self-shadow march at all.
-    Low,
-    /// The full effect: the per-prefix values from `Material::surface_depth()`.
-    /// The default; the setting exists as an escape hatch, not as an opt-in.
+    /// The full effect: the per-prefix values from `Material::surface_depth()`
+    /// verbatim, with the full self-shadow budget. The default; the setting
+    /// exists as an escape hatch, not as an opt-in.
     #[default]
-    High,
+    On,
 }
 
 impl SurfaceDepthQuality {
-    /// Every tier, in presentation order.
+    /// Every state, in presentation order.
     ///
     /// This crate carries no serde and does not depend on `postretro-entities`,
     /// so nothing here can pin the list against the `options.surfaceDepthQuality`
     /// enum set that `engine_state_catalog` declares. The two are kept in step by
     /// `postretro`, which depends on both — see the chokepoint in
-    /// `startup/render_profile.rs`, whose `match` has no `_` arm so a new tier is
+    /// `startup/render_profile.rs`, whose `match` has no `_` arm so a new state is
     /// a compile error there rather than a silent degrade.
-    pub const ALL: [Self; 3] = [Self::Off, Self::Low, Self::High];
+    pub const ALL: [Self; 2] = [Self::Off, Self::On];
 
-    /// Per-fragment dynamic-light self-shadow budget this tier allows.
+    /// Per-fragment dynamic-light self-shadow budget this state allows.
     pub const fn shadow_light_budget(self) -> u32 {
         match self {
             // The second DDA is the expensive part, and it is the part a
             // struggling GPU pays for per light per fragment.
-            Self::Off | Self::Low => 0,
-            Self::High => SURFACE_DEPTH_SHADOW_LIGHT_BUDGET,
+            Self::Off => 0,
+            Self::On => SURFACE_DEPTH_SHADOW_LIGHT_BUDGET,
         }
     }
 
-    /// Apply this tier to one material's prefix-driven tuning.
+    /// Apply this state to one material's prefix-driven tuning.
     ///
     /// `Off` returns [`SurfaceDepth::FLAT`] unconditionally, so the packed row
     /// is all zero and the shader's existing has-depth branch skips the march.
+    /// `On` is the identity: the per-prefix values reach the GPU unmodified.
     pub fn apply(self, depth: SurfaceDepth) -> SurfaceDepth {
         match self {
             Self::Off => SurfaceDepth::FLAT,
-            Self::Low => SurfaceDepth {
-                max_steps: depth.max_steps.min(SURFACE_DEPTH_LOW_MAX_STEPS),
-                fade_distance_meters: depth.fade_distance_meters
-                    * SURFACE_DEPTH_LOW_FADE_DISTANCE_SCALE,
-                ..depth
-            },
-            Self::High => depth,
+            Self::On => depth,
         }
     }
 }
@@ -630,9 +615,9 @@ pub fn march_surface_depth(
         // rule fires — resolves at its full `solid` depth, and the sample point
         // is `p0 + dir * hit_depth` where `dir` is texels per METER OF DESCENT.
         // At a grazing angle that lands the albedo, normal and specular samples
-        // tens of texels past anything the march visited, so a tighter budget
-        // produced a LARGER artifact: `Low` cuts the cap to 8 while only halving
-        // the fade that would have hidden it. Stopping at `z_enter` keeps the
+        // tens of texels past anything the march visited, so a TIGHTER budget
+        // produced a LARGER artifact — exactly backwards for the knob whose job
+        // is to make the effect cheaper. Stopping at `z_enter` keeps the
         // sample inside the walked region, and on the first iteration it IS the
         // flat result (depth 0, geometric normal, original UV), so a budget too
         // small to march degrades toward flat rather than toward an arbitrary
@@ -819,7 +804,7 @@ mod tests {
         assert!(carving.is_enabled());
         let resolved = SurfaceDepthUniform::resolve(
             carving,
-            SurfaceDepthQuality::High,
+            SurfaceDepthQuality::On,
             false,
             11,
             SURFACE_DEPTH_RESIDENT_BASE_MIP,
@@ -835,7 +820,7 @@ mod tests {
         assert_eq!(
             SurfaceDepthUniform::resolve(
                 flat,
-                SurfaceDepthQuality::High,
+                SurfaceDepthQuality::On,
                 true,
                 11,
                 SURFACE_DEPTH_RESIDENT_BASE_MIP
@@ -844,14 +829,8 @@ mod tests {
         );
     }
 
-    fn resolve_high(carving: SurfaceDepth, mip_count: u32, requested: u32) -> SurfaceDepthUniform {
-        SurfaceDepthUniform::resolve(
-            carving,
-            SurfaceDepthQuality::High,
-            true,
-            mip_count,
-            requested,
-        )
+    fn resolve_on(carving: SurfaceDepth, mip_count: u32, requested: u32) -> SurfaceDepthUniform {
+        SurfaceDepthUniform::resolve(carving, SurfaceDepthQuality::On, true, mip_count, requested)
     }
 
     #[test]
@@ -859,27 +838,39 @@ mod tests {
         let carving = postretro_render_data::material::Material::Concrete.surface_depth();
         // A single-level chain (the 1x1 placeholder shape) must still be a
         // legal textureLoad level, whatever residency asks for.
-        assert_eq!(resolve_high(carving, 1, 0).base_mip, 0);
-        assert_eq!(resolve_high(carving, 0, 0).base_mip, 0);
-        assert_eq!(resolve_high(carving, 1, 9).base_mip, 0);
+        assert_eq!(resolve_on(carving, 1, 0).base_mip, 0);
+        assert_eq!(resolve_on(carving, 0, 0).base_mip, 0);
+        assert_eq!(resolve_on(carving, 1, 9).base_mip, 0);
         // A streamed-down chain keeps the level streaming asked for.
-        assert_eq!(resolve_high(carving, 11, 3).base_mip, 3);
-        assert_eq!(resolve_high(carving, 4, 9).base_mip, 3);
+        assert_eq!(resolve_on(carving, 11, 3).base_mip, 3);
+        assert_eq!(resolve_on(carving, 4, 9).base_mip, 3);
     }
 
     #[test]
     fn a_requested_base_mip_survives_the_packed_word() {
         let carving = postretro_render_data::material::Material::Concrete.surface_depth();
-        let fields = unpack_surface_depth_march(resolve_high(carving, 11, 3).march_word());
+        let fields = unpack_surface_depth_march(resolve_on(carving, 11, 3).march_word());
         assert_eq!(fields.base_mip, 3);
         assert!(fields.has_depth);
     }
 
-    // -- Player quality tier (D5) --
+    // -- Player on/off switch (D5) --
 
     #[test]
-    fn quality_defaults_to_high_because_the_feature_ships_on() {
-        assert_eq!(SurfaceDepthQuality::default(), SurfaceDepthQuality::High);
+    fn the_switch_defaults_to_on_because_the_feature_ships_enabled() {
+        assert_eq!(SurfaceDepthQuality::default(), SurfaceDepthQuality::On);
+    }
+
+    #[test]
+    fn the_switch_has_exactly_two_states() {
+        // D5 is a cost lever, not a quality ladder: a third state would have to
+        // earn its keep visually, and the one that existed never changed the
+        // carve depth at all.
+        assert_eq!(SurfaceDepthQuality::ALL.len(), 2);
+        assert_eq!(
+            SurfaceDepthQuality::ALL,
+            [SurfaceDepthQuality::Off, SurfaceDepthQuality::On]
+        );
     }
 
     #[test]
@@ -892,7 +883,7 @@ mod tests {
             postretro_render_data::material::Material::Default,
         ] {
             let carving = material.surface_depth();
-            assert!(carving.is_enabled(), "{material:?} must carve at High");
+            assert!(carving.is_enabled(), "{material:?} must carve at On");
             assert_eq!(
                 SurfaceDepthQuality::Off.apply(carving),
                 SurfaceDepth::FLAT,
@@ -915,72 +906,70 @@ mod tests {
     }
 
     #[test]
-    fn high_is_exactly_the_material_prefix_values() {
-        let carving = postretro_render_data::material::Material::Concrete.surface_depth();
-        assert_eq!(SurfaceDepthQuality::High.apply(carving), carving);
-        let resolved = resolve_high(carving, 11, SURFACE_DEPTH_RESIDENT_BASE_MIP);
-        assert_eq!(resolved.depth, carving);
-        assert_eq!(
-            resolved.shadow_light_budget,
-            SURFACE_DEPTH_SHADOW_LIGHT_BUDGET
-        );
+    fn on_is_exactly_the_material_prefix_values() {
+        for material in [
+            postretro_render_data::material::Material::Concrete,
+            postretro_render_data::material::Material::Metal,
+            postretro_render_data::material::Material::Grate,
+            postretro_render_data::material::Material::Wood,
+            postretro_render_data::material::Material::Default,
+        ] {
+            let carving = material.surface_depth();
+            assert_eq!(
+                SurfaceDepthQuality::On.apply(carving),
+                carving,
+                "{material:?}: On must pass the per-prefix tuning through unmodified"
+            );
+            let resolved = resolve_on(carving, 11, SURFACE_DEPTH_RESIDENT_BASE_MIP);
+            assert_eq!(resolved.depth, carving);
+            assert_eq!(
+                resolved.shadow_light_budget, SURFACE_DEPTH_SHADOW_LIGHT_BUDGET,
+                "{material:?}: On gets the full self-shadow budget"
+            );
+            assert!(resolved.has_depth);
+        }
     }
 
     #[test]
-    fn low_keeps_the_carve_but_drops_the_expensive_parts() {
-        let carving = postretro_render_data::material::Material::Concrete.surface_depth();
-        let low = SurfaceDepthQuality::Low.apply(carving);
-
-        // The visual read stays: depth and terracing are what produce the side
-        // faces and the AO, and both are free once the primary march runs.
-        assert_eq!(low.depth_meters, carving.depth_meters);
-        assert_eq!(low.quantize_levels, carving.quantize_levels);
-        // The cost comes down: fewer steps, shorter fade.
-        assert!(low.max_steps < carving.max_steps);
-        assert_eq!(low.max_steps, SURFACE_DEPTH_LOW_MAX_STEPS);
-        assert!(low.fade_distance_meters < carving.fade_distance_meters);
-        assert!(low.fade_distance_meters > 0.0);
-        // A carving material must still be able to march at least one texel.
-        assert!(low.is_enabled());
-        assert!(low.max_steps >= 1);
-
-        let resolved = SurfaceDepthUniform::resolve(
-            carving,
-            SurfaceDepthQuality::Low,
-            true,
-            11,
-            SURFACE_DEPTH_RESIDENT_BASE_MIP,
-        );
-        assert!(resolved.has_depth, "Low still carves");
-        assert_eq!(
-            resolved.shadow_light_budget, 0,
-            "Low must not run the dynamic self-shadow march"
-        );
-        assert_eq!(
-            unpack_surface_depth_march(resolved.march_word()).shadow_light_budget,
-            0
-        );
+    fn no_state_makes_a_material_cost_more_than_its_prefix_asks_for() {
+        // The switch is a cost lever. Whatever it does to a material's tuning,
+        // it may only ever spend LESS than the prefix authored — never more.
+        for material in [
+            postretro_render_data::material::Material::Concrete,
+            postretro_render_data::material::Material::Metal,
+            postretro_render_data::material::Material::Grate,
+            postretro_render_data::material::Material::Wood,
+            postretro_render_data::material::Material::Glass,
+            postretro_render_data::material::Material::Default,
+        ] {
+            let authored = material.surface_depth();
+            for quality in SurfaceDepthQuality::ALL {
+                let applied = quality.apply(authored);
+                assert!(
+                    applied.max_steps <= authored.max_steps,
+                    "{material:?} at {quality:?}: step cap rose above the prefix"
+                );
+                assert!(
+                    applied.fade_distance_meters <= authored.fade_distance_meters,
+                    "{material:?} at {quality:?}: fade distance rose above the prefix"
+                );
+                assert!(
+                    applied.depth_meters <= authored.depth_meters,
+                    "{material:?} at {quality:?}: carve depth rose above the prefix"
+                );
+                assert!(
+                    quality.shadow_light_budget() <= SURFACE_DEPTH_SHADOW_LIGHT_BUDGET,
+                    "{quality:?}: self-shadow budget rose above the ceiling"
+                );
+            }
+        }
     }
 
     #[test]
-    fn low_never_raises_a_materials_own_step_cap() {
-        // A prefix that already asks for fewer steps than the Low cap keeps
-        // its own, cheaper value: the tier is a ceiling, not an assignment.
-        let shallow = SurfaceDepth {
-            depth_meters: 0.01,
-            quantize_levels: 4,
-            max_steps: 3,
-            fade_distance_meters: 8.0,
-        };
-        assert_eq!(SurfaceDepthQuality::Low.apply(shallow).max_steps, 3);
-    }
-
-    #[test]
-    fn only_high_budgets_a_self_shadow_march() {
+    fn only_on_budgets_a_self_shadow_march() {
         assert_eq!(SurfaceDepthQuality::Off.shadow_light_budget(), 0);
-        assert_eq!(SurfaceDepthQuality::Low.shadow_light_budget(), 0);
         assert_eq!(
-            SurfaceDepthQuality::High.shadow_light_budget(),
+            SurfaceDepthQuality::On.shadow_light_budget(),
             SURFACE_DEPTH_SHADOW_LIGHT_BUDGET
         );
         // The budget must survive its packed field without clamping.
@@ -988,9 +977,9 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_material_is_tier_independent() {
-        // Glass and Neon are flat by intent; no tier may make them carve, and
-        // every tier must produce the identical all-zero row.
+    fn a_flat_material_is_switch_independent() {
+        // Glass and Neon are flat by intent; neither state may make them carve,
+        // and both must produce the identical all-zero row.
         let flat = postretro_render_data::material::Material::Glass.surface_depth();
         for quality in SurfaceDepthQuality::ALL {
             assert_eq!(quality.apply(flat), SurfaceDepth::FLAT);
@@ -1152,8 +1141,8 @@ mod tests {
     /// full `solid` depth. The sample point is `p0 + dir * depth` and `dir` is
     /// texels per meter of DESCENT, so at a grazing angle that landed the
     /// albedo, normal and specular samples tens of texels past anything the
-    /// march had visited — and `Low`, which cuts the budget to 8, made the
-    /// artifact larger rather than smaller.
+    /// march had visited — so a tighter per-material step cap made the artifact
+    /// larger rather than smaller.
     #[test]
     fn a_starved_march_samples_inside_the_walked_region() {
         let values = [0.4, 0.9, 0.2, 1.0, 0.55, 0.05, 0.7, 0.3, 0.85];
@@ -1390,13 +1379,7 @@ mod tests {
                 max_steps: 16,
                 fade_distance_meters: 10.0,
             };
-            let resolved = SurfaceDepthUniform::resolve(
-                depth,
-                SurfaceDepthQuality::High,
-                true,
-                4,
-                0,
-            );
+            let resolved = SurfaceDepthUniform::resolve(depth, SurfaceDepthQuality::On, true, 4, 0);
             assert_eq!(
                 resolved,
                 SurfaceDepthUniform::FLAT,
@@ -1416,8 +1399,7 @@ mod tests {
             max_steps: 16,
             fade_distance_meters: 10.0,
         };
-        let resolved =
-            SurfaceDepthUniform::resolve(depth, SurfaceDepthQuality::High, true, 4, 0);
+        let resolved = SurfaceDepthUniform::resolve(depth, SurfaceDepthQuality::On, true, 4, 0);
         assert!(
             resolved.depth.depth_meters <= ceiling,
             "{} exceeds the ceiling {ceiling}",

@@ -218,14 +218,15 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   already allocated and already zeroed, so nothing about the binding layout or
   buffer size changed. A material whose loaded specular slot is not `Rg8Unorm`
   gets an all-zero row and skips the march entirely.
-- **Player quality tier:** the renderer RETAINS each world/mover material's
-  uniform buffer handle alongside its bind group (`GpuTexture`), plus the
-  GPU-free `MaterialUniformPlan` that produced its contents, so
+- **Player on/off switch (D5):** the renderer RETAINS each world/mover
+  material's uniform buffer handle alongside its bind group (`GpuTexture`),
+  plus the GPU-free `MaterialUniformPlan` that produced its contents, so
   `Renderer::set_surface_depth_quality` can rewrite those 32 bytes in place.
-  The plan stores the material's untiered tuning and the two facts taken from
-  the slot that actually loaded (is it `Rg8Unorm`, how many mips), so a rewrite
-  can move up as well as down and can never resurrect a carve for a material
-  with no height sibling. Ownership is unchanged: the buffers live in the
+  The setting is **off/on** — no middle tier; see `player_options.md` §4. The
+  plan stores the material's own per-prefix tuning, unmodified by the switch,
+  and the two facts taken from the slot that actually loaded (is it `Rg8Unorm`,
+  how many mips), so a rewrite can turn the effect back on as well as off and
+  can never resurrect a carve for a material with no height sibling. Ownership is unchanged: the buffers live in the
   level's `gpu_textures` vector and die with the level (§8.2).
 
 ---
@@ -316,7 +317,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 | Phase | Action |
 |-------|--------|
 | Level load | Parse PRL `TextureNames` and `TextureCacheKeys`. Open each `.prm` sidecar, upload mip chains to GPU. During model upload, resolve each glTF-derived content key, load only the diffuse slot from its `.prm`, and bind neutral specular and normal placeholders. Build sampler pool. Distribute handles. |
-| Gameplay | Handles are stable. No allocation or deallocation during gameplay. Live graphics settings that must reach a per-material uniform rewrite that buffer's CONTENTS (`queue.write_buffer`) — see the Surface Depth quality tier in §4.6 — rather than rebuilding a bind group. |
+| Gameplay | Handles are stable. No allocation or deallocation during gameplay. Live graphics settings that must reach a per-material uniform rewrite that buffer's CONTENTS (`queue.write_buffer`) — see the Surface Depth on/off switch in §4.6 — rather than rebuilding a bind group. |
 | Debug descriptor reload | Visual asset path additions or changes stay deferred in the installed descriptor snapshot. The latest authored snapshot promotes before the next level install preload. Gameplay never uploads a model or sprite collection. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 

@@ -832,8 +832,8 @@ mod tests {
                 values: vec!["low".into(), "medium".into(), "high".into()]
             }
         );
-        // Surface Depth's vocabulary is deliberately off/low/high, not the
-        // low/medium/high the other graphics tiers use.
+        // Surface Depth's vocabulary is deliberately off/on, not the
+        // low/medium/high the other graphics tiers use: it is a cost lever.
         assert_eq!(
             table
                 .get("options.surfaceDepthQuality")
@@ -841,13 +841,13 @@ mod tests {
                 .schema
                 .slot_type,
             SlotType::Enum {
-                values: vec!["off".into(), "low".into(), "high".into()]
+                values: vec!["off".into(), "on".into()]
             }
         );
         assert_eq!(
             table.get("options.surfaceDepthQuality").unwrap().value,
-            Some(SlotValue::Enum("high".into())),
-            "the feature ships on; the tier is an escape hatch",
+            Some(SlotValue::Enum("on".into())),
+            "the feature ships on; the switch is an escape hatch",
         );
     }
 

@@ -402,17 +402,41 @@ have distinct runtime-loadable filenames. Stored at
 identical complete bundles produce the same `.prm` regardless of which mod
 authored them.
 
-**Root derivation.** Compiler and runtime reach the materials tree by different
-routes, and both routes are relative — there is no flag and no absolute path.
-prl-build walks up from the map source to the nearest `Cargo.toml` ancestor and
-appends `baked/materials`. The engine derives the root from the loaded content
-root's grandparent plus `baked/materials`. The two routes agree while the mod
-root is a two-component path under the tree root — `content/dev`, and every
-other `<container>/<mod>`. A mod nested deeper or shallower sends the runtime
-derivation to a directory the sidecars are not in, and every world material
-degrades to a placeholder with a warning rather than a failure. That shape is a
-constraint on every mod, and it is what lets a packaged tree (§Distribution
-packaging) carry its own `baked/materials` beside its own `content/`.
+**Root derivation.** Compiler and runtime reach the materials tree by two
+different relative routes. prl-build walks up from the map source to the nearest
+`Cargo.toml` ancestor and appends `baked/materials`. The engine derives the root
+from the loaded content root's grandparent plus `baked/materials`. The two
+routes agree while the mod root is a two-component path under the tree root —
+`content/dev`, and every other `<container>/<mod>`. A mod nested deeper or
+shallower sends the runtime derivation to a directory the sidecars are not in,
+and every world material degrades to a placeholder with a warning rather than a
+failure. That shape is a constraint on every mod, and it is what lets a packaged
+tree (§Distribution packaging) carry its own `baked/materials` beside its own
+`content/`.
+
+The walks stay deliberately distinct — collapsing them into one implementation
+would break shipping layouts, where no `Cargo.toml` exists at all — so the one
+thing that makes them agree outside those two layouts is an explicit override.
+**`--baked-root <dir>` on both `prl-build` and `postretro`** names the directory
+that *contains* `materials/`, and each binary applies it in front of its own
+walk. Absent, both resolve exactly what they resolved before it existed. The
+invariant is cross-binary, not per-binary: given one directory, the path the
+compiler writes must equal the path the engine reads, and passing the flag to
+only one of the two reproduces the placeholder degradation it exists to prevent.
+That is why the flags are never typed by hand in the intended workflow — the
+tool that owns the project manifest passes both (§Distribution packaging).
+
+This is what lets game content live in a developer's own version-controlled
+repository rather than inside an engine installation: such a repository has no
+`Cargo.toml`, so without the override prl-build falls back to
+`<map parent>/baked/materials` while the engine reads the install's tree, and
+the two never meet.
+
+> **Adding an engine flag that takes a value?** It must also join the skip list
+> in `resolve_map_path` (`crates/postretro/src/startup/session.rs`). That scan
+> treats the first non-flag argument as the map path, so a flag it does not know
+> about leaves its *value* exposed — `postretro --baked-root <dir>` with no map
+> silently loads `<dir>` as the level.
 
 **Wire format.** `.prm` v3 (`PRM\x02`) has a fixed 45-byte header, followed by
 present slot blocks in diffuse → specular → normal → emissive order. The header

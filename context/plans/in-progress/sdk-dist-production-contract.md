@@ -162,6 +162,21 @@ flags, and changing the manifest schema stays a tool change. Without this the
 modder types two absolute paths whose failure mode is the silent placeholder
 degradation D3 exists to prevent.
 
+### D11. The tool places the stage cache; it never lands in `maps/`
+
+*Added after Track 2.* `postretro-tool run` and the tool's bake path pass
+`--cache-dir <project>/.build-caches` alongside `--baked-root`.
+
+*Consequence:* `prl-build`'s stage-cache fallback is its own `Cargo.toml` walk,
+and in an external content repository it resolves to the map's own directory —
+Track 2 observed `.build-caches/` appearing inside `<repo>/levels/maps/`. Every
+modder would find a growing cache directory sitting among their `.map` sources,
+in the one directory they are most likely to commit. The cache is disposable
+(§Build Cache) and belongs beside the project, not inside its content. This is
+the same class of defect as D3, differing only in that it is visible rather than
+silent, so it is fixed the same way: the tool that owns the manifest passes the
+path, and nobody types it.
+
 ### D10. `content/dev` stays in the repository
 
 The engine's own test content — fixtures, stress maps, capture rigs — is
@@ -210,6 +225,15 @@ No track may break these.
 10. **Prose follows `context/lib/context_style_guide.md`; files follow
     `development_guide.md` §2** (~400–500 lines yellow, ~600+ split first; tests
     exempt).
+11. **An engine flag that takes a value must join `resolve_map_path`'s skip
+    list** (`crates/postretro/src/startup/session.rs`). That scan treats the
+    first non-flag argument as the map path, so a flag it does not recognise
+    leaves its *value* exposed and the engine loads it as the level. Track 2
+    hit this with `--baked-root` and pinned it with
+    `prm_root_flag_value_is_not_mistaken_for_the_map_path`.
+12. **`--baked-root` and `--cache-dir` are passed together or not at all.**
+    Passing the baked root to only one binary, or passing it without the cache
+    dir, each reproduces a defect the other closes (D3, D11). The tool owns both.
 
 ## File ownership per track
 
@@ -390,9 +414,40 @@ unrelated *example* path were renamed to `content/example`:
 test-only string literals. `crates/level-format/src/gltf_resolve.rs` held a
 false positive (a file literally named `base.png`) now written `/assets/base.png`.
 
+## Left open by Track 2, for Track 3 or the review to weigh
+
+Track 2 verified the external-content path end to end against a real repository
+with no `Cargo.toml` ancestry, including a negative control that reproduced the
+D3 defect. These are the edges it could not reach.
+
+- **`--capture` ignores `--baked-root`.** `crates/postretro/src/capture/driver.rs`
+  calls the runtime derivation directly, outside the `App` and worker path the
+  flag threads through. A capture run against external content will silently
+  placeholder. The capture rig is workspace-only by construction today, so this
+  is dormant rather than broken — but it is the first place to look if the rig
+  ever targets a project.
+- **The headless and observability level-load path** derives its content root
+  separately in `crates/postretro/src/session/mod.rs`, and no test above
+  exercises whether it reaches the threaded worker or bypasses it.
+- **Multi-level loads within one session.** The override is read once at boot
+  and cloned per load, so a level change keeps it. Asserted structurally, not by
+  a running-session test.
+
 ## Open questions
 
-None. D1 through D10 were settled with the owner before the first dispatch.
+None blocking. D1 through D11 were settled with the owner before their
+respective dispatches.
+
+**One awaiting an owner call:** `cargo test -p postretro-level-compiler` has
+**11 failures on unmodified `main`** on this machine, not the one originally
+found — 9 in `pack.rs`, 2 in `cache.rs`. The `pack.rs` ones build temp
+filenames from `std::thread::current().name()`, which under `cargo test` is the
+test path (`pack::tests::…`); `::` is illegal in a Windows filename, so they
+fail with os error 123. The `cache.rs` ones fail setting a file mtime with
+`Access is denied` (os error 5). Both groups are platform artifacts rather than
+product defects, and both are outside every track's scope, but they mean
+preflight's `cargo test` gate cannot go green on this machine without either
+fixing them or accepting a documented exception.
 
 ## Sequencing
 

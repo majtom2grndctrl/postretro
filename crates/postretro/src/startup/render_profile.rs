@@ -85,16 +85,16 @@ impl App {
         }
     }
 
-    /// Apply the player's Surface Depth tier.
+    /// Apply the player's Surface Depth switch.
     ///
     /// Unlike the shadow tier this is fully live: the renderer rewrites every
     /// installed material's uniform buffer, so a change takes effect on the
     /// next frame with no level reload. It is also safe with no level loaded
-    /// and before full init — the renderer retains the tier in boot state and
+    /// and before full init — the renderer retains the value in boot state and
     /// the next `install_textures` builds its materials with it.
     ///
     /// A `None` renderer (pre-window boot, or suspended) is a no-op; boot
-    /// re-applies the tier from `PlayerOptions` once a renderer exists.
+    /// re-applies the state from `PlayerOptions` once a renderer exists.
     pub(crate) fn apply_player_surface_depth_quality(&mut self, quality: SurfaceDepthQuality) {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_surface_depth_quality(renderer_surface_depth_quality(quality));
@@ -198,9 +198,19 @@ mod tests {
         ] {
             assert_eq!(renderer_surface_depth_quality(persisted), expected);
         }
-        // Both sides of the chokepoint carry the same number of states, so a
-        // future addition on one side cannot quietly fold into an existing arm.
-        assert_eq!(RendererSurfaceDepthQuality::ALL.len(), 2);
+        // Drift guard in both directions: `renderer_surface_depth_quality`'s
+        // match is exhaustive over the persisted side, but a new *renderer*
+        // variant is a compile error nowhere on its own — so walk the
+        // renderer's own `ALL` and map each one back to the persisted enum
+        // through an exhaustive match (no `_` arm). A variant added to either
+        // enum without a matching update on the other fails to compile here.
+        for renderer_state in RendererSurfaceDepthQuality::ALL {
+            let persisted = match renderer_state {
+                RendererSurfaceDepthQuality::Off => SurfaceDepthQuality::Off,
+                RendererSurfaceDepthQuality::On => SurfaceDepthQuality::On,
+            };
+            assert_eq!(renderer_surface_depth_quality(persisted), renderer_state);
+        }
     }
 
     #[test]

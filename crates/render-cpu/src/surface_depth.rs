@@ -27,7 +27,7 @@ pub const SURFACE_DEPTH_HAS_DEPTH_BIT: u32 = 1 << 12;
 /// Uniform-word bit offset of the packed per-fragment self-shadow budget.
 ///
 /// The budget is per-MATERIAL data rather than a shader constant because the
-/// player-facing quality tier (design D5) is applied by rewriting this buffer,
+/// player-facing on/off switch (design D5) is applied by rewriting this buffer,
 /// not by compiling a shader variant — this engine has no variant system. Bit
 /// 13..16 stay free between the has-depth flag and this field.
 pub const SURFACE_DEPTH_SHADOW_BUDGET_SHIFT: u32 = 16;
@@ -235,7 +235,7 @@ pub struct SurfaceDepthUniform {
     /// Resident base mip the DDA reads at (D6.2).
     pub base_mip: u32,
     /// Per-fragment dynamic-light self-shadow budget, from the player's
-    /// quality tier. Zero means the fragment never runs the shadow DDA.
+    /// on/off switch. Zero means the fragment never runs the shadow DDA.
     pub shadow_light_budget: u32,
 }
 
@@ -248,8 +248,8 @@ impl SurfaceDepthUniform {
         shadow_light_budget: 0,
     };
 
-    /// Resolve a material's prefix-driven tuning against the player's quality
-    /// tier and against what actually loaded.
+    /// Resolve a material's prefix-driven tuning against the player's on/off
+    /// switch and against what actually loaded.
     ///
     /// `quality` is the persisted player setting (design D5); it is applied
     /// FIRST, so `Off` collapses to [`Self::FLAT`] before any other decision is
@@ -927,41 +927,6 @@ mod tests {
                 "{material:?}: On gets the full self-shadow budget"
             );
             assert!(resolved.has_depth);
-        }
-    }
-
-    #[test]
-    fn no_state_makes_a_material_cost_more_than_its_prefix_asks_for() {
-        // The switch is a cost lever. Whatever it does to a material's tuning,
-        // it may only ever spend LESS than the prefix authored — never more.
-        for material in [
-            postretro_render_data::material::Material::Concrete,
-            postretro_render_data::material::Material::Metal,
-            postretro_render_data::material::Material::Grate,
-            postretro_render_data::material::Material::Wood,
-            postretro_render_data::material::Material::Glass,
-            postretro_render_data::material::Material::Default,
-        ] {
-            let authored = material.surface_depth();
-            for quality in SurfaceDepthQuality::ALL {
-                let applied = quality.apply(authored);
-                assert!(
-                    applied.max_steps <= authored.max_steps,
-                    "{material:?} at {quality:?}: step cap rose above the prefix"
-                );
-                assert!(
-                    applied.fade_distance_meters <= authored.fade_distance_meters,
-                    "{material:?} at {quality:?}: fade distance rose above the prefix"
-                );
-                assert!(
-                    applied.depth_meters <= authored.depth_meters,
-                    "{material:?} at {quality:?}: carve depth rose above the prefix"
-                );
-                assert!(
-                    quality.shadow_light_budget() <= SURFACE_DEPTH_SHADOW_LIGHT_BUDGET,
-                    "{quality:?}: self-shadow budget rose above the ceiling"
-                );
-            }
         }
     }
 

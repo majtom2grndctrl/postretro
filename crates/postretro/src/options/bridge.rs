@@ -476,7 +476,13 @@ mod tests {
         assert!(write_state_slot_json(&ctx, CROUCH_MODE_SLOT, &json!("invalid")).is_err());
         assert!(write_state_slot_json(&ctx, SHADOW_QUALITY_SLOT, &json!("ultra")).is_err());
         assert!(write_state_slot_json(&ctx, FOG_QUALITY_SLOT, &json!("ultra")).is_err());
-        // Surface Depth has no `medium`: the tiers are off/low/high.
+        // The slot vocabulary is strictly off/on. The retired `low`/`high`
+        // names are accepted only when reading a persisted TOML file (serde
+        // aliases on `SurfaceDepthQuality::On`), never through the slot layer
+        // — so both must still be rejected here, alongside a genuinely bogus
+        // value.
+        assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("high")).is_err());
+        assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("low")).is_err());
         assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("medium")).is_err());
         assert!(write_state_slot_json(&ctx, INVERT_Y_SLOT, &json!(1)).is_err());
         assert!(write_state_slot_json(&ctx, VIEW_FEEL_SCALE_SLOT, &json!(true)).is_err());

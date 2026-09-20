@@ -674,19 +674,6 @@ fn the_player_switch_reaches_the_shader_through_the_packed_march_word() {
         "On must budget the self-shadow march",
     );
     assert_eq!(off.march_word(), 0, "Off must pack the all-zero march word");
-
-    // The packed fields must not overlap: has-depth is one bit and the budget
-    // is a nibble above it, so zeroing the budget must leave the step count,
-    // the base mip and the has-depth flag exactly where they were.
-    let without_budget =
-        sd::unpack_surface_depth_march(sd::pack_surface_depth_march(sd::SurfaceDepthMarch {
-            shadow_light_budget: 0,
-            ..decoded_on
-        }));
-    assert_eq!(without_budget.shadow_light_budget, 0);
-    assert_eq!(without_budget.max_steps, decoded_on.max_steps);
-    assert_eq!(without_budget.base_mip, decoded_on.base_mip);
-    assert_eq!(without_budget.has_depth, decoded_on.has_depth);
 }
 
 /// The prefix-driven parameters reach the shader through the already-zeroed

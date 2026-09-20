@@ -64,7 +64,13 @@ Amend the file when a track changes a decision — before the next dispatch, not
 
 Size alone is not the signal. A large change living inside one crate is one track, however many lines it runs to. Two crates on opposite sides of a contract you have already pinned are two tracks, even when each is small. Give every track a whole vertical slice with its own acceptance — never one agent per file or per step.
 
-**Keep the count low, and send them together.** One agent beats several on the same job. Launch independent tracks in a single message so they run concurrently. Never split one modest job across parallel agents.
+**Keep the count low, then choose the shape.** One agent beats several on the same job, and one modest job is never split across parallel agents. Past that the shape is yours, and the two are worth different things.
+
+**Concurrent** when the tracks are independent and the contract between them is already pinned. Launch them in a single message so they genuinely overlap rather than queueing, and give each an isolated worktree. You buy wall-clock and pay a cold build per worktree.
+
+**Sequential** when one track's output is another's input, when the first track's findings would narrow the next brief, or when the design is uncertain enough that you might stop after the first. Sequential tracks work on the branch directly, inherit the warm target, and test as they go. You buy a warm build, early exit, and briefs that get sharper as you learn.
+
+Mixing is the normal case: pin the format in one track, then fan its consumers out.
 
 **Brief precisely the first time.** Launching, waiting, and re-briefing costs a full context rebuild each round. Give the whole slice up front — outcome, constraints, acceptance, the contract — then let it run.
 

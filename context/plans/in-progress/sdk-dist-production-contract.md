@@ -333,8 +333,10 @@ instruction there is, by construction, an instruction its reader cannot follow.
 ## Known-red on this machine, before any track ran
 
 Track 1 confirmed each of these against unmodified `HEAD`. They are not
-regressions, and no track should spend time re-deriving them — but preflight
-gates on the first two, so they must be resolved before this branch lands.
+regressions, and no track should spend time re-deriving them. The owner asked
+for the three test and format failures to be **fixed** rather than documented,
+so Track 2's scope was extended to cover the two test fixtures and its file
+ownership extended to `crates/postretro/src/startup/lifecycle.rs`.
 
 - **`cargo fmt --all -- --check`** is red on `main` in four files no track
   edits: `crates/level-compiler/src/texture_mips.rs`,
@@ -348,11 +350,27 @@ gates on the first two, so they must be resolved before this branch lands.
 - **`startup::lifecycle::tests::level_identity_keeps_outside_content_root_absolute`**
   fails on Windows. `/tmp/test.prl` is rooted but not absolute there, so
   `level_identity` takes its `cwd.join` branch and yields `C:/tmp/test.prl`.
-  A test-fixture assumption, not a product bug.
+  A test-fixture assumption, not a product bug — the fixture is fixed to build
+  a genuinely absolute path on both platforms, and the production function is
+  left alone. The fix must keep the test exercising the outside-the-content-root
+  branch its name claims; one that passes by no longer reaching that branch is
+  worse than the failure.
 - **`model_byte_report_names_textures_relative_to_the_content_root`** in
-  `level-compiler` fails on backslash-versus-slash separators. Same character.
-- **`cargo test -p xtask`** fails one test because Python is not installed on
-  this machine. Out of scope; note it and move on.
+  `level-compiler` fails on backslash-versus-slash separators. Fixed by
+  normalizing the separator where the report name is built, matching what
+  `level_identity` already does, rather than by loosening the assertion: the
+  byte-accounting report name is a key meant to be comparable across machines,
+  and one that differs by platform defeats that.
+- **`cargo test -p xtask`** fails
+  `prop_writer_output_loads_and_checks_without_cli_axes_or_euler` because Python
+  is not installed here. The test shells the real Python prop writer on purpose
+  — it exists to cover the writer → loader → declared-check seam without a
+  second hand-authored JSON shape. Owner's call: install Python, leave the test
+  alone. A bare interpreter suffices despite the script's `bpy` and `mathutils`
+  imports, because the test injects empty stub modules for both before loading
+  it, so nothing in the Blender API or `tools/requirements.txt` is reached.
+  Track 3 owns `crates/xtask/src/main.rs` and should make the failure name the
+  missing interpreter instead of surfacing the Store stub's message raw.
 
 ## Track 1 spillover, already applied
 

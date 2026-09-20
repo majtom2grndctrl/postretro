@@ -75,7 +75,7 @@ use anyhow::Context as _;
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::light_membership::LightMembershipManifest;
-use postretro_level_format::prm_accounting::TextureByteSummary;
+use texture_mips::{SidecarSlots, StageTextureBytes};
 
 static DATA_SCRIPT_TEMP_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -208,7 +208,7 @@ fn bake_model_textures(
     entities: &[map_data::MapEntityRecord],
     content_root: &Path,
     prm_root: &Path,
-    byte_summary: &mut TextureByteSummary,
+    byte_summary: &mut StageTextureBytes,
 ) {
     bake_model_textures_with(
         entities,
@@ -217,11 +217,20 @@ fn bake_model_textures(
         postretro_level_format::gltf_resolve::resolve_document_base_color_paths,
         |texture_path, cache_root| {
             let key = texture_mips::bake_diffuse_texture(texture_path, cache_root)?;
-            texture_mips::account_baked_sidecar(
-                byte_summary,
-                format!("model:{}", texture_path.display()),
+            // Name the texture relative to the content root. The report is
+            // pinned deterministic for identical inputs, and an absolute
+            // prefix both varies by machine and pushes the part that
+            // identifies the texture off the end of the `largest:` lines.
+            let relative = texture_path.strip_prefix(content_root).unwrap_or(texture_path);
+            byte_summary.account_baked_sidecar(
+                format!("model:{}", relative.display()),
                 cache_root,
                 &key,
+                // Model rendering binds the diffuse slot and substitutes
+                // placeholders for the rest, and `bake_diffuse_texture` may
+                // hand back a richer world bundle parked at the diffuse-only
+                // address.
+                SidecarSlots::DiffuseOnly,
             );
             anyhow::Ok(key)
         },
@@ -277,7 +286,7 @@ fn bake_sprite_textures(
     entities: &[map_data::MapEntityRecord],
     texture_root: &Path,
     prm_cache_root: &Path,
-    byte_summary: &mut TextureByteSummary,
+    byte_summary: &mut StageTextureBytes,
 ) {
     bake_sprite_textures_with(
         entities,
@@ -285,11 +294,11 @@ fn bake_sprite_textures(
         prm_cache_root,
         |root, collection, cache_root| {
             let key = texture_mips::bake_sprite_collection(root, collection, cache_root)?;
-            texture_mips::account_baked_sidecar(
-                byte_summary,
+            byte_summary.account_baked_sidecar(
                 format!("sprite:{collection}"),
                 cache_root,
                 &key,
+                SidecarSlots::All,
             );
             Some(key)
         },
@@ -1852,6 +1861,47 @@ mod tests {
         assert_eq!(baked_textures, vec![shared, first_only, unreadable]);
     }
 
+    /// The byte report is pinned deterministic for identical inputs, and its
+    /// world and sprite entries are short names. A model entry carrying the
+    /// absolute filesystem path makes two machines' reports incomparable and
+    /// pushes the identifying part of the name off the end of a `largest:`
+    /// line, so it is named relative to the content root.
+    #[test]
+    fn model_byte_report_names_textures_relative_to_the_content_root() {
+        let root = unique_temp_dir("model-texture-report-name");
+        let content_root = root.join("content/base");
+        let models_root = content_root.join("models");
+        let cache_root = root.join("prm-cache");
+        std::fs::create_dir_all(&models_root).unwrap();
+
+        std::fs::write(models_root.join("base-color.png"), png_bytes(2, 2)).unwrap();
+        std::fs::write(
+            models_root.join("fixture.gltf"),
+            r#"{
+                "asset": {"version": "2.0"},
+                "images": [{"uri": "base-color.png"}],
+                "textures": [{"source": 0}],
+                "materials": [{
+                    "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let entities = vec![map_entity("prop_mesh", &[("model", "models/fixture.gltf")])];
+        let mut byte_summary = StageTextureBytes::new();
+        bake_model_textures(&entities, &content_root, &cache_root, &mut byte_summary);
+
+        let names: Vec<&str> = byte_summary
+            .summary()
+            .entries()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, vec!["model:models/base-color.png"]);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn model_texture_bake_creates_and_regenerates_blake3_named_sidecar() {
         let root = unique_temp_dir("model-texture-boundary");
@@ -1883,7 +1933,7 @@ mod tests {
             &entities,
             &content_root,
             &cache_root,
-            &mut TextureByteSummary::new(),
+            &mut StageTextureBytes::new(),
         );
         assert!(expected_sidecar.is_file());
 
@@ -1892,7 +1942,7 @@ mod tests {
             &entities,
             &content_root,
             &cache_root,
-            &mut TextureByteSummary::new(),
+            &mut StageTextureBytes::new(),
         );
         assert!(expected_sidecar.is_file());
 
@@ -1902,7 +1952,7 @@ mod tests {
             &no_prop_entities,
             &content_root,
             &no_prop_cache_root,
-            &mut TextureByteSummary::new(),
+            &mut StageTextureBytes::new(),
         );
         assert!(!no_prop_cache_root.exists());
 

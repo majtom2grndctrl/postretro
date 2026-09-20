@@ -447,15 +447,46 @@ costs, at `info` level: a grand total, a per-slot breakdown, a per-mip-level
 breakdown, and the largest few material bundles. The accounting primitive is
 `postretro-level-format::prm_accounting` — per material, per slot, per mip,
 derived from each slot's declared `(format, width, height, level_count)`
-without reading payload bytes, so it needs no wire-format change. It lives in
-`level-format` rather than beside `render-cpu`'s `level_byte_size` because
-`prl-build` and the renderer sit on opposite sides of the layering and
+rather than from payload bytes, so it needs no wire-format change. (The
+compiler's route to it does read the file: the model and sprite bakes hand back
+only a cache key, so the stage reads the `.prm` back through
+`PrmFile::from_bytes_partial` to recover its declared headers. That read is
+cheap next to the bake and keeps the report honest about what landed on disk.)
+It lives in `level-format` rather than beside `render-cpu`'s `level_byte_size`
+because `prl-build` and the renderer sit on opposite sides of the layering and
 `level-format` is the only crate below both; `level_byte_size` delegates to it
 so the format → bytes table has one definition. Reporting is deterministic
 (ordered by material name, never by hash-map iteration) and covers cache hits
 as well as fresh bakes, so a warm and a cold build report identically. This is
 accounting only — no budget, cap, or eviction — and is the intended foundation
 for asset streaming's per-mip residency decisions.
+
+**The report covers all three of the stage's bakes**, not just world material
+bundles: world bundles, `prop_mesh` model sidecars (`model:<path relative to
+the content root>`) and billboard sprite collections (`sprite:<collection>`).
+Sprite collections are the heaviest bundles the format produces — one complete
+mip chain per frame — so a level with a billboard emitter was under-reported by
+far more than a rounding error while the report flushed after the world loop
+alone. `bake_world_texture_mips` hands its accounting back instead
+of logging it, the model and sprite bakes fold theirs in, and `prl-build` logs
+one report at the stage boundary.
+
+Three rules keep that total meaningful:
+
+- **A bundle is charged once per cache key, never once per name.** `.prm` files
+  are content-addressed, so one file is reachable under several names at once —
+  two map names normalizing to one texture, two glTFs carrying byte-identical
+  base-color PNGs, a diffuse-only world material at exactly the address a model
+  bake derives, two sprite collections with identical frame sets. The first
+  name to reach a key owns its report line, and because world bundles bake
+  first, a shared address reports under its world material name.
+- **A model is charged its diffuse slot only.** Model rendering binds nothing
+  else, and the model bake deliberately keeps a richer world bundle already
+  parked at the diffuse-only address.
+- **Every way a bundle can drop out of the report warns.** An unreadable
+  `.prm`, an unparseable header, and a declared slot whose payload does not
+  parse each log a `warn!` naming the material and the file — a byte total that
+  shrinks silently is the failure this accounting exists to rule out.
 
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
 space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT

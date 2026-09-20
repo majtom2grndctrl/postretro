@@ -689,6 +689,13 @@ pub(crate) struct App {
     /// sibling directories are resolved relative to this root.
     content_root: PathBuf,
 
+    /// `--baked-root` when supplied: the directory that *contains* `materials/`,
+    /// so `.prm` sidecars are read from `<baked_root>/materials/`. `None` — the
+    /// normal case — leaves the level worker's grandparent derivation alone.
+    /// Threaded to `spawn_level_worker`; `prl-build` takes the same flag with
+    /// the same meaning.
+    baked_root: Option<PathBuf>,
+
     exit_result: Result<()>,
 
     camera: Camera,

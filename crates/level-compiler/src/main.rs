@@ -126,6 +126,10 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
 /// `<payload>/baked/materials`, which is what the runtime's grandparent
 /// derivation resolves for a mod rooted at `<payload>/content/<mod>`. The two
 /// paths agree because of that layout, not because either function enforces it.
+///
+/// This is the derivation used when `--baked-root` is absent. Content outside a
+/// Cargo workspace has no layout to agree by, which is what the flag is for; see
+/// [`resolve_prm_root`].
 fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {
@@ -136,6 +140,26 @@ fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
         })
         .join("baked")
         .join("materials")
+}
+
+/// Resolve the compiled-material output root, honouring `--baked-root`.
+///
+/// `baked_root` names the directory that *contains* `materials/` — the same
+/// thing `<workspace>/baked` is in the in-repo layout — so `--baked-root
+/// /p/baked` writes `/p/baked/materials/<hex>.prm`. The engine's `--baked-root`
+/// reads that identical parent-of-`materials/` directory; the two flags are one
+/// contract, and reading the flag as `materials/` itself on either side puts
+/// writer and reader in different directories, which is the silent
+/// every-texture-is-a-placeholder failure this override exists to prevent.
+/// `baked_root_agrees_with_the_runtime_reader` asserts that agreement.
+///
+/// `None` keeps the `Cargo.toml` ancestor walk untouched, so every in-workspace
+/// bake resolves exactly the directory it resolved before the flag existed.
+fn resolve_prm_root(map_path: &Path, baked_root: Option<&Path>) -> PathBuf {
+    match baked_root {
+        Some(root) => root.join("materials"),
+        None => resolve_prm_root_via_cargo(map_path),
+    }
 }
 
 fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> {
@@ -221,11 +245,21 @@ fn bake_model_textures(
             // pinned deterministic for identical inputs, and an absolute
             // prefix both varies by machine and pushes the part that
             // identifies the texture off the end of the `largest:` lines.
+            //
+            // Separators are normalized to `/` for the same reason the prefix
+            // is stripped: the report name is the only thing identifying a
+            // bundle across runs, and `models\base-color.png` on Windows versus
+            // `models/base-color.png` elsewhere makes two machines' reports
+            // incomparable — and sorts differently, since the name is the
+            // report's sort key. The name is a reporting key only; no cache
+            // key, `.prm` filename, or filesystem path is derived from it.
+            // Matches `level_identity` in
+            // `crates/postretro/src/startup/lifecycle.rs`.
             let relative = texture_path
                 .strip_prefix(content_root)
                 .unwrap_or(texture_path);
             byte_summary.account_baked_sidecar(
-                format!("model:{}", relative.display()),
+                format!("model:{}", relative.to_string_lossy().replace('\\', "/")),
                 cache_root,
                 &key,
                 // Model rendering binds the diffuse slot and substitutes
@@ -729,6 +763,11 @@ pub struct Args {
     voxel_size: f32,
     /// Override cache directory. None = use the workspace-root default.
     cache_dir: Option<PathBuf>,
+    /// Override for the directory that *contains* `materials/`. `Some(dir)`
+    /// writes `.prm` sidecars to `<dir>/materials/`; `None` keeps the
+    /// `Cargo.toml` ancestor walk. The engine takes the same flag naming the
+    /// same directory — see `resolve_prm_root`.
+    baked_root: Option<PathBuf>,
     /// LRU size budget for the stage cache, in bytes. The cache is pruned to
     /// this at build start (oldest-used entries first). Defaults to
     /// `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
@@ -812,6 +851,7 @@ fn help_text() -> String {
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
+         --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
          --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
          --sh-delta-working-set-max-size <SIZE> Peak host-RAM budget for dense ids 27, 41, and 45 before baking; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
@@ -855,6 +895,7 @@ where
     let mut soft_shadow_samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
+    let mut baked_root: Option<PathBuf> = None;
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
     let mut delta_section_config = delta_sections::DeltaSectionConfig::default();
     let mut no_cache = false;
@@ -990,6 +1031,18 @@ where
                     .ok_or_else(|| anyhow::anyhow!("--cache-dir requires a path"))?;
                 cache_dir = Some(PathBuf::from(path));
             }
+            "--baked-root" => {
+                // The value is the parent of `materials/`, never `materials/`
+                // itself. The engine's flag of the same name reads the same
+                // directory.
+                let path = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--baked-root requires the directory that contains materials/")
+                })?;
+                if path.is_empty() {
+                    anyhow::bail!("--baked-root requires the directory that contains materials/");
+                }
+                baked_root = Some(PathBuf::from(path));
+            }
             "--cache-max-size" => {
                 let size_str = args
                     .next()
@@ -1097,7 +1150,7 @@ where
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
              [--sh-density-fidelity <MULTIPLIER>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--sh-delta-working-set-max-size <SIZE>] [--no-cache] [--release]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--sh-delta-working-set-max-size <SIZE>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -1115,6 +1168,7 @@ where
         soft_shadow_samples,
         voxel_size,
         cache_dir,
+        baked_root,
         cache_max_bytes,
         delta_section_config,
         no_cache,
@@ -1997,6 +2051,98 @@ mod tests {
         assert_eq!(writer_root, reader_root);
 
         std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    /// `--baked-root` names the parent of `materials/`. The engine's flag of the
+    /// same name reads that same parent, so this is the one place the two
+    /// binaries' readings of the value are compared: writer and reader must land
+    /// on the same `materials/` directory for one `--baked-root` value. Reading
+    /// the value as `materials/` itself on either side reproduces the silent
+    /// every-texture-is-a-placeholder defect the flag exists to close.
+    ///
+    /// The runtime side is reproduced inline — `resolve_prm_root` lives in the
+    /// `postretro` binary crate and is not importable here — exactly as
+    /// `prm_root_writer_and_reader_agree_in_dev_layout` reproduces the default
+    /// walk. The matching engine-side assertion is `prm_root_override_agrees_
+    /// with_the_compiler_writer` in `crates/postretro/src/startup/worker.rs`.
+    #[test]
+    fn baked_root_agrees_with_the_runtime_reader() {
+        let baked_root = Path::new("/project/baked");
+        // A content repository with no `Cargo.toml` anywhere above the map: the
+        // default walk is exactly what cannot be relied on here.
+        let map_path = Path::new("/project/levels/maps/e1m1.map");
+
+        let writer_root = resolve_prm_root(map_path, Some(baked_root));
+        // Reader side: the engine joins `materials` onto the same flag value,
+        // ignoring its own content-root grandparent walk.
+        let reader_root = baked_root.join("materials");
+
+        assert_eq!(writer_root, reader_root);
+        assert_eq!(writer_root, Path::new("/project/baked/materials"));
+    }
+
+    /// The flag value is the parent of `materials/`, so a sidecar lands at
+    /// `<flag>/materials/<hex>.prm` — and never at `<flag>/<hex>.prm` or
+    /// `<flag>/materials/materials/<hex>.prm`.
+    #[test]
+    fn baked_root_is_the_parent_of_the_materials_directory() {
+        let resolved = resolve_prm_root(
+            Path::new("/project/levels/maps/e1m1.map"),
+            Some(Path::new("/project/baked")),
+        );
+        assert_eq!(resolved.file_name().unwrap(), "materials");
+        assert_eq!(resolved.parent().unwrap(), Path::new("/project/baked"));
+        assert_eq!(
+            resolved.join("deadbeef.prm"),
+            Path::new("/project/baked/materials/deadbeef.prm"),
+        );
+    }
+
+    /// With the flag absent the resolver must be the pre-flag `Cargo.toml` walk,
+    /// byte for byte — every in-workspace bake keeps resolving the directory it
+    /// resolved before the override existed.
+    #[test]
+    fn absent_baked_root_keeps_the_cargo_walk() {
+        let workspace = unique_temp_dir("baked-root-default");
+        let maps_dir = workspace.join("content").join("dev").join("maps");
+        std::fs::create_dir_all(&maps_dir).unwrap();
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let map_path = maps_dir.join("level.map");
+        assert_eq!(
+            resolve_prm_root(&map_path, None),
+            resolve_prm_root_via_cargo(&map_path),
+        );
+        assert_eq!(
+            resolve_prm_root(&map_path, None),
+            workspace.join("baked").join("materials"),
+        );
+
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn baked_root_flag_parses_and_defaults_to_absent() {
+        let without = parse_args_from(["input.map".to_string()].into_iter()).unwrap();
+        assert_eq!(without.baked_root, None);
+
+        let with = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--baked-root".to_string(),
+                "/project/baked".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(with.baked_root, Some(PathBuf::from("/project/baked")));
+
+        // A value is required: a bare flag must not silently swallow the input
+        // path or resolve to the current directory.
+        assert!(
+            parse_args_from(["input.map".to_string(), "--baked-root".to_string()].into_iter())
+                .is_err()
+        );
     }
 
     #[test]

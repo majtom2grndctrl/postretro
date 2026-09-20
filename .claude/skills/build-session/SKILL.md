@@ -33,7 +33,9 @@ End the conversation with the whole specification settled. Long-horizon work goe
 
 ## 2. Design contract
 
-Before any dispatch, write `context/plans/in-progress/<slug>-contract.md`. Every agent reads this file first, before its own brief.
+Start a feature branch off `main` before anything is written. Everything below lands there — the contract, every track, the review.
+
+Then write `context/plans/in-progress/<slug>-contract.md`, where `<slug>` names the feature. Commit it before dispatching, so every track starts from the same committed state. Every agent reads this file first, before its own brief.
 
 Agents that share a written contract build compatible pieces with zero communication; agents inferring the design from their own prompt do not. A prompt also drifts as you retype it across tracks. A file does not.
 
@@ -50,13 +52,15 @@ Pin every convention with two plausible readings, even the ones obvious to you: 
 
 Match the contract's length to the decisions it carries. Padding it with restated background, redundant summaries, or boilerplate sections costs every agent that reads it.
 
+Put the decisions and invariants in front of the owner before the first dispatch. They settled them in conversation, but a contract they have not read is a spec you wrote alone, and every track is about to build on it.
+
 Amend the file when a track changes a decision — before the next dispatch, not after.
 
 ## 3. Build
 
 **Do the work yourself by default.** A subagent re-establishes context from nothing, re-explores, reports back, and then you read the report. Anything you could finish in a handful of tool calls is cheaper and more reliable done directly — a few file reads, a handful of edits, a focused search, a check.
 
-**Dispatch along the workspace's seams.** This engine is 23 crates with an enforced layering direction, so one feature routinely spans several of them — a bake stage in `level-compiler`, a section in `level-format`, its `level-loader` read side, a CPU reference in `render-cpu`, the shader in `renderer`. Those are real tracks: different crates, different expertise, a pinned contract between them, and the compiler enforcing the boundary. That is what makes the parallelism real and the overhead repaid.
+**Dispatch along the workspace's seams.** This engine is a many-crate workspace with a layering direction the build enforces (`layering_invariants_hold`, `crates/xtask/src/crate_graph.rs`), so one feature routinely spans several crates — a bake stage in `level-compiler`, a section in `level-format`, its `level-loader` read side, a CPU reference in `render-cpu`, the shader in `renderer`. Those are real tracks: different crates, different expertise, a pinned contract between them, and the compiler enforcing the boundary. That is what makes the parallelism real and the overhead repaid.
 
 Size alone is not the signal. A large change living inside one crate is one track, however many lines it runs to. Two crates on opposite sides of a contract you have already pinned are two tracks, even when each is small. Give every track a whole vertical slice with its own acceptance — never one agent per file or per step.
 
@@ -115,7 +119,7 @@ Read them from source yourself. A budget, a limit, an asserted invariant — any
 
 The machine's limits, not the roster's.
 
-- Parallelism is bounded by the build graph, not the file list. Two agents editing disjoint files in one workspace still share a target dir: they contend on its lock and can compile against each other's half-written edits. Isolated worktrees with separate target dirs are the fix; a separate workspace (`tools/`) or a directory with no build (`content/`) parallelizes freely.
+- Parallelism is bounded by the build graph, not the file list. Two agents editing disjoint files in one workspace still share a target dir: they contend on its lock and can compile against each other's half-written edits. Isolated worktrees with separate target dirs are the fix; a separate workspace (`tools/texture-tool`) or a directory with no build (`content/`) parallelizes freely.
 - Concurrent agents in isolated worktrees cap at **3** (`development_guide.md`, "Concurrent agents in isolated worktrees"). Beyond that, parallel engine builds exhaust CPU and disk, and correct work fails on linker errors. Batch the next group after the first merges.
 - A fresh worktree's first build is the engine's most expensive compile, and a worktree track pays it before it can compile or test at all. Decide per track which side to pay. Give it a gate needing no build — greps, byte comparisons, file assertions — and verification lands once after merge, on the warm target. Let it pay the cold build and it catches its own compile and test failures instead of handing them back to you, which is the cheaper trade whenever the track is large or the seam is one you would rather not debug at integration time. Working on the branch directly avoids the question: you inherit the warm target and test as you go.
 - Focused tests only: `cargo test -p <crate> <filter>`, narrowed to one target (`--lib`, or `--bin prl-build` for `postretro-level-compiler`). Require the test count — a filter matching nothing prints `0 passed` and exits `ok`. Never `-- --ignored` in a routine pass; those are the ~5–7 min cold bakes.
@@ -132,7 +136,7 @@ Record only what survives refactoring. A sentence that breaks when a file is ren
 
 **One review track, not a panel.** `opus` finds real bugs at high recall in a single pass, so several reviewers on one diff is one modest job split across parallel agents. A panel also returns claims you then have to re-verify, which spends the context you spent the whole session protecting.
 
-Dispatch one agent to review the diff and fix what it finds. Keep three stages distinct in its brief.
+Dispatch one `opus` agent to review the diff and fix what it finds — the recall above is that tier's. Keep three stages distinct in its brief.
 
 **Find.** Several lenses in one pass — correctness, the contract's invariants, layering and crate direction, test coverage, resource bounds, and prose against `context_style_guide.md`. Coverage is the job at this stage:
 
@@ -142,9 +146,9 @@ Dispatch one agent to review the diff and fix what it finds. Keep three stages d
 
 **Fix.** Apply what survives. Stop at anything that would change a decision in the contract — those come back to you, unfixed, with the reasoning.
 
-Require back what it found, what it changed, and what it left for a decision. Read the first and last; take the middle as given and let `/preflight` judge it.
+Require back what it found, what it changed, and what it left for a decision. Read the first and last; take the middle as given.
 
-A track that lands mid-session can take the same brief on `sonnet` as a cheap early pass. Accuracy holds at lower cost, so a quick pass per track and a thorough one at landing is worth more than a single review at the end.
+A track that lands mid-session can take the same brief on `sonnet` as a cheap early pass. Accuracy holds at lower cost, so a quick pass per track and a thorough one at landing beats a single review at the end.
 
 Then `/preflight` once, as the single full-suite gate.
 
@@ -159,6 +163,7 @@ The owner reads your text between tool calls and sees neither your thinking nor 
 - Never dispatch an agent for work you could finish in a handful of tool calls.
 - Never split one modest job across parallel agents.
 - Never dispatch a track with no gate it can run.
+- Never omit `model:` on an Agent call.
 - Never let a track spawn an agent that writes.
 - Never launch, wait, then re-brief — the whole slice goes in the first brief.
 - Never redo a track's work after it reports.

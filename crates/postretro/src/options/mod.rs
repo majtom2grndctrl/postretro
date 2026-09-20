@@ -119,41 +119,54 @@ impl FogQuality {
     }
 }
 
-/// Surface Depth (texel-space parallax) tier. Applies live: the renderer
-/// rewrites every installed material's uniform buffer, with no level reload.
+/// Surface Depth (texel-space parallax) on/off switch. Applies live: the
+/// renderer rewrites every installed material's uniform buffer, with no level
+/// reload.
 ///
-/// Three tiers rather than the low/medium/high used by shadows and fog,
-/// because the meaningful choices here are "no march at all", "the primary
-/// march only", and "the full effect" — design D5.
+/// Off/on rather than the low/medium/high used by shadows and fog, because this
+/// is a pure cost lever rather than a quality ladder — design D5. The middle
+/// tier this replaces never changed the carve DEPTH (it only capped the march
+/// budget and shortened the fade), so it read as identical to the full effect
+/// except at grazing angles, where it read as a shallower carve.
 ///
-/// Defaults to `High`. The feature is on by default; this setting exists as an
+/// Defaults to `On`. The feature ships enabled; this setting exists as an
 /// escape hatch for hardware that struggles, not as an opt-in.
+///
+/// **Stale persisted values.** `settings.toml` files written before the
+/// collapse carry `"low"` or `"high"` — `"high"` being what every save wrote,
+/// since it was the default. Both are accepted as `On` through serde aliases
+/// and rewritten as `"on"` on the next save. This is not a compatibility shim
+/// for a code API (see `development_guide.md` §1.6): a settings file is PLAYER
+/// DATA, and an unknown enum value fails the whole-document parse, which would
+/// discard every other setting in the file — sensitivity, invert-Y, crouch
+/// mode, the device identity — not just this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SurfaceDepthQuality {
     /// Force flat — byte-identical to the pre-Surface-Depth render, zero cost.
     Off,
-    /// The primary march only: side-face shading and depth AO are kept, with a
-    /// tighter step cap, a shorter fade, and no dynamic self-shadow march.
-    Low,
+    /// The full effect: every material's per-prefix values verbatim, with the
+    /// full self-shadow budget.
     #[default]
-    High,
+    #[serde(alias = "low", alias = "high")]
+    On,
 }
 
 impl SurfaceDepthQuality {
+    /// The live slot vocabulary, which is deliberately only the two current
+    /// values: the retired names are tolerated when READING a settings file,
+    /// never as a script-writable state.
     fn slot_value(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Low => "low",
-            Self::High => "high",
+            Self::On => "on",
         }
     }
 
     fn from_slot_value(value: &str) -> Option<Self> {
         match value {
             "off" => Some(Self::Off),
-            "low" => Some(Self::Low),
-            "high" => Some(Self::High),
+            "on" => Some(Self::On),
             _ => None,
         }
     }
@@ -450,7 +463,7 @@ mod tests {
             crouch_mode: CrouchMode::Toggle,
             shadow_quality: ShadowQuality::Medium,
             fog_quality: FogQuality::Low,
-            surface_depth_quality: SurfaceDepthQuality::Low,
+            surface_depth_quality: SurfaceDepthQuality::On,
             switch_cycle_dwell_ms: Some(400),
             scroll_notch_pixels: 100.0,
         };
@@ -474,49 +487,85 @@ mod tests {
         assert_eq!(loaded.player_id, None, "an absent key stays absent on load");
         // Schema evolution: a settings.toml written before Surface Depth
         // shipped must load with the feature ON, not silently disabled.
-        assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::High);
+        assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::On);
     }
 
     #[test]
-    fn surface_depth_quality_persists_as_a_snake_case_tier_name() {
+    fn surface_depth_quality_persists_as_a_snake_case_state_name() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("settings.toml");
-        for (tier, wire) in [
+        for (state, wire) in [
             (SurfaceDepthQuality::Off, "off"),
-            (SurfaceDepthQuality::Low, "low"),
-            (SurfaceDepthQuality::High, "high"),
+            (SurfaceDepthQuality::On, "on"),
         ] {
             let options = PlayerOptions {
-                surface_depth_quality: tier,
+                surface_depth_quality: state,
                 ..PlayerOptions::default()
             };
             options.save(&path).unwrap();
             let text = fs::read_to_string(&path).unwrap();
             assert!(
                 text.contains(&format!("surface_depth_quality = \"{wire}\"")),
-                "{tier:?} must persist as `{wire}`; got:\n{text}"
+                "{state:?} must persist as `{wire}`; got:\n{text}"
             );
-            assert_eq!(PlayerOptions::load(&path).surface_depth_quality, tier);
-            assert_eq!(tier.slot_value(), wire);
-            assert_eq!(SurfaceDepthQuality::from_slot_value(wire), Some(tier));
+            assert_eq!(PlayerOptions::load(&path).surface_depth_quality, state);
+            assert_eq!(state.slot_value(), wire);
+            assert_eq!(SurfaceDepthQuality::from_slot_value(wire), Some(state));
         }
         assert_eq!(SurfaceDepthQuality::from_slot_value("ultra"), None);
     }
 
     #[test]
-    fn an_out_of_vocabulary_surface_depth_tier_falls_back_to_defaults() {
+    fn the_retired_surface_depth_tiers_load_as_on_and_are_rewritten() {
+        // A settings.toml written before D5 collapsed to off/on carries "low"
+        // or "high" — "high" in every file that ever saved the default. Both
+        // named a state that DID march, so both load as `On`. Letting either
+        // fail the parse would discard the rest of the file with it, which is
+        // the real cost: this is player data, not a code API.
+        for retired in ["low", "high"] {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("settings.toml");
+            fs::write(
+                &path,
+                &format!("invert_y = true\nsurface_depth_quality = \"{retired}\"\n"),
+            )
+            .unwrap();
+
+            let loaded = PlayerOptions::load(&path);
+            assert_eq!(
+                loaded.surface_depth_quality,
+                SurfaceDepthQuality::On,
+                "a saved `{retired}` must load as On, not Off",
+            );
+            assert!(
+                loaded.invert_y,
+                "`{retired}` must not take the rest of the file down with it",
+            );
+
+            // The next save normalizes the file onto the live vocabulary.
+            loaded.save(&path).unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains("surface_depth_quality = \"on\""),
+                "the retired name must not survive a save; got:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_out_of_vocabulary_surface_depth_state_falls_back_to_defaults() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("settings.toml");
-        fs::write(&path, "surface_depth_quality = \"medium\"\n").unwrap();
+        fs::write(&path, "surface_depth_quality = \"ultra\"\n").unwrap();
 
-        // A value outside the tier vocabulary is a parse failure, which the
+        // A value that never named a real state is a parse failure, which the
         // documented degradation turns into in-memory defaults with the file
         // left untouched for the human to fix.
         let loaded = PlayerOptions::load(&path);
-        assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::High);
+        assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::On);
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            "surface_depth_quality = \"medium\"\n"
+            "surface_depth_quality = \"ultra\"\n"
         );
     }
 
@@ -548,7 +597,7 @@ mod tests {
             crouch_mode: CrouchMode::Toggle,
             shadow_quality: ShadowQuality::Low,
             fog_quality: FogQuality::High,
-            surface_depth_quality: SurfaceDepthQuality::High,
+            surface_depth_quality: SurfaceDepthQuality::On,
             switch_cycle_dwell_ms: Some(500),
             scroll_notch_pixels: 80.0,
         };

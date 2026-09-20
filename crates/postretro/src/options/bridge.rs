@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(options.shadow_quality, ShadowQuality::Low);
         assert_eq!(
             options.surface_depth_quality,
-            SurfaceDepthQuality::High,
+            SurfaceDepthQuality::On,
             "untouched slots keep their value",
         );
 
@@ -605,13 +605,13 @@ mod tests {
         assert_eq!(
             effects.surface_depth_quality,
             Some(SurfaceDepthQuality::Off),
-            "the tier must be reported so the app can apply it live",
+            "the state must be reported so the app can apply it live",
         );
         assert_eq!(effects.fog_quality, None);
         assert_eq!(options.fog_quality, FogQuality::High);
 
-        // Returning to a richer tier reports too: the live path is two-way.
-        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("low"));
+        // Turning it back on reports too: the live path is two-way.
+        write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("on"));
         let effects = bridge.update(
             0.0,
             &ctx.slot_table.borrow(),
@@ -619,11 +619,8 @@ mod tests {
             &mut input,
             None,
         );
-        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::Low);
-        assert_eq!(
-            effects.surface_depth_quality,
-            Some(SurfaceDepthQuality::Low)
-        );
+        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::On);
+        assert_eq!(effects.surface_depth_quality, Some(SurfaceDepthQuality::On));
     }
 
     #[test]

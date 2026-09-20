@@ -299,9 +299,9 @@ cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
 
 `--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
 
-#### The player's quality setting
+#### The player's on/off setting
 
-Players get a **SURFACE DEPTH** setting in the graphics options: **Off**, **Low**, **High**, defaulting to **High**. `Off` renders exactly as the engine did before the feature existed. `Low` keeps the depth and the terracing but flattens out closer to the camera, takes fewer steps per pixel, and drops the per-light self-shadowing. `High` is the full effect. Author for `High`, but don't build a room whose readability depends on it — someone will be playing on `Off`.
+Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed, and costs nothing — it is there for machines that can't afford the per-pixel march. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
 
 ### Model Texture Sidecars
 

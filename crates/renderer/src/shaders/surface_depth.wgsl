@@ -71,9 +71,9 @@ const SURFACE_DEPTH_BASE_MIP_SHIFT: u32 = 8u;
 const SURFACE_DEPTH_BASE_MIP_MASK: u32 = 0xFu;
 const SURFACE_DEPTH_HAS_DEPTH_BIT: u32 = 0x1000u;
 // Per-fragment dynamic-light self-shadow budget. It rides the uniform rather
-// than a `const` because the player-facing quality tier (design D5) is applied
+// than a `const` because the player-facing on/off switch (design D5) is applied
 // by rewriting this BUFFER — this engine has no shader-variant system, so a
-// tier that must switch the shadow march off has to reach the shader as data.
+// switch that must turn the shadow march off has to reach the shader as data.
 // Zero means the second (shadow) DDA never runs.
 const SURFACE_DEPTH_SHADOW_BUDGET_SHIFT: u32 = 16u;
 const SURFACE_DEPTH_SHADOW_BUDGET_MASK: u32 = 0xFu;
@@ -135,7 +135,7 @@ struct SurfaceDepthResult {
     quantize_levels: f32,
     shadow_steps: u32,
     // How many DYNAMIC lights this fragment may self-shadow, from the player's
-    // quality tier. Zero at `Low` and `Off`, and zero whenever `carved` is
+    // Surface Depth switch. Zero at `Off`, and zero whenever `carved` is
     // false, so the consumer's budget test also covers the flat path.
     shadow_light_budget: u32,
     base_mip: u32,
@@ -420,9 +420,9 @@ fn surface_depth_resolve(
         // rule fires — resolves at its full `solid` depth, and the sample point
         // is `p0 + dir * hit_depth` where `dir` is texels per METER OF DESCENT.
         // At a grazing angle that lands the albedo, normal and specular samples
-        // tens of texels past anything the march visited, so a tighter budget
-        // produced a LARGER artifact: `Low` cuts the cap to 8 while only halving
-        // the fade that would have hidden it. Stopping at `z_enter` keeps the
+        // tens of texels past anything the march visited, so a TIGHTER budget
+        // produced a LARGER artifact — exactly backwards for a knob whose job
+        // is to make the effect cheaper. Stopping at `z_enter` keeps the
         // sample inside the walked region, and on the first iteration it IS the
         // flat result (depth 0, geometric normal, original UV), so a budget too
         // small to march degrades toward flat rather than toward an arbitrary

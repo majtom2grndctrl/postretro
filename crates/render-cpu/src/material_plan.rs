@@ -43,11 +43,11 @@ pub fn build_material_uniform(
     bytes
 }
 
-/// Everything needed to rebuild ONE material's uniform bytes at any quality
-/// tier, with no GPU access.
+/// Everything needed to rebuild ONE material's uniform bytes in either Surface
+/// Depth state, with no GPU access.
 ///
 /// The renderer retains this beside each material's uniform buffer so the
-/// player-facing Surface Depth tier (design D5) can be applied live by
+/// player-facing Surface Depth switch (design D5) can be applied live by
 /// rewriting the buffer — `queue.write_buffer`, not a bind-group rebuild
 /// (`resource_management.md` §8.2: handles are stable, nothing allocates during
 /// gameplay) and not a new group-0 uniform field (that struct is exactly 128
@@ -60,9 +60,9 @@ pub fn build_material_uniform(
 pub struct MaterialUniformPlan {
     pub shininess: f32,
     pub emissive_strength: f32,
-    /// The material prefix's own tuning, BEFORE any quality tier is applied.
-    /// Storing the untiered value is what lets a rewrite move up as well as
-    /// down: `Off` is not a one-way door.
+    /// The material prefix's own tuning, BEFORE the player's switch is applied.
+    /// Storing the unswitched value is what lets a rewrite turn the effect back
+    /// on as well as off: `Off` is not a one-way door.
     pub surface_depth: postretro_render_data::material::SurfaceDepth,
     /// The bound specular slot is a two-channel `Rg8Unorm` surface map.
     pub specular_is_surface_map: bool,
@@ -92,7 +92,7 @@ impl MaterialUniformPlan {
 
     /// The exact 32 bytes this material uploads at `quality`.
     ///
-    /// Deterministic and total: the same plan and tier always produce the same
+    /// Deterministic and total: the same plan and state always produce the same
     /// bytes, so a live rewrite and a fresh level install agree byte for byte.
     pub fn uniform_bytes(
         self,
@@ -146,7 +146,7 @@ mod material_uniform_tests {
                 max_steps: 24,
                 fade_distance_meters: 14.0,
             },
-            SurfaceDepthQuality::High,
+            SurfaceDepthQuality::On,
             true,
             11,
             crate::surface_depth::SURFACE_DEPTH_RESIDENT_BASE_MIP,
@@ -160,7 +160,7 @@ mod material_uniform_tests {
         assert_eq!(march & 0xFF, 24);
     }
 
-    // -- Player quality tier (D5): the bytes a live rewrite uploads --
+    // -- Player on/off switch (D5): the bytes a live rewrite uploads --
 
     /// A carving material with a real surface map: the plan the renderer keeps
     /// for a `.prm` whose specular slot baked to `Rg8Unorm`.
@@ -193,57 +193,50 @@ mod material_uniform_tests {
     }
 
     #[test]
-    fn off_never_alters_the_first_row_any_tier_uploads() {
+    fn neither_state_alters_the_first_row() {
         let plan = carving_plan();
-        let high = plan.uniform_bytes(SurfaceDepthQuality::High);
+        let on = plan.uniform_bytes(SurfaceDepthQuality::On);
         for quality in SurfaceDepthQuality::ALL {
             assert_eq!(
                 plan.uniform_bytes(quality)[..16],
-                high[..16],
+                on[..16],
                 "{quality:?} must not disturb shininess/emissive_strength",
             );
         }
     }
 
     #[test]
-    fn each_tier_uploads_distinct_second_row_bytes() {
+    fn the_two_states_upload_distinct_second_row_bytes() {
         let plan = carving_plan();
         let off = plan.uniform_bytes(SurfaceDepthQuality::Off);
-        let low = plan.uniform_bytes(SurfaceDepthQuality::Low);
-        let high = plan.uniform_bytes(SurfaceDepthQuality::High);
-        assert_ne!(off[16..], low[16..]);
-        assert_ne!(low[16..], high[16..]);
-        assert_ne!(off[16..], high[16..]);
-
-        // Low keeps the carve depth and the terracing, shortens the fade, and
-        // clears the self-shadow budget.
-        assert_eq!(low[16..20], high[16..20], "carve depth is unchanged at Low");
-        assert_eq!(
-            low[24..28],
-            high[24..28],
-            "quantization is unchanged at Low"
+        let on = plan.uniform_bytes(SurfaceDepthQuality::On);
+        assert_ne!(
+            off[16..],
+            on[16..],
+            "the switch must actually change what the GPU reads",
         );
-        let low_fade = f32::from_le_bytes(low[20..24].try_into().unwrap());
-        let high_fade = f32::from_le_bytes(high[20..24].try_into().unwrap());
-        assert!(low_fade < high_fade && low_fade > 0.0);
 
-        let low_march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
-            low[28..32].try_into().unwrap(),
+        // `On` is the material's own tuning, verbatim, with the full budget.
+        let authored = Material::Concrete.surface_depth();
+        assert_eq!(on[16..20], authored.depth_meters.to_le_bytes());
+        assert_eq!(on[20..24], authored.fade_distance_meters.to_le_bytes());
+        assert_eq!(on[24..28], (authored.quantize_levels as f32).to_le_bytes());
+
+        let on_march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
+            on[28..32].try_into().unwrap(),
         ));
-        let high_march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
-            high[28..32].try_into().unwrap(),
-        ));
-        assert!(low_march.has_depth && high_march.has_depth);
-        assert!(low_march.max_steps < high_march.max_steps);
-        assert_eq!(low_march.shadow_light_budget, 0);
-        assert!(high_march.shadow_light_budget > 0);
-        assert_eq!(low_march.base_mip, high_march.base_mip);
+        assert!(on_march.has_depth);
+        assert_eq!(on_march.max_steps, authored.max_steps);
+        assert!(on_march.shadow_light_budget > 0);
+
+        // `Off` is the whole second row zeroed, budget included.
+        assert!(off[16..].iter().all(|&byte| byte == 0));
     }
 
     #[test]
-    fn a_material_with_no_surface_map_is_tier_independent() {
-        // The whole point of deciding has-depth from the LOADED slot: no
-        // quality tier may make a material without an `_h.png` sibling march.
+    fn a_material_with_no_surface_map_is_switch_independent() {
+        // The whole point of deciding has-depth from the LOADED slot: neither
+        // state may make a material without an `_h.png` sibling march.
         let plan = MaterialUniformPlan::new(Material::Concrete, false, 11);
         for quality in SurfaceDepthQuality::ALL {
             assert!(
@@ -254,20 +247,19 @@ mod material_uniform_tests {
     }
 
     #[test]
-    fn a_tier_change_is_reversible_byte_for_byte() {
+    fn a_switch_change_is_reversible_byte_for_byte() {
         // `Off` must not be a one-way door: the plan retains the material's own
-        // untiered tuning, so returning to High restores the exact bytes.
+        // untouched tuning, so returning to On restores the exact bytes.
         let plan = carving_plan();
-        let high = plan.uniform_bytes(SurfaceDepthQuality::High);
+        let on = plan.uniform_bytes(SurfaceDepthQuality::On);
         let _ = plan.uniform_bytes(SurfaceDepthQuality::Off);
-        let _ = plan.uniform_bytes(SurfaceDepthQuality::Low);
-        assert_eq!(plan.uniform_bytes(SurfaceDepthQuality::High), high);
+        assert_eq!(plan.uniform_bytes(SurfaceDepthQuality::On), on);
     }
 
     #[test]
     fn the_plan_records_the_first_row_from_the_material_prefix() {
         let plan = MaterialUniformPlan::new(Material::Metal, true, 4);
-        let bytes = plan.uniform_bytes(SurfaceDepthQuality::High);
+        let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
         assert_eq!(&bytes[0..4], &Material::Metal.shininess().to_le_bytes());
         assert_eq!(
             &bytes[4..8],
@@ -284,7 +276,7 @@ mod material_uniform_tests {
             ..MaterialUniformPlan::new(Material::Concrete, true, 1)
         };
         let march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
-            plan.uniform_bytes(SurfaceDepthQuality::High)[28..32]
+            plan.uniform_bytes(SurfaceDepthQuality::On)[28..32]
                 .try_into()
                 .unwrap(),
         ));

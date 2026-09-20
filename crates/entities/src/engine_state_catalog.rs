@@ -347,10 +347,10 @@ fn sdk_path_string(path: &[&str]) -> String {
 const INPUT_MODE_VALUES: &[&str] = &["pointer", "focus"];
 const CROUCH_MODE_VALUES: &[&str] = &["hold", "toggle"];
 const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
-/// Surface Depth's tiers are off/low/high, not low/medium/high: the
-/// meaningful choices are "no march", "the primary march only", and "the full
-/// effect". See `context/lib/player_options.md` §4.
-const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "low", "high"];
+/// Surface Depth is off/on, not a low/medium/high ladder: it is a pure cost
+/// lever, and the middle tier it once had never changed the carve depth.
+/// See `context/lib/player_options.md` §4.
+const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "on"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
@@ -627,7 +627,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         value_type: EngineStateValueType::Enum {
             values: SURFACE_DEPTH_QUALITY_VALUES,
         },
-        default: EngineStateDefault::Enum("high"),
+        default: EngineStateDefault::Enum("on"),
         range: None,
         persist: false,
         capability: EngineStateCapability::Writable,

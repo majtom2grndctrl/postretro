@@ -199,8 +199,9 @@ impl Material {
     /// out to sit well below that, so a direct re-expression carved far deeper
     /// than the meters table ever did.
     ///
-    /// Concrete's 6 is what the `Low` tier was *effectively* producing and what
-    /// read best: `Low` never reduces depth, it caps the budget at 8 steps, and
+    /// Concrete's 6 is what the since-retired `Low` quality tier was
+    /// *effectively* producing and what read best: that tier never reduced
+    /// depth, it capped the budget at 8 steps, and
     /// a carve `N` texels deep needs `N * tan(theta)` texels of travel — so past
     /// ~39 degrees off normal the march ran out and resolved short, at roughly
     /// `8 / tan(theta)` texels. Over a typical floor view that landed around 4-7.

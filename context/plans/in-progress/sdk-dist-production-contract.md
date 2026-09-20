@@ -46,7 +46,16 @@ mod replaced it. Deleting any of them removes a working screen.
 
 `content/base/fonts/Inter-Regular.ttf` and
 `content/base/fonts/JetBrainsMono-Regular.ttf` move to
-`crates/ui/assets/fonts/`, with their OFL licence files beside them.
+`crates/ui/assets/fonts/`. Their OFL licence texts move to `core/licenses/`,
+*not* beside the fonts.
+
+*Amended after Track 1.* The licence texts reached every payload only because
+`dist` copied `content/base` wholesale. Once the fonts became crate-local build
+inputs they reached no payload at all, while the binary still embeds both faces
+— and SIL OFL 1.1 requires the licence to accompany the font, embedded or not.
+`core/licenses/` is inside the tree D1 already makes `dist` and `sdk-dist` copy,
+so the licence ships with the binary that embeds the faces, independent of
+whatever fonts the shipped game supplies.
 
 *Consequence:* both faces are `include_bytes!`-ed into the `ui` crate at
 `crates/ui/src/text.rs:10` and `:17`. They are a compile-time build input and a
@@ -236,9 +245,14 @@ list is allowed and must be reported.
 ### Track 4 — documentation (all decisions)
 
 - `docs/distribution.md`, `docs/modding.md`, new external-project guide
+- `docs/scripting-reference.md`, `docs/level_design.md` — both carry
+  `content/base/ui` and `content/base/textures` paths that D1 invalidates
 - `context/lib/build_pipeline.md`, `context/lib/ui.md`,
-  `context/lib/boot_sequence.md`, `context/lib/index.md`
+  `context/lib/boot_sequence.md`, `context/lib/index.md`,
+  `context/lib/resource_management.md`
 - `context/lib/crate-graph.md` (regenerated, not hand-edited)
+- `CLAUDE.md` and `AGENTS.md` — the `prl-build` example compiles to
+  `content/base/maps/output.prl`, which D6 makes a distribution-only path
 
 ## Acceptance per track
 
@@ -248,7 +262,7 @@ list is allowed and must be reported.
 grep -rn "content/base" --include=*.rs --include=*.ts crates/ sdk/
 test ! -e content/base
 cargo test -p postretro-ui --lib
-cargo test -p postretro --lib startup
+cargo test -p postretro --bin postretro startup
 cargo run -p xtask -- run content/dev/maps/campaign-test.prl
 ```
 
@@ -264,7 +278,7 @@ for `[UI] tree asset` and look at the window.
 
 ```bash
 cargo test -p postretro-level-compiler --bin prl-build baked_root
-cargo test -p postretro --lib prm_root
+cargo test -p postretro --bin postretro prm_root
 ```
 
 Expect `ok` with at least 3 and at least 2 tests passed respectively.
@@ -315,6 +329,40 @@ Both greps return no output.
 
 `docs/` is the tree `sdk-dist` copies into the bundle. A `cargo run -p xtask`
 instruction there is, by construction, an instruction its reader cannot follow.
+
+## Known-red on this machine, before any track ran
+
+Track 1 confirmed each of these against unmodified `HEAD`. They are not
+regressions, and no track should spend time re-deriving them — but preflight
+gates on the first two, so they must be resolved before this branch lands.
+
+- **`cargo fmt --all -- --check`** is red on `main` in four files no track
+  edits: `crates/level-compiler/src/texture_mips.rs`,
+  `crates/render-cpu/src/surface_depth.rs`,
+  `crates/render-data/src/material.rs`, and
+  `crates/renderer/src/render/tests/surface_depth_tests.rs`. Running `rustfmt`
+  on `level-compiler`'s crate root follows its `mod` tree, so `texture_mips.rs`
+  is already fixed on this branch as a side effect. The remaining three stay
+  untouched — unrelated churn does not belong in this diff — so preflight's
+  format check will report them at landing, and that report is expected.
+- **`startup::lifecycle::tests::level_identity_keeps_outside_content_root_absolute`**
+  fails on Windows. `/tmp/test.prl` is rooted but not absolute there, so
+  `level_identity` takes its `cwd.join` branch and yields `C:/tmp/test.prl`.
+  A test-fixture assumption, not a product bug.
+- **`model_byte_report_names_textures_relative_to_the_content_root`** in
+  `level-compiler` fails on backslash-versus-slash separators. Same character.
+- **`cargo test -p xtask`** fails one test because Python is not installed on
+  this machine. Out of scope; note it and move on.
+
+## Track 1 spillover, already applied
+
+Track 1's grep gate is literal, so five files holding `content/base` as an
+unrelated *example* path were renamed to `content/example`:
+`crates/level-compiler/src/main.rs`,
+`crates/postretro/src/startup/{session,worker}.rs`, and
+`crates/xtask/src/dist/payload.rs` — files owned by Tracks 2 and 3. All are
+test-only string literals. `crates/level-format/src/gltf_resolve.rs` held a
+false positive (a file literally named `base.png`) now written `/assets/base.png`.
 
 ## Open questions
 

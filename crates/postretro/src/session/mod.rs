@@ -404,7 +404,7 @@ impl Session {
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
-        // `AnchoredTree` is authored in `content/base/ui/<file>.json` and loaded
+        // `AnchoredTree` is authored in `core/ui/<file>.json` and loaded
         // from disk so a layout edit + reload changes it with no Rust change. A
         // missing/malformed asset warns once and skips the registration — that
         // screen is unavailable, the engine still runs.

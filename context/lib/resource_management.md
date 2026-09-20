@@ -18,7 +18,7 @@ Textures live under `content/<mod>/textures/` (where `<mod>` is `base` for first
 content/<mod>/textures/<collection>/<name>.png
 ```
 
-Example paths: `content/base/textures/concrete/wall.png`, `content/dev/textures/metal/panel.png`.
+Example paths: `content/base/textures/concrete/wall.png` (a packaged game's mod root), `content/dev/textures/metal/panel.png`.
 
 TrenchBroom requires the collection subdirectory structure for texture browsing. Collections group related textures (e.g., `concrete/`, `metal/`, `trim/`). The texture root is not accessed at runtime for world materials — source PNGs are consumed by `prl-build` only.
 

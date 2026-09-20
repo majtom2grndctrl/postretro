@@ -22,7 +22,7 @@ const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 /// mismatched border around the splash art.
 ///
 /// MUST match the background color of the splash art
-/// (`content/base/textures/splash/postretro-ascii-art.png`), whose uniform
+/// (`core/textures/splash/postretro-ascii-art.png`), whose uniform
 /// background is sRGB 8-bit `(28, 33, 39)`. The logo PNG draws over this clear as
 /// an `Rgba8UnormSrgb` texture, so the cleared region and the image's own
 /// background must resolve to the same on-screen color with no seam.

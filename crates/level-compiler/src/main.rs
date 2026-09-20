@@ -221,7 +221,9 @@ fn bake_model_textures(
             // pinned deterministic for identical inputs, and an absolute
             // prefix both varies by machine and pushes the part that
             // identifies the texture off the end of the `largest:` lines.
-            let relative = texture_path.strip_prefix(content_root).unwrap_or(texture_path);
+            let relative = texture_path
+                .strip_prefix(content_root)
+                .unwrap_or(texture_path);
             byte_summary.account_baked_sidecar(
                 format!("model:{}", relative.display()),
                 cache_root,
@@ -1705,12 +1707,12 @@ mod tests {
     #[test]
     fn resolve_content_root_uses_map_directory_grandparent() {
         assert_eq!(
-            resolve_content_root(Path::new("content/base/maps/test.map")),
-            PathBuf::from("content/base")
+            resolve_content_root(Path::new("content/example/maps/test.map")),
+            PathBuf::from("content/example")
         );
         assert_eq!(
-            resolve_texture_root(Path::new("content/base/maps/test.map")),
-            PathBuf::from("content/base/textures")
+            resolve_texture_root(Path::new("content/example/maps/test.map")),
+            PathBuf::from("content/example/textures")
         );
     }
 
@@ -1781,7 +1783,7 @@ mod tests {
             map_entity("billboard_emitter", &[("sprite", "missing")]),
             map_entity("billboard_emitter", &[("sprite", "smoke")]),
         ];
-        let texture_root = Path::new("content/base/textures");
+        let texture_root = Path::new("content/example/textures");
         let cache_root = Path::new("baked/materials");
         let mut baked = Vec::new();
         let capture = LogCapture::start();
@@ -1816,11 +1818,11 @@ mod tests {
             map_entity("prop_mesh", &[("model", "models/malformed.gltf")]),
             map_entity("prop_mesh", &[("model", "models/second.gltf")]),
         ];
-        let content_root = Path::new("content/base");
+        let content_root = Path::new("content/example");
         let cache_root = Path::new("baked/materials");
-        let shared = PathBuf::from("content/base/models/shared.png");
-        let first_only = PathBuf::from("content/base/models/first.png");
-        let unreadable = PathBuf::from("content/base/models/unreadable.png");
+        let shared = PathBuf::from("content/example/models/shared.png");
+        let first_only = PathBuf::from("content/example/models/first.png");
+        let unreadable = PathBuf::from("content/example/models/unreadable.png");
         let mut resolved_models = Vec::new();
         let mut baked_textures = Vec::new();
 
@@ -1869,7 +1871,7 @@ mod tests {
     #[test]
     fn model_byte_report_names_textures_relative_to_the_content_root() {
         let root = unique_temp_dir("model-texture-report-name");
-        let content_root = root.join("content/base");
+        let content_root = root.join("content/example");
         let models_root = content_root.join("models");
         let cache_root = root.join("prm-cache");
         std::fs::create_dir_all(&models_root).unwrap();
@@ -1905,7 +1907,7 @@ mod tests {
     #[test]
     fn model_texture_bake_creates_and_regenerates_blake3_named_sidecar() {
         let root = unique_temp_dir("model-texture-boundary");
-        let content_root = root.join("content/base");
+        let content_root = root.join("content/example");
         let models_root = content_root.join("models");
         let cache_root = root.join("prm-cache");
         std::fs::create_dir_all(&models_root).unwrap();

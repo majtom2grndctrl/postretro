@@ -343,11 +343,7 @@ fn stage_five_assemble_bundle(
         ("sdk", workspace.join("sdk"), bundle_root.join("sdk")),
         ("docs", workspace.join("docs"), bundle_root.join("docs")),
         ("tools", workspace.join("tools"), bundle_root.join("tools")),
-        (
-            "content/base",
-            workspace.join("content").join("base"),
-            bundle_root.join("content").join("base"),
-        ),
+        ("core", workspace.join("core"), bundle_root.join("core")),
     ] {
         let copied = copy_bundle_tree(&source, &destination, false)?;
         println!("  copied {copied} files from {name}/");

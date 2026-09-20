@@ -60,7 +60,7 @@ pub(crate) struct InFlightLevelLoad {
     pub(crate) entry: LevelLoadEntry,
 }
 
-/// `Base` = built-in PNG at `content/base/textures/splash/`.
+/// `Base` = built-in PNG at `core/textures/splash/`.
 /// `Mod` = absolute path from mod's `mod_init`. Install path is wired; only `Base` is reachable today.
 pub(crate) enum SplashSource {
     Base,
@@ -72,7 +72,7 @@ pub(crate) enum SplashSource {
 
 impl SplashSource {
     pub(crate) fn base_path() -> PathBuf {
-        PathBuf::from("content/base/textures/splash/postretro-ascii-art.png")
+        PathBuf::from("core/textures/splash/postretro-ascii-art.png")
     }
 }
 

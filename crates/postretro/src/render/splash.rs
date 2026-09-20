@@ -51,7 +51,7 @@ mod tests {
             .ancestors()
             .nth(2)
             .expect("crates/postretro has a workspace root two levels up")
-            .join("content/base/textures/splash/postretro-ascii-art.png");
+            .join("core/textures/splash/postretro-ascii-art.png");
 
         let tex = load_splash(&SplashSource::Mod(splash_path)).expect("base splash decodes");
         assert!(tex.width > 0 && tex.height > 0, "non-zero dimensions");

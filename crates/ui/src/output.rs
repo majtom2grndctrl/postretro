@@ -225,7 +225,7 @@ pub struct UiReadSnapshot {
     /// is the bottom, the last entry is the top/active tree). Empty (the default)
     /// on the splash path and whenever gameplay publishes no UI - the renderer's
     /// UI pass then early-outs each empty/absent layer. The bottom-of-stack layer
-    /// is the HUD (`content/base/ui/hud.json`), resolved by name from the registry
+    /// is the HUD (`core/ui/hud.json`), resolved by name from the registry
     /// and published by `main.rs`; modal trees pushed via the named-tree registry
     /// stack above it.
     pub trees: Vec<UiTreeEntry>,

@@ -1,5 +1,5 @@
 // Generic load-and-register path for engine-shipped UI descriptor trees: reads a
-// named `AnchoredTree` from `content/base/ui/<file>.json` on disk (NOT embedded,
+// named `AnchoredTree` from `core/ui/<file>.json` on disk (NOT embedded,
 // so a mod author can edit the layout JSON and reload to change a built-in screen
 // with no Rust change) and registers it under a name in the modal-stack registry.
 // A missing/malformed file warns ONCE and skips the registration — that screen is
@@ -14,16 +14,17 @@ use super::modal_stack::{ScopeTier, UiTreeRegistry};
 
 /// Registry name the gameplay HUD registers + resolves under. The per-frame
 /// snapshot resolves this name through the registry to compose the always-on
-/// bottom passthrough layer; the boot path registers `content/base/ui/hud.json`
+/// bottom passthrough layer; the boot path registers `core/ui/hud.json`
 /// against it.
 pub const HUD_NAME: &str = "hud";
 
 /// Resolve an engine-shipped UI asset's path, relative to the working directory —
-/// the same `content/base/...` convention the splash PNG and keyboard JSON use.
-/// Independent of the mod content root (derived from the map path): these screens
-/// ship with the engine, so they load from `base` regardless of the active mod.
+/// the same `core/...` convention the splash PNG and keyboard JSON use. `core/`
+/// is the engine's own asset root, a sibling of `content/`: it is never a mod
+/// root and `--mod` never redirects it, so these screens load the same way
+/// whichever mod is active.
 pub fn ui_asset_path(file_name: &str) -> PathBuf {
-    PathBuf::from("content/base/ui").join(file_name)
+    PathBuf::from("core/ui").join(file_name)
 }
 
 /// Load and deserialize a UI descriptor tree from `path`. Returns the parsed
@@ -54,7 +55,7 @@ pub fn load_named_tree(path: &Path) -> Option<AnchoredTree> {
     }
 }
 
-/// Load `content/base/ui/<file_name>` and, on success, register it under `name`
+/// Load `core/ui/<file_name>` and, on success, register it under `name`
 /// in `registry` at the `Engine` scope tier. A missing/malformed asset warns once
 /// (via `load_named_tree`) and skips the registration — the one shared boot wiring
 /// for engine built-in screens (HUD, pause menu, keyboard).

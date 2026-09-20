@@ -517,8 +517,8 @@ mod tests {
     #[test]
     fn content_root_from_map_returns_grandparent_for_mod_path() {
         assert_eq!(
-            content_root_from_map(Some("content/base/maps/e1m1.prl")),
-            PathBuf::from("content/base"),
+            content_root_from_map(Some("content/example/maps/e1m1.prl")),
+            PathBuf::from("content/example"),
         );
     }
 
@@ -594,9 +594,12 @@ mod tests {
         let args = vec![
             "postretro".to_string(),
             "--content-root".to_string(),
-            "content/base".to_string(),
+            "content/example".to_string(),
         ];
-        assert_eq!(content_root_arg(&args), Some(PathBuf::from("content/base")));
+        assert_eq!(
+            content_root_arg(&args),
+            Some(PathBuf::from("content/example"))
+        );
     }
 
     #[test]
@@ -639,12 +642,15 @@ mod tests {
             "postretro".to_string(),
             "--mod".to_string(),
             "--content-root".to_string(),
-            "content/base".to_string(),
+            "content/example".to_string(),
             "maps/dev.prl".to_string(),
         ];
 
         assert_eq!(mod_arg(&args), None);
-        assert_eq!(content_root_arg(&args), Some(PathBuf::from("content/base")));
+        assert_eq!(
+            content_root_arg(&args),
+            Some(PathBuf::from("content/example"))
+        );
         assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
     }
 
@@ -762,12 +768,12 @@ mod tests {
     fn resolve_map_path_skips_content_root_value() {
         let args = vec![
             "postretro".to_string(),
-            "--content-root=content/base".to_string(),
-            "content/base/maps/e1m1.prl".to_string(),
+            "--content-root=content/example".to_string(),
+            "content/example/maps/e1m1.prl".to_string(),
         ];
         assert_eq!(
             resolve_map_path(&args),
-            Some("content/base/maps/e1m1.prl".to_string()),
+            Some("content/example/maps/e1m1.prl".to_string()),
         );
     }
 

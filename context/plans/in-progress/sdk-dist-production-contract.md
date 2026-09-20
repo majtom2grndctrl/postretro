@@ -1,0 +1,329 @@
+# SDK distribution: production-ready contract
+
+> **Status:** in progress. Branch `sdk-dist-production`.
+> **Read before any track brief.** Amend here when a track changes a decision.
+
+## Goal
+
+Make a PostRetro SDK bundle a self-sufficient product. Today the bundle ships
+`docs/modding.md`, whose final section tells its recipient to run
+`cargo run -p xtask -- dist` — a command that needs a repository, a Rust
+toolchain, and a crate that is not in the bundle. Three changes close that: the
+content tools move out of `xtask` into a shippable `postretro-tool` binary that
+discovers its project rather than baking one in at compile time; the `.prm`
+materials root gains symmetric overrides so a developer's content can live in
+their own repository without every texture silently degrading to a placeholder;
+and the engine's own assets move out of `content/base` so a distribution can
+publish the developer's game there, which is what the Quake-derived name meant
+all along.
+
+## Decisions
+
+Each carries the consequence that makes it load-bearing.
+
+### D1. Engine assets move to `core/` at the tree root
+
+`content/base/ui/*.json` becomes `core/ui/*.json`;
+`content/base/textures/splash/*` becomes `core/textures/splash/*`.
+`content/base/` is removed from the repository.
+
+*Consequence:* `content/base` becomes free for D6 to publish the developer's
+game into. `core/` is a sibling of `content/` and `baked/`, so it reads as
+engine-owned to anyone browsing an install, and it is outside the
+`<container>/<mod>` two-component shape that `build_pipeline.md`
+§Baked texture mips requires of mod roots — engine assets are not a mod.
+
+*Correction this encodes:* the four UI JSON descriptors are **not** dead
+fixtures. All four register at boot through `register_tree_from_disk`
+(`crates/postretro/src/session/mod.rs:418`). `pauseMenu`, `frontendMenu`, and
+`keyboard` are the only implementations of those screens; `hud.json` is a
+deliberate fallback that mod content shadows, and
+`fallback_hud_descriptor_carries_the_fallback_only_marker` asserts its
+`"FALLBACK HUD HP --"` marker stays fallback-only so shadowing tests can prove a
+mod replaced it. Deleting any of them removes a working screen.
+
+### D2. Fonts leave content entirely
+
+`content/base/fonts/Inter-Regular.ttf` and
+`content/base/fonts/JetBrainsMono-Regular.ttf` move to
+`crates/ui/assets/fonts/`, with their OFL licence files beside them.
+
+*Consequence:* both faces are `include_bytes!`-ed into the `ui` crate at
+`crates/ui/src/text.rs:10` and `:17`. They are a compile-time build input and a
+test fixture, never read from disk at runtime. Because `dist` copies
+`content/base` wholesale, every payload today ships two font files nothing
+opens. Moving them into the crate removes that, and removes the false
+affordance that editing them changes anything. `read_font_file` — the genuine
+runtime disk path, for mod-supplied fonts — is unaffected.
+
+### D3. Symmetric `--baked-root` on `prl-build` and `postretro`
+
+Both binaries accept `--baked-root <dir>`, naming the directory that *contains*
+`materials/`. When absent, both derive exactly as they do today, byte for byte.
+
+*Consequence:* this is the blocker under the external-content convention, not a
+documentation gap. `prl-build` walks up to the nearest `Cargo.toml`
+(`crates/level-compiler/src/cache.rs:534`, used at
+`crates/level-compiler/src/main.rs:130`) and otherwise falls back to
+`<map parent>/baked/materials`. The engine derives
+`<content_root>/../../baked/materials`
+(`crates/postretro/src/startup/worker.rs:108`). A developer's repository has no
+`Cargo.toml`, so the compiler writes `<repo>/maps/baked/materials` while the
+engine reads `<install>/baked/materials`. Every world material then degrades to
+a placeholder with a `warn!` and no failure — the worst available outcome, since
+it looks like a broken engine.
+
+### D4. `postretro-tool`: one shippable multicall binary
+
+New workspace member `crates/tool`, package `postretro-tool`, binary
+`postretro-tool`. Subcommands: `dist`, `sdk-dist`, `run`, `bake-model-textures`,
+`solve-weapon-mount`, `mint-identity`.
+
+*Consequence:* `xtask` cannot be shipped. `workspace_root()`
+(`crates/xtask/src/main.rs:1331`) is `env!("CARGO_MANIFEST_DIR")`, resolved at
+compile time, and every command routes through it — a shipped `xtask` would
+carry the build machine's absolute path. `postretro-tool` replaces that with
+runtime discovery (D5).
+
+One multicall binary rather than several, because the subcommands share the
+manifest parser, the output-root containment guard, and the completion-gate
+machinery. Splitting them would duplicate all three.
+
+### D5. `postretro.toml` is the project marker, found by walking up
+
+`postretro-tool` locates the project root by walking parents from the working
+directory for the first `postretro.toml`, the way cargo finds `Cargo.toml`. It
+supersedes `dist.toml`; the repository's own `dist.toml` is renamed and
+extended. No compatibility shim is kept — this project is pre-stable
+(`context/lib/index.md`).
+
+*Consequence:* the marker is what lets a content repository be a project in its
+own right, and it re-anchors the output-root containment guard. That guard's
+safety argument today is "`<workspace>/dist/` is gitignored and holds no
+committed input" (`build_pipeline.md` §Output-root containment); in an arbitrary
+repository that argument does not hold on its own, so containment anchors to the
+marker's directory and the **provenance** check (a completion marker or an
+engine binary at the root's top level) carries the real weight.
+
+### D6. A distribution publishes the developer's mod into `content/base`
+
+`dist` and `sdk-dist` write the mod tree to `<payload>/content/base/`,
+regardless of the project's own mod-root name, and the launcher passes
+`--mod content/base`.
+
+*Consequence:* `content/base` is two components, so the runtime grandparent
+derivation still resolves `<payload>/baked/materials` and
+`build_pipeline.md` §Baked texture mips holds unchanged. The shipped-level-set
+scan reads mod-root-relative `maps/<name>.prl` literals, so the rename does not
+disturb it. This is a destination-path parameter change at payload assembly, not
+a redesign of the stages.
+
+### D7. The tool never compiles Rust and never links the script VM
+
+`postretro-tool` locates helper binaries by explicit flag
+(`--engine`, `--prl-build`, `--scripts-build`, `--mint-identity`), defaulting to
+conventional paths beside itself. `xtask dist` becomes: cargo-build the
+binaries, then invoke `postretro-tool dist` with their paths.
+
+*Consequence:* this is the one real seam in the existing `dist`. Stage 1 builds
+release binaries and needs cargo; stages 2 through 7 are pure content work and
+do not. Putting the seam anywhere else means either shipping cargo or splitting
+a stage. It also keeps `mint-identity` out of the tool's link graph:
+`crates/sim/src/bin/mint_identity.rs` pulls in `postretro-scripting-core`'s
+runtime, so linking it would drag rquickjs and mlua into a tool that otherwise
+needs neither.
+
+### D8. `sdk-dist` ships a release engine and the tool
+
+Beyond today's debug `--features dev-tools` engine, the bundle carries
+`bin/postretro-release`, `bin/postretro-tool`, and `bin/mint-identity`.
+
+*Consequence:* without a release engine the bundle's recipient cannot produce
+the player payload `docs/modding.md` promises, and the alternatives are refusing
+outright or shipping a debug build under the name "player payload". Costs one
+additional release engine build per `sdk-dist` run.
+
+### D9. `postretro-tool run` drives the external authoring loop
+
+It discovers `postretro.toml`, then launches the engine with `--mod` and
+`--baked-root` already correct.
+
+*Consequence:* the engine learns nothing about `postretro.toml` — it keeps plain
+flags, and changing the manifest schema stays a tool change. Without this the
+modder types two absolute paths whose failure mode is the silent placeholder
+degradation D3 exists to prevent.
+
+### D10. `content/dev` stays in the repository
+
+The engine's own test content — fixtures, stress maps, capture rigs — is
+referenced by workspace-relative path throughout the test suite and tooling. It
+keeps working through the in-repo `Cargo.toml` derivation and does not migrate
+to the external convention.
+
+*Consequence:* the external convention is proven by documentation and by the
+tool's own tests, not by moving content that CI depends on.
+
+## Invariants
+
+No track may break these.
+
+1. **No upward crate edges.** `layering_invariants_hold`
+   (`crates/xtask/src/crate_graph.rs:496`) enforces that nothing depends on the
+   `postretro` binary, `foundation` is a leaf, `entities` depends only on
+   `foundation`, `postretro-net` has no internal dependencies, and only
+   `postretro` depends on `postretro-ai`. `postretro-tool` depends downward only
+   — `postretro-level-compiler`, `postretro-level-format`, `postretro-model` —
+   exactly as `xtask` does today, and never on `postretro` or `postretro-sim`.
+2. **Adding a workspace member invalidates the crate-graph snapshot.**
+   `cargo run -p xtask -- crate-graph --check` is a preflight gate; regenerate
+   `context/lib/crate-graph.md` with `--write` in the same change.
+3. **Default behaviour is byte-identical.** With no `--baked-root` and no
+   `postretro.toml` beyond the repository's own, every existing path — dev run,
+   `cargo test`, `prl-build` from the workspace — resolves the same directories
+   it resolves on `main`.
+4. **`--baked-root` names the parent of `materials/`, not `materials/` itself.**
+   `--baked-root /p/baked` reads and writes `/p/baked/materials/<hex>.prm`. Both
+   binaries agree on this; the opposite reading is the silent-placeholder bug.
+5. **A mod root is exactly two `/`-separated components.** Unchanged from
+   `build_pipeline.md` §Baked texture mips. `content/base` satisfies it; `core/`
+   is deliberately outside it and is not a mod root.
+6. **Payload stages 1 through 4 write nothing into the payload root.** That is
+   what makes stage 5's delete safe (`build_pipeline.md` §Distribution
+   packaging). Preserved through the move to `postretro-tool`.
+7. **`--release` is the only shippable bake.** The tool supplies it; a manifest
+   recipe may not. Bakes run one at a time, ordered by ascending effective
+   lightmap density, ties broken lexicographically by output path.
+8. **The completion marker's format is unchanged.** First line names the stage;
+   every following line is one outstanding level as a mod-root-relative
+   `maps/<name>.prl` with `/` separators.
+9. **Engine assets are not mod content.** Nothing under `core/` is resolved
+   through the mod content root, and `--mod` never redirects it.
+10. **Prose follows `context/lib/context_style_guide.md`; files follow
+    `development_guide.md` §2** (~400–500 lines yellow, ~600+ split first; tests
+    exempt).
+
+## File ownership per track
+
+A track edits only what is listed for it. Compile-forced spillover outside the
+list is allowed and must be reported.
+
+### Track 1 — `core/` engine asset root (D1, D2)
+
+- `content/base/**`, moving to `core/**` and `crates/ui/assets/fonts/**`
+- `crates/ui/src/text.rs`, `tree_asset.rs`, `keyboard_asset.rs`, `demo.rs`
+- `crates/postretro/src/startup/mod.rs`, `render/splash.rs`, `main.rs`,
+  `render/ui_lifecycle_render_test.rs`, `session/mod.rs`
+- `crates/renderer/src/render/splash_pass.rs` (doc comment only)
+- `crates/xtask/src/dist/mod.rs`, `crates/xtask/src/sdk_dist/mod.rs` — the
+  `content/base` copy pair only (`dist/mod.rs:416`, `sdk_dist/mod.rs:348`)
+- `sdk/lib/ui/reactions.ts` (doc comment)
+
+### Track 2 — symmetric `--baked-root` (D3)
+
+- `crates/level-compiler/src/main.rs` (arg parsing, `resolve_prm_root_via_cargo`)
+- `crates/postretro/src/startup/session.rs`, `startup/worker.rs`,
+  `startup/mod.rs` (threading only)
+
+### Track 3 — `postretro-tool` (D4 through D9)
+
+- `crates/tool/**` (new)
+- `crates/xtask/src/main.rs`, `crates/xtask/src/dist/**`,
+  `crates/xtask/src/sdk_dist/**`
+- `Cargo.toml` (workspace members, dependencies)
+- `dist.toml`, becoming `postretro.toml`
+- `.gitignore` if required
+
+### Track 4 — documentation (all decisions)
+
+- `docs/distribution.md`, `docs/modding.md`, new external-project guide
+- `context/lib/build_pipeline.md`, `context/lib/ui.md`,
+  `context/lib/boot_sequence.md`, `context/lib/index.md`
+- `context/lib/crate-graph.md` (regenerated, not hand-edited)
+
+## Acceptance per track
+
+### Track 1
+
+```bash
+grep -rn "content/base" --include=*.rs --include=*.ts crates/ sdk/
+test ! -e content/base
+cargo test -p postretro-ui --lib
+cargo test -p postretro --lib startup
+cargo run -p xtask -- run content/dev/maps/campaign-test.prl
+```
+
+The grep returns no output; `test` exits 0; both test commands report `ok` with
+0 failed and a non-zero count.
+
+The engine run is the artifact, not a proxy for it: `load_named_tree` degrades a
+missing descriptor to a `warn!` and keeps booting, so a broken path passes every
+compile and test gate above and shows up only as a missing screen. Read the log
+for `[UI] tree asset` and look at the window.
+
+### Track 2
+
+```bash
+cargo test -p postretro-level-compiler --bin prl-build baked_root
+cargo test -p postretro --lib prm_root
+```
+
+Expect `ok` with at least 3 and at least 2 tests passed respectively.
+
+Required assertions: with the flag absent, `prl-build`'s resolved root equals
+the `Cargo.toml`-walk result and the engine's equals the grandparent walk, both
+unchanged; with the flag present on both sides pointing at one directory, the
+two resolved `materials/` paths are equal. That last equality is the check that
+would have caught the defect D3 describes.
+
+### Track 3
+
+```bash
+cargo run -p xtask -- crate-graph --check
+cargo test -p postretro-tool
+cargo run -p xtask -- dist
+test -d dist/postretro-dev/content/base
+test ! -e dist/postretro-dev/.dist-incomplete
+cargo run -p xtask -- sdk-dist
+ls dist/postretro-dev-sdk/bin/
+```
+
+`crate-graph --check` and both `test` commands exit 0; `cargo test` reports `ok`
+with 0 failed; `dist` prints `Distribution complete`; `sdk-dist` prints
+`SDK distribution complete`; the `bin/` listing holds `postretro-tool`,
+`prl-build`, `scripts-build`, `mint-identity`, and `postretro-release`.
+
+Then, from `dist/postretro-dev-sdk/` with no cargo on `PATH`, the bundle's own
+tool must produce a payload:
+
+```bash
+cd dist/postretro-dev-sdk && ./bin/postretro-tool dist
+```
+
+That run is the acceptance. It is the exact thing the bundle's documentation
+promises today and cannot deliver, and no workspace-side test substitutes for
+it — every workspace test has a `Cargo.toml` ancestor and a cargo binary, which
+are the two things the recipient does not have.
+
+### Track 4
+
+```bash
+grep -rn "cargo run -p xtask" docs/
+grep -rn "content/base/ui\|content/base/fonts\|content/base/textures" docs/ context/lib/
+```
+
+Both greps return no output.
+
+`docs/` is the tree `sdk-dist` copies into the bundle. A `cargo run -p xtask`
+instruction there is, by construction, an instruction its reader cannot follow.
+
+## Open questions
+
+None. D1 through D10 were settled with the owner before the first dispatch.
+
+## Sequencing
+
+Sequential on the branch, not concurrent in worktrees. Track 1 and Track 2 both
+edit `crates/postretro`, so isolated worktrees would each pay the engine's cold
+build and then conflict on merge; Track 3 consumes both, and its brief sharpens
+once the `core/` destination and the `--baked-root` flag names are real. Order:
+1, 2, 3, 4, then one review track, then `/preflight`.

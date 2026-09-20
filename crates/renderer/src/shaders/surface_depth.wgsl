@@ -87,7 +87,7 @@ const SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS: f32 = 0.5;
 // Unit of `material.surface_depth_meters`: 0 = world meters, 1 = albedo texels.
 // Mirrors `postretro_render_data::material::SURFACE_DEPTH_TEXEL_MODE`, which
 // selects the matching authoring table; the two are pinned against each other.
-const SURFACE_DEPTH_TEXEL_MODE: u32 = 0u;
+const SURFACE_DEPTH_TEXEL_MODE: u32 = 1u;
 
 // `LightTermMask::DEPTH_AMBIENT_OCCLUSION`. Bit 8 — bit 7 stays reserved for
 // the intentionally unwired emissive category.

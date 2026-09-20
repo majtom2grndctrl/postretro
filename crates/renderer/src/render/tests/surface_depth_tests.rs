@@ -182,6 +182,12 @@ fn shader_constants_match_the_cpu_reference() {
         declared_u32("SURFACE_DEPTH_TEXEL_MODE"),
         sd::SURFACE_DEPTH_TEXEL_MODE
     );
+    // The ceiling on the RESOLVED depth. In texel mode the CPU caps a texel
+    // count, so this is the only bound on the meters the march actually sees.
+    assert_eq!(
+        declared_f32("SURFACE_DEPTH_MAX_METERS"),
+        sd::SURFACE_DEPTH_MAX_METERS
+    );
     assert_eq!(
         declared_u32("SURFACE_DEPTH_SHADOW_BUDGET_MASK"),
         sd::SURFACE_DEPTH_SHADOW_BUDGET_MASK
@@ -302,11 +308,21 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
             }
             call_sites += 1;
             let args = &cursor[..cursor.find(')').unwrap_or(cursor.len())];
-            // Either the interpolated `in.lightmap_uv` or, inside a helper that
-            // forwards it, the parameter of that name.
+            // The FIRST argument must be the UV itself, verbatim. Asserting
+            // only that the token appears somewhere in the window would pass
+            // `sample_lightmap_irradiance(in.lightmap_uv + parallax, ..)`,
+            // which is precisely the offset this constraint forbids.
+            // The UV must appear as a WHOLE argument, not merely somewhere in
+            // the window: `sample_lightmap_irradiance(in.lightmap_uv + parallax,
+            // ..)` contains the token but is exactly the offset this forbids.
+            // Its position varies — `shadowmask_union_subtraction` takes the
+            // world position first — so match any argument, not the first.
+            let verbatim = args
+                .split(',')
+                .any(|arg| matches!(arg.trim(), "in.lightmap_uv" | "lightmap_uv"));
             assert!(
-                args.contains("lightmap_uv"),
-                "forward: `{call}` must sample the atlas at the interpolated lightmap UV —                  got `{}`",
+                verbatim,
+                "forward: `{call}` must sample the atlas at the interpolated lightmap UV, unmodified — got `{}`",
                 args.trim(),
             );
             assert!(
@@ -318,6 +334,22 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
         assert!(
             call_sites > 0,
             "forward: no call site for `{call}`, so this guard asserts nothing —              the call was renamed or removed and the assertion list is stale",
+        );
+    }
+
+    // A floor under the per-call-site assertions above: they name four helpers,
+    // but the atlas is ALSO read through raw `textureSample` (the
+    // `lightmap_direction` decode at forward.wgsl:1032), which no named-helper
+    // list covers. Scanning every line keeps those sites guarded without having
+    // to enumerate them — this is the coverage the positive rewrite dropped.
+    for line in forward_code.lines() {
+        if !line.contains("lightmap_uv") {
+            continue;
+        }
+        assert!(
+            !line.contains("shade_uv") && !line.contains("depth."),
+            "forward: a lightmap-atlas read must not mix in a marched UV — `{}`",
+            line.trim(),
         );
     }
 
@@ -508,8 +540,13 @@ fn self_shadowing_is_budgeted_and_dynamic_only() {
     // (and every fragment at `Off`) stays byte-identical.
     for (label, code) in [("forward", &forward), ("kinematic brush", &kinematic)] {
         assert!(
-            code.contains("depth.hit_top || dot(mesh_n, L) > 0.0"),
-            "{label}: a side hit must be gated on the geometric plane too, or a light \
+            code.contains("let plane_lit = depth.hit_top ||"),
+            "{label}: the light gate must short-circuit on a TOP hit, which is what keeps \
+             an uncarved fragment and every fragment at `Off` byte-identical",
+        );
+        assert!(
+            code.contains("dot(mesh_n, L) > 0.0"),
+            "{label}: a side hit must be gated on the GEOMETRIC plane too, or a light \
              behind opaque brush geometry lights its carved side walls at full strength",
         );
     }

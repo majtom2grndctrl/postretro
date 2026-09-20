@@ -388,13 +388,20 @@ fn accumulate_dynamic_direct(
         }
         // Gate a SIDE hit on the geometric plane as well as on its shading
         // normal. A side-wall normal is an exact +/-U or +/-V axis lying IN the
-        // tangent plane, so `dot(N_shade, L) > 0` holds across half the
+        // tangent plane, so `dot(n, L) > 0` holds across half the
         // sub-plane hemisphere — a light behind opaque brush geometry would
         // otherwise light the carved face at full strength, with no shadow map
         // to stop it when the light won no slot. Top hits are left exactly as
         // they were: their normal is the normal-mapped one, which is what keeps
         // an uncarved fragment (and every fragment at `Off`) byte-identical.
-        let plane_lit = depth.hit_top || dot(mesh_n, L) > 0.0;
+        // `above_plane` is hoisted because the self-shadow gate below needs it
+        // too: `surface_depth_light_visibility` returns 1.0 immediately when the
+        // light is at or below the geometric plane, so without this term a
+        // below-plane light on a TOP hit whose normal map tilts toward it passes
+        // `contributes`, spends one of the two budget slots, and gets "lit" back
+        // — leaving a later light that genuinely casts a shadow unmarched.
+        let above_plane = dot(mesh_n, L) > 0.0;
+        let plane_lit = depth.hit_top || above_plane;
         let n_dot_l = select(0.0, dot(n, L), plane_lit);
         var depth_visibility = 1.0;
         // Spend the self-shadow budget only on lights that actually reach this
@@ -403,8 +410,10 @@ fn accumulate_dynamic_direct(
         // zero color: marching for it burns one of the two slots on a result
         // that is then multiplied by zero, and leaves the light that genuinely
         // casts the shadow unshadowed.
-        let contributes =
-            n_dot_l > 0.0 && attenuation > 0.0 && dot(effective_color, vec3<f32>(1.0)) > 0.0;
+        let contributes = n_dot_l > 0.0
+            && above_plane
+            && attenuation > 0.0
+            && dot(effective_color, vec3<f32>(1.0)) > 0.0;
         if depth.carved
             && contributes
             && i < kinematic_light_params.dynamic_light_count

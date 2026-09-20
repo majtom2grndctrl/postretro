@@ -195,7 +195,18 @@ pub(crate) fn build_session() -> Result<BootSession> {
 
     let map_path = resolve_map_path(&args);
     let content_root = resolve_content_root(&args, map_path.as_deref());
+    // Logged because a mismatch between this and the directory `prl-build` wrote
+    // into surfaces only as per-texture placeholder warnings; the two paths in
+    // the log are what makes that diagnosable.
+    let baked_root = baked_root_arg(&args);
     log::info!("[Engine] Content root: {}", content_root.display());
+    if let Some(baked_root) = baked_root.as_ref() {
+        log::info!(
+            "[Engine] Baked root: {} (materials at {})",
+            baked_root.display(),
+            baked_root.join("materials").display(),
+        );
+    }
     boot_timings.record("args_parsed");
 
     // Event loop is created AHEAD of the whole session build (options I/O, audio,
@@ -235,6 +246,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         nav_graph: None,
         map_path: map_path.map(PathBuf::from),
         content_root,
+        baked_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         // The entire `Session` (options, audio, scripting core, input/UI/modal
@@ -306,12 +318,15 @@ pub(crate) fn build_session() -> Result<BootSession> {
 }
 
 /// Recover the positional map-path argument (the raw-path dev bypass), skipping
-/// the values consumed by `--content-root`/`--mod` and any other flags.
+/// the values consumed by `--content-root`/`--mod`/`--baked-root` and any other
+/// flags. A value-taking flag missing from that list has its value mistaken for
+/// the map path, so every such flag belongs here.
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if arg == "--content-root"
             || arg == "--mod"
+            || arg == "--baked-root"
             || arg == "--pool-seed"
             || arg == "--observe-live"
         {
@@ -322,6 +337,7 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
         }
         if arg.starts_with("--content-root=")
             || arg.starts_with("--mod=")
+            || arg.starts_with("--baked-root=")
             || arg.starts_with("--pool-seed=")
             || arg.starts_with("--observe-live=")
             || arg.starts_with("--")
@@ -436,7 +452,7 @@ fn capture_arg(args: &[String]) -> Option<Option<&str>> {
 fn mod_arg(args: &[String]) -> Option<PathBuf> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--content-root" {
+        if arg == "--content-root" || arg == "--baked-root" {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
@@ -456,10 +472,44 @@ fn mod_arg(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+/// Detect `--baked-root <dir>` / `--baked-root=<dir>`: the directory that
+/// *contains* `materials/`, not `materials/` itself.
+///
+/// A plain flag by design. The engine never learns what a project manifest is —
+/// `postretro-tool` discovers the project and passes the resolved directory on
+/// the command line, so a manifest schema change stays a tool change.
+///
+/// Absent (the normal case, including every dev run and test) leaves the `.prm`
+/// root exactly where `derive_prm_root_dev_layout` puts it. An empty value is
+/// treated as absent rather than as the current directory, matching `--mod` and
+/// `--content-root`.
+fn baked_root_arg(args: &[String]) -> Option<PathBuf> {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--mod" || arg == "--content-root" {
+            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
+                let _ = iter.next();
+            }
+            continue;
+        }
+        if arg == "--baked-root" {
+            return iter
+                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
+                .map(PathBuf::from);
+        }
+        if let Some(value) = arg.strip_prefix("--baked-root=") {
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+        }
+    }
+    None
+}
+
 fn content_root_arg(args: &[String]) -> Option<PathBuf> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--mod" {
+        if arg == "--mod" || arg == "--baked-root" {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
@@ -587,6 +637,95 @@ mod tests {
     #[test]
     fn content_root_from_map_uses_default_dev_root_without_map() {
         assert_eq!(content_root_from_map(None), PathBuf::from("content/dev"));
+    }
+
+    #[test]
+    fn prm_root_flag_parses_in_split_and_equals_forms() {
+        let split = vec![
+            "postretro".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+        ];
+        assert_eq!(
+            baked_root_arg(&split),
+            Some(PathBuf::from("/project/baked"))
+        );
+
+        let equals = vec![
+            "postretro".to_string(),
+            "--baked-root=/project/baked".to_string(),
+        ];
+        assert_eq!(
+            baked_root_arg(&equals),
+            Some(PathBuf::from("/project/baked"))
+        );
+
+        assert_eq!(baked_root_arg(&["postretro".to_string()]), None);
+        // A bare flag must not silently resolve to the current directory.
+        assert_eq!(
+            baked_root_arg(&["postretro".to_string(), "--baked-root".to_string()]),
+            None
+        );
+    }
+
+    /// `--baked-root` takes a value, so the positional-map-path scan has to skip
+    /// it. Before the flag was added to that scan's list, a run with
+    /// `--baked-root <dir>` and no map loaded `<dir>` as the map — and derived
+    /// the content root from it.
+    #[test]
+    fn prm_root_flag_value_is_not_mistaken_for_the_map_path() {
+        let args = vec![
+            "postretro".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+        ];
+        assert_eq!(resolve_map_path(&args), None);
+
+        let with_map = vec![
+            "postretro".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+            "content/dev/maps/campaign-test.prl".to_string(),
+        ];
+        assert_eq!(
+            resolve_map_path(&with_map).as_deref(),
+            Some("content/dev/maps/campaign-test.prl"),
+        );
+    }
+
+    /// `--baked-root` and `--mod` are independent: neither swallows the other's
+    /// value, and the baked root never becomes the content root.
+    #[test]
+    fn prm_root_flag_and_mod_flag_stay_independent() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod".to_string(),
+            "/project/levels".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+        ];
+        assert_eq!(
+            resolve_content_root(&args, None),
+            PathBuf::from("/project/levels")
+        );
+        assert_eq!(baked_root_arg(&args), Some(PathBuf::from("/project/baked")));
+
+        // Reversed order resolves identically.
+        let reversed = vec![
+            "postretro".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+            "--mod".to_string(),
+            "/project/levels".to_string(),
+        ];
+        assert_eq!(
+            resolve_content_root(&reversed, None),
+            PathBuf::from("/project/levels")
+        );
+        assert_eq!(
+            baked_root_arg(&reversed),
+            Some(PathBuf::from("/project/baked"))
+        );
     }
 
     #[test]

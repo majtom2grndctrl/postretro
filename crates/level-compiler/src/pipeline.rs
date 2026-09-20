@@ -18,8 +18,8 @@ use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
-    map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density,
-    resolve_prm_root_via_cargo, resolve_sh_density_fidelity, resolve_texture_root,
+    map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density, resolve_prm_root,
+    resolve_sh_density_fidelity, resolve_texture_root,
 };
 
 pub(crate) mod lightmap_stage;
@@ -2117,7 +2117,7 @@ fn run_after_parsing(
     };
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
-    let prm_root = resolve_prm_root_via_cargo(&args.input);
+    let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
     let (name_to_key, mut texture_bytes) = texture_mips::bake_world_texture_mips(
         &geo_result.texture_names.names,
         &texture_root,

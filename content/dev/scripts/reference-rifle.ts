@@ -1,7 +1,9 @@
 import { defineEntity, defineWeaponPlacement } from "postretro";
 
 const riflePlacement = defineWeaponPlacement({
-  positionFromCenter: { right: 0.3, up: -0.35, forward: 0.6 },
+  // Sit the rifle low in view, in line with the rocket launcher and plasma gun
+  // rather than riding high near the crosshair.
+  positionFromCenter: { right: 0.3, up: -0.45, forward: 0.6 },
 });
 
 export const referenceRifleEntity = defineEntity({
@@ -23,6 +25,7 @@ export const referenceRifleEntity = defineEntity({
       spreadVerticalBias: 0.3,
       thirdPersonModel: "models/cyberpunk_weapons/rifle/model.gltf",
       viewmodel: "models/cyberpunk_weapons/rifle/model.gltf",
+      placement: riflePlacement,
       // Authored from the viewmodel's rigid `muzzle` socket.
       muzzleOffset: [0.0, 0.3, -0.9],
       resource: {

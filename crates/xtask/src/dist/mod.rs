@@ -412,9 +412,12 @@ fn stage_five_assemble_payload(
         &manifest.package.mod_root,
     )?;
     let workspace_mod_root = workspace.join(&manifest.package.mod_root);
+    // Engine-owned assets (UI descriptors, splash). `core/` sits at the payload
+    // root beside `content/` and `baked/`, mirroring the workspace: it is not a mod
+    // root, so `--mod` never redirects it.
     copy_filtered_tree(
-        &workspace.join("content").join("base"),
-        &payload_root.join("content").join("base"),
+        &workspace.join("core"),
+        &payload_root.join("core"),
         &workspace_mod_root,
         state.entry_ext,
     )?;

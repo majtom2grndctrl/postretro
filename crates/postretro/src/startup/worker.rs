@@ -124,7 +124,7 @@ mod tests {
         // compiler's `resolve_prm_root_via_cargo` writes to (cross-checked by the
         // `prm_root_writer_and_reader_agree_in_dev_layout` test in the compiler's
         // `main.rs`). Keep both pointing at `baked/materials` together.
-        let content_root = Path::new("/ws/content/base");
+        let content_root = Path::new("/ws/content/example");
         assert_eq!(
             derive_prm_root_dev_layout(content_root),
             Path::new("/ws/baked/materials"),

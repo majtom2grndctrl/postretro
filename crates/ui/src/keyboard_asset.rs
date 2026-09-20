@@ -1,5 +1,5 @@
 // Engine-shipped on-screen keyboard descriptor: loads the keyboard `AnchoredTree`
-// from `content/base/ui/keyboard.json` at boot and registers it under the
+// from `core/ui/keyboard.json` at boot and registers it under the
 // `keyboard` name in the modal-stack registry. Read from disk (NOT embedded) so a
 // mod author can edit the layout JSON and reload to change the keyboard with no
 // Rust change — the gamepad accessibility accommodation, built entirely from F's
@@ -25,7 +25,7 @@ pub const KEYBOARD_TREE_NAME: &str = "keyboard";
 pub(crate) const COMMIT_TEXT_ENTRY_SENTINEL: &str = super::actions::COMMIT_TEXT_ENTRY_ACTION;
 
 /// Engine-shipped keyboard descriptor path, relative to the working directory —
-/// the same `content/base/...` convention the splash PNG uses. The boot path
+/// the same `core/...` convention the splash PNG uses. The boot path
 /// registers the keyboard through `tree_asset::register_tree_from_disk`; this
 /// anchors the same asset for the keyboard's own deserialization tests.
 #[cfg(test)]
@@ -47,8 +47,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(keyboard_asset_path());
-        let bytes =
-            std::fs::read_to_string(&path).expect("keyboard asset exists under content/base/ui");
+        let bytes = std::fs::read_to_string(&path).expect("keyboard asset exists under core/ui");
         serde_json::from_str(&bytes).expect("keyboard asset deserializes through the wire path")
     }
 

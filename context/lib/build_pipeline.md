@@ -537,12 +537,14 @@ A payload reproduces the tree the engine expects, rooted at the payload director
 <payload>/
   postretro[.exe]              engine binary
   <package name>.{bat,sh}      launcher: pins cwd to its own directory, passes --mod
-  content/base/                UI descriptors, splash
+  core/                        engine assets: UI descriptors, splash, font licences
   content/<mod>/               mod tree, entry script, baked levels
   baked/materials/             .prm sidecars
 ```
 
-Content paths resolve cwd-relative (`ui.md` §5), so the payload is correct only as a whole tree with the working directory pinned to its root. Flattening it, or moving the base content tree, breaks paths the engine hardcodes. The launcher pins that directory rather than trusting the caller's, so a shortcut or a launch from elsewhere resolves the same, and passes no map argument, so the mod's frontend drives the first screen (`boot_sequence.md` §1).
+`core/` holds what the engine owns and a mounted game never replaces, so it sits outside `content/` and `--mod` never redirects it. It is deliberately one path component, which keeps it outside the two-component shape a mod root must have (§Baked texture mips) — engine assets are not a mod.
+
+Content paths resolve cwd-relative (`ui.md` §5), so the payload is correct only as a whole tree with the working directory pinned to its root. Flattening it, or moving `core/`, breaks paths the engine hardcodes. The launcher pins that directory rather than trusting the caller's, so a shortcut or a launch from elsewhere resolves the same, and passes no map argument, so the mod's frontend drives the first screen (`boot_sequence.md` §1).
 
 The manifest's mod root carries the two-component shape §Baked texture mips requires, and its first component may not be `dist` — that tree is where the payload delete works.
 

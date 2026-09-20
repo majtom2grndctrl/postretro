@@ -133,8 +133,8 @@ mod tests {
         for uri in [
             "data:image/png;base64,AAAA",
             "https://example.com/base.png",
-            "file:///content/base.png",
-            "/content/base.png",
+            "file:///assets/base.png",
+            "/assets/base.png",
         ] {
             let json = format!(
                 r#"{{

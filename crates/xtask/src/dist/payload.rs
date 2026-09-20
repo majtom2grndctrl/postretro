@@ -608,10 +608,10 @@ mod tests {
     }
 
     #[test]
-    fn should_exclude_does_not_treat_base_content_luau_as_mod_source() {
+    fn should_exclude_does_not_treat_non_mod_luau_as_mod_source() {
         let root = mod_root();
         assert!(!should_exclude(
-            Path::new("content/base/scripts/splash.luau"),
+            Path::new("content/example/scripts/splash.luau"),
             &root,
             EntryExt::Js
         ));

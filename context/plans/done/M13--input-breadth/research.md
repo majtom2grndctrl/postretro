@@ -11,7 +11,7 @@
 > nav intents, hold-to-repeat, input-mode switching, modal stack, gamepad UI nav,
 > button/input activation, `bar` widget).
 > **Wave context:** Goal F and Goal E (`ready/M13--hud-dynamics/`) are the next
-> M13 wave — two specs, drafted separately, runnable in one `/orchestrate` wave.
+> M13 wave — two specs, drafted separately, runnable in one `/build-spec` wave.
 > See §Cross-spec coordination below for the E/F boundary.
 
 ---

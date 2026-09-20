@@ -97,7 +97,7 @@ Unit-test `derive_collection_id` for injectivity and bit-exact float handling ac
 
 ## Invariants
 
-`/orchestrate` hands this table to every task agent. Reference a row; do not restate it.
+`/build-spec` hands this table to every task agent. Reference a row; do not restate it.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 | --- | --- | --- | --- |

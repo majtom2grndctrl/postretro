@@ -91,7 +91,7 @@ pub struct SurfaceDepth {
 /// `SURFACE_DEPTH_TEXEL_MODE` in `surface_depth.wgsl`, pinned by
 /// `shader_constants_match_the_cpu_reference` — change one and that test fails
 /// rather than the two silently disagreeing.
-pub const SURFACE_DEPTH_TEXEL_MODE: u32 = 0;
+pub const SURFACE_DEPTH_TEXEL_MODE: u32 = 1;
 
 /// Whether the authored depth is a texel count rather than meters.
 pub const fn surface_depth_is_texel_relative() -> bool {
@@ -192,41 +192,51 @@ impl Material {
 
     /// Carve tuning when depth is authored in TEXELS.
     ///
-    /// The counts are the meters table re-expressed at the ~512 texels/m the
-    /// shipped stone assets sit at, so flipping the mode is a change of unit
-    /// rather than a change of look — then tune from there. `quantize_levels`
-    /// is set equal to the texel depth so every plateau lands exactly one texel
-    /// down, which is the terracing the albedo lattice can actually express.
+    /// Tuned by eye against `campaign-test.map`, not converted from the meters
+    /// table — the conversion assumed ~512 texels/m and the shipped stone turned
+    /// out to sit well below that, so a direct re-expression carved far deeper
+    /// than the meters table ever did.
+    ///
+    /// Concrete's 6 is what the `Low` tier was *effectively* producing and what
+    /// read best: `Low` never reduces depth, it caps the budget at 8 steps, and
+    /// a carve `N` texels deep needs `N * tan(theta)` texels of travel — so past
+    /// ~39 degrees off normal the march ran out and resolved short, at roughly
+    /// `8 / tan(theta)` texels. Over a typical floor view that landed around 4-7.
+    /// Authoring that depth directly gets the same look at every angle instead of
+    /// only where the budget happened to run out.
+    ///
+    /// `quantize_levels` equals the texel depth so every plateau lands exactly
+    /// one texel down, which is the terracing the albedo lattice can express.
     fn surface_depth_texels(self) -> SurfaceDepth {
         match self {
             Material::Concrete => SurfaceDepth {
-                depth_meters: 10.0,
-                quantize_levels: 10,
+                depth_meters: 6.0,
+                quantize_levels: 6,
                 max_steps: 24,
                 fade_distance_meters: 14.0,
             },
             Material::Metal => SurfaceDepth {
+                depth_meters: 2.0,
+                quantize_levels: 2,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            },
+            Material::Grate => SurfaceDepth {
                 depth_meters: 3.0,
                 quantize_levels: 3,
                 max_steps: 16,
                 fade_distance_meters: 10.0,
             },
-            Material::Grate => SurfaceDepth {
-                depth_meters: 5.0,
-                quantize_levels: 5,
-                max_steps: 16,
-                fade_distance_meters: 10.0,
-            },
             Material::Wood => SurfaceDepth {
-                depth_meters: 4.0,
-                quantize_levels: 4,
+                depth_meters: 2.0,
+                quantize_levels: 2,
                 max_steps: 16,
                 fade_distance_meters: 10.0,
             },
             Material::Glass | Material::Neon => SurfaceDepth::FLAT,
             Material::Default => SurfaceDepth {
-                depth_meters: 5.0,
-                quantize_levels: 8,
+                depth_meters: 3.0,
+                quantize_levels: 3,
                 max_steps: 16,
                 fade_distance_meters: 10.0,
             },

@@ -66,6 +66,8 @@ Size alone is not the signal. A large change living inside one crate is one trac
 
 **Commit to the dispatch.** When a track reports, do not redo its work or re-derive its findings.
 
+**Writes stay at depth 2.** A track may read as widely as it likes, including by fanning out read-only. It never spawns an agent that writes — you cannot partition file ownership among agents you did not create, and a child you cannot see outlives the parent that made it.
+
 ### What goes in a brief
 
 **Intent, not procedure.** Ordered step lists, prescribed search strategies, and told-you-how decomposition lower output quality. They compensate for a weakness the agent does not have.
@@ -115,7 +117,7 @@ The machine's limits, not the roster's.
 
 - Parallelism is bounded by the build graph, not the file list. Two agents editing disjoint files in one workspace still share a target dir: they contend on its lock and can compile against each other's half-written edits. Isolated worktrees with separate target dirs are the fix; a separate workspace (`tools/`) or a directory with no build (`content/`) parallelizes freely.
 - Concurrent agents in isolated worktrees cap at **3** (`development_guide.md`, "Concurrent agents in isolated worktrees"). Beyond that, parallel engine builds exhaust CPU and disk, and correct work fails on linker errors. Batch the next group after the first merges.
-- A fresh worktree's first build is the engine's most expensive compile. Worktree agents skip `cargo check` and tests; verification lands once, after merge, against the integration branch's warm target. Work on the branch directly and you inherit the warm target and test as you go.
+- A fresh worktree's first build is the engine's most expensive compile, and a worktree track pays it before it can compile or test at all. Decide per track which side to pay. Give it a gate needing no build — greps, byte comparisons, file assertions — and verification lands once after merge, on the warm target. Let it pay the cold build and it catches its own compile and test failures instead of handing them back to you, which is the cheaper trade whenever the track is large or the seam is one you would rather not debug at integration time. Working on the branch directly avoids the question: you inherit the warm target and test as you go.
 - Focused tests only: `cargo test -p <crate> <filter>`, narrowed to one target (`--lib`, or `--bin prl-build` for `postretro-level-compiler`). Require the test count — a filter matching nothing prints `0 passed` and exits `ok`. Never `-- --ignored` in a routine pass; those are the ~5–7 min cold bakes.
 
 **Every agent reads `context/lib/context_style_guide.md` and `development_guide.md` §2.** Style governs code comments and any prose; §2 governs file size and splitting. Whole-slice tracks make god files the likely failure — an agent authoring new modules never edits an already-large file, so nothing trips the usual threshold.
@@ -128,11 +130,13 @@ Record only what survives refactoring. A sentence that breaks when a file is ren
 
 ## 5. Landing
 
-`/review-panel` → `/fix-review-findings` → `/preflight` once, as the single full-suite gate.
+`/review-panel`, then fixes, then `/preflight` once as the single full-suite gate.
 
 Ask the panel for everything it finds with a confidence and severity on each, and filter afterwards. A review brief that says "only report what's important" gets followed literally, and real findings go unreported.
 
 Require each finding to quote the line and name the file and symbol. Drop any finding whose quote you cannot locate in the tree — checking a citation is not re-deriving the work. Report the survivors to the owner before acting on the ambiguous ones.
+
+Apply the local fixes yourself. A nit, a stale comment, a missing error case is one edit, and an agent per finding costs more than the finding. Dispatch only what crosses a crate or contract boundary, and send it as one track with a gate it can run.
 
 Record each acceptance row's result and any outstanding manual proof in the PR body. Move the contract to `context/plans/done/`, or delete it once `context/lib/` absorbs it.
 
@@ -144,6 +148,8 @@ The owner reads your text between tool calls and sees neither your thinking nor 
 
 - Never dispatch an agent for work you could finish in a handful of tool calls.
 - Never split one modest job across parallel agents.
+- Never dispatch a track with no gate it can run.
+- Never let a track spawn an agent that writes.
 - Never launch, wait, then re-brief — the whole slice goes in the first brief.
 - Never redo a track's work after it reports.
 - Never ask an agent to verify, re-check, or confirm its own work.

@@ -372,6 +372,14 @@ ownership extended to `crates/postretro/src/startup/lifecycle.rs`.
   Track 3 owns `crates/xtask/src/main.rs` and should make the failure name the
   missing interpreter instead of surfacing the Store stub's message raw.
 
+  *Resolved.* Python 3.13.14 installed through `uv python install --default`,
+  which lands `python3` in `…/scoop/persist/uv/python/shims`. That directory
+  already precedes `AppData/Local/Microsoft/WindowsApps` on PATH, so the Store
+  alias stubs — the source of the "Python was not found" message — are shadowed
+  without touching App Execution Aliases. `uv`'s `--default` flag is marked
+  experimental, so if a bare `python3` ever disappears from PATH again, that is
+  the first thing to check.
+
 ## Track 1 spillover, already applied
 
 Track 1's grep gate is literal, so five files holding `content/base` as an

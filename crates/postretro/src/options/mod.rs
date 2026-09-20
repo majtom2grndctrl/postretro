@@ -218,8 +218,8 @@ pub struct PlayerOptions {
     #[serde(default)]
     pub fog_quality: FogQuality,
 
-    /// Surface Depth (texel-space parallax) tier, applied live by rewriting the
-    /// per-material uniform buffers, and re-applied on renderer full-init.
+    /// Surface Depth (texel-space parallax) switch, applied live by rewriting
+    /// the per-material uniform buffers, and re-applied on renderer full-init.
     #[serde(default)]
     pub surface_depth_quality: SurfaceDepthQuality,
 
@@ -513,6 +513,10 @@ mod tests {
             assert_eq!(SurfaceDepthQuality::from_slot_value(wire), Some(state));
         }
         assert_eq!(SurfaceDepthQuality::from_slot_value("ultra"), None);
+        // The retired tier names are accepted only at the TOML file-reading
+        // boundary (serde aliases on `On`), never through the slot layer.
+        assert_eq!(SurfaceDepthQuality::from_slot_value("high"), None);
+        assert_eq!(SurfaceDepthQuality::from_slot_value("low"), None);
     }
 
     #[test]

@@ -1,14 +1,14 @@
 // Bakes per-texture mip pyramids into `.prm` sidecar files.
 // See: context/lib/build_pipeline.md §Baked texture mips
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use postretro_level_format::prm::{
     PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots,
     STAGE_VERSION, bc5_level_count, cache_filename_for_key, expected_level_count,
 };
-use postretro_level_format::prm_accounting::{MaterialBytes, TextureByteSummary};
+use postretro_level_format::prm_accounting::{MaterialBytes, TextureByteSummary, slot_label};
 use postretro_level_format::sprite_collection::{
     SpriteSlot, collection_frame_paths, sprite_collection_key_from_frame_bytes,
 };
@@ -20,14 +20,16 @@ mod resolution;
 use bake::{
     build_diffuse_chain, build_normal_bc5_chain, build_specular_chain, build_surface_chain,
 };
-use cache::{bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for};
+use cache::{
+    SLOT_MASK_BITS, bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for,
+};
 use resolution::{
     build_name_to_path_map, normalize_map_texture_name, resolve_texture_bundle_paths,
 };
 
 // -- Gamma helpers --------------------------------------------------------
 
-/// 256-entry sRGB → linear lookup. Built once per call to `bake_texture_mips`.
+/// 256-entry sRGB → linear lookup. Built once per world-bundle bake.
 fn build_srgb_to_linear_lut() -> [f32; 256] {
     let mut lut = [0.0f32; 256];
     for (i, slot) in lut.iter_mut().enumerate() {
@@ -883,24 +885,26 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
     Ok(filename_key)
 }
 
-/// Bake per-texture mip pyramids into `.prm` sidecars under `cache_root`.
+/// Bake the world's material bundles — per-texture mip pyramids in `.prm`
+/// sidecars under `cache_root` — and report what they cost.
+///
 /// Returns a map from texture name → 32-byte cache key (the `.prm` filename
 /// stem in hex). Names whose slots are all missing get a `[0u8; 32]` key and
 /// no `.prm` is written; callers flag the all-zero key in
 /// `TextureCacheKeysSection`. The runtime treats zero keys as 'no source PNG'
 /// and substitutes placeholders silently by design — missing PNGs are not an
 /// error in maps that don't use every named texture slot.
-/// Bake the world's material bundles and report what they cost.
 ///
-/// The byte summary is handed back rather than logged, because the compiler's
-/// TextureMips stage bakes model sidecars and sprite collections too and the
-/// report has to cover all three. `bake_texture_mips` is the standalone form
-/// for callers that own no other bakes.
-pub fn bake_texture_mips_with_byte_summary(
+/// The byte accounting is handed back rather than logged, because the
+/// compiler's TextureMips stage bakes model sidecars and sprite collections
+/// too and the report has to cover all three. Callers fold those in with
+/// [`StageTextureBytes::account_baked_sidecar`] and flush the whole report
+/// once with [`log_texture_byte_summary`].
+pub fn bake_world_texture_mips(
     texture_names: &[String],
     texture_root: &Path,
     cache_root: &Path,
-) -> anyhow::Result<(HashMap<String, [u8; 32]>, TextureByteSummary)> {
+) -> anyhow::Result<(HashMap<String, [u8; 32]>, StageTextureBytes)> {
     let name_to_path = build_name_to_path_map(texture_root);
     let lut = build_srgb_to_linear_lut();
 
@@ -910,7 +914,7 @@ pub fn bake_texture_mips_with_byte_summary(
     // rather than borrowing hash iteration order — the report has to be
     // identical across runs for identical inputs, like everything else
     // `prl-build` emits.
-    let mut byte_summary = TextureByteSummary::new();
+    let mut byte_summary = StageTextureBytes::new();
 
     for name in texture_names {
         // Normalize the incoming map name: lowercase, backslashes → forward
@@ -1049,7 +1053,8 @@ pub fn bake_texture_mips_with_byte_summary(
                     {
                         // Account the reused sidecar too: the report describes
                         // what this level costs, not what this run rebaked.
-                        byte_summary.record(
+                        byte_summary.record_bundle(
+                            filename_key,
                             name.clone(),
                             MaterialBytes::from_parsed_slots(&slots, hdr.layer_count),
                         );
@@ -1187,7 +1192,8 @@ pub fn bake_texture_mips_with_byte_summary(
             .map_err(|e| anyhow::anyhow!("encoding .prm for texture {name:?}: {e}"))?;
         atomic_write(&prm_path, &encoded)?;
 
-        byte_summary.record(
+        byte_summary.record_bundle(
+            filename_key,
             name.clone(),
             MaterialBytes::from_slots(&prm.slots, prm.header.layer_count),
         );
@@ -1197,42 +1203,129 @@ pub fn bake_texture_mips_with_byte_summary(
     Ok((out, byte_summary))
 }
 
-/// Bake the world's material bundles, logging the byte report for them alone.
-pub fn bake_texture_mips(
-    texture_names: &[String],
-    texture_root: &Path,
-    cache_root: &Path,
-) -> anyhow::Result<HashMap<String, [u8; 32]>> {
-    let (out, byte_summary) =
-        bake_texture_mips_with_byte_summary(texture_names, texture_root, cache_root)?;
-    log_texture_byte_summary(&byte_summary);
-    Ok(out)
+/// Which of a sidecar's slots the caller that asked for it actually uploads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarSlots {
+    /// Every slot the file declares. The sprite path uploads the whole bundle.
+    All,
+    /// The diffuse slot alone. Model loading consumes only its diffuse slot,
+    /// and [`bake_diffuse_texture`] deliberately accepts a richer world bundle
+    /// already parked at the diffuse-only address — charging its specular,
+    /// normal and emissive slots to the model would bill the report for slots
+    /// the runtime never binds for it.
+    DiffuseOnly,
 }
 
-/// Account a sidecar another bake path just wrote.
+/// The `TextureMips` stage's byte report under construction.
 ///
-/// The model and sprite bakes write their own `.prm` files and hand back only
-/// the cache key, so the stage report reads the file back rather than threading
-/// a slot table out of each one. The read is cheap next to the bake, and it
-/// keeps the accounting honest about what actually landed on disk.
-pub fn account_baked_sidecar(
-    summary: &mut TextureByteSummary,
-    name: impl Into<String>,
-    cache_root: &Path,
-    key: &[u8; 32],
-) {
-    let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(key)));
-    let Ok(bytes) = std::fs::read(&prm_path) else {
-        return;
-    };
-    let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-    let Ok(header) = header else {
-        return;
-    };
-    summary.record(
-        name,
-        MaterialBytes::from_parsed_slots(&slots, header.layer_count),
-    );
+/// Charges each baked bundle **once per cache key**, not once per name. A
+/// `.prm` is content-addressed, so one file is reachable under several names
+/// at once: two map names that normalize to the same texture, two glTFs
+/// carrying byte-identical base-color PNGs at different paths, a diffuse-only
+/// world material sitting at the very address a model bake derives, two sprite
+/// collections with identical frame sets. [`TextureByteSummary::record`] can
+/// only dedup by name, so without this guard every extra walk adds a whole
+/// second charge to the grand total for memory the runtime uploads once.
+#[derive(Debug, Default)]
+pub struct StageTextureBytes {
+    summary: TextureByteSummary,
+    /// Cache keys already charged. First name to reach a key owns its report
+    /// line; the stage bakes world bundles first, so a shared address reports
+    /// under its world material name.
+    accounted: HashSet<[u8; 32]>,
+}
+
+impl StageTextureBytes {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The report accumulated so far.
+    pub fn summary(&self) -> &TextureByteSummary {
+        &self.summary
+    }
+
+    /// Charge a bundle this stage baked or found cached, unless its cache key
+    /// is already charged.
+    fn record_bundle(&mut self, key: [u8; 32], name: impl Into<String>, bytes: MaterialBytes) {
+        if self.accounted.insert(key) {
+            self.summary.record(name, bytes);
+        }
+    }
+
+    /// Account a sidecar another bake path just wrote.
+    ///
+    /// The model and sprite bakes write their own `.prm` files and hand back
+    /// only the cache key, so the stage report reads the file back rather than
+    /// threading a slot table out of each one. The read is cheap next to the
+    /// bake, and it keeps the accounting honest about what actually landed on
+    /// disk.
+    ///
+    /// Every way this can fail is logged: a byte report that silently shrinks
+    /// is the exact failure this accounting exists to rule out.
+    pub fn account_baked_sidecar(
+        &mut self,
+        name: impl Into<String>,
+        cache_root: &Path,
+        key: &[u8; 32],
+        charged: SidecarSlots,
+    ) {
+        if !self.accounted.insert(*key) {
+            return;
+        }
+        let name = name.into();
+        let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(key)));
+        let bytes = match std::fs::read(&prm_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!(
+                    "[prl-build] byte report: cannot read baked sidecar {} for '{name}': \
+                     {error} — its bytes are missing from the texture total",
+                    prm_path.display()
+                );
+                return;
+            }
+        };
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = match header {
+            Ok(header) => header,
+            Err(error) => {
+                log::warn!(
+                    "[prl-build] byte report: cannot parse baked sidecar {} for '{name}': \
+                     {error} — its bytes are missing from the texture total",
+                    prm_path.display()
+                );
+                return;
+            }
+        };
+        // A slot the header declares but that failed to parse contributes
+        // nothing, so the bundle would otherwise be reported light while
+        // looking perfectly healthy.
+        for (index, declared) in SLOT_MASK_BITS.iter().enumerate() {
+            if header.slot_mask.contains(*declared) {
+                if let Err(error) = &slots[index] {
+                    log::warn!(
+                        "[prl-build] byte report: baked sidecar {} for '{name}' declares a \
+                         {} slot that does not parse: {error} — that slot is missing from \
+                         the texture total",
+                        prm_path.display(),
+                        slot_label(index as u8)
+                    );
+                }
+            }
+        }
+
+        let mut charged_slots = slots.map(|slot| slot.ok());
+        if charged == SidecarSlots::DiffuseOnly {
+            for slot in &mut charged_slots[1..] {
+                *slot = None;
+            }
+        }
+        self.summary.record(
+            name,
+            MaterialBytes::from_slots(&charged_slots, header.layer_count),
+        );
+    }
 }
 
 /// How many of the heaviest materials the stage report names individually.
@@ -1261,6 +1354,20 @@ mod tests {
     use postretro_level_format::prm::PrmReadError;
     use postretro_level_format::sprite_collection::sprite_collection_filename_key;
     use postretro_test_log_capture::LogCapture;
+
+    /// Drive the world-bundle bake and flush its report, the way the compiler
+    /// stage does for the bakes it owns. Most tests here only bake world
+    /// bundles, and several assert on the logged report.
+    fn bake_texture_mips(
+        texture_names: &[String],
+        texture_root: &Path,
+        cache_root: &Path,
+    ) -> anyhow::Result<HashMap<String, [u8; 32]>> {
+        let (keys, byte_summary) =
+            bake_world_texture_mips(texture_names, texture_root, cache_root)?;
+        log_texture_byte_summary(byte_summary.summary());
+        Ok(keys)
+    }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -3026,6 +3133,298 @@ mod tests {
             .map(|record| record.message.clone())
             .collect();
         assert_eq!(warm_logged, logged, "warm and cold reports must agree");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Sum every slot payload actually on disk for the given cache keys,
+    /// counting each `.prm` once however many keys point at it.
+    fn prm_payload_bytes_on_disk(cache_root: &Path, keys: &[[u8; 32]]) -> u64 {
+        let mut seen = HashSet::new();
+        let mut total = 0u64;
+        for key in keys {
+            if !seen.insert(*key) {
+                continue;
+            }
+            let path = cache_root.join(format!("{}.prm", cache_filename_for_key(key)));
+            let bytes = std::fs::read(&path).unwrap();
+            let (_, slots) = PrmFile::from_bytes_partial(&bytes);
+            total += slots
+                .iter()
+                .filter_map(|slot| slot.as_ref().ok())
+                .map(|slot| slot.payload.len() as u64)
+                .sum::<u64>();
+        }
+        total
+    }
+
+    /// The `TextureMips` stage bakes world bundles, model sidecars and sprite
+    /// collections, and flushes one report covering all three. The grand total
+    /// is what a streaming system will size residency against, so it must equal
+    /// the bytes on disk — and a `.prm` two callers reach must be charged once,
+    /// because the runtime uploads it once. Identity here is the
+    /// content-addressed cache key, never the report name.
+    #[test]
+    fn stage_byte_report_spans_all_three_bakes_and_charges_each_prm_once() {
+        let root = unique_temp_dir("byte-accounting-three-bakes");
+        let texture_root = root.join("textures");
+        let cache_root = root.join("cache");
+        let world_dir = texture_root.join("stone");
+        std::fs::create_dir_all(&world_dir).unwrap();
+
+        // A rich world bundle, at a complete-bundle address of its own.
+        std::fs::write(world_dir.join("plain.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(
+            world_dir.join("plain_s.png"),
+            solid_png_bytes(8, 8, [128, 0, 0, 255]),
+        )
+        .unwrap();
+
+        // A diffuse-only world material and a model base-color PNG at a
+        // different path with byte-identical content: both resolve to the same
+        // `.prm`, and the level pays for it once.
+        let shared_png = solid_png_bytes(8, 8, [10, 200, 30, 255]);
+        std::fs::write(world_dir.join("shared.png"), &shared_png).unwrap();
+        let model_dir = root.join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_png = model_dir.join("base-color.png");
+        std::fs::write(&model_png, &shared_png).unwrap();
+
+        // Two sprite frames: layered payloads are the heaviest bundles the
+        // format emits, and the report used to omit them entirely.
+        write_sprite_frame(
+            &texture_root,
+            "puff",
+            "puff_00.png",
+            &solid_png_bytes(4, 4, [255, 0, 0, 255]),
+        );
+        write_sprite_frame(
+            &texture_root,
+            "puff",
+            "puff_01.png",
+            &solid_png_bytes(4, 4, [0, 0, 255, 255]),
+        );
+
+        let names = vec!["stone/plain".to_string(), "stone/shared".to_string()];
+        let capture = LogCapture::start();
+
+        let (world_keys, mut stage_bytes) =
+            bake_world_texture_mips(&names, &texture_root, &cache_root).unwrap();
+        let model_key = bake_diffuse_texture(&model_png, &cache_root).unwrap();
+        stage_bytes.account_baked_sidecar(
+            "model:models/base-color.png",
+            &cache_root,
+            &model_key,
+            SidecarSlots::DiffuseOnly,
+        );
+        let sprite_key = bake_sprite_collection(&texture_root, "puff", &cache_root)
+            .expect("two valid frames bake a collection");
+        stage_bytes.account_baked_sidecar("sprite:puff", &cache_root, &sprite_key, SidecarSlots::All);
+
+        assert_eq!(
+            model_key, world_keys["stone/shared"],
+            "identical diffuse bytes must address one .prm"
+        );
+
+        // One flush, after all three bakes.
+        log_texture_byte_summary(stage_bytes.summary());
+        let records = capture.records();
+        let logged: Vec<String> = records
+            .iter()
+            .filter(|record| record.message.contains("texture bytes"))
+            .map(|record| record.message.clone())
+            .collect();
+
+        let expected_total = prm_payload_bytes_on_disk(
+            &cache_root,
+            &[
+                world_keys["stone/plain"],
+                world_keys["stone/shared"],
+                model_key,
+                sprite_key,
+            ],
+        );
+        let summary = stage_bytes.summary();
+        assert_eq!(
+            summary.total_bytes(),
+            expected_total,
+            "the report must equal the bytes the three bakes actually left on disk"
+        );
+        assert_eq!(
+            summary.material_count(),
+            3,
+            "three distinct .prm files, three report lines"
+        );
+        assert!(
+            summary
+                .entries()
+                .all(|(name, _)| name != "model:models/base-color.png"),
+            "a bundle already charged under its world material name must not be charged again"
+        );
+
+        // The sprite collection's layered bytes reach the report.
+        let (_, sprite_bytes) = summary
+            .entries()
+            .find(|(name, _)| *name == "sprite:puff")
+            .expect("the sprite collection is reported");
+        assert_eq!(
+            sprite_bytes.slot(0).map(|slot| slot.layer_count),
+            Some(2),
+            "both sprite frames are charged"
+        );
+        assert_eq!(
+            sprite_bytes.total_bytes(),
+            prm_payload_bytes_on_disk(&cache_root, &[sprite_key]),
+        );
+
+        assert_eq!(
+            logged,
+            vec![format!(
+                "[prl-build] {}",
+                summary.report_lines(BYTE_REPORT_LARGEST)[0]
+            )],
+            "the stage reports once, after every bake it owns"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `bake_diffuse_texture` deliberately keeps a richer world bundle that
+    /// already occupies the diffuse-only address, because model loading binds
+    /// only the diffuse slot. The report must charge the model the same way —
+    /// billing it for specular and normal slots the runtime never uploads for
+    /// it inflates both its line and the grand total.
+    #[test]
+    fn model_sidecar_is_charged_only_the_diffuse_slot_it_uploads() {
+        let root = unique_temp_dir("byte-accounting-model-slots");
+        let texture_root = root.join("textures");
+        let world_dir = texture_root.join("stone");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&world_dir).unwrap();
+
+        let diffuse = png_bytes(8, 8);
+        std::fs::write(world_dir.join("panel.png"), &diffuse).unwrap();
+        std::fs::write(
+            world_dir.join("panel_s.png"),
+            solid_png_bytes(8, 8, [128, 0, 0, 255]),
+        )
+        .unwrap();
+        let (rich_keys, _) = bake_world_texture_mips(
+            &["stone/panel".to_string()],
+            &texture_root,
+            &cache_root,
+        )
+        .unwrap();
+
+        // Park that rich bundle at the diffuse-only address a model bake
+        // derives, the way a pre-change cache still can.
+        let model_png = root.join("base-color.png");
+        std::fs::write(&model_png, &diffuse).unwrap();
+        let diffuse_only_key = *blake3::hash(&diffuse).as_bytes();
+        let rich_path = cache_root.join(format!(
+            "{}.prm",
+            cache_filename_for_key(&rich_keys["stone/panel"])
+        ));
+        let legacy_path =
+            cache_root.join(format!("{}.prm", cache_filename_for_key(&diffuse_only_key)));
+        std::fs::copy(&rich_path, &legacy_path).unwrap();
+
+        let key = bake_diffuse_texture(&model_png, &cache_root).unwrap();
+        assert_eq!(key, diffuse_only_key, "the richer bundle is kept in place");
+
+        let mut stage_bytes = StageTextureBytes::new();
+        stage_bytes.account_baked_sidecar(
+            "model:base-color.png",
+            &cache_root,
+            &key,
+            SidecarSlots::DiffuseOnly,
+        );
+
+        let (_, model_bytes) = stage_bytes
+            .summary()
+            .entries()
+            .find(|(name, _)| *name == "model:base-color.png")
+            .expect("the model sidecar is reported");
+        let (_, slots) = PrmFile::from_bytes_partial(&std::fs::read(&legacy_path).unwrap());
+        assert!(
+            slots[1].is_ok(),
+            "the parked bundle really does carry a specular slot"
+        );
+        assert_eq!(
+            model_bytes.slot(1).map(|slot| slot.total_bytes()),
+            None,
+            "a model must not be charged the specular slot it never binds"
+        );
+        assert_eq!(
+            model_bytes.total_bytes(),
+            slots[0].as_ref().unwrap().payload.len() as u64,
+            "a model is charged its diffuse slot and nothing else"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every way the byte report can lose a bundle is a silent shrink of the
+    /// grand total — the exact failure the stage-boundary flush exists to
+    /// prevent. Each one warns and names the material and the `.prm`.
+    #[test]
+    fn byte_report_warns_when_a_baked_sidecar_cannot_be_accounted() {
+        let root = unique_temp_dir("byte-accounting-degradations");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let capture = LogCapture::start();
+        let mut stage_bytes = StageTextureBytes::new();
+
+        // 1. No file at the key's address.
+        let missing_key = [7u8; 32];
+        stage_bytes.account_baked_sidecar(
+            "model:missing.png",
+            &cache_root,
+            &missing_key,
+            SidecarSlots::DiffuseOnly,
+        );
+        capture.assert_logged_once(Level::Warn, "cannot read baked sidecar");
+
+        // 2. A file whose header does not parse.
+        let bad_header_key = [8u8; 32];
+        std::fs::write(
+            cache_root.join(format!("{}.prm", cache_filename_for_key(&bad_header_key))),
+            b"not a prm file at all",
+        )
+        .unwrap();
+        stage_bytes.account_baked_sidecar(
+            "sprite:garbage",
+            &cache_root,
+            &bad_header_key,
+            SidecarSlots::All,
+        );
+        capture.assert_logged_once(Level::Warn, "cannot parse baked sidecar");
+
+        // 3. A parseable header declaring a slot whose payload is truncated.
+        // `from_parsed_slots` skips it by design, so the bundle is recorded
+        // light while looking perfectly healthy.
+        let diffuse_path = root.join("base-color.png");
+        std::fs::write(&diffuse_path, png_bytes(8, 8)).unwrap();
+        let truncated_key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+        let truncated_path =
+            cache_root.join(format!("{}.prm", cache_filename_for_key(&truncated_key)));
+        let mut truncated = std::fs::read(&truncated_path).unwrap();
+        truncated.pop();
+        std::fs::write(&truncated_path, &truncated).unwrap();
+        stage_bytes.account_baked_sidecar(
+            "model:base-color.png",
+            &cache_root,
+            &truncated_key,
+            SidecarSlots::DiffuseOnly,
+        );
+        capture.assert_logged_once(Level::Warn, "declares a diffuse slot that does not parse");
+
+        assert_eq!(
+            stage_bytes.summary().total_bytes(),
+            0,
+            "nothing usable was read, and the report says so out loud"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

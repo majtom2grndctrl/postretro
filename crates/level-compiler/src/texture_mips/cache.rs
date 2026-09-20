@@ -127,17 +127,20 @@ pub(super) fn filename_key_for(
     }
 }
 
+/// The `slot_mask` bit each wire-order slot index declares itself with.
+pub(super) const SLOT_MASK_BITS: [PrmSlots; 4] = [
+    PrmSlots::DIFFUSE,
+    PrmSlots::SPECULAR,
+    PrmSlots::NORMAL,
+    PrmSlots::EMISSIVE,
+];
+
 pub(super) fn cache_entry_has_valid_declared_slots(
     header: &PrmHeader,
     slots: &[Result<PrmSlot, PrmReadError>; 4],
 ) -> bool {
-    [
-        PrmSlots::DIFFUSE,
-        PrmSlots::SPECULAR,
-        PrmSlots::NORMAL,
-        PrmSlots::EMISSIVE,
-    ]
-    .iter()
-    .enumerate()
-    .all(|(index, slot)| !header.slot_mask.contains(*slot) || slots[index].is_ok())
+    SLOT_MASK_BITS
+        .iter()
+        .enumerate()
+        .all(|(index, slot)| !header.slot_mask.contains(*slot) || slots[index].is_ok())
 }

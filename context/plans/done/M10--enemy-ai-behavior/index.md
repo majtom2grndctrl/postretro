@@ -1,6 +1,6 @@
 # M10 — Enemy AI Behavior
 
-> **Wave:** plan 2 of 2 in the M10 closing wave (one `/orchestrate` session). Build order: **`M10--pathfinding-path-following` → this plan**. Consumes that plan's runtime steering API (set agent destination, read arrived/blocked). This is the milestone payoff — the behavioral convergence that closes M10's north star.
+> **Wave:** plan 2 of 2 in the M10 closing wave (one `/build-spec` session). Build order: **`M10--pathfinding-path-following` → this plan**. Consumes that plan's runtime steering API (set agent destination, read arrived/blocked). This is the milestone payoff — the behavioral convergence that closes M10's north star.
 
 ## Goal
 

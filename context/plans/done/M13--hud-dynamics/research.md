@@ -8,7 +8,7 @@
 > **Read this when:** drafting or reviewing the Goal E spec (`styleRanges` +
 > `onStateCrossing` + UI reaction helpers).
 > **Wave context:** Goal E and Goal F (`ready/M13--input-breadth/`) are the next
-> M13 wave — two specs, drafted separately, runnable in one `/orchestrate` wave.
+> M13 wave — two specs, drafted separately, runnable in one `/build-spec` wave.
 > Roadmap: D → (E ‖ F); D and TW are shipped, so both are unblocked. See
 > §Cross-spec coordination below for the E/F boundary.
 

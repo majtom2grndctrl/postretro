@@ -176,7 +176,7 @@ Regenerate typedefs after both land.
 
 ## Review round 3 (implementability, 2026-06-14): 3 Blockers in the reactive core
 
-The implementability pass (simulating the task-only /orchestrate contract) found
+The implementability pass (simulating the task-only /build-spec contract) found
 three real Blockers the structural reviews couldn't see:
 1. **`selected` → highlight path doesn't exist.** A `Button` is a bare
    `NodeContext::Text` leaf (no `bind`/`styleRanges`, no backdrop, no highlight

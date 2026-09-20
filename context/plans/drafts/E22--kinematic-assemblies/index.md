@@ -97,7 +97,7 @@ Each is one paragraph of intent, not a task breakdown; the deep spec is drafted 
 
 ## Sequencing (across specs)
 
-Detail-on-open, one child spec per `/orchestrate` cycle, re-grounded against the live tree just before it is built (each landed spec moves the ground the next stands on):
+Detail-on-open, one child spec per `/build-spec` cycle, re-grounded against the live tree just before it is built (each landed spec moves the ground the next stands on):
 
 **Spec 1 first, alone** — the foundation is the thin slice; it falsifies the assembly boundary across every layer before any breadth piles on. Do not pair it.
 **Spec 2 after 1** — recognition translates onto the canonical assembly spec 1 defines; it consumes that shape.

@@ -1,6 +1,6 @@
 # M10 — Pathfinding + Path Following
 
-> **Wave:** plan 1 of 2 in the M10 closing wave (one `/orchestrate` session). Build order: **this plan → `M10--enemy-ai-behavior`**. This plan publishes the runtime steering API; the enemy-AI plan is its first real consumer. Mirrors how `M10--navigation-representation` published the region graph this plan consumes.
+> **Wave:** plan 1 of 2 in the M10 closing wave (one `/build-spec` session). Build order: **this plan → `M10--enemy-ai-behavior`**. This plan publishes the runtime steering API; the enemy-AI plan is its first real consumer. Mirrors how `M10--navigation-representation` published the region graph this plan consumes.
 
 ## Goal
 

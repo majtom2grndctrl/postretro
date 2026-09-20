@@ -341,7 +341,7 @@ portals to the oracle, if not regenerated in-test).
 
 ## Invariants
 
-`/orchestrate` hands this table to every task agent with the Goal and AC list.
+`/build-spec` hands this table to every task agent with the Goal and AC list.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|

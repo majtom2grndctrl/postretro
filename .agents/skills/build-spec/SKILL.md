@@ -1,7 +1,7 @@
 ---
-name: orchestrate
+name: build-spec
 description: >
-  Orchestrates execution of a plan by spawning agents to work on tasks according
+  Executes a drafted spec by spawning agents to work on tasks according
   to the plan's sequencing instructions. Reads a plan from context/plans/ready/,
   moves it to in-progress, and coordinates task execution across phases.
   Use when a reviewed plan is ready for implementation.
@@ -9,9 +9,9 @@ disable-model-invocation: true
 argument-hint: "[plan-name]"
 ---
 
-# Orchestrate
+# Build Spec
 
-Orchestrate a plan from `context/plans/ready/`. Coordinate — don't produce. Dispatch agents, track progress.
+Execute a spec from `context/plans/ready/`. Coordinate — don't produce. Dispatch agents, track progress.
 
 ## Available plans
 

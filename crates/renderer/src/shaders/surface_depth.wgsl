@@ -93,7 +93,7 @@ const SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS: f32 = 0.5;
 // Collision still uses the true plane, so an unbounded carve diverges from it
 // visibly and pushes `world_position` — which feeds dynamic light direction and
 // attenuation — off the surface with it.
-const SURFACE_DEPTH_MAX_METERS: f32 = 0.05;
+const SURFACE_DEPTH_MAX_METERS: f32 = 0.2;
 // Unit of `material.surface_depth_meters`: 0 = world meters, 1 = albedo texels.
 // Mirrors `postretro_render_data::material::SURFACE_DEPTH_TEXEL_MODE`, which
 // selects the matching authoring table; the two are pinned against each other.

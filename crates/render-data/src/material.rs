@@ -103,7 +103,7 @@ pub const fn surface_depth_is_texel_relative() -> bool {
 ///
 /// A carve deeper than a few centimeters reads as a hole and diverges visibly
 /// from collision, which still uses the true plane.
-pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.05;
+pub const SURFACE_DEPTH_MAX_METERS: f32 = 0.2;
 
 /// Hard ceiling on an authored carve depth in TEXELS.
 ///

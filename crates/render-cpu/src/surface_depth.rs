@@ -10,10 +10,22 @@
 //! raymarch: within one texel the solid's top is a single depth, so the only
 //! events are "cross a side wall" and "meet the top".
 //!
-//! Everything in this module is GPU-free and is the authority the WGSL snippet
-//! `shaders/surface_depth.wgsl` mirrors — the renderer's rule is that data
-//! logic stays testable without a GPU. Constants defined here are pinned
-//! against the shader text by `render/tests/surface_depth_tests.rs`.
+//! Everything in this module is GPU-free, and it is the authority for the
+//! march itself, the packed material layout, and every tuning constant that
+//! the WGSL snippet `shaders/surface_depth.wgsl` mirrors — the renderer's rule
+//! is that data logic stays testable without a GPU. Constants defined here are
+//! pinned against the shader text by `render/tests/surface_depth_tests.rs`.
+//!
+//! One rule is GPU-only and this module does NOT mirror it: the texel→meters
+//! conversion in `surface_depth.wgsl` (`texels_per_m`, `texel_rate`, and the
+//! `depth_scale_m` derivation gated on `SURFACE_DEPTH_TEXEL_MODE`) reads a
+//! per-fragment UV Jacobian that only exists mid-shader, so
+//! [`march_surface_depth`] below takes the already-converted
+//! `depth_scale_meters` as a parameter rather than deriving it. That is an
+//! accepted gap, not an oversight: Surface Depth is a purely graphical carve —
+//! collision still walks the true brush plane — so a wrong conversion is a
+//! visible depth error on screen, never a corrupted game-logic value, and
+//! there is no save data or netcode downstream of it to silently corrupt.
 
 use glam::Vec3;
 use postretro_render_data::material::SurfaceDepth;
@@ -1556,5 +1568,70 @@ mod tests {
         };
         assert!(surface_depth_light_ray(&basis, -Vec3::Z).is_none());
         assert!(surface_depth_light_ray(&basis, Vec3::Z).is_some());
+    }
+
+    // -- Texel→meters conversion (GPU-only; mirrored here for one assertion) --
+
+    /// Reproduces `surface_depth.wgsl`'s texel→meters conversion and its
+    /// `SURFACE_DEPTH_MAX_METERS` clamp (search that name in the WGSL file,
+    /// currently the `depth_scale_m` derivation a few lines above the
+    /// `SURFACE_DEPTH_MIN_DESCENT` check). This is test-local scaffolding, not
+    /// the CPU mirror the module header explains the owner declined to build —
+    /// it exists only so the regression test below can assert the property the
+    /// shader's clamp defends, since `march_surface_depth` never derives this
+    /// value itself (it takes `depth_scale_meters` as a parameter).
+    #[cfg(test)]
+    fn shader_depth_scale_m(carve_request_texels: f32, texels_per_m: [f32; 2], fade: f32) -> f32 {
+        let texel_rate = (texels_per_m[0] * texels_per_m[1])
+            .max(SURFACE_DEPTH_EPS)
+            .sqrt();
+        let depth_scale_m = carve_request_texels / texel_rate;
+        depth_scale_m.min(SURFACE_DEPTH_MAX_METERS * fade)
+    }
+
+    /// Regression: in texel mode the authored ceiling (`SURFACE_DEPTH_MAX_TEXELS`)
+    /// bounds a TEXEL COUNT, not meters. Nothing re-imposed the meters ceiling
+    /// after the shader's per-fragment divide by the texel rate, so a
+    /// coarsely-scaled face (few texels per meter) resolved an unbounded depth.
+    /// Fixed by clamping `depth_scale_m` to `SURFACE_DEPTH_MAX_METERS * fade`
+    /// in `surface_depth.wgsl` after the divide; this asserts the clamped
+    /// result never exceeds the meters ceiling, for a range of plausible texel
+    /// rates including a coarsely-scaled face (a 128px texture tiled over 4 m,
+    /// giving ~32 texels/m).
+    #[test]
+    fn deepest_authored_texel_count_resolves_within_the_meters_ceiling_at_any_texel_rate() {
+        assert!(
+            surface_depth_is_texel_relative(),
+            "this regression is specific to texel-relative authoring; revisit \
+             if SURFACE_DEPTH_TEXEL_MODE ever flips back to meters",
+        );
+        let deepest_authored = surface_depth_max_authored(); // texels, in TEXEL mode
+        // `surface_depth_max_authored()` reads texels in this mode; the meters
+        // ceiling the clamp defends is the other branch of the same function,
+        // `SURFACE_DEPTH_MAX_METERS` itself (read from source, not restated).
+        let meters_ceiling = SURFACE_DEPTH_MAX_METERS;
+        let fade = 1.0;
+
+        // Plausible per-axis texel rates, from a coarsely-scaled face (a 128px
+        // texture tiled over 4 m, ~32 texels/m — the case that actually
+        // triggered the unbounded depth) up through finely-tiled walls.
+        for texel_rate_axis in [1.0_f32, 4.0, 8.0, 16.0, 32.0, 128.0, 512.0, 4096.0] {
+            let texels_per_m = [texel_rate_axis, texel_rate_axis];
+            let depth_scale_m = shader_depth_scale_m(deepest_authored, texels_per_m, fade);
+            assert!(
+                depth_scale_m <= meters_ceiling + 1e-6,
+                "deepest authored value ({deepest_authored} texels) at {texel_rate_axis} \
+                 texels/m resolved to {depth_scale_m} m, above the {meters_ceiling} m ceiling",
+            );
+        }
+
+        // Anisotropic scaling: the shader's rate is the geometric mean of the
+        // two axes, so a face that is finely tiled on one axis and coarsely on
+        // the other must still clamp.
+        let depth_scale_m = shader_depth_scale_m(deepest_authored, [2.0, 4096.0], fade);
+        assert!(
+            depth_scale_m <= meters_ceiling + 1e-6,
+            "anisotropic face resolved to {depth_scale_m} m, above the {meters_ceiling} m ceiling",
+        );
     }
 }

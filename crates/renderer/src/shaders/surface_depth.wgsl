@@ -47,8 +47,15 @@
 //    That path takes the GEOMETRIC normal on purpose; this normal is far
 //    bumpier than a normal map and would wobble shadow boundaries.
 //
-// The CPU authority for every rule and constant below is
-// `postretro_render_cpu::surface_depth`, which is unit-tested without a GPU.
+// The CPU authority for the march, the packing and every tuning constant
+// below is `postretro_render_cpu::surface_depth`, which is unit-tested without
+// a GPU. One rule is GPU-only and has no CPU mirror: the texel→meters
+// conversion just below (`texels_per_m`, `texel_rate`, `depth_scale_m` under
+// `SURFACE_DEPTH_TEXEL_MODE`) needs a per-fragment UV Jacobian that only
+// exists mid-shader. That is accepted because this is a purely graphical
+// carve — collision uses the true brush plane, so a wrong conversion is a
+// visible on-screen error, not a corrupted game-logic value, and nothing
+// downstream (no save data, no netcode) depends on it.
 
 const SURFACE_DEPTH_EPS: f32 = 1.0e-9;
 const SURFACE_DEPTH_FAR: f32 = 3.4e38;

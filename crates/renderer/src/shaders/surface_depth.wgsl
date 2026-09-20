@@ -84,6 +84,16 @@ const SURFACE_DEPTH_FADE_DISTANCE_FRACTION: f32 = 0.25;
 const SURFACE_DEPTH_AO_STRENGTH: f32 = 0.75;
 const SURFACE_DEPTH_SHADOW_BIAS_M: f32 = 1.0e-4;
 const SURFACE_DEPTH_SIDE_UV_BIAS_TEXELS: f32 = 0.5;
+// Hard ceiling on the RESOLVED carve depth, in meters, whatever unit it was
+// authored in. Mirrors `postretro_render_data::material::SURFACE_DEPTH_MAX_METERS`.
+//
+// In meters mode the CPU clamp already bounds this. In texel mode it does NOT:
+// the CPU caps a TEXEL COUNT, and the per-fragment divide by the texel rate can
+// turn a legal count into an arbitrarily deep carve on a coarsely-scaled face.
+// Collision still uses the true plane, so an unbounded carve diverges from it
+// visibly and pushes `world_position` — which feeds dynamic light direction and
+// attenuation — off the surface with it.
+const SURFACE_DEPTH_MAX_METERS: f32 = 0.05;
 // Unit of `material.surface_depth_meters`: 0 = world meters, 1 = albedo texels.
 // Mirrors `postretro_render_data::material::SURFACE_DEPTH_TEXEL_MODE`, which
 // selects the matching authoring table; the two are pinned against each other.
@@ -209,7 +219,7 @@ fn surface_depth_indirect_ao(depth: SurfaceDepthResult, light_terms: u32) -> f32
     if !depth.carved || (light_terms & LIGHT_TERM_DEPTH_AO) == 0u {
         return 1.0;
     }
-    if depth.depth_scale_m <= SURFACE_DEPTH_EPS {
+    if !(depth.depth_scale_m > SURFACE_DEPTH_EPS) {
         return 1.0;
     }
     // Scale by the fade. `depth_m` and `depth_scale_m` are both post-fade, so
@@ -328,6 +338,10 @@ fn surface_depth_resolve(
         let texel_rate = sqrt(max(texels_per_m.x * texels_per_m.y, SURFACE_DEPTH_EPS));
         depth_scale_m = carve_request / texel_rate;
     }
+    // Clamp rather than bail: a face scaled past the ceiling should flatten
+    // gracefully, not pop to unmarched. `fade` scales the ceiling too so the
+    // clamp cannot re-deepen a carve the fade is busy closing.
+    depth_scale_m = min(depth_scale_m, SURFACE_DEPTH_MAX_METERS * fade);
     if !(depth_scale_m > SURFACE_DEPTH_EPS) {
         return flat_result;
     }
@@ -419,9 +433,20 @@ fn surface_depth_resolve(
         // `max_steps` iterations whatever `solid` is — including a NaN, which
         // compares false against both hit rules.
         if walked + 1u >= max_steps {
+            // The TOP face, not the entry face. `z_enter` is strictly above the
+            // solid in BOTH the cell just left and the cell just entered — that
+            // is why neither hit rule fired — so there is no wall at this depth
+            // to report, and when the entered cell is the deeper of the two the
+            // entry face points the exact opposite way from the only surface
+            // present. Reporting the geometric normal keeps a starved fragment
+            // shading like its unstarved neighbour instead of flipping the
+            // normal map off, engaging the plane gate and starting a self-shadow
+            // march from open air, all across a view-angle isoline that sweeps
+            // as the camera turns. It also makes "degrades toward flat" true for
+            // every budget rather than only for a budget of one.
             hit_depth = z_enter;
-            hit_normal_ts = entry_normal_ts;
-            hit_bias = entry_bias;
+            hit_normal_ts = vec3<f32>(0.0, 0.0, 1.0);
+            hit_bias = vec2<f32>(0.0, 0.0);
             break;
         }
         if t_max.x <= t_max.y {

@@ -1361,7 +1361,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // to stop it when the light won no slot. Top hits are left exactly as
         // they were: their normal is the normal-mapped one, which is what keeps
         // an uncarved fragment (and every fragment at `Off`) byte-identical.
-        let plane_lit = depth.hit_top || dot(mesh_n, L) > 0.0;
+        // `above_plane` is hoisted because the self-shadow gate below needs it
+        // too: `surface_depth_light_visibility` returns 1.0 immediately when the
+        // light is at or below the geometric plane, so without this term a
+        // below-plane light on a TOP hit whose normal map tilts toward it passes
+        // `contributes`, spends one of the two budget slots, and gets "lit" back
+        // — leaving a later light that genuinely casts a shadow unmarched.
+        let above_plane = dot(mesh_n, L) > 0.0;
+        let plane_lit = depth.hit_top || above_plane;
         let NdotL = select(0.0, max(dot(N_shade, L), 0.0), plane_lit);
         // Surface Depth self-shadowing, against DYNAMIC lights only. The bake
         // knows nothing about dynamic bodies (§4), so this adds a fact no baked
@@ -1375,8 +1382,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // zero color: marching for it burns one of the two slots on a result
         // that is then multiplied by zero, and leaves the light that genuinely
         // casts the shadow unshadowed.
-        let contributes =
-            NdotL > 0.0 && attenuation > 0.0 && dot(effective_color, vec3<f32>(1.0)) > 0.0;
+        let contributes = NdotL > 0.0
+            && above_plane
+            && attenuation > 0.0
+            && dot(effective_color, vec3<f32>(1.0)) > 0.0;
         if depth.carved && contributes && depth_shadow_marches < depth.shadow_light_budget {
             depth_shadow_marches = depth_shadow_marches + 1u;
             depth_visibility = surface_depth_light_visibility(depth, L);

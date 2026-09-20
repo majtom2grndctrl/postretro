@@ -36,13 +36,14 @@ pub struct MaterialProperties {
 /// `depth_meters` carries whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects,
 /// and the two readings trade against each other rather than one being right.
 ///
-/// METERS (the default) makes the carve a WORLD distance. Brush UV scale is set
+/// METERS makes the carve a WORLD distance. Brush UV scale is set
 /// per-face in TrenchBroom and is unconstrained, so the same material keeps the
 /// same physical depth however a mapper scaled the face — a stone is a stone.
 /// The cost is that the number of TEXELS that depth spans varies with
 /// resolution and scale, and the march's step budget has to absorb it.
 ///
-/// TEXELS makes the carve a fixed depth in the albedo lattice instead. That is
+/// TEXELS — the shipped default — makes the carve a fixed depth in the albedo
+/// lattice instead. That is
 /// the lattice the retro look is built on, so edges land on it by construction,
 /// and the march's worst case stops depending on resolution or brush scale. The
 /// cost is the mirror image: the same material carves a different physical
@@ -112,9 +113,10 @@ pub const SURFACE_DEPTH_MAX_TEXELS: f32 = 32.0;
 
 /// The ceiling for whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects.
 ///
-/// Capping a texel count at the METERS ceiling would shrink every carve by
-/// ~80x with no error, which is the quiet failure this exists to prevent — so
-/// the cap and the unit are chosen together, in one place.
+/// Capping a texel count at the METERS ceiling would shrink every carve by the
+/// ratio between the two ceilings — 120x for Concrete's 6, 40x for a 2 — with no
+/// error at all, which is the quiet failure this exists to prevent. So the cap
+/// and the unit are chosen together, in one place.
 pub const fn surface_depth_max_authored() -> f32 {
     if surface_depth_is_texel_relative() {
         SURFACE_DEPTH_MAX_TEXELS
@@ -642,6 +644,69 @@ mod tests {
         for mat in [Material::Glass, Material::Neon] {
             assert_eq!(mat.surface_depth(), SurfaceDepth::FLAT);
             assert!(!mat.surface_depth().is_enabled());
+        }
+    }
+
+    /// Both tables, not just the active one. The inactive table is invisible to
+    /// every other test in this module, so without this a bad edit to it sits
+    /// dormant until someone flips the switch.
+    #[test]
+    fn every_carving_material_in_either_unit_bounds_its_march() {
+        let tables: [(fn(Material) -> SurfaceDepth, f32, &str); 2] = [
+            (Material::surface_depth_meters, SURFACE_DEPTH_MAX_METERS, "meters"),
+            (Material::surface_depth_texels, SURFACE_DEPTH_MAX_TEXELS, "texels"),
+        ];
+        for (table, ceiling, unit) in tables {
+            let mut deepest = 0.0f32;
+            for mat in [
+                Material::Metal,
+                Material::Concrete,
+                Material::Grate,
+                Material::Wood,
+                Material::Glass,
+                Material::Neon,
+                Material::Default,
+            ] {
+                let depth = table(mat);
+                if !depth.is_enabled() {
+                    continue;
+                }
+                assert!(
+                    depth.depth_meters <= ceiling,
+                    "{mat:?}: {} {unit} exceeds the {unit} ceiling of {ceiling}",
+                    depth.depth_meters,
+                );
+                assert!(depth.max_steps >= 1, "{mat:?} ({unit}): needs a DDA step");
+                assert!(
+                    depth.fade_distance_meters > 0.0,
+                    "{mat:?} ({unit}): needs a finite fade distance",
+                );
+                deepest = deepest.max(depth.depth_meters);
+            }
+            // Concrete is the motivating case in whichever unit is authored.
+            assert_eq!(
+                table(Material::Concrete).depth_meters,
+                deepest,
+                "the cobblestone case must be the deepest carve in {unit}",
+            );
+        }
+    }
+
+    /// The texel table's own stated invariant: one plateau per texel of depth.
+    #[test]
+    fn the_texel_table_puts_one_quantize_plateau_per_texel() {
+        for mat in [
+            Material::Metal,
+            Material::Concrete,
+            Material::Grate,
+            Material::Wood,
+            Material::Default,
+        ] {
+            let depth = Material::surface_depth_texels(mat);
+            assert_eq!(
+                depth.quantize_levels as f32, depth.depth_meters,
+                "{mat:?}: the texel table documents one plateau per texel of depth",
+            );
         }
     }
 

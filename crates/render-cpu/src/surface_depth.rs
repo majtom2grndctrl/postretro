@@ -158,17 +158,11 @@ pub fn unpack_surface_depth_march(packed: u32) -> SurfaceDepthMarch {
 /// the per-fragment cost is.
 pub const SURFACE_DEPTH_LOW_MAX_STEPS: u32 = 8;
 
-/// Hard ceiling on a material's carve depth, in meters.
-///
-/// The prefix table's deepest entry is 0.020 m and the design caps authored
-/// depth at 0.05 m. Clamping here makes that cap a real constraint on the value
-/// that reaches the GPU rather than an assertion about one hardcoded table:
-/// `SurfaceDepth::depth_meters` is a public field and `is_enabled()` only tests
-/// `> 0.0`, which admits `+inf`. An infinite scale makes `solid` a NaN on every
-/// zero-depth texel — the most common texel in a cobblestone map — and a NaN
-/// compares false against both hit rules.
-/// Re-exported so the shader-parity test and the uniform resolve read the mode
-/// and its cap from one place. Both live beside the tables they select.
+/// Re-exported so the shader-parity test and the uniform resolve read the depth
+/// unit and its ceiling from one place. Both live in `render-data`, beside the
+/// authoring tables they select; see [`SURFACE_DEPTH_TEXEL_MODE`] for which unit
+/// ships and why. The rationale for clamping at all lives on
+/// [`SurfaceDepthUniform::resolve`], which is where it is applied.
 pub use postretro_render_data::material::{
     SURFACE_DEPTH_MAX_METERS, SURFACE_DEPTH_MAX_TEXELS, SURFACE_DEPTH_TEXEL_MODE,
     surface_depth_is_texel_relative, surface_depth_max_authored,
@@ -279,6 +273,16 @@ impl SurfaceDepthUniform {
     /// [`SURFACE_DEPTH_RESIDENT_BASE_MIP`], later whatever streaming has kept
     /// resident — and is clamped against `specular_mip_count` so the DDA can
     /// never `textureLoad` past the end of the uploaded chain.
+    ///
+    /// The authored depth is also rejected if non-finite and clamped to
+    /// [`surface_depth_max_authored`]. `SurfaceDepth::depth_meters` is a public
+    /// field and `is_enabled()` only tests `> 0.0`, which admits `+inf`; an
+    /// infinite scale makes the march's `solid` a NaN on every zero-depth texel
+    /// — the most common texel in a cobblestone map — and a NaN compares false
+    /// against both hit rules. The march terminates on its integer budget
+    /// regardless, so this is defence in depth rather than the only guard, but
+    /// it is what keeps the ceiling a real constraint on the value reaching the
+    /// GPU instead of an assertion about one hardcoded table.
     pub fn resolve(
         depth: SurfaceDepth,
         quality: SurfaceDepthQuality,
@@ -639,7 +643,10 @@ pub fn march_surface_depth(
         // `max_steps` iterations whatever `solid` is — including a NaN, which
         // compares false against both hit rules.
         if walked + 1 >= steps_allowed {
-            break (z_enter, entry_face, entry_bias);
+            // The TOP face, not the entry face — see the WGSL mirror: `z_enter`
+            // is above the solid in both the cell just left and the one just
+            // entered, so no wall exists at this depth to report.
+            break (z_enter, SurfaceDepthFace::Top, [0.0, 0.0]);
         }
         if t_max[0] <= t_max[1] {
             cell[0] += step[0];
@@ -1181,6 +1188,41 @@ mod tests {
         );
     }
 
+    /// A starved march must not invent a face the field does not contain.
+    ///
+    /// Budget exhaustion used to resolve with the ENTRY face — the wall of the
+    /// boundary just crossed. But the loop only reaches the budget test after
+    /// BOTH hit rules failed, which means the ray entered this cell ABOVE its
+    /// solid: there is no wall at that depth to report. On a uniform field,
+    /// which has no side walls anywhere, it still returned one.
+    ///
+    /// A phantom side face is not cosmetic. `hit_top` goes false, so the
+    /// consumer drops the normal map, engages the geometric-plane light gate,
+    /// and starts a self-shadow march from a point in open air — all across a
+    /// view-angle isoline that sweeps as the camera turns.
+    #[test]
+    fn a_starved_march_reports_no_face_the_field_does_not_have() {
+        // Uniform field: every texel carves to full depth, so the only face
+        // anywhere in it is the top.
+        let values = [1.0f32; 9];
+        let f = field(3, 3, &values);
+        let hit = march_surface_depth(&f, [0.13, 0.77], [5000.0, 0.0], 0.02, 8);
+        assert!(
+            hit.steps + 1 >= 8,
+            "the setup must actually starve the march; it walked {}",
+            hit.steps
+        );
+        assert!(
+            hit.face.is_top(),
+            "a uniform field has only top faces; the march reported {:?}",
+            hit.face
+        );
+        assert_eq!(
+            hit.uv, hit.march_uv,
+            "a top resolution carries no side bias, so the sample UV is the hit UV",
+        );
+    }
+
     #[test]
     fn the_march_terminates_within_the_step_budget_at_any_angle() {
         let values = [0.4, 0.9, 0.2, 1.0, 0.55, 0.05, 0.7, 0.3, 0.85];
@@ -1334,6 +1376,57 @@ mod tests {
         assert_eq!(surface_depth_fade(0.0, 10.0, 0.0), 1.0);
     }
 
+    /// A non-finite authored depth must never reach the GPU.
+    ///
+    /// `is_enabled()` is `> 0.0`, which rejects NaN and zero but ADMITS `+inf`.
+    /// An infinite scale makes the march's `solid` a NaN on every zero-depth
+    /// texel, and a NaN compares false against both hit rules.
+    #[test]
+    fn a_non_finite_authored_depth_resolves_flat() {
+        for bad in [f32::INFINITY, f32::NAN] {
+            let depth = SurfaceDepth {
+                depth_meters: bad,
+                quantize_levels: 8,
+                max_steps: 16,
+                fade_distance_meters: 10.0,
+            };
+            let resolved = SurfaceDepthUniform::resolve(
+                depth,
+                SurfaceDepthQuality::High,
+                true,
+                4,
+                0,
+            );
+            assert_eq!(
+                resolved,
+                SurfaceDepthUniform::FLAT,
+                "an authored depth of {bad} must resolve flat, not reach the shader",
+            );
+        }
+    }
+
+    /// The ceiling is a real constraint on the value that reaches the GPU, not
+    /// an assertion about one hardcoded table.
+    #[test]
+    fn an_over_deep_authored_depth_is_clamped_to_the_ceiling() {
+        let ceiling = surface_depth_max_authored();
+        let depth = SurfaceDepth {
+            depth_meters: ceiling * 10.0,
+            quantize_levels: 8,
+            max_steps: 16,
+            fade_distance_meters: 10.0,
+        };
+        let resolved =
+            SurfaceDepthUniform::resolve(depth, SurfaceDepthQuality::High, true, 4, 0);
+        assert!(
+            resolved.depth.depth_meters <= ceiling,
+            "{} exceeds the ceiling {ceiling}",
+            resolved.depth.depth_meters,
+        );
+        // Still carving — the clamp bounds the depth, it does not disable it.
+        assert!(resolved.has_depth);
+    }
+
     #[test]
     fn ambient_occlusion_darkens_only_with_depth() {
         assert_eq!(surface_depth_ambient_occlusion(0.0, 0.02, 1.0), 1.0);
@@ -1367,9 +1460,12 @@ mod tests {
             // Post-fade inputs: the hit stays at the bottom of a shallower carve.
             let scale = 0.02 * fade;
             let ao = surface_depth_ambient_occlusion(scale, scale, fade);
+            // STRICTLY weaker. `>=` passes on a CONSTANT function, which is
+            // exactly what the unfaded formula was: every iteration returned
+            // the same 0.25 and this loop saw nothing wrong.
             assert!(
-                ao >= previous - 1e-6,
-                "occlusion must weaken as the carve fades: {ao} < {previous} at fade {fade}"
+                ao > previous,
+                "occlusion must weaken STRICTLY as the carve fades: {ao} is not above {previous} at fade {fade}"
             );
             previous = ao;
         }

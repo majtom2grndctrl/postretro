@@ -30,10 +30,18 @@ through 5 are otherwise complete and committed.
    minimal one-map project — a `sdk-dist` against this repository's own project
    re-bakes `stress-warren-hallway-inspection`, which cost three hours, and the
    owner has excluded starting another.
-3. **The review track** — one `opus` pass over the whole diff: find, filter, fix,
-   stopping at anything that would change a decision here.
-4. **`/preflight`** as the single full-suite gate. Expect its format check to
-   report three files that are red on `main` and untouched by this branch.
+3. ~~The review track.~~ **Done.** Eleven classes found and fixed; see
+   *Decisions the review left open*, below, for what it deliberately did not
+   touch. `cargo test --workspace --all-targets`: 7732 passed, 0 failed.
+   It also closed item 2 above: `sdk-dist` ran for the first time against a
+   throwaway one-map project, producing a correct bundle with one publication
+   lock removed and none left — D13 confirmed live rather than by unit test —
+   and the bundle's own `dist` then ran from the bundle root with **no cargo on
+   `PATH` and no flags at all**, producing a working payload. That is the thing
+   this whole contract exists to make possible.
+4. **`/preflight`** as the single full-suite gate. **Owner-invoked only** — it
+   cannot be run on the model's behalf. Expect its format check to report three
+   files that are red on `main` and untouched by this branch.
 5. **Move this contract to `context/plans/done/`,** or delete it once
    `context/lib/` has absorbed everything durable.
 
@@ -632,6 +640,34 @@ D3 defect. These are the edges it could not reach.
   claimed `dist` copies `core/` *out of the project root*, which D14's correction
   had already made false. Both are rewritten to say engine assets come from the
   install.
+
+## Decisions the review left open
+
+Each is a real finding the review declined to fix because fixing it would settle
+something this contract does not cover. None blocks landing.
+
+- **A recipe `source` outside the mod tree degrades to a printed note**
+  (`sdk_dist/readme.rs`). The bundle then ships a marker naming a file it does
+  not contain, and the recipient's own `dist` fails at stage 3 with
+  `missing map source`. Either copy the source into the bundle and repoint the
+  recipe, or refuse at `sdk-dist` time. The code comment currently blesses the
+  silence.
+- **D12 has an unstated exception.** `docs/level_design.md` runs
+  `cargo run --release --manifest-path tools/texture-tool/Cargo.toml`, because
+  `texture-tool` ships as Rust source and genuinely needs a toolchain. D12 as
+  written is unconditional and the grep gate cannot see it. Amend D12 to name
+  the exception, or move those instructions into `tools/texture-tool/README.md`.
+- **The engine's own diagnostics still say `cargo run -p xtask -- run …`**
+  (`scripting-core/src/runtime/{compile,watcher,staged_manifest}.rs`). Correct
+  for an engine developer, unrunnable for the bundle holder who will also see
+  them — the same defect class this branch exists to close, one layer down.
+- **`mint-identity` and `run` accept helper flags they ignore.** `Overrides`
+  recognises all six for every subcommand by construction; `--scripts-build` on
+  `mint-identity` is the pointed case, since that function's own usage text
+  tells the reader `scripts-build` is what matters.
+- **`prl-build --baked-root` swallows a following `--flag` as its value**, where
+  the engine's parser rejects one. Its sibling options share the shape, so
+  fixing this one alone would leave the compiler inconsistent with itself.
 
 ## Open questions
 

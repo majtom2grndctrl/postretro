@@ -55,17 +55,17 @@ Per-texel greater-than-four overlap on today's content is **unmeasured**.
 plus a global drop. `stress-warren-lit`'s 157 lights is a map-wide count, not a
 per-texel one. No bug, review finding, or modder report has contradicted that since.
 
-The predecessor brief stated this plainly — "rare and unmeasured on today's content
-(a build-ahead lift, not an observed defect)" — and the epic that replaced it deleted
-the sentence without replacing it, while making the measurement a deliverable of the
-fix it was meant to justify. The `/validate-plan` *Reshape* caught that inversion.
-`shadowmask-atlas-compress-at-rest` now ships the `--verbose` overlap instrumentation,
-and this brief is gated on what it reports.
+So this is a build-ahead lift, and it has to be named as one. The inversion to avoid
+is letting the justifying measurement become a deliverable of the fix — that leaves
+the premise unfalsifiable until the work is already done.
+`shadowmask-atlas-compress-at-rest` ships the `--verbose` overlap instrumentation, and
+this brief is gated on what it reports.
 
 ## Why BC5 pairs dominate BC4 planes
 
-The predecessor brief proposed single-channel BC4 **planes**: one mask per array
-layer, carrying `floor(256 / layer_count)` masks per texel.
+Single-channel BC4 **planes** — one mask per array layer — carry
+`floor(256 / layer_count)` masks per texel. That is the obvious first shape, and it is
+dominated.
 
 `crates/level-compiler/src/bc5.rs` documents and implements BC5 as exactly two BC4
 blocks in one 16-byte block — per 4×4 block, a BC4 R block then a BC4 G block. So
@@ -128,10 +128,9 @@ array-layer headroom.
 slot `s` addressing group `s / 4` and channel `s % 4` — reaches the same
 `4 × floor(256 / layer_count)` mask capacity at **one** binding, today, with no
 encoder and the existing channel-select decode. The second binding buys that capacity
-at half the bytes. Capacity is not blocked; capacity-with-compression is. The epic
-that preceded these briefs presented the two-texture layout as the capacity endgame
-behind a two-epic chain, which overstated the block — the `/validate-plan` *Reshape*
-caught it from the capacity table's own arithmetic.
+at half the bytes. Capacity is not blocked; capacity-with-compression is. Reading
+the two-texture layout as *the* capacity endgame overstates the block, and the
+capacity table's own arithmetic is what shows it.
 
 ## Why consolidation must sequence behind the streaming epic
 
@@ -201,9 +200,8 @@ sampled value changes.
 
 The real cost is **one sample per fragment becoming one per contributing static
 light**, behind the early-outs already gating those loops. This is intrinsic to
-capacity and survives into every layout in the brief's table — it is the feature's
-price, not a codec artifact, and the predecessor epic omitted it from its spec
-entirely while stating it in research.
+capacity and survives into every layout in the brief's table. It is the feature's
+price rather than a codec artifact, so it belongs in acceptance and not only here.
 
 ## The slot index and its sentinel
 

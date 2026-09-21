@@ -4,10 +4,9 @@ Brief · resumable · reads: `context/lib/rendering_pipeline.md` §4,
 `context/lib/build_pipeline.md` §PRL · §Build Cache, `context/lib/testing_guide.md`
 §Resource bounds
 
-Split from the former `shadowmask-atlas-capacity-and-compression` epic on a
-`/validate-plan` *Reshape*. This brief carries the **certain, unblocked** half —
-the at-rest win. Per-texel mask capacity is `shadowmask-atlas-mask-capacity`, which
-is gated on a measurement this brief takes.
+This brief changes bytes, never masks. Per-texel mask capacity is
+`shadowmask-atlas-mask-capacity`, a separate brief gated on a measurement this one
+takes.
 
 ## Problem
 
@@ -81,7 +80,7 @@ bake, and it is how the landing note states what this brief actually bought.
 
 - **Per-texel mask capacity above four.** `shadowmask-atlas-mask-capacity`. Greater-than-four
   overlap is rare and unmeasured on today's content — a build-ahead lift, not a
-  reported defect — which is precisely why it is not welded to this certain win.
+  reported defect — so it must not gate a win that is certain.
 - **A BC7 encoder.** `bc7-color-textures` owns BC7. BC7 models a per-block
   cross-channel correlation four independent masks do not have.
 - **Streaming or visibility-driven residency.** `large-map-spatial-residency`.

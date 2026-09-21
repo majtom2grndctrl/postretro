@@ -260,8 +260,15 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
 
     let snippet_code = strip_line_comments(SNIPPET);
     for derivative in [
-        "dpdx", "dpdy", "fwidth", "dpdxFine", "dpdyFine", "dpdxCoarse", "dpdyCoarse",
-        "fwidthFine", "fwidthCoarse",
+        "dpdx",
+        "dpdy",
+        "fwidth",
+        "dpdxFine",
+        "dpdyFine",
+        "dpdxCoarse",
+        "dpdyCoarse",
+        "fwidthFine",
+        "fwidthCoarse",
     ] {
         assert!(
             !snippet_code.contains(&format!("{derivative}(")),
@@ -516,8 +523,7 @@ fn self_shadowing_is_budgeted_and_dynamic_only() {
         ("kinematic brush", &kinematic, "n_dot_l > 0.0"),
     ] {
         assert!(
-            code.contains("contributes && depth_shadow_marches")
-                || code.contains("&& contributes"),
+            code.contains("contributes && depth_shadow_marches") || code.contains("&& contributes"),
             "{label}: the self-shadow march must be gated on the light contributing",
         );
         let at = code

@@ -438,16 +438,47 @@ D3 defect. These are the edges it could not reach.
 None blocking. D1 through D11 were settled with the owner before their
 respective dispatches.
 
-**One awaiting an owner call:** `cargo test -p postretro-level-compiler` has
-**11 failures on unmodified `main`** on this machine, not the one originally
-found — 9 in `pack.rs`, 2 in `cache.rs`. The `pack.rs` ones build temp
-filenames from `std::thread::current().name()`, which under `cargo test` is the
-test path (`pack::tests::…`); `::` is illegal in a Windows filename, so they
-fail with os error 123. The `cache.rs` ones fail setting a file mtime with
-`Access is denied` (os error 5). Both groups are platform artifacts rather than
-product defects, and both are outside every track's scope, but they mean
-preflight's `cargo test` gate cannot go green on this machine without either
-fixing them or accepting a documented exception.
+**The 11 pre-existing `level-compiler` failures, now diagnosed.** They are two
+unrelated causes, and only one of them is confined to test code.
+
+**`cache.rs` (2 failures) — a production defect on Windows, not a test
+artifact.** `StageCache::get` opens the entry with `fs::File::open` — a
+read-only handle — and then calls `set_modified` to bump the entry's mtime for
+LRU. Windows requires `FILE_WRITE_ATTRIBUTES` to set a file time, which a
+read-only handle does not carry, so the call fails with `Access is denied`
+(os error 5). It is wrapped in `let _ =` as best-effort, so **on Windows the
+LRU touch has never worked and nothing reports it**. `prune_to_budget`
+therefore evicts by write time rather than use time — it degrades from LRU to
+FIFO — and the case the code comment says the touch exists to protect (a
+long-stable entry hit every build but never rewritten) is exactly the one
+wrongly evicted. The two failing tests share the cause through their own
+read-only `set_mtime` helper, which is why the production bug stayed masked:
+the test that would catch it fails first, for its own reason.
+
+Verified directly: a standalone program shows `set_modified` returning
+`Err(PermissionDenied, os error 5)` on a handle from `File::open` and `Ok(())`
+on one from `OpenOptions::new().write(true)`.
+
+The careful fix is **not** to open the entry for writing in `get`. That would
+turn a read-only cache directory from "reads fine, no LRU touch" into a total
+cache miss, since the open itself would fail. Keep the read handle read-only
+and perform the touch through a separate short-lived write handle, still
+best-effort — the read path then behaves exactly as it does today and only the
+touch improves.
+
+**`pack.rs` (9 failures) — test-only.** Temp filenames interpolate
+`std::thread::current().name()`, which under `cargo test` is the test path
+(`pack::tests::…`). `::` is illegal in a Windows filename, so the writes fail
+with os error 123. All ten occurrences sit below `mod tests`; no production
+path builds a filename this way. The fix is one shared helper rather than ten
+sanitized copies, sanitizing any character illegal in a path rather than `::`
+specifically, so a test added later cannot reintroduce it. Keep the thread name
+in the result after sanitizing: these land in the shared temp directory, and
+the name is what identifies which test left one behind. `parse.rs` already uses
+`thread::current().id()` for the same purpose and is a usable precedent.
+
+Both land as their own commits on this branch, separate from the distribution
+work, so preflight can go green here without burying them in the diff.
 
 ## Sequencing
 

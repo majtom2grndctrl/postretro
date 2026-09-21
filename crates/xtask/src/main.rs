@@ -401,7 +401,7 @@ fn print_help() {
          CONTENT TOOLING:\n\
            Authoring runs, asset bakes, and the weapon-mount solver live in\n\
            `postretro-tool`, which needs no cargo and ships inside the SDK bundle:\n\
-             cargo run -p postretro-tool -- run content/dev/maps/campaign-test.prl\n\
+             cargo run -p postretro-tool -- run --install-root . content/dev/maps/campaign-test.prl\n\
              cargo run -p postretro-tool -- bake-model-textures <scene.gltf>\n\
              cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> ...\n\
              cargo run -p postretro-tool -- mint-identity content/dev\n\
@@ -410,8 +410,8 @@ fn print_help() {
            first (for example `cargo build -p postretro-sim --bin mint-identity`); and\n\
            its engine-owned trees (core/, sdk/, docs/, tools/) resolve under the install\n\
            root, which a checkout build in target/ cannot derive — `dist` and `sdk-dist`\n\
-           above pass `--install-root` for you, so a direct `dist` invocation needs\n\
-           `--install-root .` from the workspace root.\n\n\
+           above pass `--install-root` for you, so a direct `dist`, `sdk-dist`, or\n\
+           `run` invocation needs `--install-root .` from the workspace root.\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\

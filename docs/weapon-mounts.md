@@ -11,7 +11,7 @@ or mount axes at this stage.
 ```bash
 blender --background --python tools/prop_to_gltf.py -- \
   --input raw/weapons/ar_4.glb \
-  --output content/dev/models/ar_4/model.gltf \
+  --output content/base/models/ar_4/model.gltf \
   --grip 0.0 -0.05 0.12 \
   --scale 0.68
 ```
@@ -29,13 +29,13 @@ They are directions in the **raw-source frame**, before the corrective rotation
 is baked. They are not axes copied from the grip/scale-only output.
 
 ```bash
-bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
-  --weapon content/dev/models/ar_4/model.gltf \
+bin/postretro-tool solve-weapon-mount content/base/models/limitator/model.gltf \
+  --weapon content/base/models/ar_4/model.gltf \
   --mount-joint hand_r \
   --barrel 0 1 0 \
   --up 0 0 1 \
   --raw-source raw/weapons/ar_4.glb \
-  --out content/dev/models/ar_4/model.gltf \
+  --out content/base/models/ar_4/model.gltf \
   --grip 0.0 -0.05 0.12 \
   --scale 0.68
 ```
@@ -70,8 +70,8 @@ persisted Euler is the rotation applied during the final bake.
 Normally, verify the final asset without re-supplying axes or Euler values:
 
 ```bash
-bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
-  --weapon content/dev/models/ar_4/model.gltf \
+bin/postretro-tool solve-weapon-mount content/base/models/limitator/model.gltf \
+  --weapon content/base/models/ar_4/model.gltf \
   --mount-joint hand_r \
   --check
 ```
@@ -96,7 +96,7 @@ paste-ready descriptor value:
 
 ```bash
 bin/postretro-tool solve-weapon-mount --read-muzzle-offset \
-  content/dev/models/ar_4/model.gltf
+  content/base/models/ar_4/model.gltf
 ```
 
 The tool prints `muzzleOffset: [x, y, z]`. Copy the array into the weapon

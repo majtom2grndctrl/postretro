@@ -64,14 +64,19 @@ fn try_main() -> Result<i32, String> {
 const HELP: &str = r"Postretro content tool
 
 Every command finds its project by walking up from the working directory for
-`postretro.toml`, the way cargo finds `Cargo.toml`. Pass --manifest <path> to
-name one instead.
+`postretro.toml`, the way cargo finds `Cargo.toml`. Pass --project <dir> or
+--manifest <path> to name one instead.
+
+The engine-owned trees (core/, sdk/, docs/, tools/) are a separate lookup that
+never consults the project: they resolve under the install root, which defaults
+to this executable's own directory (its parent, from a bundle's bin/). Name it
+with --install-root <dir> when that derivation cannot see it.
 
 USAGE:
-  postretro-tool dist [--manifest <path>] [--out <dir>]
-  postretro-tool sdk-dist [--manifest <path>] [--out <dir>]
-  postretro-tool run [--manifest <path>] [engine args...]
-  postretro-tool bake-model-textures <scene.gltf> [--manifest <path>]
+  postretro-tool dist [--project <dir> | --manifest <path>] [--install-root <dir>] [--out <dir>]
+  postretro-tool sdk-dist [--project <dir> | --manifest <path>] [--install-root <dir>] [--out <dir>]
+  postretro-tool run [--project <dir> | --manifest <path>] [--install-root <dir>] [engine args...]
+  postretro-tool bake-model-textures <scene.gltf> [--project <dir> | --manifest <path>]
   postretro-tool solve-weapon-mount --read-muzzle-offset <viewmodel.gltf>
   postretro-tool solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [options]
   postretro-tool mint-identity <mod-root>

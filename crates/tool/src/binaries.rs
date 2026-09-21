@@ -77,7 +77,17 @@ impl Helper {
             Self::ReleaseEngine => &["postretro-release", "postretro"],
             // A bundle's authoring engine sits at the bundle root, one level up
             // from `bin/`; a workspace build sits beside the tool.
-            Self::AuthoringEngine => &["postretro", "../postretro", "postretro-release"],
+            //
+            // `postretro-release` is deliberately *not* a fallback here, unlike
+            // the mirrored preference above. The authoring engine must be a
+            // debug build with `--features dev-tools` — TS auto-compile and hot
+            // reload are gated on debug assertions, and a release engine links
+            // no TypeScript compiler at all — so substituting the release binary
+            // would hand `sdk-dist` an engine that cannot serve the loop its own
+            // README promises, and hand `run` one that silently stops reloading.
+            // Nothing downstream can tell the two apart, so an absent authoring
+            // engine is an error naming `--engine` instead.
+            Self::AuthoringEngine => &["postretro", "../postretro"],
             Self::PrlBuild => &["prl-build"],
             Self::ScriptsBuild => &["scripts-build"],
             Self::MintIdentity => &["mint-identity"],
@@ -288,8 +298,22 @@ mod tests {
             [
                 PathBuf::from("/bundle/bin").join(binary_name("postretro")),
                 PathBuf::from("/bundle").join(binary_name("postretro")),
-                PathBuf::from("/bundle/bin").join(binary_name("postretro-release")),
             ]
+        );
+    }
+
+    /// The mirror of `release_engine_prefers_the_bundled_release_name`, and the
+    /// direction that used to be unguarded. An authoring engine is a debug
+    /// `--features dev-tools` build; the release binary links no TypeScript
+    /// compiler, so a bundle assembled from it would promise a hot-reload loop
+    /// it cannot serve, with nothing downstream able to tell.
+    #[test]
+    fn the_authoring_engine_never_falls_back_to_a_release_build() {
+        assert!(
+            !Helper::AuthoringEngine
+                .candidates()
+                .contains(&"postretro-release"),
+            "a release engine cannot serve the authoring loop"
         );
     }
 

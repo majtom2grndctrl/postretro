@@ -31,7 +31,7 @@ The source glTF's textures must resolve from its own directory (stage the file
 where its `textures/` siblings live). After export, bake the atlas into the
 runtime `.prm` cache:
 
-    cargo run -p xtask -- bake-model-textures <out.gltf>
+    postretro-tool bake-model-textures <out.gltf>
 """
 import bpy, sys, math
 

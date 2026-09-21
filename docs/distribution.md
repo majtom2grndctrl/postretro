@@ -90,17 +90,27 @@ bin/postretro-tool dist
 The payload lands at `dist/<name>/`. With the manifest above, that is
 `dist/my-game/`.
 
-Two optional flags:
+Four optional flags:
 
 ```bash
+bin/postretro-tool dist --project path/to/game
 bin/postretro-tool dist --manifest path/to/postretro.toml
 bin/postretro-tool dist --out dist/nightly
+bin/postretro-tool dist --install-root path/to/engine-install
 ```
 
-`--manifest` names a project marker explicitly instead of searching for one; its
-parent directory becomes the project root. `--out` selects the parent directory
-the payload folder is created in. Both resolve a relative path from the
-directory you ran the command in.
+`--project` names the project directory instead of searching for one, and
+`--manifest` names its marker file; give one or the other, not both. `--out`
+selects the parent directory the payload folder is created in. All three resolve
+a relative path from the directory you ran the command in.
+
+`--install-root` names the engine install the payload's `core/` tree is copied
+from — the engine's own UI descriptors, boot splash, and font licences. You do
+not normally pass it: the tool derives the install from its own location, which
+is this bundle's root. Pass it if the tool reports `engine-owned tree `core/` not
+found`, which means it is running from somewhere that is not an install. The
+install and your project are separate lookups in both directions: your game never
+supplies engine assets, and the install never supplies your game.
 
 **The resulting payload root must lie strictly inside the project's own `dist/`
 directory.** `--out dist/nightly` is fine; `--out build`, `--out ..`, `--out .`,

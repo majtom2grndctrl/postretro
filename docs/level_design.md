@@ -9,7 +9,7 @@ Levels are made in **TrenchBroom** and compiled to `.prl` files that the engine 
 ### Setting Up TrenchBroom
 
 1. Open TrenchBroom and load the Postretro game definition: `sdk/TrenchBroom/postretro.fgd`.
-2. Set the texture path to the `textures/` directory inside your content root. Throughout this document `<content-root>` means that directory — `content/base` in an SDK bundle, and whatever `mod_root` your `postretro.toml` names in your own project.
+2. Set the texture path to the `textures/` directory inside your content root. Throughout this document `<content-root>` means the content root itself, not its `textures/` subdirectory — `content/base` in an SDK bundle, and whatever `mod_root` your `postretro.toml` names in your own project.
 3. Author your map in Quake 1/2 `.map` format. Both Standard and Valve 220 UV projections work and can coexist in the same file.
 
 ### Compiling Your Map
@@ -28,7 +28,7 @@ bin/prl-build <content-root>/maps/input.map \
 |------|---------|-------------|
 | `-o <PATH>` | same as input, `.prl` extension | Where to write the compiled file |
 | `--baked-root <DIR>` | derived from the map's location | The directory that **contains** `materials/` — where the compiled texture sidecars go. Point it at your project's `baked/`. See below. |
-| `--cache-dir <DIR>` | beside the map | Disposable compiler scratch. Name it, or it lands among your `.map` sources. |
+| `--cache-dir <DIR>` | `.build-caches/prl-cache` beside the map | Disposable compiler scratch. Name it, or it lands among your `.map` sources. |
 | `--lightmap-density <METERS>` | `0.04` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. |
 | `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |

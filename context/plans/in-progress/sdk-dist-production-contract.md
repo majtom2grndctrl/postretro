@@ -37,10 +37,24 @@ through 5 are otherwise complete and committed.
 5. **Move this contract to `context/plans/done/`,** or delete it once
    `context/lib/` has absorbed everything durable.
 
-An artifact worth keeping in mind when reading item 2: the engine is a windowed
-application, so launching it with redirected stdout and stderr makes it exit
-with code 1 shortly after reaching the first frame. Run plain, it stays up. That
-exit is a measurement artifact, not a payload defect.
+Two things about measuring a payload boot, because the first hid the second.
+
+The engine is a windowed application, so launching it with redirected stdout and
+stderr makes it exit with code 1 shortly after reaching the first frame. Run
+plain, it stays up. That exit *is* a measurement artifact.
+
+A launcher that exits code 1 **immediately**, writing nothing, is not. The
+shipped launcher named the engine bare, which `cmd` resolves against `PATH` and
+only conditionally against the working directory; Git for Windows exports
+`NoDefaultCurrentDirectoryInExePath`, which removes that fallback. Every
+packaging check passed and the sweep was clean, while the payload was
+unstartable by the one mechanism a recipient uses. Confirmed directly against
+`dist/postretro-dev/`: with that variable set, the shipped launcher exits 1 at
+once and a `%~dp0`-qualified copy starts the engine and keeps running.
+
+The lesson for anyone verifying a payload: **boot it through its launcher**.
+Running the engine binary directly bypasses the exact layer this failed in, and
+will report a broken payload as healthy — which is what happened here.
 
 Known unclosed at pause, needing no build to decide:
 

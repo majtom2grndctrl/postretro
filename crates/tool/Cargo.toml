@@ -1,0 +1,25 @@
+[package]
+name = "postretro-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Shippable Postretro content tooling: distributions, authoring runs, asset bakes"
+license.workspace = true
+
+[[bin]]
+name = "postretro-tool"
+path = "src/main.rs"
+
+[dependencies]
+# Content bakes the tool performs itself: model base-color `.prm` sidecars.
+postretro-level-compiler = { workspace = true }
+# `.prm` cache-key naming plus the shared glTF base-color resolver.
+postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
+# Rigid weapon-mount solving reads skinned models through the CPU loader.
+postretro-model = { workspace = true }
+glam = { workspace = true }
+# Keys the entry-script scratch directory by canonical manifest path.
+blake3 = { workspace = true }
+# `postretro.toml` — the project marker and distribution manifest.
+serde = { workspace = true }
+toml = { workspace = true }

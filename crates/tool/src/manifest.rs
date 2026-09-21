@@ -1,7 +1,10 @@
-//! xtask-owned distribution manifest schema and boundary validation.
+//! `postretro.toml` — the project marker's schema and boundary validation.
 //!
-//! Paths intentionally remain slash-separated strings. The resolver compares a
-//! recipe output directly with literals scanned from the emitted entry script.
+//! The same file identifies a Postretro project (`project.rs`) and describes the
+//! distribution it builds, so its paths are project-relative rather than
+//! workspace-relative. They intentionally remain slash-separated strings: the
+//! resolver compares a recipe output directly with literals scanned from the
+//! emitted entry script.
 //!
 //! See: context/lib/build_pipeline.md §Distribution packaging
 
@@ -26,7 +29,7 @@ pub(crate) struct Package {
 pub(crate) struct Recipe {
     /// The mod-root-relative `maps/<name>.prl` literal emitted by the entry script.
     pub(crate) output: String,
-    /// An optional workspace-relative `.map` source path.
+    /// An optional project-relative `.map` source path.
     pub(crate) source: Option<String>,
     /// Additional, individual `prl-build` arguments supplied by the manifest.
     pub(crate) args: Vec<String>,
@@ -58,9 +61,9 @@ struct RawRecipe {
 impl Manifest {
     pub(crate) fn read(path: &Path) -> Result<Self, String> {
         let contents = std::fs::read_to_string(path)
-            .map_err(|error| format!("read distribution manifest {}: {error}", path.display()))?;
+            .map_err(|error| format!("read project manifest {}: {error}", path.display()))?;
         Self::parse(&contents)
-            .map_err(|error| format!("parse distribution manifest {}: {error}", path.display()))
+            .map_err(|error| format!("parse project manifest {}: {error}", path.display()))
     }
 
     pub(crate) fn parse(contents: &str) -> Result<Self, String> {
@@ -133,7 +136,7 @@ fn validate_package(package: &RawPackage) -> Result<(), String> {
 fn validate_recipe_path(path: &str, field: &str, label: &str) -> Result<(), String> {
     if slash_components(path).is_none() {
         return Err(format!(
-            "{label}: {field} must be a workspace-relative `/` path"
+            "{label}: {field} must be a project-relative `/` path"
         ));
     }
     Ok(())
@@ -158,11 +161,31 @@ fn is_normal_component(component: &str) -> bool {
         && !component.contains(['/', '\\', ':'])
 }
 
+/// Arguments a recipe may never supply, because the tool owns them.
+///
+/// `-o`, `--release`, and the TUI switches decide *what kind of bake* a
+/// distribution runs, and `--release` is the only shippable one. `--baked-root`
+/// and `--cache-dir` are the pair that must stay consistent across the compiler
+/// and the engine: prl-build reads the last occurrence of each, so a recipe
+/// naming one would silently override the tool's and reintroduce exactly the
+/// placeholder degradation the flags exist to close.
+const TOOL_OWNED_ARGS: [&str; 6] = [
+    "-o",
+    "--release",
+    "--tui",
+    "--no-tui",
+    "--baked-root",
+    "--cache-dir",
+];
+
 fn validate_args(args: &[String], label: &str) -> Result<Option<f32>, String> {
     let mut density = None;
     for (index, arg) in args.iter().enumerate() {
-        if matches!(arg.as_str(), "-o" | "--release" | "--tui" | "--no-tui") {
-            return Err(format!("{label}: args may not contain `{arg}`"));
+        let owned = TOOL_OWNED_ARGS.iter().find(|owned| {
+            arg == *owned || arg.split_once('=').is_some_and(|(flag, _)| flag == **owned)
+        });
+        if let Some(owned) = owned {
+            return Err(format!("{label}: args may not contain `{owned}`"));
         }
         if arg.starts_with("--lightmap-density=") {
             return Err(format!(
@@ -316,6 +339,30 @@ args = ["--lightmap-density", "0.02"]
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("recipe `maps/a.prl`"), "{error}");
             assert!(error.contains(arg), "{error}");
+        }
+    }
+
+    /// The tool passes the materials root and the stage cache directory itself,
+    /// on both sides of the compiler/engine contract. prl-build takes the last
+    /// occurrence of each, so a recipe that named one would win — and silently
+    /// send the `.prm` sidecars somewhere the engine does not read.
+    #[test]
+    fn rejects_the_root_and_cache_flags_the_tool_owns_in_both_spellings() {
+        for arg in [
+            "--baked-root",
+            "--baked-root=/elsewhere/baked",
+            "--cache-dir",
+            "--cache-dir=/elsewhere/cache",
+        ] {
+            let input = format!(
+                "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\nargs = [\"{arg}\", \"x\"]\n"
+            );
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("recipe `maps/a.prl`"), "{error}");
+            assert!(
+                error.contains("--baked-root") || error.contains("--cache-dir"),
+                "{error}"
+            );
         }
     }
 

@@ -98,6 +98,26 @@ impl StageCache {
         })
     }
 
+    /// Mark an entry as freshly used, so the LRU prune treats it as recent.
+    ///
+    /// The touch needs a handle of its own. Windows requires write access to set
+    /// a file time, and `File::open` yields a read-only one — so doing this
+    /// through the read handle fails with `Access is denied`, and because the
+    /// result is discarded, it failed silently for every cache hit on Windows.
+    /// The prune then ordered by write time rather than use time, evicting
+    /// exactly the long-stable entries this touch exists to protect.
+    ///
+    /// Opening the *read* handle for writing instead would be worse: a cache
+    /// directory the process may read but not write would stop being readable at
+    /// all. So the touch takes a second, short-lived handle and stays
+    /// best-effort — a failure here costs prune accuracy, never the read.
+    fn touch_for_lru(path: &Path) {
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|entry| entry.set_modified(SystemTime::now()));
+    }
+
     /// Load and validate an entry. Missing entries return `None` silently.
     /// Corrupted entries (short read, length mismatch, hash mismatch) log a
     /// warning and return `None` so the stage falls through to a rebuild.
@@ -119,9 +139,7 @@ impl StageCache {
             }
         };
 
-        // Mark the entry as freshly used for LRU. Best-effort: a failure here
-        // only makes the prune slightly less accurate, never breaks the read.
-        let _ = file.set_modified(SystemTime::now());
+        Self::touch_for_lru(&path);
 
         let mut header = [0u8; HEADER_BYTES];
         if let Err(err) = file.read_exact(&mut header) {
@@ -782,11 +800,53 @@ mod tests {
 
     /// Overwrite an entry's mtime so prune-ordering tests are deterministic
     /// instead of depending on wall-clock write order.
+    ///
+    /// Opened for writing, not with `File::open`: Windows refuses to set a file
+    /// time through a read-only handle. The read-only version of this helper
+    /// failed on Windows for the same reason `StageCache::touch_for_lru` did,
+    /// which is what kept that production defect looking like a test artifact.
     fn set_mtime(path: &Path, t: SystemTime) {
-        fs::File::open(path)
-            .expect("open entry to set mtime")
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open entry for writing to set mtime")
             .set_modified(t)
             .expect("set mtime");
+    }
+
+    /// The LRU touch must actually move the entry's mtime on every platform.
+    ///
+    /// Regression: `get` performed the touch through its read handle, which
+    /// Windows rejects, and discarded the error — so every cache hit there left
+    /// the mtime untouched and `prune_to_budget` silently degraded from LRU to
+    /// FIFO. The prune-ordering tests below cover the *consequence*, but each
+    /// one also writes an mtime itself, so they could not distinguish a broken
+    /// touch from a broken helper. This asserts the mechanism directly.
+    #[test]
+    fn get_touch_moves_the_entry_mtime_through_a_writable_handle() {
+        let dir = fresh_temp_dir("touch_mechanism");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let key = CacheKey::new("lightmap_layer", 1, b"touched");
+        cache.put(&key, b"payload");
+
+        let entry = dir.join(key.as_filename());
+        let stale = SystemTime::now() - std::time::Duration::from_secs(3600);
+        set_mtime(&entry, stale);
+
+        assert!(cache.get(&key).is_some(), "warm-up read must hit");
+
+        let after = fs::metadata(&entry)
+            .expect("entry metadata")
+            .modified()
+            .expect("entry mtime");
+        assert!(
+            after > stale,
+            "a cache hit must bump the entry mtime; it stayed at {stale:?}, \
+             which means the LRU touch silently did nothing and the prune \
+             orders by write time instead of use time",
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

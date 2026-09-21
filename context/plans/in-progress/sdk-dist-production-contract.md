@@ -12,24 +12,35 @@
 Everything here needs the machine and is deliberately not running. Tracks 1
 through 5 are otherwise complete and committed.
 
-1. **Two `level-compiler` fixes** (see *Known-red*, below). The `cache.rs` one is
-   a real Windows product defect — the build cache's LRU touch has never worked
-   there — and its fix must go through a separate short-lived write handle, not
-   by opening the entry for writing in `get`. The `pack.rs` one is test-only and
-   wants a single shared helper, not ten sanitized copies. Both must wait for
-   the stress-map bake to exit, because Windows will not let `prl-build.exe` be
-   rebuilt while a copy runs.
-2. **Track 3's outstanding acceptance:** `sdk-dist` has never executed; the
-   `bin/` listing, the bundle's own `dist`, and a payload boot are unverified.
-   Verify bundle assembly against a minimal project first and keep the real
-   payload for the boot check, rather than paying a six-level release bake three
-   more times.
+1. ~~Two `level-compiler` fixes.~~ **Done.** The `cache.rs` LRU touch now takes
+   a second short-lived write handle, with a test asserting the mechanism rather
+   than its consequence; `pack.rs` routes all ten temp paths through one helper
+   that sanitizes every character illegal in a path component.
+   `cargo test -p postretro-level-compiler --bin prl-build`: 1233 passed, 0
+   failed, down from 11 failures.
+2. **Track 3's outstanding acceptance — partly done.** The workspace `dist`
+   completed: six levels baked, marker removed and swept, and the payload boots
+   with content root `content/base`, the splash loading from `core/`, no
+   tree-asset or placeholder warnings, reaching `first_level_frame`. That payload
+   predates D13/D14/D15, so it still carries ten `.prl.pack.lock` files; the
+   layout it proves is current, the pack-lock behaviour is not.
+   **Still unverified:** `sdk-dist` has never executed once, so its assembly,
+   bundle-manifest emission, sweep and README rest on unit tests alone; the
+   `bin/` listing and the bundle's own `dist` follow from it. Do this against a
+   minimal one-map project — a `sdk-dist` against this repository's own project
+   re-bakes `stress-warren-hallway-inspection`, which cost three hours, and the
+   owner has excluded starting another.
 3. **The review track** — one `opus` pass over the whole diff: find, filter, fix,
    stopping at anything that would change a decision here.
 4. **`/preflight`** as the single full-suite gate. Expect its format check to
    report three files that are red on `main` and untouched by this branch.
 5. **Move this contract to `context/plans/done/`,** or delete it once
    `context/lib/` has absorbed everything durable.
+
+An artifact worth keeping in mind when reading item 2: the engine is a windowed
+application, so launching it with redirected stdout and stderr makes it exit
+with code 1 shortly after reaching the first frame. Run plain, it stays up. That
+exit is a measurement artifact, not a payload defect.
 
 Known unclosed at pause, needing no build to decide:
 

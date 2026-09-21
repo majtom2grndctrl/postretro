@@ -12,19 +12,6 @@ use super::resolve::{EntryExt, Resolved, is_prm_filename};
 
 pub(crate) const MARKER_NAME: &str = ".dist-incomplete";
 
-/// Where a distribution publishes the developer's mod, whatever the project
-/// calls its own mod root.
-///
-/// Two `/`-separated components, which is what keeps the runtime's grandparent
-/// derivation resolving `<payload>/baked/materials` (`build_pipeline.md`
-/// §Baked texture mips). It is also the root the engine falls back to reading
-/// as a mounted game, so a payload is a game rather than a copy of whichever
-/// directory happened to hold the sources. Level paths stay mod-root-relative,
-/// so nothing expressed against the *source* mod root — the scanned
-/// `maps/<name>.prl` literals, the completion marker's lines, the runtime
-/// catalog — changes when a project publishes here under another name.
-pub(crate) const PAYLOAD_MOD_ROOT: &str = "content/base";
-
 /// Replace any prior payload with an empty root carrying the completion marker.
 pub(crate) fn replace_payload_root(
     output_root: &Path,
@@ -529,10 +516,14 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        EntryExt, MARKER_NAME, PAYLOAD_MOD_ROOT, Resolved, copy_prm_tree, is_pack_lock,
-        remove_pack_locks, replace_existing_payload_with, should_exclude, sweep_payload,
-        write_marker,
+        EntryExt, MARKER_NAME, Resolved, copy_prm_tree, is_pack_lock, remove_pack_locks,
+        replace_existing_payload_with, should_exclude, sweep_payload, write_marker,
     };
+
+    /// The published mod root these sweep tests build under. A distribution now
+    /// honors the project's declared mod root; the sweep only cares that it is a
+    /// two-component path, so this stands in for whatever a project names.
+    const PAYLOAD_MOD_ROOT: &str = "content/base";
 
     /// Build the smallest payload the sweep accepts: one baked level and the
     /// emitted entry script at the published mod root.

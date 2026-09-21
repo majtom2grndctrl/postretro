@@ -12,6 +12,19 @@ use super::resolve::{EntryExt, Resolved, is_prm_filename};
 
 pub(crate) const MARKER_NAME: &str = ".dist-incomplete";
 
+/// Where a distribution publishes the developer's mod, whatever the project
+/// calls its own mod root.
+///
+/// Two `/`-separated components, which is what keeps the runtime's grandparent
+/// derivation resolving `<payload>/baked/materials` (`build_pipeline.md`
+/// §Baked texture mips). It is also the root the engine falls back to reading
+/// as a mounted game, so a payload is a game rather than a copy of whichever
+/// directory happened to hold the sources. Level paths stay mod-root-relative,
+/// so nothing expressed against the *source* mod root — the scanned
+/// `maps/<name>.prl` literals, the completion marker's lines, the runtime
+/// catalog — changes when a project publishes here under another name.
+pub(crate) const PAYLOAD_MOD_ROOT: &str = "content/base";
+
 /// Replace any prior payload with an empty root carrying the completion marker.
 pub(crate) fn replace_payload_root(
     output_root: &Path,
@@ -455,7 +468,43 @@ mod tests {
 
     use super::{
         EntryExt, MARKER_NAME, copy_prm_tree, replace_existing_payload_with, should_exclude,
+        write_marker,
     };
+
+    /// The marker's format is read by tooling outside this crate, so it is a
+    /// contract rather than a convenience: the stage line first, then one
+    /// outstanding level per line as a mod-root-relative `maps/<name>.prl` with
+    /// `/` separators — unchanged by where the payload publishes the mod.
+    #[test]
+    fn completion_marker_names_the_stage_then_one_relative_level_per_line() {
+        let root = unique_temp_dir();
+        let payload_root = root.join("postretro-dev");
+        fs::create_dir_all(&payload_root).expect("payload root created");
+
+        write_marker(
+            &payload_root,
+            &root,
+            "postretro-dev",
+            "stage 6",
+            &["maps/arena.prl".to_string(), "maps/e1m1.prl".to_string()],
+        )
+        .expect("marker written");
+
+        assert_eq!(
+            fs::read_to_string(payload_root.join(MARKER_NAME)).expect("marker readable"),
+            "stage 6\nmaps/arena.prl\nmaps/e1m1.prl\n"
+        );
+
+        // A finished run's marker still carries its status line, so a truncated
+        // write stays detectable.
+        write_marker(&payload_root, &root, "postretro-dev", "stage 7", &[])
+            .expect("final marker written");
+        assert_eq!(
+            fs::read_to_string(payload_root.join(MARKER_NAME)).expect("marker readable"),
+            "stage 7\n"
+        );
+        remove_temp_dir(&root);
+    }
 
     fn mod_root() -> PathBuf {
         PathBuf::from("content/dev")

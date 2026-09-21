@@ -22,6 +22,7 @@ members = [
     "crates/script-compiler",
     "crates/net",
     "crates/test-log-capture",
+    "crates/tool",
     "crates/xtask",
 ]
 resolver = "2"

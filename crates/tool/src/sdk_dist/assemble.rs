@@ -50,6 +50,16 @@ pub(super) fn assemble_bundle(
     println!("Stage 5: assemble content-complete bundle tree");
     guard_payload_root(target.bundle_root, project.root())
         .map_err(|error| format!("sdk-dist stage 5: {error}"))?;
+    // Resolved before the delete below. Each is one `is_dir` check, and a wrong
+    // or missing install root would otherwise cost the previous good bundle
+    // before anything diagnosed it.
+    let trees: Vec<(&str, PathBuf)> = crate::engine_trees::BUNDLE_TREES
+        .iter()
+        .map(|name| {
+            crate::engine_trees::resolve(target.install_root, name).map(|tree| (*name, tree))
+        })
+        .collect::<Result<_, _>>()?;
+
     // The completion gate tracks the outstanding level bakes exactly as the
     // player payload does: the marker carries the full resolved set at assembly,
     // and stage 6 rewrites it after each bake.
@@ -68,9 +78,8 @@ pub(super) fn assemble_bundle(
     // the project — a developer's content repository carries none of them, and a
     // project that happens to have a directory of the same name does not get to
     // stand in for the engine's.
-    for name in crate::engine_trees::BUNDLE_TREES {
-        let tree = crate::engine_trees::resolve(target.install_root, name)?;
-        let copied = copy_bundle_tree(&tree, &target.bundle_root.join(name), false)?;
+    for (name, tree) in &trees {
+        let copied = copy_bundle_tree(tree, &target.bundle_root.join(name), false)?;
         println!("  copied {copied} files from {name}/ ({})", tree.display());
     }
 
@@ -102,7 +111,7 @@ pub(super) fn assemble_bundle(
     write_bundle_file(
         target.bundle_root,
         MARKER_FILE,
-        &render_bundle_manifest(project.manifest()),
+        &render_bundle_manifest(project.manifest())?,
     )?;
     emit_launcher(target.bundle_root, target.bundle_name, PAYLOAD_MOD_ROOT)?;
     write_bundle_file(
@@ -289,8 +298,9 @@ fn sdk_entry_source_name(choice: EntryExt) -> &'static str {
 /// Light completion check for the content-complete bundle. Unlike the player
 /// sweep, sources (`.map`/`.ts`/`.md`) are allowed and expected; this instead
 /// confirms the required entries are present: the engines, the compilers, the
-/// tool, the project marker, `sdk/`, the mod entry SOURCE, every resolved baked
-/// `maps/<name>.prl`, and the baked `baked/materials/` tree.
+/// tool, the project marker, every engine-owned tree (`sdk/`, `docs/`, `tools/`,
+/// and each `core/` subtree in its own right), the mod entry SOURCE, every
+/// resolved baked `maps/<name>.prl`, and the baked `baked/materials/` tree.
 pub(super) fn sweep_sdk_bundle(
     bundle_root: &Path,
     mod_root: &Path,
@@ -325,9 +335,21 @@ pub(super) fn sweep_sdk_bundle(
         }
     }
 
+    let core = bundle_root.join(crate::engine_trees::CORE_TREE);
     for dir in [
         bundle_root.join("sdk"),
-        bundle_root.join(crate::engine_trees::CORE_TREE).join("ui"),
+        bundle_root.join("docs"),
+        bundle_root.join("tools"),
+        // Each `core/` subtree separately, not the tree as a whole: every one of
+        // them degrades to a warning at runtime rather than a failure, so a
+        // half-copied `core/` is exactly what a sweep over the parent would let
+        // through. `licenses/` is a shipping obligation rather than a runtime
+        // one — the two default typefaces are compiled into the engine, and SIL
+        // OFL 1.1 requires their licence to travel with the binary that embeds
+        // them, which this tree is the only copy of.
+        core.join("ui"),
+        core.join("textures"),
+        core.join("licenses"),
         bundle_root.join("baked").join("materials"),
     ] {
         if !dir.is_dir() {
@@ -454,8 +476,13 @@ mod tests {
         let mod_dir = root.join(mod_root);
         fs::create_dir_all(mod_dir.join("maps")).unwrap();
         fs::create_dir_all(root.join(BIN_DIR)).unwrap();
-        fs::create_dir_all(root.join("sdk")).unwrap();
-        fs::create_dir_all(root.join(crate::engine_trees::CORE_TREE).join("ui")).unwrap();
+        for tree in crate::engine_trees::BUNDLE_TREES {
+            fs::create_dir_all(root.join(tree)).unwrap();
+        }
+        let core = root.join(crate::engine_trees::CORE_TREE);
+        for subtree in ["ui", "textures", "licenses"] {
+            fs::create_dir_all(core.join(subtree)).unwrap();
+        }
         fs::create_dir_all(root.join("baked").join("materials")).unwrap();
         fs::write(root.join(binary_name("postretro")), "engine").unwrap();
         fs::write(root.join(binary_name("scripts-build")), "scripts").unwrap();
@@ -550,16 +577,33 @@ mod tests {
     /// without it boots with those screens gone and only warnings to say so, so
     /// the sweep treats its absence as a failure rather than a gap.
     #[test]
-    fn sweep_requires_the_engine_owned_core_tree() {
+    fn sweep_requires_every_engine_owned_tree_and_core_subtree() {
         let root = unique_temp_dir();
         let mod_root = Path::new(PAYLOAD_MOD_ROOT);
         let levels = [resolved("maps/campaign-test.prl")];
         assemble_swept_bundle(&root, mod_root, &levels);
-        fs::remove_dir_all(root.join(crate::engine_trees::CORE_TREE)).unwrap();
 
-        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
-            .expect_err("a bundle without core/ is rejected");
-        assert!(error.contains("core"), "{error}");
+        // Each engine-owned subtree separately. A sweep over bare `core/` would
+        // pass a half-copied tree, and every one of those absences is a runtime
+        // warning rather than a failure: the built-in screens, the boot splash,
+        // and the OFL text the embedded typefaces oblige the bundle to carry.
+        let core = root.join(crate::engine_trees::CORE_TREE);
+        for subtree in ["ui", "textures", "licenses"] {
+            let path = core.join(subtree);
+            fs::remove_dir_all(&path).unwrap();
+            let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+                .expect_err("a bundle missing an engine-owned subtree is rejected");
+            assert!(error.contains(subtree), "{error}");
+            fs::create_dir_all(&path).unwrap();
+        }
+
+        for tree in ["sdk", "docs", "tools"] {
+            fs::remove_dir_all(root.join(tree)).unwrap();
+            let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+                .expect_err("a bundle missing an engine-owned tree is rejected");
+            assert!(error.contains(tree), "{error}");
+            fs::create_dir_all(root.join(tree)).unwrap();
+        }
 
         let _ = fs::remove_dir_all(&root);
     }

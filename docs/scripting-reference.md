@@ -2764,9 +2764,9 @@ Announce({ priority: "assertive" }, "Connection lost"); // interrupts
 
 ### Proving the type-safety surface
 
-The repo has no `tsc` CI; per-kind narrowing is proven two ways, both committed:
+There is no `tsc` CI; per-kind narrowing is proven two ways, both committed:
 
-- **Typedef snapshot tests** (`crates/postretro/src/scripting/typedef/tests/`) assert
+- **Typedef snapshot tests**, in the engine's own test suite, assert
   the emitted `.d.ts` / `.d.luau` narrows per kind — `content` is a `Text`-only
   prop (so a `Button({ content })` is a type error), `Bar` requires no name, the
   interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows

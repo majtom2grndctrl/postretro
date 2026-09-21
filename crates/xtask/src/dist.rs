@@ -222,6 +222,7 @@ impl Context {
         binaries: &[BuiltBinary],
         args: Vec<OsString>,
     ) -> Result<i32, String> {
+        let forwarded = forwarded_args(args, &self.workspace)?;
         let mut command = Command::new(tool);
         command.current_dir(&self.workspace).arg(subcommand);
         // The engine-owned trees resolve under the install root and never under
@@ -229,12 +230,18 @@ impl Context {
         // from — it sits in `target/debug` with no `core/` beside it — but the
         // workspace *is* the install, and this crate is the one entitled to know
         // that. Naming it here keeps the tool's rule single and unconditional.
-        command.arg("--install-root").arg(&self.workspace);
+        //
+        // Skipped when the caller named one: the tool accepts the flag once, so
+        // adding ours unconditionally would turn every deliberate override into
+        // `--install-root may be given only once`.
+        if !names_install_root(&forwarded) {
+            command.arg("--install-root").arg(&self.workspace);
+        }
         for binary in binaries {
             command.arg(binary.flag).arg(&binary.path);
         }
         command
-            .args(forwarded_args(args, &self.workspace)?)
+            .args(forwarded)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -244,6 +251,15 @@ impl Context {
                 .map_err(|error| format!("launch postretro-tool {subcommand}: {error}")),
         )
     }
+}
+
+/// Whether the caller already named the install root, in either spelling.
+fn names_install_root(args: &[OsString]) -> bool {
+    args.iter().any(|argument| {
+        argument.to_str().is_some_and(|argument| {
+            argument == "--install-root" || argument.starts_with("--install-root=")
+        })
+    })
 }
 
 /// Re-root the path flags so they keep meaning what they meant when the tool
@@ -410,6 +426,24 @@ mod tests {
                 OsString::from("--project"),
                 Path::new("/work/here").join("game").into(),
             ]
+        );
+    }
+
+    /// Regression: the workspace install root was prepended unconditionally, so
+    /// the override the test above rebases could never take effect — the tool
+    /// accepts the flag once and refused the pair with
+    /// `--install-root may be given only once`.
+    #[test]
+    fn a_caller_supplied_install_root_suppresses_the_workspace_default() {
+        assert!(names_install_root(&os_args(&[
+            "--install-root",
+            "/elsewhere"
+        ])));
+        assert!(names_install_root(&os_args(&["--install-root=/elsewhere"])));
+        assert!(!names_install_root(&os_args(&["--out", "ship"])));
+        assert!(
+            !names_install_root(&os_args(&["--project", "install-root"])),
+            "a value that merely resembles the flag is not the flag"
         );
     }
 

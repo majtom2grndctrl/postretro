@@ -35,12 +35,13 @@ cargo run -p xtask -- sdk-dist                # same, for the content-complete m
 
 ## Content tooling
 
-Authoring runs, asset bakes, the weapon-mount solver, and distribution assembly live in `postretro-tool`, which compiles nothing and ships inside SDK bundles. It finds its project by walking up for `postretro.toml`, and its helper binaries by looking beside its own executable — so build what it needs first.
+Authoring runs, asset bakes, the weapon-mount solver, and distribution assembly live in `postretro-tool`, which compiles nothing and ships inside SDK bundles. It finds its project by walking up for `postretro.toml`, and its helper binaries by looking beside its own executable — so build what it needs first. Its engine-owned trees (`core/`, `sdk/`, `docs/`, `tools/`) resolve under the **install root**, which a checkout build in `target/` cannot derive, so pass `--install-root .` from the workspace root for `run`, `dist` and `sdk-dist`.
 
 ```bash
 cargo run -p postretro-tool -- --help                     # full usage
-cargo run -p postretro-tool -- run content/dev/maps/campaign-test.prl
+cargo run -p postretro-tool -- run --install-root . content/dev/maps/campaign-test.prl
 cargo run -p postretro-tool -- bake-model-textures <scene.gltf>
+cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> --check
 cargo run -p postretro-tool -- mint-identity content/dev
 ```
 

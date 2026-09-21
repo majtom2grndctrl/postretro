@@ -203,7 +203,7 @@ Hot reload (debug only) stages entity descriptors, store declarations, the map c
 
 None of the following exists in code. Do not treat any of it as current behavior; it is recorded only to anchor future work.
 
-- **Mod discovery / `content/mods/`.** A scan of `content/*/` mod roots plus per-mod load-order resolution. Today one active mod root is selected explicitly with singular `--mod`, by `--content-root`, by the CLI map path, or by the default dev root.
+- **Mod discovery / multiple mod roots.** A scan of `content/*/` mod roots plus per-mod load-order resolution. Today one active mod root is selected explicitly with singular `--mod`, by `--content-root`, by the CLI map path, or by the default dev root.
 - **Mod browser and persisted mod selection.** Engine-native mod browsing, multi-mod selection (`--mods`), and remembering the last selected mod. Singular `--mod` is already the shipped single-mod boot handle.
 - **Mod-supplied splash override.** No override hook is active until a splash-override feature ships. The renderer-owned boot splash (§1) consumes only the built-in base asset today; the mod-override consume path is wired but unreachable until the mod system sets it.
 - **Classname-driven world mesh spawn.** A classname handler replaces the hardwired single-mesh seam (§3 stage 5).

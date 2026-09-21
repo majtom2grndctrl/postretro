@@ -119,6 +119,17 @@ fn assemble_payload(
     guard_payload_root(payload_root, project.root())
         .map_err(|error| format!("stage 5: {error}"))?;
     let package_name = &project.manifest().package.name;
+    // Engine-owned assets (UI descriptors, splash, font licences). `core/` sits
+    // at the payload root beside `content/` and `baked/`: it is not a mod root,
+    // so `--mod` never redirects it — and it comes from the install, never from
+    // the project, so a game cannot shadow it by having a directory of that name.
+    //
+    // Resolved *before* the delete below. It is one `is_dir` check, and a wrong
+    // or missing install root would otherwise cost the previous good payload
+    // before anything diagnosed it.
+    let core = engine_trees::resolve(install_root, engine_trees::CORE_TREE)?;
+    println!("  core/ from the install at {}", core.display());
+
     let ordered = bake_order(&state.resolved);
     replace_payload_root(
         output_root,
@@ -132,12 +143,6 @@ fn assemble_payload(
     launcher::emit_launcher(payload_root, package_name, PAYLOAD_MOD_ROOT)?;
 
     let source_mod_root = project.mod_root();
-    // Engine-owned assets (UI descriptors, splash, font licences). `core/` sits
-    // at the payload root beside `content/` and `baked/`: it is not a mod root,
-    // so `--mod` never redirects it — and it comes from the install, never from
-    // the project, so a game cannot shadow it by having a directory of that name.
-    let core = engine_trees::resolve(install_root, engine_trees::CORE_TREE)?;
-    println!("  core/ from the install at {}", core.display());
     copy_filtered_tree(
         &core,
         &payload_root.join(engine_trees::CORE_TREE),

@@ -1974,7 +1974,7 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle)
 --- `network = "ownerPrivate"`; `network = "shared"` is for global slots. A mod-owned
 --- persisted writable or replicated slot requires a minted
 --- `<mod-root>/identity.json` entry; run
---- `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key
+--- `postretro-tool mint-identity <mod-root>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
   { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }

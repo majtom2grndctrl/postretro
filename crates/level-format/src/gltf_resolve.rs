@@ -31,7 +31,14 @@ pub fn resolve_material_base_color_path(
         .map(|value| value.into_owned())
         .unwrap_or_else(|_| uri.to_string());
 
-    if decoded.contains(':') || Path::new(&decoded).is_absolute() {
+    // `has_root`, not `is_absolute`. On Windows a leading-slash path carries a
+    // root but no drive prefix, so `is_absolute` is false for it — and the join
+    // below then *replaces* the parent directory rather than extending it,
+    // which is the one outcome this guard exists to prevent. A glTF URI is a
+    // relative reference by specification, so a rooted one is unsupported on
+    // both platforms.
+    let decoded_path = Path::new(&decoded);
+    if decoded.contains(':') || decoded_path.is_absolute() || decoded_path.has_root() {
         return None;
     }
 
@@ -128,6 +135,11 @@ mod tests {
         );
     }
 
+    /// Regression: `/assets/base.png` was accepted on Windows, where a rooted
+    /// path is not *absolute* without a drive prefix. `Path::join` still
+    /// replaces on a rooted argument, so the resolver returned the URI itself
+    /// and the parent directory vanished — on the one platform where the guard
+    /// reads as satisfied.
     #[test]
     fn material_resolver_rejects_uri_schemes_and_absolute_paths() {
         for uri in [

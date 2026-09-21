@@ -62,7 +62,8 @@ Fixing the group count at two is what keeps this brief small, and the reasons co
   frequency.
 
 Once the group count grows, all three reverse at once. That cluster of consequences
-is the capacity brief's, and its absence here is the point of the split.
+belongs to `shadowmask-atlas-mask-capacity`, and keeping it out is what makes this
+brief cheap.
 
 ## Why not BC7
 
@@ -77,10 +78,9 @@ the colour path would not transfer where it matters.
 ## No new device requirement, no new alignment
 
 - `TEXTURE_COMPRESSION_BC` is **already a hard init requirement** — the renderer bails
-  at device acquisition on an adapter lacking it. BC5 adds nothing. This also makes
-  the predecessor brief's acceptance row "an adapter without `TEXTURE_COMPRESSION_BC`
-  falls back to the all-visible placeholder" unreachable: the engine never reaches
-  level load on such an adapter. Dropped.
+  at device acquisition on an adapter lacking it. BC5 adds nothing. It also means a
+  no-BC-adapter degradation row would be unreachable — the engine never reaches level
+  load on such an adapter — so none is written.
 - `round_atlas_dim` guarantees the lightmap atlas is power-of-two and at least 64 on
   both axes, and its comment names BC6H block alignment as the reason. The shadowmask
   shares those dimensions, so a BC shadowmask needs **no padding** — unlike the
@@ -136,10 +136,8 @@ buy is *not* avoiding a second version bump, since pre-release there is no
 compatibility obligation (`development_guide.md` §1.6 — version bump, named reject,
 no shim), so a second id-42 bump is nearly free.
 
-The predecessor epic welded compression to capacity on a "one wire surface, one
-format evolution" premise, which is the position that document argued against. The
-`/validate-plan` *Reshape* that produced this split made the same point
-independently.
+The tempting counter-premise — one wire surface, therefore one format evolution —
+is precisely the position that argument rejects.
 
 ## Prior-art and collision map
 

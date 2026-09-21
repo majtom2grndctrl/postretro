@@ -3,10 +3,8 @@
 Brief · resumable · **gated** · reads: `context/lib/rendering_pipeline.md` §4,
 `context/lib/build_pipeline.md` §PRL · §Build Cache
 
-Split from the former `shadowmask-atlas-capacity-and-compression` epic on a
-`/validate-plan` *Reshape*. That epic welded this to the at-rest win;
-`shadowmask-atlas-compress-at-rest` now carries the certain half and ships the
-measurement this brief is gated on.
+`shadowmask-atlas-compress-at-rest` lands first. It changes bytes, never masks, and
+it ships the measurement this brief is gated on.
 
 ## Gate
 
@@ -17,9 +15,10 @@ Greater-than-four per-texel overlap is **rare and unmeasured**.
 `static-light-shadowmask-world-receipt` judged it rare enough for a compiler warning
 plus a global drop, and no observation since has contradicted that — no bug, no
 review finding, no modder report. `stress-warren-lit`'s 157 lights is a map-wide
-count, not a per-texel one. This is a build-ahead lift, and under the epic shape that
-preceded these briefs the measurement that would justify it was a deliverable of the
-fix itself.
+count, not a per-texel one. This is a build-ahead lift, which is legitimate — but its
+justifying measurement must not be a deliverable of the fix itself, or the premise
+stays unfalsifiable until after the work is done. Hence the gate, and hence the
+measurement belonging to the sibling brief.
 
 The gate has three outcomes, and the middle one is the most likely:
 
@@ -64,10 +63,10 @@ reaches the two-texture layout's exact mask capacity at one binding, today, with
 encoder and nothing blocking it — the second binding buys that capacity *at half the
 bytes*, which is bytes, not masks.
 
-The BC4 plane row is recorded because the predecessor brief proposed it. It is
-dominated: BC5 is literally two BC4 blocks in one 16-byte block, so `.rg` pairs give
-the same ratio at twice the capacity, reusing `encode_bc5_rg` rather than needing a
-single-channel wrapper.
+The BC4 plane row is recorded because single-channel planes are the obvious first
+shape, and the row shows why they are dominated: BC5 is literally two BC4 blocks in
+one 16-byte block, so `.rg` pairs give the same ratio at twice the capacity, reusing
+`encode_bc5_rg` rather than needing a single-channel wrapper.
 
 **Why the low-capacity bands are not merely theoretical.** `layer_count` tracks BVH
 leaf structure, not map size or authored density. `choose_layer_dim` sizes the shared

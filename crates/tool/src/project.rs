@@ -21,6 +21,81 @@ pub(crate) const MARKER_FILE: &str = "postretro.toml";
 /// among the author's `.map` sources, so the tool always names it explicitly.
 const CACHE_DIR: &str = ".build-caches";
 
+/// How the caller named the project, before any of it is opened.
+///
+/// A project is passable as an argument — `--project <dir>` names the directory,
+/// `--manifest <file>` names the marker itself. The walk up from the working
+/// directory is the convenience for when you are already standing inside one,
+/// not the contract. This deliberately has nothing to do with the install root
+/// (`engine_trees.rs`): the two lookups are independent and neither falls back
+/// to the other.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectLocation {
+    manifest: Option<PathBuf>,
+    directory: Option<PathBuf>,
+}
+
+impl ProjectLocation {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn manifest(&self) -> Option<&Path> {
+        self.manifest.as_deref()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn directory(&self) -> Option<&Path> {
+        self.directory.as_deref()
+    }
+
+    /// Record a recognized project flag. Returns `false` when `flag` names
+    /// neither, leaving the caller's own flag handling to run.
+    pub(crate) fn absorb(
+        &mut self,
+        flag: &str,
+        value: Option<&std::ffi::OsString>,
+    ) -> Result<bool, String> {
+        let slot = match flag {
+            "--manifest" => &mut self.manifest,
+            "--project" => &mut self.directory,
+            _ => return Ok(false),
+        };
+        let value = value.ok_or_else(|| format!("{flag} requires a path"))?;
+        if slot.replace(PathBuf::from(value)).is_some() {
+            return Err(format!("{flag} may be given only once"));
+        }
+        Ok(true)
+    }
+
+    /// Resolve relative flag values against the directory the caller stood in.
+    pub(crate) fn rebase(&mut self, invocation_dir: &Path) {
+        for slot in [&mut self.manifest, &mut self.directory] {
+            if let Some(path) = slot.as_ref().filter(|path| !path.is_absolute()) {
+                *slot = Some(invocation_dir.join(path));
+            }
+        }
+    }
+
+    /// Open the named project, or walk up from `working_directory`.
+    pub(crate) fn open(&self, working_directory: &Path) -> Result<Project, String> {
+        match (&self.manifest, &self.directory) {
+            (Some(_), Some(_)) => Err(
+                "--manifest and --project name the same thing two ways; give only one".to_string(),
+            ),
+            (Some(manifest), None) => Project::open(manifest),
+            (None, Some(directory)) => {
+                let manifest = directory.join(MARKER_FILE);
+                if !manifest.is_file() {
+                    return Err(format!(
+                        "--project {} holds no {MARKER_FILE}",
+                        directory.display()
+                    ));
+                }
+                Project::open(&manifest)
+            }
+            (None, None) => Project::discover(working_directory),
+        }
+    }
+}
+
 /// A discovered project: its root, its marker, and the parsed manifest.
 #[derive(Debug, Clone)]
 pub(crate) struct Project {
@@ -149,6 +224,33 @@ fn find_marker(start: &Path, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+
+    struct TempProject {
+        root: PathBuf,
+    }
+
+    impl TempProject {
+        fn new() -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time follows Unix epoch")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "postretro-project-location-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).expect("temporary project created");
+            Self { root }
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 
     #[test]
     fn marker_walk_stops_at_the_nearest_ancestor_holding_it() {
@@ -173,6 +275,80 @@ mod tests {
                 == outer
                 || path == inner),
             Some(inner),
+        );
+    }
+
+    /// A project is passable as an argument; the walk up is the convenience for
+    /// standing inside one, not the contract.
+    #[test]
+    fn a_named_project_directory_is_opened_without_any_walk() {
+        let temp = TempProject::new();
+        let project_dir = temp.root.join("game");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join(MARKER_FILE),
+            "[package]\nname = \"g\"\nmod_root = \"content/base\"\n",
+        )
+        .unwrap();
+
+        let mut location = ProjectLocation::default();
+        assert_eq!(
+            location.absorb("--project", Some(&OsString::from(&project_dir))),
+            Ok(true)
+        );
+        // Opened from a directory that is not inside the project at all.
+        let project = location
+            .open(&temp.root)
+            .expect("a named project needs no walk");
+        assert_eq!(project.root(), project_dir);
+    }
+
+    #[test]
+    fn a_named_project_directory_without_a_marker_says_so() {
+        let temp = TempProject::new();
+        let bare = temp.root.join("not-a-project");
+        fs::create_dir_all(&bare).unwrap();
+
+        let mut location = ProjectLocation::default();
+        location
+            .absorb("--project", Some(&OsString::from(&bare)))
+            .unwrap();
+        let error = location
+            .open(&temp.root)
+            .expect_err("a directory without the marker is not a project");
+        assert!(error.contains(MARKER_FILE), "{error}");
+        assert!(error.contains(&bare.display().to_string()), "{error}");
+    }
+
+    /// `--project` and `--manifest` name the same thing two ways. Accepting both
+    /// would mean silently picking one.
+    #[test]
+    fn naming_the_project_two_ways_at_once_is_refused() {
+        let mut location = ProjectLocation::default();
+        location
+            .absorb("--manifest", Some(&OsString::from("/a/postretro.toml")))
+            .unwrap();
+        location
+            .absorb("--project", Some(&OsString::from("/b")))
+            .unwrap();
+
+        let error = location
+            .open(Path::new("/cwd"))
+            .expect_err("two names for one project is ambiguous");
+        assert!(error.contains("--manifest"), "{error}");
+        assert!(error.contains("--project"), "{error}");
+    }
+
+    #[test]
+    fn project_flags_rebase_onto_the_directory_the_caller_stood_in() {
+        let mut location = ProjectLocation::default();
+        location
+            .absorb("--project", Some(&OsString::from("game")))
+            .unwrap();
+        location.rebase(Path::new("/work"));
+        assert_eq!(
+            location.directory(),
+            Some(Path::new("/work").join("game").as_path())
         );
     }
 

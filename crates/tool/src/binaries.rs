@@ -222,8 +222,9 @@ fn helper_label(helper: Helper) -> &'static str {
 }
 
 /// The directory holding this executable — the only anchor a shipped binary has
-/// for its siblings.
-fn tool_directory() -> Result<PathBuf, String> {
+/// for its siblings, and for the engine-owned trees beside them
+/// (`engine_trees.rs`).
+pub(crate) fn tool_directory() -> Result<PathBuf, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("locate this executable to find its sibling binaries: {error}"))?;
     executable.parent().map(Path::to_path_buf).ok_or_else(|| {

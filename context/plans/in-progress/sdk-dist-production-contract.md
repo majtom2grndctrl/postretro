@@ -252,12 +252,30 @@ the working directory to the project root and the engine resolves `core/…`
 cwd-relative, so an external project silently loses the pause menu, frontend
 menu, and on-screen keyboard with only warnings.
 
-The two-step order is what makes all three layouts work with one rule: a
-workspace has `core/` at the project root and nothing beside
-`target/debug/postretro-tool`; an external project has it only in the install
-beside the tool; a bundle acting as its own project has both, pointing at the
-same tree. The tool already resolves helper binaries by searching beside its own
-executable, so the install root is a path it can derive.
+### D15. The engine takes `--core-root`, and the tool passes it
+
+*Added after Track 3 closed D14.* `postretro` accepts `--core-root <dir>` naming
+the directory that holds the engine's own `ui/` and `textures/` trees. Absent, it
+resolves `core/` cwd-relative exactly as it does today. `postretro-tool run`
+passes the install root's `core/`.
+
+*Consequence:* D14 fixed packaging but not launching. `postretro-tool run` pins
+the working directory to the **project** root, and the engine resolves `core/…`
+against the working directory, so an author running an external project gets no
+pause menu, no frontend menu, and no on-screen keyboard — `load_named_tree`
+warns once per screen and boots anyway. The authoring loop this session exists
+to enable is otherwise broken for every built-in screen.
+
+This mirrors D3 exactly, and for the same reason: a resource whose location the
+engine derives from its surroundings needs an explicit override once those
+surroundings stop being the workspace. The same two rules apply — absent flag
+means byte-identical behaviour, and the flag joins `resolve_map_path`'s skip
+list (invariant 11) or its value is eaten as the map path.
+
+Resolving `core/` relative to the engine's own executable instead was considered
+and rejected: in a checkout the engine is at `target/debug/postretro` while
+`core/` is at the workspace root, so it reproduces the same split D14 hit and
+solves nothing the flag does not.
 
 ### D10. `content/dev` stays in the repository
 

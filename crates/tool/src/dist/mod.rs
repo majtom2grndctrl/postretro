@@ -14,7 +14,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::binaries::{Helper, Overrides, binary_name};
-use crate::project::Project;
+use crate::engine_trees;
+use crate::project::{Project, ProjectLocation};
 
 pub(crate) mod launcher;
 pub(crate) mod payload;
@@ -23,7 +24,7 @@ pub(crate) mod stages;
 
 use payload::{
     MARKER_NAME, PAYLOAD_MOD_ROOT, copy_filtered_tree, count_payload, remove_if_exists,
-    replace_payload_root, sweep_payload,
+    remove_pack_locks, replace_payload_root, sweep_payload,
 };
 use resolve::{EntryExt, Resolved, bake_order, guard_payload_root, outstanding_outputs};
 use stages::BakeTarget;
@@ -38,6 +39,7 @@ struct RunState {
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let cli = parse_args(args, "dist")?;
     let project = cli.project()?;
+    let install_root = cli.install_root()?;
     let output_root = cli.output_root(&project);
     let payload_root = output_root.join(&project.manifest().package.name);
 
@@ -56,7 +58,14 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     };
 
     stages::bake_model_textures(&project)?;
-    assemble_payload(&project, &output_root, &payload_root, &engine, &state)?;
+    assemble_payload(
+        &project,
+        &install_root,
+        &output_root,
+        &payload_root,
+        &engine,
+        &state,
+    )?;
     stages::bake_levels(
         &project,
         &BakeTarget {
@@ -69,6 +78,10 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         &state.resolved,
     )?;
     stages::copy_materials(&project, &payload_root)?;
+    let locks = remove_pack_locks(&payload_root)?;
+    if locks > 0 {
+        println!("  removed {locks} publication locks left by the level bakes");
+    }
     sweep_payload(
         &payload_root,
         Path::new(PAYLOAD_MOD_ROOT),
@@ -94,6 +107,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
 /// engine-owned `core/` tree, and the mod tree published at `content/base`.
 fn assemble_payload(
     project: &Project,
+    install_root: &Path,
     output_root: &Path,
     payload_root: &Path,
     engine: &Path,
@@ -120,10 +134,13 @@ fn assemble_payload(
     let source_mod_root = project.mod_root();
     // Engine-owned assets (UI descriptors, splash, font licences). `core/` sits
     // at the payload root beside `content/` and `baked/`: it is not a mod root,
-    // so `--mod` never redirects it.
+    // so `--mod` never redirects it — and it comes from the install, never from
+    // the project, so a game cannot shadow it by having a directory of that name.
+    let core = engine_trees::resolve(install_root, engine_trees::CORE_TREE)?;
+    println!("  core/ from the install at {}", core.display());
     copy_filtered_tree(
-        &project.join("core"),
-        &payload_root.join("core"),
+        &core,
+        &payload_root.join(engine_trees::CORE_TREE),
         &source_mod_root,
         state.entry_ext,
     )?;
@@ -151,22 +168,29 @@ fn assemble_payload(
 }
 
 /// Arguments shared by `dist` and, minus `--out`, every other project command.
+///
+/// The project and the install are two independent lookups. Neither falls back
+/// to the other: a game never supplies engine-owned trees, and an install never
+/// supplies a game.
 pub(crate) struct DistArgs {
-    pub(crate) manifest_path: Option<PathBuf>,
+    pub(crate) location: ProjectLocation,
+    pub(crate) named_install_root: Option<PathBuf>,
     pub(crate) output_root: Option<PathBuf>,
     pub(crate) binaries: Overrides,
 }
 
 impl DistArgs {
-    /// Open the project: an explicit `--manifest`, else the marker walk.
     pub(crate) fn project(&self) -> Result<Project, String> {
-        match &self.manifest_path {
-            Some(path) => Project::open(path),
-            None => {
-                let working_directory = std::env::current_dir()
-                    .map_err(|error| format!("read the working directory: {error}"))?;
-                Project::discover(&working_directory)
-            }
+        let working_directory = std::env::current_dir()
+            .map_err(|error| format!("read the working directory: {error}"))?;
+        self.location.open(&working_directory)
+    }
+
+    /// The install root: named outright, else derived from this executable.
+    pub(crate) fn install_root(&self) -> Result<PathBuf, String> {
+        match &self.named_install_root {
+            Some(root) => Ok(root.clone()),
+            None => engine_trees::default_install_root(),
         }
     }
 
@@ -184,7 +208,8 @@ impl DistArgs {
 pub(crate) fn parse_args(args: Vec<OsString>, command: &str) -> Result<DistArgs, String> {
     let invocation_dir =
         std::env::current_dir().map_err(|error| format!("read the working directory: {error}"))?;
-    let mut manifest_path = None;
+    let mut location = ProjectLocation::default();
+    let mut named_install_root = None;
     let mut output_root = None;
     let mut binaries = Overrides::default();
     let mut index = 0;
@@ -201,24 +226,30 @@ pub(crate) fn parse_args(args: Vec<OsString>, command: &str) -> Result<DistArgs,
             index += 2;
             continue;
         }
+        if location.absorb(flag, value)? {
+            index += 2;
+            continue;
+        }
 
         let value = match flag {
-            "--manifest" | "--out" => value
+            engine_trees::INSTALL_ROOT_FLAG | "--out" => value
                 .ok_or_else(|| format!("{flag} requires a path\n\n{}", usage(command)))?
                 .clone(),
             _ => return Err(format!("unknown argument `{flag}`\n\n{}", usage(command))),
         };
         let path = absolute_from(&invocation_dir, PathBuf::from(value));
         match flag {
-            "--manifest" => set_once(&mut manifest_path, path, flag)?,
+            engine_trees::INSTALL_ROOT_FLAG => set_once(&mut named_install_root, path, flag)?,
             "--out" => set_once(&mut output_root, path, flag)?,
             _ => unreachable!("only recognized flags reach this branch"),
         }
         index += 2;
     }
+    location.rebase(&invocation_dir);
 
     Ok(DistArgs {
-        manifest_path,
+        location,
+        named_install_root,
         output_root,
         binaries,
     })
@@ -241,7 +272,8 @@ fn set_once(slot: &mut Option<PathBuf>, value: PathBuf, flag: &str) -> Result<()
 
 pub(crate) fn usage(command: &str) -> String {
     format!(
-        "{command} usage:\n  postretro-tool {command} [--manifest <path>] [--out <dir>]\n{}",
+        "{command} usage:\n  postretro-tool {command} [--project <dir> | --manifest <path>] \
+         [--install-root <dir>] [--out <dir>]\n{}",
         crate::binaries::HELPER_USAGE
     )
 }

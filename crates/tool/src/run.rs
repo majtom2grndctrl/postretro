@@ -9,28 +9,23 @@
 //! See: context/lib/build_pipeline.md §Baked texture mips
 
 use std::ffi::OsString;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::binaries::{Helper, Overrides, status_code};
-use crate::project::Project;
+use crate::project::{Project, ProjectLocation};
 
 /// The tool's own flags, and everything forwarded to the engine untouched.
 struct RunArgs {
-    manifest_path: Option<PathBuf>,
+    location: ProjectLocation,
     binaries: Overrides,
     engine_args: Vec<OsString>,
 }
 
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let cli = parse_args(args)?;
-    let project = match &cli.manifest_path {
-        Some(manifest) => Project::open(manifest)?,
-        None => Project::discover(
-            &std::env::current_dir()
-                .map_err(|error| format!("read the working directory: {error}"))?,
-        )?,
-    };
+    let working_directory =
+        std::env::current_dir().map_err(|error| format!("read the working directory: {error}"))?;
+    let project = cli.location.open(&working_directory)?;
     let engine = cli.binaries.resolve(Helper::AuthoringEngine)?;
     let launch_args = engine_arguments(&project, cli.engine_args);
 
@@ -39,6 +34,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         engine.display(),
         project.root().display()
     );
+    warn_if_engine_assets_are_not_at_the_working_directory(&project);
 
     // The working directory is the contract, not a convenience: every content
     // path the engine resolves is joined against it.
@@ -50,6 +46,38 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     status_code(command.status())
+}
+
+/// Say so when the engine will not find its own assets.
+///
+/// `run` pins the working directory to the project root, and the engine resolves
+/// `core/…` relative to it — so an external project, which correctly has no
+/// `core/` of its own, launches without the pause menu, frontend menu or
+/// on-screen keyboard. `load_named_tree` degrades each of those to a `warn!` and
+/// keeps booting, so without this the only symptom is three missing screens.
+///
+/// This is a diagnosis, not a fix: the engine takes no flag for `core/`, so
+/// closing it needs an engine change and is called out in the report rather than
+/// worked around here.
+fn warn_if_engine_assets_are_not_at_the_working_directory(project: &Project) {
+    if project.join(crate::engine_trees::CORE_TREE).is_dir() {
+        return;
+    }
+    let install = crate::engine_trees::default_install_root()
+        .map(|root| {
+            root.join(crate::engine_trees::CORE_TREE)
+                .display()
+                .to_string()
+        })
+        .unwrap_or_else(|error| format!("<undetermined: {error}>"));
+    eprintln!(
+        "warning: no `{}/` at {} — the engine resolves its UI descriptors relative to the\n\
+         working directory, which this run pins to the project root, so the pause menu,\n\
+         frontend menu and on-screen keyboard will be missing. The install's copy is at {}.",
+        crate::engine_trees::CORE_TREE,
+        project.root().display(),
+        install,
+    );
 }
 
 /// Prepend the flags the project already answers, unless the caller set them.
@@ -86,7 +114,7 @@ fn names_flag(args: &[OsString], flags: &[&str]) -> bool {
 /// Consume the tool's flags; everything else forwards verbatim, so an engine
 /// flag the tool has never heard of needs no change here.
 fn parse_args(args: Vec<OsString>) -> Result<RunArgs, String> {
-    let mut manifest_path = None;
+    let mut location = ProjectLocation::default();
     let mut binaries = Overrides::default();
     let mut engine_args = Vec::new();
     let mut index = 0;
@@ -98,11 +126,10 @@ fn parse_args(args: Vec<OsString>) -> Result<RunArgs, String> {
             index += 2;
             continue;
         }
-        if flag == "--manifest" {
-            let value = value.ok_or_else(|| usage("--manifest requires a path"))?;
-            if manifest_path.replace(PathBuf::from(value)).is_some() {
-                return Err(usage("--manifest may be given only once"));
-            }
+        if location
+            .absorb(flag, value)
+            .map_err(|error| usage(&error))?
+        {
             index += 2;
             continue;
         }
@@ -111,7 +138,7 @@ fn parse_args(args: Vec<OsString>) -> Result<RunArgs, String> {
     }
 
     Ok(RunArgs {
-        manifest_path,
+        location,
         binaries,
         engine_args,
     })
@@ -119,14 +146,15 @@ fn parse_args(args: Vec<OsString>) -> Result<RunArgs, String> {
 
 fn usage(message: &str) -> String {
     format!(
-        "{message}\n\nUsage: postretro-tool run [--manifest <path>] [--engine <path>] \
-         [engine args...]"
+        "{message}\n\nUsage: postretro-tool run [--project <dir> | --manifest <path>] \
+         [--engine <path>] [engine args...]"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn os_args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
@@ -179,7 +207,7 @@ mod tests {
     fn unknown_engine_flags_forward_verbatim() {
         let parsed = parse_args(os_args(&["--headless", "runspec.json", "--pool-seed=17"]))
             .expect("engine arguments forward");
-        assert_eq!(parsed.manifest_path, None);
+        assert_eq!(parsed.location, ProjectLocation::default());
         assert_eq!(
             parsed.engine_args,
             os_args(&["--headless", "runspec.json", "--pool-seed=17"])
@@ -198,8 +226,8 @@ mod tests {
         .expect("tool arguments parse");
 
         assert_eq!(
-            parsed.manifest_path,
-            Some(PathBuf::from("/projects/game/postretro.toml"))
+            parsed.location.manifest(),
+            Some(Path::new("/projects/game/postretro.toml"))
         );
         assert_eq!(parsed.engine_args, os_args(&["maps/e1m1.prl"]));
     }

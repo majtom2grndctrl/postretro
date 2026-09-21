@@ -405,9 +405,13 @@ fn print_help() {
              cargo run -p postretro-tool -- bake-model-textures <scene.gltf>\n\
              cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> ...\n\
              cargo run -p postretro-tool -- mint-identity content/dev\n\
-           Run `cargo run -p postretro-tool -- --help` for its own usage. Note that\n\
+           Run `cargo run -p postretro-tool -- --help` for its own usage. Two notes:\n\
            it runs helper binaries rather than building them, so build what it needs\n\
-           first (for example `cargo build -p postretro-sim --bin mint-identity`).\n\n\
+           first (for example `cargo build -p postretro-sim --bin mint-identity`); and\n\
+           its engine-owned trees (core/, sdk/, docs/, tools/) resolve under the install\n\
+           root, which a checkout build in target/ cannot derive — `dist` and `sdk-dist`\n\
+           above pass `--install-root` for you, so a direct `dist` invocation needs\n\
+           `--install-root .` from the workspace root.\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\

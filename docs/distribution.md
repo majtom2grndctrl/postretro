@@ -143,10 +143,12 @@ Two of those names are load-bearing.
 descriptors, the boot splash, the font licences. It sits outside `content/`
 precisely so that mounting a game never redirects it.
 
-`content/base` is your game's own tree. A payload always publishes there,
-whatever your project calls its mod root, because `content/base` is two path
-components and the engine's sidecar walk depends on that shape. The launcher
-mounts it for you.
+`content/base` is your game's own tree — the mod root this example's
+`postretro.toml` declares. A payload publishes under whatever mod root your
+project names, keeping that path rather than renaming it; the name must be two
+path components because the engine's sidecar walk depends on that shape, and
+`content/base` is the recommended convention for a game. The launcher mounts
+your declared root for you.
 
 A payload is correct only as a whole tree with the working directory pinned to
 its root. The launcher does that pinning itself, so it works from a shortcut or

@@ -160,6 +160,17 @@ impl Project {
         self.join(&self.manifest.package.mod_root)
     }
 
+    /// The mod root as declared in the manifest, relative to the project root —
+    /// the path a distribution publishes the mod tree under. A distribution
+    /// honors this name rather than renaming to a fixed `content/base`, so the
+    /// engine's own bare-launch default (`content/dev`) matches what a payload
+    /// of this project ships. The manifest parser guarantees two components
+    /// (`manifest.rs`), so the runtime's `baked/` grandparent derivation
+    /// (`build_pipeline.md` §Baked texture mips) holds for whatever this names.
+    pub(crate) fn mod_root_rel(&self) -> &str {
+        &self.manifest.package.mod_root
+    }
+
     /// The directory that *contains* `materials/` — what both `prl-build` and
     /// the engine mean by `--baked-root` (`build_pipeline.md` §Baked texture
     /// mips). In the engine's own repository this is `<workspace>/baked`, the

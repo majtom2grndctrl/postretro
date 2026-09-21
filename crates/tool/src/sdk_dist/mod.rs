@@ -32,7 +32,7 @@ use std::path::Path;
 
 use crate::binaries::Helper;
 use crate::dist::parse_args;
-use crate::dist::payload::{MARKER_NAME, PAYLOAD_MOD_ROOT, count_payload};
+use crate::dist::payload::{MARKER_NAME, count_payload};
 use crate::dist::resolve::guard_payload_root;
 use crate::dist::stages::{self, BakeTarget};
 
@@ -87,7 +87,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
             output_root: &output_root,
             payload_root: &bundle_root,
             marker_name: &bundle_name,
-            payload_mod_root: PAYLOAD_MOD_ROOT,
+            payload_mod_root: project.mod_root_rel(),
         },
         &binaries.prl_build,
         &resolved,
@@ -100,7 +100,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
 
     sweep_sdk_bundle(
         &bundle_root,
-        Path::new(PAYLOAD_MOD_ROOT),
+        Path::new(project.mod_root_rel()),
         entry_ext,
         &resolved,
     )?;

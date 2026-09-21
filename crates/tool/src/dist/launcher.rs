@@ -85,15 +85,18 @@ fn posix_single_quoted(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dist::payload::PAYLOAD_MOD_ROOT;
+
+    /// A representative two-component mod root; the launcher just echoes
+    /// whatever name the payload published under.
+    const SAMPLE_MOD_ROOT: &str = "content/dev";
 
     /// Whatever the project calls its own mod root, the payload's launcher
     /// mounts the one the payload published — and pins the working directory
     /// first, because a payload is correct only as a whole tree.
     #[test]
     fn launcher_pins_its_own_directory_and_mounts_the_published_mod_root() {
-        let contents = launcher_contents(PAYLOAD_MOD_ROOT);
-        assert!(contents.contains(PAYLOAD_MOD_ROOT), "{contents}");
+        let contents = launcher_contents(SAMPLE_MOD_ROOT);
+        assert!(contents.contains(SAMPLE_MOD_ROOT), "{contents}");
         assert!(contents.contains("--mod"), "{contents}");
         assert!(
             contents.contains("%~dp0") || contents.contains("dirname"),
@@ -108,7 +111,7 @@ mod tests {
     /// external command" while the payload beside it was perfectly good.
     #[test]
     fn the_launcher_names_the_engine_by_path_not_by_bare_name() {
-        let contents = launcher_contents(PAYLOAD_MOD_ROOT);
+        let contents = launcher_contents(SAMPLE_MOD_ROOT);
         #[cfg(windows)]
         assert!(
             contents.contains("\"%~dp0postretro.exe\""),

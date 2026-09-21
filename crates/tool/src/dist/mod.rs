@@ -23,8 +23,8 @@ pub(crate) mod resolve;
 pub(crate) mod stages;
 
 use payload::{
-    MARKER_NAME, PAYLOAD_MOD_ROOT, copy_filtered_tree, count_payload, remove_if_exists,
-    remove_pack_locks, replace_payload_root, sweep_payload,
+    MARKER_NAME, copy_filtered_tree, count_payload, remove_if_exists, remove_pack_locks,
+    replace_payload_root, sweep_payload,
 };
 use resolve::{EntryExt, Resolved, bake_order, guard_payload_root, outstanding_outputs};
 use stages::BakeTarget;
@@ -72,7 +72,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
             output_root: &output_root,
             payload_root: &payload_root,
             marker_name: &project.manifest().package.name,
-            payload_mod_root: PAYLOAD_MOD_ROOT,
+            payload_mod_root: project.mod_root_rel(),
         },
         &prl_build,
         &state.resolved,
@@ -84,7 +84,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     }
     sweep_payload(
         &payload_root,
-        Path::new(PAYLOAD_MOD_ROOT),
+        Path::new(project.mod_root_rel()),
         state.entry_ext,
         &state.resolved,
     )?;
@@ -104,7 +104,8 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
 }
 
 /// Stage 5: replace the payload root, then write the engine, the launcher, the
-/// engine-owned `core/` tree, and the mod tree published at `content/base`.
+/// engine-owned `core/` tree, and the mod tree published at the project's own
+/// declared mod root.
 fn assemble_payload(
     project: &Project,
     install_root: &Path,
@@ -140,7 +141,7 @@ fn assemble_payload(
 
     fs::copy(engine, payload_root.join(binary_name("postretro")))
         .map_err(|error| format!("stage 5: copy release engine {}: {error}", engine.display()))?;
-    launcher::emit_launcher(payload_root, package_name, PAYLOAD_MOD_ROOT)?;
+    launcher::emit_launcher(payload_root, package_name, project.mod_root_rel())?;
 
     let source_mod_root = project.mod_root();
     copy_filtered_tree(
@@ -151,12 +152,12 @@ fn assemble_payload(
     )?;
     copy_filtered_tree(
         &source_mod_root,
-        &payload_root.join(PAYLOAD_MOD_ROOT),
+        &payload_root.join(project.mod_root_rel()),
         &source_mod_root,
         state.entry_ext,
     )?;
 
-    let payload_mod_root = payload_root.join(PAYLOAD_MOD_ROOT);
+    let payload_mod_root = payload_root.join(project.mod_root_rel());
     remove_if_exists(&payload_mod_root.join("start-script.js"))?;
     remove_if_exists(&payload_mod_root.join("start-script.luau"))?;
     fs::copy(
@@ -287,16 +288,17 @@ pub(crate) fn usage(command: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The payload's mod root is the thing D6 changes, and the runtime's
-    /// materials derivation depends on its shape rather than its name.
+    /// A distribution publishes under the project's *own* declared mod root, so
+    /// the runtime's `baked/` grandparent derivation depends on that name's
+    /// shape. The manifest parser is what guarantees the two components the
+    /// derivation needs; here we pin that a project hands its declared mod root
+    /// straight through to the payload with no fixed rename.
     #[test]
-    fn payload_mod_root_keeps_the_two_component_shape_a_mod_root_must_have() {
-        let components: Vec<&str> = PAYLOAD_MOD_ROOT.split('/').collect();
-        assert_eq!(components.len(), 2, "{PAYLOAD_MOD_ROOT}");
+    fn the_payload_mod_root_is_the_projects_own_declared_mod_root() {
+        let project = Project::for_test("/projects/game", "game", "content/dev");
+        assert_eq!(project.mod_root_rel(), "content/dev");
+        let components: Vec<&str> = project.mod_root_rel().split('/').collect();
+        assert_eq!(components.len(), 2, "{}", project.mod_root_rel());
         assert!(components.iter().all(|component| !component.is_empty()));
-        assert_ne!(
-            components[0], "dist",
-            "the payload tree is where the delete works"
-        );
     }
 }

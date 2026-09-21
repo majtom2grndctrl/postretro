@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::binaries::binary_name;
 use crate::dist::launcher::emit_launcher;
-use crate::dist::payload::{PAYLOAD_MOD_ROOT, replace_payload_root};
+use crate::dist::payload::replace_payload_root;
 use crate::dist::resolve::{
     EntryExt, Resolved, bake_order, guard_payload_root, outstanding_outputs,
 };
@@ -85,15 +85,13 @@ pub(super) fn assemble_bundle(
 
     // The mod tree ships WITH its .map/.ts sources, but committed stale generated
     // .prl/.js are dropped: fresh .prl come from stage 6's level bake and the
-    // fresh entry .js is installed just below. It publishes at the payload mod
-    // root like the player payload's, so the bundle's own `dist` re-publishes
-    // the same path and the `postretro.toml` written below describes both.
-    let bundle_mod_root = target.bundle_root.join(PAYLOAD_MOD_ROOT);
+    // fresh entry .js is installed just below. It publishes under the project's
+    // own declared mod root — the same path the bundle's own `dist` re-publishes,
+    // and the one the `postretro.toml` written below names.
+    let mod_root_rel = project.mod_root_rel();
+    let bundle_mod_root = target.bundle_root.join(mod_root_rel);
     let mod_copied = copy_bundle_tree(&project.mod_root(), &bundle_mod_root, true)?;
-    println!(
-        "  copied {mod_copied} files from mod tree {} (with sources) into {PAYLOAD_MOD_ROOT}",
-        project.manifest().package.mod_root
-    );
+    println!("  copied {mod_copied} files from the mod tree (with sources) into {mod_root_rel}");
 
     // Install the emitted entry .js beside its .ts source (a TS mod). A Luau mod
     // already shipped its `start-script.luau` source via the tree copy and needs
@@ -113,11 +111,15 @@ pub(super) fn assemble_bundle(
         MARKER_FILE,
         &render_bundle_manifest(project.manifest())?,
     )?;
-    emit_launcher(target.bundle_root, target.bundle_name, PAYLOAD_MOD_ROOT)?;
+    emit_launcher(target.bundle_root, target.bundle_name, mod_root_rel)?;
     write_bundle_file(
         target.bundle_root,
         "README.md",
-        &render_readme(&project.manifest().package.name, target.bundle_name),
+        &render_readme(
+            &project.manifest().package.name,
+            target.bundle_name,
+            mod_root_rel,
+        ),
     )?;
     Ok(())
 }
@@ -389,6 +391,11 @@ fn refuse_pack_locks(directory: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The published mod root these bundle-sweep tests build under. The bundle
+    /// now honors the project's declared mod root; the sweep only requires a
+    /// two-component path, so this stands in for whatever a project names.
+    const PAYLOAD_MOD_ROOT: &str = "content/base";
 
     #[test]
     fn skip_predicate_drops_caches_vcs_and_os_junk_in_both_modes() {

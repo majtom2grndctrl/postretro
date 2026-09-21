@@ -66,7 +66,7 @@ No WAD files. Textures are authored as PNGs.
 |-------|-------------|
 | Author | Create PNGs in `content/<mod>/textures/<collection>/<name>.png` (where `<mod>` is `base` for first-party content or `tests` for fixtures). TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Browses the textures directory via the Postretro game config. |
-| prl-build | Reads PNGs, decodes them, runs Mitchell-Netravali downsampling in linear color space, and writes per-texture `.prm` mip sidecars to `<workspace>/baked/materials/<blake3-hex>.prm`. Stores a content-addressed blake3 key per texture in the `TextureCacheKeys` PRL section. Authored PNGs are not shipped or read at runtime for world materials. |
+| prl-build | Reads PNGs, decodes them, runs Mitchell-Netravali downsampling in linear color space, and writes per-texture `.prm` mip sidecars to `<baked root>/materials/<blake3-hex>.prm`. Stores a content-addressed blake3 key per texture in the `TextureCacheKeys` PRL section. Authored PNGs are not shipped or read at runtime for world materials. |
 | PRL output | `TextureNames` section stores a deduplicated texture name list (verbatim from the `.map`, possibly collection-qualified). `TextureCacheKeys` section stores one 32-byte blake3 per name entry. No pixel data. |
 | Engine | Loads `.prm` sidecars at level load via the blake3 keys in `TextureCacheKeys`. Never opens a PNG for world materials. UI textures (splash, HUD) still load directly from PNGs. |
 
@@ -398,7 +398,7 @@ diffuse-only materials share one sidecar. Other single-slot bundles use
 `blake3(tag_byte || PNG content)`; the tag distinguishes specular, normal, and
 emissive. Two bundles with the same diffuse but different siblings therefore
 have distinct runtime-loadable filenames. Stored at
-`<workspace>/baked/materials/<hex>.prm`. Cross-mod dedupe is intended:
+`<baked root>/materials/<hex>.prm`. Cross-mod dedupe is intended:
 identical complete bundles produce the same `.prm` regardless of which mod
 authored them.
 
@@ -523,7 +523,7 @@ only; the shader reconstructs Z).
 
 **Runtime.** Level load resolves each `TextureNamesSection` entry's blake3 key from `TextureCacheKeysSection`, opens the corresponding `.prm`, and uploads each slot's mip chain directly. A zero key (`[0u8; 32]`) substitutes per-slot placeholders silently. A corrupt or missing `.prm` substitutes per-slot placeholders and logs a `warn!`; load continues. Sampler `lod_max_clamp` is set to `mip_count - 1` per texture.
 
-**Model textures.** `prop_mesh` model base-color textures bake the same way, content-driven from the model placements in the map — no CLI flag, mirroring how world materials follow from `TextureNames`. prl-build resolves each placed model's glTF base-color PNG(s) and bakes a diffuse-only `.prm`, content-addressed by `blake3(base-color PNG)` — byte-identical to a diffuse-only world sidecar. Richer world bundles use complete-bundle filenames and cannot be replaced by a model bake. Model rendering still consumes only the diffuse slot and substitutes neutral specular and normal placeholders. Unlike world materials, no PRL section carries model keys: the runtime content-hashes the same PNG when it loads the glTF and opens `<key>.prm` directly, so the compiler only has to make the sidecar exist. The glTF base-color path resolver is shared by runtime and compiler through the `gltf-resolve` feature of `postretro-level-format`. Missing or malformed glTF fails the whole model load, so the model is skipped. Only an unresolved, missing, or unreadable base-color PNG or material degrades to the texture placeholder. Compiler resolution and bake failures warn; compilation continues. For standalone model prep, `cargo run -p xtask -- bake-model-textures <scene.gltf>` runs the same model-texture sidecar bake without compiling a map. Output stays under `<workspace>/baked/materials/`: gitignored, regenerable, runtime-required.
+**Model textures.** `prop_mesh` model base-color textures bake the same way, content-driven from the model placements in the map — no CLI flag, mirroring how world materials follow from `TextureNames`. prl-build resolves each placed model's glTF base-color PNG(s) and bakes a diffuse-only `.prm`, content-addressed by `blake3(base-color PNG)` — byte-identical to a diffuse-only world sidecar. Richer world bundles use complete-bundle filenames and cannot be replaced by a model bake. Model rendering still consumes only the diffuse slot and substitutes neutral specular and normal placeholders. Unlike world materials, no PRL section carries model keys: the runtime content-hashes the same PNG when it loads the glTF and opens `<key>.prm` directly, so the compiler only has to make the sidecar exist. The glTF base-color path resolver is shared by runtime and compiler through the `gltf-resolve` feature of `postretro-level-format`. Missing or malformed glTF fails the whole model load, so the model is skipped. Only an unresolved, missing, or unreadable base-color PNG or material degrades to the texture placeholder. Compiler resolution and bake failures warn; compilation continues. For standalone model prep, `postretro-tool bake-model-textures <scene.gltf>` runs the same model-texture sidecar bake without compiling a map. Output stays under the project's `baked/materials/`: gitignored, regenerable, runtime-required.
 
 ---
 
@@ -531,9 +531,21 @@ only; the shader reconstructs Z).
 
 > **Key invariant:** a payload is a whole tree, not a bag of files. Every content path the engine resolves is joined against the process working directory, and the launcher pins that directory to the payload root.
 
-`cargo run -p xtask -- dist` assembles a folder that runs on a machine with no repository, no Rust toolchain, and no build tools. Every runtime-required artifact but the committed assets — `.prl` levels, `.prm` material mips, the mod entry script — is a build product, and a release engine produces none of them: TypeScript compilation is debug-only (`scripting.md` §8), levels live in git as `.map` sources, mips come from prl-build. Packaging is the stage that makes them together.
+`postretro-tool dist` assembles a folder that runs on a machine with no repository, no Rust toolchain, and no build tools. Every runtime-required artifact but the committed assets — `.prl` levels, `.prm` material mips, the mod entry script — is a build product, and a release engine produces none of them: TypeScript compilation is debug-only (`scripting.md` §8), levels live in git as `.map` sources, mips come from prl-build. Packaging is the stage that makes them together.
 
-`dist` is a launcher, not engine code, which is why it lives in `xtask`: it builds the tools it needs before it uses them, the way the development launcher builds `scripts-build` before the engine process starts (`boot_sequence.md` §1). The engine never assembles a payload, and prl-build sees one map rather than a mod.
+### The project marker
+
+`postretro.toml` marks a directory as a Postretro project. The tool finds it by walking parents of the working directory, the way cargo finds `Cargo.toml`; `--manifest <path>` names one instead, and its parent becomes the project root. Every path the tool touches hangs off that one runtime anchor — mod root, `baked/`, `.build-caches/`, `dist/`.
+
+The marker is what lets a content repository be a project in its own right, which is the point of the whole arrangement: a game's content lives in its author's own version-controlled tree, and the engine install is a replaceable sibling (§Baked texture mips). It carries the package name, the mod root, and the optional bake recipes (§Shipped level set). Its mod root is two `/`-separated components — the shape §Baked texture mips requires — and its first component may not be `dist`, since that tree is where the payload delete works.
+
+### Why the tool is not xtask
+
+`xtask` cannot ship. Its workspace root is `env!("CARGO_MANIFEST_DIR")`, resolved at compile time, so a shipped `xtask` would carry the build machine's absolute path; every command routes through it. `postretro-tool` replaces that with runtime discovery and resolves nothing at compile time — a crate test enforces the absence of compile-time path macros, because the rule is easier to hold by checking than by remembering.
+
+The tool compiles nothing and links no script VM. It locates the engine, `prl-build`, `scripts-build`, `mint-identity`, and a copy of itself by explicit flag, each defaulting to a conventional path beside its own executable — `bin/prl-build` beside `bin/postretro-tool` in a bundle, `target/release/prl-build` beside `target/release/postretro-tool` in a checkout. That default is what makes a bundle's tool work from any working directory: the project comes from the walk, the binaries come from the executable's own directory.
+
+The seam is stage 1. Building release binaries needs cargo; stages 2 through 7 are pure content work and do not. `cargo run -p xtask -- dist` therefore cargo-builds the binaries and then invokes `postretro-tool dist` with their paths. Anywhere else the seam would mean either shipping cargo or splitting a stage. It also keeps `mint-identity` out of the tool's link graph: that binary pulls in the scripting runtime, so linking it would drag rquickjs and mlua into a tool that needs neither. One multicall binary rather than several, because the subcommands share the manifest parser, the containment guard, and the completion-gate machinery.
 
 **Host builds for host.** A payload targets the machine that produced it; a Windows payload comes from a Windows host. `rquickjs-sys`, `luau0-src`, and `blake3` all compile native C/C++ through `cc`, so cross-compiling is a sysroot-and-untested-target problem rather than something a packaging command owns.
 
@@ -541,46 +553,54 @@ only; the shader reconstructs Z).
 
 The stages run in this order, and the order is a contract other tooling reads:
 
-1. **Release binaries.** `postretro`, `prl-build`, and `scripts-build` at `--release`, with no non-default features, so a payload carries no dev-tools, observability, or capture surface. Later stages locate them by absolute path under the cargo target directory, never through `PATH`.
+1. **Release binaries.** `postretro`, `prl-build`, and `scripts-build` at `--release`, with no non-default features, so a payload carries no dev-tools, observability, or capture surface. This is the one stage that needs cargo, and the one stage the tool does not own: it receives the resulting paths.
 2. **Entry-script bundle.** The mod root's `start-script.ts` bundles through `scripts-build` into scratch, or its `start-script.luau` copies into scratch verbatim. Exactly one of the two may be present: `dist` has no rule for picking an entry language and refuses to invent one, which is stricter than the pair the engine itself rejects at init (`scripting.md` §2).
 3. **Level-set resolution.** Reads the shipped set out of the script stage 2 emitted (§Shipped level set).
-4. **Model-texture bake.** Every glTF under the mod's `models/` bakes its base-color sidecars into the workspace materials tree. prl-build bakes model textures only for `prop_mesh` placements (§Baked texture mips), so a mod declaring its rigs, viewmodels, and enemies in script reaches a payload with no sidecar for them and renders placeholders without failing.
-5. **Payload assembly.** Deletes the payload root, then writes the engine binary, the launcher, the base content tree, and the mod tree, each at its workspace-relative path, with source-only and stale generated files excluded.
+4. **Model-texture bake.** Every glTF under the mod's `models/` bakes its base-color sidecars into the project's materials tree. prl-build bakes model textures only for `prop_mesh` placements (§Baked texture mips), so a mod declaring its rigs, viewmodels, and enemies in script reaches a payload with no sidecar for them and renders placeholders without failing.
+5. **Payload assembly.** Deletes the payload root, then writes the engine binary, the launcher, the engine-owned `core/` tree, and the mod tree, with source-only and stale generated files excluded.
 6. **Level bakes.** One `prl-build --release` per resolved level, written straight into the payload.
-7. **Materials copy.** The workspace materials tree copies into the payload, after every writer of it has run — assembling it earlier ships a directory that is absent or half-written, which the engine degrades to placeholders without failing.
+7. **Materials copy.** The project's materials tree copies into the payload, after every writer of it has run — assembling it earlier ships a directory that is absent or half-written, which the engine degrades to placeholders without failing.
 
 Stages 1 through 4 write nothing into the payload root. That is what makes stage 5's delete safe, not any claim about which inputs they read: everything ahead of it is regenerable build output, so a failure before assembly leaves the previous payload byte-for-byte intact.
 
-`--release` is the only shippable bake (§Build Cache), so stage 6 supplies that flag and a manifest recipe may not. Bakes run one at a time — prl-build already saturates the machine internally, and a second concurrent bake multiplies peak bake memory — ordered by ascending effective lightmap density with ties broken lexicographically by output path. That order is a cheap proxy for descending peak memory, chosen to fail an over-large bake early; it is not derived from the memory model.
+`--release` is the only shippable bake (§Build Cache), so stage 6 supplies that flag and a manifest recipe may not. Stage 6 also supplies `--baked-root` and `--cache-dir` together: the first keeps the compiler writing `.prm` sidecars where stage 7 will find them, the second keeps the disposable stage cache out of the author's `maps/` directory, whose own fallback would put it there. Bakes run one at a time — prl-build already saturates the machine internally, and a second concurrent bake multiplies peak bake memory — ordered by ascending effective lightmap density with ties broken lexicographically by output path. That order is a cheap proxy for descending peak memory, chosen to fail an over-large bake early; it is not derived from the memory model.
 
 ### Payload layout
 
-A payload reproduces the tree the engine expects, rooted at the payload directory instead of the workspace:
+A payload reproduces the tree the engine expects, rooted at the payload directory instead of the project:
 
 ```
 <payload>/
   postretro[.exe]              engine binary
   <package name>.{bat,sh}      launcher: pins cwd to its own directory, passes --mod
   core/                        engine assets: UI descriptors, splash, font licences
-  content/<mod>/               mod tree, entry script, baked levels
+  content/base/                the developer's mod, published here
   baked/materials/             .prm sidecars
 ```
 
-`core/` holds what the engine owns and a mounted game never replaces, so it sits outside `content/` and `--mod` never redirects it. It is deliberately one path component, which keeps it outside the two-component shape a mod root must have (§Baked texture mips) — engine assets are not a mod.
+**A distribution publishes the developer's mod at `content/base`**, whatever the project calls its own mod root, and the launcher mounts that path. The name is not cosmetic: it is two components, so the runtime grandparent derivation still resolves `<payload>/baked/materials` and §Baked texture mips holds unchanged. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes when a project publishes here under another name. This is a destination-path parameter at assembly, not a redesign of the stages.
+
+`core/` holds what the engine owns and a mounted game never replaces, so it sits outside `content/` and `--mod` never redirects it. It is deliberately one path component, which keeps it outside the two-component shape a mod root must have (§Baked texture mips) — engine assets are not a mod. Stage 5 copies it from the project root, so a project that intends to build distributions carries one.
 
 Content paths resolve cwd-relative (`ui.md` §5), so the payload is correct only as a whole tree with the working directory pinned to its root. Flattening it, or moving `core/`, breaks paths the engine hardcodes. The launcher pins that directory rather than trusting the caller's, so a shortcut or a launch from elsewhere resolves the same, and passes no map argument, so the mod's frontend drives the first screen (`boot_sequence.md` §1).
 
-The manifest's mod root carries the two-component shape §Baked texture mips requires, and its first component may not be `dist` — that tree is where the payload delete works.
+### Authoring launch
+
+`postretro-tool run` discovers the project and launches the engine with `--mod` and `--baked-root` already correct, with the working directory pinned to the project root. Flags the caller supplies win outright rather than being shadowed, since the engine reads the first occurrence of each.
+
+The engine learns nothing about `postretro.toml` — it keeps plain flags, so changing the manifest schema stays a tool change. What the command removes is the two paths a modder would otherwise type on every launch, whose failure mode is not an error but the silent placeholder degradation §Baked texture mips describes. The tool has no single-level build, so a direct `prl-build` invocation is the one place an author still supplies `--baked-root` and `--cache-dir` by hand.
 
 ### Output-root containment
 
-Every payload root lies strictly under `<workspace>/dist/`. That tree is gitignored and holds no committed input, so a directory under it is safe to delete. A guard proves it before the first build and again immediately before the delete, since the filesystem can change under a multi-minute build. It refuses on the first of these to trip:
+Every payload root lies strictly under `<project>/dist/`, the project being the marker's directory. A guard proves it before the first build and again immediately before the delete, since the filesystem can change under a multi-minute build. It refuses on the first of these to trip:
 
-- **Containment.** The payload root is not strictly under `<workspace>/dist/`. Comparison is component-wise over canonicalized paths, never a string prefix, so a sibling named `dist-old` is outside, and a symlink under `dist/` that resolves elsewhere is outside, while a checkout reached through a symlink keeps its own `dist/` usable. A path that cannot be canonicalized fails here: containment is exactly what the failure leaves unproven.
+- **Containment.** The payload root is not strictly under `<project>/dist/`. Comparison is component-wise over canonicalized paths, never a string prefix, so a sibling named `dist-old` is outside, and a symlink under `dist/` that resolves elsewhere is outside, while a project reached through a symlink keeps its own `dist/` usable. A path that cannot be canonicalized fails here: containment is exactly what the failure leaves unproven.
 - **Directory.** The payload root exists and is not a directory in its own right. Assembly renames, removes, and writes into that path as a directory throughout, so the check reads the root's own metadata rather than following it, and a symlink is refused whatever it resolves to.
 - **Provenance.** The payload root exists, is non-empty, and holds at its top level neither the completion marker nor the engine binary. A mistyped output path under `dist/` therefore cannot delete a directory no `dist` run produced. The states this permits: absent; empty, which is what a kill between the root's creation and the marker's write leaves; marker-bearing, a run stopped mid-payload; binary-bearing, a completed run whose epilogue removed the marker.
 
-The cargo target directory is refused at or under `<workspace>/dist/` before stage 1 builds anything: `<target-dir>/release` holds the engine binary at its top level, so provenance would read it as a payload root and permit a delete of the binaries stages 5 and 6 read.
+**Provenance, not containment, carries the safety argument.** In the engine's own repository `<project>/dist` is gitignored and holds no committed input, but an arbitrary content repository makes no such promise. Containment now bounds the blast radius to one directory the project owns; the provenance check is what proves a distribution run produced what is about to be deleted.
+
+In the engine's own workspace, the cargo target directory is refused at or under `dist/` before stage 1 builds anything: `<target-dir>/release` holds the engine binary at its top level, so provenance would read it as a payload root and permit a delete of the binaries stages 5 and 6 read.
 
 ### Completion gate
 
@@ -602,15 +622,29 @@ That scan is the whole of the visibility. A catalog path assembled at runtime ra
 
 Each resolved level bakes from `<mod_root>/maps/<stem>.map` at default flags. A manifest `[[recipes]]` entry exists for a level whose source or compiler flags that default cannot infer; it is keyed by output path, and a recipe matching no scanned literal is reported as an orphan rather than passing silently.
 
+A recipe may not supply the arguments the tool owns. `-o`, `--release`, and the TUI switches decide what kind of bake a distribution runs. `--baked-root` and `--cache-dir` are the pair that must stay consistent across the compiler and the engine: prl-build reads the last occurrence of each, so a recipe naming one would win and reintroduce exactly the degradation the flags exist to close.
+
 ### SDK bundle (modder distribution)
 
-Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`cargo run -p xtask -- sdk-dist`). Both bake the maps — the SDK bundle is **content-complete**: it runs the same level and material bakes as the player payload, so it is playable on arrival, and *additionally* ships what authoring needs. The invariant that separates them is subtraction, not baking: the player payload carries only released runtime artifacts, while the SDK bundle is a superset that also carries the compilers, the SDK, the docs, and the mod's `.map`/`.ts` sources beside the baked output. A recipient of the player payload can only play; a recipient of the SDK bundle can play or edit-and-rebake.
+Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`postretro-tool sdk-dist`). Both bake the maps — the SDK bundle is **content-complete**: it runs the same level and material bakes as the player payload, so it is playable on arrival, and *additionally* ships what authoring needs. The invariant that separates them is subtraction, not baking: the player payload carries only released runtime artifacts, while the SDK bundle is a superset that also carries the compilers, the tool, the SDK, the docs, and the mod's `.map`/`.ts` sources beside the baked output. Its sweep is correspondingly lighter — it confirms the required entries exist rather than forbidding sources.
+
+**The bundle is a project in its own right.** It carries a generated `postretro.toml` naming `content/base` as its mod root, so its recipient can produce a player payload from it with no repository, no Rust toolchain, and no cargo. That is the whole reason for shipping the tool, and it is what makes the bundle's own `dist` run the real acceptance for this machinery: every workspace test has a `Cargo.toml` ancestor and a cargo binary, which are the two things the recipient does not have.
 
 **The SDK engine is a debug build with `--features dev-tools`, never `--release`.** One engine both plays the baked maps and authors. TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
 
-Bundle root is `<package name>-sdk` under `dist/`, sibling to the player payload's `<package name>` root; the `-sdk` suffix is what keeps the two from colliding under the same output directory. Beyond the baked levels, baked materials, and base content the player payload also holds, the bundle carries the authoring engine, `bin/prl-build` and `bin/scripts-build` (both built `--release`, since only the engine's TS pipeline needs debug), `sdk/`, `docs/`, `tools/`, and the mod tree whole — its `.map`/`.ts` sources beside the freshly baked `.prl` and the emitted entry `.js`, never run through the player payload's source-excluding filter.
+Bundle root is `<package name>-sdk` under `dist/`, sibling to the player payload's `<package name>` root; the `-sdk` suffix is what keeps the two from colliding under the same output directory. Beyond the baked levels, baked materials, and `core/` tree the player payload also holds, the bundle carries:
 
-It reuses the player payload's bake stages (model-texture bake, per-level `prl-build --release`, materials copy) and its containment and completion-gate machinery: whole-tree, output-root containment under `dist/` (§Output-root containment), and `.dist-incomplete` tracking the outstanding level bakes while the root is assembled (§Completion gate). The same host-builds-for-host native-toolchain constraint applies (above): a bundle's binaries are as host-specific as the player payload's.
+- the debug authoring engine at the bundle root, with `scripts-build` beside it because the engine's own hot-reload discovery looks there rather than in `bin/`;
+- `bin/` holding `postretro-tool`, `prl-build`, `scripts-build`, `mint-identity`, and a release engine under the distinct name `postretro-release` — the authoring engine at the root owns the plain name, and a payload must carry an optimized engine;
+- `sdk/`, `docs/`, and `tools/`, copied from the project root;
+- the mod tree whole, published at `content/base` like a player payload's, with its `.map`/`.ts` sources beside the freshly baked `.prl` and the emitted entry `.js`;
+- a generated `README.md` quickstart and the project marker.
+
+Because the bundle's binaries sit where the tool's own sibling search looks, `bin/postretro-tool dist` from the bundle root needs no flags at all.
+
+It reuses the player payload's bake stages (model-texture bake, per-level `prl-build --release`, materials copy) and its containment and completion-gate machinery (§Output-root containment, §Completion gate). The same host-builds-for-host native-toolchain constraint applies: a bundle's binaries are as host-specific as the player payload's.
+
+**`docs/` is modder-facing only.** `sdk-dist` copies that tree verbatim into every bundle, so every command in it must be runnable by someone holding only a bundle. The engine-developer workflow — `cargo run -p xtask -- …` — lives in `CLAUDE.md`, `AGENTS.md`, and here, never in `docs/`.
 
 ---
 

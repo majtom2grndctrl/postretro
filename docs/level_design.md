@@ -9,13 +9,17 @@ Levels are made in **TrenchBroom** and compiled to `.prl` files that the engine 
 ### Setting Up TrenchBroom
 
 1. Open TrenchBroom and load the Postretro game definition: `sdk/TrenchBroom/postretro.fgd`.
-2. Set the texture path to the `content/<mod>/textures/` directory (e.g., `content/base/textures/`).
+2. Set the texture path to the `textures/` directory inside your content root. Throughout this document `<content-root>` means that directory — `content/base` in an SDK bundle, and whatever `mod_root` your `postretro.toml` names in your own project.
 3. Author your map in Quake 1/2 `.map` format. Both Standard and Valve 220 UV projections work and can coexist in the same file.
 
 ### Compiling Your Map
 
+The level compiler is `bin/prl-build` in an SDK bundle. Run it from your project root:
+
 ```bash
-cargo run -p postretro-level-compiler -- input.map -o output.prl
+bin/prl-build <content-root>/maps/input.map \
+  --baked-root baked --cache-dir .build-caches/prl-cache \
+  -o <content-root>/maps/output.prl
 ```
 
 **Common options:**
@@ -23,9 +27,13 @@ cargo run -p postretro-level-compiler -- input.map -o output.prl
 | Flag | Default | What it does |
 |------|---------|-------------|
 | `-o <PATH>` | same as input, `.prl` extension | Where to write the compiled file |
+| `--baked-root <DIR>` | derived from the map's location | The directory that **contains** `materials/` — where the compiled texture sidecars go. Point it at your project's `baked/`. See below. |
+| `--cache-dir <DIR>` | beside the map | Disposable compiler scratch. Name it, or it lands among your `.map` sources. |
 | `--lightmap-density <METERS>` | `0.04` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. |
 | `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |
+
+**`--baked-root` is worth getting right.** It names the directory that *contains* `materials/` — `baked`, not `baked/materials` — and the engine takes a flag of the same name meaning the same thing. If the compiler writes its texture sidecars somewhere the engine does not read them, nothing fails: the engine substitutes a placeholder for every world material and logs a warning, so the level loads with every surface flat grey. `bin/postretro-tool run` points the engine at the right directory for you, and `bin/postretro-tool dist` points the compiler at it. The only time you supply it yourself is a direct `prl-build` call like the one above. See [docs/external-projects.md](external-projects.md).
 
 **Unit scale:** 1 map unit = 0.0254 m (one inch). A standard player-height room is roughly 72–80 units tall.
 
@@ -243,7 +251,7 @@ You can auto-generate `_s` maps using the included tool, which applies sensible 
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install Pillow
-python3 tools/gen_specular.py --input content/base/textures/ --recursive
+python3 tools/gen_specular.py --input <content-root>/textures --recursive
 ```
 
 ### Surface Depth (Height Maps)
@@ -289,10 +297,13 @@ The effect applies to static world brushes and to `kinematic_mover` brushes. It 
 
 `tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and terraces it so the plateaus line up with the diffuse's own quantization:
 
+`tools/texture-tool` is Rust source rather than a shipped binary, so it is the
+one helper here that needs a Rust toolchain you install yourself:
+
 ```bash
 cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
   process --src cobble-source.png --stem concrete_cobble_01 \
-  --out-dir content/dev/textures/street \
+  --out-dir <content-root>/textures/street \
   --tileable --spec-profile polished-stone \
   --height-strength 1.6 --height-quantize-levels 6
 ```
@@ -308,10 +319,10 @@ Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On
 Map compilation bakes texture sidecars for any `prop_mesh` glTF models placed in the map. If you want to prepare a model's textures without compiling a map, run:
 
 ```bash
-cargo run -p xtask -- bake-model-textures <scene.gltf>
+bin/postretro-tool bake-model-textures <scene.gltf>
 ```
 
-The helper writes `.prm` sidecars under `<workspace>/baked/materials/`. Those files are runtime-required output, but they are gitignored and safe to regenerate whenever the source model or texture changes.
+The helper writes `.prm` sidecars under your project's `baked/materials/`. Those files are runtime-required output, but they are regenerable and safe to delete whenever the source model or texture changes.
 
 ---
 

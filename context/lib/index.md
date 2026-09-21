@@ -28,6 +28,8 @@
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
+- **`postretro-tool` / `postretro.toml` project marker / project discovery / helper-binary resolution / why `xtask` cannot ship** → `build_pipeline.md` §Distribution packaging (§The project marker, §Why the tool is not xtask)
+- **Authoring launch against a project / `postretro-tool run` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `docs/external-projects.md` (author-facing)
 - **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad** → `input.md`
@@ -49,7 +51,8 @@
 - **Dynamic weapon accuracy / spread / bloom / recoil-as-accuracy-loss / movement inaccuracy / crosshair spread ring** → `entity_model.md` §Components (Weapon vocabulary — Dynamic accuracy) · `networking.md` §engine-randomness carve-out
 - **Splash / AoE / area damage / blast radius / distance falloff / rocket explosion** → `entity_model.md` §Components (Splash / area effects)
 - **Knockback / hit impulses / rocket jumping** → `entity_model.md` §Components (Knockback) · `movement.md` §6 · `networking.md` §Game-logic-owned apply invariant
-- **Game / mod author docs (human-facing, not agent context)** → `docs/`
+- **Game / mod author docs (human-facing, not agent context)** → `docs/` — every command there must be runnable from an SDK bundle alone; `cargo run -p xtask -- …` never appears in it
+- **Game content in an author's own repository, outside an engine install (human-facing walkthrough)** → `docs/external-projects.md`; the contract behind it is `build_pipeline.md` §Baked texture mips and §Distribution packaging
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake

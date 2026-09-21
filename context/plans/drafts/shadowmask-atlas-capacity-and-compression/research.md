@@ -245,9 +245,14 @@ outside the representable slot range.
   and *encoding*, not the union term.
 - `build_pipeline.md` §Build Cache keys the shadowmask memo on inputs, not outputs,
   and exempts lossy compressed output from byte-identity;
-  `sh-base-atlas-at-rest-slimming` set that posture for ids 34/35. Inherited: the
-  pre-compression assignment must be byte-identical, the compressed section only
-  length-stable.
+  `sh-base-atlas-at-rest-slimming` set that posture for ids 34/35. **Not inherited
+  here.** `static-light-shadowmask-cache-addendum` ships a live AC requiring cached
+  warm output for `ShadowmaskAtlasSection` to match uncached output byte-for-byte,
+  and `bc5.rs` is a pure function — per-block min/max endpoints, a fixed integer
+  palette matching the hardware ladder, nearest-index selection, no cluster-fit
+  refinement, no parallelism. Byte-identity is therefore achievable, and taking the
+  exemption by analogy to BC6H would surrender a currently-satisfied guarantee for
+  nothing. The whole section stays byte-identical across re-bakes.
 - The `build_pipeline.md` id-42 line is revised at promotion.
 
 ## Streaming — why it stays a separate epic
@@ -273,7 +278,11 @@ pre-stable.
   "bounding the output below its on-disk size — a format question." Confirms the gap is
   open, not owned.
 - `lighting-scale--sh-base-atlas-at-rest-slimming` (done) — BC-at-rest precedent for
-  ids 34/35; its section-length-stable posture generalizes.
+  ids 34/35. Its section-length-stable posture is available but deliberately not
+  taken; see *Prior commitments preserved*. Note also its opening argument that an
+  unconditional at-rest win should not be bundled with a gated, contract-rewriting
+  sibling — a thesis the current one-format-evolution framing chooses against, and
+  the crux of the outstanding split question.
 - `shadowmask-array-atlas` (done) — closed "no action"; id 42 is already a
   `texture_2d_array` within device limits.
 - `shadowmask-bake-scaling` (done) — restructured the composite into streaming

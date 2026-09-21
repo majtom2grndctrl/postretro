@@ -420,7 +420,69 @@ fn verify_entry_script_set(mod_root: &Path, emitted: EntryExt) -> Result<(), Str
 fn is_sweep_forbidden(path: &Path) -> bool {
     has_component_pair(path, "maps", "autosave")
         || matches!(file_name(path), Some(".DS_Store"))
+        || is_pack_lock(file_name(path).unwrap_or_default())
         || matches!(extension(path), Some("map" | "ts" | "md" | "bsp"))
+}
+
+/// Whether `name` is one of `prl-build`'s publication locks, `.<name>.prl.pack.lock`.
+///
+/// Matched by name rather than by extension: the leading dot and the compound
+/// `.prl.pack.lock` suffix mean `Path::extension` reports a bare `lock`, which
+/// would both miss the shape that identifies these files and catch unrelated
+/// ones. See [`remove_pack_locks`] for why a distribution carries none.
+pub(crate) fn is_pack_lock(name: &str) -> bool {
+    name.starts_with('.') && name.ends_with(".prl.pack.lock")
+}
+
+/// Delete every publication lock the level bakes left inside a distribution.
+///
+/// `prl-build` writes `.<name>.prl.pack.lock` beside each `.prl` and keeps it
+/// deliberately — `crates/level-compiler/src/pack.rs` explains that unlinking it
+/// would let a waiter hold the old inode while a new compiler locks a freshly
+/// created one, so the compiler must go on leaving it behind. Packaging is
+/// nonetheless the right place to remove it: stage 6 bakes straight into the
+/// payload, *after* the assembly copy filter has run, so the filter never sees
+/// these files; and nothing recompiles a shipped `.prl` in place, while a modder
+/// who rebakes inside an SDK bundle simply recreates the lock on demand. The
+/// sweep refusal above is what stops a later change reintroducing them.
+pub(crate) fn remove_pack_locks(payload_root: &Path) -> Result<usize, String> {
+    let mut removed = 0;
+    remove_pack_locks_in(payload_root, &mut removed)?;
+    Ok(removed)
+}
+
+fn remove_pack_locks_in(directory: &Path, removed: &mut usize) -> Result<(), String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "remove publication locks: read {}: {error}",
+                directory.display()
+            ));
+        }
+    };
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("remove publication locks: read entry: {error}"))?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "remove publication locks: inspect {}: {error}",
+                path.display()
+            )
+        })?;
+        if file_type.is_dir() {
+            remove_pack_locks_in(&path, removed)?;
+            continue;
+        }
+        if is_pack_lock(entry.file_name().to_str().unwrap_or_default()) {
+            fs::remove_file(&path)
+                .map_err(|error| format!("remove publication lock {}: {error}", path.display()))?;
+            *removed += 1;
+        }
+    }
+    Ok(())
 }
 
 fn extension(path: &Path) -> Option<&str> {
@@ -467,9 +529,94 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        EntryExt, MARKER_NAME, copy_prm_tree, replace_existing_payload_with, should_exclude,
+        EntryExt, MARKER_NAME, PAYLOAD_MOD_ROOT, Resolved, copy_prm_tree, is_pack_lock,
+        remove_pack_locks, replace_existing_payload_with, should_exclude, sweep_payload,
         write_marker,
     };
+
+    /// Build the smallest payload the sweep accepts: one baked level and the
+    /// emitted entry script at the published mod root.
+    fn swept_payload(root: &Path) -> Vec<Resolved> {
+        let mod_dir = root.join(PAYLOAD_MOD_ROOT).join("maps");
+        fs::create_dir_all(&mod_dir).expect("payload mod root created");
+        fs::write(
+            root.join(PAYLOAD_MOD_ROOT).join(EntryExt::Js.file_name()),
+            "entry",
+        )
+        .expect("entry script written");
+        fs::write(mod_dir.join("demo.prl"), "baked").expect("level written");
+        vec![Resolved {
+            output: "maps/demo.prl".to_string(),
+            source: PathBuf::from("unused.map"),
+            args: Vec::new(),
+            lightmap_density: 0.04,
+        }]
+    }
+
+    /// `prl-build` names its publication lock `.<name>.prl.pack.lock`. The
+    /// leading dot with a compound suffix means `Path::extension` reports a bare
+    /// `lock`, so an extension check would both miss the shape that identifies
+    /// these files and catch unrelated ones.
+    #[test]
+    fn pack_locks_are_recognized_by_name_not_by_extension() {
+        assert!(is_pack_lock(".demo.prl.pack.lock"));
+        assert!(is_pack_lock(".campaign-test.prl.pack.lock"));
+
+        assert!(
+            !is_pack_lock("demo.prl.pack.lock"),
+            "the leading dot is part of the name"
+        );
+        assert!(!is_pack_lock(".demo.prl"));
+        assert!(!is_pack_lock("settings.lock"));
+        assert!(!is_pack_lock(".prl.pack.lock.txt"));
+    }
+
+    /// Stage 6 bakes straight into the payload, after the copy filter has run,
+    /// so packaging is the only place these can be caught. They may sit at any
+    /// depth, under any level name.
+    #[test]
+    fn packaging_removes_every_publication_lock_at_any_depth() {
+        let root = unique_temp_dir();
+        let maps = root.join(PAYLOAD_MOD_ROOT).join("maps");
+        let nested = maps.join("episode2");
+        fs::create_dir_all(&nested).expect("payload tree created");
+        fs::write(maps.join(".demo.prl.pack.lock"), "lock").unwrap();
+        fs::write(nested.join(".deep.prl.pack.lock"), "lock").unwrap();
+        fs::write(maps.join("demo.prl"), "baked").unwrap();
+
+        assert_eq!(remove_pack_locks(&root), Ok(2));
+        assert!(!maps.join(".demo.prl.pack.lock").exists());
+        assert!(!nested.join(".deep.prl.pack.lock").exists());
+        assert!(maps.join("demo.prl").is_file(), "the level itself stays");
+
+        // Idempotent: a payload with none reports none rather than failing.
+        assert_eq!(remove_pack_locks(&root), Ok(0));
+        remove_temp_dir(&root);
+    }
+
+    /// Removal alone would be a fix a later change could silently undo, so the
+    /// sweep refuses the pattern outright.
+    #[test]
+    fn the_sweep_refuses_a_payload_that_still_carries_a_lock() {
+        let root = unique_temp_dir();
+        let resolved = swept_payload(&root);
+        assert!(
+            sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved).is_ok(),
+            "the clean payload is the control"
+        );
+
+        fs::write(
+            root.join(PAYLOAD_MOD_ROOT)
+                .join("maps")
+                .join(".demo.prl.pack.lock"),
+            "lock",
+        )
+        .unwrap();
+        let error = sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved)
+            .expect_err("a lock in the payload is a forbidden artifact");
+        assert!(error.contains(".demo.prl.pack.lock"), "{error}");
+        remove_temp_dir(&root);
+    }
 
     /// The marker's format is read by tooling outside this crate, so it is a
     /// contract rather than a convenience: the stage line first, then one

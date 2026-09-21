@@ -35,6 +35,8 @@ pub(super) struct BundleTarget<'a> {
     pub(super) output_root: &'a Path,
     pub(super) bundle_root: &'a Path,
     pub(super) bundle_name: &'a str,
+    /// Where the engine-owned trees come from — never the project.
+    pub(super) install_root: &'a Path,
 }
 
 pub(super) fn assemble_bundle(
@@ -62,9 +64,14 @@ pub(super) fn assemble_bundle(
     install_binaries(target.bundle_root, binaries)?;
 
     // These trees ship verbatim: they are not mod source, so no stale-output drop.
-    for name in ["sdk", "docs", "tools", "core"] {
-        let copied = copy_bundle_tree(&project.join(name), &target.bundle_root.join(name), false)?;
-        println!("  copied {copied} files from {name}/");
+    // All four are engine-owned, so all four come from the install and never from
+    // the project — a developer's content repository carries none of them, and a
+    // project that happens to have a directory of the same name does not get to
+    // stand in for the engine's.
+    for name in crate::engine_trees::BUNDLE_TREES {
+        let tree = crate::engine_trees::resolve(target.install_root, name)?;
+        let copied = copy_bundle_tree(&tree, &target.bundle_root.join(name), false)?;
+        println!("  copied {copied} files from {name}/ ({})", tree.display());
     }
 
     // The mod tree ships WITH its .map/.ts sources, but committed stale generated
@@ -320,12 +327,37 @@ pub(super) fn sweep_sdk_bundle(
 
     for dir in [
         bundle_root.join("sdk"),
+        bundle_root.join(crate::engine_trees::CORE_TREE).join("ui"),
         bundle_root.join("baked").join("materials"),
     ] {
         if !dir.is_dir() {
             return Err(format!(
                 "sdk-dist sweep: required bundle directory missing: {}",
                 dir.display()
+            ));
+        }
+    }
+
+    // The bundle is a superset, so its sweep forbids almost nothing — but a
+    // publication lock is build scaffolding rather than content, and refusing it
+    // here is what keeps a later change from quietly shipping them again.
+    refuse_pack_locks(bundle_root)
+}
+
+fn refuse_pack_locks(directory: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("sdk-dist sweep: read {}: {error}", directory.display()))?
+    {
+        let entry = entry.map_err(|error| format!("sdk-dist sweep: read entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            refuse_pack_locks(&path)?;
+            continue;
+        }
+        if crate::dist::payload::is_pack_lock(entry.file_name().to_str().unwrap_or_default()) {
+            return Err(format!(
+                "sdk-dist sweep: publication lock left in the bundle: {}",
+                path.display()
             ));
         }
     }
@@ -423,6 +455,7 @@ mod tests {
         fs::create_dir_all(mod_dir.join("maps")).unwrap();
         fs::create_dir_all(root.join(BIN_DIR)).unwrap();
         fs::create_dir_all(root.join("sdk")).unwrap();
+        fs::create_dir_all(root.join(crate::engine_trees::CORE_TREE).join("ui")).unwrap();
         fs::create_dir_all(root.join("baked").join("materials")).unwrap();
         fs::write(root.join(binary_name("postretro")), "engine").unwrap();
         fs::write(root.join(binary_name("scripts-build")), "scripts").unwrap();
@@ -482,6 +515,51 @@ mod tests {
         let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
             .expect_err("missing baked .prl is rejected");
         assert!(error.contains("campaign-test.prl"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The bundle's sweep forbids almost nothing, which is exactly why the one
+    /// thing it does forbid has to be pinned.
+    #[test]
+    fn sweep_refuses_a_bundle_that_still_carries_a_publication_lock() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
+        let levels = [resolved("maps/campaign-test.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+        assert!(
+            sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels).is_ok(),
+            "the clean bundle is the control"
+        );
+
+        fs::write(
+            root.join(mod_root)
+                .join("maps")
+                .join(".campaign-test.prl.pack.lock"),
+            "lock",
+        )
+        .unwrap();
+        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            .expect_err("a lock in the bundle is refused");
+        assert!(error.contains("campaign-test.prl.pack.lock"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `core/ui` holds the pause menu, frontend menu and keyboard. A bundle
+    /// without it boots with those screens gone and only warnings to say so, so
+    /// the sweep treats its absence as a failure rather than a gap.
+    #[test]
+    fn sweep_requires_the_engine_owned_core_tree() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
+        let levels = [resolved("maps/campaign-test.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+        fs::remove_dir_all(root.join(crate::engine_trees::CORE_TREE)).unwrap();
+
+        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            .expect_err("a bundle without core/ is rejected");
+        assert!(error.contains("core"), "{error}");
 
         let _ = fs::remove_dir_all(&root);
     }

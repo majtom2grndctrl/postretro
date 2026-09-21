@@ -10,6 +10,7 @@ use std::ffi::OsString;
 
 mod binaries;
 mod dist;
+mod engine_trees;
 mod manifest;
 mod mint;
 mod model_textures;

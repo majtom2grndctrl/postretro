@@ -14,17 +14,13 @@ use std::path::{Path, PathBuf};
 
 use postretro_level_format::prm::cache_filename_for_key;
 
-use crate::project::Project;
+use crate::project::ProjectLocation;
 
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
-    let (gltf_path, manifest_path) = parse_args(args)?;
-    let project = match &manifest_path {
-        Some(path) => Project::open(path)?,
-        None => Project::discover(
-            &std::env::current_dir()
-                .map_err(|error| format!("read the working directory: {error}"))?,
-        )?,
-    };
+    let (gltf_path, location) = parse_args(args)?;
+    let working_directory =
+        std::env::current_dir().map_err(|error| format!("read the working directory: {error}"))?;
+    let project = location.open(&working_directory)?;
 
     let baked = bake_model_textures_for_gltf(&gltf_path, &project.materials_root())?;
     if baked.is_empty() {
@@ -47,10 +43,10 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
 }
 
 /// One glTF path, resolved against the working directory the way any CLI path
-/// argument is, plus the optional project-marker override.
-fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, Option<PathBuf>), String> {
+/// argument is, plus however the caller named the project.
+fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, ProjectLocation), String> {
     let mut gltf_path = None;
-    let mut manifest_path = None;
+    let mut location = ProjectLocation::default();
     let mut index = 0;
 
     while index < args.len() {
@@ -60,13 +56,10 @@ fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, Option<PathBuf>), String>
                 args[index].to_string_lossy()
             )
         })?;
-        if argument == "--manifest" {
-            let value = args
-                .get(index + 1)
-                .ok_or_else(|| usage("--manifest requires a path"))?;
-            if manifest_path.replace(PathBuf::from(value)).is_some() {
-                return Err(usage("--manifest may be given only once"));
-            }
+        if location
+            .absorb(argument, args.get(index + 1))
+            .map_err(|error| usage(&error))?
+        {
             index += 2;
             continue;
         }
@@ -82,12 +75,13 @@ fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, Option<PathBuf>), String>
     }
 
     let gltf_path = gltf_path.ok_or_else(|| usage("bake-model-textures requires a glTF path"))?;
-    Ok((gltf_path, manifest_path))
+    Ok((gltf_path, location))
 }
 
 fn usage(message: &str) -> String {
     format!(
-        "{message}\n\nUsage: postretro-tool bake-model-textures <scene.gltf> [--manifest <path>]"
+        "{message}\n\nUsage: postretro-tool bake-model-textures <scene.gltf> \
+         [--project <dir> | --manifest <path>]"
     )
 }
 
@@ -158,22 +152,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_accepts_one_gltf_path_with_an_optional_manifest() {
+    fn parse_args_accepts_one_gltf_path_with_an_optional_project() {
+        let (gltf, location) =
+            parse_args(os_args(&["models/knight/scene.gltf"])).expect("a bare path is valid");
+        assert_eq!(gltf, PathBuf::from("models/knight/scene.gltf"));
+        assert_eq!(location, ProjectLocation::default());
+
+        let (gltf, location) = parse_args(os_args(&[
+            "scene.gltf",
+            "--manifest",
+            "/projects/game/postretro.toml",
+        ]))
+        .expect("a named marker is valid");
+        assert_eq!(gltf, PathBuf::from("scene.gltf"));
         assert_eq!(
-            parse_args(os_args(&["models/knight/scene.gltf"])),
-            Ok((PathBuf::from("models/knight/scene.gltf"), None))
+            location.manifest(),
+            Some(Path::new("/projects/game/postretro.toml"))
         );
-        assert_eq!(
-            parse_args(os_args(&[
-                "scene.gltf",
-                "--manifest",
-                "/projects/game/postretro.toml"
-            ])),
-            Ok((
-                PathBuf::from("scene.gltf"),
-                Some(PathBuf::from("/projects/game/postretro.toml"))
-            ))
-        );
+
+        let (_, location) = parse_args(os_args(&["scene.gltf", "--project", "/projects/game"]))
+            .expect("a named project directory is valid");
+        assert_eq!(location.directory(), Some(Path::new("/projects/game")));
 
         assert!(parse_args(Vec::new()).is_err());
         assert!(parse_args(os_args(&["one.gltf", "two.gltf"])).is_err());

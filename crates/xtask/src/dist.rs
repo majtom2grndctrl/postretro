@@ -224,6 +224,12 @@ impl Context {
     ) -> Result<i32, String> {
         let mut command = Command::new(tool);
         command.current_dir(&self.workspace).arg(subcommand);
+        // The engine-owned trees resolve under the install root and never under
+        // the project. A checkout is the one layout the tool cannot derive that
+        // from — it sits in `target/debug` with no `core/` beside it — but the
+        // workspace *is* the install, and this crate is the one entitled to know
+        // that. Naming it here keeps the tool's rule single and unconditional.
+        command.arg("--install-root").arg(&self.workspace);
         for binary in binaries {
             command.arg(binary.flag).arg(&binary.path);
         }
@@ -259,7 +265,7 @@ fn rebase_path_flags(
     while index < args.len() {
         let flag = args[index].to_str().unwrap_or_default();
         let base = match flag {
-            "--manifest" => Some(invocation_dir),
+            "--manifest" | "--project" | "--install-root" => Some(invocation_dir),
             "--out" => Some(workspace),
             _ => None,
         };
@@ -382,6 +388,27 @@ mod tests {
                 invocation.join("other.toml").into_os_string(),
                 OsString::from("--out"),
                 workspace.join("ship").into_os_string(),
+            ]
+        );
+    }
+
+    /// A checkout is the one layout whose install root the tool cannot derive —
+    /// it sits in `target/debug` with no `core/` beside it — so this crate names
+    /// the workspace. A caller may still override it, and that override is a
+    /// path like any other.
+    #[test]
+    fn a_caller_supplied_install_root_rebases_like_the_other_path_flags() {
+        assert_eq!(
+            rebase_path_flags(
+                os_args(&["--install-root", "other-install", "--project", "game"]),
+                Path::new("/work/here"),
+                Path::new("/work/repo"),
+            ),
+            vec![
+                OsString::from("--install-root"),
+                Path::new("/work/here").join("other-install").into(),
+                OsString::from("--project"),
+                Path::new("/work/here").join("game").into(),
             ]
         );
     }

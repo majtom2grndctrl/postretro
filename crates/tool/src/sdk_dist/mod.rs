@@ -44,6 +44,7 @@ use assemble::{BundleBinaries, sweep_sdk_bundle};
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let cli = parse_args(args, "sdk-dist")?;
     let project = cli.project()?;
+    let install_root = cli.install_root()?;
     let output_root = cli.output_root(&project);
     let bundle_name = sdk_bundle_root_name(&project.manifest().package.name);
     let bundle_root = output_root.join(&bundle_name);
@@ -70,6 +71,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
             output_root: &output_root,
             bundle_root: &bundle_root,
             bundle_name: &bundle_name,
+            install_root: &install_root,
         },
         &binaries,
         entry_ext,
@@ -91,6 +93,10 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         &resolved,
     )?;
     stages::copy_materials(&project, &bundle_root)?;
+    let locks = crate::dist::payload::remove_pack_locks(&bundle_root)?;
+    if locks > 0 {
+        println!("  removed {locks} publication locks left by the level bakes");
+    }
 
     sweep_sdk_bundle(
         &bundle_root,

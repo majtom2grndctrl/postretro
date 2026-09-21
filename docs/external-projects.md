@@ -48,7 +48,6 @@ Nothing about the project changes when you move or replace the install.
 ```
 my-game/
   postretro.toml        the project marker
-  core/                 engine-owned assets — copied from the install, see below
   content/base/         your game
     maps/               .map sources and the .prl the compiler writes
     textures/<collection>/
@@ -92,31 +91,20 @@ from your PNG sources, and its files are content-addressed blobs that churn on
 every texture edit. `.build-caches/` is disposable at any time. `dist/` holds
 build products.
 
-## Copy `core/` into your project
+## Engine assets stay in the install
 
-`core/` holds the assets the engine owns and a game never replaces — the built-in
-UI descriptors, the boot splash, the font licences. The engine resolves them
-relative to the working directory, and when you launch against your project the
-working directory is your project root. So `core/` has to be there.
+Your repository holds your game and nothing else. `core/` — the built-in UI
+descriptors, the boot splash, the font licences — belongs to the engine, and the
+tool takes it from your install every time: `postretro-tool run` passes the
+engine `--core-root <install>/core`, and `dist` and `sdk-dist` copy that same
+tree into what they build. Nothing is ever read from a `core/` in your project,
+so upgrading the install upgrades those assets with no step on your side.
 
-Copy it once from your install:
-
-```bash
-cp -r /opt/postretro-sdk/core my-game/core
-```
-
-Without it the engine still boots, but the pause menu, the frontend menu and the
-on-screen keyboard are simply absent, each announced by a warning in the log and
-nothing else. Re-copy it when you upgrade the install.
-
-Commit it or ignore it as you prefer — it is not yours, but it is small, and
-committing it means a fresh clone runs immediately.
-
-> Producing a distribution from your own project has the same requirement, and
-> `sdk-dist` extends it: a `dist` run copies `core/` out of the project root, and
-> an `sdk-dist` run additionally copies `sdk/`, `docs/` and `tools/` from there.
-> Copy those three in as well if you intend to build SDK bundles from your
-> repository rather than from the install.
+If you launch the engine by hand rather than through the tool, pass
+`--core-root` yourself — pointed at your install's `core/`, as an absolute path
+or relative to wherever you launch from. Without it the engine still boots, but
+the pause menu, the frontend menu, the on-screen keyboard and the boot splash
+are simply absent, each announced by a warning in the log and nothing else.
 
 ## The authoring loop
 
@@ -227,8 +215,8 @@ mechanism, and what to send a recipient.
 
 ## Upgrading the install
 
-Unpack the newer bundle, re-copy `core/` into your project, and delete
-`baked/materials/` if the release notes say the material format changed — the
-next compile repopulates it. Your repository is otherwise untouched: it holds
+Unpack the newer bundle and point at it — the engine assets come from there, so
+there is nothing to re-copy. Delete `baked/materials/` if the release notes say
+the material format changed; the next compile repopulates it. Your repository is otherwise untouched: it holds
 content and one small TOML file, and neither has a build machine's paths baked
 into it.

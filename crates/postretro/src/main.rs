@@ -696,6 +696,13 @@ pub(crate) struct App {
     /// the same meaning.
     baked_root: Option<PathBuf>,
 
+    /// Where the engine's own `ui/` and `textures/` trees live, from
+    /// `--core-root` or, absent it, `core/` under the working directory. Two
+    /// boot-phase consumers read it: the splash decode on the first splash frame
+    /// and the built-in tree registration inside `Session::build`. Engine-owned
+    /// and independent of `content_root` — `--mod` never redirects it.
+    core_root: postretro_ui::CoreRoot,
+
     exit_result: Result<()>,
 
     camera: Camera,
@@ -12218,8 +12225,8 @@ mod tests {
             "focus rect proves layout produced usable hit geometry",
         );
 
-        let fallback_path =
-            workspace_root().join(postretro_ui::tree_asset::ui_asset_path("pauseMenu.json"));
+        let fallback_path = postretro_ui::CoreRoot::at(workspace_root().join("core"))
+            .ui_asset_path("pauseMenu.json");
         let fallback = postretro_ui::tree_asset::load_named_tree(&fallback_path)
             .expect("engine pause fallback loads");
         assert!(

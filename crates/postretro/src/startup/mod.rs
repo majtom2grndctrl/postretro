@@ -60,7 +60,7 @@ pub(crate) struct InFlightLevelLoad {
     pub(crate) entry: LevelLoadEntry,
 }
 
-/// `Base` = built-in PNG at `core/textures/splash/`.
+/// `Base` = built-in PNG under the engine's core root (`<core root>/textures/splash/`).
 /// `Mod` = absolute path from mod's `mod_init`. Install path is wired; only `Base` is reachable today.
 pub(crate) enum SplashSource {
     Base,
@@ -70,9 +70,16 @@ pub(crate) enum SplashSource {
     Mod(PathBuf),
 }
 
+/// The built-in splash, relative to the engine's core root. A mod override is an
+/// absolute path and never routes through here.
+const BASE_SPLASH_ASSET: &str = "textures/splash/postretro-ascii-art.png";
+
 impl SplashSource {
-    pub(crate) fn base_path() -> PathBuf {
-        PathBuf::from("core/textures/splash/postretro-ascii-art.png")
+    /// Resolve the built-in splash under `core_root`. Taking the root rather than
+    /// assuming the working directory is what keeps the logo present when a
+    /// launcher pins the cwd to a game project.
+    pub(crate) fn base_path(core_root: &postretro_ui::CoreRoot) -> PathBuf {
+        core_root.asset_path(BASE_SPLASH_ASSET)
     }
 }
 

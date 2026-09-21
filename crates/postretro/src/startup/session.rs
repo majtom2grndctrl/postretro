@@ -114,8 +114,9 @@ impl PendingSessionInit {
         // degrade in place inside `build`. `boot_timings` is threaded in so the
         // deferred-session marks record behind first pixels.
         // See: context/lib/boot_sequence.md §1.
-        let session = crate::session::Session::build(&self.raw_args, &mut app.boot_timings)
-            .context("failed to build session")?;
+        let session =
+            crate::session::Session::build(&self.raw_args, &app.core_root, &mut app.boot_timings)
+                .context("failed to build session")?;
         app.session = Some(session);
         app.boot_timings.record("session_init_complete");
         Ok(())
@@ -199,7 +200,12 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // into surfaces only as per-texture placeholder warnings; the two paths in
     // the log are what makes that diagnosable.
     let baked_root = baked_root_arg(&args);
+    // Logged for the same reason: a `core/` the engine cannot find costs three
+    // screens and a splash, and every one of those degrades to a warning. The
+    // resolved root in the log is what makes the absence attributable.
+    let core_root = postretro_ui::CoreRoot::from_flag(core_root_arg(&args));
     log::info!("[Engine] Content root: {}", content_root.display());
+    log::info!("[Engine] Core root: {}", core_root.path().display());
     if let Some(baked_root) = baked_root.as_ref() {
         log::info!(
             "[Engine] Baked root: {} (materials at {})",
@@ -247,6 +253,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         map_path: map_path.map(PathBuf::from),
         content_root,
         baked_root,
+        core_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         // The entire `Session` (options, audio, scripting core, input/UI/modal
@@ -317,34 +324,69 @@ pub(crate) fn build_session() -> Result<BootSession> {
     Ok(BootSession { event_loop, app })
 }
 
+/// Every flag naming a directory: one list, read by the scanners that extract a
+/// value and by the positional-map scan that must step over one.
+///
+/// Keeping it in one place is what holds the invariant. A flag added to only
+/// half of them leaves its *value* exposed to `resolve_map_path`, which then
+/// loads a directory as the level — the defect `--baked-root` hit and
+/// `--core-root` would hit next.
+const PATH_FLAGS: [&str; 4] = ["--mod", "--content-root", "--baked-root", "--core-root"];
+
 /// Recover the positional map-path argument (the raw-path dev bypass), skipping
-/// the values consumed by `--content-root`/`--mod`/`--baked-root` and any other
-/// flags. A value-taking flag missing from that list has its value mistaken for
-/// the map path, so every such flag belongs here.
+/// the values consumed by [`PATH_FLAGS`] and the other value-taking flags. A
+/// value-taking flag missing from that list has its value mistaken for the map
+/// path, so every such flag belongs here.
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--content-root"
-            || arg == "--mod"
-            || arg == "--baked-root"
-            || arg == "--pool-seed"
-            || arg == "--observe-live"
-        {
+        if PATH_FLAGS.contains(&arg.as_str()) || arg == "--pool-seed" || arg == "--observe-live" {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
             continue;
         }
-        if arg.starts_with("--content-root=")
-            || arg.starts_with("--mod=")
-            || arg.starts_with("--baked-root=")
-            || arg.starts_with("--pool-seed=")
-            || arg.starts_with("--observe-live=")
-            || arg.starts_with("--")
-        {
+        // A `--flag=value` form carries its value inside one token, so no
+        // separate per-flag list is needed: the general flag test covers them.
+        if arg.starts_with("--") {
             continue;
         }
         return Some(arg.clone());
+    }
+    None
+}
+
+/// Read the value of one directory-naming flag, in `--flag <dir>` or
+/// `--flag=<dir>` form.
+///
+/// Shared by every flag in [`PATH_FLAGS`] so they cannot drift apart. Absent, or
+/// present with no value, yields `None` — a bare flag never silently resolves to
+/// the current directory, and an empty value is treated as absence. The scan
+/// steps over the other path flags' values so one flag never swallows another's.
+fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
+    debug_assert!(
+        PATH_FLAGS.contains(&flag),
+        "every directory-naming flag belongs in PATH_FLAGS",
+    );
+    let equals_form = format!("{flag}=");
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter
+                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
+                .map(PathBuf::from);
+        }
+        if let Some(value) = arg.strip_prefix(equals_form.as_str()) {
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+            continue;
+        }
+        if PATH_FLAGS.contains(&arg.as_str())
+            && iter.peek().is_some_and(|value| !value.starts_with("--"))
+        {
+            let _ = iter.next();
+        }
     }
     None
 }
@@ -450,26 +492,7 @@ fn capture_arg(args: &[String]) -> Option<Option<&str>> {
 }
 
 fn mod_arg(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--content-root" || arg == "--baked-root" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        if arg == "--mod" {
-            return iter
-                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
-                .map(PathBuf::from);
-        }
-        if let Some(value) = arg.strip_prefix("--mod=") {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
-    }
-    None
+    path_flag_value(args, "--mod")
 }
 
 /// Detect `--baked-root <dir>` / `--baked-root=<dir>`: the directory that
@@ -484,49 +507,30 @@ fn mod_arg(args: &[String]) -> Option<PathBuf> {
 /// treated as absent rather than as the current directory, matching `--mod` and
 /// `--content-root`.
 fn baked_root_arg(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--mod" || arg == "--content-root" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        if arg == "--baked-root" {
-            return iter
-                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
-                .map(PathBuf::from);
-        }
-        if let Some(value) = arg.strip_prefix("--baked-root=") {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
-    }
-    None
+    path_flag_value(args, "--baked-root")
+}
+
+/// Detect `--core-root <dir>` / `--core-root=<dir>`: the directory that *holds*
+/// the engine's own `ui/` and `textures/` trees — the `core/` directory itself.
+///
+/// The same shape as `--baked-root`, for the same reason: `core/` is resolved
+/// from the engine's surroundings, and a launcher that pins the working
+/// directory to a game project moves those surroundings out from under it. An
+/// external project correctly has no `core/` of its own, so without this flag
+/// the pause menu, frontend menu and on-screen keyboard are absent and
+/// `load_named_tree` only warns.
+///
+/// Independent of `--mod` in both directions. `core/` is engine-owned: mounting
+/// a game never replaces it, and relocating it never relocates game content.
+///
+/// Absent (the normal case, including every dev run and test) resolves `core/`
+/// against the working directory exactly as before the flag existed.
+fn core_root_arg(args: &[String]) -> Option<PathBuf> {
+    path_flag_value(args, "--core-root")
 }
 
 fn content_root_arg(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--mod" || arg == "--baked-root" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        if arg == "--content-root" {
-            return iter
-                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
-                .map(PathBuf::from);
-        }
-        if let Some(value) = arg.strip_prefix("--content-root=") {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
-    }
-    None
+    path_flag_value(args, "--content-root")
 }
 
 fn resolve_content_root(args: &[String], map_path: Option<&str>) -> PathBuf {
@@ -691,6 +695,217 @@ mod tests {
             resolve_map_path(&with_map).as_deref(),
             Some("content/dev/maps/campaign-test.prl"),
         );
+    }
+
+    #[test]
+    fn core_root_flag_parses_in_split_and_equals_forms() {
+        let split = vec![
+            "postretro".to_string(),
+            "--core-root".to_string(),
+            "/install/core".to_string(),
+        ];
+        assert_eq!(core_root_arg(&split), Some(PathBuf::from("/install/core")));
+
+        let equals = vec![
+            "postretro".to_string(),
+            "--core-root=/install/core".to_string(),
+        ];
+        assert_eq!(core_root_arg(&equals), Some(PathBuf::from("/install/core")));
+
+        assert_eq!(core_root_arg(&["postretro".to_string()]), None);
+        // A bare flag must not silently resolve to the current directory.
+        assert_eq!(
+            core_root_arg(&["postretro".to_string(), "--core-root".to_string()]),
+            None
+        );
+        assert_eq!(
+            core_root_arg(&["postretro".to_string(), "--core-root=".to_string()]),
+            None
+        );
+    }
+
+    /// The compatibility contract, asserted on the paths themselves rather than
+    /// on the flag: with `--core-root` absent, both consumers resolve exactly
+    /// what they resolved before the flag existed.
+    #[test]
+    fn without_the_core_root_flag_both_consumers_keep_the_working_directory_paths() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod".to_string(),
+            "levels".to_string(),
+            "--baked-root".to_string(),
+            "baked".to_string(),
+            "levels/maps/e1m1.prl".to_string(),
+        ];
+        let core_root = postretro_ui::CoreRoot::from_flag(core_root_arg(&args));
+
+        assert_eq!(core_root.path(), Path::new("core"));
+        for file in [
+            "hud.json",
+            "pauseMenu.json",
+            "frontendMenu.json",
+            "keyboard.json",
+        ] {
+            assert_eq!(
+                core_root.ui_asset_path(file),
+                PathBuf::from("core/ui").join(file),
+            );
+        }
+        assert_eq!(
+            crate::startup::SplashSource::base_path(&core_root),
+            PathBuf::from("core/textures/splash/postretro-ascii-art.png"),
+        );
+    }
+
+    /// With the flag, the descriptors and the splash both move under the named
+    /// directory — the whole point of the flag, and the thing a launcher that
+    /// pins the working directory to a game project depends on.
+    #[test]
+    fn a_named_core_root_relocates_the_descriptors_and_the_splash() {
+        let args = vec![
+            "postretro".to_string(),
+            "--core-root".to_string(),
+            "/install/core".to_string(),
+        ];
+        let core_root = postretro_ui::CoreRoot::from_flag(core_root_arg(&args));
+
+        assert_eq!(
+            core_root.ui_asset_path("frontendMenu.json"),
+            PathBuf::from("/install/core/ui/frontendMenu.json"),
+        );
+        assert_eq!(
+            crate::startup::SplashSource::base_path(&core_root),
+            PathBuf::from("/install/core/textures/splash/postretro-ascii-art.png"),
+        );
+    }
+
+    /// `--core-root` takes a value, so the positional-map-path scan has to skip
+    /// it. Invariant 11: a value-taking flag missing from that scan leaves its
+    /// *value* exposed, and the engine loads a directory as the level.
+    #[test]
+    fn core_root_flag_value_is_not_mistaken_for_the_map_path() {
+        let args = vec![
+            "postretro".to_string(),
+            "--core-root".to_string(),
+            "/install/core".to_string(),
+        ];
+        assert_eq!(resolve_map_path(&args), None);
+        // And the content root is not derived from it either.
+        assert_eq!(
+            resolve_content_root(&args, resolve_map_path(&args).as_deref()),
+            PathBuf::from("content/dev"),
+        );
+
+        let with_map = vec![
+            "postretro".to_string(),
+            "--core-root".to_string(),
+            "/install/core".to_string(),
+            "content/dev/maps/campaign-test.prl".to_string(),
+        ];
+        assert_eq!(
+            resolve_map_path(&with_map).as_deref(),
+            Some("content/dev/maps/campaign-test.prl"),
+        );
+    }
+
+    /// The structural half of invariant 11: every directory-naming flag is
+    /// stepped over by the positional-map scan. Adding a flag to `PATH_FLAGS`
+    /// enrolls it here, so the next one cannot be half-wired.
+    #[test]
+    fn resolve_map_path_skips_every_directory_naming_flag() {
+        for flag in PATH_FLAGS {
+            let split = vec![
+                "postretro".to_string(),
+                flag.to_string(),
+                "/some/directory".to_string(),
+            ];
+            assert_eq!(resolve_map_path(&split), None, "{flag} value leaked");
+
+            let with_map = vec![
+                "postretro".to_string(),
+                flag.to_string(),
+                "/some/directory".to_string(),
+                "maps/e1m1.prl".to_string(),
+            ];
+            assert_eq!(
+                resolve_map_path(&with_map).as_deref(),
+                Some("maps/e1m1.prl"),
+                "{flag} displaced the map path",
+            );
+
+            let equals = vec![
+                "postretro".to_string(),
+                format!("{flag}=/some/directory"),
+                "maps/e1m1.prl".to_string(),
+            ];
+            assert_eq!(
+                resolve_map_path(&equals).as_deref(),
+                Some("maps/e1m1.prl"),
+                "{flag}=<dir> displaced the map path",
+            );
+        }
+    }
+
+    /// The four directory flags are mutually independent: none swallows
+    /// another's value, in any order. `--core-root` in particular never becomes
+    /// the content root — engine assets are not mod content.
+    #[test]
+    fn core_root_is_independent_of_the_mod_and_baked_roots() {
+        let args = vec![
+            "postretro".to_string(),
+            "--core-root".to_string(),
+            "/install/core".to_string(),
+            "--mod".to_string(),
+            "/project/levels".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+        ];
+        assert_eq!(core_root_arg(&args), Some(PathBuf::from("/install/core")));
+        assert_eq!(baked_root_arg(&args), Some(PathBuf::from("/project/baked")));
+        assert_eq!(
+            resolve_content_root(&args, None),
+            PathBuf::from("/project/levels"),
+        );
+
+        // Reversed order resolves identically.
+        let reversed = vec![
+            "postretro".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
+            "--mod".to_string(),
+            "/project/levels".to_string(),
+            "--core-root".to_string(),
+            "/install/core".to_string(),
+        ];
+        assert_eq!(
+            core_root_arg(&reversed),
+            Some(PathBuf::from("/install/core"))
+        );
+        assert_eq!(
+            baked_root_arg(&reversed),
+            Some(PathBuf::from("/project/baked"))
+        );
+        assert_eq!(
+            resolve_content_root(&reversed, None),
+            PathBuf::from("/project/levels"),
+        );
+    }
+
+    /// A flag whose value is missing does not consume the next flag, so the one
+    /// after it still parses — the shared scanner's half of `mod_arg`'s existing
+    /// guarantee, held for all four.
+    #[test]
+    fn a_directory_flag_without_a_value_does_not_eat_the_next_flag() {
+        let args = vec![
+            "postretro".to_string(),
+            "--core-root".to_string(),
+            "--mod".to_string(),
+            "content/example".to_string(),
+            "maps/dev.prl".to_string(),
+        ];
+        assert_eq!(core_root_arg(&args), None);
+        assert_eq!(mod_arg(&args), Some(PathBuf::from("content/example")));
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
     }
 
     /// `--baked-root` and `--mod` are independent: neither swallows the other's

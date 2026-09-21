@@ -68,7 +68,7 @@ impl App {
         // splash synchronously. PNG decode is bounded CPU work (~ms); doing it
         // here keeps the boot path single-threaded and ordering causal.
         let source = SplashSource::Base;
-        match render::splash::load_splash(&source) {
+        match render::splash::load_splash(&source, &self.core_root) {
             Ok(loaded) => {
                 self.boot_timings.record("splash_decoded");
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -463,7 +463,7 @@ impl App {
     /// complete the moment the hook arrives.
     fn swap_mod_splash_override_if_pending(&mut self) {
         if let Some(source) = self.pending_splash_override.take() {
-            match render::splash::load_splash(&source) {
+            match render::splash::load_splash(&source, &self.core_root) {
                 Ok(loaded) => {
                     if let Some(renderer) = self.renderer.as_mut() {
                         let dims = renderer.install_splash_pixels(&loaded);

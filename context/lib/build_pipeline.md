@@ -586,9 +586,11 @@ Content paths resolve cwd-relative (`ui.md` §5), so the payload is correct only
 
 ### Authoring launch
 
-`postretro-tool run` discovers the project and launches the engine with `--mod` and `--baked-root` already correct, with the working directory pinned to the project root. Flags the caller supplies win outright rather than being shadowed, since the engine reads the first occurrence of each.
+`postretro-tool run` discovers the project and launches the engine with `--mod`, `--baked-root`, and `--core-root` already correct, with the working directory pinned to the project root. Flags the caller supplies win outright rather than being shadowed, since the engine reads the first occurrence of each.
 
-The engine learns nothing about `postretro.toml` — it keeps plain flags, so changing the manifest schema stays a tool change. What the command removes is the two paths a modder would otherwise type on every launch, whose failure mode is not an error but the silent placeholder degradation §Baked texture mips describes. The tool has no single-level build, so a direct `prl-build` invocation is the one place an author still supplies `--baked-root` and `--cache-dir` by hand.
+Content and engine assets are two independent lookups here, exactly as they are for the packaging commands: `--mod` and `--baked-root` come from the project, `--core-root` is the install's `core/` (§Distribution packaging, D14), and neither falls back to the other. `--core-root` is passed absolute, because the engine would otherwise resolve it against the working directory this command pins to the project — the one directory that does not hold `core/`. An install carrying no `core/` refuses the launch rather than starting an engine whose pause menu, frontend menu, on-screen keyboard and splash are all absent behind warnings; `--install-root` names the install when the tool's own location cannot imply it, which is the checkout case (`xtask run` is the checkout's launcher).
+
+The engine learns nothing about `postretro.toml` — it keeps plain flags, so changing the manifest schema stays a tool change. What the command removes is the three paths a modder would otherwise type on every launch, none of whose failure modes is an error: a wrong materials root is the silent placeholder degradation §Baked texture mips describes, and an unreachable `core/` is four warnings and four missing surfaces. The tool has no single-level build, so a direct `prl-build` invocation is the one place an author still supplies `--baked-root` and `--cache-dir` by hand.
 
 ### Output-root containment
 

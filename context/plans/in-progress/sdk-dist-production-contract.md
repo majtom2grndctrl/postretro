@@ -190,6 +190,49 @@ actual reader — which is how `docs/modding.md` came to end with
 author docs", so this makes an existing split enforceable rather than inventing
 one, and it is what lets Track 4's grep gate be exact instead of approximate.
 
+### D13. No `.prl.pack.lock` reaches any distribution
+
+*Added at owner request, after Track 3.* Neither a player payload nor an SDK
+bundle carries `.<name>.prl.pack.lock`. Both outputs remove the lock siblings
+their level bakes create, and both sweeps refuse the pattern.
+
+*Consequence, and where the fix must not go:* the lock's persistence is
+deliberate. `crates/level-compiler/src/pack.rs` keeps the lock pathname between
+runs on purpose — its comment explains that removing it would let a waiter hold
+the old inode while a new compiler locks a freshly created one. So `prl-build`
+must keep writing and keeping it; a "fix" that deletes the lock at the end of a
+bake reintroduces a real publication race for every concurrent compile in a
+workspace.
+
+The packaging stage is the right place because the bake writes straight into the
+payload, *after* the assembly copy filter has already run — which is exactly why
+the filter never sees these files. Removing them at packaging time is safe in a
+way it is not in a workspace: nothing recompiles a player payload's `.prl` in
+place, and a modder who rebakes inside an SDK bundle simply recreates the lock
+on demand. The sweep refusal is what keeps a later change from quietly
+reintroducing them.
+
+### D14. Engine-owned trees resolve from the project, then the tool's install
+
+*Added after Track 4.* `core/`, and for `sdk-dist` also `sdk/`, `docs/`, and
+`tools/`, resolve by looking in the project root first and the tool's own
+install root second, with a failure naming both paths.
+
+*Consequence:* Track 4 found that both outputs copy these trees from the project
+root alone, so an external content repository — the layout this whole session
+exists to enable — cannot build a distribution without a recipient first copying
+engine-owned directories into their game repo. Worse, `postretro-tool run` pins
+the working directory to the project root and the engine resolves `core/…`
+cwd-relative, so an external project silently loses the pause menu, frontend
+menu, and on-screen keyboard with only warnings.
+
+The two-step order is what makes all three layouts work with one rule: a
+workspace has `core/` at the project root and nothing beside
+`target/debug/postretro-tool`; an external project has it only in the install
+beside the tool; a bundle acting as its own project has both, pointing at the
+same tree. The tool already resolves helper binaries by searching beside its own
+executable, so the install root is a path it can derive.
+
 ### D10. `content/dev` stays in the repository
 
 The engine's own test content — fixtures, stress maps, capture rigs — is

@@ -76,7 +76,7 @@ entry in `<mod-root>/identity.json`:
 ```
 
 After adding such a slot, run
-`cargo run -p xtask -- mint-identity <mod-root>` and ship the updated file with
+`bin/postretro-tool mint-identity <mod-root>` and ship the updated file with
 the mod. When renaming a store or slot, rename the dotted key in this file but
 keep its opaque value; that retains saved data and replication identity. Missing
 or invalid durable identity rejects mod initialization. This is stricter than an
@@ -1786,7 +1786,7 @@ fire. A `progress` reaction behaves differently: naming one from a trigger does
 **not** fire its target — progress is tracked independently, and its target fires
 only when the kill threshold is reached, however many ticks later that is. The
 canonical progress use is a threshold that fires an event of the same name — see
-[the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
+[the combat-demo walkthrough](../content/base/maps/combat-demo.README.md).
 
 ### `grantHealth` and `grantAmmo`
 
@@ -1875,14 +1875,7 @@ authored baseline.
 
 That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
-The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
-
-```sh
-tsc --project context/plans/done/E16--impact-policy-substrate/tsconfig.json
-tsc --project context/plans/done/E16--impact-death-lifecycle/tsconfig.json
-```
-
-The repository does not install or download `tsc`; editor/CI tooling supplies it. The committed `@ts-expect-error` cases make unsafe narrowing and forged effects fail this gate.
+The type definitions for this area carry committed `@ts-expect-error` cases, so unsafe narrowing and forged effects fail a type check. Nothing here installs or downloads `tsc` — supply your own, and run `tsc --noEmit` against your scripts.
 
 ### `armTrigger` and `disarmTrigger`
 
@@ -2313,14 +2306,14 @@ opener:
 ```
 
 The keyboard layout itself is an engine-shipped JSON asset at
-`content/base/ui/keyboard.json`, loaded from disk at boot. Editing it (adding or
+`core/ui/keyboard.json`, loaded from disk at boot. Editing it (adding or
 removing keys, retiming the backspace repeat) and reloading changes the keyboard
 with no engine change — keys are data. Each key's `onPress` names a reaction the
 mod registers (the `appendText` / `backspaceText` reactions above), except the
 `done` key, whose reserved `onPress` (`ui.commitTextEntry`) the engine intercepts
 to reach the shared commit seam.
 
-> **Keyboard asset is layout-only.** `content/base/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop).
+> **Keyboard asset is layout-only.** `core/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/base/scripts/arena-lights.ts` for the registration loop). It lives under `core/` rather than in a content tree because it belongs to the engine: mounting a game never replaces it.
 
 ### Pause menu
 
@@ -2699,7 +2692,7 @@ byte-identical between TypeScript and Luau (Luau table iteration order is
 undefined, so the sort is load-bearing for cross-runtime wire identity). A subtree
 that already carries a `visibleWhen` is rejected — `Switch` owns that field. The
 canonical end-to-end example is the campaign-test tabs demo
-(`content/dev/scripts/tabs-demo.ts`).
+(`content/base/scripts/tabs-demo.ts`).
 
 ### Accessible name, role, and `disabled`
 
@@ -2779,7 +2772,7 @@ The repo has no `tsc` CI; per-kind narrowing is proven two ways, both committed:
   interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows
   to `label` xor `decorative`, local-cell `.is(v)` is typed to the cell value
   type, and `stateEquals(ref, v)` is typed to the state-ref value type.
-- **`@ts-expect-error` fixtures** (`content/dev/scripts/reactive-ui-fixture.ts`)
+- **`@ts-expect-error` fixtures** (`content/base/scripts/reactive-ui-fixture.ts`)
   are a documented review gate: each marked line MUST be a type error in an IDE;
   if a future change makes one compile cleanly, `tsc --noEmit` flags the now-unused
   directive and the gate fails.

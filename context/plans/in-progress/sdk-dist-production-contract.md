@@ -1,7 +1,48 @@
 # SDK distribution: production-ready contract
 
-> **Status:** in progress. Branch `sdk-dist-production`.
+> **Status:** in progress, **builds paused at owner request**. Branch
+> `sdk-dist-production`.
 > **Read before any track brief.** Amend here when a track changes a decision.
+> **Do not start a build, test run, `dist`, `sdk-dist`, or preflight until the
+> owner says to resume.** The queue below is what remains; it is ordered so a
+> resume can start at the top.
+
+## Resume queue
+
+Everything here needs the machine and is deliberately not running. Tracks 1
+through 5 are otherwise complete and committed.
+
+1. **Two `level-compiler` fixes** (see *Known-red*, below). The `cache.rs` one is
+   a real Windows product defect — the build cache's LRU touch has never worked
+   there — and its fix must go through a separate short-lived write handle, not
+   by opening the entry for writing in `get`. The `pack.rs` one is test-only and
+   wants a single shared helper, not ten sanitized copies. Both must wait for
+   the stress-map bake to exit, because Windows will not let `prl-build.exe` be
+   rebuilt while a copy runs.
+2. **Track 3's outstanding acceptance:** `sdk-dist` has never executed; the
+   `bin/` listing, the bundle's own `dist`, and a payload boot are unverified.
+   Verify bundle assembly against a minimal project first and keep the real
+   payload for the boot check, rather than paying a six-level release bake three
+   more times.
+3. **The review track** — one `opus` pass over the whole diff: find, filter, fix,
+   stopping at anything that would change a decision here.
+4. **`/preflight`** as the single full-suite gate. Expect its format check to
+   report three files that are red on `main` and untouched by this branch.
+5. **Move this contract to `context/plans/done/`,** or delete it once
+   `context/lib/` has absorbed everything durable.
+
+Known unclosed at pause, needing no build to decide:
+
+- There is no single-level build subcommand on the tool, so an author
+  recompiling one level must call `prl-build` directly and type both
+  `--baked-root` and `--cache-dir`. Track 4 documented this honestly rather than
+  writing around it. A `postretro-tool build-level` would close it; not scoped.
+- `--capture` bypasses the `--baked-root` thread entirely
+  (`crates/postretro/src/capture/driver.rs`). Dormant while the capture rig is
+  workspace-only, and the first place to look if that changes.
+- `cargo run -p postretro-tool -- dist` invoked directly in a checkout now fails
+  by design, because the tool in `target/debug` derives an install root with no
+  `core/`. `xtask` passes `--install-root` and its help says so.
 
 ## Goal
 

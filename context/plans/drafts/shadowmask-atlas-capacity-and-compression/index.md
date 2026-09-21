@@ -47,11 +47,29 @@ packing at any lightmap layer count.
 
 ## Direction
 
-**Problem.** A texel packs per-light masks into the four RGBA channels of one raw
-`Rgba8Unorm` texel. A fifth overlapping selected light is dropped lowest-intensity
-first and its runtime shadow disappears; and the payload is stored, loaded, and
-held uncompressed while ids 22 and 35 both ship BC-compressed. One wire surface
-carries both defects, so one format evolution closes both.
+**Problem.** Two problems on one wire surface, with different evidential standing —
+state them apart, because the spec's shape turns on which is measured.
+
+*At-rest cost — observed.* The payload is stored, loaded, and held uncompressed
+while ids 22 and 35 both ship BC-compressed. Checkable in source: the pack seam has
+no compression step for id 42. But **no id-42 byte figure is recorded anywhere in
+the repo** — `sh-base-atlas-at-rest-slimming` measured ids 34, 35, 27, 41 and 45 on
+`campaign-test` and omitted 42. This epic asserts a ratio and no magnitude, which
+departs from the discipline that at-rest precedent set (it opened with a measured
+basis *before* choosing a codec). Taking that measurement is the first thing to do
+and costs one bake.
+
+*Capacity — anticipated, not observed.* A fifth overlapping selected light is
+dropped lowest-intensity first and its runtime shadow disappears. No observation
+produced this: greater-than-four per-texel overlap is **rare and unmeasured on
+today's content**, a build-ahead lift rather than a reported defect, and
+`static-light-shadowmask-world-receipt` judged it rare enough for a warning plus a
+global drop. It is also partly downstream of selection — mask pileup follows the
+`entity_shadow_min_intensity_ratio` and `entity_shadow_min_range` floors, which this
+epic holds out of scope. The measurement that would settle reachability is peak
+observed per-texel overlap, and in the sequencing below it is a deliverable of the
+fix rather than its premise. That inversion is the open structural question, not a
+detail.
 
 **Prior commitments.** `rendering_pipeline.md` §4 commits that absent, rejected,
 or dropped shadowmask data reads fully lit, independent of pool-shadow promotion
@@ -59,9 +77,15 @@ and its crossfade — preserved and extended here to a new cause (an over-budget
 layer product). The static→static double-count dead-zone is untouched: this epic
 changes where a mask lives and how it is encoded, never the union subtraction.
 `build_pipeline.md` §Build Cache keys the shadowmask memo on inputs and exempts
-lossy compressed output from byte-identity; `sh-base-atlas-at-rest-slimming` set
-that posture, and Slice 1 inherits it — the pre-compression assignment must be
-byte-identical, the compressed section only length-stable.
+lossy compressed output from byte-identity, a posture `sh-base-atlas-at-rest-slimming`
+set for BC6H irradiance. **Slice 1 does not take that exemption.**
+`static-light-shadowmask-cache-addendum` ships a live guarantee that cached warm
+output for this section matches uncached output byte-for-byte, and the in-tree BC5
+path is a pure function — per-block min/max endpoints, a fixed integer palette,
+nearest-index selection, no cluster-fit refinement and no parallelism — so
+byte-identity is achievable here and the exemption would give up a satisfied
+guarantee for nothing. Inheriting it by analogy to BC6H would be an unforced
+downgrade.
 `static-light-shadowmask-world-receipt` banked a lightmap array-consolidation
 refactor as the fallback for a feature needing array-layer headroom. Slice 2 is
 that feature; this epic names the coupling rather than triggering it.
@@ -82,8 +106,40 @@ correlation, and four independent visibility scalars have none, so its ratio is
 bought with error concentrated on exactly this data. No BC7-unorm encoder exists
 in-tree, and `bc7-color-textures` owns that codec.
 
-*Two BC5 textures now* removes the capacity ceiling outright but needs a
+*Group-addressed raw `Rgba8Unorm`* — slot `s` addressing group `s / 4` and channel
+`s % 4` — reaches `4 × floor(256/L)` masks per texel at one binding, with no
+encoder, no fidelity gate, and the existing channel-select decode. That is the same
+mask capacity as two BC5 textures. It is not rejected on capacity grounds at all; it
+is simply the no-compression point on the trade curve, and it is the layout to build
+if capacity is wanted without waiting on anything. It is excluded from Slice 1 only
+because Slice 1's purpose is the at-rest win.
+
+*Two BC5 textures now* reaches that same capacity at half the bytes, but needs a
 sampled-texture slot the forward pass does not have. See Slice 2.
+
+**Costs and foreclosures.**
+
+*A per-fragment sampling-rate increase on the world specular path — the unpriced
+cost, and it is not a codec cost.* Both decode paths sample the atlas once per
+fragment today, hoisted out of their light loops because every light shared one
+texel's four channels. Any group-addressed layout puts each light's mask on its own
+array layer, so the sample moves inside both loops: one sample per fragment becomes
+one per contributing static light. This is intrinsic to **capacity**, not to
+compression — it survives into group-addressed raw and into Slice 2 equally, and it
+is absent only from a layout that keeps all four masks in one texel. For an epic
+whose other half is a footprint reduction, shipping an unmeasured per-fragment cost
+would be incoherent, so it carries a frame-time acceptance row below rather than
+living in the research file.
+
+*A permanent second decode path in the shader,* if the raw fallback ships: the
+existing RGBA channel-select persists alongside group addressing, branched on a
+per-level uniform. Note the ledger — retiring the exact-search colourer is justified
+below by the lean northstar, and this spends that credit back.
+
+*Contribution- or coverage-weighted mask retention* stays foreclosed:
+`lighting-scale--shadowmask-cold-working-set` deleted the only structure where
+per-texel visibility values and cross-light adjacency coexist. Intensity-ordered
+retention reads light parameters only and is unaffected.
 
 ## Capacity model
 
@@ -94,13 +150,21 @@ granted limit is 256. `MAX_ATLAS_LAYERS` caps the lightmap packer at 256 layers.
 Masks per texel, as a function of lightmap `layer_count` (L), where the group
 count P is bounded by `floor(256 / L)`:
 
-| Layout | Masks/texel | Bytes/texel/mask | Falls below today at |
-|---|---|---|---|
-| Today — raw `Rgba8Unorm` | 4 | 1.0 | n/a |
-| Rejected — BC4 planes | `floor(256/L)` | 0.5 | L ≥ 65 |
-| **Slice 1 — BC5 `.rg` pairs** | `2 × floor(256/L)` | 0.5 | L ≥ 129 |
-| Slice 1 raw fallback | 4 | 1.0 | never |
-| Slice 2 — two BC5 textures | `4 × floor(256/L)` | 0.5 | never |
+| Layout | Masks/texel | Bytes/texel/mask | Bindings | Falls below today at |
+|---|---|---|---|---|
+| Today — raw `Rgba8Unorm`, one group | 4 | 1.0 | 1 | n/a |
+| Rejected — BC4 planes | `floor(256/L)` | 0.5 | 1 | L ≥ 65 |
+| **Slice 1 — BC5 `.rg` pairs** | `2 × floor(256/L)` | 0.5 | 1 | L ≥ 129 |
+| Slice 1 raw fallback | 4 | 1.0 | 1 | never |
+| Raw `Rgba8Unorm`, group-addressed | `4 × floor(256/L)` | 1.0 | 1 | never |
+| Slice 2 — two BC5 textures | `4 × floor(256/L)` | 0.5 | 2 | never |
+
+Read the last two rows together: **capacity and compression are two levers trading
+against each other on one 256-layer budget**, not one problem. BC5 halves bytes per
+mask and halves masks per layer-group; raw keeps four masks per group and pays full
+bytes. Group-addressed raw reaches Slice 2's exact mask capacity at one binding,
+today, with no encoder. What the second binding buys is that capacity *at half the
+bytes* — bytes, not masks.
 
 Slice 1's guarantee comes from the last two rows together: BC5 pairs while
 `2 × floor(256/L) ≥ 4` (that is, L ≤ 128), raw `Rgba8Unorm` above it. Compression
@@ -127,8 +191,11 @@ Changes no binding count, so it cannot collide with the in-flight
 L ≤ 128, and 2× to 128× today's per-texel mask capacity over the same band. The
 Tasks, Wire format, Boundary inventory, and Invariants sections below specify it.
 
-**Slice 2 — two BC5 textures.** Raises capacity to `4 × floor(256/L)`, which never
-falls below today at any layer count, retiring the raw fallback band. Blocked: the
+**Slice 2 — two BC5 textures.** Reaches `4 × floor(256/L)` masks per texel *at half
+today's bytes per mask*, retiring the raw fallback band. Note precisely what is
+blocked: that mask capacity is reachable at one binding today via group-addressed
+raw, per the capacity table. Slice 2 buys bytes at that capacity, not masks. Blocked
+because the
 forward pass already requests exactly 16 sampled textures per stage, which
 `renderer_init_resources.rs` documents as the WebGPU spec floor, so a 17th breaks
 the stated portability guarantee. The count is 15 without `CUBE_ARRAY`, so the
@@ -187,10 +254,10 @@ Slice 1 only. Slice 2 inherits these and adds its own when specified.
       section, a raw section, and an empty selection. `from_bytes` rejects an
       out-of-range non-sentinel slot, and a payload whose length disagrees with the
       tagged codec's block arithmetic.
-- [ ] A section whose `layer_count × group_count` exceeds the device maximum is
-      rejected to the all-visible placeholder with a `[Renderer]` error, no panic.
+- [ ] A section whose `layer_count × group_count` exceeds the engine's pinned
+      array-layer maximum is rejected to the all-visible placeholder with a `[Renderer]` error, no panic.
       The check compares the product, not `layer_count` alone.
-- [ ] Boundary: a product exactly equal to the device maximum is retained; one
+- [ ] Boundary: a product exactly equal to that pinned maximum is retained; one
       greater by a single layer degrades to the placeholder.
 - [ ] A sentinel slot reads fully lit in both decode paths; and a baked non-zero
       group index samples fully lit rather than out of range when the bound texture
@@ -205,6 +272,11 @@ Slice 1 only. Slice 2 inherits these and adds its own when specified.
       array layer from the light's group rather than from `lightmap_layer` alone.
 - [ ] Control, not a fix gate: four-way overlap carries every mask with no drop
       under both codecs.
+- [ ] Frame time on the world specular path does not regress measurably against a
+      pre-change baseline, on a scene whose fragments carry several selected static
+      specular lights — the case where the hoisted single sample becomes one sample
+      per contributing light. Measured on the same capture scene as the visual A/B,
+      with the per-pass GPU timing path.
 - [ ] On a fixture carrying a populated atlas, the id-42 on-disk section byte count
       drops ≈2:1 against the raw baseline of the same mask count, measured by the
       per-section byte accounting at the pack seam.
@@ -214,11 +286,11 @@ Slice 1 only. Slice 2 inherits these and adds its own when specified.
 - [ ] After upload, no `width × height × layer_count × group_count` shadowmask buffer
       remains resident on the CPU, and a subsequent level reload still installs a
       correct atlas.
-- [ ] Re-baking a fixture twice yields a byte-identical pre-compression assignment
-      and a length-stable compressed section, so the build cache stays valid.
-      Byte-identity holds across differing worker-thread counts, and slot-open order
-      is a pure function of a stable ordering key rather than of chart-worker or
-      iteration order.
+- [ ] Re-baking a fixture twice yields a byte-identical section — assignment *and*
+      compressed payload — so the existing cached-warm-equals-uncached guarantee for
+      this section survives. Byte-identity holds across differing worker-thread
+      counts, and slot-open order is a pure function of a stable ordering key rather
+      than of chart-worker or iteration order.
 - [ ] Fidelity, measured and reported rather than gated: max and mean per-channel
       absolute error of the BC5 encode against the raw masks, recorded in the landing
       note. The visual A/B below is the fidelity gate.
@@ -386,12 +458,12 @@ Two encodings cross module boundaries and are each pinned once.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Capacity floor: masks per texel never below four, bytes per mask never above today's, at any layer count | Task 1 raw codec, Task 2 codec selection | a codec chosen without consulting the layer budget; a raw path that stops round-tripping | AC 5, 6, 13, 14 |
+| Capacity floor: masks per texel never below four, bytes per mask never above today's, at any layer count | Task 1 raw codec, Task 2 codec selection | a codec chosen without consulting the layer budget; a raw path that stops round-tripping | AC 5, 6, 13, 15 |
 | No selected mask dropped while `layer_count × group_count` fits the device array-layer maximum — true by construction under greedy first-fit, with no search-budget drop path | Task 2 | any residual four-slot cap surviving in assignment, metadata, or shader | AC 1, 2, 3, 4 |
 | Absent, rejected, or over-budget shadowmask data resolves to fully lit, never a panic | existing usability filter, extended by Task 2 | a filter comparing `layer_count` alone; an unclamped array layer against the placeholder | AC 7, 8, 9 |
 | Static→static world shadowing stays exactly zero (pool-shadow union dead-zone) | existing promoted-union path | a group or codec decode that alters the union term | AC 10 |
-| Pre-compression assignment byte-deterministic; compressed section length-stable | Task 2 assignment, Task 1 encoder | non-deterministic slot-open order; an encoder whose output length varies across runs | AC 17 |
-| CPU payload released after upload; reload reinstalls | Task 3 | a post-upload payload reader; a reload that fails to re-read | AC 16 |
+| Section byte-identical across re-bakes, assignment and compressed payload alike — the shipped cached-warm-equals-uncached guarantee for this section, not the BC6H lossy exemption | Task 2 assignment, Task 1 encoder | non-deterministic slot-open order; any encoder change introducing parallelism or refinement | AC 18 |
+| CPU payload released after upload; reload reinstalls | Task 3 | a post-upload payload reader; a reload that fails to re-read | AC 17 |
 
 ## Rough sketch
 
@@ -423,15 +495,32 @@ Two encodings cross module boundaries and are each pinned once.
 
 ## Open questions
 
-- **Whether Slice 1 ships the raw fallback, or degrades to the placeholder above
-  128 layers.** Shipping it is what makes the capacity floor a guarantee, and it is
-  the reason this shape was chosen over BC4 planes; the cost is that `forward.wgsl`
-  retains the RGBA channel-select path alongside the new group addressing, branched
-  on a per-level uniform, rather than deleting it. Specified as shipping. Revisit
-  only with a measurement showing the fallback band unreachable on real content —
-  which would require establishing what layer counts shipping maps actually produce,
-  a measurement this epic does not have and stage-5 planning will need anyway.
+Three, and the first two are structural — a direction review returned *Reshape* on
+this spec's bundling, and these carry that finding. They are owner decisions, left
+open rather than settled here.
+
+- **Whether this stays one epic, or splits into two briefs.** The certain win
+  (compression, CPU release, byte accounting) is currently bundled with the
+  unmeasured one (capacity), and `sh-base-atlas-at-rest-slimming` argued explicitly
+  against exactly this bundling when it split itself off from its own sibling —
+  a commitment this spec cites approvingly on a different point while choosing
+  against it here. Split shape: **Brief A** ships the codec tag at a group count
+  fixed at two, BC5 `.rg`, CPU payload release, and byte/error measurement. At two
+  groups BC5 seats exactly four masks — today's number, no regression at any L ≤ 128
+  — so Brief A needs no capacity floor, no raw fallback, no second decode path, and
+  roughly a third of the acceptance list evaporates; above 128 layers it rejects to
+  the all-visible placeholder through the filter that already exists. **Brief B**
+  then does capacity, justified by the peak-overlap figure Brief A's `--verbose`
+  instrumentation actually measures. Under the current single-epic shape that
+  measurement is a deliverable of the fix it is meant to justify.
+- **Whether capacity should be bought through group-addressed raw instead.** Per the
+  capacity table, raw `Rgba8Unorm` with group addressing reaches `4 × floor(256/L)`
+  masks — Slice 2's exact capacity — at one binding, today, with no encoder and no
+  blocking chain. If capacity is the goal, that is the shortest route and neither
+  `sh-probe-streaming` nor the consolidation gates it. It costs bytes rather than
+  saving them, which is only a conflict while capacity and compression are treated
+  as one problem.
 - **Whether Slice 2 survives its own prerequisite.** If the lightmap
-  array-consolidation lands as part of `large-map-spatial-residency` stage 5, the
-  slice scheme it introduces may make a second shadowmask texture unnecessary or
-  differently shaped. Slice 2 is scoped here, not specified, for that reason.
+  array-consolidation lands within `large-map-spatial-residency` stage 5, the slice
+  scheme it introduces may make a second shadowmask texture unnecessary or
+  differently shaped. Scoped here, not specified, for that reason.

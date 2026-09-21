@@ -31,7 +31,7 @@ cargo run -p xtask -- dist                    # build release binaries, then ass
 cargo run -p xtask -- sdk-dist                # same, for the content-complete modder SDK bundle
 ```
 
-`content/base` is a **distribution-only** path: a payload publishes the developer's mod there. In this workspace, engine test content is `content/dev` and engine-owned assets are `core/`.
+A distribution publishes the developer's mod under the mod root their `postretro.toml` declares — it keeps that name rather than renaming it. `content/base` is the recommended convention for a downstream game; this workspace's own mod root is `content/dev`, so a payload or SDK bundle of it publishes at `content/dev`. Engine-owned assets are `core/`.
 
 ## Content tooling
 

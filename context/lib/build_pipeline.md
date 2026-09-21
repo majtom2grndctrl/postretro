@@ -64,7 +64,7 @@ No WAD files. Textures are authored as PNGs.
 
 | Stage | What happens |
 |-------|-------------|
-| Author | Create PNGs in `<mod root>/textures/<collection>/<name>.png` — `content/dev` in this workspace, `content/base` in a packaged distribution. TrenchBroom requires one subdirectory level. |
+| Author | Create PNGs in `<mod root>/textures/<collection>/<name>.png` — `content/dev` in this workspace, and the mod root named by `postretro.toml` in a packaged distribution. TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Browses the textures directory via the Postretro game config. |
 | prl-build | Reads PNGs, decodes them, runs Mitchell-Netravali downsampling in linear color space, and writes per-texture `.prm` mip sidecars to `<baked root>/materials/<blake3-hex>.prm`. Stores a content-addressed blake3 key per texture in the `TextureCacheKeys` PRL section. Authored PNGs are not shipped or read at runtime for world materials. |
 | PRL output | `TextureNames` section stores a deduplicated texture name list (verbatim from the `.map`, possibly collection-qualified). `TextureCacheKeys` section stores one 32-byte blake3 per name entry. No pixel data. |
@@ -574,11 +574,11 @@ A payload reproduces the tree the engine expects, rooted at the payload director
   postretro[.exe]              engine binary
   <package name>.{bat,sh}      launcher: pins cwd to its own directory, passes --mod
   core/                        engine assets: UI descriptors, splash, font licences
-  content/base/                the developer's mod, published here
+  content/<mod>/               the developer's mod, published under its declared root
   baked/materials/             .prm sidecars
 ```
 
-**A distribution publishes the developer's mod at `content/base`**, whatever the project calls its own mod root, and the launcher mounts that path. The name is not cosmetic: it is two components, so the runtime grandparent derivation still resolves `<payload>/baked/materials` and §Baked texture mips holds unchanged. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes when a project publishes here under another name. This is a destination-path parameter at assembly, not a redesign of the stages.
+**A distribution publishes the developer's mod under the mod root their `postretro.toml` declares**, keeping that name rather than renaming it — and the launcher mounts that same path. `content/base` is the recommended convention for a downstream game; the engine's own `content/dev` is what a distribution of this workspace keeps. The manifest parser guarantees a mod root is exactly two components (and never `dist/…`), which is what keeps the runtime grandparent derivation resolving `<payload>/baked/materials` (§Baked texture mips) for whatever the project named — so the name is honored without special-casing. Honoring it also aligns the published tree with the engine's own bare-launch default (`content/dev`): a payload started without its launcher finds its mod where the engine already looks. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes with the root's name. This is a destination-path parameter at assembly, not a redesign of the stages.
 
 `core/` holds what the engine owns and a mounted game never replaces, so it sits outside `content/` and `--mod` never redirects it. It is deliberately one path component, which keeps it outside the two-component shape a mod root must have (§Baked texture mips) — engine assets are not a mod. Stage 5 copies it from the **install root**, never from the project: a game repository carries no engine assets, and a project that happens to hold a directory of that name does not get to stand in for the engine's. The install root is named by `--install-root <dir>` or derived from the tool's own executable location; a checkout is the one layout that derivation cannot see, so `xtask` names the workspace explicitly.
 
@@ -636,7 +636,7 @@ A recipe may not supply the arguments the tool owns. `-o`, `--release`, and the 
 
 Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`postretro-tool sdk-dist`). Both bake the maps — the SDK bundle is **content-complete**: it runs the same level and material bakes as the player payload, so it is playable on arrival, and *additionally* ships what authoring needs. The invariant that separates them is subtraction, not baking: the player payload carries only released runtime artifacts, while the SDK bundle is a superset that also carries the compilers, the tool, the SDK, the docs, and the mod's `.map`/`.ts` sources beside the baked output. Its sweep is correspondingly lighter — it confirms the required entries exist rather than forbidding sources.
 
-**The bundle is a project in its own right.** It carries a generated `postretro.toml` naming `content/base` as its mod root, so its recipient can produce a player payload from it with no repository, no Rust toolchain, and no cargo. That is the whole reason for shipping the tool, and it is what makes the bundle's own `dist` run the real acceptance for this machinery: every workspace test has a `Cargo.toml` ancestor and a cargo binary, which are the two things the recipient does not have.
+**The bundle is a project in its own right.** It carries a generated `postretro.toml` naming the source project's own mod root (`content/dev` for this workspace), so its recipient can produce a player payload from it with no repository, no Rust toolchain, and no cargo. That is the whole reason for shipping the tool, and it is what makes the bundle's own `dist` run the real acceptance for this machinery: every workspace test has a `Cargo.toml` ancestor and a cargo binary, which are the two things the recipient does not have.
 
 **The SDK engine is a debug build with `--features dev-tools`, never `--release`.** One engine both plays the baked maps and authors. TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
 
@@ -645,7 +645,7 @@ Bundle root is `<package name>-sdk` under `dist/`, sibling to the player payload
 - the debug authoring engine at the bundle root, with `scripts-build` beside it because the engine's own hot-reload discovery looks there rather than in `bin/`;
 - `bin/` holding `postretro-tool`, `prl-build`, `scripts-build`, `mint-identity`, and a release engine under the distinct name `postretro-release` — the authoring engine at the root owns the plain name, and a payload must carry an optimized engine;
 - `sdk/`, `docs/`, and `tools/`, copied from the install root alongside `core/` — all four are engine-owned, and the project is never consulted for any of them;
-- the mod tree whole, published at `content/base` like a player payload's, with its `.map`/`.ts` sources beside the freshly baked `.prl` and the emitted entry `.js`;
+- the mod tree whole, published under the project's declared mod root like a player payload's, with its `.map`/`.ts` sources beside the freshly baked `.prl` and the emitted entry `.js`;
 - a generated `README.md` quickstart and the project marker.
 
 Because the bundle's binaries sit where the tool's own sibling search looks, `bin/postretro-tool dist` from the bundle root needs no flags at all.

@@ -188,18 +188,35 @@ repository that argument does not hold on its own, so containment anchors to the
 marker's directory and the **provenance** check (a completion marker or an
 engine binary at the root's top level) carries the real weight.
 
-### D6. A distribution publishes the developer's mod into `content/base`
+### D6. A distribution publishes the developer's mod under its *declared* mod root
 
-`dist` and `sdk-dist` write the mod tree to `<payload>/content/base/`,
-regardless of the project's own mod-root name, and the launcher passes
-`--mod content/base`.
+**Revised after Track review (owner call).** The original D6 forced every
+project's mod tree to `<payload>/content/base/` regardless of the project's own
+mod-root name. That renamed the engine's own `content/dev` tech-demo content to
+`content/base` in a distribution — squatting on the folder a downstream
+developer should be free to fill with their own game, which the owner did not
+intend.
 
-*Consequence:* `content/base` is two components, so the runtime grandparent
-derivation still resolves `<payload>/baked/materials` and
-`build_pipeline.md` §Baked texture mips holds unchanged. The shipped-level-set
-scan reads mod-root-relative `maps/<name>.prl` literals, so the rename does not
-disturb it. This is a destination-path parameter change at payload assembly, not
-a redesign of the stages.
+`dist` and `sdk-dist` now write the mod tree to `<payload>/<declared mod root>/`
+— the path the project's `postretro.toml` names — and the launcher passes
+`--mod <declared mod root>`. There is no fixed `PAYLOAD_MOD_ROOT` constant; the
+publish path is `project.mod_root_rel()`. `content/base` is documented as the
+recommended convention for a downstream *game*, not a rename the tool imposes.
+
+*Consequence:* the manifest parser already guarantees a mod root is exactly two
+`/`-separated components and never `dist/…` (`manifest.rs`), so the runtime
+grandparent derivation resolves `<payload>/baked/materials` for whatever the
+project named — `build_pipeline.md` §Baked texture mips holds unchanged, with no
+special-casing. Honoring the declared root additionally *fixes a latent
+fragility*: the engine's own bare-launch default is `content/dev`
+(`session.rs` `DEFAULT_MAP_PATH`), so a payload started without its launcher now
+finds its mod where the engine already looks — the old forced `content/base`
+rename left a bare `postretro.exe` looking at an empty path. The shipped-level-set
+scan reads mod-root-relative `maps/<name>.prl` literals, so the root's name never
+disturbs it. Proven end to end: a throwaway project declaring `mod_root =
+content/dev` produced a player payload and an SDK bundle both publishing at
+`content/dev` (no `content/base`), with the generated `postretro.toml`, README,
+and launcher all naming `content/dev`.
 
 ### D7. The tool never compiles Rust and never links the script VM
 

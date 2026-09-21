@@ -85,23 +85,28 @@ player payload uses — see "If a build stops partway through" in
   docs/                      this documentation set
   tools/                     Python asset helpers (see tools/README.md)
   core/                      engine-owned assets: UI descriptors, splash, licences
-  content/base/              the game's tree: SOURCE .map/.ts beside the freshly
+  content/<mod-root>/        the game's tree: SOURCE .map/.ts beside the freshly
                              baked maps/*.prl and the emitted start-script.js
   baked/materials/           .prm material sidecars (so the baked maps render)
   README.md                  generated quickstart for this bundle
 ```
 
-`content/base/` ships both halves: the baked outputs the engine loads to play
+This bundle publishes its mod under the mod root named in its `postretro.toml`
+at the bundle root — the generated `README.md` shows the exact path. Throughout
+this document `<mod-root>` stands for that path; substitute it in the commands
+below. `content/base` is the recommended convention for a game you start
+yourself, but a bundle keeps whatever root its source project declared.
+
+`<mod-root>/` ships both halves: the baked outputs the engine loads to play
 (`maps/*.prl`, the emitted `start-script.js`) and the sources you keep editing
 (`maps/*.map`, `scripts/`, `start-script.ts` or `start-script.luau`, models,
 other assets). Only genuinely regenerable junk is dropped — `.build-caches`,
 `maps/autosave/`, `.git*` entries, and any *stale* committed `.prl`/`.js`, since
 the run produces fresh ones.
 
-`content/base` is where a distribution always publishes a game, whatever the
-source project called its own content directory, and `core/` is what the engine
-owns and a game never replaces. Neither name is arbitrary; see "Payload layout"
-in [docs/distribution.md](distribution.md).
+A distribution publishes a game under its declared mod root, keeping that name,
+and `core/` is what the engine owns and a game never replaces. Neither is
+arbitrary; see "Payload layout" in [docs/distribution.md](distribution.md).
 
 ## Play it first
 
@@ -120,15 +125,15 @@ content paths resolve.
 
 1. **Author a level in TrenchBroom.** Load `sdk/TrenchBroom/postretro.fgd` as
    the game definition and point the texture path at the `textures/` directory
-   inside `content/base/`.
+   inside `<mod-root>/`.
    See `docs/level_design.md` for entity and lighting reference.
 
 2. **Recompile the level:**
 
    ```bash
-   bin/prl-build content/base/maps/<name>.map \
+   bin/prl-build <mod-root>/maps/<name>.map \
      --baked-root baked --cache-dir .build-caches/prl-cache \
-     -o content/base/maps/<name>.prl
+     -o <mod-root>/maps/<name>.prl
    ```
 
    `--baked-root` names the directory that *contains* `materials/` — not
@@ -155,14 +160,14 @@ content paths resolve.
    compile a script by hand instead:
 
    ```bash
-   bin/scripts-build --in content/base/start-script.ts --out content/base/start-script.js
+   bin/scripts-build --in <mod-root>/start-script.ts --out <mod-root>/start-script.js
    ```
 
    Because it is a `--features dev-tools` build, the egui inspector and debug UI
    are available; see `docs/diagnostics.md` for the diagnostic keyboard chords.
 
 `bin/postretro-tool run` forwards anything it does not recognize straight to the
-engine, so `bin/postretro-tool run content/base/maps/<name>.prl` loads that level
+engine, so `bin/postretro-tool run <mod-root>/maps/<name>.prl` loads that level
 directly instead of starting at the frontend.
 
 ## Keeping your game in its own repository

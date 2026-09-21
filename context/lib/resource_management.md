@@ -18,7 +18,7 @@ Textures live under the mod root's `textures/` directory with one required subdi
 <mod root>/textures/<collection>/<name>.png
 ```
 
-The mod root is two `/`-separated components (`build_pipeline.md` §Baked texture mips) — `content/dev` for engine test fixtures, `content/base` in a packaged distribution. Example path: `content/dev/textures/metal/panel.png`.
+The mod root is two `/`-separated components (`build_pipeline.md` §Baked texture mips) — `content/dev` for engine test fixtures, and whatever a project's `postretro.toml` declares (a distribution keeps that name; `content/base` is the recommended convention for a downstream game). Example path: `content/dev/textures/metal/panel.png`.
 
 TrenchBroom requires the collection subdirectory structure for texture browsing. Collections group related textures (e.g., `concrete/`, `metal/`, `trim/`). The texture root is not accessed at runtime for world materials — source PNGs are consumed by `prl-build` only.
 

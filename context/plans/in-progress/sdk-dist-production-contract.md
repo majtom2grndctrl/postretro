@@ -212,11 +212,37 @@ place, and a modder who rebakes inside an SDK bundle simply recreates the lock
 on demand. The sweep refusal is what keeps a later change from quietly
 reintroducing them.
 
-### D14. Engine-owned trees resolve from the project, then the tool's install
+### D14. Engine-owned trees come from the install root, always
 
-*Added after Track 4.* `core/`, and for `sdk-dist` also `sdk/`, `docs/`, and
-`tools/`, resolve by looking in the project root first and the tool's own
-install root second, with a failure naming both paths.
+*Added after Track 4; corrected by the owner before Track 3 implemented it.*
+`core/`, and for `sdk-dist` also `sdk/`, `docs/`, and `tools/`, resolve under the
+**install root only**. The project root is never consulted for them. The install
+root comes from `--install-root <dir>`, defaulting to a directory derived from
+the tool's own executable location.
+
+The project root is a separate, independent lookup: `--project <dir>`, or
+`--manifest <file>` to name a marker directly, or a walk up from the working
+directory as a convenience. Neither lookup falls back to the other.
+
+*First draft was wrong.* It resolved the project root first and fell back to the
+install. That quietly reintroduces what D1 removed — a game tree able to shadow
+engine assets, decided by whichever directory happens to exist — and it makes the
+dev checkout the primary case with the shipped layout as its fallback, which is
+backwards. `core/` is a single path component precisely so `--mod` cannot
+redirect it; resolution order must not hand back the same power.
+
+*The dev checkout is the case that tempts the fallback, and it has a clean
+answer.* In a workspace the tool sits at `target/debug/postretro-tool` with no
+`core/` beside it — but the workspace **is** the install, and `xtask` already
+knows the workspace root, so `xtask dist` and `xtask sdk-dist` pass
+`--install-root <workspace>` explicitly. The tool's rule stays single and
+unconditional, and the one piece of checkout-specific knowledge lives in the one
+crate entitled to it. A "walk up from `target/debug` looking for a marker"
+heuristic is the same trial-and-error resolution in a different coat, and is
+excluded.
+
+A bundle acting as its own project has both lookups land on one directory. That
+is a coincidence of layout, not a rule in the code.
 
 *Consequence:* Track 4 found that both outputs copy these trees from the project
 root alone, so an external content repository — the layout this whole session

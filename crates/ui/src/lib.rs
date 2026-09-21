@@ -5,6 +5,7 @@
 //! boundary.
 
 pub mod actions;
+pub mod core_root;
 pub mod demo;
 pub mod descriptor;
 pub mod keyboard_asset;
@@ -18,6 +19,7 @@ pub mod tree;
 pub mod tree_asset;
 pub mod ui_texture;
 
+pub use core_root::CoreRoot;
 pub use output::{
     UiDrawList, UiInstance, UiReadSnapshot, UiRingInstance, UiText, UiTreeEntry, UiUniform,
 };

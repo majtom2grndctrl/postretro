@@ -1670,6 +1670,7 @@ mod tests {
             map_path: None,
             content_root: PathBuf::from("content/dev"),
             baked_root: None,
+            core_root: postretro_ui::CoreRoot::working_directory(),
             exit_result: Ok(()),
             camera: Camera::new(Vec3::ZERO, 0.0, 0.0),
             // Tests exercise level load/unload in the Running state, which touches

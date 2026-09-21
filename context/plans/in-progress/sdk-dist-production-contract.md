@@ -574,6 +574,40 @@ D3 defect. These are the edges it could not reach.
   and cloned per load, so a level change keeps it. Asserted structurally, not by
   a running-session test.
 
+## Settled by Track 5, implementing D15
+
+- **`postretro-tool run` refuses an install with no `core/`; it does not warn and
+  launch.** D15 says the tool passes the install root's `core/` and leaves the
+  missing case open. It is an error, for the reason `engine_trees` already gives
+  for the packaging stages: nothing downstream reports it, so a soft fallback
+  ships the same four missing surfaces the flag exists to restore. `--install-root`
+  names the install when the tool's own location cannot imply it, and a caller's
+  own `--core-root` suppresses the lookup entirely. The checkout is the layout
+  where the derivation lands on `target/debug`, and its launcher is
+  `xtask run`, which does not route through the tool.
+
+- **`--core-root` is passed absolute.** The engine resolves a relative flag
+  against the working directory, which `run` pins to the project — the one
+  directory that does not hold `core/`. `--baked-root` has no equivalent hazard
+  because the project *is* the working directory there.
+
+- **The engine has exactly two `core/` consumers, both on the windowed boot
+  path:** the splash decode on splash frame 0 and the built-in tree registration
+  inside `Session::build`. The capture rig and the headless observability path
+  touch neither, so D15 has no counterpart to Track 2's dormant
+  `--capture` ignores `--baked-root` gap.
+
+- **Invariant 11 is now structural.** The four directory-naming flags share one
+  `PATH_FLAGS` list in `startup/session.rs`, read by both the value scanners and
+  `resolve_map_path`, and `resolve_map_path_skips_every_directory_naming_flag`
+  iterates it. A fifth flag added to the list is covered without a new test.
+
+- **Track 4 spillover, applied.** `docs/external-projects.md` told authors to copy
+  `core/` into their repository — the workaround D15 removes — and its aside
+  claimed `dist` copies `core/` *out of the project root*, which D14's correction
+  had already made false. Both are rewritten to say engine assets come from the
+  install.
+
 ## Open questions
 
 None blocking. D1 through D11 were settled with the owner before their

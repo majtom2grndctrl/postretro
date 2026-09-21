@@ -10,9 +10,9 @@
 use std::path::PathBuf;
 
 #[cfg(test)]
-use super::descriptor::AnchoredTree;
+use super::core_root::CoreRoot;
 #[cfg(test)]
-use super::tree_asset::ui_asset_path;
+use super::descriptor::AnchoredTree;
 
 /// Registry name the on-screen keyboard registers under. A `showDialog { tree:
 /// "keyboard", onCommit }` resolves this name through the modal stack.
@@ -24,13 +24,13 @@ pub const KEYBOARD_TREE_NAME: &str = "keyboard";
 #[cfg(test)]
 pub(crate) const COMMIT_TEXT_ENTRY_SENTINEL: &str = super::actions::COMMIT_TEXT_ENTRY_ACTION;
 
-/// Engine-shipped keyboard descriptor path, relative to the working directory —
-/// the same `core/...` convention the splash PNG uses. The boot path
-/// registers the keyboard through `tree_asset::register_tree_from_disk`; this
-/// anchors the same asset for the keyboard's own deserialization tests.
+/// Engine-shipped keyboard descriptor path under `core_root` — the same engine
+/// asset root the splash PNG uses. The boot path registers the keyboard through
+/// `tree_asset::register_tree_from_disk`; this anchors the same asset for the
+/// keyboard's own deserialization tests.
 #[cfg(test)]
-pub(crate) fn keyboard_asset_path() -> PathBuf {
-    ui_asset_path("keyboard.json")
+pub(crate) fn keyboard_asset_path(core_root: &CoreRoot) -> PathBuf {
+    core_root.ui_asset_path("keyboard.json")
 }
 
 #[cfg(test)]
@@ -40,13 +40,17 @@ mod tests {
 
     /// Deserialize the on-disk keyboard JSON through the standard wire path and
     /// load its bytes the same way the boot path does, so the test exercises the
-    /// real asset, not a fixture. The boot loader uses a working-directory-relative
-    /// path (the engine runs from the workspace root); `cargo test` runs from the
-    /// crate dir, so the test anchors the same asset off `CARGO_MANIFEST_DIR`.
+    /// real asset, not a fixture. The boot loader resolves its root from argv
+    /// (defaulting to the working directory, where the engine runs from the tree
+    /// holding `core/`); `cargo test` runs from the crate dir, so the test names
+    /// the workspace's own root off `CARGO_MANIFEST_DIR`.
     fn load_from_disk() -> AnchoredTree {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(keyboard_asset_path());
+        let core_root = CoreRoot::at(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("core"),
+        );
+        let path = keyboard_asset_path(&core_root);
         let bytes = std::fs::read_to_string(&path).expect("keyboard asset exists under core/ui");
         serde_json::from_str(&bytes).expect("keyboard asset deserializes through the wire path")
     }

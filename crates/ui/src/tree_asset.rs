@@ -1,5 +1,5 @@
 // Generic load-and-register path for engine-shipped UI descriptor trees: reads a
-// named `AnchoredTree` from `core/ui/<file>.json` on disk (NOT embedded,
+// named `AnchoredTree` from `<core root>/ui/<file>.json` on disk (NOT embedded,
 // so a mod author can edit the layout JSON and reload to change a built-in screen
 // with no Rust change) and registers it under a name in the modal-stack registry.
 // A missing/malformed file warns ONCE and skips the registration — that screen is
@@ -7,25 +7,17 @@
 // this same helper.
 // See: context/lib/ui.md §1
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use super::core_root::CoreRoot;
 use super::descriptor::AnchoredTree;
 use super::modal_stack::{ScopeTier, UiTreeRegistry};
 
 /// Registry name the gameplay HUD registers + resolves under. The per-frame
 /// snapshot resolves this name through the registry to compose the always-on
-/// bottom passthrough layer; the boot path registers `core/ui/hud.json`
+/// bottom passthrough layer; the boot path registers `<core root>/ui/hud.json`
 /// against it.
 pub const HUD_NAME: &str = "hud";
-
-/// Resolve an engine-shipped UI asset's path, relative to the working directory —
-/// the same `core/...` convention the splash PNG and keyboard JSON use. `core/`
-/// is the engine's own asset root, a sibling of `content/`: it is never a mod
-/// root and `--mod` never redirects it, so these screens load the same way
-/// whichever mod is active.
-pub fn ui_asset_path(file_name: &str) -> PathBuf {
-    PathBuf::from("core/ui").join(file_name)
-}
 
 /// Load and deserialize a UI descriptor tree from `path`. Returns the parsed
 /// `AnchoredTree` on success; on a missing or malformed file logs a `warn!` once
@@ -55,10 +47,14 @@ pub fn load_named_tree(path: &Path) -> Option<AnchoredTree> {
     }
 }
 
-/// Load `core/ui/<file_name>` and, on success, register it under `name`
+/// Load `<core_root>/ui/<file_name>` and, on success, register it under `name`
 /// in `registry` at the `Engine` scope tier. A missing/malformed asset warns once
 /// (via `load_named_tree`) and skips the registration — the one shared boot wiring
 /// for engine built-in screens (HUD, pause menu, keyboard).
+///
+/// `core_root` is threaded rather than assumed: the caller has already resolved
+/// `--core-root`, and taking it here is what keeps a launcher that pins the
+/// working directory to a game project from losing these screens.
 ///
 /// `always_on` marks the tree as a per-frame base layer (the HUD): the compose
 /// step composes it beneath the modal stack every gameplay frame. Pushed-only
@@ -66,11 +62,12 @@ pub fn load_named_tree(path: &Path) -> Option<AnchoredTree> {
 /// only when pushed.
 pub fn register_tree_from_disk(
     registry: &mut UiTreeRegistry,
+    core_root: &CoreRoot,
     name: &'static str,
     file_name: &str,
     always_on: bool,
 ) {
-    if let Some(tree) = load_named_tree(&ui_asset_path(file_name)) {
+    if let Some(tree) = load_named_tree(&core_root.ui_asset_path(file_name)) {
         registry.register(name, tree, ScopeTier::Engine, always_on);
     }
 }
@@ -79,11 +76,24 @@ pub fn register_tree_from_disk(
 mod tests {
     use super::*;
 
+    /// Anchor the committed assets off `CARGO_MANIFEST_DIR` (`../..` reaches the
+    /// workspace root): the boot loader resolves the root from argv, while
+    /// `cargo test` runs from the crate directory. Test-only by construction —
+    /// baking this into a production loader would ship the build machine's
+    /// absolute path.
+    fn workspace_core_root() -> CoreRoot {
+        CoreRoot::at(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("core"),
+        )
+    }
+
     /// A missing file path degrades to `None` (warn-once, no panic) — the graceful
     /// boot path: an absent screen leaves the engine running.
     #[test]
     fn load_named_tree_missing_file_degrades_to_none() {
-        let missing = ui_asset_path("does-not-exist.json");
+        let missing = CoreRoot::working_directory().ui_asset_path("does-not-exist.json");
         assert!(
             load_named_tree(&missing).is_none(),
             "a missing UI asset resolves to None, not a panic",
@@ -118,17 +128,14 @@ mod tests {
     /// hand-assembled builder remains), so this is a structural load check, not a
     /// builder-equality oracle: it proves the asset reaches the registry as a usable
     /// tree. The exact load-bearing HUD values (slot names, tween durations,
-    /// styleRange thresholds and band tokens) are pinned by `demo`'s tests. Anchored
-    /// off `CARGO_MANIFEST_DIR` (the boot loader uses a cwd-relative path; `cargo
-    /// test` runs from the crate dir) — the same precedent the keyboard asset test
-    /// uses.
+    /// styleRange thresholds and band tokens) are pinned by `demo`'s tests.
+    /// Anchored through `workspace_core_root` — the same precedent the keyboard
+    /// asset test uses.
     #[test]
     fn hud_asset_loads_to_a_nonempty_tree() {
         use crate::descriptor::Widget;
 
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(ui_asset_path("hud.json"));
+        let path = workspace_core_root().ui_asset_path("hud.json");
         let tree = load_named_tree(&path).expect("hud.json loads through the wire path");
         let Widget::VStack(col) = &tree.root else {
             panic!("the HUD root is a vstack column");
@@ -144,9 +151,7 @@ mod tests {
     fn pause_menu_asset_loads_to_a_capturing_modal() {
         use crate::descriptor::CaptureMode;
 
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(ui_asset_path("pauseMenu.json"));
+        let path = workspace_core_root().ui_asset_path("pauseMenu.json");
         let tree = load_named_tree(&path).expect("pauseMenu.json loads through the wire path");
         assert_eq!(
             tree.capture_mode,
@@ -157,5 +162,48 @@ mod tests {
             tree.initial_focus.is_none(),
             "the fallback has no focusable controls",
         );
+    }
+
+    /// The registration path reads through the root it is handed. Nothing here
+    /// is on the working directory, so a boot that ignored the root would
+    /// register nothing — which is the defect `--core-root` closes, seen from
+    /// the one function that performs the read.
+    #[test]
+    fn registration_reads_the_descriptor_through_the_core_root_it_is_handed() {
+        let relocated = std::env::temp_dir().join(format!(
+            "postretro-core-root-registration-{}",
+            std::process::id()
+        ));
+        let ui_dir = relocated.join("ui");
+        std::fs::create_dir_all(&ui_dir).expect("relocated core root created");
+        let source = workspace_core_root().ui_asset_path("pauseMenu.json");
+        std::fs::copy(&source, ui_dir.join("pauseMenu.json")).expect("descriptor copied");
+
+        let mut stack = crate::modal_stack::ModalStack::new();
+        register_tree_from_disk(
+            stack.registry_mut(),
+            &CoreRoot::at(&relocated),
+            "pauseMenu",
+            "pauseMenu.json",
+            false,
+        );
+        assert!(
+            stack.tree("pauseMenu").is_some(),
+            "a relocated root registers the screen",
+        );
+
+        // A descriptor the root does not hold still degrades to a skipped
+        // registration rather than a panic.
+        let mut missing = crate::modal_stack::ModalStack::new();
+        register_tree_from_disk(
+            missing.registry_mut(),
+            &CoreRoot::at(&relocated),
+            "pauseMenu",
+            "does-not-exist.json",
+            false,
+        );
+        assert!(missing.tree("pauseMenu").is_none());
+
+        let _ = std::fs::remove_dir_all(&relocated);
     }
 }

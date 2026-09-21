@@ -14,14 +14,16 @@ pub const FRONTEND_MENU_NAME: &str = "frontendMenu";
 /// Read a committed UI descriptor JSON anchored to the repo root (NOT runtime
 /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors
 /// the `tree_asset`/keyboard precedent: `CARGO_MANIFEST_DIR` + `../..` reaches the
-/// workspace root, then `core/ui/<name>`. Test-only — the engine loads these via
-/// the cwd-relative `tree_asset` path at boot.
+/// workspace root, then the workspace's own `core/`. Test-only — the engine
+/// resolves its root from argv at boot.
 #[cfg(any(test, feature = "test-fixtures"))]
 fn load_ui_fixture(name: &str) -> super::descriptor::AnchoredTree {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("core/ui")
-        .join(name);
+    let path = super::core_root::CoreRoot::at(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("core"),
+    )
+    .ui_asset_path(name);
     let bytes = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("fixture '{}' exists: {e}", path.display()));
     serde_json::from_str(&bytes)

@@ -177,6 +177,19 @@ the same class of defect as D3, differing only in that it is visible rather than
 silent, so it is fixed the same way: the tool that owns the manifest passes the
 path, and nobody types it.
 
+### D12. `docs/` is modder-facing only; engine-developer commands live elsewhere
+
+*Added before Track 4.* Every command in `docs/` must be runnable by someone
+holding only an SDK bundle. The engine-developer workflow — `cargo run -p xtask
+-- …` — lives in `CLAUDE.md`, `AGENTS.md`, and `context/lib/`, never in `docs/`.
+
+*Consequence:* `sdk-dist` copies `docs/` verbatim into every bundle, so a
+workspace-only instruction there is unrunnable by definition for the tree's
+actual reader — which is how `docs/modding.md` came to end with
+`cargo run -p xtask -- dist`. `index.md` already routes `docs/` as "game / mod
+author docs", so this makes an existing split enforceable rather than inventing
+one, and it is what lets Track 4's grep gate be exact instead of approximate.
+
 ### D10. `content/dev` stays in the repository
 
 The engine's own test content — fixtures, stress maps, capture rigs — is

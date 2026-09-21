@@ -52,9 +52,18 @@ fn launcher_contents(mod_root: &str) -> String {
     // `%` expands environment variables in a batch file even inside quotes.
     // Doubling it keeps the manifest value intact when cmd executes the launcher.
     let batch_mod_root = mod_root.replace('%', "%%");
+    // The engine is named by `%~dp0`, the launcher's own directory, rather than
+    // bare: a bare name is resolved against PATH and — only sometimes — the
+    // current directory. Git for Windows exports
+    // `NoDefaultCurrentDirectoryInExePath`, which switches that second half off,
+    // so a bare name makes the launcher fail with "not recognized as an internal
+    // or external command" for anyone double-clicking it from a Git Bash shell
+    // while working from Explorer or plain cmd. The `cd /d` still matters
+    // independently: the working directory is what every content path resolves
+    // against.
     format!(
         "@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d \"%~dp0\"\r\n\
-         postretro.exe --mod \"{batch_mod_root}\"\r\n"
+         \"%~dp0postretro.exe\" --mod \"{batch_mod_root}\"\r\n"
     )
 }
 
@@ -89,6 +98,26 @@ mod tests {
         assert!(
             contents.contains("%~dp0") || contents.contains("dirname"),
             "the launcher must pin its own directory: {contents}"
+        );
+    }
+
+    /// Regression: the launcher named the engine bare, so it resolved against
+    /// PATH plus — conditionally — the current directory. Git for Windows
+    /// exports `NoDefaultCurrentDirectoryInExePath`, which removes that second
+    /// half, and the launcher died with "not recognized as an internal or
+    /// external command" while the payload beside it was perfectly good.
+    #[test]
+    fn the_launcher_names_the_engine_by_path_not_by_bare_name() {
+        let contents = launcher_contents(PAYLOAD_MOD_ROOT);
+        #[cfg(windows)]
+        assert!(
+            contents.contains("\"%~dp0postretro.exe\""),
+            "the engine must be named relative to the launcher: {contents}"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            contents.contains("./postretro"),
+            "the engine must be named relative to the launcher: {contents}"
         );
     }
 

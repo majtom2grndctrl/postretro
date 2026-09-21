@@ -34,9 +34,16 @@ struct RunArgs {
 }
 
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
-    let cli = parse_args(args)?;
+    let mut cli = parse_args(args)?;
     let working_directory =
         std::env::current_dir().map_err(|error| format!("read the working directory: {error}"))?;
+    // Absolute before anything derives a path from it. This command re-roots the
+    // engine's working directory at the project, and `--baked-root` is passed as
+    // a path the engine then resolves against *that* directory — so a project
+    // root left relative would send the engine looking for
+    // `<project>/<project>/baked/materials` and degrade every world texture to a
+    // placeholder with a warning. Same class as D3 itself.
+    cli.location.rebase(&working_directory);
     let project = cli.location.open(&working_directory)?;
     let engine = cli.binaries.resolve(Helper::AuthoringEngine)?;
     let core_root = resolve_core_root(&cli, &cli.engine_args)?;
@@ -326,6 +333,49 @@ mod tests {
 
         assert_eq!(parsed.named_install_root, Some(PathBuf::from("/bundle")));
         assert_eq!(parsed.engine_args, os_args(&["maps/e1m1.prl"]));
+    }
+
+    /// Regression: `run` opened the project without rebasing, so a relative
+    /// `--project` left the project root relative. This command pins the
+    /// engine's working directory to that root and then hands the engine
+    /// `--baked-root <project>/baked`, which the engine resolves against the
+    /// directory just pinned — doubling the relative segment and pointing the
+    /// materials lookup at a directory no compiler ever wrote. The engine warns
+    /// per texture and exits zero, so only the resolved path shows it.
+    #[test]
+    fn a_relative_project_flag_becomes_absolute_before_any_path_is_derived() {
+        let temp = std::env::temp_dir().join(format!(
+            "postretro-run-relative-project-{}",
+            std::process::id()
+        ));
+        let project_dir = temp.join("game");
+        std::fs::create_dir_all(&project_dir).expect("temporary project created");
+        std::fs::write(
+            project_dir.join(crate::project::MARKER_FILE),
+            "[package]\nname = \"game\"\nmod_root = \"content/base\"\n",
+        )
+        .expect("marker written");
+
+        let mut cli = parse_args(os_args(&["--project", "game"])).expect("tool arguments parse");
+        cli.location.rebase(&temp);
+        let project = cli.location.open(&temp).expect("the named project opens");
+
+        assert!(
+            project.root().is_absolute(),
+            "project root stayed relative: {}",
+            project.root().display(),
+        );
+        let launch = engine_arguments(&project, None, cli.engine_args);
+        let baked = launch
+            .iter()
+            .position(|argument| argument == "--baked-root")
+            .and_then(|index| launch.get(index + 1))
+            .map(PathBuf::from)
+            .expect("run supplies a baked root");
+        assert_eq!(baked, project_dir.join("baked"));
+        assert!(baked.is_absolute(), "{}", baked.display());
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]

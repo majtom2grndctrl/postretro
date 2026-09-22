@@ -98,9 +98,12 @@ mod tests {
 
     #[test]
     fn mint_identity_accepts_the_mint_override_it_actually_drives() {
-        let (mod_root, _binaries) =
-            parse_args(os_args(&["content/dev", "--mint-identity", "/build/mint-identity"]))
-                .expect("the one helper this command drives is accepted");
+        let (mod_root, _binaries) = parse_args(os_args(&[
+            "content/dev",
+            "--mint-identity",
+            "/build/mint-identity",
+        ]))
+        .expect("the one helper this command drives is accepted");
         // The `--mint-identity` token and its path were consumed as the override,
         // not mistaken for a second mod root.
         assert_eq!(mod_root, PathBuf::from("content/dev"));

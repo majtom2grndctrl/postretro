@@ -114,6 +114,12 @@ bytes alone are not enough to create independent 8x8 residency cells.
 - Id 47 is dense x-fastest `Rgba16Float` over the id-34 grid and currently uploads as a
   whole 3D texture.
 - Id 48 mirrors id 45's CSR topology but expands every entry to 64 RGBA16F probe samples.
+- Owner scope decision for this slice: ids 47/48 stay whole-resident. Billboard scatter
+  samples id 47 at the global dense probe coordinate; the existing SH indirection word
+  names a stored-node slot that L1/L2 share across multiple dense probes. It cannot
+  uniquely address dense scatter without a separate scheme. A later asset-streaming
+  project may redesign texture sampler assignments, so id 50 covers only ids
+  27/34/35/41/45. Report the unchanged 47/48 allocation separately.
 - Ids 27/41/45 carry `valid_probe_masks` and `cell_levels`; those are row-parallel
   metadata. Keeping them always resident avoids per-row duplication in id 50. Id 48 has
   no mask/level stream and instead stores dense 64-probe RGBA16F blocks per CSR entry.

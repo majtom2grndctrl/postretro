@@ -8,3 +8,6 @@ default-run = "imgproc"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+png = "0.18"

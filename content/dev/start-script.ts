@@ -39,10 +39,13 @@ import {
 } from "./scripts/faction-sentiment";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import {
+  ammoReadout,
   hud,
   hudTheme,
+  openSeatsReadout,
   reloadMeterTree,
   spreadReticle,
+  xpReadout,
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import {
@@ -98,6 +101,9 @@ export default defineMod({
   },
   uiTrees: [
     hud,
+    xpReadout,
+    ammoReadout,
+    openSeatsReadout,
     spreadReticle,
     reloadMeterTree,
     pauseMenu,

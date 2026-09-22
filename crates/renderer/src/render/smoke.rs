@@ -259,15 +259,27 @@ fn plan_baked_sprite_array(
     {
         return None;
     }
-    for (slot_index, slot_flag, expected_format) in [
-        (1, PrmSlots::SPECULAR, PrmFormat::R8Unorm),
-        (2, PrmSlots::NORMAL, PrmFormat::Bc5RgUnorm),
+    for (slot_index, slot_flag, allowed_formats) in [
+        // Slot 1 is the specular slot in both of the forms `format_allowed_for_slot`
+        // permits: single-channel `R8Unorm`, and the two-channel `Rg8Unorm`
+        // surface map (R specular, G depth) that a bundle with an `_h.png`
+        // height sibling bakes to. Pinning one of them here declined an
+        // otherwise valid sidecar and silently dropped the collection to its
+        // PNG fallback. The sprite path reads only `.r`, and both formats are
+        // filterable floats behind the same D2-array binding, so accepting the
+        // wider form changes nothing about how the slot is sampled.
+        (
+            1,
+            PrmSlots::SPECULAR,
+            &[PrmFormat::R8Unorm, PrmFormat::Rg8Unorm][..],
+        ),
+        (2, PrmSlots::NORMAL, &[PrmFormat::Bc5RgUnorm][..]),
     ] {
         if !header.slot_mask.contains(slot_flag) {
             continue;
         }
         let slot = slots[slot_index].as_ref().ok()?;
-        if slot.format != expected_format
+        if !allowed_formats.contains(&slot.format)
             || (slot.width, slot.height) != (diffuse.width, diffuse.height)
             || u32::from(slot.width) > limits.max_texture_dimension_2d
             || u32::from(slot.height) > limits.max_texture_dimension_2d
@@ -1606,6 +1618,61 @@ mod tests {
             plan_baked_sprite_array(&header, &slots, 3, portable_sprite_texture_limits()).is_none(),
             "a sidecar whose layer count differs from the collection frame count must fall back"
         );
+    }
+
+    /// Slot 1 accepts both forms `format_allowed_for_slot` permits. Pinning the
+    /// single-channel one here declined an otherwise valid surface-map sidecar
+    /// and dropped the collection to its PNG fallback; a two-channel specular
+    /// must plan exactly like the single-channel one, since the sprite path
+    /// reads only `.r` and both bind through the same D2-array entry.
+    #[test]
+    fn baked_sprite_plan_accepts_either_specular_slot_format() {
+        let single_channel = companion_bearing_sprite_prm([0xA5; 32]);
+        let mut surface_map = companion_bearing_sprite_prm([0xA5; 32]);
+        surface_map.slots[1] = Some(layered_slot(PrmFormat::Rg8Unorm, 0x20));
+
+        let plan_for = |file: &PrmFile| {
+            let bytes = file.to_bytes().expect("fixture PRM must serialize");
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            let header = header.expect("fixture header must parse");
+            assert!(slots[1].is_ok(), "specular slot must parse");
+            plan_baked_sprite_array(&header, &slots, 2, portable_sprite_texture_limits())
+        };
+
+        let baseline = plan_for(&single_channel).expect("R8Unorm specular must plan");
+        let widened = plan_for(&surface_map)
+            .expect("an Rg8Unorm surface map on slot 1 must plan, not fall back");
+        assert_eq!(
+            widened, baseline,
+            "the surface map must produce the same upload plan as the single-channel specular"
+        );
+    }
+
+    /// The other slots keep their exact format contracts: widening slot 1 must
+    /// not widen slot 0 or slot 2.
+    #[test]
+    fn baked_sprite_plan_still_rejects_a_surface_map_on_other_slots() {
+        for slot_index in [0usize, 2] {
+            let mut file = companion_bearing_sprite_prm([0xA5; 32]);
+            file.slots[slot_index] = Some(layered_slot(PrmFormat::Rg8Unorm, 0x40));
+            // Slot 0/2 reject tag 4 at the wire level, so the slot itself must
+            // not parse — the sidecar can never reach the plan as valid.
+            let Ok(bytes) = file.to_bytes() else {
+                continue;
+            };
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            let declined = match header {
+                Ok(header) => {
+                    plan_baked_sprite_array(&header, &slots, 2, portable_sprite_texture_limits())
+                        .is_none()
+                }
+                Err(_) => true,
+            };
+            assert!(
+                declined,
+                "slot {slot_index} must not accept the surface-map format"
+            );
+        }
     }
 
     #[test]

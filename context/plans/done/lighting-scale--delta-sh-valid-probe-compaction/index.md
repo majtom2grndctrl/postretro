@@ -152,7 +152,7 @@ Compile and run both maps end to end. Record every measured-finding AC in a sibl
 
 ## Invariants
 
-`/orchestrate` hands this table to every task agent with the Goal and its task text. Task paragraphs reference rows, never restate them.
+`/build-spec` hands this table to every task agent with the Goal and its task text. Task paragraphs reference rows, never restate them.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|

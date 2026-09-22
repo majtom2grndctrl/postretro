@@ -26,7 +26,7 @@ TrenchBroom requires the collection subdirectory structure for texture browsing.
 
 PRL stores a deduplicated texture name list (`TextureNames` section) plus a parallel `TextureCacheKeys` section — one 32-byte `blake3` hash per name entry, same ordering. No pixel data.
 
-**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), and `{name}_e.png` (emissive) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its four slots exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All four are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
+**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), `{name}_e.png` (emissive), and `{name}_h.png` (height, packed into the specular slot — see §4.6) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its five sibling forms exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All five are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; a two-channel `Rg8Unorm` surface map (specular plus height, §4.6) filters both channels through the same path with per-output-texel clamping; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
 
 **Level load.** For each `TextureCacheKeys[i]`, the engine opens `<hex>.prm` under the materials root it derives from the content root (`build_pipeline.md` §Baked texture mips) and parses it with `PrmFile::from_bytes_partial`. Legacy world and model loaders upload present slot mip chains only from single-layer sidecars. A valid layered sidecar logs a `warn!` and replaces the full material with placeholders until a `D2Array` PRM upload path exists. A zero key produces a silent placeholder. A corrupt or missing single-layer sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use diffuse-only addressing and share sidecars only with diffuse-only world bundles. They consume only diffuse; specular and normal remain neutral and emissive remains black.
 
@@ -83,6 +83,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 |----------|--------|
 | **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
+| **Surface Depth carve** | Implemented — per-prefix carve depth (meters), terrace count, march step cap, and fade distance for the texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -106,10 +107,10 @@ Optional sibling textures provide per-texel surface properties. Suffixes are app
 Per-texel specular intensity modulates the direct lighting highlight.
 
 - **Naming:** `{name}_s.png` suffix.
-- **Format:** R8Unorm (sampled as `.r` in shader).
+- **Format:** R8Unorm (sampled as `.r` in shader). The slot widens to two-channel `Rg8Unorm` when a `{name}_h.png` height sibling is present — §4.6 owns that form; specular is still `.r` either way.
 - **Color Space:** Linear.
 - **Dimensions:** Must match the diffuse texture.
-- **Fallback:** Absent or missing sibling bakes to `NotPresent` in the `.prm`; the runtime substitutes a shared 1×1 black texture (zero specular response).
+- **Fallback:** Absent or missing sibling bakes to `NotPresent` in the `.prm`; the runtime substitutes a shared 1×1 black texture (zero specular response). A `_h.png` with no `_s.png` still bakes the slot, with R all zero — same zero specular response, but the slot is present because it carries depth.
 
 ### 4.2 Generation Tool
 
@@ -166,6 +167,67 @@ an author places a separate light entity.
 `tools/gen_emissive.py` creates a bright-texel starting point from a diffuse
 texture. Its output is deliberately untagged: PNG metadata does not determine
 the authored sRGB-content convention for this sibling.
+
+### 4.6 Height Maps (Surface Depth)
+
+Per-texel depth for texel-space parallax. Height does **not** get a `.prm` slot
+of its own — the forward pass is at its 16/16 sampled-texture budget — so it
+rides in the **G channel of the specular slot**, which becomes a two-channel
+"surface map" (`PrmFormat::Rg8Unorm`, wire tag 4): R specular, G depth.
+
+- **Naming:** `{name}_h.png` suffix.
+- **Format:** the authored PNG is grayscale; the baker reads its R channel.
+  Authored as a **conventional height map — white = raised**, the familiar
+  convention.
+- **Color Space:** Linear. An `sRGB`, `gAMA`, or `iCCP` tag fails the build,
+  exactly like `_s` and `_n`.
+- **Dimensions:** Must match the diffuse, and must match `_s.png` when that
+  sibling exists. Both are hard compile-time bails — unlike `_s`/`_n` versus
+  diffuse, which is documented but unenforced — because `_h` and `_s` are
+  interleaved into one texture.
+- **Inversion at bake time:** `prl-build` stores `G = 255 - height`, i.e. depth
+  *below* the true surface plane, not height above it. Authors never think in
+  inverted terms; the baker does it. This is what makes an absent height map a
+  true no-op: sampling a single-channel `R8Unorm` specular in WGSL yields
+  `(r, 0, 0, 1)`, so `.g == 0`, and depth 0 means flat.
+- **Slot mask:** the SPECULAR bit is set if **either** `_s.png` or `_h.png` is
+  present. With `_h` and no `_s`, R bakes to 0 — the same zero specular
+  response the shared black placeholder gives.
+- **Fallback:** no `_h.png` bakes the historical single-channel `R8Unorm`
+  specular slot, byte-identical to before. Content addressing folds height in
+  only when it is present, so no existing `baked/materials/` sidecar rebakes.
+- **Runtime:** the absent-specular placeholder is unchanged and needs no
+  change — it is the same 1×1 black `R8Unorm` texel it always was, and WGSL's
+  `(r, 0, 0, 1)` expansion of a single-channel sample makes its depth channel
+  read 0, i.e. flat. Both slot formats bind through the same group-1 texture
+  entry (`Float { filterable: true }`), so no bind-group layout changes. The
+  surface map costs exactly twice the single-channel specular slot it replaces
+  and nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101
+  to 2,796,202 bytes across its 11 mip levels.
+- **Shading:** the forward and kinematic-mover passes march the G channel with
+  an exact texel-grid DDA before sampling any other slot; see
+  `rendering_pipeline.md` §7.3 (Surface Depth) for the algorithm, the lighting
+  integration, and the hard renderer constraints it honors.
+- **Per-material tuning:** carve depth (in **meters**), quantization plateau
+  count, march step cap, and fade distance are derived from the material name
+  **prefix**, exactly like `shininess` and `emissive_strength`
+  (`postretro-render-data::material::Material::surface_depth`). This engine has
+  no author-facing material descriptor file and Surface Depth deliberately does
+  not introduce one: authoring is still "drop a correctly-named PNG". The four
+  values ride in the per-material uniform's second 16-byte row, which was
+  already allocated and already zeroed, so nothing about the binding layout or
+  buffer size changed. A material whose loaded specular slot is not `Rg8Unorm`
+  gets an all-zero row and skips the march entirely.
+- **Player on/off switch (D5):** the renderer RETAINS each world/mover
+  material's uniform buffer handle alongside its bind group (`GpuTexture`),
+  plus the GPU-free `MaterialUniformPlan` that produced its contents, so
+  `Renderer::set_surface_depth_quality` can rewrite those 32 bytes in place.
+  The setting is **off/on** — no middle tier; see `player_options.md` §4. The
+  plan stores the material's own per-prefix tuning, unmodified by the switch,
+  and the two facts taken from the slot that actually loaded (is it `Rg8Unorm`,
+  how many mips), so a rewrite can turn the effect back on as well as off and
+  can never resurrect a carve for a material with no height sibling. Ownership is unchanged: the buffers live in the
+  level's `gpu_textures` vector and die with the level (§8.2).
 
 ---
 
@@ -255,7 +317,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 | Phase | Action |
 |-------|--------|
 | Level load | Parse PRL `TextureNames` and `TextureCacheKeys`. Open each `.prm` sidecar, upload mip chains to GPU. During model upload, resolve each glTF-derived content key, load only the diffuse slot from its `.prm`, and bind neutral specular and normal placeholders. Build sampler pool. Distribute handles. |
-| Gameplay | Handles are stable. No allocation or deallocation during gameplay. |
+| Gameplay | Handles are stable. No allocation or deallocation during gameplay. Live graphics settings that must reach a per-material uniform rewrite that buffer's CONTENTS (`queue.write_buffer`) — see the Surface Depth on/off switch in §4.6 — rather than rebuilding a bind group. |
 | Debug descriptor reload | Visual asset path additions or changes stay deferred in the installed descriptor snapshot. The latest authored snapshot promotes before the next level install preload. Gameplay never uploads a model or sprite collection. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 

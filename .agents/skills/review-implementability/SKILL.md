@@ -5,7 +5,7 @@ description: >
   agent given only its own task paragraph plus the AC list build the right
   thing, and is each AC realistically achievable and a sound metric? Run
   after structural review is clean (`review-draft-spec` recommends promote),
-  or a la carte on a ready spec before `orchestrate`.
+  or a la carte on a ready spec before `build-spec`.
 argument-hint: "[plan-name]"
 ---
 
@@ -18,7 +18,7 @@ paragraphs; structural rework invalidates them, so sequencing matters.
 
 ## Premise
 
-`orchestrate` gives each task agent only:
+`build-spec` gives each task agent only:
 
 - Its own task paragraph
 - The plan's acceptance criteria
@@ -81,11 +81,11 @@ Output format:
 - Per task: one-line verdict, either `Sets up success` or `Needs tightening`,
   plus findings as `{ location, problem, fix, severity: Blocker | Complicates | Nit }`.
 - Per AC: verdict, either `Achievable+sound` or `Problem`, plus findings.
-- Per spec: summary line, either `ready to orchestrate` or what to tighten first.
+- Per spec: summary line, either `ready for build-spec` or what to tighten first.
 
 ### 3. Triage And Apply
 
-The reviewer reports; the orchestrating session owns fixes. Apply determinate
+The reviewer reports; the build-spec session owns fixes. Apply determinate
 fixes directly: completions of the stated design, plumbing enumeration, fixture
 or type corrections. Surface genuine path choices and anything touching a
 locked decision to the human.
@@ -100,7 +100,7 @@ Report:
 - Spec verdict
 - Blocker count and disposition: fixed vs. surfaced
 - Any architectural or owner-decision items requiring the caller
-- Recommendation: orchestrate as-is, tighten first, or escalate
+- Recommendation: build-spec as-is, tighten first, or escalate
 
 ## Working Rules
 

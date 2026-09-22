@@ -1,6 +1,6 @@
 # M13 G1b — UI SDK lifecycle: registration, always-on compose, `ui.createLocalState()`
 
-> Wave plan 2 of 2 (after **G1a**; both ship in one /orchestrate). Large plan — the full dynamic story.
+> Wave plan 2 of 2 (after **G1a**; both ship in one /build-spec). Large plan — the full dynamic story.
 > Prereqs: G1a (factories, bridge fns, typed handles, text alias), plus A–F/TW shipped. Grounding: `research/ui-layer.md` §18, `lib/ui.md` §1/§2/§3, `scripting/runtime.rs`, `scripting/staged_manifest.rs`, `scripting/data_descriptors.rs`, `scripting/reactions/system_commands.rs`, `render/ui/modal_stack.rs`, `render/ui/tree.rs`, `render/ui/text.rs`, `render/mod.rs`, `done/M13--ui-value-tweening/`.
 
 ## Goal

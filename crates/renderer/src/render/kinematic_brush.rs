@@ -105,7 +105,19 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/shadow_sample_static_cache.wgsl"),
     "\n",
+    // Surface Depth shares ONE march with the static world forward pass; see
+    // the snippet inventory in `pipeline_layout.rs`.
+    include_str!("../shaders/surface_depth.wgsl"),
+    "\n",
 );
+
+/// The mover pass's composed WGSL, for GPU-free shader-contract tests. The
+/// Surface Depth parity test reads it here so it compares the REAL composed
+/// source rather than a second hand-maintained concat.
+#[cfg(test)]
+pub(crate) fn composed_shader_source() -> &'static str {
+    SHADER_SOURCE
+}
 
 fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
     if cube_array_supported {
@@ -838,11 +850,16 @@ mod tests {
     use super::*;
     use postretro_level_format::geometry::{FaceMeta, Vertex};
 
+    // `abs` replaced `fwidth` here: the seam width now comes from the
+    // pre-march ddx/ddy the caller already passes, because under Surface Depth
+    // `uv` is the marched UV and its fwidth measures the parallax step rather
+    // than the pixel footprint. Tracking the call that actually runs is what
+    // keeps this fingerprint a real parity check.
     const POST_RETRO_SAMPLING_CALLS: &[&str] = &[
         "textureDimensions",
         "floor",
         "max",
-        "fwidth",
+        "abs",
         "clamp",
         "textureSampleGrad",
     ];

@@ -2,13 +2,17 @@
 // See: context/lib/rendering_pipeline.md §3
 
 use postretro_level_format::prm::{PrmFormat, PrmReadError, PrmSlot, PrmSlots};
+use postretro_level_format::prm_accounting::mip_level_bytes;
 
+/// Bytes one mip level occupies, for slicing a `.prm` payload into upload
+/// ranges.
+///
+/// Delegates to `prm_accounting::mip_level_bytes` so the format → bytes table
+/// has exactly one definition, shared with the compiler's byte accounting.
+/// That crate is layer 0, reachable by `prl-build` and the renderer alike; see
+/// that module's header for why the accounting could not live here.
 pub fn level_byte_size(format: PrmFormat, w: u32, h: u32) -> usize {
-    match format {
-        PrmFormat::Rgba8Unorm | PrmFormat::Rgba8UnormSrgb => (4 * w * h) as usize,
-        PrmFormat::R8Unorm => (w * h) as usize,
-        PrmFormat::Bc5RgUnorm => (w.div_ceil(4) * h.div_ceil(4) * 16) as usize,
-    }
+    mip_level_bytes(format, w, h) as usize
 }
 
 /// Splits one layer's mip chain for a `texture_2d` upload.

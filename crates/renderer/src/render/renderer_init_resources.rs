@@ -70,10 +70,14 @@ pub(crate) fn request_renderer_device(
     // every targeted backend reports far higher (Metal/AMD = 128) — the
     // adapter pre-check below confirms the granted maximum still covers it.
     //
-    // Derived (15 when CUBE_ARRAY is supported, 14 without) from the actual
+    // Derived (16 when CUBE_ARRAY is supported, 15 without) from the actual
     // BGLs that compose the forward pipeline layout, so it can never drift from
-    // the real binding count:
-    //   Group 1 — material (3): diffuse, specular, normal
+    // the real binding count. The per-group inventory is [0, 4, 0, 3, 5, 4]
+    // (or [0, 4, 0, 3, 5, 3] without CUBE_ARRAY), pinned by
+    // `pipeline_budget_tests::forward_pipeline_sampled_texture_request_matches_bgl_definitions`:
+    //   Group 1 — material (4): diffuse, emissive, specular (the two-channel
+    //                           Surface Depth map when a material has an
+    //                           `_h.png` sibling), normal
     //   Group 3 — SH volume (3): octahedral atlas + depth-moments
     //                            + direct static-light atlas (billboard samples it in
     //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it
@@ -652,6 +656,7 @@ pub(crate) fn build_placeholder_textures(
     queue: &wgpu::Queue,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     mip_count_aniso_samplers: &std::collections::HashMap<u32, wgpu::Sampler>,
+    surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
 ) -> (Vec<LoadedTexture>, Vec<GpuTexture>) {
     let mut loaded_textures: Vec<LoadedTexture> = Vec::new();
     let mut gpu_textures: Vec<GpuTexture> = Vec::new();
@@ -660,16 +665,21 @@ pub(crate) fn build_placeholder_textures(
         let aniso_sampler = mip_count_aniso_samplers
             .get(&1)
             .expect("mip_count 1 aniso seeded above");
-        let bind_group = build_material_bind_group(
+        // The placeholder's specular slot is the single-channel black 1x1, so
+        // this material is flat at every tier. The tier is still threaded in
+        // rather than defaulted, so there is exactly one rule for how a
+        // material's uniform bytes are produced.
+        let binding = build_material_bind_group(
             device,
             texture_bind_group_layout,
             &placeholder,
             aniso_sampler,
             Material::Default,
+            surface_depth_quality,
             "Placeholder Material",
         );
         loaded_textures.push(placeholder);
-        gpu_textures.push(GpuTexture { bind_group });
+        gpu_textures.push(binding.into());
     }
     (loaded_textures, gpu_textures)
 }

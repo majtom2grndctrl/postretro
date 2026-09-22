@@ -113,16 +113,51 @@ Revise `context/lib/` to address any context drift that emerged during execution
 
 ### Skills (.claude/skills/)
 
-The lifecycle is supported by Claude Code skills:
+The lifecycle is supported by Claude Code skills, grouped by the stage they serve:
+
+**Plan** — decide what to build and in what form.
 
 | Skill | Role |
 |-------|------|
-| `plan` | Creates feature specs with task breakdown, sequencing, and acceptance criteria |
-| `orchestrate` | Coordinates plan execution — spawns agents, tracks progress, moves plans through stages |
+| `draft-session` | Runs the conversation that precedes an artifact; routes to a direct build, brief, spec, or no work |
+| `draft-plan` | Drafts a full feature or epic spec — tasks, sequencing, acceptance criteria |
+| `draft-brief` | Drafts a problem brief — the lightweight spec form for a repo-aware executor |
+
+**Review a spec** — before any code exists.
+
+| Skill | Role |
+|-------|------|
+| `validate-plan` | Adversarial direction review: is this a reasonable solution to the problem? |
+| `review-draft-spec` | Three parallel reviewers — broad, source-anchored, temporal |
+| `review-brief` | Three-lens detail review of a brief; opt-in, for one-way doors |
+| `review-implementability` | Reads a spec through the executor's lens: would a task agent build the right thing? |
+| `spec-review-loop` | Runs the full review loop end to end, then audits `context/lib/` for staleness |
+
+**Execute** — turn an artifact into code.
+
+| Skill | Role |
+|-------|------|
+| `build-spec` | Executes a drafted spec — spawns agents, tracks progress, moves plans through stages |
+| `build-brief` | Executes a promoted problem brief end to end |
+| `build-session` | Talks a feature through, then orchestrates the build in the same session |
+| `implement-task` | Implements a single task from a plan or an ad-hoc description |
+
+**Review and verify** — after the code exists.
+
+| Skill | Role |
+|-------|------|
 | `code-review` | Reviews implementations against specs, architecture, and conventions |
-| `review-panel` | Spawns 3 reviewer agents that approach review from different angles |
-| `preflight` | Pre-commit quality gate: fmt, clippy, test |
+| `review-panel` | Spawns reviewer agents sized to the diff, each with a different lens |
+| `fix-review-findings` | Acts on panel findings — concurrent agents for local fixes, one agent for knock-on effects |
+| `preflight` | Pre-commit gate: fmt, clippy, tests, release compile check, crate-graph snapshot |
+
+**Meta.**
+
+| Skill | Role |
+|-------|------|
 | `create-skill` | Builds new skills for the project |
+
+Three experimental variants exist alongside their parents and are selected deliberately, not by default: `draft-plan-priced-deferral`, `draft-plan-schema-first`, and `review-draft-spec-priced-deferral`.
 
 ## Tech Stack
 

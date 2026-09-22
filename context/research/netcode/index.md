@@ -3,7 +3,7 @@
 > **Milestone 15 design reference** (`plans/roadmap.md`). Defines the networking model,
 > stack, architectural seams, and an **eight-phase, horizontal** build order. Per-phase
 > implementation specs are **reserved** — each gets its own `/draft-spec` → review →
-> `/orchestrate` cycle as it opens. Rationale + codebase seam map: `research.md`.
+> `/build-spec` cycle as it opens. Rationale + codebase seam map: `research.md`.
 > Verified crate landscape + named-pattern references: `crate-pattern-research.md`.
 
 ## Goal

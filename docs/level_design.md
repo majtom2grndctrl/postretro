@@ -297,8 +297,10 @@ The effect applies to static world brushes and to `kinematic_mover` brushes. It 
 
 `tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and terraces it so the plateaus line up with the diffuse's own quantization:
 
-`tools/texture-tool` is Rust source rather than a shipped binary, so it is the
-one helper here that needs a Rust toolchain you install yourself:
+`texture-tool` is the one exception to the bundle's "no toolchain needed"
+rule. Unlike the prebuilt helpers in `bin/`, it ships as Rust *source* under
+`tools/`, so building it needs the Rust toolchain (rustup/cargo), which you
+install yourself. If you have no toolchain you cannot run `texture-tool`:
 
 ```bash
 cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \

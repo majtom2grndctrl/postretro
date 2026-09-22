@@ -210,8 +210,10 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
   generation, model rebaking) need Python plus a small virtual environment; see
   `tools/README.md` before running them. `tools/texture-tool` is a Rust program
   that writes a whole diffuse/specular/normal/height bundle in one run — it is
-  the one thing in this bundle that needs a Rust toolchain you install yourself;
-  see `tools/texture-tool/README.md`.
+  the one exception in this bundle, shipping as source rather than a prebuilt
+  binary, so it needs the Rust toolchain (rustup/cargo) you install yourself,
+  and without one you cannot build it; see `tools/texture-tool/README.md` and
+  the toolchain note in `docs/level_design.md`.
 
 ## Shipping a finished mod
 

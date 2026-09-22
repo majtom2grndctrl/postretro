@@ -44,6 +44,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     pub(super) cluster_bake: &'a crate::cluster_directory_bake::ClusterDirectoryBake,
+    pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
 }
 
 /// Build the legacy PRL descriptor plan in its established on-disk order.
@@ -84,6 +85,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         cell_draw_index,
         cell_visibility,
         cluster_bake,
+        cluster_payload,
     } = inputs;
 
     let sh_volume_len = sh_volume.try_byte_len().map_err(|error| {
@@ -391,6 +393,9 @@ pub(super) fn build_finalized_section_plan<'a>(
             })
         },
     ));
+    if let Some(cluster_payload) = cluster_payload {
+        sections.push(cluster_payload.into_planned_section()?);
+    }
 
     Ok(sections)
 }

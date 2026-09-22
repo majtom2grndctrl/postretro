@@ -14,7 +14,7 @@ use crate::dist::resolve::{
 };
 use crate::project::{MARKER_FILE, Project};
 
-use super::readme::{render_bundle_manifest, render_readme};
+use super::readme::render_readme;
 use super::{BIN_DIR, RELEASE_ENGINE_STEM};
 
 /// The binaries a bundle ships. Each is built elsewhere and named by a flag.
@@ -46,6 +46,7 @@ pub(super) fn assemble_bundle(
     entry_ext: EntryExt,
     entry_script: &Path,
     resolved: &[Resolved],
+    bundle_manifest: &str,
 ) -> Result<(), String> {
     println!("Stage 5: assemble content-complete bundle tree");
     guard_payload_root(target.bundle_root, project.root())
@@ -106,11 +107,9 @@ pub(super) fn assemble_bundle(
         })?;
     }
 
-    write_bundle_file(
-        target.bundle_root,
-        MARKER_FILE,
-        &render_bundle_manifest(project.manifest())?,
-    )?;
+    // Already rendered and validated up front (`sdk_dist::run`), so a recipe
+    // source outside the shipped mod tree failed before this tree was written.
+    write_bundle_file(target.bundle_root, MARKER_FILE, bundle_manifest)?;
     emit_launcher(target.bundle_root, target.bundle_name, mod_root_rel)?;
     write_bundle_file(
         target.bundle_root,

@@ -89,11 +89,34 @@ fn animated_baked_light_tail_count() -> u32 {
 
 struct MaterialUniform {
     // Blinn-Phong specular exponent; constant per-material variant.
-    // Padded to 16 B for uniform-buffer alignment.
     shininess: f32,
     // Prefix-driven static multiplier for the emissive texture.
     emissive_strength: f32,
     _pad: vec2<f32>,
+    // --- Surface Depth (second 16-byte row) ---
+    // Already-allocated, already-zeroed slack: `MATERIAL_UNIFORM_SIZE` has been
+    // 32 on the CPU while this struct was 16, so the feature needs no buffer
+    // resize, no new binding, and no change to the 128-byte group-0 `Uniforms`
+    // ABI. An all-zero row is the flat material.
+    //
+    // Inward carve below the true surface plane, in METERS. There is no
+    // texel-density convention for world materials — brush UV scale is authored
+    // freely in TrenchBroom — so a texture-space scale would give the same
+    // material a different physical depth on differently scaled brushes. 0
+    // disables the march entirely.
+    surface_depth_meters: f32,
+    // Distance at which the carve has faded fully flat, in meters.
+    surface_depth_fade_distance: f32,
+    // Plateau count for the in-shader quantization `floor(h * levels) / levels`;
+    // 0 leaves the stored 8-bit value alone.
+    surface_depth_quantize_levels: f32,
+    // Packed: bits 0..7 = max DDA steps, bits 8..11 = the RESIDENT base mip the
+    // DDA reads at (D6.2 — a parameter, never a hardcoded 0 in WGSL, because
+    // streaming will move it), bit 12 = the has-depth flag the bind-group
+    // builder sets from the loaded specular slot's format, bits 13..15 unused,
+    // bits 16..19 = how many dynamic lights this fragment may self-shadow (the
+    // player's quality tier rides here; zero at Low and Off), bits 20..31 unused.
+    surface_depth_march: u32,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
 // Per-material tangent-space normal map. Sampled with `aniso_sampler`. The
@@ -418,7 +441,20 @@ fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer:
 // the shared helper with backface rejection enabled (forward-only). The
 // geometric mesh normal keys the backface test; the (possibly normal-mapped)
 // shading normal drives the octahedral direction lookup.
-fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
+// `offset_normal` is the direction the lookup is biased along; `shading_normal`
+// is the direction the irradiance is evaluated for. They are separate because
+// Surface Depth's side-wall normal points ALONG the surface (it is
+// perpendicular to the surface NORMAL, lying in the tangent plane): biasing
+// along it would slide the lookup sideways across the floor instead of lifting
+// it off the surface, which is the opposite of what the bias is for. Callers
+// with no carve pass the same normal for both, which is the historical
+// behaviour byte for byte.
+fn sample_sh_indirect(
+    world_pos: vec3<f32>,
+    shading_normal: vec3<f32>,
+    offset_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
@@ -426,7 +462,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
     // Bias the lookup toward the lit side by offsetting along the surface
     // normal. Reduces SH bleed across thin walls.
     const SH_NORMAL_OFFSET_M: f32 = 0.1;
-    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let offset_world = world_pos + offset_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (offset_world - sh_grid.grid_origin) /
@@ -465,10 +501,17 @@ fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
     let dims = vec2<f32>(textureDimensions(tex, 0));
     let uv_tex = uv * dims;
     let seam = floor(uv_tex + 0.5);
-    // Floor the seam-width divisor: a constant-UV fragment (edge-on face,
-    // degenerate UV chart, vanishing derivatives) gives fwidth == 0, and
-    // clamp() does not reliably sanitize the resulting NaN/Inf in WGSL.
-    let seam_width = max(fwidth(uv_tex), vec2<f32>(1.0e-6));
+    // Seam width comes from the ORIGINAL screen-space derivatives, not from
+    // fwidth() of `uv_tex`. Under Surface Depth `uv` is the MARCHED UV, which
+    // jumps between adjacent pixels that hit different texel faces, so its
+    // fwidth measures the parallax step rather than the pixel footprint and
+    // would widen the AA band into a multi-texel blur along every carved edge.
+    // fwidth(uv * dims) == (abs(dpdx(uv)) + abs(dpdy(uv))) * dims for a smooth
+    // uv, so this is the same quantity the un-marched path always computed.
+    // Floor the divisor: a constant-UV fragment (edge-on face, degenerate UV
+    // chart, vanishing derivatives) gives zero, and clamp() does not reliably
+    // sanitize the resulting NaN/Inf in WGSL.
+    let seam_width = max((abs(ddx) + abs(ddy)) * dims, vec2<f32>(1.0e-6));
     let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
     let uv_recon = (seam + aa) / dims;
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
@@ -853,17 +896,59 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // textureSampleGrad as explicit gradients before conditional texture reads.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-
-    let base_color = sample_color(base_texture, in.uv, ddx, ddy);
+    // World-space footprint of the same fragment. Surface Depth carves in
+    // METERS and needs world-units-per-UV-unit to reach UV space; taking it
+    // here keeps every derivative in uniform control flow, which the naga
+    // uniformity test enforces. The march itself calls no derivative.
+    let ddx_world = dpdx(in.world_position);
+    let ddy_world = dpdy(in.world_position);
 
     let mesh_n = normalize(in.world_normal);
+
+    let view_vector = uniforms.camera_position - in.world_position;
+    let view_distance = length(view_vector);
+    // normalize(), not a divide by `view_distance`: this runs at EVERY quality
+    // tier including Off, and v/sqrt(dot(v,v)) is not required to round to the
+    // same bits as the rsqrt normalize() lowers to. Keeping it exact is what
+    // makes Off byte-identical to the pre-Surface-Depth render.
+    let V = normalize(view_vector);
+
+    // Surface Depth: march the surface map's depth channel and shade the texel
+    // face this pixel's view ray actually lands on. When the march is inactive
+    // — flat material, no `_h.png` sibling (the 1x1 black R8 placeholder reads
+    // `.g == 0`), faded out, degenerate UV chart, edge-on fragment — it returns
+    // `in.uv`, `in.world_position` and the geometric normal unchanged, so
+    // everything below is the pre-Surface-Depth path exactly.
+    //
+    // It shifts `base_uv` ONLY. `in.lightmap_uv` is never offset: lightmap
+    // charts carry just CHART_PADDING_TEXELS = 2 of gutter.
+    let depth = surface_depth_resolve(
+        in.uv,
+        in.world_position,
+        mesh_n,
+        V,
+        view_distance,
+        ddx,
+        ddy,
+        ddx_world,
+        ddy_world,
+    );
+    let shade_uv = depth.uv;
+
+    let base_color = sample_color(base_texture, shade_uv, ddx, ddy);
 
     // Tangent-space normal map + TBN construction. The neutral placeholder
     // (127, 127, 255, 255) decodes to ~(0, 0, 1), which TBN transforms back
     // to the mesh normal — surfaces without `_n.png` are identical to the
     // pre-bump path.
-    let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
+    let n_ts = sample_normal(t_normal, shade_uv, ddx, ddy);
     let N_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
+    // The DDA face normal replaces the shading normal. The normal map still
+    // applies on TOP faces; a side wall uses the exact axis normal, which no
+    // authored map should soften. `mesh_n` stays the GEOMETRIC normal and is
+    // what the shadow-map receiver bias below must keep using — this normal is
+    // far bumpier than a normal map and would wobble shadow boundaries.
+    let N_shade = select(depth.normal, N_bump, depth.hit_top);
 
     const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
     const LIGHT_TERM_INDIRECT_STATIC: u32 = 0x02u;
@@ -882,8 +967,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var indirect = vec3<f32>(0.0);
     if use_indirect {
-        indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * uniforms.indirect_scale;
+        indirect = sample_sh_indirect(in.world_position, N_shade, N_bump, mesh_n)
+            * uniforms.indirect_scale;
     }
+    // Depth-derived ambient occlusion, on the INDIRECT term ONLY and behind its
+    // own LightTermMask bit so it toggles in isolation. SH probes sit at ~1 m
+    // spacing and know nothing of the receiver's own geometry (§4), so
+    // cobblestone-scale self-occlusion is a fact no other source owns — this is
+    // not double-counting a light. The SH lookup itself stays on the true
+    // surface position; only its magnitude is modulated.
+    indirect = indirect * surface_depth_indirect_ao(depth, light_terms);
 
     // SDF static-occluder shadow factor. The four RGBA channels are the K = 4
     // per-light visibility slices consumed by the sdf-tag diffuse/specular loop
@@ -931,13 +1024,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         // Bumped-Lambert correction: the baker pre-multiplied by mesh-normal NdotL
         // using the dominant incident direction. Divide out mesh NdotL and
-        // remultiply with N_bump NdotL to make the static term respond to normal-map
-        // detail. lm_anim gets the same correction below via its own fused animated
-        // dominant direction, so style-animated lights respond to normal-map detail
-        // identically to static ones.
+        // remultiply with the shading normal's NdotL so the static term responds
+        // to normal-map (and Surface Depth face) detail. lm_anim gets the same
+        // correction below via its own fused animated dominant direction, so
+        // style-animated lights respond to normal-map detail identically to
+        // static ones.
         let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv, i32(in.lightmap_layer)));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
-        let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
+        let n_dot_l_bump = max(dot(N_shade, dom), 0.0);
         // NDOTL_EPS is a tight cosine floor (~0.57° from grazing) — a divide-by-zero
         // guard, not a wide grazing-angle fade. It gates the correction off and floors
         // the ratio denominator so the bumped/mesh NdotL ratio can't blow up when the
@@ -947,8 +1041,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // unreliable for unlit texels.
         const LM_IRR_EPS: f32 = 1.0e-4;
         let use_correction = dot(lm_irr, lm_irr) >= LM_IRR_EPS * LM_IRR_EPS && n_dot_l_mesh > NDOTL_EPS;
-        // Cap at 4.0: prevents unbounded spike when N_bump tilts toward the light
-        // on a near-backfacing mesh surface.
+        // Cap at 4.0: prevents unbounded spike when the shading normal tilts
+        // toward the light on a near-backfacing mesh surface.
         let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, NDOTL_EPS), 4.0), use_correction);
 
         // Same bumped-Lambert correction for the animated term. The animated
@@ -962,7 +1056,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // layers without animated receivers keep the zero-coverage sentinel.
         let dom_anim = decode_lightmap_direction(anim_dir_sample);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
-        let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);
+        let n_dot_l_bump_anim = max(dot(N_shade, dom_anim), 0.0);
         // Mirror the static gate: when lm_anim is ~zero (no animated weight maps or
         // dark this frame) the fused direction is unreliable, so leave the term as-is.
         const LM_ANIM_EPS: f32 = 1.0e-4;
@@ -1012,7 +1106,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let L = to_light / max(dist, 0.0001);
-            let n_dot_l = dot(N_bump, L);
+            let n_dot_l = dot(N_shade, L);
             if n_dot_l <= 0.0 {
                 continue;
             }
@@ -1029,7 +1123,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             in.lightmap_uv,
             in.lightmap_layer,
             mesh_n,
-            N_bump,
+            N_shade,
         );
         shadowmask_union = shadowmask.subtraction;
         shadowmask_raw_pool_visibility = shadowmask.raw_pool_visibility;
@@ -1044,8 +1138,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var specular_sum = vec3<f32>(0.0);
     if use_specular {
-        let V = normalize(uniforms.camera_position - in.world_position);
-        let spec_int = sample_color(spec_texture, in.uv, ddx, ddy).r;
+        // The surface map's R channel; the march read its G channel.
+        let spec_int = sample_color(spec_texture, shade_uv, ddx, ddy).r;
         let spec_exp = max(material.shininess, 1.0);
         // Hoisted because every static specular light shares this fragment's
         // lightmap UV/layer. Undo this if specular gains per-light UVs.
@@ -1087,7 +1181,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let L = to_light / max(dist, 0.0001);
-            let NdotL = dot(N_bump, L);
+            let NdotL = dot(N_shade, L);
             if NdotL <= 0.0 {
                 continue;
             }
@@ -1106,7 +1200,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask);
             }
             let contribution = blinn_phong(
-                L, V, N_bump, sl.color_and_pad.xyz, spec_exp, spec_int
+                L, V, N_shade, sl.color_and_pad.xyz, spec_exp, spec_int
             ) * (atten * cone * visibility);
             specular_sum = specular_sum + contribution;
         }
@@ -1114,8 +1208,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     total_light = total_light + specular_sum;
 
     let light_count = select(0u, uniforms.light_count, use_dynamic);
+    // Surface Depth self-shadowing is budgeted: at most
+    // `depth.shadow_light_budget` marches per fragment, spent on the first
+    // contributing lights in loop order. The budget rides the per-material
+    // uniform because the player's quality tier switches it off by rewriting
+    // that buffer — `Low` and `Off` send zero, and so does every flat fragment.
+    var depth_shadow_marches: u32 = 0u;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.
+        // Keyed on the true surface position, like every other spatial index
+        // here: a centimetre-scale carve must not move a fragment between
+        // acceleration-structure cells.
         let influence = light_influence[i];
         let inf_radius = influence.w;
         if inf_radius <= 1.0e30 {
@@ -1193,7 +1296,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         switch light_type {
             case 0u: {
-                let to_light = light.position_and_type.xyz - in.world_position;
+                // The DISPLACED hit position feeds direction and attenuation;
+                // the shadow-map lookup below deliberately stays on the true
+                // plane, which is the geometry the depth map was rendered from
+                // and the geometry its receiver bias is tuned against.
+                let to_light = light.position_and_type.xyz - depth.world_position;
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
                 attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
@@ -1215,7 +1322,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
             case 1u: {
-                let to_light = light.position_and_type.xyz - in.world_position;
+                // Displaced for direction and attenuation, true plane for the
+                // shadow map — same split as the point case above.
+                let to_light = light.position_and_type.xyz - depth.world_position;
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
                 let dist_falloff = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
@@ -1244,13 +1353,49 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
 
-        let NdotL = max(dot(N_bump, L), 0.0);
-        total_light = total_light + effective_color * attenuation * NdotL;
+        // Gate a SIDE hit on the geometric plane as well as on its shading
+        // normal. A side-wall normal is an exact +/-U or +/-V axis lying IN the
+        // tangent plane, so `dot(N_shade, L) > 0` holds across half the
+        // sub-plane hemisphere — a light behind opaque brush geometry would
+        // otherwise light the carved face at full strength, with no shadow map
+        // to stop it when the light won no slot. Top hits are left exactly as
+        // they were: their normal is the normal-mapped one, which is what keeps
+        // an uncarved fragment (and every fragment at `Off`) byte-identical.
+        // `above_plane` is hoisted because the self-shadow gate below needs it
+        // too: `surface_depth_light_visibility` returns 1.0 immediately when the
+        // light is at or below the geometric plane, so without this term a
+        // below-plane light on a TOP hit whose normal map tilts toward it passes
+        // `contributes`, spends one of the two budget slots, and gets "lit" back
+        // — leaving a later light that genuinely casts a shadow unmarched.
+        let above_plane = dot(mesh_n, L) > 0.0;
+        let plane_lit = depth.hit_top || above_plane;
+        let NdotL = select(0.0, max(dot(N_shade, L), 0.0), plane_lit);
+        // Surface Depth self-shadowing, against DYNAMIC lights only. The bake
+        // knows nothing about dynamic bodies (§4), so this adds a fact no baked
+        // source owns. There is deliberately no equivalent march against baked
+        // static light: the lightmap owns static-onto-static occlusion at
+        // 4 cm/texel and competing with it would risk no-double-counting.
+        var depth_visibility = 1.0;
+        // Spend the self-shadow budget only on lights that actually reach this
+        // fragment. A spot in range but aimed elsewhere, or a scripted light
+        // whose descriptor is present but inactive, has zero attenuation or
+        // zero color: marching for it burns one of the two slots on a result
+        // that is then multiplied by zero, and leaves the light that genuinely
+        // casts the shadow unshadowed.
+        let contributes = NdotL > 0.0
+            && above_plane
+            && attenuation > 0.0
+            && dot(effective_color, vec3<f32>(1.0)) > 0.0;
+        if depth.carved && contributes && depth_shadow_marches < depth.shadow_light_budget {
+            depth_shadow_marches = depth_shadow_marches + 1u;
+            depth_visibility = surface_depth_light_visibility(depth, L);
+        }
+        total_light = total_light + effective_color * attenuation * NdotL * depth_visibility;
     }
 
     var emissive = vec3<f32>(0.0);
     if material.emissive_strength > 0.0 {
-        emissive = sample_color(emissive_texture, in.uv, ddx, ddy).rgb;
+        emissive = sample_color(emissive_texture, shade_uv, ddx, ddy).rgb;
     }
     let rgb = base_color.rgb * total_light + emissive * material.emissive_strength;
     // `SdfShadowMode::Visualize` (2) replaces the shaded color with a

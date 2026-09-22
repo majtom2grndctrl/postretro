@@ -187,6 +187,14 @@ const optionReactions: NamedReactionDescriptor[] = [
     updateState(options.fogQuality, "medium"),
   ),
   defineReaction("frontend.options.fogQuality.high", updateState(options.fogQuality, "high")),
+  defineReaction(
+    "frontend.options.surfaceDepthQuality.off",
+    updateState(options.surfaceDepthQuality, "off"),
+  ),
+  defineReaction(
+    "frontend.options.surfaceDepthQuality.on",
+    updateState(options.surfaceDepthQuality, "on"),
+  ),
 ];
 
 function radioChoice(id: string, label: string, checked: Predicate, onPress: string) {
@@ -345,6 +353,21 @@ export const optionsMenu = defineUiTree({
                 "HIGH",
                 stateEquals(options.fogQuality, "high"),
                 "frontend.options.fogQuality.high",
+              ),
+            ]),
+            optionLabel("optionsSurfaceDepthQualityLabel", "SURFACE DEPTH"),
+            optionChoices([
+              radioChoice(
+                "optionsSurfaceDepthOff",
+                "OFF",
+                stateEquals(options.surfaceDepthQuality, "off"),
+                "frontend.options.surfaceDepthQuality.off",
+              ),
+              radioChoice(
+                "optionsSurfaceDepthOn",
+                "ON",
+                stateEquals(options.surfaceDepthQuality, "on"),
+                "frontend.options.surfaceDepthQuality.on",
               ),
             ]),
           ]),

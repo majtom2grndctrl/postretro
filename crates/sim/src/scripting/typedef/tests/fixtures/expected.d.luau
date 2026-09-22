@@ -1206,6 +1206,7 @@ export type GameStateRefs = {
     invertY: Ref<boolean>,
     mouseSensitivity: Ref<number>,
     shadowQuality: Ref<"low" | "medium" | "high">,
+    surfaceDepthQuality: Ref<"off" | "on">,
     viewFeelScale: Ref<number>,
   },
   player: {

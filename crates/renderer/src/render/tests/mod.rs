@@ -6,3 +6,4 @@ mod light_filter_tests;
 mod pipeline_budget_tests;
 mod shader_pipeline_tests;
 mod shader_tests;
+mod surface_depth_tests;

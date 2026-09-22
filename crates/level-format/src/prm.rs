@@ -6,8 +6,12 @@
 // sidecars have one layer and are uploaded directly as D2 textures at runtime;
 // multi-layer payloads are parseable and feed a downstream D2Array upload path.
 // Normal slots may use BC5 block compression (format_tag 3); diffuse and
-// specular stay uncompressed. Loading is still a header parse plus memcpy — BC5
-// payload bytes are uploaded verbatim. No per-mip headers.
+// specular stay uncompressed. The specular slot is a two-channel "surface map"
+// (format_tag 4, `Rg8Unorm`) when the material carries a `_h.png` height
+// sibling: R keeps specular intensity, G carries depth below the surface.
+// Single-channel `R8Unorm` specular remains valid and is what a material
+// without a height sibling still bakes to. Loading is still a header parse plus
+// memcpy — BC5 payload bytes are uploaded verbatim. No per-mip headers.
 //
 // Wire format (little-endian throughout):
 //
@@ -16,15 +20,24 @@
 //   u8       stage_version        -- equals STAGE_VERSION
 //   u8       slot_mask            -- bit 0 diffuse, 1 specular, 2 normal, 3 emissive
 //   u8       reserved             = 0
-//   [u8; 32] bundle_hash          -- blake3 over slot_mask + per-present-slot
-//                                    (bit_index_byte, source_png_file_bytes)
+//   [u8; 32] bundle_hash          -- blake3 over a presence mask + per-present-
+//                                    input (tag_byte, source_png_file_bytes).
+//                                    The compiler owns that digest
+//                                    (level-compiler texture_mips/cache.rs);
+//                                    the reader only compares it. Its mask is
+//                                    not `slot_mask` — a `_h.png` height
+//                                    sibling contributes bit 4 and tag 0x04
+//                                    there while riding in the specular slot,
+//                                    and contributes nothing at all when
+//                                    absent.
 //   u32      total_body_bytes     -- Σ across present slots of
 //                                    (12-byte per-slot header + payload_bytes)
 //   u16      layer_count          -- shared layer count for every slot, >= 1
 //
 //   -- per present slot, in wire order diffuse → specular → normal → emissive
 //   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm, 2 R8Unorm,
-//                                    3 Bc5RgUnorm (normal slot only)
+//                                    3 Bc5RgUnorm (normal slot only),
+//                                    4 Rg8Unorm (specular slot only)
 //   u8       reserved             = 0
 //   u16      width                -- mip 0, >= 1
 //   u16      height               -- mip 0, >= 1
@@ -112,6 +125,15 @@ pub enum PrmFormat {
     /// `expected_payload_bytes`) — and its mip chain is truncated to levels
     /// whose width and height are both ≥ 4 (see `bc5_level_count`).
     Bc5RgUnorm = 3,
+    /// 2 bytes per pixel, linear two-channel. The specular slot's "surface
+    /// map" form: R is specular intensity (identical in meaning to
+    /// `R8Unorm`), G is depth below the true surface plane, baked from the
+    /// material's `_h.png` height sibling as `255 - height`.
+    ///
+    /// Storing depth rather than height is what makes an absent height
+    /// sibling a true no-op: sampling a single-channel `R8Unorm` specular in
+    /// WGSL yields `(r, 0, 0, 1)`, so `.g == 0` — and depth 0 means "flat".
+    Rg8Unorm = 4,
 }
 
 impl PrmFormat {
@@ -121,6 +143,7 @@ impl PrmFormat {
             1 => Some(Self::Rgba8Unorm),
             2 => Some(Self::R8Unorm),
             3 => Some(Self::Bc5RgUnorm),
+            4 => Some(Self::Rg8Unorm),
             _ => None,
         }
     }
@@ -131,6 +154,7 @@ impl PrmFormat {
     fn bytes_per_pixel(self) -> u32 {
         match self {
             Self::Rgba8UnormSrgb | Self::Rgba8Unorm => 4,
+            Self::Rg8Unorm => 2,
             Self::R8Unorm => 1,
             // BC5 has no per-pixel size; callers route it through the
             // block-based payload-size path instead. Reaching here is a bug.
@@ -329,10 +353,15 @@ pub fn bc5_level_count(width: u16, height: u16) -> u8 {
 /// Material-slot format contract shared by the reader and writer.
 ///
 /// The linear RGBA normal format remains accepted for pre-BC5 sidecars.
+///
+/// Slot 1 (specular) accepts both of its forms: `R8Unorm` for a material with
+/// no height sibling — which is what every pre-surface-depth `.prm` carries,
+/// still read unchanged — and `Rg8Unorm` for the two-channel surface map
+/// (R specular, G depth). Widening here is purely additive.
 fn format_allowed_for_slot(slot_index: u8, format: PrmFormat) -> bool {
     match slot_index {
         0 | 3 => format == PrmFormat::Rgba8UnormSrgb,
-        1 => format == PrmFormat::R8Unorm,
+        1 => matches!(format, PrmFormat::R8Unorm | PrmFormat::Rg8Unorm),
         2 => matches!(format, PrmFormat::Rgba8Unorm | PrmFormat::Bc5RgUnorm),
         _ => false,
     }
@@ -1082,6 +1111,110 @@ mod tests {
         assert_eq!(parsed.payload, diffuse.payload);
     }
 
+    /// Surface-depth wire-tag pin. The four pre-existing tags must keep their
+    /// numbers or every `.prm` on disk reinterprets its slots, and the new
+    /// two-channel surface map must be tag 4. `from_tag` and the `repr(u8)`
+    /// discriminant are checked together because `to_bytes` writes the
+    /// discriminant while the reader goes through `from_tag`.
+    #[test]
+    fn format_tags_are_stable_and_rg8_is_tag_four() {
+        for (tag, format) in [
+            (0u8, PrmFormat::Rgba8UnormSrgb),
+            (1, PrmFormat::Rgba8Unorm),
+            (2, PrmFormat::R8Unorm),
+            (3, PrmFormat::Bc5RgUnorm),
+            (4, PrmFormat::Rg8Unorm),
+        ] {
+            assert_eq!(PrmFormat::from_tag(tag), Some(format), "tag {tag}");
+            assert_eq!(format as u8, tag, "discriminant for {format:?}");
+        }
+        assert_eq!(PrmFormat::from_tag(5), None);
+    }
+
+    /// The specular slot's two-channel surface-map form must survive a full
+    /// write → read cycle with its format, dimensions, level count, and every
+    /// payload byte intact, and must land as wire tag 4 in the slot header.
+    #[test]
+    fn rg8_specular_slot_round_trips() {
+        let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 8, 8);
+        let specular = make_slot(PrmFormat::Rg8Unorm, 8, 8);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR,
+                bundle_hash: [0x5C; 32],
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [Some(diffuse.clone()), Some(specular.clone()), None, None],
+        };
+
+        let bytes = file.to_bytes().expect("Rg8Unorm specular must serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("header parses");
+        assert_eq!(header.slot_mask, PrmSlots::DIFFUSE | PrmSlots::SPECULAR);
+        assert_eq!(slots[0].as_ref().expect("diffuse parses"), &diffuse);
+        let parsed = slots[1].as_ref().expect("Rg8Unorm specular parses");
+        assert_eq!(parsed, &specular);
+        assert_eq!(parsed.format, PrmFormat::Rg8Unorm);
+        // Two bytes per texel across the whole chain.
+        assert_eq!(
+            parsed.payload.len() as u32,
+            expected_payload_bytes(PrmFormat::Rg8Unorm, 8, 8, parsed.level_count, 1),
+        );
+
+        // The diffuse slot header precedes the specular one; the specular
+        // slot's format_tag byte must be 4 on the wire.
+        let diffuse_block = SLOT_HEADER_SIZE + diffuse.payload.len();
+        assert_eq!(bytes[HEADER_SIZE + diffuse_block], 4);
+    }
+
+    /// Widening slot 1 is additive only: `Rg8Unorm` is legal there and
+    /// nowhere else, and `R8Unorm` stays legal there so every pre-surface-depth
+    /// sidecar keeps parsing.
+    #[test]
+    fn rg8_is_legal_only_on_the_specular_slot() {
+        assert!(format_allowed_for_slot(1, PrmFormat::Rg8Unorm));
+        assert!(format_allowed_for_slot(1, PrmFormat::R8Unorm));
+        for slot_index in [0u8, 2, 3] {
+            assert!(
+                !format_allowed_for_slot(slot_index, PrmFormat::Rg8Unorm),
+                "Rg8Unorm must not be accepted on slot {slot_index}"
+            );
+        }
+    }
+
+    /// A `.prm` written before the surface-map format existed — single-channel
+    /// `R8Unorm` specular, tag 2 — must still parse byte-for-byte unchanged.
+    /// This is the compatibility promise the whole additive design rests on.
+    #[test]
+    fn pre_surface_depth_r8_specular_file_still_parses() {
+        let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
+        let specular = make_slot(PrmFormat::R8Unorm, 4, 4);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR,
+                bundle_hash: [0x11; 32],
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [Some(diffuse.clone()), Some(specular.clone()), None, None],
+        };
+        let bytes = file.to_bytes().expect("legacy fixture serializes");
+        // Wire tag 2 on the specular slot, untouched by the widening.
+        let diffuse_block = SLOT_HEADER_SIZE + diffuse.payload.len();
+        assert_eq!(bytes[HEADER_SIZE + diffuse_block], 2);
+        assert_eq!(bytes[4], STAGE_VERSION);
+
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert_eq!(header.expect("legacy header parses").stage_version, 3);
+        assert_eq!(
+            slots[1].as_ref().expect("legacy specular parses"),
+            &specular
+        );
+    }
+
     #[test]
     fn existing_three_slot_file_parses_with_absent_emissive() {
         let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
@@ -1629,6 +1762,9 @@ mod tests {
         let accepted = [
             (0, make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
             (1, make_slot(PrmFormat::R8Unorm, 1, 1)),
+            // The specular slot's two-channel surface-map form (R specular,
+            // G depth). Additive: the R8Unorm row above stays accepted.
+            (1, make_slot(PrmFormat::Rg8Unorm, 1, 1)),
             // Legacy linear RGBA normals remain readable and writable.
             (2, make_slot(PrmFormat::Rgba8Unorm, 1, 1)),
             (2, make_bc5_slot(4, 4)),
@@ -1658,11 +1794,14 @@ mod tests {
         let rejected = [
             (0, make_slot(PrmFormat::R8Unorm, 1, 1)),
             (0, make_bc5_slot(4, 4)),
+            (0, make_slot(PrmFormat::Rg8Unorm, 1, 1)),
             (1, make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
             (1, make_bc5_slot(4, 4)),
             (2, make_slot(PrmFormat::R8Unorm, 1, 1)),
+            (2, make_slot(PrmFormat::Rg8Unorm, 1, 1)),
             (3, make_slot(PrmFormat::R8Unorm, 1, 1)),
             (3, make_bc5_slot(4, 4)),
+            (3, make_slot(PrmFormat::Rg8Unorm, 1, 1)),
         ];
 
         for (slot_index, slot) in rejected {
@@ -1700,9 +1839,19 @@ mod tests {
                 PrmFormat::R8Unorm,
             ),
             (
+                2,
+                make_slot(PrmFormat::Rgba8Unorm, 1, 1),
+                PrmFormat::Rg8Unorm,
+            ),
+            (
                 3,
                 make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1),
                 PrmFormat::R8Unorm,
+            ),
+            (
+                0,
+                make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1),
+                PrmFormat::Rg8Unorm,
             ),
         ];
 

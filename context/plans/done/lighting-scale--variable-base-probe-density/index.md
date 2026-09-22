@@ -174,7 +174,7 @@ Constraint-level; field order and exact encodings are implementer-pinned at land
 
 ## Invariants
 
-`/orchestrate` hands this table to every task agent with the Goal and its task text.
+`/build-spec` hands this table to every task agent with the Goal and its task text.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|

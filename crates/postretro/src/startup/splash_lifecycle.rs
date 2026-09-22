@@ -196,17 +196,22 @@ impl App {
     /// the surface was recreated — the renderer's `ensure_full_ready` no-ops when
     /// already full-ready, so the steady boot path pays nothing on re-entry.
     fn finish_renderer_full_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let (shadow_quality, fog_quality) = self
+        let (shadow_quality, fog_quality, surface_depth_quality) = self
             .session
             .as_ref()
             .map(|session| {
                 (
                     session.player_options.shadow_quality,
                     session.player_options.fog_quality,
+                    session.player_options.surface_depth_quality,
                 )
             })
             .unwrap_or_default();
         self.configure_player_shadow_quality(shadow_quality);
+        // Retained in renderer boot state BEFORE `ensure_full_ready`, so the
+        // placeholder material this build creates already carries the player's
+        // tier and no rewrite is needed to catch it up.
+        self.apply_player_surface_depth_quality(surface_depth_quality);
         let Some(renderer) = self.renderer.as_mut() else {
             return true;
         };

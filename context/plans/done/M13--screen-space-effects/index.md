@@ -1,7 +1,7 @@
 # M13 Goal SE — Post-UI Screen-Space Effects + Compositor Seam
 
 > Wave plan 1 of 2 (sibling: **G2**, `drafts/M13--sdk-typesafety-a11y/`). Both
-> ship in one /orchestrate; mutually independent except the typedef/barrel seam
+> ship in one /build-spec; mutually independent except the typedef/barrel seam
 > noted under Sequencing. Downstream: **BIS** consumes the effects (damage
 > vignette); **M9 tonemap / M10 post** later extend the resolve SE establishes.
 > Grounding: `research.md`, `ui-layer.md` §13, `lib/ui.md` §3. Prereqs: A–E

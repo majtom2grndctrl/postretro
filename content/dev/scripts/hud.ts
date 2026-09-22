@@ -17,9 +17,9 @@ import { progression } from "./combat-lifecycle";
 export const hudTheme = defineTheme({
   color: {
     hud: {
-      panel: [0.018, 0.026, 0.039, 0.82],
+      panel: [0.01, 0.015, 0.020, 0.75],
       health: {
-        background: [0.035, 0.045, 0.060, 1.0],
+        background: [0.01, 0.015, 0.020, 0.25],
       },
       text: [0.82, 0.95, 0.98, 1.0],
     },
@@ -78,6 +78,14 @@ const xp = Text({
   bind: bindState(progression.xp, { format: "XP {}" }),
 });
 
+const weaponLabel = Text({
+  content: "--",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 18.0,
+  bind: bindState(player.weapon.current),
+});
+
 const openSeats = Text({
   content: "",
   color: color.hud.text,
@@ -106,6 +114,8 @@ const bar = Bar({
   },
 });
 
+// Health stands alone in the lower-left corner: just the numeric readout and the
+// health bar, so the panel shrink-wraps to its content.
 export const hud = defineUiTree({
   name: "hud",
   alwaysOn: true,
@@ -118,10 +128,52 @@ export const hud = defineUiTree({
         align: "stretch",
         fill: color.hud.panel,
       },
+      [status, bar],
+    ),
+  ),
+});
+
+// The co-op seat line lives in its own top-left tree with no panel fill, so it
+// takes no space (and shows no background) until a session roster fills it in.
+export const openSeatsReadout = defineUiTree({
+  name: "hud.openSeats",
+  alwaysOn: true,
+  tree: Tree({ anchor: "topLeft", offset: [24.0, 24.0] }, openSeats),
+});
+
+// XP sits centered along the bottom edge, away from the health and ammo groups.
+export const xpReadout = defineUiTree({
+  name: "hud.xp",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "bottom", offset: [0.0, -24.0] },
+    VStack(
+      {
+        padding: spacing.hud.padding,
+        align: "center",
+        fill: color.hud.panel,
+      },
+      [xp],
+    ),
+  ),
+});
+
+// Ammo lives in the lower-right corner, headed by the current weapon's name.
+export const ammoReadout = defineUiTree({
+  name: "hud.ammo",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "bottomRight", offset: [-24.0, -24.0] },
+    VStack(
+      {
+        gap: spacing.hud.rowGap,
+        padding: spacing.hud.padding,
+        align: "end",
+        fill: color.hud.panel,
+      },
       [
-        HStack({ gap: spacing.hud.gap, align: "center" }, [status, ammo, ammoReserve, xp]),
-        bar,
-        openSeats,
+        weaponLabel,
+        HStack({ gap: spacing.hud.gap, align: "center" }, [ammo, ammoReserve]),
       ],
     ),
   ),
@@ -135,7 +187,9 @@ export const spreadReticle = defineUiTree({
   tree: Tree(
     { anchor: "center", offset: [0.0, 0.0] },
     Ring({
-      diameter: 72.0,
+      // Diameter must be at least twice `radiusRange.max` (below) so the fully
+      // bloomed ring fits inside its own box.
+      diameter: 200.0,
       radius: bindState(player.spread, {
         tween: {
           durationMs: 90.0,
@@ -143,8 +197,9 @@ export const spreadReticle = defineUiTree({
         },
       }),
       // Eight degrees is the rifle's full sustained-fire bloom. Map it from a
-      // visible 4 px resting ring to a 20 px ring — exactly five times larger.
-      radiusRange: { inputMax: 8.0, min: 4.0, max: 20.0 },
+      // visible 4 px resting ring to a 200 px ring so sustained fire opens the
+      // reticle dramatically.
+      radiusRange: { inputMax: 8.0, min: 4.0, max: 100.0 },
       thickness: 2.0,
       fill: color.hud.text,
     }),

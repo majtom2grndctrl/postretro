@@ -21,13 +21,23 @@ pub(super) struct TextureBundlePaths {
     pub specular: Option<PathBuf>,
     pub normal: Option<PathBuf>,
     pub emissive: Option<PathBuf>,
+    /// `{name}_h.png` — the authored height map (white = raised). It is not a
+    /// `.prm` slot of its own: the baker inverts it to depth and packs it into
+    /// the specular slot's G channel. See `context/lib/resource_management.md`
+    /// §4.6.
+    pub height: Option<PathBuf>,
 }
+
+/// Every sibling suffix a bundle can be spelled with, including the bare
+/// diffuse (`""`). A qualified base stays selected when *any* of these exists,
+/// so a height-only or sibling-only bundle never falls back to the bare stem.
+const BUNDLE_SUFFIXES: [&str; 5] = ["", "_s", "_n", "_e", "_h"];
 
 pub(super) fn resolve_texture_bundle_paths(
     name_to_path: &HashMap<String, PathBuf>,
     normalized: &str,
 ) -> TextureBundlePaths {
-    let qualified_base_exists = ["", "_s", "_n", "_e"]
+    let qualified_base_exists = BUNDLE_SUFFIXES
         .iter()
         .any(|suffix| name_to_path.contains_key(&format!("{normalized}{suffix}")));
     let resolved_base = if qualified_base_exists {
@@ -41,6 +51,7 @@ pub(super) fn resolve_texture_bundle_paths(
         specular: name_to_path.get(&format!("{resolved_base}_s")).cloned(),
         normal: name_to_path.get(&format!("{resolved_base}_n")).cloned(),
         emissive: name_to_path.get(&format!("{resolved_base}_e")).cloned(),
+        height: name_to_path.get(&format!("{resolved_base}_h")).cloned(),
     }
 }
 

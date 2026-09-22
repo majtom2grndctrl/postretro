@@ -24,7 +24,7 @@ A drafting session may produce 0, 1, or N plans. Scope often shifts during plann
 
 Start from the `/draft-session` handoff: problem, outcome, verified facts, decisions, proof, and the route. If none exists, run `/draft-session` first — routing is its job, not this skill's. Ask a focused question only where the handoff leaves the Goal or "done" unwritable.
 
-Pin down what subsystems are touched and what constraints apply. The spec's consumer is `/orchestrate`: task agents receive the Goal, their own paragraph, the AC list, and the Invariants table — nothing else. Write knowing that.
+Pin down what subsystems are touched and what constraints apply. The spec's consumer is `/build-spec`: task agents receive the Goal, their own paragraph, the AC list, and the Invariants table — nothing else. Write knowing that.
 
 ### 2. Research
 
@@ -95,7 +95,7 @@ For each new binary surface, pin: endianness, integer signedness, length-prefix 
 ## Invariants
 (Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
 
-Pin each cross-task invariant once. `/orchestrate` hands this table to every task agent with the Goal and AC list — task paragraphs reference rows, never restate them.
+Pin each cross-task invariant once. `/build-spec` hands this table to every task agent with the Goal and AC list — task paragraphs reference rows, never restate them.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
@@ -135,7 +135,7 @@ One paragraph. What to build.
 ...
 
 ## Sequencing
-(Required when Tasks section exists. Feeds /orchestrate.)
+(Required when Tasks section exists. Feeds /build-spec.)
 
 **Phase 1 (sequential):** Task 1 — blocks everything.
 **Phase 2 (concurrent):** Task 2, Task 3 — independent.
@@ -155,7 +155,7 @@ Unresolved items, risks, alternatives considered, if applicable (only use sectio
 
 **Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
 
-**Task-paragraph contract.** Each task paragraph is an execution contract: `/orchestrate` hands a task agent only its own paragraph, the plan's Goal, the AC list, and the Invariants table when present — never the Scope section. Don't point at Scope ("the list in Scope"); inline load-bearing enumerations in the task paragraph, or pin them in an AC. The AC list and Invariants table are the only shared channels across tasks.
+**Task-paragraph contract.** Each task paragraph is an execution contract: `/build-spec` hands a task agent only its own paragraph, the plan's Goal, the AC list, and the Invariants table when present — never the Scope section. Don't point at Scope ("the list in Scope"); inline load-bearing enumerations in the task paragraph, or pin them in an AC. The AC list and Invariants table are the only shared channels across tasks.
 
 **State a fact once.** A fact written in two places is a defect waiting for a fix to land in one of them — the largest single source of new defects across review rounds. A task can *reference* an AC or an Invariants row instead of restating it; the agent receives both. Restate only where both sides of an interface genuinely need it. Never write a count in prose: "the three call sites" is wrong the moment a fourth appears, while the enumeration after it stays right.
 
@@ -178,7 +178,7 @@ Named types, functions, and line numbers belong in the sketch — not AC. AC sur
 
 ### 6. Sequencing
 
-Feeds `/orchestrate`. Terse is fine — models read short phase blocks reliably.
+Feeds `/build-spec`. Terse is fine — models read short phase blocks reliably.
 
 Rules:
 - Concurrent by default.
@@ -276,7 +276,7 @@ finding unilaterally. Those are owner decisions.
 - Task count and phase summary
 - The `/validate-plan` verdict per plan
 - Open questions left for the user
-- Plan lives in `drafts/` — not ready for `/orchestrate` until promoted
+- Plan lives in `drafts/` — not ready for `/build-spec` until promoted
 
 ## Promoting a plan to `ready/`
 

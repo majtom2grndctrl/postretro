@@ -32,6 +32,14 @@ export const referencePlasmaBoltEntity = defineEntity({
       viewmodel: PLASMA_RIFLE_MODEL,
       placement: plasmaRiflePlacement,
       muzzleOffset: [0.0, 0.372, -0.984],
+      resource: {
+        kind: "ammo",
+        type: "cells.plasma",
+        magazine: 50,
+        reserve: 200,
+        reloadMs: 1800,
+        reloadStyle: "magazine",
+      },
       projectile: {
         speed: 40.0,
         radius: 0.5,
@@ -79,6 +87,14 @@ export const referenceRocketEntity = defineEntity({
       viewmodel: ROCKET_LAUNCHER_MODEL,
       placement: rocketLauncherPlacement,
       muzzleOffset: [0.0, -0.05, -0.834],
+      resource: {
+        kind: "ammo",
+        type: "rockets",
+        magazine: 4,
+        reserve: 20,
+        reloadMs: 2500,
+        reloadStyle: "magazine",
+      },
       projectile: {
         speed: 30.0,
         radius: 0.25,

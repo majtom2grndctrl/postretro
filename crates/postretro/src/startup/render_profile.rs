@@ -3,8 +3,10 @@
 
 use postretro_scripting_core::runtime::{ModBloomResolution, ModRenderProfile};
 
+use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
+
 use crate::App;
-use crate::options::{FogQuality, ShadowQuality};
+use crate::options::{FogQuality, ShadowQuality, SurfaceDepthQuality};
 use crate::render::{BloomRenderProfile, BloomResolution};
 
 /// Translate the persisted shadow tier into the spot-shadow allocation used by
@@ -24,6 +26,23 @@ pub(crate) const fn renderer_fog_step_size(quality: FogQuality) -> f32 {
         FogQuality::Low => 1.0,
         FogQuality::Medium => 0.5,
         FogQuality::High => 0.25,
+    }
+}
+
+/// Translate the persisted Surface Depth state into the renderer's own
+/// vocabulary. The `match` is exhaustive with no `_` arm on purpose: a new
+/// state must fail to compile here rather than silently degrade.
+///
+/// The two enums are separate because `PlayerOptions` is a serde TOML type and
+/// `postretro-render-cpu` carries no serde dependency — the same split the
+/// bloom profile already uses. This chokepoint is the only place they meet, so
+/// option storage and the UI never own renderer vocabulary.
+pub(crate) const fn renderer_surface_depth_quality(
+    quality: SurfaceDepthQuality,
+) -> RendererSurfaceDepthQuality {
+    match quality {
+        SurfaceDepthQuality::Off => RendererSurfaceDepthQuality::Off,
+        SurfaceDepthQuality::On => RendererSurfaceDepthQuality::On,
     }
 }
 
@@ -63,6 +82,22 @@ impl App {
             && renderer.is_full_ready()
         {
             renderer.set_fog_step_size(renderer_fog_step_size(quality));
+        }
+    }
+
+    /// Apply the player's Surface Depth switch.
+    ///
+    /// Unlike the shadow tier this is fully live: the renderer rewrites every
+    /// installed material's uniform buffer, so a change takes effect on the
+    /// next frame with no level reload. It is also safe with no level loaded
+    /// and before full init — the renderer retains the value in boot state and
+    /// the next `install_textures` builds its materials with it.
+    ///
+    /// A `None` renderer (pre-window boot, or suspended) is a no-op; boot
+    /// re-applies the state from `PlayerOptions` once a renderer exists.
+    pub(crate) fn apply_player_surface_depth_quality(&mut self, quality: SurfaceDepthQuality) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_surface_depth_quality(renderer_surface_depth_quality(quality));
         }
     }
 
@@ -153,6 +188,42 @@ mod tests {
                 "{quality:?} fog quality must map to step size {expected}"
             );
         }
+    }
+
+    #[test]
+    fn every_surface_depth_state_maps_to_its_renderer_state() {
+        for (persisted, expected) in [
+            (SurfaceDepthQuality::Off, RendererSurfaceDepthQuality::Off),
+            (SurfaceDepthQuality::On, RendererSurfaceDepthQuality::On),
+        ] {
+            assert_eq!(renderer_surface_depth_quality(persisted), expected);
+        }
+        // Drift guard in both directions: `renderer_surface_depth_quality`'s
+        // match is exhaustive over the persisted side, but a new *renderer*
+        // variant is a compile error nowhere on its own — so walk the
+        // renderer's own `ALL` and map each one back to the persisted enum
+        // through an exhaustive match (no `_` arm). A variant added to either
+        // enum without a matching update on the other fails to compile here.
+        for renderer_state in RendererSurfaceDepthQuality::ALL {
+            let persisted = match renderer_state {
+                RendererSurfaceDepthQuality::Off => SurfaceDepthQuality::Off,
+                RendererSurfaceDepthQuality::On => SurfaceDepthQuality::On,
+            };
+            assert_eq!(renderer_surface_depth_quality(persisted), renderer_state);
+        }
+    }
+
+    #[test]
+    fn surface_depth_defaults_to_the_full_effect() {
+        // The feature ships on; the setting is an escape hatch, not an opt-in.
+        assert_eq!(
+            renderer_surface_depth_quality(SurfaceDepthQuality::default()),
+            RendererSurfaceDepthQuality::On,
+        );
+        assert_eq!(
+            RendererSurfaceDepthQuality::default(),
+            RendererSurfaceDepthQuality::On,
+        );
     }
 
     #[test]

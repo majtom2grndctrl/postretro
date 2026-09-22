@@ -2,7 +2,8 @@
 // See: context/lib/resource_management.md
 
 use super::*;
-use postretro_render_cpu::material_plan::{build_material_uniform, mip_lod_max_clamp};
+use postretro_render_cpu::material_plan::{MaterialUniformPlan, mip_lod_max_clamp};
+use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MipSamplerFiltering {
@@ -77,21 +78,68 @@ fn create_mip_sampler(
     })
 }
 
+/// Whether a loaded specular slot carries Surface Depth's second channel.
+///
+/// `Rg8Unorm` is the surface map the level compiler bakes when a material has
+/// an `_h.png` sibling (R = specular, G = depth below the surface). Every other
+/// legal specular format is single-channel, and WGSL expands those to
+/// `(r, 0, 0, 1)` — `.g == 0`, i.e. flat — so the flag is belt-and-braces over
+/// a degradation that is already a no-op. It exists so a material without a
+/// height map skips the march instead of paying for an all-zero one.
+pub(crate) fn specular_slot_is_surface_map(format: wgpu::TextureFormat) -> bool {
+    matches!(format, wgpu::TextureFormat::Rg8Unorm)
+}
+
+/// One material's group-1 bind group together with the uniform buffer behind
+/// its binding 3, and the GPU-free plan that produced that buffer's contents.
+///
+/// An earlier revision built the buffer and dropped the handle, leaving no way to reach
+/// the per-material parameters again. The player-facing Surface Depth tier
+/// needs exactly that reach: it is applied by REWRITING these buffers
+/// (`Renderer::set_surface_depth_quality`), never by rebuilding bind groups —
+/// gameplay must not allocate (`resource_management.md` §8.2) — and never by
+/// growing the 128-byte group-0 `Uniforms` ABI.
+///
+/// Ownership is unchanged: the renderer owns the buffer, it lives in the
+/// level's `gpu_textures` vector, and it dies with the level. No reference
+/// counting, nothing to release by hand.
+pub(crate) struct MaterialBinding {
+    pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) uniform_buffer: wgpu::Buffer,
+    pub(crate) uniform_plan: MaterialUniformPlan,
+}
+
 pub(crate) fn build_material_bind_group(
     device: &wgpu::Device,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     loaded: &LoadedTexture,
     material_sampler: &wgpu::Sampler,
     material: Material,
+    surface_depth_quality: SurfaceDepthQuality,
     label_prefix: &str,
-) -> wgpu::BindGroup {
-    let uniform_bytes = build_material_uniform(material.shininess(), material.emissive_strength());
-    let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+) -> MaterialBinding {
+    // Surface Depth's has-depth flag is decided HERE, from what actually
+    // loaded, not from the material prefix: only a two-channel `Rg8Unorm`
+    // specular slot is a surface map. A prefix that wants depth but whose
+    // `.prm` has no `_h.png` sibling binds the single-channel specular (or the
+    // 1x1 black placeholder) and must skip the march entirely rather than walk
+    // an all-zero field. The base mip is clamped to the slot's own uploaded
+    // chain so the shader's `textureLoad` level can never go out of range.
+    //
+    // Both facts are recorded in the retained plan rather than folded away, so
+    // a later quality rewrite re-derives from the same loaded truth.
+    let uniform_plan = MaterialUniformPlan::new(
+        material,
+        specular_slot_is_surface_map(loaded.specular_texture.format()),
+        loaded.specular_texture.mip_level_count(),
+    );
+    let uniform_bytes = uniform_plan.uniform_bytes(surface_depth_quality);
+    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),
         contents: &uniform_bytes,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(&format!("{label_prefix} Bind Group")),
         layout: texture_bind_group_layout,
         entries: &[
@@ -109,7 +157,7 @@ pub(crate) fn build_material_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: uniform_buf.as_entire_binding(),
+                resource: uniform_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
@@ -123,12 +171,48 @@ pub(crate) fn build_material_bind_group(
                 resource: wgpu::BindingResource::Sampler(material_sampler),
             },
         ],
-    })
+    });
+    MaterialBinding {
+        bind_group,
+        uniform_buffer,
+        uniform_plan,
+    }
+}
+
+/// Rewrite one material's uniform buffer for a new Surface Depth tier.
+///
+/// `queue.write_buffer` resolves on the queue timeline ahead of the frames
+/// recorded after it, so the change is live on the next presented frame with
+/// no level reload, no bind-group rebuild, and no allocation.
+pub(crate) fn rewrite_material_surface_depth(
+    queue: &wgpu::Queue,
+    uniform_buffer: &wgpu::Buffer,
+    uniform_plan: MaterialUniformPlan,
+    quality: SurfaceDepthQuality,
+) {
+    queue.write_buffer(uniform_buffer, 0, &uniform_plan.uniform_bytes(quality));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_two_channel_surface_map_sets_the_has_depth_flag() {
+        assert!(specular_slot_is_surface_map(wgpu::TextureFormat::Rg8Unorm));
+        for other in [
+            wgpu::TextureFormat::R8Unorm,
+            wgpu::TextureFormat::Bc4RUnorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureFormat::Bc5RgUnorm,
+        ] {
+            assert!(
+                !specular_slot_is_surface_map(other),
+                "{other:?} is not a Surface Depth surface map"
+            );
+        }
+    }
 
     #[test]
     fn character_model_sampler_uses_nearest_magnification_and_linear_minification() {

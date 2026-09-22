@@ -77,7 +77,7 @@ One paragraph. What to build.
 ...
 
 ## Sequencing
-(Required when Tasks section exists. Feeds /orchestrate.)
+(Required when Tasks section exists. Feeds /build-spec.)
 
 **Phase 1 (sequential):** Task 1 — blocks everything.
 **Phase 2 (concurrent):** Task 2, Task 3 — independent.
@@ -103,7 +103,7 @@ For each new binary surface, pin: endianness, integer signedness, length-prefix 
 ## Invariants
 (Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
 
-Pin each cross-task invariant once. `orchestrate` hands this table to every task agent with the shared context and AC list — task paragraphs reference rows, never restate them.
+Pin each cross-task invariant once. `build-spec` hands this table to every task agent with the shared context and AC list — task paragraphs reference rows, never restate them.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
@@ -133,7 +133,7 @@ Named types, functions, and line numbers belong in the sketch — not AC. AC sur
 
 ### 5. Sequencing
 
-Feeds `/orchestrate`. Terse is fine — models read short phase blocks reliably.
+Feeds `/build-spec`. Terse is fine — models read short phase blocks reliably.
 
 Rules:
 - Concurrent by default.
@@ -164,7 +164,7 @@ Stage and commit the plan folder (`index.md` + optional `research.md`).
 - What was planned, or if the session produced no plan (scope already covered, etc.)
 - Task count and phase summary
 - Open questions left for the user
-- Plan lives in `drafts/` — not ready for `/orchestrate` until promoted
+- Plan lives in `drafts/` — not ready for `/build-spec` until promoted
 
 ## Promoting a plan to `ready/`
 

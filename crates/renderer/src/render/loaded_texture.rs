@@ -16,6 +16,25 @@ const CHECKER_SQUARE: u32 = 8;
 const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
 const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
 
+/// The placeholder bound to the specular slot when a material has no `_s.png`
+/// and no `_h.png`: a single-channel 1×1 black texel.
+///
+/// Both channels of the surface map degrade through this one texture, and both
+/// degrade correctly with no runtime code:
+/// - R (specular intensity) is 0 — the zero specular response this placeholder
+///   has always provided.
+/// - G (depth below the surface) is 0 because WGSL expands a single-channel
+///   sample to `(r, 0, 0, 1)`. Surface Depth stores DEPTH rather than height
+///   precisely so that 0 means "flat" (design D1, `resource_management.md`
+///   §4.6), which makes a material without a height map render identically to
+///   before the feature existed.
+///
+/// Widening this placeholder to two channels, or giving its G byte a non-zero
+/// value, would silently lift every un-mapped material off its true plane.
+/// `absent_specular_placeholder_is_a_flat_surface_map` pins both facts.
+const SPECULAR_PLACEHOLDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+const SPECULAR_PLACEHOLDER_PIXEL: [u8; 1] = [0];
+
 /// Tangent-space +Z normal encoded as Rgba8Unorm: (0,0,1) → (127,127,255).
 /// The 1×1 placeholder stays Rgba8Unorm because BC5 requires a 4×4-block
 /// minimum. The shader samples both Rgba8Unorm and Bc5RgUnorm normals as
@@ -29,9 +48,11 @@ pub struct LoadedTexture {
     pub diffuse_texture: wgpu::Texture,
     pub diffuse_view: wgpu::TextureView,
     /// Owned alongside `specular_view`; views borrow the texture, so dropping
-    /// the texture invalidates the view. The renderer never reads
-    /// `specular_texture` directly — it samples via `specular_view`.
-    #[allow(dead_code)]
+    /// the texture invalidates the view. Shading samples through
+    /// `specular_view`; the texture itself is read only for its METADATA, by
+    /// `build_material_bind_group`, which decides Surface Depth's has-depth
+    /// flag from the slot's format (`Rg8Unorm` = a two-channel surface map) and
+    /// clamps the DDA's base mip to this slot's own uploaded chain.
     pub specular_texture: wgpu::Texture,
     pub specular_view: wgpu::TextureView,
     /// Owned alongside `normal_view`; same rationale as `specular_texture`.
@@ -49,11 +70,35 @@ pub struct LoadedTexture {
     pub mip_count: u32,
 }
 
+/// Row-layout classification for a `.prm`-backed upload format.
+///
+/// `Some(bpp)` is an uncompressed format with that bytes-per-pixel;
+/// `None` is block-compressed (BC5), sized block-by-block instead.
+/// `upload_texture_data` and `upload_texture_array_data` share this one table,
+/// so a format legal in a `.prm` cannot be uploadable through one and a panic
+/// through the other.
+///
+/// Returns `None` for a format outside the `.prm` contract, which is a caller
+/// bug — both uploaders turn that into a panic naming the format. Split out
+/// from the uploaders so the mapping is checkable without a GPU.
+fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Option<u32>> {
+    match format {
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(Some(4)),
+        // The two-channel surface map: R specular, G depth. A material with an
+        // `_h.png` height sibling bakes its specular slot to this instead of
+        // `R8Unorm`, so every world-material upload path must size it.
+        wgpu::TextureFormat::Rg8Unorm => Some(Some(2)),
+        wgpu::TextureFormat::R8Unorm => Some(Some(1)),
+        wgpu::TextureFormat::Bc5RgUnorm => Some(None),
+        _ => None,
+    }
+}
+
 /// Upload a pre-baked mip chain to a 2D texture. Each `(width, height, bytes)`
 /// entry in `levels` is a single mip level, in level order (mip 0 first), with
 /// `width`/`height` the LOGICAL mip dimensions.
 ///
-/// For uncompressed formats (Rgba8*, R8) the byte count must equal
+/// For uncompressed formats (Rgba8*, Rg8, R8) the byte count must equal
 /// `bytes_per_pixel(format) * width * height`, uploaded with
 /// `bytes_per_row = bytes_per_pixel * width` and `rows_per_image = height`.
 ///
@@ -72,12 +117,8 @@ pub fn upload_texture_data(
 ) -> (wgpu::Texture, wgpu::TextureView) {
     // `None` = block-compressed (BC5); `Some(bpp)` = uncompressed with that
     // bytes-per-pixel. Drives the per-level `bytes_per_row`/`rows_per_image`.
-    let bytes_per_pixel: Option<u32> = match format {
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(4),
-        wgpu::TextureFormat::R8Unorm => Some(1),
-        wgpu::TextureFormat::Bc5RgUnorm => None,
-        other => panic!("upload_texture_data: unsupported format {other:?}"),
-    };
+    let bytes_per_pixel: Option<u32> = upload_bytes_per_pixel(format)
+        .unwrap_or_else(|| panic!("upload_texture_data: unsupported format {format:?}"));
     let (mip0_w, mip0_h, _) = levels
         .first()
         .copied()
@@ -149,12 +190,8 @@ pub fn upload_texture_array_data(
     mip_level_count: u32,
     label: &str,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let bytes_per_pixel: Option<u32> = match format {
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(4),
-        wgpu::TextureFormat::R8Unorm => Some(1),
-        wgpu::TextureFormat::Bc5RgUnorm => None,
-        other => panic!("upload_texture_array_data: unsupported format {other:?}"),
-    };
+    let bytes_per_pixel: Option<u32> = upload_bytes_per_pixel(format)
+        .unwrap_or_else(|| panic!("upload_texture_array_data: unsupported format {format:?}"));
     assert_eq!(
         layers.len(),
         array_layer_count as usize,
@@ -240,6 +277,8 @@ pub(super) fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
         PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         PrmFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
+        // Two-channel surface map: R specular, G depth (see `PrmFormat`).
+        PrmFormat::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
         // BC5 two-channel (R,G) block-compressed normal map. Requires the
         // adapter's TEXTURE_COMPRESSION_BC feature (checked at device creation
         // in render/mod.rs).
@@ -288,8 +327,8 @@ fn make_specular_placeholder(
     upload_texture_data(
         device,
         queue,
-        wgpu::TextureFormat::R8Unorm,
-        &[(1, 1, &[0u8])],
+        SPECULAR_PLACEHOLDER_FORMAT,
+        &[(1, 1, &SPECULAR_PLACEHOLDER_PIXEL[..])],
         "Placeholder Specular (Black 1x1)",
     )
 }
@@ -608,6 +647,133 @@ fn upload_slot_or_placeholder(
 mod tests {
     use super::*;
     use postretro_level_format::prm::{PrmSlots, STAGE_VERSION};
+
+    /// Surface Depth's central safety property: a material WITHOUT a height
+    /// map must render exactly as it did before the feature existed.
+    ///
+    /// That holds with no runtime code at all, and this test exists to keep it
+    /// that way. The absent-specular placeholder is a single-channel `R8Unorm`
+    /// black texel; WGSL expands a single-channel sample to `(r, 0, 0, 1)`, so
+    /// the surface map's depth channel `.g` is already 0, and Surface Depth
+    /// stores depth-below-surface so that 0 means flat. Nothing about the
+    /// placeholder needed to change for the feature — but widening it to two
+    /// channels, or filling its G byte, would push every un-mapped material
+    /// off its true plane the moment the march reads it.
+    #[test]
+    fn absent_specular_placeholder_is_a_flat_surface_map() {
+        assert_eq!(
+            SPECULAR_PLACEHOLDER_FORMAT,
+            wgpu::TextureFormat::R8Unorm,
+            "the specular placeholder must stay single-channel: WGSL's (r, 0, 0, 1) expansion \
+             is what makes the depth channel read 0 for a material with no height map",
+        );
+        assert_eq!(
+            SPECULAR_PLACEHOLDER_PIXEL,
+            [0],
+            "the placeholder texel must stay black: R is the zero specular response, and a \
+             single-channel texture has no stored G to disturb",
+        );
+        // One byte per texel, one texel — the placeholder must remain the
+        // cheapest possible no-op rather than growing a second channel.
+        assert_eq!(
+            upload_bytes_per_pixel(SPECULAR_PLACEHOLDER_FORMAT),
+            Some(Some(1)),
+        );
+        assert_eq!(
+            SPECULAR_PLACEHOLDER_PIXEL.len(),
+            1,
+            "placeholder payload must match its format's bytes per texel",
+        );
+    }
+
+    /// The renderer must be able to upload every format a `.prm` may legally
+    /// carry. `Rg8Unorm` is legal on the specular slot, but for a while the
+    /// uploaders' row-layout table did not know it — a world material with an
+    /// `_h.png` sibling panicked at level load instead of uploading.
+    #[test]
+    fn every_prm_format_has_an_upload_row_layout() {
+        for format in [
+            PrmFormat::Rgba8UnormSrgb,
+            PrmFormat::Rgba8Unorm,
+            PrmFormat::R8Unorm,
+            PrmFormat::Rg8Unorm,
+            PrmFormat::Bc5RgUnorm,
+        ] {
+            assert!(
+                upload_bytes_per_pixel(prm_format_to_wgpu(format)).is_some(),
+                "{format:?} is representable in a .prm but has no upload row layout",
+            );
+        }
+        // The surface map is two bytes per texel — twice the single-channel
+        // specular slot it replaces, and the byte count the upload must write.
+        assert_eq!(
+            prm_format_to_wgpu(PrmFormat::Rg8Unorm),
+            wgpu::TextureFormat::Rg8Unorm,
+        );
+        assert_eq!(
+            upload_bytes_per_pixel(prm_format_to_wgpu(PrmFormat::Rg8Unorm)),
+            Some(Some(2)),
+        );
+        // BC5 stays block-sized, not per-pixel.
+        assert_eq!(
+            upload_bytes_per_pixel(prm_format_to_wgpu(PrmFormat::Bc5RgUnorm)),
+            Some(None),
+        );
+        // A format outside the .prm contract is still reported as unsupported,
+        // so the uploaders keep panicking on a caller bug rather than
+        // guessing a row stride.
+        assert_eq!(
+            upload_bytes_per_pixel(wgpu::TextureFormat::Rgba16Float),
+            None,
+        );
+    }
+
+    /// A surface-map specular slot must slice into upload ranges that exactly
+    /// consume its payload — the CPU-side half of "would upload the right byte
+    /// count", provable without a device.
+    #[test]
+    fn surface_map_specular_slot_slices_to_its_whole_payload() {
+        let (width, height) = (64u16, 32u16);
+        let level_count = postretro_level_format::prm::expected_level_count(width, height);
+        let payload_len: usize = (0..level_count)
+            .map(|level| {
+                let w = (u32::from(width) >> level).max(1);
+                let h = (u32::from(height) >> level).max(1);
+                2 * (w * h) as usize
+            })
+            .sum();
+        let slot = PrmSlot {
+            format: PrmFormat::Rg8Unorm,
+            width,
+            height,
+            level_count,
+            payload: vec![0u8; payload_len],
+        };
+
+        let levels = slot_levels(&slot);
+        assert_eq!(levels.len(), usize::from(level_count));
+        assert_eq!(
+            (levels[0].0, levels[0].1, levels[0].2.len()),
+            (64, 32, 4096)
+        );
+
+        let bpp = upload_bytes_per_pixel(prm_format_to_wgpu(slot.format))
+            .expect("surface map is uploadable")
+            .expect("surface map is uncompressed");
+        let uploaded: usize = levels
+            .iter()
+            .map(|(w, h, bytes)| {
+                // What `upload_texture_data` writes per level: bytes_per_row *
+                // rows_per_image, which must be exactly the slice it was given.
+                assert_eq!(bytes.len(), (bpp * w * h) as usize);
+                bytes.len()
+            })
+            .sum();
+        assert_eq!(
+            uploaded, payload_len,
+            "the per-level uploads must consume the slot payload exactly",
+        );
+    }
 
     // Checkerboard placeholder pixel pattern: 64×64 magenta/black, 8-pixel squares.
 

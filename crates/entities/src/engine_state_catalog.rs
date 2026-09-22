@@ -347,6 +347,10 @@ fn sdk_path_string(path: &[&str]) -> String {
 const INPUT_MODE_VALUES: &[&str] = &["pointer", "focus"];
 const CROUCH_MODE_VALUES: &[&str] = &["hold", "toggle"];
 const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
+/// Surface Depth is off/on, not a low/medium/high ladder: it is a pure cost
+/// lever, and the middle tier it once had never changed the carve depth.
+/// See `context/lib/player_options.md` §4.
+const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "on"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
@@ -618,6 +622,18 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "options.surfaceDepthQuality",
+        sdk_path: &["options", "surfaceDepthQuality"],
+        value_type: EngineStateValueType::Enum {
+            values: SURFACE_DEPTH_QUALITY_VALUES,
+        },
+        default: EngineStateDefault::Enum("on"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
         sdk_path: &["ui", "textEntry"],
         value_type: EngineStateValueType::String,
@@ -800,6 +816,7 @@ mod tests {
                 "options.invertY",
                 "options.mouseSensitivity",
                 "options.shadowQuality",
+                "options.surfaceDepthQuality",
                 "options.viewFeelScale",
                 "player.ammo",
                 "player.ammoReserve",
@@ -834,6 +851,7 @@ mod tests {
             "options.crouchMode",
             "options.shadowQuality",
             "options.fogQuality",
+            "options.surfaceDepthQuality",
         ] {
             let entry = entries
                 .iter()

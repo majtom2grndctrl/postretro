@@ -246,6 +246,63 @@ uv venv && source .venv/bin/activate && uv pip install Pillow
 python3 tools/gen_specular.py --input content/base/textures/ --recursive
 ```
 
+### Surface Depth (Height Maps)
+
+Add a height map next to any diffuse texture and its surface gets real depth: cobblestones stand proud of their mortar, panel seams sink in, plank gaps read as gaps. The effect is strongest at shallow viewing angles, which is exactly where a flat texture normally gives itself away.
+
+Name it `{diffuse}_h.png`. That's the whole workflow — the compiler finds it by suffix. There is no material file to edit and no map key to set, and you don't need an `_s.png` alongside it; a height map on its own is fine. (A helper that generates one is below, but nothing requires you to use it.)
+
+Example: `cobble.png` → diffuse; `cobble_h.png` → height.
+
+**Author an ordinary height map: white = raised, black = recessed.** This is the familiar convention and it is the one the engine wants. Do not pre-invert it. `prl-build` converts height to depth when it bakes, so the inverted form only ever exists inside the compiled `.prm` — you never see it or think about it.
+
+Requirements — each of these **fails the compile**. None of them is a warning you can ignore:
+
+- **Linear color space.** No `sRGB` chunk, no `iCCP` chunk, `gAMA` ≈ 1.0. Same rule as `_s.png` and `_n.png`. A gamma curve on a height map warps the depth. Re-export as linear PNG if your editor tags files by default.
+- **Same dimensions as the diffuse.** No scaling, no half-res height maps.
+- **Same dimensions as `_s.png`, if you have one.** Specular and height are packed into one two-channel texture in the compiled output, so they have to line up texel for texel.
+
+#### How deep it carves
+
+Depth character comes from the **material prefix** — the same first-token-before-the-underscore rule the Material System table above uses. You control it by naming the texture, not by tuning the PNG:
+
+| Prefix | Carve |
+|--------|-------|
+| `concrete` | Deepest — the cobblestone and pavement case this is built for |
+| `grate` | Moderate |
+| `wood` | Shallow — plank gaps |
+| `metal` | Shallowest — panel seams and rivets |
+| `glass`, `neon` | **Flat.** Deliberately |
+| anything else | A conservative carve, so a `_h.png` on an unrecognized prefix still shows up |
+
+The compiler does not know about prefixes — it bakes any `_h.png` it finds. So a `glass_*_h.png` compiles cleanly, makes that material's compiled surface texture twice the size it needed to be, and is then ignored at render time. Don't ship one.
+
+A height map's own black-to-white range shapes *where* the surface is high and low; the prefix decides *how far* in meters, and how many flat terraces the depth snaps to. Depths are a couple of centimeters at most.
+
+#### Depth never changes where you can walk
+
+The carve goes **inward only**. Nothing is ever pushed out past the real brush face, so the surface you see is never higher than the surface the map actually has. The player walks on the stone tops — that *is* the true plane — and collision, clipping and mover geometry are untouched. You cannot break a jump or a ledge by adding a height map.
+
+The effect applies to static world brushes and to `kinematic_mover` brushes. It does not apply to `prop_mesh` glTF models.
+
+#### Generating one
+
+`tools/texture-tool` writes `{stem}_h.png` alongside the diffuse, specular and normal maps in the same run. It derives height from diffuse luminance and terraces it so the plateaus line up with the diffuse's own quantization:
+
+```bash
+cargo run --release --manifest-path tools/texture-tool/Cargo.toml -- \
+  process --src cobble-source.png --stem concrete_cobble_01 \
+  --out-dir content/dev/textures/street \
+  --tileable --spec-profile polished-stone \
+  --height-strength 1.6 --height-quantize-levels 6
+```
+
+`--height-strength` scales the relief (above `1.0` exaggerates it, below flattens it; each spec profile has its own default). `--height-quantize-levels` sets how many terraces — **lower means fewer, flatter, chunkier plateaus**, which is the retro read the effect is tuned for. The tool writes untagged linear PNGs at the diffuse's exact dimensions, so its output satisfies the rules above by construction. See `tools/texture-tool/README.md` for the full flag list and the per-profile defaults.
+
+#### The player's on/off setting
+
+Players get a **SURFACE DEPTH** setting in the graphics options: **Off** or **On**, defaulting to **On**. `On` is the full effect. `Off` renders exactly as the engine did before the feature existed, and costs nothing — it is there for machines that can't afford the per-pixel march. There is no middle setting. Author for `On`, but don't build a room whose readability depends on it — someone will be playing with it off.
+
 ### Model Texture Sidecars
 
 Map compilation bakes texture sidecars for any `prop_mesh` glTF models placed in the map. If you want to prepare a model's textures without compiling a map, run:
@@ -274,3 +331,6 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 | `period_ms` missing | A `*_curve` key is present but no cycle length | Add `period_ms` to the same entity |
 | Lightmap atlas overflow | Too many surfaces at the current texel density | Increase `--lightmap-density` (the compiler retries automatically and logs a warning) |
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |
+| PNG color-space validation failed | An `_s.png`, `_n.png`, or `_h.png` carries an `sRGB` or `iCCP` chunk, or a `gAMA` that isn't ≈ 1.0 | Re-export the named files as linear PNG with no color-management metadata. The error lists every offending path |
+| `_h.png` dimensions must match diffuse | A height map is a different resolution from its diffuse texture | Re-export the height map at the diffuse's exact dimensions |
+| `_h.png` and `_s.png` … must have identical dimensions | A height map and its specular sibling disagree | Match them. The two are packed into one two-channel texture and cannot be resized independently |

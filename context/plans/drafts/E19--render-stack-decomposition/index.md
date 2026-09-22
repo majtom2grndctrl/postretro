@@ -10,7 +10,7 @@ Decompose the `postretro` binary's rendering runtime and the heavy CPU/GPU modul
 
 ## Scoping philosophy — build more right faster
 
-Scope to the **correct end-state crate graph**, not a locally-safe first slice. Build the specs **sequentially in dependency order** — one spec per `/orchestrate` run, lowest crate first. Each extraction re-points shared call sites and edits the workspace, so concurrent extractions conflict; and each landed spec moves files and re-points imports, so the next spec must be **re-grounded against the live tree** right before it's built (see **Execution model**). Because incremental human checkpoints are removed, **replace them with verification**: every spec proves correctness by construction (`cargo tree` isolation, acyclicity-by-compile, typedef-drift byte-identity, WGSL byte-layout tests, behavior-preservation), not by reviewer trust. A split that does not measurably improve its targeted edit loop pauses the structural phases for re-evaluation.
+Scope to the **correct end-state crate graph**, not a locally-safe first slice. Build the specs **sequentially in dependency order** — one spec per `/build-spec` run, lowest crate first. Each extraction re-points shared call sites and edits the workspace, so concurrent extractions conflict; and each landed spec moves files and re-points imports, so the next spec must be **re-grounded against the live tree** right before it's built (see **Execution model**). Because incremental human checkpoints are removed, **replace them with verification**: every spec proves correctness by construction (`cargo tree` isolation, acyclicity-by-compile, typedef-drift byte-identity, WGSL byte-layout tests, behavior-preservation), not by reviewer trust. A split that does not measurably improve its targeted edit loop pauses the structural phases for re-evaluation.
 
 ## Scope
 
@@ -96,11 +96,11 @@ Three milestones, each a shippable checkpoint with a developer-facing testable o
 
 ## Execution model
 
-Build the specs **sequentially in dependency order** — one spec per `/orchestrate` run, not waves. The cadence per spec:
+Build the specs **sequentially in dependency order** — one spec per `/build-spec` run, not waves. The cadence per spec:
 
 1. **Re-ground.** Run `review-draft-spec`'s codebase-anchor (source-grounding) lens against the *then-current* tree. Discovery (`research.md`) was a point-in-time snapshot; every landed extraction moves files and re-points imports, so a spec's named identifiers and call-sites drift stale until re-grounded.
 2. **Update the spec** from the anchor findings.
-3. **Orchestrate** that one spec.
+3. **`/build-spec`** that one spec.
 4. **Verification gate** — the full Global ACs (cargo-tree isolation, acyclicity, typedef drift, WGSL) must hold before the next spec opens.
 
 Then the next spec, lowest crate first. **Don't deep-ground the later specs now** — they change as the lower crates land; ground each just before it's built (detail-on-open).

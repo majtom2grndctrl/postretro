@@ -811,6 +811,7 @@ mod tests {
             "options.crouchMode",
             "options.shadowQuality",
             "options.fogQuality",
+            "options.surfaceDepthQuality",
         ] {
             let slot = table.get(name).expect("engine option slot exists");
             assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
@@ -830,6 +831,23 @@ mod tests {
             SlotType::Enum {
                 values: vec!["low".into(), "medium".into(), "high".into()]
             }
+        );
+        // Surface Depth's vocabulary is deliberately off/on, not the
+        // low/medium/high the other graphics tiers use: it is a cost lever.
+        assert_eq!(
+            table
+                .get("options.surfaceDepthQuality")
+                .unwrap()
+                .schema
+                .slot_type,
+            SlotType::Enum {
+                values: vec!["off".into(), "on".into()]
+            }
+        );
+        assert_eq!(
+            table.get("options.surfaceDepthQuality").unwrap().value,
+            Some(SlotValue::Enum("on".into())),
+            "the feature ships on; the switch is an escape hatch",
         );
     }
 

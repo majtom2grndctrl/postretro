@@ -85,7 +85,8 @@ impl SdfShadowMode {
 
 /// Dev-tools-only gates for independently viewing the terms that light a
 /// surface. Bit 7 remains reserved: emissive lights only their own material
-/// and is intentionally outside this instrument.
+/// and is intentionally outside this instrument. Bit 8 is the first term added
+/// above that reservation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct LightTermMask(u32);
@@ -98,13 +99,21 @@ impl LightTermMask {
     pub const BAKED_DIRECT_ANIMATED: Self = Self(1 << 4);
     pub const DYNAMIC_DIRECT: Self = Self(1 << 5);
     pub const SPECULAR: Self = Self(1 << 6);
+    /// Surface Depth ambient occlusion on the SH INDIRECT term.
+    ///
+    /// Bit 8, skipping the reserved emissive bit 7. It gets a bit of its own so
+    /// the self-occlusion the DDA derives can be toggled in isolation from the
+    /// indirect term it modulates — the two are separate facts (`INDIRECT_*`
+    /// owns the probe lookup, this owns the receiver's own cobblestone-scale
+    /// geometry, which no probe at ~1 m spacing can know).
+    pub const DEPTH_AMBIENT_OCCLUSION: Self = Self(1 << 8);
 
     /// Every wired term. Bit 7 is reserved for the intentionally unwired
     /// emissive category and must not be included here.
-    pub const ALL: Self = Self(0x7F);
+    pub const ALL: Self = Self(0x17F);
 
     /// Terms in diagnostics display order.
-    pub const ALL_TERMS: [Self; 7] = [
+    pub const ALL_TERMS: [Self; 8] = [
         Self::AMBIENT_FLOOR,
         Self::INDIRECT_STATIC,
         Self::INDIRECT_ANIMATED,
@@ -112,6 +121,7 @@ impl LightTermMask {
         Self::BAKED_DIRECT_ANIMATED,
         Self::DYNAMIC_DIRECT,
         Self::SPECULAR,
+        Self::DEPTH_AMBIENT_OCCLUSION,
     ];
 
     pub const fn bits(self) -> u32 {
@@ -139,6 +149,7 @@ impl LightTermMask {
             0x10 => "Baked direct — animated",
             0x20 => "Dynamic direct",
             0x40 => "Specular",
+            0x100 => "Surface depth AO",
             _ => "Unknown lighting term",
         }
     }
@@ -184,8 +195,8 @@ pub struct FrameUniforms {
     pub ambient_floor: f32,
     pub light_count: u32,
     pub time: f32,
-    /// Bits 0..=6 are `LightTermMask`; byte 88..92 is a fixed group-0 ABI
-    /// slot shared by the renderer and every shader mirror.
+    /// Bits 0..=6 and bit 8 are `LightTermMask`; byte 88..92 is a fixed group-0
+    /// ABI slot shared by the renderer and every shader mirror.
     pub light_term_mask: LightTermMask,
     pub indirect_scale: f32,
     /// Bitset of `SDF_SHADOW_FLAG_*` controlling the forward shader's SDF
@@ -297,15 +308,27 @@ mod tests {
     }
 
     #[test]
-    fn light_term_mask_uses_only_the_seven_wired_bits() {
-        assert_eq!(LightTermMask::ALL.bits(), 0x7F);
-        assert_eq!(LightTermMask::ALL_TERMS.len(), 7);
+    fn light_term_mask_uses_only_the_wired_bits() {
+        assert_eq!(LightTermMask::ALL.bits(), 0x17F);
+        assert_eq!(LightTermMask::ALL_TERMS.len(), 8);
+        // Bit 7 stays reserved for emissive: adding a term must skip it, not
+        // consume it.
+        assert_eq!(LightTermMask::ALL.bits() & 0x80, 0);
+        assert!(LightTermMask::ALL.contains(LightTermMask::DEPTH_AMBIENT_OCCLUSION));
+        assert_eq!(
+            LightTermMask::DEPTH_AMBIENT_OCCLUSION.label(),
+            "Surface depth AO"
+        );
+        let mut without_ao = LightTermMask::ALL;
+        without_ao.set_enabled(LightTermMask::DEPTH_AMBIENT_OCCLUSION, false);
+        assert_eq!(without_ao.bits(), 0x7F);
+        assert!(without_ao.contains(LightTermMask::INDIRECT_STATIC));
         assert!(LightTermMask::ALL.contains(LightTermMask::AMBIENT_FLOOR));
         assert!(LightTermMask::ALL.contains(LightTermMask::SPECULAR));
 
         let mut mask = LightTermMask::ALL;
         mask.set_enabled(LightTermMask::DYNAMIC_DIRECT, false);
-        assert_eq!(mask.bits(), 0x5F);
+        assert_eq!(mask.bits(), 0x15F);
         assert!(!mask.contains(LightTermMask::DYNAMIC_DIRECT));
         assert_eq!(
             LightTermMask::BAKED_DIRECT_ANIMATED.label(),

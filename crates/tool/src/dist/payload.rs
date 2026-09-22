@@ -7,6 +7,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use super::resolve::{EntryExt, Resolved, is_prm_filename};
 
@@ -62,13 +63,7 @@ where
     RemoveTree: FnOnce(&Path) -> io::Result<()>,
     MarkPartial: FnOnce(&Path) -> Result<(), String>,
 {
-    fs::rename(payload_root, aside).map_err(|error| {
-        format!(
-            "stage 5: rename payload root {} aside to {}: {error}",
-            payload_root.display(),
-            aside.display()
-        )
-    })?;
+    rename_aside(payload_root, aside)?;
 
     let Err(remove_error) = remove_tree(aside) else {
         return Ok(());
@@ -95,6 +90,83 @@ where
         aside.display(),
         payload_root.display()
     ))
+}
+
+/// How many times the move-aside is attempted before it gives up, and the base
+/// delay between attempts (it grows linearly with the attempt number).
+const RENAME_ASIDE_ATTEMPTS: u32 = 5;
+const RENAME_ASIDE_BACKOFF: Duration = Duration::from_millis(150);
+
+/// Move the existing payload aside, retrying briefly past a transient lock.
+///
+/// Windows refuses to rename a directory while any program holds a handle
+/// *inside* it — an open file-browser window showing a subfolder, a shell whose
+/// current directory is under it, or an engine or tool still running from it —
+/// and reports it as an access denial rather than a sharing violation. Antivirus
+/// and the search indexer also take brief handles on freshly written files, so a
+/// first denial is frequently transient; a bounded retry rides those out. A
+/// denial that survives every attempt is a program that is still holding the
+/// payload open, so the final message names that cause and its remedy instead of
+/// surfacing a bare "Access is denied".
+fn rename_aside(payload_root: &Path, aside: &Path) -> Result<(), String> {
+    rename_aside_with(
+        payload_root,
+        aside,
+        || fs::rename(payload_root, aside),
+        std::thread::sleep,
+    )
+}
+
+fn rename_aside_with<Rename, Sleep>(
+    payload_root: &Path,
+    aside: &Path,
+    mut rename: Rename,
+    mut sleep: Sleep,
+) -> Result<(), String>
+where
+    Rename: FnMut() -> io::Result<()>,
+    Sleep: FnMut(Duration),
+{
+    let mut attempt = 1;
+    loop {
+        match rename() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_lock_denial(&error) && attempt < RENAME_ASIDE_ATTEMPTS => {
+                sleep(RENAME_ASIDE_BACKOFF * attempt);
+                attempt += 1;
+            }
+            Err(error) if is_lock_denial(&error) => {
+                return Err(format!(
+                    "stage 5: rename payload root {} aside to {}: {error}; another program is \
+                     holding a handle inside the existing payload, so it cannot be moved aside to \
+                     be replaced — commonly a file-browser window open inside it, a shell whose \
+                     current directory is under it, or an engine or tool still running from it. \
+                     Close whatever is browsing or running under {} and re-run.",
+                    payload_root.display(),
+                    aside.display(),
+                    payload_root.display(),
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "stage 5: rename payload root {} aside to {}: {error}",
+                    payload_root.display(),
+                    aside.display()
+                ));
+            }
+        }
+    }
+}
+
+/// Whether a rename error looks like a program holding the directory open.
+///
+/// `PermissionDenied` is the portable signal; on Windows the two raw codes that
+/// carry this — `ERROR_ACCESS_DENIED` (5, how a held descendant handle surfaces)
+/// and `ERROR_SHARING_VIOLATION` (32) — are matched directly so a future
+/// `ErrorKind` remapping cannot quietly drop them.
+fn is_lock_denial(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(5) | Some(32))
 }
 
 fn clear_stale_stage_five_siblings(output_root: &Path, package_name: &str) -> Result<(), String> {
@@ -515,9 +587,13 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
 
+    use std::cell::Cell;
+    use std::time::Duration;
+
     use super::{
         EntryExt, MARKER_NAME, Resolved, copy_prm_tree, is_pack_lock, remove_pack_locks,
-        replace_existing_payload_with, should_exclude, sweep_payload, write_marker,
+        rename_aside_with, replace_existing_payload_with, should_exclude, sweep_payload,
+        write_marker,
     };
 
     /// The published mod root these sweep tests build under. A distribution now
@@ -766,6 +842,77 @@ mod tests {
         assert!(error.contains(&aside.display().to_string()));
         assert!(error.contains("simulated marker failure"));
         remove_temp_dir(&root);
+    }
+
+    /// Antivirus and the search indexer take brief handles on freshly written
+    /// files, so the move-aside must survive a denial that clears on its own
+    /// rather than failing the whole distribution on the first one.
+    #[test]
+    fn rename_aside_retries_a_transient_lock_then_succeeds() {
+        let attempts = Cell::new(0u32);
+        let sleeps = Cell::new(0u32);
+        let result = rename_aside_with(
+            Path::new("payload"),
+            Path::new("aside"),
+            || {
+                let seen = attempts.get();
+                attempts.set(seen + 1);
+                if seen < 2 {
+                    Err(io::Error::from_raw_os_error(5))
+                } else {
+                    Ok(())
+                }
+            },
+            |_: Duration| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(attempts.get(), 3, "two denials then one success");
+        assert_eq!(sleeps.get(), 2, "one backoff before each retry");
+    }
+
+    /// A denial that survives every attempt is a program still holding the
+    /// payload open, so the message must name that cause and the payload path
+    /// rather than surfacing a bare access-denied.
+    #[test]
+    fn rename_aside_reports_the_holder_when_the_denial_persists() {
+        let attempts = Cell::new(0u32);
+        let result = rename_aside_with(
+            Path::new("dist/postretro-dev-sdk"),
+            Path::new("dist/.aside"),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::from_raw_os_error(5))
+            },
+            |_: Duration| {},
+        );
+
+        let error = result.expect_err("a persistent denial fails");
+        assert_eq!(attempts.get(), super::RENAME_ASIDE_ATTEMPTS);
+        assert!(
+            error.contains("holding a handle inside the existing payload"),
+            "{error}"
+        );
+        assert!(error.contains("postretro-dev-sdk"), "{error}");
+    }
+
+    /// The retry is scoped to lock denials: an unrelated failure is reported at
+    /// once, with no wasted backoff.
+    #[test]
+    fn rename_aside_does_not_retry_an_unrelated_error() {
+        let attempts = Cell::new(0u32);
+        let result = rename_aside_with(
+            Path::new("payload"),
+            Path::new("aside"),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::new(io::ErrorKind::NotFound, "gone"))
+            },
+            |_: Duration| panic!("an unrelated error must not sleep or retry"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
     }
 
     fn remove_temp_dir(root: &Path) {

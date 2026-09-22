@@ -35,10 +35,9 @@ use super::setup::{
 use super::prepared::{
     capture_mesh_models, collect_capture_receiver_draws, spawn_capture_receiver_registry,
 };
+use crate::camera;
 #[cfg(test)]
 use crate::runtime_movers::KinematicMoverRenderCollector;
-#[cfg(test)]
-use crate::camera;
 #[cfg(test)]
 use crate::scripting_systems::light_bridge::LightBridge;
 #[cfg(test)]

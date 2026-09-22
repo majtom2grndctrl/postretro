@@ -881,6 +881,33 @@ fn help_text() -> String {
     )
 }
 
+/// Consume the value token that must follow a value-taking flag `flag`.
+///
+/// Mirrors the engine's path-flag rule (`path_flag_value` / `resolve_map_path`
+/// in `crates/postretro/src/startup/session.rs`, which guard on
+/// `!value.starts_with("--")`): a token that begins with `--` is another
+/// option, never this flag's value, so a value-taking flag immediately
+/// followed by one is a missing-value error rather than a silent capture. This
+/// keeps the compiler consistent with the engine, which rejects
+/// `--baked-root --release` instead of taking `--release` as the path, and
+/// keeps every value-taking flag here consistent with its siblings.
+///
+/// `-o out.prl` and real paths containing single dashes are unaffected — only a
+/// leading `--` marks a token as an option. There is no `--` end-of-options
+/// terminator in this parser, so none is special-cased.
+fn flag_value<I>(args: &mut I, flag: &str) -> anyhow::Result<String>
+where
+    I: Iterator<Item = String>,
+{
+    match args.next() {
+        None => anyhow::bail!("{flag} requires a value"),
+        Some(value) if value.starts_with("--") => {
+            anyhow::bail!("{flag} requires a value, found the flag '{value}'")
+        }
+        Some(value) => Ok(value),
+    }
+}
+
 fn parse_args_from<I>(mut args: I) -> anyhow::Result<Args>
 where
     I: Iterator<Item = String>,
@@ -918,15 +945,11 @@ where
                 std::process::exit(0);
             }
             "-o" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("-o requires an output path"))?;
+                let path = flag_value(&mut args, "-o")?;
                 output = Some(PathBuf::from(path));
             }
             "-j" | "--jobs" => {
-                let jobs_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+                let jobs_str = flag_value(&mut args, &arg)?;
                 jobs = jobs_str
                     .parse::<usize>()
                     .map_err(|_| anyhow::anyhow!("{arg} must be an integer >= 1"))?;
@@ -950,18 +973,14 @@ where
                 verbose = true;
             }
             "--format" => {
-                let fmt_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--format requires a value"))?;
+                let fmt_str = flag_value(&mut args, "--format")?;
                 format = fmt_str
                     .parse::<MapFormat>()
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             "--sh-probe-spacing" => {
                 quality_flag_supplied = true;
-                let spacing_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-probe-spacing requires a value"))?;
+                let spacing_str = flag_value(&mut args, "--sh-probe-spacing")?;
                 let parsed: f32 = spacing_str.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-probe-spacing must be a positive number of meters")
                 })?;
@@ -972,9 +991,7 @@ where
             }
             "--lightmap-density" => {
                 quality_flag_supplied = true;
-                let density_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--lightmap-density requires a value"))?;
+                let density_str = flag_value(&mut args, "--lightmap-density")?;
                 let parsed: f32 = density_str.parse().map_err(|_| {
                     anyhow::anyhow!("--lightmap-density must be a positive number of meters")
                 })?;
@@ -985,9 +1002,7 @@ where
             }
             "--sh-density-fidelity" => {
                 quality_flag_supplied = true;
-                let fidelity_str = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-density-fidelity requires a positive multiplier")
-                })?;
+                let fidelity_str = flag_value(&mut args, "--sh-density-fidelity")?;
                 let parsed: f32 = fidelity_str.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-density-fidelity must be a positive multiplier")
                 })?;
@@ -998,9 +1013,7 @@ where
             }
             "--soft-shadow-samples" => {
                 quality_flag_supplied = true;
-                let samples_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--soft-shadow-samples requires a value"))?;
+                let samples_str = flag_value(&mut args, "--soft-shadow-samples")?;
                 let parsed: u32 = samples_str.parse().map_err(|_| {
                     anyhow::anyhow!("--soft-shadow-samples must be a positive integer")
                 })?;
@@ -1014,9 +1027,7 @@ where
             }
             "--sdf-voxel-size" => {
                 quality_flag_supplied = true;
-                let voxel_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sdf-voxel-size requires a value"))?;
+                let voxel_str = flag_value(&mut args, "--sdf-voxel-size")?;
                 let parsed: f32 = voxel_str.parse().map_err(|_| {
                     anyhow::anyhow!("--sdf-voxel-size must be a positive number of meters")
                 })?;
@@ -1026,40 +1037,30 @@ where
                 voxel_size = parsed;
             }
             "--cache-dir" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--cache-dir requires a path"))?;
+                let path = flag_value(&mut args, "--cache-dir")?;
                 cache_dir = Some(PathBuf::from(path));
             }
             "--baked-root" => {
                 // The value is the parent of `materials/`, never `materials/`
                 // itself. The engine's flag of the same name reads the same
                 // directory.
-                let path = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--baked-root requires the directory that contains materials/")
-                })?;
+                let path = flag_value(&mut args, "--baked-root")?;
                 if path.is_empty() {
                     anyhow::bail!("--baked-root requires the directory that contains materials/");
                 }
                 baked_root = Some(PathBuf::from(path));
             }
             "--cache-max-size" => {
-                let size_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--cache-max-size requires a value"))?;
+                let size_str = flag_value(&mut args, "--cache-max-size")?;
                 cache_max_bytes = size_options::parse_size("--cache-max-size", &size_str)?;
             }
             "--sh-delta-max-size" => {
-                let size_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-delta-max-size requires a value"))?;
+                let size_str = flag_value(&mut args, "--sh-delta-max-size")?;
                 delta_section_config.max_payload_bytes =
                     size_options::parse_size("--sh-delta-max-size", &size_str)?;
             }
             "--sh-delta-working-set-max-size" => {
-                let size_str = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-delta-working-set-max-size requires a value")
-                })?;
+                let size_str = flag_value(&mut args, "--sh-delta-working-set-max-size")?;
                 delta_section_config.max_working_set_bytes =
                     size_options::parse_size("--sh-delta-working-set-max-size", &size_str)?;
             }
@@ -1076,9 +1077,7 @@ where
             }
             "--direction-texel-scale" => {
                 quality_flag_supplied = true;
-                let scale_str = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--direction-texel-scale requires a positive power of two")
-                })?;
+                let scale_str = flag_value(&mut args, "--direction-texel-scale")?;
                 let parsed: u32 = scale_str.parse().map_err(|_| {
                     anyhow::anyhow!(
                         "--direction-texel-scale must be a positive power of two no larger than {}",
@@ -1100,21 +1099,15 @@ where
                 sh_analyze = true;
             }
             "--sh-analyze-out" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-analyze-out requires a path"))?;
+                let path = flag_value(&mut args, "--sh-analyze-out")?;
                 sh_analyze_out = Some(PathBuf::from(path));
             }
             "--sh-protect-aabb" => {
-                let spec = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-protect-aabb requires a value"))?;
+                let spec = flag_value(&mut args, "--sh-protect-aabb")?;
                 sh_protect_aabbs.push(parse_protect_aabb(&spec)?);
             }
             "--sh-density-force-level" => {
-                let value = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-density-force-level requires one of 0, 1, or 2")
-                })?;
+                let value = flag_value(&mut args, "--sh-density-force-level")?;
                 let parsed: u8 = value.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-density-force-level must be one of 0, 1, or 2")
                 })?;
@@ -1125,9 +1118,7 @@ where
                 sh_density_force_level = Some(level);
             }
             "--sh-density-force-scale" => {
-                let value = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-density-force-scale requires a value from 0 through 3")
-                })?;
+                let value = flag_value(&mut args, "--sh-density-force-scale")?;
                 let parsed: u8 = value.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-density-force-scale must be a value from 0 through 3")
                 })?;
@@ -2143,6 +2134,103 @@ mod tests {
             parse_args_from(["input.map".to_string(), "--baked-root".to_string()].into_iter())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn value_flag_rejects_a_following_option_as_its_value() {
+        // A value-taking flag whose next token looks like another option is a
+        // missing-value error, not a silent capture — the engine's own parser
+        // rejects this shape (`path_flag_value` in
+        // `crates/postretro/src/startup/session.rs`). `--baked-root` and every
+        // sibling value-taking flag must agree.
+        let err = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--baked-root".to_string(),
+                "--release".to_string(),
+                "-o".to_string(),
+                "out.prl".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("--baked-root") && err.contains("--release"),
+            "error should name the flag and the offending token, got: {err}"
+        );
+
+        // A sibling path flag: `-o` must not swallow the following option.
+        assert!(
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "-o".to_string(),
+                    "--no-cache".to_string(),
+                ]
+                .into_iter(),
+            )
+            .is_err()
+        );
+
+        // A sibling non-path value flag behaves identically.
+        assert!(
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "--cache-dir".to_string(),
+                    "--release".to_string(),
+                ]
+                .into_iter(),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "--jobs".to_string(),
+                    "--verbose".to_string(),
+                ]
+                .into_iter(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn value_flag_accepts_real_values_including_single_dash_and_dashed_paths() {
+        // A real path that merely contains dashes — or is relative — must still
+        // be accepted; only a leading `--` marks a token as an option.
+        let parsed = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--baked-root".to_string(),
+                "/project/my-baked-dir".to_string(),
+                "-o".to_string(),
+                "out-01.prl".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.baked_root,
+            Some(PathBuf::from("/project/my-baked-dir"))
+        );
+        assert_eq!(parsed.output, PathBuf::from("out-01.prl"));
+
+        // A single-dash-leading value (e.g. a negative AABB coordinate) is not
+        // an option and is still consumed by its flag.
+        let parsed = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--sh-protect-aabb".to_string(),
+                "-1,-2,-3,4,5,6".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(parsed.sh_protect_aabbs, vec![[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]]);
     }
 
     #[test]

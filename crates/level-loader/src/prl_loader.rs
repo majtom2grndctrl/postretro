@@ -2,7 +2,6 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
@@ -64,6 +63,8 @@ use super::{
     PortalData, PrlLoadError, ShadowType,
 };
 use crate::prl::{KinematicGeometry, LoadedKinematicWaypoint};
+use crate::prl_container::PrlContainer;
+use crate::prl_lighting::LoadedLighting;
 #[cfg(test)]
 use crate::prl_lighting::read_bounded_delta_section_data;
 pub(crate) use crate::prl_lighting::{
@@ -1268,20 +1269,6 @@ pub(crate) fn validate_cell_draw_index(
     Ok(())
 }
 
-/// Read an optional section's raw bytes by id, or `None` if the section is
-/// absent from the container.
-///
-/// Generic over `section_id` so any optional PRL section routes through the
-/// same read point. Wraps `prl_format::read_section_data`; the `FormatError`
-/// converts into `PrlLoadError` via the `#[from]` impl on the error enum.
-pub(crate) fn read_optional_section_data<R: std::io::Read + std::io::Seek>(
-    cursor: &mut R,
-    meta: &prl_format::ContainerMeta,
-    section_id: u32,
-) -> Result<Option<Vec<u8>>, PrlLoadError> {
-    Ok(prl_format::read_section_data(cursor, meta, section_id)?)
-}
-
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     load_prl_with_section_limits(
         path,
@@ -1322,15 +1309,9 @@ fn load_prl_with_section_limits(
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
 ) -> Result<LevelWorld, PrlLoadError> {
-    let path_ref = Path::new(path);
-    if !path_ref.exists() {
-        return Err(PrlLoadError::FileNotFound(path.to_string()));
-    }
-
-    let file_data = std::fs::read(path_ref)?;
-    let mut cursor = std::io::Cursor::new(&file_data);
-
-    let meta = prl_format::read_container(&mut cursor)?;
+    let container = PrlContainer::open(path)?;
+    let meta = container.metadata();
+    let read_section = |section: SectionId| container.read_section(section as u32);
 
     // Section 49 is optional, but when present its structural contract is
     // checked before any optional lighting fallback can affect diagnostics.
@@ -1355,12 +1336,7 @@ fn load_prl_with_section_limits(
                 }
                 .into());
             }
-            let data = prl_format::read_section_data(
-                &mut cursor,
-                &meta,
-                SectionId::ClusterDirectory as u32,
-            )?
-            .ok_or_else(|| {
+            let data = read_section(SectionId::ClusterDirectory)?.ok_or_else(|| {
                 ClusterDirectoryError::InvalidData(
                     "section 49 table entry could not be read".into(),
                 )
@@ -1370,13 +1346,12 @@ fn load_prl_with_section_limits(
         None => None,
     };
 
-    let geom_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?
+    let geom_data = read_section(SectionId::Geometry)?
         .ok_or_else(|| stale_section("Geometry", SectionId::Geometry))?;
     let geom = GeometrySection::from_bytes(&geom_data)
         .map_err(|err| section_validation_from_error("Geometry", err))?;
 
-    let texture_names_data =
-        read_optional_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
+    let texture_names_data = read_section(SectionId::TextureNames)?;
     let texture_names_section = match texture_names_data {
         Some(data) => Some(TextureNamesSection::from_bytes(&data)?),
         None => None,
@@ -1387,8 +1362,7 @@ fn load_prl_with_section_limits(
     // that omitted section 32; reject so the texture cache never silently
     // degrades every surface to a placeholder on a bad file.
     let texture_cache_keys_data =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureCacheKeys as u32)?
-            .ok_or(PrlLoadError::NoTextureCacheKeys)?;
+        read_section(SectionId::TextureCacheKeys)?.ok_or(PrlLoadError::NoTextureCacheKeys)?;
     let texture_cache_keys = TextureCacheKeysSection::from_bytes(&texture_cache_keys_data)?;
 
     let mut warned_prefixes = HashSet::new();
@@ -1440,8 +1414,8 @@ fn load_prl_with_section_limits(
     );
 
     // Required. Pre-BVH maps must be rebuilt with `prl-build`.
-    let bvh_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Bvh as u32)?
-        .ok_or_else(|| stale_section("Bvh", SectionId::Bvh))?;
+    let bvh_data =
+        read_section(SectionId::Bvh)?.ok_or_else(|| stale_section("Bvh", SectionId::Bvh))?;
     let bvh_section = BvhSection::from_bytes(&bvh_data)
         .map_err(|err| section_validation_from_error("Bvh", err))?;
     let bvh = convert_bvh_section(bvh_section.clone());
@@ -1467,29 +1441,25 @@ fn load_prl_with_section_limits(
         "BVH nodes carry unexpected flag bits",
     );
 
-    let has_legacy_bsp_nodes = meta.find_section(SectionId::BspNodes as u32).is_some();
-    let has_legacy_bsp_leaves = meta.find_section(SectionId::BspLeaves as u32).is_some();
+    let has_legacy_bsp_nodes = container.has_section(SectionId::BspNodes as u32);
+    let has_legacy_bsp_leaves = container.has_section(SectionId::BspLeaves as u32);
 
-    let portals_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Portals as u32)? {
-            Some(data) => match PortalsSection::from_bytes(&data) {
-                Ok(section) => Some(section),
-                Err(err) => {
-                    log::warn!(
-                        "[PRL] Portals section malformed ({err}); using no-portals fallback"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
+    let portals_section = match read_section(SectionId::Portals)? {
+        Some(data) => match PortalsSection::from_bytes(&data) {
+            Ok(section) => Some(section),
+            Err(err) => {
+                log::warn!("[PRL] Portals section malformed ({err}); using no-portals fallback");
+                None
+            }
+        },
+        None => None,
+    };
 
-    let cells_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Cells as u32)? {
-            Some(data) => CellsSection::from_bytes(&data)
-                .map_err(|err| section_validation_from_error("Cells", err))?,
-            None => return Err(stale_section("Cells", SectionId::Cells)),
-        };
+    let cells_section = match read_section(SectionId::Cells)? {
+        Some(data) => CellsSection::from_bytes(&data)
+            .map_err(|err| section_validation_from_error("Cells", err))?,
+        None => return Err(stale_section("Cells", SectionId::Cells)),
+    };
     let cell_count = cells_section.cells.len();
     let portal_ref_count = cells_section.portal_refs.len();
     let (cells, cell_portal_refs) = convert_cells_section(cells_section.clone());
@@ -1524,11 +1494,7 @@ fn load_prl_with_section_limits(
             ));
         }
     }
-    let cell_visibility = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::CellVisibility as u32,
-    )? {
+    let cell_visibility = match read_section(SectionId::CellVisibility)? {
         Some(data) => {
             let section = CellVisibilitySection::from_bytes(&data, expected_cell_count)
                 .map_err(|err| section_validation_from_error("CellVisibility", err))?;
@@ -1548,7 +1514,7 @@ fn load_prl_with_section_limits(
     };
 
     let (cell_locator_section, cell_locator_root, cell_locator_nodes) =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::CellLocator as u32)? {
+        match read_section(SectionId::CellLocator)? {
             Some(data) => {
                 let section = CellLocatorSection::from_bytes(&data, cells.len() as u32)
                     .map_err(|err| section_validation_from_error("CellLocator", err))?;
@@ -1561,11 +1527,7 @@ fn load_prl_with_section_limits(
         };
 
     // Optional — older maps fall back to empty with a warning.
-    let mut lights: Vec<MapLight> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::AlphaLights as u32,
-    )? {
+    let mut lights: Vec<MapLight> = match read_section(SectionId::AlphaLights)? {
         Some(data) => {
             let section = AlphaLightsSection::from_bytes(&data)?;
             let count = section.lights.len();
@@ -1582,9 +1544,7 @@ fn load_prl_with_section_limits(
     };
 
     // 1:1 with AlphaLights; count mismatch = format error. Absence = no tags.
-    if let Some(data) =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::LightTags as u32)?
-    {
+    if let Some(data) = read_section(SectionId::LightTags)? {
         let section = LightTagsSection::from_bytes(&data)?;
         if section.tags.len() != lights.len() {
             return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
@@ -1612,11 +1572,7 @@ fn load_prl_with_section_limits(
     // Optional — absent/short → missing lights are treated as infinite-bound by
     // downstream consumers. Extra records remain malformed: they cannot map to a
     // light and would hide writer bugs if silently ignored.
-    let light_influences: Vec<LightInfluence> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::LightInfluence as u32,
-    )? {
+    let light_influences: Vec<LightInfluence> = match read_section(SectionId::LightInfluence)? {
         Some(data) => {
             let section = LightInfluenceSection::from_bytes(&data)?;
             if section.records.len() > lights.len() {
@@ -1655,10 +1611,8 @@ fn load_prl_with_section_limits(
         }
     };
 
-    let sh_volume: Option<OctahedralShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::OctahedralShVolume as u32,
+    let sh_volume: Option<OctahedralShVolumeSection> = match read_section(
+        SectionId::OctahedralShVolume,
     )? {
         Some(data) => {
             let section = OctahedralShVolumeSection::from_bytes(&data)?;
@@ -1709,32 +1663,29 @@ fn load_prl_with_section_limits(
     }
 
     // Optional — absent → 1×1 white placeholder; bumped-Lambert degrades to flat white.
-    let lightmap: Option<LightmapSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)? {
-            Some(data) => {
-                let section = LightmapSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] Lightmap: {}x{} atlas, {} layer(s), {} B irradiance, {} B direction",
-                    section.irr_width,
-                    section.irr_height,
-                    section.layer_count,
-                    section.irradiance.len(),
-                    section.direction.len(),
-                );
-                Some(section)
-            }
-            None => {
-                log::warn!(
-                    "[PRL] Lightmap section missing — static direct lighting disabled for this map"
-                );
-                None
-            }
-        };
+    let lightmap: Option<LightmapSection> = match read_section(SectionId::Lightmap)? {
+        Some(data) => {
+            let section = LightmapSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] Lightmap: {}x{} atlas, {} layer(s), {} B irradiance, {} B direction",
+                section.irr_width,
+                section.irr_height,
+                section.layer_count,
+                section.irradiance.len(),
+                section.direction.len(),
+            );
+            Some(section)
+        }
+        None => {
+            log::warn!(
+                "[PRL] Lightmap section missing — static direct lighting disabled for this map"
+            );
+            None
+        }
+    };
 
-    let mut shadowmask_atlas: Option<ShadowmaskAtlasSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::ShadowmaskAtlas as u32,
+    let mut shadowmask_atlas: Option<ShadowmaskAtlasSection> = match read_section(
+        SectionId::ShadowmaskAtlas,
     )? {
         Some(data) => match ShadowmaskAtlasSection::from_bytes(&data) {
             Ok(section) => match lightmap.as_ref() {
@@ -1777,11 +1728,7 @@ fn load_prl_with_section_limits(
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
     // marker; the renderer collapses it to the same disabled state.
-    let sdf_atlas: Option<SdfAtlasSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::SdfAtlas as u32,
-    )? {
+    let sdf_atlas: Option<SdfAtlasSection> = match read_section(SectionId::SdfAtlas)? {
         Some(data) => {
             let section = SdfAtlasSection::from_bytes(&data)?;
             log::info!(
@@ -1804,37 +1751,30 @@ fn load_prl_with_section_limits(
     };
 
     // Optional — absent → full spec-buffer scan fallback.
-    let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::ChunkLightList as u32,
-    )? {
-        Some(data) => {
-            let section = ChunkLightListSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] ChunkLightList: {}×{}×{} grid, {} indices",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.light_indices.len(),
-            );
-            Some(section)
-        }
-        None => {
-            log::info!(
-                "[PRL] ChunkLightList section missing — specular path uses full-buffer fallback"
-            );
-            None
-        }
-    };
+    let chunk_light_list: Option<ChunkLightListSection> =
+        match read_section(SectionId::ChunkLightList)? {
+            Some(data) => {
+                let section = ChunkLightListSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] ChunkLightList: {}×{}×{} grid, {} indices",
+                    section.grid_dimensions[0],
+                    section.grid_dimensions[1],
+                    section.grid_dimensions[2],
+                    section.light_indices.len(),
+                );
+                Some(section)
+            }
+            None => {
+                log::info!(
+                    "[PRL] ChunkLightList section missing — specular path uses full-buffer fallback"
+                );
+                None
+            }
+        };
 
     // Optional — cross-checked against weight-map chunk count at runtime.
     let animated_light_chunks: Option<AnimatedLightChunksSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::AnimatedLightChunks as u32,
-        )? {
+        match read_section(SectionId::AnimatedLightChunks)? {
             Some(data) => {
                 let section = AnimatedLightChunksSection::from_bytes(&data)?;
                 log::info!(
@@ -1848,30 +1788,27 @@ fn load_prl_with_section_limits(
         };
 
     // Optional — absent → 1×1 zero atlas on animated-contribution slot.
-    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::AnimatedLightWeightMaps as u32,
-        )? {
-            Some(data) => {
-                let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
-                    section.chunk_rects.len(),
-                    section.offset_counts.len(),
-                    section.texel_lights.len(),
-                );
-                Some(section)
-            }
-            None => None,
-        };
+    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> = match read_section(
+        SectionId::AnimatedLightWeightMaps,
+    )? {
+        Some(data) => {
+            let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
+                section.chunk_rects.len(),
+                section.offset_counts.len(),
+                section.texel_lights.len(),
+            );
+            Some(section)
+        }
+        None => None,
+    };
 
     // Optional — absent → SH compose pass falls back to base→total copy.
     let delta_sh_volumes: Option<DeltaShVolumesSection> =
         match read_bounded_delta_section_data_with_limit(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             SectionId::DeltaShVolumes,
             "DeltaShVolumes",
             max_delta_section_binding_bytes,
@@ -1911,8 +1848,8 @@ fn load_prl_with_section_limits(
     // the complete load before any renderer buffers are built.
     let parsed_animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
         match read_bounded_delta_section_data_with_limit(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             SectionId::AnimatedDirectShDeltaVolumes,
             "AnimatedDirectShDeltaVolumes",
             max_delta_section_binding_bytes,
@@ -1976,8 +1913,8 @@ fn load_prl_with_section_limits(
     // map that otherwise loads.
     let parsed_billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection> =
         match read_soft_optional_scatter_section_data(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             SectionId::BillboardDirectScatterVolume,
             "BillboardDirectScatterVolume",
         ) {
@@ -2012,18 +1949,15 @@ fn load_prl_with_section_limits(
             None => None,
         };
 
-    let id45_present = meta
-        .find_section(SectionId::AnimatedDirectShDeltaVolumes as u32)
-        .is_some();
-    let id48_present = meta
-        .find_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32)
-        .is_some();
+    let id45_present = container.has_section(SectionId::AnimatedDirectShDeltaVolumes as u32);
+    let id48_present =
+        container.has_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32);
     let parsed_animated_billboard_direct_scatter_delta_volumes: Option<
         AnimatedBillboardDirectScatterDeltaVolumesSection,
     > = match parsed_animated_direct_sh_delta_volumes.as_ref() {
         Some(animated_direct) => match read_bounded_scatter_section_data_with_limit(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             max_scatter_section_bytes,
         ) {
             BoundedScatterSectionData::Data(data) => {
@@ -2087,10 +2021,8 @@ fn load_prl_with_section_limits(
 
     // Optional — absent when the map has no static direct SH/static lights.
     // Dynamic objects fall back to indirect-only.
-    let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::DirectShVolume as u32,
+    let direct_sh_volume: Option<DirectShVolumeSection> = match read_section(
+        SectionId::DirectShVolume,
     )? {
         Some(data) => {
             // id-35 is a stored-set sibling of required id-34. A present stale,
@@ -2121,60 +2053,57 @@ fn load_prl_with_section_limits(
         None => None,
     };
 
-    let parsed_entity_shadow_lights: Option<EntityShadowLightsSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::EntityShadowLights as u32,
-        )? {
-            // A corrupt/tampered EntityShadowLights section degrades to empty (warn +
-            // clear), mirroring the sibling DirectShDeltaVolumes path below — presence
-            // without a usable selection means "no promotion", not a bricked load.
-            // Older PRLs (absent section) already load fine via the `None` arm. The
-            // outer `?` still propagates a structurally broken section table.
-            Some(data) => match EntityShadowLightsSection::from_bytes(&data) {
-                Ok(section) => {
-                    if direct_sh_volume.is_none() {
-                        if !section.light_indices.is_empty() {
-                            log::warn!(
-                                "[PRL] EntityShadowLights present without DirectShVolume; ignoring {} selected light(s)",
-                                section.light_indices.len()
-                            );
-                        }
-                        None
-                    } else if let Err(err) =
-                        validate_entity_shadow_light_selection(&section.light_indices, &lights)
-                    {
+    let parsed_entity_shadow_lights: Option<EntityShadowLightsSection> = match read_section(
+        SectionId::EntityShadowLights,
+    )? {
+        // A corrupt/tampered EntityShadowLights section degrades to empty (warn +
+        // clear), mirroring the sibling DirectShDeltaVolumes path below — presence
+        // without a usable selection means "no promotion", not a bricked load.
+        // Older PRLs (absent section) already load fine via the `None` arm. The
+        // outer `?` still propagates a structurally broken section table.
+        Some(data) => match EntityShadowLightsSection::from_bytes(&data) {
+            Ok(section) => {
+                if direct_sh_volume.is_none() {
+                    if !section.light_indices.is_empty() {
                         log::warn!(
-                            "[PRL] EntityShadowLights invalid selection; clearing {} selected static light(s): {err}",
+                            "[PRL] EntityShadowLights present without DirectShVolume; ignoring {} selected light(s)",
                             section.light_indices.len()
                         );
-                        None
-                    } else {
-                        log::info!(
-                            "[PRL] EntityShadowLights: {} selected static light(s)",
-                            section.light_indices.len()
-                        );
-                        Some(section)
                     }
-                }
-                Err(err) => {
+                    None
+                } else if let Err(err) =
+                    validate_entity_shadow_light_selection(&section.light_indices, &lights)
+                {
                     log::warn!(
-                        "[PRL] EntityShadowLights malformed; treating as empty (no promotion): {err}"
+                        "[PRL] EntityShadowLights invalid selection; clearing {} selected static light(s): {err}",
+                        section.light_indices.len()
                     );
                     None
+                } else {
+                    log::info!(
+                        "[PRL] EntityShadowLights: {} selected static light(s)",
+                        section.light_indices.len()
+                    );
+                    Some(section)
                 }
-            },
-            None => None,
-        };
+            }
+            Err(err) => {
+                log::warn!(
+                    "[PRL] EntityShadowLights malformed; treating as empty (no promotion): {err}"
+                );
+                None
+            }
+        },
+        None => None,
+    };
     let mut entity_shadow_lights = parsed_entity_shadow_lights
         .as_ref()
         .map_or_else(Vec::new, |section| section.light_indices.clone());
 
     let direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection> =
         match read_bounded_delta_section_data_with_limit(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             SectionId::DirectShDeltaVolumes,
             "DirectShDeltaVolumes",
             max_delta_section_binding_bytes,
@@ -2289,44 +2218,39 @@ fn load_prl_with_section_limits(
     }
 
     // Optional — absent when map has no `data_script` worldspawn KVP.
-    let data_script: Option<DataScriptSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
-            Some(data) => {
-                let section = DataScriptSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] DataScript: {} bytes from `{}`",
-                    section.compiled_bytes.len(),
-                    section.source_path,
-                );
-                Some(section)
-            }
-            None => None,
-        };
+    let data_script: Option<DataScriptSection> = match read_section(SectionId::DataScript)? {
+        Some(data) => {
+            let section = DataScriptSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] DataScript: {} bytes from `{}`",
+                section.compiled_bytes.len(),
+                section.source_path,
+            );
+            Some(section)
+        }
+        None => None,
+    };
 
     // Optional — absent when no non-light, non-worldspawn entities exist.
-    let map_entities: Vec<MapEntityRecord> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::MapEntity as u32)? {
-            Some(data) => {
-                let section = MapEntitySection::from_bytes(&data)?;
-                log::info!("[PRL] MapEntity: {} entities", section.entries.len());
-                section.entries
-            }
-            None => Vec::new(),
-        };
+    let map_entities: Vec<MapEntityRecord> = match read_section(SectionId::MapEntity)? {
+        Some(data) => {
+            let section = MapEntitySection::from_bytes(&data)?;
+            log::info!("[PRL] MapEntity: {} entities", section.entries.len());
+            section.entries
+        }
+        None => Vec::new(),
+    };
 
     // Optional — absent or empty means the level has no kinematic movers.
-    let mut kinematic_geometry: KinematicGeometry = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::KinematicGeometry as u32,
-    )? {
-        Some(data) => {
-            let section = KinematicGeometrySection::from_bytes(&data)
-                .map_err(|err| section_validation_from_error("KinematicGeometry", err))?;
-            convert_kinematic_geometry_section(section)?
-        }
-        None => KinematicGeometry::default(),
-    };
+    let mut kinematic_geometry: KinematicGeometry =
+        match read_section(SectionId::KinematicGeometry)? {
+            Some(data) => {
+                let section = KinematicGeometrySection::from_bytes(&data)
+                    .map_err(|err| section_validation_from_error("KinematicGeometry", err))?;
+                convert_kinematic_geometry_section(section)?
+            }
+            None => KinematicGeometry::default(),
+        };
     drop_invalid_carried_light_links(&mut kinematic_geometry, &lights);
     let kinematic_vertex_count: usize = kinematic_geometry
         .movers
@@ -2346,11 +2270,7 @@ fn load_prl_with_section_limits(
         kinematic_index_count,
     );
     // Optional — absent or empty means no trigger volumes.
-    let trigger_volumes = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::TriggerVolumes as u32,
-    )? {
+    let trigger_volumes = match read_section(SectionId::TriggerVolumes)? {
         Some(data) => {
             TriggerVolumesSection::from_bytes(&data)
                 .map_err(|err| section_validation_from_error("TriggerVolumes", err))?
@@ -2390,7 +2310,7 @@ fn load_prl_with_section_limits(
     // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
     // rejected so the engine never silently falls back to a hardcoded default.
     let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
+        match read_section(SectionId::FogVolumes)? {
             Some(data) => {
                 let section = FogVolumesSection::from_bytes(&data)
                     .map_err(|err| section_validation_from_error("FogVolumes", err))?;
@@ -2411,51 +2331,48 @@ fn load_prl_with_section_limits(
 
     // Required when FogVolumes contains canonical fog entities; optional only
     // for no-fog maps, where `compute_fog_cell_mask` can keep all zero slots.
-    let fog_cell_masks: Option<Vec<u32>> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)? {
-            Some(data) => {
-                let section = FogCellMasksSection::from_bytes(&data)
-                    .map_err(|err| section_validation_from_error("FogCellMasks", err))?;
-                log::info!("[PRL] FogCellMasks: {} cells", section.masks.len());
-                Some(section.masks)
-            }
-            None => None,
-        };
+    let fog_cell_masks: Option<Vec<u32>> = match read_section(SectionId::FogCellMasks)? {
+        Some(data) => {
+            let section = FogCellMasksSection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("FogCellMasks", err))?;
+            log::info!("[PRL] FogCellMasks: {} cells", section.masks.len());
+            Some(section.masks)
+        }
+        None => None,
+    };
 
     // Optional — absent → no runtime navigation (logged at info, mirroring the
     // SdfAtlas precedent for the absent-section case). A malformed body warns
     // and decodes to None (softer than SdfAtlas, which propagates with `?` and
     // fails the load): nothing depends on the navmesh yet, so warn-and-continue
     // is intentional rather than making a malformed navmesh unplayable.
-    let navmesh: Option<NavMeshSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)? {
-            Some(data) => match NavMeshSection::from_bytes(&data) {
-                Ok(section) => {
-                    log::info!(
-                        "[PRL] NavMesh: {}×{} grid, cell_size={:.4}m, {} region(s), {} portal(s)",
-                        section.dim_x,
-                        section.dim_z,
-                        section.cell_size,
-                        section.regions.len(),
-                        section.portals.len(),
-                    );
-                    Some(section)
-                }
-                Err(err) => {
-                    log::warn!("[PRL] NavMesh section malformed, ignoring: {err}");
-                    None
-                }
-            },
-            None => {
-                log::info!("[PRL] NavMesh section missing — no runtime navigation for this map");
+    let navmesh: Option<NavMeshSection> = match read_section(SectionId::NavMesh)? {
+        Some(data) => match NavMeshSection::from_bytes(&data) {
+            Ok(section) => {
+                log::info!(
+                    "[PRL] NavMesh: {}×{} grid, cell_size={:.4}m, {} region(s), {} portal(s)",
+                    section.dim_x,
+                    section.dim_z,
+                    section.cell_size,
+                    section.regions.len(),
+                    section.portals.len(),
+                );
+                Some(section)
+            }
+            Err(err) => {
+                log::warn!("[PRL] NavMesh section malformed, ignoring: {err}");
                 None
             }
-        };
+        },
+        None => {
+            log::info!("[PRL] NavMesh section missing — no runtime navigation for this map");
+            None
+        }
+    };
 
     // Required when the BVH has leaves; omitted only for empty-BVH maps. Hold
     // the raw bytes until Cells and BVH are both available for cross-validation.
-    let cell_draw_index_data =
-        read_optional_section_data(&mut cursor, &meta, SectionId::CellDrawIndex as u32)?;
+    let cell_draw_index_data = read_section(SectionId::CellDrawIndex)?;
 
     validate_light_cells(&lights, &cells)?;
 
@@ -2534,11 +2451,7 @@ fn load_prl_with_section_limits(
         }
     };
 
-    let on_wire = |section: SectionId| {
-        meta.sections
-            .iter()
-            .any(|entry| entry.section_id == section as u32)
-    };
+    let on_wire = |section: SectionId| container.has_section(section as u32);
     let mut unavailable_directory_companions = Vec::new();
     for (section, available) in [
         (SectionId::DeltaShVolumes, delta_sh_volumes.is_some()),
@@ -2636,6 +2549,27 @@ fn load_prl_with_section_limits(
         (Vec::new(), false)
     };
 
+    let lighting = LoadedLighting {
+        lights,
+        light_influences,
+        sh_volume,
+        lightmap,
+        lightmap_mode: LightmapMode::default(),
+        sdf_atlas,
+        chunk_light_list,
+        animated_light_chunks,
+        animated_light_weight_maps,
+        delta_sh_volumes,
+        direct_sh_volume,
+        direct_sh_delta_volumes,
+        animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes,
+        entity_shadow_lights,
+        shadowmask_atlas,
+        cluster_directory,
+    };
+
     log::info!(
         "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} cells, bvh=[{} nodes, {} leaves], portals={}, textures={}",
         vertices.len(),
@@ -2663,25 +2597,26 @@ fn load_prl_with_section_limits(
         texture_names,
         texture_cache_keys,
         bvh,
-        lights,
-        light_influences,
-        sh_volume,
-        lightmap,
+        lights: lighting.lights,
+        light_influences: lighting.light_influences,
+        sh_volume: lighting.sh_volume,
+        lightmap: lighting.lightmap,
         // Current bakes load as Shadowed. Unshadowed remains for legacy PRL
         // wire compatibility; new lightmaps should carry baked visibility.
-        lightmap_mode: LightmapMode::default(),
-        sdf_atlas,
-        chunk_light_list,
-        animated_light_chunks,
-        animated_light_weight_maps,
-        delta_sh_volumes,
-        direct_sh_volume,
-        direct_sh_delta_volumes,
-        animated_direct_sh_delta_volumes,
-        billboard_direct_scatter_volume,
-        animated_billboard_direct_scatter_delta_volumes,
-        entity_shadow_lights,
-        shadowmask_atlas,
+        lightmap_mode: lighting.lightmap_mode,
+        sdf_atlas: lighting.sdf_atlas,
+        chunk_light_list: lighting.chunk_light_list,
+        animated_light_chunks: lighting.animated_light_chunks,
+        animated_light_weight_maps: lighting.animated_light_weight_maps,
+        delta_sh_volumes: lighting.delta_sh_volumes,
+        direct_sh_volume: lighting.direct_sh_volume,
+        direct_sh_delta_volumes: lighting.direct_sh_delta_volumes,
+        animated_direct_sh_delta_volumes: lighting.animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume: lighting.billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes: lighting
+            .animated_billboard_direct_scatter_delta_volumes,
+        entity_shadow_lights: lighting.entity_shadow_lights,
+        shadowmask_atlas: lighting.shadowmask_atlas,
         data_script,
         map_entities,
         kinematic_geometry,
@@ -2692,7 +2627,7 @@ fn load_prl_with_section_limits(
         fog_cell_masks,
         navmesh,
         cell_draw_index,
-        cluster_directory,
+        cluster_directory: lighting.cluster_directory,
     })
 }
 

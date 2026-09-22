@@ -363,9 +363,7 @@ pub fn surface_depth_ambient_occlusion(
     if depth_scale_meters <= SURFACE_DEPTH_EPS {
         return 1.0;
     }
-    1.0 - SURFACE_DEPTH_AO_STRENGTH
-        * fade
-        * (hit_depth_meters / depth_scale_meters).clamp(0.0, 1.0)
+    1.0 - SURFACE_DEPTH_AO_STRENGTH * fade * (hit_depth_meters / depth_scale_meters).clamp(0.0, 1.0)
 }
 
 /// Orthonormal surface frame derived from screen-space derivatives rather than
@@ -1390,8 +1388,7 @@ mod tests {
     fn ambient_occlusion_darkens_only_with_depth() {
         assert_eq!(surface_depth_ambient_occlusion(0.0, 0.02, 1.0), 1.0);
         assert!(
-            (surface_depth_ambient_occlusion(0.02, 0.02, 1.0)
-                - (1.0 - SURFACE_DEPTH_AO_STRENGTH))
+            (surface_depth_ambient_occlusion(0.02, 0.02, 1.0) - (1.0 - SURFACE_DEPTH_AO_STRENGTH))
                 .abs()
                 < 1e-6
         );

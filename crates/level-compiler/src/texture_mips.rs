@@ -3219,7 +3219,12 @@ mod tests {
         );
         let sprite_key = bake_sprite_collection(&texture_root, "puff", &cache_root)
             .expect("two valid frames bake a collection");
-        stage_bytes.account_baked_sidecar("sprite:puff", &cache_root, &sprite_key, SidecarSlots::All);
+        stage_bytes.account_baked_sidecar(
+            "sprite:puff",
+            &cache_root,
+            &sprite_key,
+            SidecarSlots::All,
+        );
 
         assert_eq!(
             model_key, world_keys["stone/shared"],
@@ -3309,12 +3314,9 @@ mod tests {
             solid_png_bytes(8, 8, [128, 0, 0, 255]),
         )
         .unwrap();
-        let (rich_keys, _) = bake_world_texture_mips(
-            &["stone/panel".to_string()],
-            &texture_root,
-            &cache_root,
-        )
-        .unwrap();
+        let (rich_keys, _) =
+            bake_world_texture_mips(&["stone/panel".to_string()], &texture_root, &cache_root)
+                .unwrap();
 
         // Park that rich bundle at the diffuse-only address a model bake
         // derives, the way a pre-change cache still can.

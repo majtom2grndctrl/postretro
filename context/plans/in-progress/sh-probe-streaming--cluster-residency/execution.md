@@ -9,8 +9,8 @@ slice by owner decision.
 |---|---|---|---|
 | 1 loader ownership split | Done | `00ea51b84` | workspace check; loader default/no-default tests; focused code review |
 | 2 renderer SH split | Done | `0f39b4f1b` | workspace and dev-tools checks; 34 focused SH tests; exact billboard source-order test; focused code review |
-| 3 app/capture split | Running | — | — |
-| 4 compiler publication split | Pending | — | — |
+| 3 app/capture split | Done | `93538cd99`, `1c8f49a01` | workspace check; 19 capture-feature tests; focused code review |
+| 4 compiler publication split | Running | — | — |
 | 5–13 streaming and proof | Pending | — | — |
 
 After each completed phase, check workspace free space. If it falls below

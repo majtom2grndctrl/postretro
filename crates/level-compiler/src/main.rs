@@ -2230,7 +2230,10 @@ mod tests {
             .into_iter(),
         )
         .unwrap();
-        assert_eq!(parsed.sh_protect_aabbs, vec![[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]]);
+        assert_eq!(
+            parsed.sh_protect_aabbs,
+            vec![[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]]
+        );
     }
 
     #[test]

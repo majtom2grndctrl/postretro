@@ -564,7 +564,11 @@ fn checked_total_probe_count(grid_dimensions: [u32; 3]) -> crate::Result<usize> 
         })
 }
 
-fn validate_probe_metadata(
+/// Validate the complete v11 probe metadata table and derive its canonical
+/// stored-node prefix. This intentionally needs no atlas body, so metadata-only
+/// readers (including id-50 streaming validation) can share the source codec's
+/// exact closure rules.
+pub fn validate_probe_metadata(
     grid_dimensions: [u32; 3],
     probes: &[OctahedralShProbe],
 ) -> crate::Result<StoredBrickPrefixSum> {

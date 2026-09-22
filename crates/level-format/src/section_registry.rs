@@ -210,6 +210,11 @@ pub enum SectionId {
     /// Inert cell-cluster metadata and grid-relative SH resource addressing.
     /// See `cluster_directory::ClusterDirectorySection`.
     ClusterDirectory = 49,
+
+    /// Optional independently-readable cluster-major SH payloads for the
+    /// streaming residency path. Older loaders skip this section and retain
+    /// their whole-section SH behavior.
+    ClusterShPayloads = 50,
 }
 
 impl SectionId {
@@ -252,6 +257,7 @@ impl SectionId {
             47 => Some(Self::BillboardDirectScatterVolume),
             48 => Some(Self::AnimatedBillboardDirectScatterDeltaVolumes),
             49 => Some(Self::ClusterDirectory),
+            50 => Some(Self::ClusterShPayloads),
             _ => None,
         }
     }
@@ -301,6 +307,7 @@ mod tests {
             SectionId::BillboardDirectScatterVolume,
             SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
             SectionId::ClusterDirectory,
+            SectionId::ClusterShPayloads,
         ];
 
         for section_id in registered {
@@ -308,6 +315,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(50), None);
+        assert_eq!(SectionId::from_u32(51), None);
     }
 }

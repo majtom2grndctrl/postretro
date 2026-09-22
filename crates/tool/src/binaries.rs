@@ -71,6 +71,21 @@ impl Helper {
         }
     }
 
+    /// The helper a flag names, or `None` when it names no helper at all. The
+    /// inverse of [`Helper::flag`], and the single place the six flag spellings
+    /// are recognised.
+    pub(crate) fn from_flag(flag: &str) -> Option<Self> {
+        Some(match flag {
+            "--release-engine" => Self::ReleaseEngine,
+            "--engine" => Self::AuthoringEngine,
+            "--prl-build" => Self::PrlBuild,
+            "--scripts-build" => Self::ScriptsBuild,
+            "--mint-identity" => Self::MintIdentity,
+            "--tool" => Self::Tool,
+            _ => return None,
+        })
+    }
+
     /// Paths tried in order, relative to the directory holding the tool.
     fn candidates(self) -> &'static [&'static str] {
         match self {
@@ -148,18 +163,61 @@ impl Overrides {
     /// Record a recognized override flag. Returns `false` when `flag` names no
     /// helper, leaving the caller's own flag handling to run.
     ///
+    /// Every helper flag is recognised — the caller vouches that it drives all
+    /// of them (`dist` and `sdk-dist`). A command that drives only some must use
+    /// [`Overrides::absorb_only`] so it rejects the rest instead of swallowing an
+    /// override it will never read.
+    ///
     /// `value` is the token after the flag; its absence is this function's error
     /// to report, since it is the one that knows the flag takes a path.
     pub(crate) fn absorb(&mut self, flag: &str, value: Option<&OsString>) -> Result<bool, String> {
-        let helper = match flag {
-            "--release-engine" => Helper::ReleaseEngine,
-            "--engine" => Helper::AuthoringEngine,
-            "--prl-build" => Helper::PrlBuild,
-            "--scripts-build" => Helper::ScriptsBuild,
-            "--mint-identity" => Helper::MintIdentity,
-            "--tool" => Helper::Tool,
-            _ => return Ok(false),
+        match Helper::from_flag(flag) {
+            Some(helper) => self.record(helper, flag, value),
+            None => Ok(false),
+        }
+    }
+
+    /// Like [`Overrides::absorb`], but only the helpers in `allowed` are this
+    /// command's to consume. A flag naming a helper outside that set is refused
+    /// with a clear error rather than silently recorded — a command that never
+    /// reads an override should not quietly accept the flag that sets it.
+    ///
+    /// A flag naming no helper at all still returns `false`, leaving the caller's
+    /// own flag handling (engine passthrough, positional arguments) to run.
+    pub(crate) fn absorb_only(
+        &mut self,
+        flag: &str,
+        value: Option<&OsString>,
+        allowed: &[Helper],
+    ) -> Result<bool, String> {
+        let Some(helper) = Helper::from_flag(flag) else {
+            return Ok(false);
         };
+        if !allowed.contains(&helper) {
+            let accepted = allowed
+                .iter()
+                .map(|helper| helper.flag())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let accepted = if accepted.is_empty() {
+                "no helper flags".to_string()
+            } else {
+                format!("only {accepted}")
+            };
+            return Err(format!(
+                "{flag} is not a helper flag this command uses (it accepts {accepted})"
+            ));
+        }
+        self.record(helper, flag, value)
+    }
+
+    /// Store one resolved helper override, rejecting a missing path or a repeat.
+    fn record(
+        &mut self,
+        helper: Helper,
+        flag: &str,
+        value: Option<&OsString>,
+    ) -> Result<bool, String> {
         let value = value.ok_or_else(|| format!("{flag} requires a path to the binary"))?;
         if self.slot(helper).replace(PathBuf::from(value)).is_some() {
             return Err(format!("{flag} may be given only once"));
@@ -282,6 +340,42 @@ mod tests {
         let value = OsString::from("/build/postretro");
         assert_eq!(overrides.absorb("--engine", Some(&value)), Ok(true));
         assert!(overrides.absorb("--engine", Some(&value)).is_err());
+    }
+
+    #[test]
+    fn absorb_only_records_an_allowed_helper_and_ignores_unrelated_flags() {
+        let mut overrides = Overrides::default();
+        let value = OsString::from("/build/mint-identity");
+
+        assert_eq!(
+            overrides.absorb_only("--mint-identity", Some(&value), &[Helper::MintIdentity]),
+            Ok(true),
+            "the one helper this set allows is recorded"
+        );
+        assert_eq!(
+            overrides.get(Helper::MintIdentity),
+            Some(Path::new("/build/mint-identity"))
+        );
+        assert_eq!(
+            overrides.absorb_only("--out", Some(&value), &[Helper::MintIdentity]),
+            Ok(false),
+            "a flag that names no helper is left to the command's own parser"
+        );
+    }
+
+    #[test]
+    fn absorb_only_refuses_a_helper_flag_outside_the_allowed_set() {
+        let mut overrides = Overrides::default();
+        let value = OsString::from("/build/scripts-build");
+
+        let error = overrides
+            .absorb_only("--scripts-build", Some(&value), &[Helper::MintIdentity])
+            .expect_err("a helper this command does not drive is rejected, not swallowed");
+        assert!(error.contains("--scripts-build"), "{error}");
+        // The message points the reader at what this command does accept.
+        assert!(error.contains("--mint-identity"), "{error}");
+        // Nothing was recorded: the flag was refused outright.
+        assert_eq!(overrides.get(Helper::ScriptsBuild), None);
     }
 
     #[test]

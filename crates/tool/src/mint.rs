@@ -14,6 +14,13 @@ use std::process::{Command, Stdio};
 
 use crate::binaries::{Helper, Overrides, status_code};
 
+/// The only helper `mint-identity` drives is the mint binary itself. The mint
+/// finds `scripts-build` on its own at runtime (beside itself or on `PATH`), so
+/// `--scripts-build` — and every other helper flag — is not this command's to
+/// accept. Recognising them here would let a reader who trusts the usage text's
+/// mention of `scripts-build` pass a flag that is then silently ignored.
+const MINT_HELPERS: &[Helper] = &[Helper::MintIdentity];
+
 pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let (supplied_mod_root, binaries) = parse_args(args)?;
     let invocation_dir = std::env::current_dir()
@@ -47,7 +54,7 @@ fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, Overrides), String> {
 
     while index < args.len() {
         let argument = args[index].to_str().unwrap_or_default();
-        if binaries.absorb(argument, args.get(index + 1))? {
+        if binaries.absorb_only(argument, args.get(index + 1), MINT_HELPERS)? {
             index += 2;
             continue;
         }
@@ -87,6 +94,30 @@ mod tests {
 
         assert!(parse_args(Vec::new()).is_err());
         assert!(parse_args(os_args(&["one", "two"])).is_err());
+    }
+
+    #[test]
+    fn mint_identity_accepts_the_mint_override_it_actually_drives() {
+        let (mod_root, _binaries) =
+            parse_args(os_args(&["content/dev", "--mint-identity", "/build/mint-identity"]))
+                .expect("the one helper this command drives is accepted");
+        // The `--mint-identity` token and its path were consumed as the override,
+        // not mistaken for a second mod root.
+        assert_eq!(mod_root, PathBuf::from("content/dev"));
+    }
+
+    /// Pointed: the usage text mentions `scripts-build`, but the mint finds that
+    /// compiler itself — this flag is not `mint-identity`'s to accept, and
+    /// silently ignoring it is the defect being closed.
+    #[test]
+    fn mint_identity_rejects_a_helper_flag_it_never_consumes() {
+        let error = parse_args(os_args(&[
+            "content/dev",
+            "--scripts-build",
+            "/build/scripts-build",
+        ]))
+        .expect_err("a helper flag this command does not drive is rejected");
+        assert!(error.contains("--scripts-build"), "{error}");
     }
 
     #[test]

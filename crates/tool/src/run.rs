@@ -25,6 +25,12 @@ use crate::project::{Project, ProjectLocation};
 /// The engine flag naming the directory that holds its own `ui/` and `textures/`.
 const CORE_ROOT_FLAG: &str = "--core-root";
 
+/// The only helper a launch drives is the debug authoring engine it starts. The
+/// compilers, the mint, and the tool belong to the packaging commands, not to a
+/// launch — so their flags are rejected here rather than swallowed and forwarded
+/// to an engine that has never heard of them.
+const RUN_HELPERS: &[Helper] = &[Helper::AuthoringEngine];
+
 /// The tool's own flags, and everything forwarded to the engine untouched.
 struct RunArgs {
     location: ProjectLocation,
@@ -158,7 +164,7 @@ fn parse_args(args: Vec<OsString>) -> Result<RunArgs, String> {
     while index < args.len() {
         let flag = args[index].to_str().unwrap_or_default();
         let value = args.get(index + 1);
-        if binaries.absorb(flag, value)? {
+        if binaries.absorb_only(flag, value, RUN_HELPERS)? {
             index += 2;
             continue;
         }
@@ -394,5 +400,29 @@ mod tests {
             Some(Path::new("/projects/game/postretro.toml"))
         );
         assert_eq!(parsed.engine_args, os_args(&["maps/e1m1.prl"]));
+    }
+
+    /// A launch drives only the authoring engine, so its own `--engine` override
+    /// is consumed and never forwarded — the flag `run` genuinely uses.
+    #[test]
+    fn run_accepts_the_authoring_engine_flag_it_drives() {
+        let parsed = parse_args(os_args(&["--engine", "/build/postretro", "maps/e1m1.prl"]))
+            .expect("the one helper run drives is accepted");
+        assert_eq!(parsed.engine_args, os_args(&["maps/e1m1.prl"]));
+    }
+
+    /// A helper flag `run` does not drive is rejected outright rather than
+    /// swallowed — and, crucially, rather than forwarded to the engine, which is
+    /// how a genuinely unknown flag is treated.
+    #[test]
+    fn run_rejects_a_helper_flag_it_never_consumes() {
+        let error = parse_args(os_args(&[
+            "--scripts-build",
+            "/build/scripts-build",
+            "maps/e1m1.prl",
+        ]))
+        .err()
+        .expect("a helper flag a launch never drives is rejected");
+        assert!(error.contains("--scripts-build"), "{error}");
     }
 }

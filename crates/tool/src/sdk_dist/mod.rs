@@ -49,6 +49,12 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let bundle_name = sdk_bundle_root_name(&project.manifest().package.name);
     let bundle_root = output_root.join(&bundle_name);
 
+    // Render the bundle's marker before anything is assembled. It refuses a
+    // recipe source that lives outside the shipped mod tree — a bundle the
+    // recipient's own `dist` could not build from — so that failure lands here,
+    // on the author's machine, rather than after a broken tree has been written.
+    let bundle_manifest = readme::render_bundle_manifest(project.manifest())?;
+
     guard_payload_root(&bundle_root, project.root())
         .map_err(|error| format!("sdk-dist: {error}"))?;
 
@@ -77,6 +83,7 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         entry_ext,
         &entry_script,
         &resolved,
+        &bundle_manifest,
     )?;
 
     // The bundle's marker namespace is the `-sdk` bundle name, so its temp files

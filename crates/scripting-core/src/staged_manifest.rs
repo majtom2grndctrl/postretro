@@ -237,7 +237,7 @@ fn run_staged_manifest_build(
         if ts_path.is_file() {
             let compiler = super::watcher::TsCompilerPath::detect().ok_or_else(|| {
                 ScriptError::InvalidArgument {
-                    reason: "mod-init: failed to compile start-script.ts: scripts-build not found; run via `cargo run -p xtask -- run ...` or place scripts-build on PATH/next to the engine"
+                    reason: "mod-init: failed to compile start-script.ts: scripts-build not found; place scripts-build on PATH or next to the engine, then reload"
                         .to_string(),
                 }
             })?;

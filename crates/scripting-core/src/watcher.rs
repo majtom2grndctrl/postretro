@@ -164,9 +164,8 @@ impl TsCompilerPath {
         if self.is_stale() {
             warn!(
                 "[Scripting] `scripts-build` looks stale (older than its source). \
-                 raw `cargo run -p postretro` does not rebuild the sidecar — hot reload \
-                 may silently fail. Use `cargo run -p xtask -- run ...` or rebuild it: \
-                 `cargo build -p postretro-script-compiler --bin scripts-build`."
+                 Hot reload may silently fail until it is rebuilt — rebuild \
+                 `scripts-build` from its current source and relaunch the engine."
             );
         }
     }
@@ -278,9 +277,8 @@ impl ScriptWatcher {
             info!("[Scripting] TS compiler = {}", c.describe());
         } else {
             error!(
-                "[Scripting] `scripts-build` not found — run via \
-                 `cargo run -p xtask -- run ...`, install it on PATH, or ship it next \
-                 to the engine binary. `.ts` hot reload disabled; `.luau` files still work."
+                "[Scripting] `scripts-build` not found — install it on PATH or ship it next \
+                 to the engine binary, then relaunch. `.ts` hot reload disabled; `.luau` files still work."
             );
         }
 

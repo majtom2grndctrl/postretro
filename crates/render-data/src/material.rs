@@ -661,8 +661,16 @@ mod tests {
     #[test]
     fn every_carving_material_in_either_unit_bounds_its_march() {
         let tables: [(fn(Material) -> SurfaceDepth, f32, &str); 2] = [
-            (Material::surface_depth_meters, SURFACE_DEPTH_MAX_METERS, "meters"),
-            (Material::surface_depth_texels, SURFACE_DEPTH_MAX_TEXELS, "texels"),
+            (
+                Material::surface_depth_meters,
+                SURFACE_DEPTH_MAX_METERS,
+                "meters",
+            ),
+            (
+                Material::surface_depth_texels,
+                SURFACE_DEPTH_MAX_TEXELS,
+                "texels",
+            ),
         ];
         for (table, ceiling, unit) in tables {
             let mut deepest = 0.0f32;
@@ -749,7 +757,11 @@ mod tests {
                 "{mat:?}: {} is deeper than the inward-carve contract allows ({} max, {})",
                 depth.depth_meters,
                 surface_depth_max_authored(),
-                if surface_depth_is_texel_relative() { "texels" } else { "meters" },
+                if surface_depth_is_texel_relative() {
+                    "texels"
+                } else {
+                    "meters"
+                },
             );
         }
     }

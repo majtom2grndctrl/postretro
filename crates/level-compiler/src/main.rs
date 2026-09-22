@@ -229,7 +229,9 @@ fn bake_model_textures(
             // pinned deterministic for identical inputs, and an absolute
             // prefix both varies by machine and pushes the part that
             // identifies the texture off the end of the `largest:` lines.
-            let relative = texture_path.strip_prefix(content_root).unwrap_or(texture_path);
+            let relative = texture_path
+                .strip_prefix(content_root)
+                .unwrap_or(texture_path);
             byte_summary.account_baked_sidecar(
                 format!("model:{}", relative.display()),
                 cache_root,

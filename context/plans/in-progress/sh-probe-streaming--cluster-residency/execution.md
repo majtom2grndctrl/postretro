@@ -11,9 +11,11 @@ slice by owner decision.
 | 2 renderer SH split | Done | `0f39b4f1b` | workspace and dev-tools checks; 34 focused SH tests; exact billboard source-order test; focused code review |
 | 3 app/capture split | Done | `93538cd99`, `1c8f49a01` | workspace check; 19 capture-feature tests; focused code review |
 | 4 compiler publication split | Done | `b236d4d5c` | compiler check; 55 pack tests; 18 pipeline tests; focused code review |
-| 5–13 streaming and proof | Pending | — | — |
+| 5 shared id-50 codec | Done | `5e1317e97` | 544 level-format tests; compiler cap test; both crate checks; focused code review |
+| 6–13 streaming and proof | Pending | — | — |
 
 After each completed phase, check workspace free space. If it falls below
 10 GiB, clean only explicit PostRetro Cargo crates with `cargo clean -p`.
 
 Phase 1 disk gate: 32 GiB available after Task 4. No Cargo cleanup needed.
+Phase 2 disk gate: 30 GiB available after Task 5. No Cargo cleanup needed.

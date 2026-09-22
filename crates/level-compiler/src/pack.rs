@@ -74,6 +74,9 @@ use finalized_sections::scatter_section_fits_pack_cap_with_limit;
 pub(crate) use finalized_sections::{
     FinalizedShEmissionView, FinalizedShPack, FinalizedShPackSources,
 };
+
+#[path = "pack/cluster_sh_payloads.rs"]
+mod cluster_sh_payloads;
 pub(crate) use finalized_sections::{
     direct_sh_delta_covers_selection, direct_sh_delta_is_usable_for_selection,
 };
@@ -560,9 +563,10 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         )?,
     };
     // Keep the pre-BC6H packed sources borrowed through descriptor planning and
-    // staged emission. The current legacy descriptors do not consume them; the
-    // future cluster payload writer will, without retaining a cloned full atlas.
-    let _finalized_sh_sources = prebuilt_cluster.map(|(pack, _)| pack.sources);
+    // staged emission. Id 50 gathers and independently re-encodes its isolated
+    // cells from these sources; the established legacy bodies still use only
+    // `finalized_sh` below.
+    let finalized_sh_sources = prebuilt_cluster.map(|(pack, _)| pack.sources);
     let direct_sh_volume = finalized_sh.direct;
     let delta_sh_volumes = finalized_sh.delta;
     let entity_shadow_lights = finalized_sh.shadow_selection;
@@ -583,6 +587,18 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
             )?;
             &owned_cluster_bake
         }
+    };
+    let cluster_payload = match finalized_sh_sources {
+        Some(sources) => Some(cluster_sh_payloads::build_cluster_payload_spool(
+            output,
+            &cluster_bake.directory,
+            finalized_sh,
+            sources,
+        )?),
+        // The legacy public pack helper has no borrowed pre-BC6H source to
+        // gather from. It remains behavior-compatible; the production pipeline
+        // always supplies the finalized pack and therefore emits id 50.
+        None => None,
     };
     log::info!(
         "[Compiler] SH cluster directory: {} clusters, {} ranges, {} active affinity cells, {} covering references, max {} adaptive nodes visited/cluster, {} bytes, <= {} bytes construction metadata, {:.3} ms",
@@ -629,6 +645,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
         cluster_bake,
+        cluster_payload,
     })?;
     let descriptors: Vec<_> = sections
         .iter()

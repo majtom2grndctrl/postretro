@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -26,11 +26,11 @@ const WINDOWS_ERROR_LOCK_VIOLATION: i32 = 33;
 mod readback;
 use readback::validate_readback;
 
-pub(super) type SectionEncoder<'a> = Box<dyn FnOnce() -> anyhow::Result<Vec<u8>> + 'a>;
+pub(super) type SectionWriter<'a> = Box<dyn FnOnce(&mut dyn Write) -> anyhow::Result<()> + 'a>;
 
 pub(super) struct PlannedSection<'a> {
     pub(super) descriptor: SectionDescriptor,
-    encode: SectionEncoder<'a>,
+    write: SectionWriter<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -65,19 +65,40 @@ pub(super) fn report_section_footprint(descriptors: &[SectionDescriptor]) -> Prl
 }
 
 impl<'a> PlannedSection<'a> {
+    /// Wrap an existing one-shot byte encoder for legacy section bodies.
+    ///
+    /// New payloads that already live in a spool may use [`Self::with_writer`]
+    /// to write directly to the staged PRL without first materializing a second
+    /// full `Vec<u8>`.
     pub(super) fn new(
         section_id: u32,
         version: u16,
         byte_len: usize,
         encode: impl FnOnce() -> anyhow::Result<Vec<u8>> + 'a,
     ) -> Self {
+        let byte_len = u64::try_from(byte_len)
+            .expect("usize section byte lengths must fit the PRL u64 descriptor field");
+        Self::with_writer(section_id, version, byte_len, move |writer| {
+            let bytes = encode()?;
+            writer.write_all(&bytes)?;
+            Ok(())
+        })
+    }
+
+    /// Plan one exact-length payload that writes itself once to the staged PRL.
+    pub(super) fn with_writer(
+        section_id: u32,
+        version: u16,
+        byte_len: u64,
+        write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()> + 'a,
+    ) -> Self {
         Self {
             descriptor: SectionDescriptor {
                 section_id,
                 version,
-                byte_len: byte_len as u64,
+                byte_len,
             },
-            encode: Box::new(encode),
+            write: Box::new(write),
         }
     }
 }
@@ -105,24 +126,31 @@ pub(super) fn write_and_validate_sections(
     let write_result = (|| -> anyhow::Result<u64> {
         write_prl_header_and_table(temporary_output.file_mut(), &descriptors)?;
         for section in sections {
-            let bytes = (section.encode)()?;
-            if bytes.len() as u64 != section.descriptor.byte_len {
+            let start = temporary_output.file_mut().stream_position()?;
+            (section.write)(temporary_output.file_mut())?;
+            let end = temporary_output.file_mut().stream_position()?;
+            let actual_len = end.checked_sub(start).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "section {} writer moved the staged PRL cursor backward",
+                    section.descriptor.section_id,
+                )
+            })?;
+            if actual_len != section.descriptor.byte_len {
                 match SectionId::from_u32(section.descriptor.section_id) {
                     Some(section_id) => anyhow::bail!(
                         "section {section_id:?} (id {}) wrote {} bytes but its table declares {} bytes",
                         section.descriptor.section_id,
-                        bytes.len(),
+                        actual_len,
                         section.descriptor.byte_len,
                     ),
                     None => anyhow::bail!(
                         "unknown section {} wrote {} bytes but its table declares {} bytes",
                         section.descriptor.section_id,
-                        bytes.len(),
+                        actual_len,
                         section.descriptor.byte_len,
                     ),
                 }
             }
-            temporary_output.file_mut().write_all(&bytes)?;
         }
         temporary_output.file_mut().flush()?;
         let total_size = temporary_output.file().metadata()?.len();
@@ -567,6 +595,48 @@ mod tests {
         }
     }
 
+    fn assert_failed_one_shot_writer_preserves_output_and_cleans_staging(
+        case: &str,
+        declared_byte_len: u64,
+        write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+        expected_error: &str,
+    ) {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-one-shot-section-{case}-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let previous_bytes = b"previous valid PRL";
+        std::fs::write(&output, previous_bytes).expect("should create previous output");
+
+        let error = write_and_validate_sections(
+            &output,
+            vec![PlannedSection::with_writer(
+                SectionId::Geometry as u32,
+                1,
+                declared_byte_len,
+                write,
+            )],
+        )
+        .expect_err("a failing one-shot writer must not publish its staging file");
+
+        assert!(
+            error.to_string().contains(expected_error),
+            "unexpected one-shot writer error: {error:#}"
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("previous output must remain readable"),
+            previous_bytes,
+            "a failed one-shot writer must not replace the previous output"
+        );
+        assert!(
+            staging_artifacts(&output).is_empty(),
+            "failed one-shot staging should be cleaned up"
+        );
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
     #[test]
     fn section_footprint_names_known_ids_and_retains_unknown_ids() {
         let footprint = report_section_footprint(&[
@@ -730,6 +800,85 @@ mod tests {
         );
         std::fs::remove_file(&output).expect("output should be removable");
         remove_publication_test_artifacts(&output);
+    }
+
+    #[test]
+    fn one_shot_section_writer_streams_chunks_without_a_payload_vec() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-one-shot-section-writer-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+
+        write_and_validate_sections(
+            &output,
+            vec![PlannedSection::with_writer(
+                SectionId::Geometry as u32,
+                1,
+                5,
+                |writer| {
+                    writer.write_all(&[0x01, 0x02])?;
+                    writer.write_all(&[0x03, 0x04, 0x05])?;
+                    Ok(())
+                },
+            )],
+        )
+        .expect("a chunked one-shot writer should produce a valid PRL");
+
+        let mut file = File::open(&output).expect("streamed output should exist");
+        let container = postretro_level_format::read_container(&mut file)
+            .expect("written PRL should have a readable container");
+        assert_eq!(
+            postretro_level_format::read_section_data(
+                &mut file,
+                &container,
+                SectionId::Geometry as u32,
+            )
+            .expect("section read should succeed"),
+            Some(vec![0x01, 0x02, 0x03, 0x04, 0x05])
+        );
+
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    #[test]
+    fn one_shot_section_writer_partial_error_preserves_output_and_cleans_staging() {
+        assert_failed_one_shot_writer_preserves_output_and_cleans_staging(
+            "partial-error",
+            3,
+            |writer| {
+                writer.write_all(&[0x01])?;
+                anyhow::bail!("test one-shot writer stopped after a partial payload")
+            },
+            "test one-shot writer stopped after a partial payload",
+        );
+    }
+
+    #[test]
+    fn one_shot_section_writer_short_write_preserves_output_and_cleans_staging() {
+        assert_failed_one_shot_writer_preserves_output_and_cleans_staging(
+            "short-write",
+            3,
+            |writer| {
+                writer.write_all(&[0x01, 0x02])?;
+                Ok(())
+            },
+            "section Geometry (id 17) wrote 2 bytes but its table declares 3",
+        );
+    }
+
+    #[test]
+    fn one_shot_section_writer_long_write_preserves_output_and_cleans_staging() {
+        assert_failed_one_shot_writer_preserves_output_and_cleans_staging(
+            "long-write",
+            3,
+            |writer| {
+                writer.write_all(&[0x01, 0x02, 0x03, 0x04])?;
+                Ok(())
+            },
+            "section Geometry (id 17) wrote 4 bytes but its table declares 3",
+        );
     }
 
     #[test]

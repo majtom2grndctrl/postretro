@@ -22,6 +22,7 @@ use crate::{
     resolve_prm_root_via_cargo, resolve_sh_density_fidelity, resolve_texture_root,
 };
 
+mod finalized_publication;
 pub(crate) mod lightmap_stage;
 mod stage_registry;
 use crate::{
@@ -31,6 +32,10 @@ use crate::{
     fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, map_data,
     navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
     sh_density, sh_group, texture_mips, texture_validation, trigger_volumes, visibility,
+};
+use finalized_publication::{
+    FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
+    write_finalized_prl,
 };
 pub(crate) use stage_registry::ORDERED_STAGES;
 #[cfg(test)]
@@ -1529,14 +1534,16 @@ fn run_after_parsing(
     .map_err(|error| anyhow::anyhow!("indirect SH stored-set packing failed: {error}"))?;
     sh_volume_section =
         sh_bake::encode_sh_volume_section_bc6h(&packed_sh_volume, args.uncompressed_irradiance);
-    if let Some(raw_direct) = sh_analyze_base_direct.take() {
-        let packed_direct = sh_density::pack_direct_section(raw_direct, &sh_volume_section)
-            .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))?;
-        direct_sh_volume_section = Some(direct_sh_bake::encode_direct_section_bc6h(
-            &packed_direct,
-            lightmap_config.uncompressed_irradiance,
-        ));
-    }
+    let packed_direct = sh_analyze_base_direct
+        .take()
+        .map(|raw_direct| {
+            sh_density::pack_direct_section(raw_direct, &sh_volume_section)
+                .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))
+        })
+        .transpose()?;
+    direct_sh_volume_section = packed_direct.as_ref().map(|section| {
+        direct_sh_bake::encode_direct_section_bc6h(section, lightmap_config.uncompressed_irradiance)
+    });
     let indirect_section_bytes = sh_volume_section
         .try_to_bytes()
         .map_err(|error| anyhow::anyhow!("OctahedralShVolume v11 serialization failed: {error}"))?
@@ -2009,32 +2016,27 @@ fn run_after_parsing(
         true,
     );
 
-    let portals_section = pack::encode_portals(&generated_portals);
     let stage_start = begin_stage(reporter.as_ref(), StageId::ClusterDirectory);
-    let cells_section = pack::encode_cells(
-        &vis_result.leaves_section,
-        &portals_section,
-        &exterior_leaves,
-    )?;
-    let locator_section = pack::encode_cell_locator(&result.tree)?;
-    let finalized_bvh = pack::bvh_with_chunk_ranges(&bvh_section, &bvh_chunk_ranges);
-    let finalized_sh = pack::FinalizedShEmissionView::new(
-        &sh_volume_section,
-        direct_sh_volume_section.as_ref(),
-        delta_sections.indirect.as_ref(),
-        delta_sections.entity_shadow_lights.as_ref(),
-        delta_sections.direct.as_ref(),
-        delta_sections.animated_direct.as_ref(),
-        billboard_direct_scatter_volume_section.as_ref(),
-        animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
-    )?;
-    let cluster_directory = crate::cluster_directory_bake::bake_cluster_directory(
-        &cells_section,
-        &portals_section,
-        &finalized_bvh,
-        &locator_section,
-        finalized_sh,
-    )?;
+    let finalized_cluster_metadata =
+        build_finalized_cluster_metadata(FinalizedClusterMetadataInputs {
+            generated_portals: &generated_portals,
+            leaves: &vis_result.leaves_section,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
+            bvh: &bvh_section,
+            bvh_chunk_ranges: &bvh_chunk_ranges,
+            packed_sh_volume: &packed_sh_volume,
+            packed_direct: packed_direct.as_ref(),
+            sh_volume: &sh_volume_section,
+            direct_sh_volume: direct_sh_volume_section.as_ref(),
+            delta_sh_volumes: delta_sections.indirect.as_ref(),
+            entity_shadow_lights: delta_sections.entity_shadow_lights.as_ref(),
+            direct_sh_delta_volumes: delta_sections.direct.as_ref(),
+            animated_direct_sh_delta_volumes: delta_sections.animated_direct.as_ref(),
+            billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
+            animated_billboard_direct_scatter_delta_volumes:
+                animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        })?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -2044,44 +2046,44 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
-    pack::pack_and_write_portals_with_billboard_scatter_finalized(
-        &args.output,
-        &geo_result,
-        &name_to_key,
-        &vis_result.leaves_section,
-        &result.tree,
-        &portals_section,
-        &exterior_leaves,
-        &bvh_section,
-        &bvh_chunk_ranges,
-        &alpha_lights_section,
-        &light_influence_section,
-        &sh_volume_section,
-        direct_sh_volume_section.as_ref(),
-        delta_sections.entity_shadow_lights.as_ref(),
-        delta_sections.direct.as_ref(),
-        shadowmask_atlas_section.as_ref(),
-        &lightmap_section,
-        &chunk_light_list_section,
-        animated_light_chunks_section.as_ref(),
-        animated_light_weight_maps_section.as_ref(),
-        light_tags_section.as_ref(),
-        delta_sections.indirect.as_ref(),
-        data_script_section.as_ref(),
-        map_entities_section.as_ref(),
-        &fog_volumes_section,
-        fog_cell_masks_section.as_ref(),
-        sdf_atlas_section.as_ref(),
-        navmesh_section.as_ref(),
-        kinematic_geometry_section.as_ref(),
-        trigger_volumes_section.as_ref(),
-        cell_draw_index_section.as_ref(),
-        Some(&cell_visibility_section),
-        delta_sections.animated_direct.as_ref(),
-        billboard_direct_scatter_volume_section.as_ref(),
-        animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
-        Some((finalized_sh, &cluster_directory)),
-    )?;
+    write_finalized_prl(FinalizedPrlPackInputs {
+        output: &args.output,
+        geo_result: &geo_result,
+        texture_cache_keys: &name_to_key,
+        leaves: &vis_result.leaves_section,
+        tree: &result.tree,
+        exterior_leaves: &exterior_leaves,
+        bvh: &bvh_section,
+        bvh_chunk_ranges: &bvh_chunk_ranges,
+        alpha_lights: &alpha_lights_section,
+        light_influence: &light_influence_section,
+        sh_volume: &sh_volume_section,
+        direct_sh_volume: direct_sh_volume_section.as_ref(),
+        entity_shadow_lights: delta_sections.entity_shadow_lights.as_ref(),
+        direct_sh_delta_volumes: delta_sections.direct.as_ref(),
+        shadowmask_atlas: shadowmask_atlas_section.as_ref(),
+        lightmap: &lightmap_section,
+        chunk_light_list: &chunk_light_list_section,
+        animated_light_chunks: animated_light_chunks_section.as_ref(),
+        animated_light_weight_maps: animated_light_weight_maps_section.as_ref(),
+        light_tags: light_tags_section.as_ref(),
+        delta_sh_volumes: delta_sections.indirect.as_ref(),
+        data_script: data_script_section.as_ref(),
+        map_entities: map_entities_section.as_ref(),
+        fog_volumes: &fog_volumes_section,
+        fog_cell_masks: fog_cell_masks_section.as_ref(),
+        sdf_atlas: sdf_atlas_section.as_ref(),
+        navmesh: navmesh_section.as_ref(),
+        kinematic_geometry: kinematic_geometry_section.as_ref(),
+        trigger_volumes: trigger_volumes_section.as_ref(),
+        cell_draw_index: cell_draw_index_section.as_ref(),
+        cell_visibility: Some(&cell_visibility_section),
+        animated_direct_sh_delta_volumes: delta_sections.animated_direct.as_ref(),
+        billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
+        animated_billboard_direct_scatter_delta_volumes:
+            animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        metadata: finalized_cluster_metadata,
+    })?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),

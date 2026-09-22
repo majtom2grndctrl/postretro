@@ -67,11 +67,13 @@ mod pack_sections;
 pub(crate) use pack_sections::bvh_with_chunk_ranges;
 
 mod finalized_sections;
-pub(crate) use finalized_sections::FinalizedShEmissionView;
 #[cfg(test)]
 pub(crate) use finalized_sections::direct_sh_delta_has_valid_csr_shape;
 #[cfg(test)]
 use finalized_sections::scatter_section_fits_pack_cap_with_limit;
+pub(crate) use finalized_sections::{
+    FinalizedShEmissionView, FinalizedShPack, FinalizedShPackSources,
+};
 pub(crate) use finalized_sections::{
     direct_sh_delta_covers_selection, direct_sh_delta_is_usable_for_selection,
 };
@@ -83,6 +85,11 @@ pub use spatial::{encode_cell_locator, encode_cells, encode_portals};
 mod pack_output;
 
 use pack_output::{PlannedSection, report_section_footprint, write_and_validate_sections};
+
+#[path = "pack/section_plan.rs"]
+mod section_plan;
+
+use section_plan::{FinalizedSectionPlanInputs, build_finalized_section_plan};
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format
 /// crate. Strips animation curves; the direct lighting path uses the static
@@ -515,7 +522,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         &AnimatedBillboardDirectScatterDeltaVolumesSection,
     >,
     prebuilt_cluster: Option<(
-        FinalizedShEmissionView<'_>,
+        FinalizedShPack<'_>,
         &crate::cluster_directory_bake::ClusterDirectoryBake,
     )>,
 ) -> anyhow::Result<()> {
@@ -540,7 +547,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         "CellDrawIndex section must be omitted when Bvh has no leaves"
     );
     let finalized_sh = match prebuilt_cluster {
-        Some((view, _)) => view,
+        Some((pack, _)) => pack.emission,
         None => FinalizedShEmissionView::new(
             sh_volume,
             direct_sh_volume,
@@ -552,6 +559,10 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
             animated_billboard_direct_scatter_delta_volumes,
         )?,
     };
+    // Keep the pre-BC6H packed sources borrowed through descriptor planning and
+    // staged emission. The current legacy descriptors do not consume them; the
+    // future cluster payload writer will, without retaining a cloned full atlas.
+    let _finalized_sh_sources = prebuilt_cluster.map(|(pack, _)| pack.sources);
     let direct_sh_volume = finalized_sh.direct;
     let delta_sh_volumes = finalized_sh.delta;
     let entity_shadow_lights = finalized_sh.shadow_selection;
@@ -584,301 +595,41 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         cluster_bake.stats.construction_metadata_bytes,
         cluster_bake.stats.elapsed.as_secs_f64() * 1000.0,
     );
-    let sh_volume_len = sh_volume.try_byte_len().map_err(|error| {
-        anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
+    let sections = build_finalized_section_plan(FinalizedSectionPlanInputs {
+        geo_result,
+        texture_cache_keys: &texture_cache_keys_section,
+        cells: &cells_section,
+        locator: &locator_section,
+        portals,
+        chunk_light_list,
+        bvh: &bvh_section,
+        alpha_lights,
+        light_influence,
+        sh_volume,
+        lightmap,
+        direct_sh_volume,
+        entity_shadow_lights,
+        direct_sh_delta_volumes,
+        shadowmask_atlas,
+        animated_light_chunks,
+        animated_light_weight_maps,
+        light_tags,
+        delta_sh_volumes,
+        animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes,
+        data_script,
+        map_entities,
+        fog_volumes,
+        fog_cell_masks,
+        sdf_atlas,
+        navmesh,
+        kinematic_geometry,
+        trigger_volumes,
+        cell_draw_index: cell_draw_index_section,
+        cell_visibility: cell_visibility_section,
+        cluster_bake,
     })?;
-    let has_usable_direct_sh_deltas = direct_sh_delta_volumes.is_some();
-    let mut sections = Vec::new();
-    sections.push(PlannedSection::new(
-        SectionId::Geometry as u32,
-        1,
-        geo_result.geometry.byte_len(),
-        || Ok(geo_result.geometry.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::TextureNames as u32,
-        1,
-        geo_result.texture_names.byte_len(),
-        || Ok(geo_result.texture_names.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::TextureCacheKeys as u32,
-        1,
-        texture_cache_keys_section.byte_len(),
-        || Ok(texture_cache_keys_section.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::Cells as u32,
-        1,
-        cells_section.byte_len(),
-        || Ok(cells_section.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::CellLocator as u32,
-        1,
-        locator_section.byte_len(),
-        || Ok(locator_section.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::Portals as u32,
-        1,
-        portals.byte_len(),
-        || Ok(portals.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::ChunkLightList as u32,
-        1,
-        chunk_light_list.byte_len(),
-        || Ok(chunk_light_list.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::Bvh as u32,
-        1,
-        bvh_section.byte_len(),
-        || Ok(bvh_section.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::AlphaLights as u32,
-        1,
-        alpha_lights.byte_len(),
-        || Ok(alpha_lights.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::LightInfluence as u32,
-        1,
-        light_influence.byte_len(),
-        || Ok(light_influence.to_bytes()),
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::OctahedralShVolume as u32,
-        1,
-        sh_volume_len,
-        || {
-            sh_volume.try_to_bytes().map_err(|error| {
-                anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
-            })
-        },
-    ));
-    sections.push(PlannedSection::new(
-        SectionId::Lightmap as u32,
-        1,
-        lightmap.byte_len(),
-        || Ok(lightmap.to_bytes()),
-    ));
-    if let Some(section) = direct_sh_volume {
-        let len = section.try_byte_len().map_err(|error| {
-            anyhow::anyhow!("DirectShVolume violates its wire contract: {error}")
-        })?;
-        sections.push(PlannedSection::new(
-            SectionId::DirectShVolume as u32,
-            1,
-            len,
-            || {
-                section.try_to_bytes().map_err(|error| {
-                    anyhow::anyhow!("DirectShVolume violates its wire contract: {error}")
-                })
-            },
-        ));
-    }
-    if has_usable_direct_sh_deltas {
-        if let Some(section) =
-            entity_shadow_lights.filter(|section| !section.light_indices.is_empty())
-        {
-            sections.push(PlannedSection::new(
-                SectionId::EntityShadowLights as u32,
-                1,
-                section.byte_len(),
-                || Ok(section.to_bytes()),
-            ));
-        }
-        if let Some(section) = direct_sh_delta_volumes {
-            sections.push(PlannedSection::new(
-                SectionId::DirectShDeltaVolumes as u32,
-                1,
-                section.byte_len(),
-                || Ok(section.to_bytes()),
-            ));
-        }
-        if let Some(section) = shadowmask_atlas.filter(|section| !section.channels.is_empty()) {
-            sections.push(PlannedSection::new(
-                SectionId::ShadowmaskAtlas as u32,
-                1,
-                section.byte_len(),
-                || Ok(section.to_bytes()),
-            ));
-        }
-    }
-    if let Some(section) = animated_light_chunks {
-        sections.push(PlannedSection::new(
-            SectionId::AnimatedLightChunks as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = animated_light_weight_maps {
-        sections.push(PlannedSection::new(
-            SectionId::AnimatedLightWeightMaps as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = light_tags {
-        sections.push(PlannedSection::new(
-            SectionId::LightTags as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = delta_sh_volumes {
-        sections.push(PlannedSection::new(
-            SectionId::DeltaShVolumes as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = animated_direct_sh_delta_volumes {
-        let len = section.try_byte_len().map_err(|error| {
-            anyhow::anyhow!("AnimatedDirectShDeltaVolumes violates its wire contract: {error}")
-        })?;
-        sections.push(PlannedSection::new(
-            SectionId::AnimatedDirectShDeltaVolumes as u32,
-            1,
-            len,
-            || {
-                section.try_to_bytes().map_err(|error| {
-                    anyhow::anyhow!(
-                        "AnimatedDirectShDeltaVolumes violates its wire contract: {error}"
-                    )
-                })
-            },
-        ));
-    }
-    if let Some(section) = billboard_direct_scatter_volume {
-        let len = section.try_byte_len().map_err(|error| {
-            anyhow::anyhow!("BillboardDirectScatterVolume violates its wire contract: {error}")
-        })?;
-        sections.push(PlannedSection::new(
-            SectionId::BillboardDirectScatterVolume as u32,
-            1,
-            len,
-            || {
-                section.try_to_bytes().map_err(|error| {
-                    anyhow::anyhow!(
-                        "BillboardDirectScatterVolume violates its wire contract: {error}"
-                    )
-                })
-            },
-        ));
-    }
-    if let Some(section) = animated_billboard_direct_scatter_delta_volumes {
-        let len = section.try_byte_len().map_err(|error| {
-            anyhow::anyhow!(
-                "AnimatedBillboardDirectScatterDeltaVolumes violates its wire contract: {error}"
-            )
-        })?;
-        sections.push(PlannedSection::new(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32, 1, len, || section.try_to_bytes().map_err(|error| anyhow::anyhow!("AnimatedBillboardDirectScatterDeltaVolumes violates its wire contract: {error}"))));
-    }
-    if let Some(section) = data_script {
-        sections.push(PlannedSection::new(
-            SectionId::DataScript as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = map_entities {
-        sections.push(PlannedSection::new(
-            SectionId::MapEntity as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    sections.push(PlannedSection::new(
-        SectionId::FogVolumes as u32,
-        1,
-        fog_volumes.byte_len(),
-        || Ok(fog_volumes.to_bytes()),
-    ));
-    if let Some(section) = fog_cell_masks {
-        sections.push(PlannedSection::new(
-            SectionId::FogCellMasks as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = sdf_atlas {
-        sections.push(PlannedSection::new(
-            SectionId::SdfAtlas as u32,
-            postretro_level_format::sdf_atlas::SDF_ATLAS_VERSION as u16,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = navmesh {
-        sections.push(PlannedSection::new(
-            SectionId::NavMesh as u32,
-            NAVMESH_CONTAINER_VERSION,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = kinematic_geometry {
-        sections.push(PlannedSection::new(
-            SectionId::KinematicGeometry as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = trigger_volumes {
-        sections.push(PlannedSection::new(
-            SectionId::TriggerVolumes as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = cell_draw_index_section {
-        sections.push(PlannedSection::new(
-            SectionId::CellDrawIndex as u32,
-            1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
-        ));
-    }
-    if let Some(section) = cell_visibility_section {
-        let len = section.try_byte_len().map_err(|error| {
-            anyhow::anyhow!("CellVisibility violates its wire contract: {error}")
-        })?;
-        sections.push(PlannedSection::new(
-            SectionId::CellVisibility as u32,
-            1,
-            len,
-            || {
-                section.to_bytes().map_err(|error| {
-                    anyhow::anyhow!("CellVisibility violates its wire contract: {error}")
-                })
-            },
-        ));
-    }
-    let cluster_directory_len = cluster_bake.directory.byte_len()?;
-    sections.push(PlannedSection::new(
-        SectionId::ClusterDirectory as u32,
-        CLUSTER_DIRECTORY_CONTAINER_VERSION,
-        cluster_directory_len,
-        || {
-            cluster_bake.directory.try_to_bytes().map_err(|error| {
-                anyhow::anyhow!("ClusterDirectory violates its wire contract: {error}")
-            })
-        },
-    ));
-
     let descriptors: Vec<_> = sections
         .iter()
         .map(|section| section.descriptor.clone())

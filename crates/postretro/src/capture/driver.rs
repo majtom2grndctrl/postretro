@@ -27,7 +27,8 @@ use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion};
 #[cfg(test)]
 use super::setup::{
     capture_static_lights_and_shadow_selection, capture_view_projection,
-    resolve_forced_animated_promotion_rows,
+    forced_active_animation_descriptor, resolve_forced_active_animation_slots,
+    resolve_forced_animated_promotion_rows, validate_forced_animation_slot_bounds,
 };
 
 #[cfg(test)]
@@ -36,6 +37,10 @@ use super::prepared::{
 };
 #[cfg(test)]
 use crate::runtime_movers::KinematicMoverRenderCollector;
+#[cfg(test)]
+use crate::camera;
+#[cfg(test)]
+use crate::scripting_systems::light_bridge::LightBridge;
 #[cfg(test)]
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
 #[cfg(test)]

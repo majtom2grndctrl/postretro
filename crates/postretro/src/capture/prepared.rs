@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
+use postretro_visibility::VisibleCells;
 
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor, Renderer,

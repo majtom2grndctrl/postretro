@@ -60,6 +60,8 @@ use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
+use crate::prl_lighting::LoadedLighting;
+#[cfg(feature = "load-prl")]
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
 #[cfg(feature = "load-prl")]
 use postretro_render_data::influence::LightInfluence;
@@ -708,6 +710,8 @@ impl LevelWorld {
 
         #[cfg(feature = "load-prl")]
         let face_meta_count: usize = cells.iter().map(|cell| cell.face_count as usize).sum();
+        #[cfg(feature = "load-prl")]
+        let lighting = LoadedLighting::default();
 
         Ok(Self {
             #[cfg(feature = "load-prl")]
@@ -742,39 +746,40 @@ impl LevelWorld {
                 root_node_index: 0,
             },
             #[cfg(feature = "load-prl")]
-            lights: vec![],
+            lights: lighting.lights,
             #[cfg(feature = "load-prl")]
-            light_influences: vec![],
+            light_influences: lighting.light_influences,
             #[cfg(feature = "load-prl")]
-            sh_volume: None,
+            sh_volume: lighting.sh_volume,
             #[cfg(feature = "load-prl")]
-            lightmap: None,
+            lightmap: lighting.lightmap,
             #[cfg(feature = "load-prl")]
-            lightmap_mode: LightmapMode::Shadowed,
+            lightmap_mode: lighting.lightmap_mode,
             #[cfg(feature = "load-prl")]
-            sdf_atlas: None,
+            sdf_atlas: lighting.sdf_atlas,
             #[cfg(feature = "load-prl")]
-            chunk_light_list: None,
+            chunk_light_list: lighting.chunk_light_list,
             #[cfg(feature = "load-prl")]
-            animated_light_chunks: None,
+            animated_light_chunks: lighting.animated_light_chunks,
             #[cfg(feature = "load-prl")]
-            animated_light_weight_maps: None,
+            animated_light_weight_maps: lighting.animated_light_weight_maps,
             #[cfg(feature = "load-prl")]
-            delta_sh_volumes: None,
+            delta_sh_volumes: lighting.delta_sh_volumes,
             #[cfg(feature = "load-prl")]
-            direct_sh_volume: None,
+            direct_sh_volume: lighting.direct_sh_volume,
             #[cfg(feature = "load-prl")]
-            direct_sh_delta_volumes: None,
+            direct_sh_delta_volumes: lighting.direct_sh_delta_volumes,
             #[cfg(feature = "load-prl")]
-            animated_direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: lighting.animated_direct_sh_delta_volumes,
             #[cfg(feature = "load-prl")]
-            billboard_direct_scatter_volume: None,
+            billboard_direct_scatter_volume: lighting.billboard_direct_scatter_volume,
             #[cfg(feature = "load-prl")]
-            animated_billboard_direct_scatter_delta_volumes: None,
+            animated_billboard_direct_scatter_delta_volumes: lighting
+                .animated_billboard_direct_scatter_delta_volumes,
             #[cfg(feature = "load-prl")]
-            entity_shadow_lights: Vec::new(),
+            entity_shadow_lights: lighting.entity_shadow_lights,
             #[cfg(feature = "load-prl")]
-            shadowmask_atlas: None,
+            shadowmask_atlas: lighting.shadowmask_atlas,
             #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
@@ -796,7 +801,7 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             cell_draw_index: None,
             #[cfg(feature = "load-prl")]
-            cluster_directory: None,
+            cluster_directory: lighting.cluster_directory,
         })
     }
 }
@@ -1107,6 +1112,27 @@ mod visibility_only_validation_tests {
         let visibility = world.cell_visibility.as_ref().unwrap();
         assert_eq!(visibility.component_ids(), &[0, 0, 1]);
         assert_eq!(visibility.coupled_pairs().count(), 1);
+    }
+
+    #[cfg(feature = "load-prl")]
+    #[test]
+    fn visibility_only_world_exposes_empty_legacy_lighting_through_the_view() {
+        let world = LevelWorld::new_visibility_only(
+            vec![cell(0, 0)],
+            vec![],
+            CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .unwrap();
+
+        let lighting = world.lighting();
+        assert!(lighting.lights.is_empty());
+        assert!(lighting.sh_volume.is_none());
+        assert!(lighting.direct_sh_volume.is_none());
+        assert!(lighting.entity_shadow_lights.is_empty());
+        assert!(lighting.cluster_directory.is_none());
     }
 }
 

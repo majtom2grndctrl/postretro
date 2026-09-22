@@ -3,22 +3,141 @@
 
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
+use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::billboard_direct_scatter_volume::{
     BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT, BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16,
     BillboardDirectScatterVolumeSection,
 };
+use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::{
     OctahedralShVolumeSection, validate_storage_levels_against_delta,
 };
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::{self as prl_format, SectionId};
+use postretro_render_data::influence::LightInfluence;
 
-use crate::prl::{LightType, MapLight, PrlLoadError, ShadowType};
+use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, ShadowType};
 #[cfg(test)]
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
 use crate::prl_loader::{section_validation, section_validation_from_error};
+
+/// Lighting-related data assembled by the PRL loader before it is transferred
+/// into the stable `LevelWorld` fields.
+///
+/// Keeping the transfer record here makes the legacy whole-section ownership
+/// explicit without changing existing callers. A later streaming storage mode
+/// can replace this boundary while the current public fields continue to
+/// preserve their legacy contract.
+pub(crate) struct LoadedLighting {
+    pub(crate) lights: Vec<MapLight>,
+    pub(crate) light_influences: Vec<LightInfluence>,
+    pub(crate) sh_volume: Option<OctahedralShVolumeSection>,
+    pub(crate) lightmap: Option<LightmapSection>,
+    pub(crate) lightmap_mode: LightmapMode,
+    pub(crate) sdf_atlas: Option<SdfAtlasSection>,
+    pub(crate) chunk_light_list: Option<ChunkLightListSection>,
+    pub(crate) animated_light_chunks: Option<AnimatedLightChunksSection>,
+    pub(crate) animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
+    pub(crate) delta_sh_volumes: Option<DeltaShVolumesSection>,
+    pub(crate) direct_sh_volume: Option<DirectShVolumeSection>,
+    pub(crate) direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection>,
+    pub(crate) animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection>,
+    pub(crate) billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection>,
+    pub(crate) animated_billboard_direct_scatter_delta_volumes:
+        Option<AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    pub(crate) entity_shadow_lights: Vec<u32>,
+    pub(crate) shadowmask_atlas: Option<ShadowmaskAtlasSection>,
+    pub(crate) cluster_directory: Option<ClusterDirectorySection>,
+}
+
+impl Default for LoadedLighting {
+    fn default() -> Self {
+        Self {
+            lights: Vec::new(),
+            light_influences: Vec::new(),
+            sh_volume: None,
+            lightmap: None,
+            lightmap_mode: LightmapMode::Shadowed,
+            sdf_atlas: None,
+            chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
+            delta_sh_volumes: None,
+            direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
+            entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
+            cluster_directory: None,
+        }
+    }
+}
+
+/// Borrowed legacy lighting view. It is an additive access seam: existing
+/// direct `LevelWorld` fields remain available until streaming owns their
+/// storage, while new code can depend on one coherent lighting boundary.
+#[derive(Clone, Copy)]
+pub struct LevelWorldLighting<'a> {
+    pub lights: &'a [MapLight],
+    pub light_influences: &'a [LightInfluence],
+    pub sh_volume: Option<&'a OctahedralShVolumeSection>,
+    pub lightmap: Option<&'a LightmapSection>,
+    pub lightmap_mode: LightmapMode,
+    pub sdf_atlas: Option<&'a SdfAtlasSection>,
+    pub chunk_light_list: Option<&'a ChunkLightListSection>,
+    pub animated_light_chunks: Option<&'a AnimatedLightChunksSection>,
+    pub animated_light_weight_maps: Option<&'a AnimatedLightWeightMapsSection>,
+    pub delta_sh_volumes: Option<&'a DeltaShVolumesSection>,
+    pub direct_sh_volume: Option<&'a DirectShVolumeSection>,
+    pub direct_sh_delta_volumes: Option<&'a DirectShDeltaVolumesSection>,
+    pub animated_direct_sh_delta_volumes: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+    pub billboard_direct_scatter_volume: Option<&'a BillboardDirectScatterVolumeSection>,
+    pub animated_billboard_direct_scatter_delta_volumes:
+        Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    pub entity_shadow_lights: &'a [u32],
+    pub shadowmask_atlas: Option<&'a ShadowmaskAtlasSection>,
+    pub cluster_directory: Option<&'a ClusterDirectorySection>,
+}
+
+impl LevelWorld {
+    /// Returns every lighting/SH input through the future storage seam.
+    ///
+    /// Legacy callers can keep reading the existing fields during this
+    /// mechanical split; the streaming migration will move them to this view.
+    pub fn lighting(&self) -> LevelWorldLighting<'_> {
+        LevelWorldLighting {
+            lights: &self.lights,
+            light_influences: &self.light_influences,
+            sh_volume: self.sh_volume.as_ref(),
+            lightmap: self.lightmap.as_ref(),
+            lightmap_mode: self.lightmap_mode,
+            sdf_atlas: self.sdf_atlas.as_ref(),
+            chunk_light_list: self.chunk_light_list.as_ref(),
+            animated_light_chunks: self.animated_light_chunks.as_ref(),
+            animated_light_weight_maps: self.animated_light_weight_maps.as_ref(),
+            delta_sh_volumes: self.delta_sh_volumes.as_ref(),
+            direct_sh_volume: self.direct_sh_volume.as_ref(),
+            direct_sh_delta_volumes: self.direct_sh_delta_volumes.as_ref(),
+            animated_direct_sh_delta_volumes: self.animated_direct_sh_delta_volumes.as_ref(),
+            billboard_direct_scatter_volume: self.billboard_direct_scatter_volume.as_ref(),
+            animated_billboard_direct_scatter_delta_volumes: self
+                .animated_billboard_direct_scatter_delta_volumes
+                .as_ref(),
+            entity_shadow_lights: &self.entity_shadow_lights,
+            shadowmask_atlas: self.shadowmask_atlas.as_ref(),
+            cluster_directory: self.cluster_directory.as_ref(),
+        }
+    }
+}
 
 /// A delta section's raw bytes after applying the storage-binding floor.
 ///

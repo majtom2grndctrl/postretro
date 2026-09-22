@@ -147,7 +147,7 @@ fn apply_forced_active_capture_light_components(
 
 /// Validate the complete batch before any write. The installed renderer count
 /// is authoritative: an unusable SH section can leave only a dummy buffer.
-fn validate_forced_animation_slot_bounds(
+pub(super) fn validate_forced_animation_slot_bounds(
     writes: &[(u32, [f32; 3])],
     descriptor_count: u32,
 ) -> Result<()> {
@@ -164,7 +164,7 @@ fn validate_forced_animation_slot_bounds(
 /// Resolve authored tags against the complete map-light list. Capture's
 /// static-only forward-light filter has a compacted index space, while
 /// `animated_slot` names the independently indexed SH compose descriptor.
-fn resolve_forced_active_animation_slots(
+pub(super) fn resolve_forced_active_animation_slots(
     lights: &[postretro_level_loader::MapLight],
     forced_lights: Option<&[ForcedAnimLight]>,
 ) -> Result<Vec<(u32, [f32; 3])>> {
@@ -333,7 +333,7 @@ pub(super) fn resolve_forced_animated_promotion_rows(
 /// Build the active/no-curve compose descriptor through the shared descriptor
 /// packer. With `animation: None` and `active_without_animation: true`, the
 /// radiance lands in `base_color` and `color_count` remains zero.
-fn forced_active_animation_descriptor(
+pub(super) fn forced_active_animation_descriptor(
     radiance: [f32; 3],
 ) -> [u8; postretro_render_cpu::sh_volume::ANIMATION_DESCRIPTOR_SIZE] {
     let component = LightComponent {

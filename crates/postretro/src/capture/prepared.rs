@@ -6,12 +6,12 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
-use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use crate::render::{
-    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor,
-    LevelGeometry, Renderer, ShResidencyReport, level_world_to_geometry,
+    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor, Renderer,
+    ShResidencyReport,
 };
+use crate::render_preparation::VisibleRenderPreparation;
 use crate::runtime_movers::{
     ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
 };
@@ -23,12 +23,12 @@ use crate::scripting_systems::mesh_render::MeshRenderCollector;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
 
-use super::driver::{
-    capture_static_lights_and_shadow_selection, capture_view_projection, derive_texture_materials,
-    install_capture_animated_promotion_bridge, install_forced_active_animation_descriptors,
-    light_reachable_cell_mask, reachable_cell_aabbs, resolve_forced_animated_promotion_rows,
-};
 use super::scene::CaptureScene;
+use super::setup::{
+    capture_level_geometry, capture_static_lights_and_shadow_selection, capture_view_projection,
+    derive_texture_materials, install_capture_animated_promotion_bridge,
+    install_forced_active_animation_descriptors, resolve_forced_animated_promotion_rows,
+};
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
 /// consumer, so avoid allocating a one-frame trace.
@@ -39,12 +39,7 @@ const CAPTURE_PORTAL_WALK: bool = false;
 /// collection depends on level loading, visibility, or receiver setup.
 pub(super) struct PreparedCapture {
     renderer: Renderer,
-    visible_cells: VisibleCells,
-    visibility_path: VisibilityPath,
-    light_reachable_cell_mask: Vec<bool>,
-    reachable_cell_aabbs: Vec<(Vec3, Vec3)>,
-    fog_reachable: Vec<u32>,
-    camera_cell: u32,
+    visible_render: VisibleRenderPreparation,
     view_proj: Mat4,
     eye: Vec3,
     forced_promotion_weights: Vec<(usize, f32)>,
@@ -80,12 +75,13 @@ impl PreparedCapture {
                 &world.light_influences,
                 &world.entity_shadow_lights,
             );
-        let geometry = LevelGeometry {
-            lights: &static_lights,
-            light_influences: &static_light_influences,
-            entity_shadow_lights: &static_entity_shadow_lights,
-            ..level_world_to_geometry(&world, &texture_materials)
-        };
+        let geometry = capture_level_geometry(
+            &world,
+            &texture_materials,
+            &static_lights,
+            &static_light_influences,
+            &static_entity_shadow_lights,
+        );
         renderer.install_level_geometry(&geometry);
         let forced_active_writes = install_forced_active_animation_descriptors(
             &mut renderer,
@@ -101,19 +97,14 @@ impl PreparedCapture {
         let eye = Vec3::from_array(scene.camera.position);
         let view_proj = capture_view_projection(&scene.camera, width, height);
         let mut scratch = Vec::new();
-        let (visibility, _frustum) = postretro_visibility::determine_visible_cells(
+        let visible_render = VisibleRenderPreparation::for_level(
+            &world,
             eye,
             view_proj,
-            &world,
             &[],
             CAPTURE_PORTAL_WALK,
             &mut scratch,
         );
-        let visible_cells = visibility.visible_cells;
-        let fog_reachable = visibility.fog_reachable;
-        let stats = visibility.stats;
-        let light_reachable_cell_mask = light_reachable_cell_mask(&world, &fog_reachable);
-        let reachable_cell_aabbs = reachable_cell_aabbs(&world, &fog_reachable);
 
         // Capture has no script context or levelLoad event. Stand up only the
         // VM-free map-authored receiver state the windowed render frame collects.
@@ -138,7 +129,7 @@ impl PreparedCapture {
         collect_capture_receiver_draws(
             &registry,
             &world,
-            &visible_cells,
+            &visible_render.visible_cells,
             eye,
             &mut mover_collector,
             &mut mesh_collector,
@@ -152,12 +143,7 @@ impl PreparedCapture {
 
         Ok(Self {
             renderer,
-            visible_cells,
-            visibility_path: stats.path,
-            light_reachable_cell_mask,
-            reachable_cell_aabbs,
-            fog_reachable,
-            camera_cell: stats.camera_cell,
+            visible_render,
             view_proj,
             eye,
             forced_promotion_weights,
@@ -169,14 +155,11 @@ impl PreparedCapture {
     /// capture path.
     pub(super) fn capture_frame(&mut self) -> Result<Vec<u8>> {
         self.renderer.capture_frame_indirect(
-            CameraCullVisibility {
-                cells: &self.visible_cells,
-                path: self.visibility_path,
-            },
-            &self.light_reachable_cell_mask,
-            &self.reachable_cell_aabbs,
-            &self.fog_reachable,
-            Some(self.camera_cell),
+            self.visible_render.camera_cull(),
+            &self.visible_render.light_reachable_cell_mask,
+            &self.visible_render.reachable_cell_aabbs,
+            &self.visible_render.fog_reachable,
+            Some(self.visible_render.stats.camera_cell),
             self.view_proj,
             self.eye,
             &[],
@@ -194,14 +177,11 @@ impl PreparedCapture {
     /// Submit and complete one prepared static sample without PNG readback.
     pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
         self.renderer.capture_measurement_frame_indirect(
-            CameraCullVisibility {
-                cells: &self.visible_cells,
-                path: self.visibility_path,
-            },
-            &self.light_reachable_cell_mask,
-            &self.reachable_cell_aabbs,
-            &self.fog_reachable,
-            Some(self.camera_cell),
+            self.visible_render.camera_cull(),
+            &self.visible_render.light_reachable_cell_mask,
+            &self.visible_render.reachable_cell_aabbs,
+            &self.visible_render.fog_reachable,
+            Some(self.visible_render.stats.camera_cell),
             self.view_proj,
             self.eye,
             &[],

@@ -62,6 +62,7 @@ pub(crate) use postretro_sim::{
 };
 
 mod render;
+mod render_preparation;
 mod runtime_movers;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
@@ -165,9 +166,7 @@ use postretro_scripting_core::runtime::{
 use postretro_scripting_core::staged_manifest::{
     StagedManifestBuildResult, StagedManifestBuildStatus,
 };
-use postretro_visibility::{
-    CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
-};
+use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 /// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
 /// author supplies one duration (mirroring `flashScreen`); the drain splits it
@@ -3729,35 +3728,27 @@ impl ApplicationHandler for App {
                     );
                 }
 
-                // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
-                let (vis_result, _frustum) = match self.level.as_ref() {
-                    Some(world) => postretro_visibility::determine_visible_cells(
+                // Portal DFS → cell IDs → renderer inputs. This stays after
+                // game and audio work; the shared preparation seam also feeds
+                // VM-free capture without changing frame order.
+                let visible_render = match self.level.as_ref() {
+                    Some(world) => render_preparation::VisibleRenderPreparation::for_level(
+                        world,
                         render_eye_position,
                         view_proj,
-                        world,
                         &self.blocked_portals,
                         capture_portal_walk,
                         &mut self.scratch_cells,
                     ),
-                    None => (
-                        VisibilityResult {
-                            visible_cells: VisibleCells::DrawAll,
-                            fog_reachable: Vec::new(),
-                            stats: VisibilityStats {
-                                camera_cell: 0,
-                                total_faces: 0,
-                                drawn_faces: 0,
-                                path: VisibilityPath::EmptyWorldFallback,
-                            },
-                        },
-                        postretro_visibility::extract_frustum_planes(view_proj),
-                    ),
+                    None => render_preparation::VisibleRenderPreparation::empty_world(),
                 };
-                let VisibilityResult {
+                let render_preparation::VisibleRenderPreparation {
                     visible_cells,
                     fog_reachable,
+                    light_reachable_cell_mask,
+                    reachable_cell_aabbs,
                     stats,
-                } = vis_result;
+                } = visible_render;
 
                 #[cfg(feature = "dev-tools")]
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -3784,48 +3775,6 @@ impl ApplicationHandler for App {
                         view_proj,
                     );
                 }
-
-                // Build the per-cell bool mask for `update_dynamic_light_slots`
-                // from the wider fog/light-reachable set so dynamic lights in
-                // empty (face_count == 0) portal-reachable cells stay
-                // eligible. Empty slice = DrawAll sentinel: keep every
-                // cell-assigned light eligible on fallback paths.
-                let light_reachable_cell_mask: Vec<bool> = match self.level.as_ref() {
-                    None => Vec::new(),
-                    Some(_) if fog_reachable.is_empty() => Vec::new(),
-                    Some(world) => {
-                        let mut mask = vec![false; world.cell_count()];
-                        for &id in &fog_reachable {
-                            let i = id as usize;
-                            if i < mask.len() {
-                                mask[i] = true;
-                            }
-                        }
-                        mask
-                    }
-                };
-
-                // AABBs of the fog/light-reachable cells — the WIDER
-                // portal-reachable set (same source as `light_reachable_cell_mask`,
-                // built from `fog_reachable`), which deliberately includes empty
-                // `face_count == 0` cells. Feeds the dynamic-light shadow-slot
-                // eligibility test: a light is shadow-eligible when its influence
-                // sphere reaches one of these reachable cells — NOT when its own
-                // cell is in the camera PVS (see
-                // `postretro_lighting::light_reaches_visible_cell`). Intentionally the wider
-                // set, not the narrower drawable `visible_cells`, so a light in an
-                // empty reachable cell still counts. Empty = DrawAll sentinel
-                // (fallback visibility paths): every light eligible.
-                let reachable_cell_aabbs: Vec<(glam::Vec3, glam::Vec3)> = match self.level.as_ref()
-                {
-                    None => Vec::new(),
-                    Some(_) if fog_reachable.is_empty() => Vec::new(),
-                    Some(world) => fog_reachable
-                        .iter()
-                        .filter_map(|&id| world.cells.get(id as usize))
-                        .map(|cell| (cell.bounds_min, cell.bounds_max))
-                        .collect(),
-                };
 
                 let presentation_viewport = self
                     .window_state
@@ -5647,17 +5596,13 @@ impl App {
         session
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
+        let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
         let present_handle = match renderer.render_frame_indirect(
             &mut session.font_system,
-            CameraCullVisibility {
-                cells: &VisibleCells::DrawAll,
-                // Frontend/splash path: no world cull. DrawAll + non-portal
-                // provenance keeps the candidate path inert regardless.
-                path: VisibilityPath::EmptyWorldFallback,
-            },
-            &[],
-            &[],
-            &[],
+            visible_render.camera_cull(),
+            &visible_render.light_reachable_cell_mask,
+            &visible_render.reachable_cell_aabbs,
+            &visible_render.fog_reachable,
             None,
             glam::Mat4::IDENTITY,
             &[],

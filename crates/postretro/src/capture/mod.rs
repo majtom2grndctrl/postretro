@@ -5,5 +5,6 @@ mod driver;
 mod prepared;
 mod report;
 mod scene;
+mod setup;
 
 pub(crate) use driver::run_capture;

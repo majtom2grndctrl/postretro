@@ -6,9 +6,9 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+#[cfg(test)]
+use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
-use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
@@ -33,9 +33,14 @@ use super::direct_sh_resources::{
 use super::sh_allocation::texture_allocation_bytes;
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, depth_moment_allocation, indirect_base_atlas_allocation,
-    indirect_base_atlas_dummy_allocation, indirect_base_atlas_empty_payload,
-    indirect_total_atlas_allocation, scripted_light_descriptor_bytes,
-    scripted_light_sample_reserve_bytes, volume_3d_fits,
+    indirect_base_atlas_dummy_allocation, indirect_total_atlas_allocation,
+    scripted_light_descriptor_bytes, scripted_light_sample_reserve_bytes, volume_3d_fits,
+};
+#[cfg(feature = "dev-tools")]
+use super::sh_atlas::base_atlas_format_label;
+use super::sh_atlas::{
+    create_total_atlas_texture, upload_compact_base_atlas_dummy, upload_compact_base_atlas_texture,
+    upload_depth_moment_texture,
 };
 use super::sh_indirection::build_probe_indirection_words;
 use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
@@ -989,99 +994,6 @@ fn dummy_depth_moment_payload() -> [u16; 4] {
 
 fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
     volume_3d_fits(grid_dimensions, limits)
-}
-
-/// Upload v11's node-aware base-volume stored-tile atlas without re-expanding it. BC6H blobs
-/// remain compressed through upload and hardware-decode only in the compose
-/// pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
-///
-fn upload_compact_base_atlas_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    section: &OctahedralShVolumeSection,
-    allocation: super::sh_allocation::TextureAllocation,
-) -> wgpu::Texture {
-    let empty_compact_atlas = indirect_base_atlas_empty_payload(section);
-    let zero_bc6h = [0u8; 16];
-    let zero_rgba16f = [0u8; 8];
-    let contents = match section.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => zero_bc6h.as_slice(),
-        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => zero_rgba16f.as_slice(),
-        IRRADIANCE_FORMAT_BC6H | IRRADIANCE_FORMAT_RGBA16F => section.compact_atlas.as_slice(),
-        unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
-    };
-
-    device.create_texture_with_data(
-        queue,
-        &allocation.descriptor(Some("SH Base Octahedral Atlas")),
-        wgpu::util::TextureDataOrder::LayerMajor,
-        contents,
-    )
-}
-
-/// Dummy for the no-usable-probes path. It is `Rgba16Float` because every
-/// compose indirection word is a sentinel, so the texture is never sampled.
-fn upload_compact_base_atlas_dummy(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    allocation: super::sh_allocation::TextureAllocation,
-) -> wgpu::Texture {
-    let zero_texel = [0u8; 8];
-    device.create_texture_with_data(
-        queue,
-        &allocation.descriptor(Some("SH Base Octahedral Atlas Dummy")),
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &zero_texel,
-    )
-}
-
-#[cfg(feature = "dev-tools")]
-fn base_atlas_format_label(format: wgpu::TextureFormat) -> &'static str {
-    match format {
-        wgpu::TextureFormat::Bc6hRgbUfloat => "BC6H",
-        wgpu::TextureFormat::Rgba16Float => "Rgba16Float",
-        _ => unreachable!("base SH atlas allocation only uses BC6H or Rgba16Float"),
-    }
-}
-
-fn upload_depth_moment_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    data_u16: &[u16],
-    allocation: super::sh_allocation::TextureAllocation,
-) -> wgpu::Texture {
-    let size = allocation.extent;
-
-    let texture = device.create_texture(&allocation.descriptor(Some("SH Depth Moments")));
-
-    let byte_slice = u16_slice_to_bytes(data_u16);
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &byte_slice,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(8 * size.width),
-            rows_per_image: Some(size.height),
-        },
-        size,
-    );
-
-    texture
-}
-
-/// Create the stored-tile total octahedral atlas texture. No data is uploaded
-/// — wgpu zero-initializes; the compose pass overwrites every stored texel.
-fn create_total_atlas_texture(
-    device: &wgpu::Device,
-    allocation: super::sh_allocation::TextureAllocation,
-    label: &str,
-) -> wgpu::Texture {
-    device.create_texture(&allocation.descriptor(Some(label)))
 }
 
 // --- Minor wgpu helper shims (local to this module) ---

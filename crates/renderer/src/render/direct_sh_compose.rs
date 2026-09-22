@@ -4,23 +4,21 @@
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
-#[cfg(feature = "dev-tools")]
-use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
-use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, DirectDeltaComposeBuffers, build_compose_grid_bytes,
-    build_direct_delta_buffers,
-};
+use postretro_render_cpu::sh_compose::{ComposeGridParams, build_compose_grid_bytes};
 
 use super::animated_direct_sh_compose::{
     AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, AnimatedDirectShPassViews,
     build_animated_direct_pass,
 };
+use super::direct_sh_compose_carrier::DirectPromotionStorage;
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
 use super::renderer_types::PromotedBakedLightState;
 use super::sh_allocation::{
-    ComposeStoragePayloads, ShAllocationKind, buffer_allocation, compose_storage_payloads,
-    probe_indirection_storage_payload,
+    ShAllocationKind, buffer_allocation, probe_indirection_storage_payload,
 };
+#[cfg(test)]
+use super::sh_compose_dispatch::should_dispatch as direct_compose_should_dispatch;
+use super::sh_compose_dispatch::{should_dispatch, whole_grid_workgroups};
 use super::sh_indirection::WGSL_DECODE_HELPER;
 use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
@@ -45,8 +43,6 @@ const DEBUG_OVERRIDE_SIZE: usize = 32;
 /// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.
 const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
 const _: () = assert!(DIRECT_COMPOSE_PARAMS_SIZE == 16);
-#[cfg(feature = "dev-tools")]
-const DIRECT_PROMOTION_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-41 promotion @group(0)";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DirectShDebugOverride {
@@ -114,49 +110,6 @@ struct DirectShComposePipeline {
     /// Present only for section-45 maps. Case 1 retains exactly one pass and
     /// writes the final sampled atlas directly.
     animated_add: Option<AnimatedDirectShComposePipeline>,
-}
-
-struct DirectPromotionStorage {
-    buffers: DirectDeltaComposeBuffers,
-    payloads: ComposeStoragePayloads,
-}
-
-impl DirectPromotionStorage {
-    fn new(delta: Option<&DirectShDeltaVolumesSection>, grid_dimensions: [u32; 3]) -> Self {
-        let delta_subblocks: &[u16] = delta.map_or(&[], |delta| delta.delta_subblocks.as_slice());
-        let buffers = build_direct_delta_buffers(delta, grid_dimensions);
-        let payloads = compose_storage_payloads(
-            ShAllocationKind::DirectComposeDeltaSubblocks,
-            ShAllocationKind::DirectComposeCompactionMetadata,
-            ShAllocationKind::DirectComposeAffinityOffsets,
-            ShAllocationKind::DirectComposeAffinityLights,
-            None,
-            delta_subblocks,
-            &buffers.compaction_meta_words(),
-            &buffers.affinity_offsets,
-            &buffers.affinity_lights,
-            None,
-        );
-        Self { buffers, payloads }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    fn footprint(&self) -> ComposeStorageFootprint {
-        ComposeStorageFootprint {
-            delta_subblocks_bytes: self.payloads.delta_subblocks.allocation.byte_len,
-            delta_compaction_meta_bytes: self.payloads.compaction_metadata.allocation.byte_len,
-            affinity_offsets_bytes: self.payloads.affinity_offsets.allocation.byte_len,
-            affinity_lights_bytes: self.payloads.affinity_lights.allocation.byte_len,
-            // The id-41 promotion pass has no descriptor-index binding. Case
-            // 2's id-45 animated-add storage belongs to its sibling pass.
-            animation_descriptor_indices_bytes: 0,
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    fn log_footprint(&self) {
-        self.footprint().log(DIRECT_PROMOTION_FOOTPRINT_LABEL);
-    }
 }
 
 pub(crate) struct DirectShComposeResources {
@@ -362,7 +315,7 @@ impl DirectShComposeResources {
             }
         }
 
-        if !direct_compose_should_dispatch(
+        if !should_dispatch(
             active,
             pipeline.pending_copy_through,
             pipeline.was_active,
@@ -377,9 +330,7 @@ impl DirectShComposeResources {
         // construction-time default mask.
         let light_term_mask_bytes = direct_compose_params_bytes(frame_light_term_mask);
         queue.write_buffer(&pipeline.light_term_mask_buffer, 0, &light_term_mask_bytes);
-        let wg_x = pipeline.dispatch_dimensions[0].max(1);
-        let wg_y = pipeline.dispatch_dimensions[1].max(1);
-        let wg_z = pipeline.dispatch_dimensions[2].max(1);
+        let [wg_x, wg_y, wg_z] = whole_grid_workgroups(pipeline.dispatch_dimensions);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Direct SH Compose"),
@@ -795,16 +746,6 @@ fn direct_compose_params_bytes(mask: LightTermMask) -> [u8; DIRECT_COMPOSE_PARAM
     bytes
 }
 
-fn direct_compose_should_dispatch(
-    active: bool,
-    pending_copy_through: bool,
-    was_active: bool,
-    frame_light_term_mask: LightTermMask,
-    last_composed_mask: LightTermMask,
-) -> bool {
-    active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,7 +890,7 @@ mod tests {
         for (label, source, borrowed_payload) in [
             (
                 "id 41",
-                include_str!("direct_sh_compose.rs"),
+                include_str!("direct_sh_compose_carrier.rs"),
                 "delta.map_or(&[], |delta| delta.delta_subblocks.as_slice())",
             ),
             (

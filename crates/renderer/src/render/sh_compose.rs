@@ -14,6 +14,9 @@ use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, compose_origin_bytes, compose_storage_payloads,
     probe_indirection_storage_payload,
 };
+#[cfg(test)]
+use super::sh_compose_dispatch::should_dispatch as indirect_compose_should_dispatch;
+use super::sh_compose_dispatch::{should_dispatch, whole_grid_workgroups};
 use super::sh_indirection::WGSL_DECODE_HELPER;
 use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
@@ -452,7 +455,7 @@ impl ShComposeResources {
         frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        if !indirect_compose_should_dispatch(
+        if !should_dispatch(
             active,
             self.pending_copy_through,
             self.was_active,
@@ -470,9 +473,7 @@ impl ShComposeResources {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, uniform_bind_group, &[]);
             pass.set_bind_group(1, &self.bind_group, &[]);
-            let wg_x = self.dispatch_dimensions[0].max(1);
-            let wg_y = self.dispatch_dimensions[1].max(1);
-            let wg_z = self.dispatch_dimensions[2].max(1);
+            let [wg_x, wg_y, wg_z] = whole_grid_workgroups(self.dispatch_dimensions);
             pass.dispatch_workgroups(wg_x, wg_y, wg_z);
         }
 
@@ -480,16 +481,6 @@ impl ShComposeResources {
         self.was_active = active;
         self.last_composed_mask = frame_light_term_mask;
     }
-}
-
-fn indirect_compose_should_dispatch(
-    active: bool,
-    pending_copy_through: bool,
-    was_active: bool,
-    frame_light_term_mask: LightTermMask,
-    last_composed_mask: LightTermMask,
-) -> bool {
-    active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
 }
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {

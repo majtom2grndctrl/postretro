@@ -190,83 +190,7 @@ impl Renderer {
             self.full_mut().light_effective_brightness = eff_brightness;
             self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
-            #[cfg(feature = "dev-tools")]
-            let direct_sh_debug_override = self.full().direct_sh_debug_override;
-            #[cfg(not(feature = "dev-tools"))]
-            let direct_sh_debug_override = DirectShDebugOverride::default();
-            #[cfg(feature = "dev-tools")]
-            let animated_direct_sh_debug_override = self.full().animated_direct_sh_debug_override;
-            #[cfg(not(feature = "dev-tools"))]
-            let animated_direct_sh_debug_override = AnimatedDirectShDebugOverride::default();
-            let full = self.full();
-            let direct_sh_active = full
-                .promoted_static_weights
-                .iter()
-                .any(|weight| *weight > 0.0)
-                || full
-                    .promoted_animated_states
-                    .iter()
-                    .any(|state| state.weight > 0.0)
-                || full
-                    .sh_volume_resources
-                    .direct
-                    .has_active_animated_descriptor(&full.sh_volume_resources.animation)
-                || direct_sh_debug_override.active()
-                || animated_direct_sh_debug_override.active();
-            // This intentionally keys on descriptor activity rather than the
-            // curve's current evaluated scale: an active zero-valued curve
-            // still needs composition for a later nonzero sample.
-            let billboard_direct_scatter_active = full
-                .sh_volume_resources
-                .billboard_direct_scatter
-                .has_active_animated_descriptor(&full.sh_volume_resources.animation);
-            let frame_light_term_mask = self.frame_light_term_mask();
-            {
-                let Self { queue, full, .. } = self;
-                let full = full
-                    .as_mut()
-                    .expect("renderer full-init must complete before full-ready paths run");
-                let direct_sh_ts = full
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_DIRECT_SH_COMPOSE));
-                let animated_direct_sh_ts = full
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE));
-                let billboard_direct_scatter_ts = full
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE));
-                full.direct_sh_compose.dispatch_if_needed(
-                    queue,
-                    encoder,
-                    DirectShComposeFrameInputs {
-                        uniform_bind_group: &full.uniform_bind_group,
-                        active: direct_sh_active,
-                        light_term_mask: frame_light_term_mask,
-                        debug_overrides: DirectShComposeDebugOverrides {
-                            promotion: direct_sh_debug_override,
-                            animated: animated_direct_sh_debug_override,
-                        },
-                        animated_promotion_states: &full.promoted_animated_states,
-                        timestamp_writes: DirectShComposeTimestampWrites {
-                            promotion: direct_sh_ts,
-                            animated: animated_direct_sh_ts,
-                        },
-                    },
-                );
-                // Shares the already-flushed descriptor/sample buffers with
-                // animated direct SH. This stays before every billboard draw,
-                // so its initial copy-through is visible on the first frame.
-                full.billboard_direct_scatter_compose.dispatch_if_needed(
-                    encoder,
-                    &full.uniform_bind_group,
-                    billboard_direct_scatter_active,
-                    frame_light_term_mask,
-                    billboard_direct_scatter_ts,
-                );
-            }
+            self.record_direct_sh_pre_scene_compute(encoder);
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------
@@ -1028,19 +952,31 @@ mod tests {
             "animated direct-SH and direct scatter must share one descriptor flush"
         );
 
-        let render = include_str!("renderer_render_frame.rs");
-        let direct = render
+        let pre_scene = include_str!("renderer_pre_scene.rs");
+        let direct = pre_scene
             .find("full.direct_sh_compose.dispatch_if_needed(")
             .expect("direct-SH compose dispatch must remain present");
-        let scatter = render
+        let scatter = pre_scene
             .find("full.billboard_direct_scatter_compose.dispatch_if_needed(")
             .expect("scatter compose dispatch must be recorded");
+        assert!(
+            direct < scatter,
+            "direct-SH composition must precede billboard scatter composition"
+        );
+
+        let render = include_str!("renderer_render_frame.rs");
+        let slot_assignment = render
+            .find("self.update_dynamic_light_slots_with_capture_overrides(")
+            .expect("dynamic-light slot assignment must remain present");
+        let direct_pre_scene = render
+            .find("self.record_direct_sh_pre_scene_compute(encoder)")
+            .expect("direct/scatter pre-scene helper must be recorded");
         let sprites = render
             .find("label: Some(\"Billboard Sprite Pass\")")
             .expect("billboard draw pass must remain present");
         assert!(
-            direct < scatter && scatter < sprites,
-            "shared descriptors must flush, then direct/scatter composition must finish before the first billboard draw"
+            slot_assignment < direct_pre_scene && direct_pre_scene < sprites,
+            "shared descriptors must flush, then direct/scatter composition must finish after slot assignment and before the first billboard draw"
         );
     }
 }

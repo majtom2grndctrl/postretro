@@ -11,6 +11,7 @@ mod debug_lines;
 #[cfg(feature = "dev-tools")]
 mod debug_ui;
 mod direct_sh_compose;
+mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
 mod fog_pass;
@@ -25,7 +26,9 @@ mod screen_effects;
 mod sdf_atlas;
 mod sdf_shadow;
 mod sh_allocation;
+mod sh_atlas;
 mod sh_compose;
+mod sh_compose_dispatch;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
 mod sh_indirection;
@@ -58,6 +61,7 @@ mod renderer_light_slots;
 mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_models;
+mod renderer_pre_scene;
 mod renderer_render_frame;
 mod renderer_resources;
 mod renderer_shadow_passes;

@@ -19,7 +19,7 @@ slice by owner decision.
 | 10 synchronous runtime thin path | Done | `86c94c928`, `340db5a8e`, `1367d938e` | 16 focused app tests; 834 app tests (2 ignored); 206 loader tests; 569 renderer tests (1 ignored); workspace check; fmt; focused code review approved; attended Mac startup exposed and motivated shader-entry and small-map floor fixes; full workspace tests pass after floor fix; visual GPU proof remains open |
 | 11 bounded async read/decode | Done | `3795e4bd2` | delayed 250 ms positional-reader tests in app and loader; completion identity/permit regression; postretro check/build; full workspace `cargo test`; fmt; strict Clippy blocked by four pre-existing level-format warnings |
 | 12 eviction, growth, hysteresis, diagnostics | Done | `ad08733a7` | 20 controller policy tests, 2 renderer release-order tests, capture JSON test, shared-target app/renderer/loader check, full workspace `cargo test`, fmt, focused code review; strict Clippy blocked by four pre-existing level-format warnings |
-| 13 integrated proof and measurement | Pending | — | — |
+| 13 integrated proof and measurement | Done with GPU evidence not-yet-evaluable | `55ceb8a3d` | 536 MiB whole versus 264 MiB streamed pure allocation fixture; app/controller/worker, loader, 1-vs-4 compiler determinism, legacy-body, and renderer binding-budget focused tests; postretro check and fmt; bounded Mac attempt stopped during rebuild before engine launch; no sampled GPU frame |
 
 After each completed phase, check workspace free space. If it falls below
 10 GiB, clean only explicit PostRetro Cargo crates with `cargo clean -p`.
@@ -73,3 +73,15 @@ async mode enables the eviction policy. Renderer-confirmed releases drive the
 controller ledger. Capture reports exact current host-phase bytes and explicit
 high-water *upper bounds* because worker and controller ledgers have independent
 historical maxima.
+
+During Phase 8, free space approached the 10 GiB gate before additional Cargo
+checks. With Cargo idle, an anticipatory crate-scoped cleanup of `postretro`,
+`postretro-renderer`, `postretro-level-loader`, `postretro-level-format`,
+`postretro-level-compiler`, `postretro-render-cpu`, and `postretro-render-data`
+removed 60,721 rebuildable files (Cargo reported 19.2 GiB); free space rose to
+about 23.5 GiB. No source, map, report, or worktree files were removed.
+
+Phase 8 disk gate: 20.79 GiB available after the focused rebuild and Task 13
+checkpoint; no further cleanup needed. GPU frame-time, seam, and retirement
+observations are explicitly not-yet-evaluable on this host rather than treated
+as a failing implementation gate; see `measurements/sh-probe-streaming/cluster-residency.md`.

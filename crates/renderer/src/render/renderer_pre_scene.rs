@@ -169,7 +169,7 @@ impl Renderer {
     pub(super) fn record_direct_sh_pre_scene_compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-    ) {
+    ) -> bool {
         #[cfg(feature = "dev-tools")]
         let direct_sh_debug_override = self.full().direct_sh_debug_override;
         #[cfg(not(feature = "dev-tools"))]
@@ -223,8 +223,8 @@ impl Renderer {
             .frame_timing
             .as_ref()
             .map(|t| t.compute_pass_writes(TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE));
-        if let Some(streaming) = full.sh_streaming.as_mut() {
-            if let Err(error) = streaming.dispatch_direct_compose(
+        let compose_succeeded = if let Some(streaming) = full.sh_streaming.as_mut() {
+            match streaming.dispatch_direct_compose(
                 queue,
                 encoder,
                 &full.uniform_bind_group,
@@ -236,10 +236,13 @@ impl Renderer {
                 direct_sh_ts,
                 animated_direct_sh_ts,
             ) {
-                // Leave the compose epoch unchanged. The next drain therefore
-                // retains miss-safe sampled words instead of promoting a
-                // partially encoded direct atlas.
-                log::error!("[Renderer] streamed direct SH compose deferred: {error}");
+                Ok(()) => true,
+                Err(error) => {
+                    // Keep this frame's sampled mirror miss-safe and report
+                    // that the app must not publish newly accepted clusters.
+                    log::error!("[Renderer] streamed direct SH compose failed: {error}");
+                    false
+                }
             }
         } else {
             full.direct_sh_compose.dispatch_if_needed(
@@ -260,7 +263,8 @@ impl Renderer {
                     },
                 },
             );
-        }
+            true
+        };
         // Shares the already-flushed descriptor/sample buffers with animated
         // direct SH. This stays before every billboard draw, so its initial
         // copy-through is visible on the first frame.
@@ -271,6 +275,7 @@ impl Renderer {
             frame_light_term_mask,
             billboard_direct_scatter_ts,
         );
+        compose_succeeded
     }
 
     /// Pre-scene compute work encoded before any render pass: BVH/visibility cull,
@@ -283,7 +288,7 @@ impl Renderer {
         view_proj: Mat4,
         render_world: bool,
         frame_light_term_mask: LightTermMask,
-    ) {
+    ) -> bool {
         let visible: &VisibleCells = cam_vis.cells;
         let Self {
             device,
@@ -500,10 +505,8 @@ impl Renderer {
                     frame_light_term_mask,
                     sh_compose_ts,
                 ) {
-                    // The sampled mirror remains on the previous composed
-                    // generation, so a bounded dispatch rejection is a miss
-                    // rather than an uninitialized sample.
-                    log::error!("[Renderer] streamed SH compose was deferred: {error}");
+                    log::error!("[Renderer] streamed indirect SH compose failed: {error}");
+                    return false;
                 }
             } else {
                 let indirect_active = full
@@ -518,5 +521,6 @@ impl Renderer {
                 );
             }
         }
+        true
     }
 }

@@ -1470,12 +1470,6 @@ pub(crate) struct ConnectedClientTriggerPoolInstallFixture {
 }
 
 #[cfg(test)]
-pub(crate) fn install_connected_client_trigger_pool_fixture_for_test()
--> ConnectedClientTriggerPoolInstallFixture {
-    tests::install_connected_client_trigger_pool_fixture()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, VecDeque};
@@ -1734,6 +1728,7 @@ mod tests {
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
                 sh_streaming: None,
+                sh_worker_retirement: None,
                 options_bridge: options::OptionsBridge::new(),
                 player_options: options::PlayerOptions::default(),
                 settings_path: None,

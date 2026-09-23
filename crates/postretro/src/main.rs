@@ -4421,6 +4421,7 @@ impl ApplicationHandler for App {
                             return;
                         }
                     };
+                    let compose_submitted = sh_frame_result.compose_submitted;
                     if let Err(err) =
                         session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer)
                     {
@@ -4436,7 +4437,7 @@ impl ApplicationHandler for App {
                             return;
                         }
                     };
-                    session.mark_sh_streaming_compose_submitted(present_handle.is_some());
+                    session.mark_sh_streaming_compose_submitted(compose_submitted);
                     // Read back the focus rect list the renderer just exported
                     // for the top stack layer (the gameplay render above laid it
                     // out). The focus engine consumes it next frame's game-logic
@@ -5664,6 +5665,7 @@ impl App {
                 return;
             }
         };
+        let compose_submitted = sh_frame_result.compose_submitted;
         if let Err(err) = session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer) {
             self.exit_result = Err(err);
             event_loop.exit();
@@ -5677,7 +5679,7 @@ impl App {
                 return;
             }
         };
-        session.mark_sh_streaming_compose_submitted(present_handle.is_some());
+        session.mark_sh_streaming_compose_submitted(compose_submitted);
         let exported_rects = renderer.export_ui_focus_rects();
         if let Some(session) = self.session.as_mut() {
             session.ui_focus_rects = Some(exported_rects);
@@ -8656,6 +8658,28 @@ mod tests {
     };
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::runtime::ScriptRuntimeConfig;
+
+    // Regression: a streamed compose encode failure used to be hidden behind
+    // a successful surface acquisition and incorrectly published the install.
+    #[test]
+    fn windowed_app_uses_renderer_compose_submission_not_present_success() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("main test module marker remains present")
+            .0;
+        assert!(
+            !production.contains("mark_sh_streaming_compose_submitted(present_handle.is_some())"),
+            "surface acquisition/presentation is not proof that SH compose encoded"
+        );
+        assert_eq!(
+            production
+                .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
+                .count(),
+            2,
+            "gameplay and frontend paths must consume the renderer-owned signal"
+        );
+    }
 
     // A connected client skips the global clean-exit save; its private
     // per-owner path remains enabled. Single-player and the host save both.

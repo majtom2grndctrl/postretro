@@ -117,6 +117,10 @@ Lights come from PRL data via the light bridge, not classname dispatch. Entity t
 ## 4. Runtime Load/Unload
 
 Runtime level requests drain at the redraw boundary before gameplay/world work for that frame.
+Streamed-SH reload cancellation never joins a live positional read on that boundary. The old
+four-worker pool retires cooperatively; the next pool starts only after all old handles join,
+so generations never overlap and process/session teardown still releases the retained file
+after worker join.
 
 | Request | State behavior |
 |---------|----------------|

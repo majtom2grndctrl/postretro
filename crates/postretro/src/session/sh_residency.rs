@@ -17,7 +17,7 @@ use postretro_renderer::ShStreamingLifecycleSummary;
 use postretro_renderer::{Renderer, ShResidencySnapshot};
 use postretro_visibility::VisibleCells;
 
-use super::sh_async_workers::ShAsyncWorkers;
+use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement};
 #[cfg(feature = "capture")]
 use crate::sh_streaming::budget::BytePhase;
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
@@ -60,9 +60,6 @@ impl ShStreamingSession {
         )?;
         let mut session = Self::from_snapshot(manifest.clone(), snapshot)?;
         session.mode = mode;
-        if mode == ShStreamingMode::Async {
-            session.workers = Some(ShAsyncWorkers::new(manifest)?);
-        }
         Ok(session)
     }
 
@@ -93,6 +90,17 @@ impl ShStreamingSession {
 
     fn is_for_manifest(&self, manifest: &Arc<ShStreamManifest>) -> bool {
         Arc::ptr_eq(&self.manifest, manifest)
+    }
+
+    fn start_async_workers(&mut self) -> Result<()> {
+        if self.mode == ShStreamingMode::Async && self.workers.is_none() {
+            self.workers = Some(ShAsyncWorkers::new(self.manifest.clone())?);
+        }
+        Ok(())
+    }
+
+    fn begin_worker_retirement(&mut self) -> Option<ShWorkerRetirement> {
+        self.workers.as_mut().map(ShAsyncWorkers::begin_retirement)
     }
 
     /// Updates the controller from one real visibility result. Capture uses
@@ -252,10 +260,12 @@ impl ShStreamingSession {
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
         self.update_targets(visible_cells, monotonic_seconds)?;
-        let workers = self
-            .workers
-            .as_ref()
-            .context("[SH streaming] async workers absent")?;
+        let Some(workers) = self.workers.as_ref() else {
+            // A prior generation may still be finishing an uncancellable OS
+            // read. Publish target deltas and miss fallback without waiting;
+            // the session starts this generation's four workers after join.
+            return self.prepare_batch();
+        };
         while let Some(completion) = workers.try_completion().map_err(anyhow::Error::msg)? {
             if !self
                 .controller
@@ -317,7 +327,26 @@ impl super::Session {
     /// a fresh nonzero residency generation, even when its content bytes match
     /// the prior map.
     pub(crate) fn clear_sh_streaming(&mut self) {
-        self.sh_streaming = None;
+        self.poll_sh_worker_retirement();
+        if let Some(mut streaming) = self.sh_streaming.take()
+            && let Some(retirement) = streaming.begin_worker_retirement()
+        {
+            debug_assert!(
+                self.sh_worker_retirement.is_none(),
+                "a replacement worker pool cannot overlap retirement"
+            );
+            self.sh_worker_retirement = Some(retirement);
+        }
+    }
+
+    fn poll_sh_worker_retirement(&mut self) {
+        let finished = self
+            .sh_worker_retirement
+            .as_mut()
+            .is_some_and(ShWorkerRetirement::try_finish);
+        if finished {
+            self.sh_worker_retirement = None;
+        }
     }
 
     /// Creates/replaces the session controller for a streamed map, updates it
@@ -330,6 +359,7 @@ impl super::Session {
         visible_cells: &VisibleCells,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
+        self.poll_sh_worker_retirement();
         let Some(manifest) = manifest else {
             self.clear_sh_streaming();
             return Ok(ShDrainBatch::default());
@@ -343,9 +373,8 @@ impl super::Session {
             .as_ref()
             .is_none_or(|streaming| !streaming.is_for_manifest(manifest) || streaming.mode != mode);
         if needs_replacement {
-            // Join the old generation before creating a new four-worker pool.
-            // Assignment would evaluate the replacement first and briefly run
-            // eight readers across a reload.
+            // Cancel the old generation now. Its handles retire off the frame
+            // path; the replacement pool starts only after they have joined.
             self.clear_sh_streaming();
             self.sh_streaming = Some(ShStreamingSession::from_renderer_with_mode(
                 manifest.clone(),
@@ -358,6 +387,9 @@ impl super::Session {
             .sh_streaming
             .as_mut()
             .expect("streaming controller initialized above");
+        if mode == ShStreamingMode::Async && self.sh_worker_retirement.is_none() {
+            streaming.start_async_workers()?;
+        }
         match mode {
             ShStreamingMode::SyncProof => {
                 streaming.prepare_sync_proof_batch(visible_cells, monotonic_seconds)

@@ -242,7 +242,7 @@ impl PreparedCapture {
         )?;
         if let Some(streaming) = self.sh_streaming.as_mut() {
             streaming.apply_outcome(result.outcome, &self.renderer)?;
-            if result.frame.is_ok() {
+            if result.compose_submitted {
                 streaming.mark_compose_submitted();
             }
         }
@@ -273,7 +273,7 @@ impl PreparedCapture {
         )?;
         if let Some(streaming) = self.sh_streaming.as_mut() {
             streaming.apply_outcome(result.outcome, &self.renderer)?;
-            if result.frame.is_ok() {
+            if result.compose_submitted {
                 streaming.mark_compose_submitted();
             }
         }

@@ -95,3 +95,16 @@ level-format and loader, but stops on 24 renderer findings (mostly pre-existing
 high-arity GPU APIs and mechanical lint suggestions). Phase-end disk check:
 14.5 GiB available; no cleanup needed. Final review panel and plan landing
 remain pending an allowance/owner-scope decision, not a code or test failure.
+
+Review-panel checkpoint (2026-09-23): the async session and renderer handoff
+slices found three substantive lifecycle gaps. Reload now cancels and retires
+workers without joining an in-flight positional read on the frame path, while
+retaining the old manifest/file and delaying the replacement pool until all four
+workers finish. Renderer compose success now reaches the app/capture promotion
+latch; a presented or read-back frame alone is not a successful compose.
+Malformed over-cap or duplicate-ready drain batches reject before renderer
+residency mutation. Focused delayed-read/reload, batch, and promotion-signal
+regressions pass; touched-crate checks, `cargo fmt --check`, and full workspace
+`cargo test` pass. Strict Clippy still stops on the same 24 renderer findings.
+The panel has reviewed two bounded slices, not the entire branch. Phase-end
+disk gate: about 11 GiB available, so no cleanup was needed.

@@ -51,6 +51,7 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 
 mod sh_async_workers;
 pub(crate) mod sh_residency;
+use sh_async_workers::ShWorkerRetirement;
 use sh_residency::ShStreamingSession;
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
@@ -190,6 +191,10 @@ pub(crate) struct Session {
     /// until the first streaming frame can observe the renderer's real pool
     /// allocation snapshot.
     pub(crate) sh_streaming: Option<ShStreamingSession>,
+
+    /// Cancelled prior-generation workers. The frame path polls these handles
+    /// and never joins a live positional read; session teardown still joins.
+    pub(crate) sh_worker_retirement: Option<ShWorkerRetirement>,
 
     // --- Remaining session state: player options, settings path, frontend
     // declaration, net endpoint, audio subsystem, and (dev-tools) debug-UI. ---
@@ -560,6 +565,7 @@ impl Session {
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
             hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
             sh_streaming: None,
+            sh_worker_retirement: None,
             player_options,
             options_bridge: options::OptionsBridge::new(),
             settings_path,

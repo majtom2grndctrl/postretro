@@ -741,10 +741,10 @@ mod tests {
         );
         assert_eq!(
             source
-                .matches("if (output_is_stored && use_indirect_animated)")
+                .matches("if (output_is_stored && use_indirect_animated && local_probe_is_kept(cell_index, local_probe))")
                 .count(),
             1,
-            "dense L0 delta accumulation must be gated per valid output; coarsened L1/L2 uses the uniform gate asserted below so every workgroup invocation reaches its barriers",
+            "dense L0 delta accumulation must require the animated term and a kept sparse probe; coarsened L1/L2 uses the uniform gate asserted below so every workgroup invocation reaches its barriers",
         );
         let coarsened_delta_path = source
             .split("    } else {\n        // Coarsened L1/L2 cells")

@@ -1180,6 +1180,40 @@ fn sh_sampling_and_compose_use_the_physical_tile_stride_without_new_bindings() {
     );
 }
 
+#[test]
+fn sparse_l0_compose_reads_only_probes_kept_by_its_delta_family() {
+    // Regression: a valid id-50 CSR entry can have zero tiles while the base probe is stored.
+    for (label, source, gate) in [
+        (
+            "id27",
+            include_str!("../../shaders/sh_compose.wgsl"),
+            "output_is_stored && use_indirect_animated",
+        ),
+        (
+            "id41",
+            include_str!("../../shaders/direct_sh_compose.wgsl"),
+            "output_is_stored && use_promotion_subtraction",
+        ),
+        (
+            "id45",
+            include_str!("../../shaders/animated_direct_sh_compose.wgsl"),
+            "output_is_stored",
+        ),
+    ] {
+        let l0 = source
+            .split("if (level == 0u) {")
+            .nth(1)
+            .and_then(|rest| rest.split("} else").next())
+            .unwrap_or_else(|| panic!("{label} needs an L0 compose branch"));
+        assert!(
+            l0.contains(&format!(
+                "if ({gate} && local_probe_is_kept(cell_index, local_probe))"
+            )),
+            "{label} must skip sparse entries with no tile for this probe"
+        );
+    }
+}
+
 fn wgsl_struct_span(source: &str, name: &str, label: &str) -> u32 {
     let module = naga::front::wgsl::parse_str(source)
         .unwrap_or_else(|err| panic!("{label} should parse as WGSL: {err}"));

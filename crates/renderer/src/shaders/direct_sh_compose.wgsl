@@ -421,7 +421,7 @@ fn compose_main(
         // retains valid brick corners in kept-rank order; base atlases id-34 and
         // id-35 share eight reserved zero-filled L1 corner slots. Avoid loading 64
         // tiles into shared memory.
-        if (output_is_stored && use_promotion_subtraction) {
+        if (output_is_stored && use_promotion_subtraction && local_probe_is_kept(cell_index, local_probe)) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let w = selection_weight(affinity_lights[entry]);

@@ -1296,9 +1296,9 @@ mod tests {
         let coarsened_path = &source[coarsened_start..output_start];
 
         assert!(
-            dense_path.contains("if (output_is_stored && use_promotion_subtraction)")
+            dense_path.contains("if (output_is_stored && use_promotion_subtraction && local_probe_is_kept(cell_index, local_probe))")
                 && dense_path.contains("read_delta_texel("),
-            "the combined bit-3/bit-5 guard must wrap dense L0 delta reads",
+            "the combined bit-3/bit-5 and sparse kept-probe guards must wrap dense L0 delta reads",
         );
         assert!(
             coarsened_path.starts_with("    } else if (use_promotion_subtraction) {")

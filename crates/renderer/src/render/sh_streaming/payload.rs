@@ -199,3 +199,65 @@ pub(super) fn parse_sparse_rows(
 
     Ok(rows)
 }
+
+pub(super) fn sparse_offsets_fit_allocation(
+    offsets: &[u32],
+    allocation_start: u32,
+    tile_f16_count: u32,
+) -> bool {
+    let Some(allocation_end) = allocation_start.checked_add(tile_f16_count) else {
+        return false;
+    };
+    if offsets.is_empty() {
+        return tile_f16_count == 0;
+    }
+    if offsets[0] != allocation_start {
+        return false;
+    }
+    offsets
+        .windows(2)
+        .all(|pair| pair[0] <= pair[1] && pair[1] <= allocation_end)
+        && offsets
+            .last()
+            .is_none_or(|&offset| offset <= allocation_end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_zero_tile_entry_at_allocation_end_is_valid_but_positive_overrun_is_not() {
+        // Regression: compiler-emitted id-50 rows can retain a light with no kept tiles.
+        let mut block = Vec::new();
+        for word in [1u32, 2, 108, 0, 8, 0, 2, 1, 7, 0, 108, 0, 9, 108, 0, 0] {
+            block.extend_from_slice(&word.to_le_bytes());
+        }
+        block.resize(block.len() + 108 * 2, 0);
+        let rows = parse_sparse_rows(0, &block).unwrap();
+        let row = &rows[0];
+        assert_eq!(row.entry_tile_f16_offsets, [0, 108]);
+        assert_eq!(row.tile_f16_count, 108);
+        assert!(sparse_offsets_fit_allocation(
+            &[4, 112],
+            4,
+            row.tile_f16_count
+        ));
+        // Moving the second start to 113 would extend the positive first entry past 108 halves.
+        assert!(!sparse_offsets_fit_allocation(
+            &[4, 113],
+            4,
+            row.tile_f16_count
+        ));
+
+        let mut empty_block = Vec::new();
+        for word in [1u32, 1, 0, 0, 9, 0, 1, 1, 7, 0, 0, 0] {
+            empty_block.extend_from_slice(&word.to_le_bytes());
+        }
+        let empty_row = parse_sparse_rows(0, &empty_block).unwrap();
+        assert_eq!(empty_row[0].tile_f16_count, 0);
+        assert_eq!(empty_row[0].entry_tile_f16_offsets, [0]);
+        assert!(sparse_offsets_fit_allocation(&[0], 0, 0));
+        assert!(!sparse_offsets_fit_allocation(&[], 0, 1));
+    }
+}

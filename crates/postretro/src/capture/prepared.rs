@@ -293,8 +293,13 @@ impl PreparedCapture {
         self.renderer.capture_measurement_timing_state()
     }
 
-    pub(super) fn sh_residency_report(&self) -> Option<ShResidencyReport> {
-        self.renderer.sh_residency_report()
+    pub(super) fn sh_residency_report(&self) -> Result<Option<ShResidencyReport>> {
+        let report = self.renderer.sh_residency_report();
+        let Some(streaming) = self.sh_streaming.as_ref() else {
+            return Ok(report);
+        };
+        let lifecycle = streaming.residency_lifecycle_summary()?;
+        Ok(report.map(|report| report.with_streaming_lifecycle_summary(lifecycle)))
     }
 
     pub(super) const fn resolution(&self) -> [u32; 2] {

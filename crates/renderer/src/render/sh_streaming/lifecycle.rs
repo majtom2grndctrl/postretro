@@ -25,16 +25,29 @@ impl ShResidencyState {
         self.apply_targets(queue, &batch)?;
         self.release_retired_generations();
         self.promote_completed(queue)?;
-        for cluster_id in &batch.evictions {
-            // Target membership is authoritative for the active generation.
-            // A delayed eviction that still names a current target must not
-            // tear down lighting that a newer target-reset/delta retained.
-            if !self.targets.contains(cluster_id) {
-                self.evict(queue, *cluster_id)?;
+        let mut outcome = ShDrainOutcome::default();
+        // A dependent and its canonical owner may depart in the same batch.
+        // Compute the release sequence against the installed graph first, so
+        // numeric cluster order cannot evict an owner before its halo. A
+        // target-dependent owner is absent from this sequence and remains
+        // pinned without making the app-side logical ledger guess.
+        let requested_evictions: BTreeSet<u32> = batch.evictions.into_iter().collect();
+        let installed: BTreeSet<u32> = self.installed.keys().copied().collect();
+        for cluster_id in dependent_first_release_order(
+            &requested_evictions,
+            &self.targets,
+            &installed,
+            &self.owner_dependencies,
+        ) {
+            self.evict(queue, cluster_id)?;
+            // `evict` rechecks live ownership while mutating rows. Report a
+            // confirmed release only after its installed record is actually
+            // gone; the app uses this outcome to retire its logical ledger.
+            if !self.installed.contains_key(&cluster_id) {
+                outcome.evicted.push(cluster_id);
             }
         }
-
-        let mut outcome = ShDrainOutcome::default();
+        outcome.evicted.sort_unstable();
         for prepared in batch.ready {
             let cluster_id = prepared.chunk.cluster_id;
             if prepared.generation != self.generation
@@ -201,5 +214,73 @@ impl ShResidencyState {
             )?;
         }
         Ok(())
+    }
+}
+
+/// Return the subset that can actually leave this drain, in dependency order.
+/// A renderer does not manufacture ownership transfers: an owner stays alive
+/// whenever any installed dependent still names it, including a dependent that
+/// remains targeted and was never itself requested for eviction.
+fn dependent_first_release_order(
+    requested: &BTreeSet<u32>,
+    targets: &BTreeSet<u32>,
+    installed: &BTreeSet<u32>,
+    owner_dependencies: &[BTreeSet<u32>],
+) -> Vec<u32> {
+    let mut remaining: BTreeSet<_> = requested
+        .iter()
+        .copied()
+        .filter(|cluster_id| !targets.contains(cluster_id) && installed.contains(cluster_id))
+        .collect();
+    let mut live = installed.clone();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    loop {
+        let releasable: Vec<_> = remaining
+            .iter()
+            .copied()
+            .filter(|&candidate| {
+                !live.iter().any(|&dependent| {
+                    dependent != candidate
+                        && owner_dependencies
+                            .get(dependent as usize)
+                            .is_some_and(|owners| owners.contains(&candidate))
+                })
+            })
+            .collect();
+        if releasable.is_empty() {
+            return ordered;
+        }
+        for cluster_id in releasable {
+            remaining.remove(&cluster_id);
+            live.remove(&cluster_id);
+            ordered.push(cluster_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_order_keeps_an_owner_pinned_until_its_departed_halo_leaves() {
+        let order = dependent_first_release_order(
+            &BTreeSet::from([0, 1]),
+            &BTreeSet::new(),
+            &BTreeSet::from([0, 1]),
+            &[BTreeSet::new(), BTreeSet::from([0])],
+        );
+        assert_eq!(order, vec![1, 0]);
+    }
+
+    #[test]
+    fn release_order_refuses_an_owner_needed_by_a_targeted_halo() {
+        let order = dependent_first_release_order(
+            &BTreeSet::from([0]),
+            &BTreeSet::from([1]),
+            &BTreeSet::from([0, 1]),
+            &[BTreeSet::new(), BTreeSet::from([0])],
+        );
+        assert!(order.is_empty());
     }
 }

@@ -3,6 +3,7 @@ use crate::sh_streaming::generation::FixedGenerationClock;
 use glam::{Mat4, Vec3};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
+use postretro_test_log_capture::LogCapture;
 use postretro_visibility::VisibleCells;
 
 fn topology(
@@ -29,6 +30,22 @@ fn controller(topology: PlannerTopology) -> ShResidencyController {
     ShResidencyController::for_test(topology, &FixedGenerationClock::new(1)).unwrap()
 }
 
+fn controller_with_nominal_budget(
+    topology: PlannerTopology,
+    nominal_cluster_bytes: u64,
+) -> ShResidencyController {
+    ShResidencyController::for_test_with_budget(
+        topology,
+        &FixedGenerationClock::new(1),
+        ShGpuBudgetInputs {
+            fixed: FixedGpuCharges::default(),
+            renderer_effective_floor_bytes: Some(nominal_cluster_bytes),
+            ..ShGpuBudgetInputs::default()
+        },
+    )
+    .unwrap()
+}
+
 fn prepared(controller: &ShResidencyController, cluster_id: u32) -> PreparedShCluster {
     PreparedShCluster {
         generation: controller.generation(),
@@ -50,6 +67,14 @@ fn queue_ready(controller: &mut ShResidencyController, expected_cluster: u32) {
             .unwrap(),
         ShDrainAdmission::Ready
     );
+}
+
+fn mark_sampleable(controller: &mut ShResidencyController, cluster_id: u32) {
+    controller.states[cluster_id as usize].state = ClusterResidencyState::Sampleable;
+    controller
+        .accounting
+        .add_logical(controller.topology.requested_resident_bytes[cluster_id as usize])
+        .unwrap();
 }
 
 #[test]
@@ -589,4 +614,273 @@ fn generation_clock_exhaustion_rejects_a_new_session_without_wraparound() {
         next,
         Err(ShResidencyControllerError::GenerationExhausted)
     ));
+}
+
+#[test]
+fn departed_residents_wait_for_hysteresis_then_evict_dependents_before_owners() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1],
+            vec![vec![], vec![]],
+            vec![vec![], vec![0]],
+            vec![8, 8],
+        ),
+        64,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![1]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+    mark_sampleable(&mut controller, 1);
+
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), 0.1)
+        .unwrap();
+    assert!(
+        controller
+            .take_async_drain_batch()
+            .unwrap()
+            .evictions
+            .is_empty(),
+        "two-second retention keeps doorway departures resident"
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), 2.1)
+        .unwrap();
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.target_remove, vec![0, 1]);
+    assert_eq!(
+        batch.evictions,
+        vec![1, 0],
+        "a dependent must leave before its baked owner"
+    );
+
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: vec![0, 1],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+    assert_eq!(controller.accounting().logical_occupancy_bytes, 0);
+    assert_eq!(controller.counters().evictions, 2);
+}
+
+#[test]
+fn sync_proof_drain_keeps_departed_residents_without_budget_eviction() {
+    let mut controller =
+        controller_with_nominal_budget(topology(vec![0], vec![vec![]], vec![vec![]], vec![12]), 8);
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let _ = controller.take_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), 0.1)
+        .unwrap();
+    let _ = controller.take_drain_batch().unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), 2.2)
+        .unwrap();
+    let batch = controller.take_drain_batch().unwrap();
+
+    assert_eq!(batch.target_remove, vec![0]);
+    assert!(batch.evictions.is_empty());
+    assert_eq!(controller.state(0), Some(ClusterResidencyState::Sampleable));
+    assert_eq!(controller.accounting().logical_occupancy_bytes, 12);
+    assert_eq!(controller.non_evictable_overshoot_bytes(), 0);
+}
+
+#[test]
+fn pressure_suppresses_prefetch_persistently_without_evicting_visible_work() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2, 3],
+            vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
+            vec![vec![], vec![], vec![], vec![]],
+            vec![8, 8, 8, 8],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+    mark_sampleable(&mut controller, 1);
+    mark_sampleable(&mut controller, 2);
+
+    let pressure = controller.take_async_drain_batch().unwrap();
+    assert_eq!(pressure.target_remove, vec![1, 2]);
+    assert_eq!(pressure.evictions, vec![1, 2]);
+    assert!(controller.is_targeted(0));
+    assert!(!controller.is_targeted(1));
+    assert!(!controller.is_targeted(2));
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: vec![1, 2],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 1.0)
+        .unwrap();
+    assert!(
+        !controller.is_targeted(1),
+        "pressure suppression survives an unchanged two-hop horizon"
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![3]), 2.0)
+        .unwrap();
+    assert!(
+        controller.is_targeted(1),
+        "a changed horizon clears suppression so the prefetch can recover"
+    );
+    assert!(controller.is_targeted(3));
+}
+
+#[test]
+fn pressure_rechecks_a_prefetch_owner_after_its_prefetch_dependent_is_suppressed() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2],
+            vec![vec![1], vec![0, 2], vec![1]],
+            vec![vec![], vec![2], vec![]],
+            vec![8, 8, 8],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+    mark_sampleable(&mut controller, 1);
+    mark_sampleable(&mut controller, 2);
+
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.target_remove, vec![1, 2]);
+    assert_eq!(batch.evictions, vec![1, 2]);
+    assert!(controller.is_targeted(0));
+    assert!(!controller.is_targeted(1));
+    assert!(!controller.is_targeted(2));
+}
+
+#[test]
+fn pressure_does_not_evict_a_just_installed_prefetch_cluster() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1],
+            vec![vec![1], vec![0]],
+            vec![vec![], vec![]],
+            vec![8, 8],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+    controller.states[1].state = ClusterResidencyState::InstalledUncomposed;
+    controller.accounting.add_logical(8).unwrap();
+
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert!(controller.is_targeted(1));
+    assert!(batch.target_remove.is_empty());
+    assert!(batch.evictions.is_empty());
+}
+
+#[test]
+fn non_evictable_overshoot_logs_once_per_onset_and_remains_separate_from_replacement_peak() {
+    let capture = LogCapture::start();
+    let mut controller =
+        controller_with_nominal_budget(topology(vec![0], vec![vec![]], vec![vec![]], vec![12]), 8);
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+
+    assert_eq!(controller.non_evictable_overshoot_bytes(), 4);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "non-evictable logical demand exceeds the effective floor by 4 bytes",
+    );
+    let snapshot = controller.report_snapshot();
+    assert_eq!(snapshot.non_evictable_overshoot_bytes, 4);
+    assert_eq!(snapshot.target_clusters, 1);
+    assert_eq!(snapshot.counters.misses, 1);
+}
+
+#[test]
+fn a_pinned_prefetch_owner_counts_as_non_evictable_overshoot() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2],
+            vec![vec![1], vec![0, 2], vec![1]],
+            vec![vec![], vec![2], vec![]],
+            vec![8, 8, 8],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+
+    let _ = controller.take_async_drain_batch().unwrap();
+    assert_eq!(controller.non_evictable_overshoot_bytes(), 8);
+}
+
+#[test]
+fn outcome_preflight_does_not_evict_before_later_install_counter_overflow() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1],
+            vec![vec![], vec![]],
+            vec![vec![], vec![]],
+            vec![4, 4],
+        ),
+        16,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0, 1]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+    queue_ready(&mut controller, 1);
+    controller
+        .update_targets(&VisibleCells::Culled(vec![1]), 0.1)
+        .unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(vec![1]), 2.2)
+        .unwrap();
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![0]);
+    assert_eq!(
+        batch
+            .ready
+            .iter()
+            .map(|prepared| prepared.chunk.cluster_id)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    controller.counters.installs = u64::MAX;
+
+    assert!(matches!(
+        controller.apply_drain_outcome(ShDrainOutcome {
+            accepted: vec![1],
+            evicted: vec![0],
+            ..ShDrainOutcome::default()
+        }),
+        Err(ShResidencyControllerError::AccountingOverflow(
+            "stream installs"
+        ))
+    ));
+    assert_eq!(controller.state(0), Some(ClusterResidencyState::Sampleable));
+    assert_eq!(controller.accounting().logical_occupancy_bytes, 4);
+    assert_eq!(controller.counters.evictions, 0);
+    assert!(controller.in_drain.contains_key(&1));
 }

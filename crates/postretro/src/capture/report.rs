@@ -9,6 +9,7 @@ use super::scene::{CameraPose, CaptureScene};
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ShResidencyAllocation,
     ShResidencyAllocationShape, ShResidencyAllocationState, ShResidencyReport, ShResidencySource,
+    ShStreamingLifecycleSummary,
 };
 
 const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v1";
@@ -287,6 +288,8 @@ struct ShResidencyReportJson {
     total_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     streaming: Option<ShStreamingAllocationSummaryJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    streaming_lifecycle: Option<ShStreamingLifecycleSummaryJson>,
 }
 
 impl From<ShResidencyReport> for ShResidencyReportJson {
@@ -295,6 +298,7 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
             allocations,
             total_bytes,
             streaming,
+            streaming_lifecycle,
         } = report;
         Self {
             rows: allocations
@@ -310,6 +314,7 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
                 retiring_capacity_bytes: summary.retiring_capacity_bytes,
                 replacement_peak_bytes: summary.replacement_peak_bytes,
             }),
+            streaming_lifecycle: streaming_lifecycle.map(ShStreamingLifecycleSummaryJson::from),
         }
     }
 }
@@ -324,6 +329,55 @@ struct ShStreamingAllocationSummaryJson {
     logical_occupancy_bytes: u64,
     retiring_capacity_bytes: u64,
     replacement_peak_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ShStreamingLifecycleSummaryJson {
+    non_evictable_overshoot_bytes: u64,
+    encoded_current_bytes: u64,
+    encoded_high_water_upper_bound_bytes: u64,
+    decoding_current_bytes: u64,
+    decoding_high_water_upper_bound_bytes: u64,
+    ready_current_bytes: u64,
+    ready_high_water_upper_bound_bytes: u64,
+    permits_in_use: u64,
+    target_clusters: u64,
+    absent_clusters: u64,
+    queued_clusters: u64,
+    ready_clusters: u64,
+    installed_uncomposed_clusters: u64,
+    sampleable_clusters: u64,
+    failed_clusters: u64,
+    misses: u64,
+    installs: u64,
+    evictions: u64,
+    retries: u64,
+}
+
+impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
+    fn from(summary: ShStreamingLifecycleSummary) -> Self {
+        Self {
+            non_evictable_overshoot_bytes: summary.non_evictable_overshoot_bytes,
+            encoded_current_bytes: summary.encoded_current_bytes,
+            encoded_high_water_upper_bound_bytes: summary.encoded_high_water_upper_bound_bytes,
+            decoding_current_bytes: summary.decoding_current_bytes,
+            decoding_high_water_upper_bound_bytes: summary.decoding_high_water_upper_bound_bytes,
+            ready_current_bytes: summary.ready_current_bytes,
+            ready_high_water_upper_bound_bytes: summary.ready_high_water_upper_bound_bytes,
+            permits_in_use: summary.permits_in_use,
+            target_clusters: summary.target_clusters,
+            absent_clusters: summary.absent_clusters,
+            queued_clusters: summary.queued_clusters,
+            ready_clusters: summary.ready_clusters,
+            installed_uncomposed_clusters: summary.installed_uncomposed_clusters,
+            sampleable_clusters: summary.sampleable_clusters,
+            failed_clusters: summary.failed_clusters,
+            misses: summary.misses,
+            installs: summary.installs,
+            evictions: summary.evictions,
+            retries: summary.retries,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -497,6 +551,7 @@ mod tests {
             }],
             total_bytes: 0,
             streaming: None,
+            streaming_lifecycle: None,
         };
         let json = as_json(measurement_report(
             &scene_with_measurement(),
@@ -533,6 +588,7 @@ mod tests {
             allocations: Vec::new(),
             total_bytes: 0,
             streaming: None,
+            streaming_lifecycle: None,
         }
         .with_streaming_summary(ShStreamingAllocationSummary {
             fixed_metadata_bytes: 11,
@@ -560,6 +616,54 @@ mod tests {
         assert_eq!(streaming["retiring_capacity_bytes"], 19);
         assert_eq!(streaming["replacement_peak_bytes"], 36);
         assert_eq!(json["renderer_accounted_sh"]["total_bytes"], 47);
+    }
+
+    #[test]
+    fn report_serializes_live_streaming_policy_and_cpu_phase_ledgers() {
+        let accounting = ShResidencyReport {
+            allocations: Vec::new(),
+            total_bytes: 0,
+            streaming: None,
+            streaming_lifecycle: None,
+        }
+        .with_streaming_lifecycle_summary(ShStreamingLifecycleSummary {
+            non_evictable_overshoot_bytes: 5,
+            encoded_current_bytes: 1,
+            encoded_high_water_upper_bound_bytes: 2,
+            decoding_current_bytes: 3,
+            decoding_high_water_upper_bound_bytes: 4,
+            ready_current_bytes: 5,
+            ready_high_water_upper_bound_bytes: 6,
+            permits_in_use: 2,
+            target_clusters: 7,
+            absent_clusters: 1,
+            queued_clusters: 2,
+            ready_clusters: 3,
+            installed_uncomposed_clusters: 4,
+            sampleable_clusters: 5,
+            failed_clusters: 6,
+            misses: 7,
+            installs: 8,
+            evictions: 9,
+            retries: 10,
+        });
+        let json = as_json(measurement_report(
+            &scene_with_measurement(),
+            99,
+            Some("abc123".into()),
+            adapter(),
+            Some(accounting),
+            vec![1.0],
+            CaptureGpuTimingState::PlainBuildUnavailable,
+            Vec::new(),
+        ));
+        let lifecycle = &json["renderer_accounted_sh"]["streaming_lifecycle"];
+        assert_eq!(lifecycle["non_evictable_overshoot_bytes"], 5);
+        assert_eq!(lifecycle["encoded_current_bytes"], 1);
+        assert_eq!(lifecycle["ready_high_water_upper_bound_bytes"], 6);
+        assert_eq!(lifecycle["permits_in_use"], 2);
+        assert_eq!(lifecycle["sampleable_clusters"], 5);
+        assert_eq!(lifecycle["retries"], 10);
     }
 
     #[test]

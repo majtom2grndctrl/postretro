@@ -12,11 +12,13 @@ use postretro_level_loader::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode,
     requested_streaming_mode,
 };
-use postretro_renderer::{Renderer, ShResidencySnapshot};
+use postretro_renderer::{Renderer, ShResidencySnapshot, ShStreamingLifecycleSummary};
 use postretro_visibility::VisibleCells;
 
 use super::sh_async_workers::ShAsyncWorkers;
-use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
+use crate::sh_streaming::budget::{
+    BytePhase, FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima,
+};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
 
 /// Controller state whose lifetime belongs to one loaded session, never to the
@@ -113,7 +115,11 @@ impl ShStreamingSession {
     /// a failed or skipped frame leaves its installs uncomposed.
     pub(crate) fn prepare_batch(&mut self) -> Result<ShDrainBatch> {
         self.promote_composed_clusters();
-        self.controller.take_drain_batch().map_err(Into::into)
+        match self.mode {
+            ShStreamingMode::SyncProof => self.controller.take_drain_batch().map_err(Into::into),
+            ShStreamingMode::Async => self.controller.take_async_drain_batch().map_err(Into::into),
+            ShStreamingMode::Off => unreachable!("a loaded streaming session cannot be off"),
+        }
     }
 
     /// Applies the renderer's ownership result before the caller inspects or
@@ -154,6 +160,70 @@ impl ShStreamingSession {
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.controller.all_targets_sampleable()
+    }
+
+    /// Merge the controller's frame-local policy/permit view with worker
+    /// phase bytes for capture. The renderer contributes pool capacity through
+    /// its own snapshot; it deliberately never reaches into this session.
+    pub(crate) fn residency_lifecycle_summary(&self) -> Result<ShStreamingLifecycleSummary> {
+        let controller = self.controller.report_snapshot();
+        let worker = self
+            .workers
+            .as_ref()
+            .map(ShAsyncWorkers::phase_snapshot)
+            .transpose()
+            .map_err(anyhow::Error::msg)?
+            .unwrap_or_default();
+        let phase = |controller_phase: BytePhase, worker_phase: BytePhase, label| {
+            let current = controller_phase
+                .current_bytes
+                .checked_add(worker_phase.current_bytes)
+                .ok_or_else(|| anyhow::anyhow!("[SH streaming] {label} current bytes overflow"))?;
+            // The independently checked ledgers cannot reconstruct one exact
+            // combined historic instant. Their sum is a checked conservative
+            // upper bound across worker/controller ownership transfer; expose
+            // it under that explicit name rather than mislabeling it a peak.
+            let high_water_upper_bound = controller_phase
+                .high_water_bytes
+                .checked_add(worker_phase.high_water_bytes)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("[SH streaming] {label} high-water upper bound overflow")
+                })?;
+            Ok::<_, anyhow::Error>((current, high_water_upper_bound))
+        };
+        let (encoded_current_bytes, encoded_high_water_upper_bound_bytes) =
+            phase(controller.cpu.encoded, worker.encoded, "encoded")?;
+        let (decoding_current_bytes, decoding_high_water_upper_bound_bytes) =
+            phase(controller.cpu.decoding, worker.decoding, "decoding")?;
+        let (ready_current_bytes, ready_high_water_upper_bound_bytes) =
+            phase(controller.cpu.ready, worker.ready, "ready")?;
+        let count = |value: usize, label: &'static str| {
+            u64::try_from(value).map_err(|_| anyhow::anyhow!("[SH streaming] {label} exceeds u64"))
+        };
+        Ok(ShStreamingLifecycleSummary {
+            non_evictable_overshoot_bytes: controller.non_evictable_overshoot_bytes,
+            encoded_current_bytes,
+            encoded_high_water_upper_bound_bytes,
+            decoding_current_bytes,
+            decoding_high_water_upper_bound_bytes,
+            ready_current_bytes,
+            ready_high_water_upper_bound_bytes,
+            permits_in_use: count(controller.permits_in_use, "permit count")?,
+            target_clusters: count(controller.target_clusters, "target count")?,
+            absent_clusters: count(controller.absent_clusters, "absent state count")?,
+            queued_clusters: count(controller.queued_clusters, "queued state count")?,
+            ready_clusters: count(controller.ready_clusters, "ready state count")?,
+            installed_uncomposed_clusters: count(
+                controller.installed_uncomposed_clusters,
+                "installed state count",
+            )?,
+            sampleable_clusters: count(controller.sampleable_clusters, "sampleable state count")?,
+            failed_clusters: count(controller.failed_clusters, "failed state count")?,
+            misses: controller.counters.misses,
+            installs: controller.counters.installs,
+            evictions: controller.counters.evictions,
+            retries: controller.counters.retries,
+        })
     }
 
     /// Synchronous proof policy: fill the four controller permits from the
@@ -305,6 +375,7 @@ impl super::Session {
             if outcome.accepted.is_empty()
                 && outcome.dropped.is_empty()
                 && outcome.deferred.is_empty()
+                && outcome.evicted.is_empty()
             {
                 return Ok(());
             }

@@ -965,6 +965,7 @@ mod tests {
                 accepted: vec![4],
                 dropped: vec![9],
                 deferred: Vec::new(),
+                evicted: Vec::new(),
             },
             frame: Err(anyhow::anyhow!("surface acquisition failed")),
         };

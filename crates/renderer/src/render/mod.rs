@@ -124,6 +124,7 @@ use sh_compose::ShComposeResources;
 pub use sh_residency::{
     ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
     ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
+    ShStreamingLifecycleSummary,
 };
 pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot};
 use sh_volume::{ShVolumeResources, ShVolumeSections};

@@ -69,6 +69,9 @@ pub struct ShDrainOutcome {
     pub accepted: Vec<u32>,
     pub dropped: Vec<u32>,
     pub deferred: Vec<PreparedShCluster>,
+    /// Clusters actually released by the renderer, not merely requested for
+    /// eviction. An installed owner may remain pinned by a dependent.
+    pub evicted: Vec<u32>,
 }
 
 pub(super) fn validate_sorted_cluster_ids(

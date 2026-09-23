@@ -17,6 +17,7 @@ impl ShResidencyController {
     ) -> Result<(), ShResidencyControllerError> {
         self.validate_time(monotonic_seconds)?;
         let visible = self.visible_clusters(visible)?;
+        self.record_visible_misses(&visible)?;
         let horizon = self.two_hop_horizon(&visible)?;
         let raw_departures: Vec<_> = self.last_horizon.difference(&horizon).copied().collect();
         let horizon_changed = horizon != self.last_horizon;
@@ -25,9 +26,9 @@ impl ShResidencyController {
                 ShResidencyControllerError::AccountingOverflow("horizon revision"),
             )?;
             self.last_horizon = horizon.clone();
-            for state in &mut self.states {
-                state.suppressed = false;
-            }
+        }
+        if horizon_changed || self.prefetch_pressure_has_cleared(&horizon)? {
+            self.clear_prefetch_suppression();
         }
         for cluster_id in raw_departures {
             self.states[cluster_id as usize].hysteresis_started_at = Some(monotonic_seconds);
@@ -61,7 +62,7 @@ impl ShResidencyController {
 
         let mut targets: BTreeSet<u32> = classes.keys().copied().collect();
         self.close_owner_targets(&mut targets, &mut classes)?;
-        self.transition_failed_retries(&targets);
+        self.transition_failed_retries(&targets)?;
         self.drop_departed_ready(&targets)?;
         for (&cluster_id, class) in &classes {
             let state = &mut self.states[cluster_id as usize];
@@ -84,6 +85,46 @@ impl ShResidencyController {
         }
         self.targets = targets;
         self.last_time = Some(monotonic_seconds);
+        Ok(())
+    }
+
+    /// Suppression survives ordinary frames so an over-budget doorway does not
+    /// oscillate at the render cadence. It can clear without a horizon change
+    /// only when the raw two-hop demand itself now fits the nominal pool; the
+    /// subsequent target rebuild then admits prefetch normally.
+    fn prefetch_pressure_has_cleared(
+        &self,
+        horizon: &BTreeSet<u32>,
+    ) -> Result<bool, ShResidencyControllerError> {
+        if !self.states.iter().any(|state| state.suppressed) {
+            return Ok(false);
+        }
+        let demand = horizon.iter().try_fold(0u64, |total, &cluster_id| {
+            total
+                .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
+                .ok_or(ShResidencyControllerError::AccountingOverflow(
+                    "prefetch pressure horizon demand",
+                ))
+        })?;
+        Ok(demand <= self.accounting.nominal_cluster_bytes()?)
+    }
+
+    /// Count a miss once for each continuous visible episode. Counting every
+    /// render frame would turn refresh rate into a diagnostic input and would
+    /// hide the useful question: how often did a visible cluster lack a
+    /// sampleable resident closure?
+    fn record_visible_misses(
+        &mut self,
+        visible: &BTreeSet<u32>,
+    ) -> Result<(), ShResidencyControllerError> {
+        self.prior_visible_misses.retain(|id| visible.contains(id));
+        for &cluster_id in visible {
+            if self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable
+                && self.prior_visible_misses.insert(cluster_id)
+            {
+                Self::increment_counter(&mut self.counters.misses, "visible misses")?;
+            }
+        }
         Ok(())
     }
 
@@ -193,7 +234,11 @@ impl ShResidencyController {
         Ok(())
     }
 
-    fn transition_failed_retries(&mut self, targets: &BTreeSet<u32>) {
+    fn transition_failed_retries(
+        &mut self,
+        targets: &BTreeSet<u32>,
+    ) -> Result<(), ShResidencyControllerError> {
+        let mut retries = 0u64;
         for (cluster_id, state) in self.states.iter_mut().enumerate() {
             if state.state != ClusterResidencyState::Failed
                 || !targets.contains(&(cluster_id as u32))
@@ -218,11 +263,18 @@ impl ShResidencyController {
             {
                 failure.retry_spent = true;
                 state.state = ClusterResidencyState::Absent;
+                retries = retries.checked_add(1).ok_or(
+                    ShResidencyControllerError::AccountingOverflow("stream retries"),
+                )?;
             }
         }
+        self.counters.retries = self.counters.retries.checked_add(retries).ok_or(
+            ShResidencyControllerError::AccountingOverflow("stream retries"),
+        )?;
+        Ok(())
     }
 
-    fn drop_departed_ready(
+    pub(super) fn drop_departed_ready(
         &mut self,
         targets: &BTreeSet<u32>,
     ) -> Result<(), ShResidencyControllerError> {

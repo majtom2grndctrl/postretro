@@ -3,6 +3,17 @@
 // See: context/lib/rendering_pipeline.md §1
 
 use super::*;
+use postretro_level_loader::{ShDrainBatch, ShDrainOutcome};
+
+/// One frame entry's renderer-owned SH admission outcome and its subsequent
+/// scene result. The outcome remains available when a later surface or scene
+/// failure occurs, so the application can release or retain loader permits
+/// exactly once before it propagates that failure.
+#[derive(Debug)]
+pub struct ShDrainFrameResult<T> {
+    pub outcome: ShDrainOutcome,
+    pub frame: std::result::Result<T, anyhow::Error>,
+}
 
 // Must match the near/far the caller bakes into `view_proj`
 // (`postretro::camera::{NEAR, FAR}`) — the fog pass reconstructs
@@ -43,38 +54,46 @@ impl Renderer {
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<Option<PresentHandle>> {
-        let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
-            return Ok(None);
-        };
-        let view = handle.surface_view();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame Encoder"),
-            });
+        sh_drain_batch: ShDrainBatch,
+    ) -> std::result::Result<ShDrainFrameResult<Option<PresentHandle>>, ShResidencyDrainError> {
+        // This is the sole loader→renderer admission point for a windowed
+        // frame. It precedes surface acquisition so even a skipped frame
+        // returns the ownership outcome to the session controller.
+        let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        let frame = (|| -> Result<Option<PresentHandle>> {
+            let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
+                return Ok(None);
+            };
+            let view = handle.surface_view();
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frame Encoder"),
+                });
 
-        self.record_scene_passes(
-            &mut encoder,
-            Some(font_system),
-            Some(&view),
-            cam_vis,
-            light_reachable_cell_mask,
-            reachable_cell_aabbs,
-            fog_reachable,
-            camera_cell,
-            view_proj,
-            particle_collections,
-            &[],
-            now_seconds,
-            clear_color,
-            render_world,
-        )?;
-        self.submit_windowed_frame(encoder);
+            self.record_scene_passes(
+                &mut encoder,
+                Some(font_system),
+                Some(&view),
+                cam_vis,
+                light_reachable_cell_mask,
+                reachable_cell_aabbs,
+                fog_reachable,
+                camera_cell,
+                view_proj,
+                particle_collections,
+                &[],
+                now_seconds,
+                clear_color,
+                render_world,
+            )?;
+            self.submit_windowed_frame(encoder);
 
-        // Caller (`App`) presents after optionally appending the egui overlay
-        // pass via `render_debug_ui`.
-        Ok(Some(handle))
+            // Caller (`App`) presents after optionally appending the egui overlay
+            // pass via `render_debug_ui`.
+            Ok(Some(handle))
+        })();
+        Ok(ShDrainFrameResult { outcome, frame })
     }
 
     /// Record the world-scene passes shared by windowed gameplay and offscreen
@@ -937,6 +956,57 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_outcome_survives_a_later_frame_failure() {
+        let result: ShDrainFrameResult<()> = ShDrainFrameResult {
+            outcome: ShDrainOutcome {
+                accepted: vec![4],
+                dropped: vec![9],
+                deferred: Vec::new(),
+            },
+            frame: Err(anyhow::anyhow!("surface acquisition failed")),
+        };
+
+        assert_eq!(result.outcome.accepted, vec![4]);
+        assert_eq!(result.outcome.dropped, vec![9]);
+        assert!(result.frame.is_err());
+    }
+
+    #[test]
+    fn windowed_entry_drains_once_before_surface_or_scene_work() {
+        let source = include_str!("renderer_render_frame.rs");
+        let entry = source
+            .find("pub fn render_frame_indirect(")
+            .expect("windowed renderer entry must remain present");
+        let end = source[entry..]
+            .find("    /// Record the world-scene")
+            .map(|offset| entry + offset)
+            .expect("windowed renderer entry must end before scene helper");
+        let body = &source[entry..end];
+        let drain = body
+            .find("self.drain_sh_residency(sh_drain_batch)")
+            .expect("windowed entry must accept its drain batch");
+        let acquire = body
+            .find("self.acquire_present_handle")
+            .expect("windowed entry must acquire its surface");
+        let scene = body
+            .find("self.record_scene_passes(")
+            .expect("windowed entry must record scene passes");
+
+        assert_eq!(
+            body.matches("self.drain_sh_residency(sh_drain_batch)")
+                .count(),
+            1,
+            "the loader batch has exactly one renderer admission point"
+        );
+        assert!(
+            drain < acquire && acquire < scene,
+            "draining must precede surface acquisition and scene composition"
+        );
+    }
+
     #[test]
     fn billboard_scatter_compose_is_after_shared_descriptor_flush_and_before_sprite_draw() {
         let frame_update = include_str!("renderer_frame.rs");

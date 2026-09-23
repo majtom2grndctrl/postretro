@@ -52,6 +52,11 @@ impl StreamedPoolMinima {
 pub(crate) struct ShGpuBudgetInputs {
     pub(crate) fixed: FixedGpuCharges,
     pub(crate) pool_minima: StreamedPoolMinima,
+    /// The renderer's exact initial physical floor after atlas-layer and sparse
+    /// alignment rounding.  The controller retains the family minima for
+    /// admission accounting, but must not reconstruct this total and risk
+    /// understating a rounded GPU allocation.
+    pub(crate) renderer_effective_floor_bytes: Option<u64>,
 }
 
 /// A current/high-water host phase. Payload ownership moves between phases,
@@ -101,6 +106,7 @@ pub(crate) struct CpuPhaseLedger {
 pub(crate) struct ShResidencyAccounting {
     pub(crate) fixed_gpu: FixedGpuCharges,
     pub(crate) pool_minima: StreamedPoolMinima,
+    renderer_effective_floor_bytes: Option<u64>,
     pub(crate) logical_occupancy_bytes: u64,
     pub(crate) cpu: CpuPhaseLedger,
 }
@@ -108,7 +114,7 @@ pub(crate) struct ShResidencyAccounting {
 impl ShResidencyAccounting {
     pub(crate) fn new(inputs: ShGpuBudgetInputs) -> Result<Self, ShResidencyControllerError> {
         let pool_minima_bytes = inputs.pool_minima.checked_sum()?;
-        let _ = inputs
+        let mandatory_floor_bytes = inputs
             .fixed
             .fixed_metadata_bytes
             .checked_add(inputs.fixed.whole_resident_scatter_bytes)
@@ -116,6 +122,15 @@ impl ShResidencyAccounting {
             .ok_or(ShResidencyControllerError::AccountingOverflow(
                 "effective GPU floor",
             ))?;
+        let required_renderer_floor_bytes = DEFAULT_GPU_FLOOR_BYTES.max(mandatory_floor_bytes);
+        if inputs
+            .renderer_effective_floor_bytes
+            .is_some_and(|renderer_floor| renderer_floor < required_renderer_floor_bytes)
+        {
+            return Err(ShResidencyControllerError::AccountingUnderflow(
+                "renderer effective GPU floor",
+            ));
+        }
         let _ = inputs
             .fixed
             .fixed_metadata_bytes
@@ -127,12 +142,16 @@ impl ShResidencyAccounting {
         Ok(Self {
             fixed_gpu: inputs.fixed,
             pool_minima: inputs.pool_minima,
+            renderer_effective_floor_bytes: inputs.renderer_effective_floor_bytes,
             logical_occupancy_bytes: 0,
             cpu: CpuPhaseLedger::default(),
         })
     }
 
     pub(crate) fn effective_floor_bytes(&self) -> Result<u64, ShResidencyControllerError> {
+        if let Some(renderer_floor) = self.renderer_effective_floor_bytes {
+            return Ok(renderer_floor);
+        }
         let pool_minima_bytes = self.pool_minima.checked_sum()?;
         let mandatory = self
             .fixed_gpu
@@ -175,6 +194,7 @@ impl ShResidencyAccounting {
         let inputs = ShGpuBudgetInputs {
             fixed: fixed_gpu,
             pool_minima: self.pool_minima,
+            renderer_effective_floor_bytes: self.renderer_effective_floor_bytes,
         };
         let _ = Self::new(inputs)?;
         self.fixed_gpu = fixed_gpu;
@@ -201,6 +221,7 @@ mod tests {
                 direct_delta_bytes: Some(40 * mib),
                 animated_direct_delta_bytes: Some(16 * mib),
             },
+            ..ShGpuBudgetInputs::default()
         };
         let mut accounting = ShResidencyAccounting::new(inputs).unwrap();
         assert_eq!(accounting.effective_floor_bytes().unwrap(), 292 * mib);
@@ -224,6 +245,57 @@ mod tests {
     }
 
     #[test]
+    fn exact_renderer_floor_preserves_physical_rounding() {
+        let inputs = ShGpuBudgetInputs {
+            fixed: FixedGpuCharges {
+                fixed_metadata_bytes: 10,
+                whole_resident_scatter_bytes: 20,
+                active_pool_capacity_bytes: 30,
+            },
+            pool_minima: StreamedPoolMinima {
+                dense_group_bytes: Some(4),
+                indirect_delta_bytes: Some(5),
+                direct_delta_bytes: None,
+                animated_direct_delta_bytes: None,
+            },
+            // The renderer owns atlas-layer padding, so the app must retain
+            // this exact result rather than recomputing 256 MiB/minima alone.
+            renderer_effective_floor_bytes: Some(DEFAULT_GPU_FLOOR_BYTES + 512),
+        };
+
+        let accounting = ShResidencyAccounting::new(inputs).unwrap();
+        assert_eq!(
+            accounting.effective_floor_bytes().unwrap(),
+            DEFAULT_GPU_FLOOR_BYTES + 512
+        );
+    }
+
+    #[test]
+    fn exact_renderer_floor_cannot_understate_known_minima() {
+        let inputs = ShGpuBudgetInputs {
+            fixed: FixedGpuCharges {
+                fixed_metadata_bytes: 10,
+                whole_resident_scatter_bytes: 20,
+                active_pool_capacity_bytes: 30,
+            },
+            pool_minima: StreamedPoolMinima {
+                dense_group_bytes: Some(4),
+                indirect_delta_bytes: Some(5),
+                direct_delta_bytes: None,
+                animated_direct_delta_bytes: None,
+            },
+            renderer_effective_floor_bytes: Some(38),
+        };
+
+        assert!(matches!(
+            ShResidencyAccounting::new(inputs),
+            Err(ShResidencyControllerError::AccountingUnderflow(
+                "renderer effective GPU floor"
+            ))
+        ));
+    }
+
+    #[test]
     fn checked_budget_inputs_and_ledger_transitions_reject_overflow() {
         let overflowing_minima = ShGpuBudgetInputs {
             fixed: FixedGpuCharges::default(),
@@ -232,6 +304,7 @@ mod tests {
                 indirect_delta_bytes: Some(1),
                 ..StreamedPoolMinima::default()
             },
+            ..ShGpuBudgetInputs::default()
         };
         assert!(matches!(
             ShResidencyAccounting::new(overflowing_minima),

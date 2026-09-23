@@ -39,6 +39,8 @@ impl StreamingGpuPools {
             uniform_bind_group_layout,
             selection_weights,
             initial_floor.effective_floor_bytes,
+            initial_floor.dense_group_minimum_bytes,
+            initial_floor.sparse_group_minimum_bytes,
         )
     }
 
@@ -55,6 +57,8 @@ impl StreamingGpuPools {
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
         effective_floor_bytes: u64,
+        dense_group_minimum_bytes: u64,
+        sparse_group_minimum_bytes: std::collections::BTreeMap<u32, u64>,
     ) -> Result<Self, ShResidencyDrainError> {
         let base_format = texture_format(base.irradiance_format)?;
         let extent = shape.extent();
@@ -452,6 +456,8 @@ impl StreamingGpuPools {
             fixed_metadata_bytes,
             whole_resident_scatter_bytes: sh.billboard_direct_scatter.capacity_bytes(),
             effective_floor_bytes,
+            dense_group_minimum_bytes,
+            sparse_group_minimum_bytes,
             probe_occlusion_enabled,
             sparse_capacity_floors: sparse_capacity_floors.clone(),
         })

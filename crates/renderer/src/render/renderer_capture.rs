@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.8
 
 use super::*;
+use postretro_level_loader::ShDrainBatch;
 
 impl Renderer {
     /// Plain adapter identity retained for a capture measurement report.
@@ -27,7 +28,8 @@ impl Renderer {
     /// Submit one prepared static capture scene and wait until the GPU has
     /// completed it. This deliberately records no PNG/readback copy; callers
     /// use it for warmup and sample work, then use `capture_frame_indirect`
-    /// once to produce the inspectable PNG.
+    /// once to produce the inspectable PNG. The SH drain outcome remains
+    /// available even if the later capture recording or readback fails.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_measurement_frame_indirect(
         &mut self,
@@ -42,38 +44,46 @@ impl Renderer {
         capture_animated_promotion_weights: &[(usize, f32)],
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<Option<CaptureGpuTimingWindow>> {
-        self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
+        sh_drain_batch: ShDrainBatch,
+    ) -> std::result::Result<
+        ShDrainFrameResult<Option<CaptureGpuTimingWindow>>,
+        ShResidencyDrainError,
+    > {
+        let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        let frame = (|| -> Result<Option<CaptureGpuTimingWindow>> {
+            self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Capture Measurement Encoder"),
-            });
-        self.record_scene_passes(
-            &mut encoder,
-            None,
-            None,
-            cam_vis,
-            light_reachable_cell_mask,
-            reachable_cell_aabbs,
-            fog_reachable,
-            camera_cell,
-            view_proj,
-            particle_collections,
-            capture_animated_promotion_weights,
-            0.0,
-            clear_color,
-            render_world,
-        )?;
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Capture Measurement Encoder"),
+                });
+            self.record_scene_passes(
+                &mut encoder,
+                None,
+                None,
+                cam_vis,
+                light_reachable_cell_mask,
+                reachable_cell_aabbs,
+                fog_reachable,
+                camera_cell,
+                view_proj,
+                particle_collections,
+                capture_animated_promotion_weights,
+                0.0,
+                clear_color,
+                render_world,
+            )?;
 
-        if self.capture_gpu_timing_state == CaptureGpuTimingState::Active {
-            if let Some(timing) = self.full_mut().frame_timing.as_mut() {
-                timing.encode_resolve(&mut encoder);
+            if self.capture_gpu_timing_state == CaptureGpuTimingState::Active {
+                if let Some(timing) = self.full_mut().frame_timing.as_mut() {
+                    timing.encode_resolve(&mut encoder);
+                }
             }
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.complete_capture_measurement_submission()
+            self.queue.submit(std::iter::once(encoder.finish()));
+            self.complete_capture_measurement_submission()
+        })();
+        Ok(ShDrainFrameResult { outcome, frame })
     }
 
     fn complete_capture_measurement_submission(
@@ -119,7 +129,8 @@ impl Renderer {
     /// Render the world scene into the renderer-owned pre-resolve target and
     /// return tight RGBA8 pixels. The supplied camera updates both culling and
     /// forward-pass uniforms at the fixed capture time. This path has no UI,
-    /// debug overlay, resolve, swapchain acquisition, or present step.
+    /// debug overlay, resolve, swapchain acquisition, or present step. The SH
+    /// drain outcome remains available if later capture work fails.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_frame_indirect(
         &mut self,
@@ -134,44 +145,49 @@ impl Renderer {
         capture_animated_promotion_weights: &[(usize, f32)],
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<Vec<u8>> {
-        self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
+        sh_drain_batch: ShDrainBatch,
+    ) -> std::result::Result<ShDrainFrameResult<Vec<u8>>, ShResidencyDrainError> {
+        let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        let frame = (|| -> Result<Vec<u8>> {
+            self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame Capture Encoder"),
-            });
-        self.record_scene_passes(
-            &mut encoder,
-            None,
-            None,
-            cam_vis,
-            light_reachable_cell_mask,
-            reachable_cell_aabbs,
-            fog_reachable,
-            camera_cell,
-            view_proj,
-            particle_collections,
-            capture_animated_promotion_weights,
-            0.0,
-            clear_color,
-            render_world,
-        )?;
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frame Capture Encoder"),
+                });
+            self.record_scene_passes(
+                &mut encoder,
+                None,
+                None,
+                cam_vis,
+                light_reachable_cell_mask,
+                reachable_cell_aabbs,
+                fog_reachable,
+                camera_cell,
+                view_proj,
+                particle_collections,
+                capture_animated_promotion_weights,
+                0.0,
+                clear_color,
+                render_world,
+            )?;
 
-        let width = self.surface_config.width;
-        let height = self.surface_config.height;
-        // The PNG path reads tightly packed RGBA8, so resolve HDR scene color to
-        // a capture-only LDR target first. Capture shares the window tonemap but
-        // uses an at-rest effect uniform instead of transient screen effects.
-        let capture_color = self.full().screen_effects.encode_capture_tonemap(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            width,
-            height,
-        );
-        self.read_texture_rgba8(&capture_color, width, height, encoder)
+            let width = self.surface_config.width;
+            let height = self.surface_config.height;
+            // The PNG path reads tightly packed RGBA8, so resolve HDR scene color to
+            // a capture-only LDR target first. Capture shares the window tonemap but
+            // uses an at-rest effect uniform instead of transient screen effects.
+            let capture_color = self.full().screen_effects.encode_capture_tonemap(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                width,
+                height,
+            );
+            self.read_texture_rgba8(&capture_color, width, height, encoder)
+        })();
+        Ok(ShDrainFrameResult { outcome, frame })
     }
 }
 
@@ -192,6 +208,42 @@ fn capture_timing_window(snapshot: frame_timing::FrameTimingSnapshot) -> Capture
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_entries_drain_once_before_scene_composition() {
+        let source = include_str!("renderer_capture.rs");
+        let measurement = source
+            .find("pub fn capture_measurement_frame_indirect(")
+            .expect("measurement capture entry must remain present");
+        let png = source
+            .find("pub fn capture_frame_indirect(")
+            .expect("PNG capture entry must remain present");
+        let measurement_body = &source[measurement..png];
+        let png_end = source[png..]
+            .find("\n}\n\nfn capture_timing_window")
+            .map(|offset| png + offset)
+            .expect("PNG capture entry must end before timing conversion helper");
+        let png_body = &source[png..png_end];
+
+        for body in [measurement_body, png_body] {
+            let drain = body
+                .find("self.drain_sh_residency(sh_drain_batch)")
+                .expect("capture entry must accept its drain batch");
+            let scene = body
+                .find("self.record_scene_passes(")
+                .expect("capture entry must record scene passes");
+            assert_eq!(
+                body.matches("self.drain_sh_residency(sh_drain_batch)")
+                    .count(),
+                1,
+                "each capture entry has exactly one renderer admission point"
+            );
+            assert!(
+                drain < scene,
+                "draining must precede capture scene composition"
+            );
+        }
+    }
 
     #[test]
     #[ignore = "on-demand GPU coverage"]

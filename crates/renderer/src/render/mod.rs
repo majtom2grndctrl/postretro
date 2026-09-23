@@ -115,6 +115,7 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+pub use renderer_render_frame::ShDrainFrameResult;
 pub use renderer_splash::PresentationDrawInput;
 use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;

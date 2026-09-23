@@ -5,6 +5,7 @@ use postretro_level_format::cluster_directory::{
     ClusterRangeRecord, ClusterRangeRole, ClusterRecord, ClusterResourceDomain,
     ClusterResourceRecord,
 };
+use postretro_level_format::cluster_sh_payloads::{DecodedClusterShBlock, DecodedClusterShPayload};
 use postretro_level_format::sh_volume::OctahedralShProbe;
 
 fn one_l0_brick() -> postretro_level_loader::ShStreamBaseMetadata {
@@ -284,6 +285,64 @@ fn base_only_manifest_does_not_require_an_id35_shared_slot_member() {
 }
 
 #[test]
+fn paired_direct_manifest_refuses_a_chunk_missing_id35() {
+    let state = ShResidencyState::from_parts(
+        [13; 32],
+        &ClusterDirectorySection {
+            runtime_cell_count: 0,
+            primitive_limit: 0,
+            cell_limit: 0,
+            clusters: vec![cluster(0)],
+            resources: vec![ClusterResourceRecord {
+                section_id: INDIRECT_BASE_ID,
+                domain: ClusterResourceDomain::DenseProbe,
+                dimensions: [4, 4, 4],
+            }],
+            members: Vec::new(),
+            ranges: vec![range(0, 0, 64, 0, ClusterRangeRole::Owned)],
+        },
+        &one_l0_brick(),
+        &all_sparse_sources(),
+    )
+    .expect("paired direct manifest metadata is valid");
+
+    // The id-34 member and patch block are structurally valid, isolating the
+    // missing id-35 member as the only failure. A paired manifest must never
+    // publish a partial shared-slot cluster.
+    let mut bytes = vec![0; 36];
+    bytes[4..8].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[12..16].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[16..20].copy_from_slice(&1_u32.to_le_bytes());
+    let chunk = DecodedClusterShPayload {
+        cluster_id: 0,
+        bytes,
+        blocks: vec![
+            DecodedClusterShBlock {
+                section_id: INDIRECT_BASE_ID,
+                kind: ISOLATED_ATLAS_BLOCK,
+                element_count: 1,
+                body: 0..20,
+            },
+            DecodedClusterShBlock {
+                section_id: INDIRECT_BASE_ID,
+                kind: PROBE_PATCH_BLOCK,
+                element_count: 1,
+                body: 20..36,
+            },
+        ],
+    };
+
+    assert_eq!(
+        state.validate_isolated_atlases(0, &chunk),
+        Err(ShResidencyDrainError::MalformedChunk {
+            cluster_id: 0,
+            reason: "chunk omits required id-35 member of the shared dense pool",
+        })
+    );
+}
+
+#[test]
 fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
     let mut state = ShResidencyState {
         // This fixture exercises only the row-union mirrors. Building a
@@ -483,6 +542,60 @@ fn halo_only_closure_requires_no_unrecorded_compose_epoch() {
         required_compose_epochs(11, 13, true, true, [INDIRECT_DELTA_ID]),
         Ok((12, 14))
     );
+}
+
+#[test]
+fn all_family_writes_wait_for_both_next_compose_epochs_before_sampleability() {
+    let (required_indirect_epoch, required_direct_epoch) = required_compose_epochs(
+        41,
+        71,
+        true,
+        true,
+        [INDIRECT_DELTA_ID, DIRECT_DELTA_ID, ANIMATED_DIRECT_DELTA_ID],
+    )
+    .expect("validated compose epochs must advance");
+    assert_eq!((required_indirect_epoch, required_direct_epoch), (42, 72));
+
+    let installed = InstalledCluster {
+        patches: Vec::new(),
+        owned_nodes: Vec::new(),
+        sparse_rows: Vec::new(),
+        required_indirect_epoch,
+        required_direct_epoch,
+    };
+    let no_dependencies = BTreeSet::new();
+
+    // The installation drain starts at 41/71. A later drain can sample only
+    // after both the indirect (id34/id27) and direct (id35/id41/id45)
+    // compose passes have completed their required next epoch.
+    assert!(!rows::installed_cluster_is_sampleable(
+        &installed,
+        &no_dependencies,
+        &BTreeSet::new(),
+        41,
+        71,
+    ));
+    assert!(!rows::installed_cluster_is_sampleable(
+        &installed,
+        &no_dependencies,
+        &BTreeSet::new(),
+        42,
+        71,
+    ));
+    assert!(!rows::installed_cluster_is_sampleable(
+        &installed,
+        &no_dependencies,
+        &BTreeSet::new(),
+        41,
+        72,
+    ));
+    assert!(rows::installed_cluster_is_sampleable(
+        &installed,
+        &no_dependencies,
+        &BTreeSet::new(),
+        42,
+        72,
+    ));
 }
 
 #[test]

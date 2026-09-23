@@ -90,6 +90,14 @@ pub struct ShResidencySnapshot {
     pub active_capacity_bytes: u64,
     /// Initial non-evictable streamed pool floor, distinct from later growth.
     pub effective_floor_bytes: u64,
+    /// Minimum physical capacity for the coupled id-34/id-35 dense pool.
+    pub dense_group_minimum_bytes: Option<u64>,
+    /// Minimum physical capacity for the id-27 sparse pool, when present.
+    pub indirect_delta_minimum_bytes: Option<u64>,
+    /// Minimum physical capacity for the id-41 sparse pool, when present.
+    pub direct_delta_minimum_bytes: Option<u64>,
+    /// Minimum physical capacity for the id-45 sparse pool, when present.
+    pub animated_direct_delta_minimum_bytes: Option<u64>,
     /// Bytes addressed by currently live pool allocations only.
     pub logical_occupancy_bytes: u64,
     /// Bytes kept alive by the single retiring generation, if any.

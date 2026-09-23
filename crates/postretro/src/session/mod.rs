@@ -49,6 +49,9 @@ use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
+pub(crate) mod sh_residency;
+use sh_residency::ShStreamingSession;
+
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
 /// once after first pixels by [`Session::build`]. Owns EVERY session-lifetime
 /// field; none can be named while `App.session` is `None` (boot phase).
@@ -181,6 +184,11 @@ pub(crate) struct Session {
     /// clips, authored joint-zone table, and a derived broad-phase bound.
     /// CPU-only — no wgpu. See: context/lib/entity_model.md §7.
     pub(crate) hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
+
+    /// Session-owned streamed-SH controller. `None` for a legacy level and
+    /// until the first streaming frame can observe the renderer's real pool
+    /// allocation snapshot.
+    pub(crate) sh_streaming: Option<ShStreamingSession>,
 
     // --- Remaining session state: player options, settings path, frontend
     // declaration, net endpoint, audio subsystem, and (dev-tools) debug-UI. ---
@@ -550,6 +558,7 @@ impl Session {
             mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
             hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
+            sh_streaming: None,
             player_options,
             options_bridge: options::OptionsBridge::new(),
             settings_path,

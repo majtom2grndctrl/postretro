@@ -155,6 +155,15 @@ fn floor_charges_every_coupled_direct_dense_texture() {
     let expected_dense_bytes = 100_u64 * 1_664;
     let expected_sparse_bytes = 2 * sparse_capacity_bytes((1, 2)).unwrap();
     assert_eq!(plan.dense_slots, 100);
+    assert_eq!(plan.dense_group_minimum_bytes, 4 * 1_664);
+    assert_eq!(
+        plan.sparse_group_minimum_bytes[&41],
+        sparse_capacity_bytes((1, 2)).unwrap()
+    );
+    assert_eq!(
+        plan.sparse_group_minimum_bytes[&45],
+        sparse_capacity_bytes((1, 2)).unwrap()
+    );
     assert_eq!(
         plan.effective_floor_bytes,
         17 + 19 + expected_dense_bytes + expected_sparse_bytes

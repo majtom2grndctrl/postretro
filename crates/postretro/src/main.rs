@@ -70,10 +70,8 @@ use postretro_sim::scripting;
 // held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
-// Task 10 wires this pure controller into the session/render seam. Until then,
-// it is intentionally exercised by its focused CPU tests rather than a live
-// frame path.
-#[allow(dead_code)]
+// App-side session policy for streamed SH targets, bounded loader batches, and
+// renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
@@ -3754,6 +3752,15 @@ impl ApplicationHandler for App {
                     reachable_cell_aabbs,
                     stats,
                 } = visible_render;
+                // A streamed map retains only its validated manifest. Keep the
+                // application-side controller keyed to this exact load before
+                // the renderer records the frame; legacy storage is `None` and
+                // bypasses the developer mode gate entirely.
+                let sh_stream_manifest = self
+                    .level
+                    .as_ref()
+                    .and_then(|world| world.sh_stream_manifest())
+                    .cloned();
 
                 #[cfg(feature = "dev-tools")]
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -3963,6 +3970,22 @@ impl ApplicationHandler for App {
                             presentation_tick,
                         );
                     }
+                    // Prepare the controller while no borrowed draw collection
+                    // is live. The actual drain still occurs as the first step
+                    // inside `render_frame_indirect`, before scene recording.
+                    let sh_drain_batch = match session.prepare_sh_streaming_drain(
+                        sh_stream_manifest.as_ref(),
+                        renderer,
+                        &visible_cells,
+                        self.script_time,
+                    ) {
+                        Ok(batch) => batch,
+                        Err(err) => {
+                            self.exit_result = Err(err);
+                            event_loop.exit();
+                            return;
+                        }
+                    };
                     let particle_collections: Vec<(&str, &[u8])> =
                         session.particle_render.iter_collections().collect();
 
@@ -4369,7 +4392,7 @@ impl ApplicationHandler for App {
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
 
-                    let present_handle = match renderer.render_frame_indirect(
+                    let sh_frame_result = match renderer.render_frame_indirect(
                         &mut session.font_system,
                         CameraCullVisibility {
                             cells: &visible_cells,
@@ -4389,14 +4412,31 @@ impl ApplicationHandler for App {
                             a: 1.0,
                         },
                         true,
+                        sh_drain_batch,
                     ) {
-                        Ok(opt) => opt,
+                        Ok(result) => result,
+                        Err(err) => {
+                            self.exit_result = Err(err.into());
+                            event_loop.exit();
+                            return;
+                        }
+                    };
+                    if let Err(err) =
+                        session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer)
+                    {
+                        self.exit_result = Err(err);
+                        event_loop.exit();
+                        return;
+                    }
+                    let present_handle = match sh_frame_result.frame {
+                        Ok(present_handle) => present_handle,
                         Err(err) => {
                             self.exit_result = Err(err);
                             event_loop.exit();
                             return;
                         }
                     };
+                    session.mark_sh_streaming_compose_submitted(present_handle.is_some());
                     // Read back the focus rect list the renderer just exported
                     // for the top stack layer (the gameplay render above laid it
                     // out). The focus engine consumes it next frame's game-logic
@@ -5602,7 +5642,8 @@ impl App {
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
         let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
-        let present_handle = match renderer.render_frame_indirect(
+        session.clear_sh_streaming();
+        let sh_frame_result = match renderer.render_frame_indirect(
             &mut session.font_system,
             visible_render.camera_cull(),
             &visible_render.light_reachable_cell_mask,
@@ -5614,14 +5655,29 @@ impl App {
             self.script_time,
             FRONTEND_CLEAR_COLOR,
             false,
+            postretro_level_loader::ShDrainBatch::default(),
         ) {
-            Ok(opt) => opt,
+            Ok(result) => result,
+            Err(err) => {
+                self.exit_result = Err(err.into());
+                event_loop.exit();
+                return;
+            }
+        };
+        if let Err(err) = session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer) {
+            self.exit_result = Err(err);
+            event_loop.exit();
+            return;
+        }
+        let present_handle = match sh_frame_result.frame {
+            Ok(present_handle) => present_handle,
             Err(err) => {
                 self.exit_result = Err(err);
                 event_loop.exit();
                 return;
             }
         };
+        session.mark_sh_streaming_compose_submitted(present_handle.is_some());
         let exported_rects = renderer.export_ui_focus_rects();
         if let Some(session) = self.session.as_mut() {
             session.ui_focus_rects = Some(exported_rects);

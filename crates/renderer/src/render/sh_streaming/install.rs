@@ -267,7 +267,7 @@ impl ShResidencyState {
         Ok(())
     }
 
-    fn validate_isolated_atlases(
+    pub(super) fn validate_isolated_atlases(
         &self,
         cluster_id: u32,
         chunk: &DecodedClusterShPayload,

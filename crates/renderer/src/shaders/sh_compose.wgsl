@@ -475,7 +475,7 @@ fn compose_main(
     if (level == 0u) {
         // Delta id 27 compacts L0/L1; L1 keeps valid brick corners by kept
         // rank. Direct reads avoid shared-memory loads; only base id 34 reserves zero corners.
-        if (output_is_stored && use_indirect_animated) {
+        if (output_is_stored && use_indirect_animated && local_probe_is_kept(cell_index, local_probe)) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let scale = animated_light_scale(affinity_lights[entry]);

@@ -5,6 +5,7 @@ use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_D
 use wgpu::util::DeviceExt;
 
 use super::super::gpu::validate_storage_buffer_size;
+use super::super::payload::sparse_offsets_fit_allocation;
 use super::super::{
     AtlasShape, ShResidencyDrainError, buffer_with_zeroes, checked_cell_count,
     sparse_compose_capacity, u32_bytes,
@@ -88,11 +89,13 @@ impl StreamingSparseBuffers {
             if row.role == 2 || row.lights.is_empty() {
                 continue;
             }
-            queue.write_buffer(
-                &self.tile_words,
-                u64::from(row.tile_f16_start / 2) * 4,
-                &u16_words(&row.tile_f16),
-            );
+            if !row.tile_f16.is_empty() {
+                queue.write_buffer(
+                    &self.tile_words,
+                    u64::from(row.tile_f16_start / 2) * 4,
+                    &u16_words(&row.tile_f16),
+                );
+            }
             queue.write_buffer(
                 &self.lights,
                 u64::from(row.entry_start) * 4,
@@ -266,11 +269,11 @@ impl StreamingSparseBuffers {
                 reason: "streamed direct sparse row exceeds its GPU pool capacity",
             });
         }
-        if row
-            .entry_tile_f16_offsets
-            .iter()
-            .any(|&offset| offset < row.tile_f16_start || offset >= tile_end)
-        {
+        if !sparse_offsets_fit_allocation(
+            &row.entry_tile_f16_offsets,
+            row.tile_f16_start,
+            u32::try_from(row.tile_f16.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?,
+        ) {
             return Err(ShResidencyDrainError::MalformedChunk {
                 cluster_id: 0,
                 reason: "streamed direct sparse entry points outside its tile allocation",

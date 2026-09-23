@@ -467,7 +467,7 @@ fn animated_compose_main(
         // kept-rank order. Base atlases id 34 and id 35 reserve eight
         // zero-filled L1 corner slots. Direct compact-payload reads avoid
         // loading 64 tiles into shared memory.
-        if (output_is_stored) {
+        if (output_is_stored && local_probe_is_kept(cell_index, local_probe)) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let scale = animated_light_scale(affinity_lights[entry]);

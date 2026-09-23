@@ -89,11 +89,7 @@ impl StreamingIndirectCompose {
                 reason: "streamed indirect compaction metadata needs growth",
             });
         }
-        if row.entry_tile_f16_offsets.iter().any(|offset| {
-            tile_f16_start
-                .checked_add(*offset)
-                .is_none_or(|absolute| absolute >= tile_end)
-        }) {
+        if !sparse_offsets_fit_allocation(&row.entry_tile_f16_offsets, 0, row.tile_f16_count) {
             return Err(ShResidencyDrainError::MalformedChunk {
                 cluster_id: 0,
                 reason: "streamed sparse entry points outside its tile allocation",
@@ -128,11 +124,13 @@ impl StreamingIndirectCompose {
             &u32_bytes(&row.lights),
         );
         let packed = u16_words(&row.tile_f16)?;
-        queue.write_buffer(
-            &self.delta_subblocks,
-            u64::from(tile_f16_start / 2) * 4,
-            &u32_bytes(&packed),
-        );
+        if !packed.is_empty() {
+            queue.write_buffer(
+                &self.delta_subblocks,
+                u64::from(tile_f16_start / 2) * 4,
+                &u32_bytes(&packed),
+            );
+        }
         let cell_count = checked_cell_count(self.grid.affinity_dims)?;
         let entry_offset_base = cell_count
             .checked_mul(3)

@@ -46,6 +46,44 @@ fn controller_with_nominal_budget(
     .unwrap()
 }
 
+/// Pure large-map allocation evidence. The values model the renderer report:
+/// whole-load allocates every SH family, while the streamed request contains
+/// fixed metadata, whole-resident billboard scatter, and one active pool.
+struct LargeMapAllocationFixture {
+    whole_load_requested_sh_bytes: u64,
+    limited_visible_cluster_bytes: u64,
+    cluster_requested_bytes: Vec<u64>,
+    gpu_budget: ShGpuBudgetInputs,
+}
+
+fn large_map_allocation_fixture() -> LargeMapAllocationFixture {
+    const MIB: u64 = 1024 * 1024;
+    let fixed_metadata_bytes = 8 * MIB;
+    let whole_resident_scatter_bytes = 16 * MIB;
+    let active_pool_capacity_bytes = 240 * MIB;
+    let cluster_requested_bytes = vec![64 * MIB; 8];
+    LargeMapAllocationFixture {
+        // The whole-load report counts every cluster plus fixed metadata and
+        // the intentionally whole-resident billboard-scatter families.
+        whole_load_requested_sh_bytes: cluster_requested_bytes.iter().sum::<u64>()
+            + fixed_metadata_bytes
+            + whole_resident_scatter_bytes,
+        limited_visible_cluster_bytes: cluster_requested_bytes[0],
+        cluster_requested_bytes,
+        gpu_budget: ShGpuBudgetInputs {
+            fixed: FixedGpuCharges {
+                fixed_metadata_bytes,
+                whole_resident_scatter_bytes,
+                active_pool_capacity_bytes,
+            },
+            renderer_effective_floor_bytes: Some(
+                fixed_metadata_bytes + whole_resident_scatter_bytes + active_pool_capacity_bytes,
+            ),
+            ..ShGpuBudgetInputs::default()
+        },
+    }
+}
+
 fn prepared(controller: &ShResidencyController, cluster_id: u32) -> PreparedShCluster {
     PreparedShCluster {
         generation: controller.generation(),
@@ -75,6 +113,43 @@ fn mark_sampleable(controller: &mut ShResidencyController, cluster_id: u32) {
         .accounting
         .add_logical(controller.topology.requested_resident_bytes[cluster_id as usize])
         .unwrap();
+}
+
+#[test]
+fn large_map_allocation_fixture_keeps_limited_visible_request_below_whole_load() {
+    let fixture = large_map_allocation_fixture();
+    let mut controller = ShResidencyController::for_test_with_budget(
+        topology(
+            vec![0, 1, 2, 3, 4, 5, 6, 7],
+            vec![vec![]; 8],
+            vec![vec![]; 8],
+            fixture.cluster_requested_bytes.clone(),
+        ),
+        &FixedGenerationClock::new(1),
+        fixture.gpu_budget,
+    )
+    .unwrap();
+
+    let accounting = controller.accounting();
+    let effective_floor = accounting.effective_floor_bytes().unwrap();
+    let limited_visible_streamed_active_request = accounting.requested_gpu_bytes().unwrap();
+    assert!(fixture.whole_load_requested_sh_bytes > effective_floor);
+    assert!(limited_visible_streamed_active_request < fixture.whole_load_requested_sh_bytes);
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.target_reset, Some(vec![1]));
+    assert!(batch.target_add.is_empty());
+    assert_eq!(controller.report_snapshot().target_clusters, 1);
+
+    mark_sampleable(&mut controller, 0);
+    assert_eq!(
+        controller.accounting().logical_occupancy_bytes,
+        fixture.limited_visible_cluster_bytes,
+        "logical occupancy remains a separate sub-ledger of the active request"
+    );
 }
 
 #[test]

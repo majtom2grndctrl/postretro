@@ -185,7 +185,13 @@ section or defeat the one-payload-at-a-time write lifetime.
 
 **Atlas preparation and SH ordering.** Chart planning and packing are not ray work, and the lightmap bake, shadowmask fill, animated light chunks, and animated weight maps consume only the charts and placements they produce. The SH/delta, entity-shadow-selection, billboard direct-scatter, and `ChunkLightList` stages complete before atlas preparation. This ordering is load-bearing: direct-SH delta work can clear entity-shadow selection wholesale, and deterministic channel assignment must finish before the fused atlas walk begins. These pre-atlas stages consume position-only geometry, so density and scale edits do not invalidate their cache keys.
 
-**Planned cluster-directory stage.** After all bakes and final section-presence decisions, an uncached metadata pass partitions cells and addresses only the SH sections actually emitted. It runs before serialization in warm and cold builds. It never feeds a bake: global SH rays, coarsening, existing cache keys, and payload order remain unchanged. Directory construction and validation borrow finalized metadata without cloning or re-encoding the lighting payloads.
+**Cluster residency metadata and payload stage.** After all bakes and final
+section-presence decisions, an uncached metadata pass partitions cells and addresses only
+the emitted SH sections. It emits id 49, then emits id 50 from borrowed finalized SH
+sources when id 34 is present. It runs before serialization in warm and cold builds. It
+never feeds a bake: global SH rays, coarsening, existing cache keys, and legacy section
+bodies remain unchanged. Construction and validation borrow finalized metadata without
+cloning or re-encoding whole lighting payloads.
 
 ### Progress reporting, controls, and logging
 
@@ -260,11 +266,33 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | CellVisibility | 46 | Optional, versioned, strictly parsed baked Cell→Cell coupling relation: per-cell reachability component IDs plus canonically ordered coupled-pair distance/aperture graded records. Missing → conservative all-perceivable, no-graded-detail fallback. Id 14 (`LeafPvs`) is a retired hole; do not reuse |
 | BillboardDirectScatterVolume | 47 | Optional dense normal-free direct-scatter base for billboards: `Rgba16Float` RGB plus binary validity alpha in the x-fastest id-34 probe order. Static-only maps omit it when no `static_light_map` source contributes. A map with animated-only `static_light_map` scatter entries may emit an all-zero RGB base solely as the required grid/validity anchor for a valid id-48 companion. Invalid or missing data selects legacy billboard direct lighting |
 | AnimatedBillboardDirectScatterDeltaVolumes | 48 | Optional dense animated billboard direct-scatter deltas: reuses id-45 descriptor mapping and CSR affinity layout, but stores fixed dense 4×4×4 `Rgba16Float` RGB deltas per CSR entry (reserved zero alpha). Required with id 47 whenever id 45 is present; a missing, invalid, or oversized pair selects legacy billboard direct lighting |
-| ClusterDirectory | 49 | Always in current compiler output; inert deterministic cell clusters and grid-relative SH-family range ownership/halo metadata; container-entry version 1 |
+| ClusterDirectory | 49 | Always in current compiler output; deterministic cell clusters and grid-relative SH-family ownership/halo metadata; container-entry version 1 |
+| ClusterShPayloads | 50 | When id 49 and id 34 are present; independently readable per-cluster payloads for streamed ids 27/34/35/41/45; container-entry version 1, internal epoch 1 |
 
-**Cluster directory (id 49, compiler-emitted inert metadata).** Resource-agnostic clustering uses portal adjacency and fixed primitive/cell limits of 64/32. Every runtime cell belongs to exactly one stable cluster; multi-cell clusters are connected, and an indivisible over-budget cell remains an explicitly flagged singleton. Resource coverage does not alter that partition. The uncached `ClusterDirectory` metadata stage runs after every bake and final SH-family presence decision and before section serialization; id 49 is appended last at container-entry version 1. The chosen limits and bounded dry-run evidence live in `measurements/sh-probe-streaming/cluster-directory-thresholds.md`.
+**Cluster directory (id 49).** Resource-agnostic clustering uses portal adjacency and
+fixed primitive/cell limits of 64/32. Every runtime cell belongs to exactly one stable
+cluster; multi-cell clusters are connected, and an indivisible over-budget cell remains an
+explicitly flagged singleton. Resource coverage does not alter that partition. The
+uncached `ClusterDirectory` metadata stage runs after every bake and final SH-family
+presence decision and before section serialization. The chosen limits and bounded dry-run
+evidence live in `measurements/sh-probe-streaming/cluster-directory-thresholds.md`.
 
-The directory addresses SH resources by grid-relative probe or affinity-cell ranges, never payload byte offsets. Cross-cluster affinity cells carry one compile-time-fixed accumulation owner; other references are reconstruction-only halo. One authored level remains one logical PRL. The directory is inert CPU metadata in this slice: loading and rendering remain whole-level, and a missing directory preserves that behavior. It adds no shader or residency consumer. Existing section layouts, epochs, and relative ordering remain intact, including id 34 v11 and id 35 v4; directory work must not restore earlier SH representations.
+The directory addresses SH resources by grid-relative probe or affinity-cell ranges, never
+payload byte offsets. Cross-cluster affinity cells carry one compile-time-fixed accumulation
+owner; other references are reconstruction-only halo. One authored level remains one
+logical PRL. A missing id 49 remains a whole-load level.
+
+**Cluster SH payloads (id 50).** Id 50 is a validated, independently readable,
+cluster-major companion for ids 27/34/35/41/45. It is emitted after id 49 only when id 34
+is present. Ids 47/48 remain whole-resident and do not appear in id 50. Id 50 duplicates
+the streamable payload deliberately: global BC6H atlas blocks cannot be gathered into
+independent cluster cells from legacy compressed bytes. Its source inventory, source
+versions, index, and chunk hashes must match id 49 and the emitted legacy sections before
+any runtime-mode decision. Invalid id 50 rejects even when streaming is disabled. Valid
+id-49/id-50 levels default to bounded asynchronous residency; `off` selects the validated
+legacy whole-load path and `sync-proof` is the deterministic no-eviction test path.
+Existing section layouts, epochs, cache-stage epochs, sampler bindings, and sample taps
+remain intact, including id 34 v11 and id 35 v4.
 
 **Coarsened delta sections (ids 27, 41, 45):** The wire representation supports an independent L0/L1/L2 level for every affinity cell in each section. L0 stores every valid probe tile. L1 stores valid brick-corner tiles. L2 stores one synthesized mean tile over the brick's valid probes. Payload size and order follow kept probes and kept rank, not dense probe index. Production adaptively classifies id 41 only. Ids 27 and 45 intentionally emit uniform L0 until animation and script amplitudes have bounded runtime contracts. Protection AABBs force intersecting bricks to L0 in an adaptively classified section before one-level seam smoothing.
 

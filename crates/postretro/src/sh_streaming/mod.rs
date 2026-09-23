@@ -5,3 +5,5 @@ pub(crate) mod budget;
 pub(crate) mod controller;
 pub(crate) mod generation;
 mod topology;
+#[cfg(test)]
+mod topology_test_fixtures;

@@ -15,7 +15,8 @@ slice by owner decision.
 | 6 deterministic compiler chunks | Done | `f71607881` | compiler check; 8 focused id-50 tests; focused code review |
 | 7 metadata-only loader manifest | Done | `1451a5bc6` | 205 loader tests; postretro check; capture target compile; physical no-read fixture; focused code review |
 | 8 pure residency planner | Done | `a8a386351` | 12 focused planner tests; postretro check; focused code review |
-| 9–13 GPU integration and proof | Pending | — | — |
+| 9 renderer cluster residency | Done | `c154bfe68`, `347c51dae` | renderer full suite: 564 passed, 1 ignored; workspace check; fmt; 44 focused streaming tests; final code review approved |
+| 10–13 runtime integration and proof | Pending | — | — |
 
 After each completed phase, check workspace free space. If it falls below
 10 GiB, clean only explicit PostRetro Cargo crates with `cargo clean -p`.
@@ -24,3 +25,4 @@ Phase 1 disk gate: 32 GiB available after Task 4. No Cargo cleanup needed.
 Phase 2 disk gate: 30 GiB available after Task 5. No Cargo cleanup needed.
 Phase 3a disk gate: 23 GiB available after Tasks 6–7. No Cargo cleanup needed.
 Phase 3b disk gate: 21 GiB available after Task 8. No Cargo cleanup needed.
+Phase 4 disk gate: 18 GiB available after Task 9. No Cargo cleanup needed.

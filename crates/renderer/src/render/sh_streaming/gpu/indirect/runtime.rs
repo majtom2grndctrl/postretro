@@ -110,57 +110,70 @@ impl StreamingIndirectCompose {
         Ok(())
     }
 
-    pub(in crate::render::sh_streaming::gpu) fn upload_sparse_row(
+    pub(in crate::render::sh_streaming::gpu) fn upload_sparse_rows(
         &mut self,
         queue: &wgpu::Queue,
-        entry_start: u32,
-        tile_f16_start: u32,
-        row: &ParsedSparseRow,
+        rows: &[&SparseInstallPlan],
     ) -> Result<(), ShResidencyDrainError> {
-        self.validate_sparse_row(entry_start, tile_f16_start, row)?;
-        queue.write_buffer(
-            &self.affinity_lights,
-            u64::from(entry_start) * 4,
-            &u32_bytes(&row.lights),
-        );
-        let packed = u16_words(&row.tile_f16)?;
-        if !packed.is_empty() {
-            queue.write_buffer(
-                &self.delta_subblocks,
-                u64::from(tile_f16_start / 2) * 4,
-                &u32_bytes(&packed),
-            );
-        }
+        let mut lights = Vec::new();
+        let mut tiles = Vec::new();
+        let mut offsets = Vec::new();
+        let mut pairs = Vec::new();
         let cell_count = checked_cell_count(self.grid.affinity_dims)?;
-        let entry_offset_base = cell_count
-            .checked_mul(3)
-            .and_then(|base| base.checked_add(entry_start))
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let offsets: Vec<u32> = row
-            .entry_tile_f16_offsets
-            .iter()
-            .map(|offset| {
-                tile_f16_start
-                    .checked_add(*offset)
-                    .ok_or(ShResidencyDrainError::SlotOverflow)
-            })
-            .collect::<Result<_, _>>()?;
-        queue.write_buffer(
-            &self.compaction_metadata,
-            u64::from(entry_offset_base) * 4,
-            &u32_bytes(&offsets),
-        );
-        let pair_index = u64::from(row.row)
-            .checked_mul(2)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let entry_end = entry_start
-            .checked_add(row.entry_count)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        queue.write_buffer(
-            &self.affinity_offsets,
-            pair_index * 4,
-            &u32_bytes(&[entry_start, entry_end]),
-        );
+        for plan in rows {
+            let row = &plan.payload;
+            let entry_start = plan.entries.start;
+            let tile_f16_start = plan.tiles.start;
+            self.validate_sparse_row(entry_start, tile_f16_start, row)?;
+            if !row.lights.is_empty() {
+                lights.push(BufferWrite {
+                    offset: u64::from(entry_start) * 4,
+                    bytes: u32_bytes(&row.lights),
+                });
+            }
+            let packed = u16_words(&row.tile_f16)?;
+            if !packed.is_empty() {
+                tiles.push(BufferWrite {
+                    offset: u64::from(tile_f16_start / 2) * 4,
+                    bytes: u32_bytes(&packed),
+                });
+            }
+            let entry_offset_base = cell_count
+                .checked_mul(3)
+                .and_then(|base| base.checked_add(entry_start))
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            let absolute_offsets: Vec<u32> = row
+                .entry_tile_f16_offsets
+                .iter()
+                .map(|offset| {
+                    tile_f16_start
+                        .checked_add(*offset)
+                        .ok_or(ShResidencyDrainError::SlotOverflow)
+                })
+                .collect::<Result<_, _>>()?;
+            if !absolute_offsets.is_empty() {
+                offsets.push(BufferWrite {
+                    offset: u64::from(entry_offset_base) * 4,
+                    bytes: u32_bytes(&absolute_offsets),
+                });
+            }
+            let entry_end = entry_start
+                .checked_add(row.entry_count)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            pairs.push(BufferWrite {
+                offset: u64::from(row.row) * 8,
+                bytes: u32_bytes(&[entry_start, entry_end]),
+            });
+        }
+        let tiles = coalesce_buffer_writes(tiles)?;
+        let lights = coalesce_buffer_writes(lights)?;
+        let offsets = coalesce_buffer_writes(offsets)?;
+        let pairs = coalesce_buffer_writes(pairs)?;
+        queue_buffer_writes(queue, &self.delta_subblocks, &tiles);
+        queue_buffer_writes(queue, &self.affinity_lights, &lights);
+        queue_buffer_writes(queue, &self.compaction_metadata, &offsets);
+        // Queue order publishes each row pair only after its sparse data.
+        queue_buffer_writes(queue, &self.affinity_offsets, &pairs);
         Ok(())
     }
 

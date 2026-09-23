@@ -231,17 +231,29 @@ impl ShResidencyState {
             // All sparse rows were parsed, ownership-checked, and allocated
             // before this point. Upload backing data before each compose CSR
             // pair is published; the compose indirection follows last.
+            let mut indirect_rows = Vec::new();
+            let mut direct_rows = Vec::new();
+            let mut animated_direct_rows = Vec::new();
             for row in &sparse_plan {
-                if row.section_id == INDIRECT_DELTA_ID {
-                    gpu.upload_indirect_sparse_row(
-                        queue,
-                        row.entries.start,
-                        row.tiles.start,
-                        &row.payload,
-                    )?;
-                } else {
-                    gpu.upload_direct_sparse_rows(queue, row.section_id, &[row.direct_upload()?])?;
+                match row.section_id {
+                    INDIRECT_DELTA_ID => indirect_rows.push(row),
+                    DIRECT_DELTA_ID => direct_rows.push(row.direct_upload()?),
+                    ANIMATED_DIRECT_DELTA_ID => animated_direct_rows.push(row.direct_upload()?),
+                    _ => unreachable!("sparse source was validated before upload"),
                 }
+            }
+            if !indirect_rows.is_empty() {
+                gpu.upload_indirect_sparse_rows(queue, &indirect_rows)?;
+            }
+            if !direct_rows.is_empty() {
+                gpu.upload_direct_sparse_rows(queue, DIRECT_DELTA_ID, &direct_rows)?;
+            }
+            if !animated_direct_rows.is_empty() {
+                gpu.upload_direct_sparse_rows(
+                    queue,
+                    ANIMATED_DIRECT_DELTA_ID,
+                    &animated_direct_rows,
+                )?;
             }
             gpu.upload_compose_words(queue, &self.compose_words);
         }

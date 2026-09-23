@@ -1,7 +1,7 @@
 //! Renderer-owned indirect compose carrier for streamed SH residency.
 
-use super::super::ParsedSparseRow;
 use super::super::payload::sparse_offsets_fit_allocation;
+use super::super::{ParsedSparseRow, SparseInstallPlan};
 use super::*;
 
 /// Indirect id-34/id-27 streamed compose. Its buffers are renderer-owned

@@ -449,9 +449,95 @@ fn u16_words(halves: &[u16]) -> Result<Vec<u32>, ShResidencyDrainError> {
         .collect())
 }
 
+const MAX_COALESCED_WRITE_BYTES: usize = 1024 * 1024;
+
+pub(in crate::render::sh_streaming) struct BufferWrite {
+    pub(in crate::render::sh_streaming) offset: u64,
+    pub(in crate::render::sh_streaming) bytes: Vec<u8>,
+}
+
+pub(in crate::render::sh_streaming) fn coalesce_buffer_writes(
+    mut writes: Vec<BufferWrite>,
+) -> Result<Vec<BufferWrite>, ShResidencyDrainError> {
+    writes.retain(|write| !write.bytes.is_empty());
+    writes.sort_by_key(|write| write.offset);
+    let mut merged: Vec<BufferWrite> = Vec::new();
+    for write in writes {
+        if let Some(last) = merged.last_mut() {
+            let end = last
+                .offset
+                .checked_add(last.bytes.len() as u64)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            if write.offset < end {
+                return Err(ShResidencyDrainError::SlotOverflow);
+            }
+            if write.offset == end
+                && last.bytes.len().saturating_add(write.bytes.len()) <= MAX_COALESCED_WRITE_BYTES
+            {
+                last.bytes.extend_from_slice(&write.bytes);
+                continue;
+            }
+        }
+        merged.push(write);
+    }
+    Ok(merged)
+}
+
+pub(in crate::render::sh_streaming) fn queue_buffer_writes(
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    writes: &[BufferWrite],
+) {
+    for write in writes {
+        queue.write_buffer(buffer, write.offset, &write.bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjacent_sparse_writes_merge_without_filling_live_gaps() {
+        // Regression: per-row Metal staging allocations stalled streamed first-frame install.
+        let merged = coalesce_buffer_writes(vec![
+            BufferWrite {
+                offset: 8,
+                bytes: vec![3, 4],
+            },
+            BufferWrite {
+                offset: 0,
+                bytes: vec![1, 2],
+            },
+            BufferWrite {
+                offset: 2,
+                bytes: vec![5, 6],
+            },
+        ])
+        .unwrap();
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            (merged[0].offset, merged[0].bytes.as_slice()),
+            (0, &[1, 2, 5, 6][..])
+        );
+        assert_eq!(
+            (merged[1].offset, merged[1].bytes.as_slice()),
+            (8, &[3, 4][..])
+        );
+        assert!(
+            coalesce_buffer_writes(vec![
+                BufferWrite {
+                    offset: 0,
+                    bytes: vec![0; 8],
+                },
+                BufferWrite {
+                    offset: 4,
+                    bytes: vec![0; 4],
+                },
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn sparse_retirement_pressure_is_scoped_to_the_replaced_family() {

@@ -4,7 +4,9 @@ use postretro_level_loader::ShStreamBaseMetadata;
 use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
 use wgpu::util::DeviceExt;
 
-use super::super::gpu::validate_storage_buffer_size;
+use super::super::gpu::{
+    BufferWrite, coalesce_buffer_writes, queue_buffer_writes, validate_storage_buffer_size,
+};
 use super::super::payload::sparse_offsets_fit_allocation;
 use super::super::{
     AtlasShape, ShResidencyDrainError, buffer_with_zeroes, checked_cell_count,
@@ -85,39 +87,47 @@ impl StreamingSparseBuffers {
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         self.validate_rows(rows)?;
+        let mut tiles = Vec::new();
+        let mut lights = Vec::new();
+        let mut offsets = Vec::new();
+        let mut pairs = Vec::new();
         for row in rows {
             if row.role == 2 || row.lights.is_empty() {
                 continue;
             }
             if !row.tile_f16.is_empty() {
-                queue.write_buffer(
-                    &self.tile_words,
-                    u64::from(row.tile_f16_start / 2) * 4,
-                    &u16_words(&row.tile_f16),
-                );
+                tiles.push(BufferWrite {
+                    offset: u64::from(row.tile_f16_start / 2) * 4,
+                    bytes: u16_words(&row.tile_f16),
+                });
             }
-            queue.write_buffer(
-                &self.lights,
-                u64::from(row.entry_start) * 4,
-                &u32_bytes(&row.lights),
-            );
+            lights.push(BufferWrite {
+                offset: u64::from(row.entry_start) * 4,
+                bytes: u32_bytes(&row.lights),
+            });
             let compaction_byte_offset = self
                 .compaction_entry_offset_words
                 .checked_add(row.entry_start)
                 .and_then(|offset| offset.checked_mul(4))
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            queue.write_buffer(
-                &self.compaction_metadata,
-                u64::from(compaction_byte_offset),
-                &u32_bytes(&row.entry_tile_f16_offsets),
-            );
-            // Queue order publishes the pair only after its entry/tile data.
-            queue.write_buffer(
-                &self.row_pairs,
-                u64::from(row.row) * 8,
-                &u32_bytes(&[row.entry_start, row.entry_end]),
-            );
+            offsets.push(BufferWrite {
+                offset: u64::from(compaction_byte_offset),
+                bytes: u32_bytes(&row.entry_tile_f16_offsets),
+            });
+            pairs.push(BufferWrite {
+                offset: u64::from(row.row) * 8,
+                bytes: u32_bytes(&[row.entry_start, row.entry_end]),
+            });
         }
+        let tiles = coalesce_buffer_writes(tiles)?;
+        let lights = coalesce_buffer_writes(lights)?;
+        let offsets = coalesce_buffer_writes(offsets)?;
+        let pairs = coalesce_buffer_writes(pairs)?;
+        queue_buffer_writes(queue, &self.tile_words, &tiles);
+        queue_buffer_writes(queue, &self.lights, &lights);
+        queue_buffer_writes(queue, &self.compaction_metadata, &offsets);
+        // Queue order publishes pairs only after their entry/tile data.
+        queue_buffer_writes(queue, &self.row_pairs, &pairs);
         Ok(())
     }
 

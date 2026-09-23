@@ -13,8 +13,9 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 
 use passes::{StreamingAnimatedPass, StreamingPromotionPass};
 pub(super) use sparse::DirectSparseRowUpload;
+use sparse::checked_ledger_sum;
 
-use super::{AtlasShape, ShResidencyDrainError};
+use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
@@ -49,11 +50,47 @@ pub(super) struct StreamingDirectComposeFrameInputs<'a> {
     pub(super) promotion_override: DirectShDebugOverride,
     pub(super) animated_override: AnimatedDirectShDebugOverride,
     pub(super) promoted_animated_states: &'a [PromotedBakedLightState],
+    pub(super) promotion_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
+    pub(super) animated_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
 }
 
 pub(super) struct StreamingDirectCompose {
     promotion: StreamingPromotionPass,
     animated: Option<StreamingAnimatedPass>,
+    fixed_metadata_bytes: u64,
+    active_capacity_bytes: u64,
+}
+
+/// Bind groups displaced by a dense atlas replacement. They deliberately
+/// retain the old texture views until the submission fence completes while
+/// the id-41/id-45 sparse buffers remain in their original generations.
+pub(super) struct RetiredDirectDenseBindings {
+    pub(super) promotion: wgpu::BindGroup,
+    pub(super) animated: Option<wgpu::BindGroup>,
+}
+
+/// One direct sparse family displaced by an append-preserving buffer growth.
+/// The sibling family stays active, so an id-41 expansion cannot transiently
+/// duplicate an unrelated id-45 backing pool (or vice versa).
+pub(super) enum RetiredDirectSparsePass {
+    Promotion(StreamingPromotionPass),
+    Animated(StreamingAnimatedPass),
+}
+
+impl RetiredDirectSparsePass {
+    pub(super) fn capacity_bytes(&self) -> u64 {
+        match self {
+            Self::Promotion(pass) => pass.total_capacity_bytes(),
+            Self::Animated(pass) => pass.total_capacity_bytes(),
+        }
+    }
+
+    pub(super) fn active_capacity_bytes(&self) -> u64 {
+        match self {
+            Self::Promotion(pass) => pass.active_capacity_bytes(),
+            Self::Animated(pass) => pass.active_capacity_bytes(),
+        }
+    }
 }
 
 impl StreamingDirectCompose {
@@ -67,6 +104,7 @@ impl StreamingDirectCompose {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        sparse_capacity_floors: &SparseCapacityFloors,
     ) -> Result<Self, ShResidencyDrainError> {
         let promotion_output = if sources.animated_direct_delta.is_some() {
             views
@@ -86,6 +124,7 @@ impl StreamingDirectCompose {
             promotion_output,
             views.selection_weights,
             compose_indirection,
+            sparse_capacity_floors.get(&41).copied(),
         )?;
         let animated = match sources.animated_direct_delta.as_ref() {
             Some(source) => Some(StreamingAnimatedPass::new(
@@ -100,12 +139,27 @@ impl StreamingDirectCompose {
                 compose_indirection,
                 sh,
                 uniform_bind_group_layout,
+                sparse_capacity_floors.get(&45).copied(),
             )?),
             None => None,
         };
+        let fixed_metadata_bytes = checked_ledger_sum(&[
+            promotion.fixed_metadata_bytes(),
+            animated
+                .as_ref()
+                .map_or(0, StreamingAnimatedPass::fixed_metadata_bytes),
+        ])?;
+        let active_capacity_bytes = checked_ledger_sum(&[
+            promotion.active_capacity_bytes(),
+            animated
+                .as_ref()
+                .map_or(0, StreamingAnimatedPass::active_capacity_bytes),
+        ])?;
         Ok(Self {
             promotion,
             animated,
+            fixed_metadata_bytes,
+            active_capacity_bytes,
         })
     }
 
@@ -116,12 +170,184 @@ impl StreamingDirectCompose {
         true
     }
 
+    /// Rebuild only the dense-atlas bindings. This never reallocates the
+    /// direct sparse pools: id-41/id-45 capacity has its own replacement
+    /// lifecycle and must not double during a 34/35 atlas layer append.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn rebind_dense(
+        &mut self,
+        device: &wgpu::Device,
+        shape: AtlasShape,
+        views: StreamingDirectViews<'_>,
+        compose_indirection: &wgpu::Buffer,
+        sh: &ShVolumeResources,
+    ) -> Result<RetiredDirectDenseBindings, ShResidencyDrainError> {
+        let promotion_output = if self.animated.is_some() {
+            views
+                .intermediate_storage
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed animated direct compose lost its intermediate atlas",
+                })?
+        } else {
+            views.total_storage
+        };
+        let promotion = self.promotion.rebind_dense(
+            device,
+            shape,
+            views.base,
+            promotion_output,
+            views.selection_weights,
+            compose_indirection,
+        );
+        let animated = match self.animated.as_mut() {
+            Some(animated) => Some(
+                animated.rebind_dense(
+                    device,
+                    shape,
+                    views
+                        .intermediate_sampled
+                        .ok_or(ShResidencyDrainError::GpuCapacity {
+                        reason:
+                            "streamed animated direct compose lost its sampled intermediate atlas",
+                    })?,
+                    views.total_storage,
+                    compose_indirection,
+                    sh,
+                ),
+            ),
+            None => None,
+        };
+        Ok(RetiredDirectDenseBindings {
+            promotion,
+            animated,
+        })
+    }
+
+    /// Build one sparse backing candidate without changing the live direct
+    /// passes. The GPU owner validates every requested family this way before
+    /// it encodes copies or publishes any replacement.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_sparse_replacement(
+        &self,
+        device: &wgpu::Device,
+        base: &ShStreamBaseMetadata,
+        sources: &ShStreamSourceMetadata,
+        shape: AtlasShape,
+        views: StreamingDirectViews<'_>,
+        compose_indirection: &wgpu::Buffer,
+        sh: &ShVolumeResources,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        section_id: u32,
+        sparse_floor: (u32, u32),
+    ) -> Result<RetiredDirectSparsePass, ShResidencyDrainError> {
+        match section_id {
+            41 => {
+                let output = if self.animated.is_some() {
+                    views
+                        .intermediate_storage
+                        .ok_or(ShResidencyDrainError::GpuCapacity {
+                            reason: "streamed direct id-41 growth lost its intermediate atlas",
+                        })?
+                } else {
+                    views.total_storage
+                };
+                let replacement = StreamingPromotionPass::new(
+                    device,
+                    base,
+                    sources.direct_delta.as_ref(),
+                    shape,
+                    views.base,
+                    output,
+                    views.selection_weights,
+                    compose_indirection,
+                    Some(sparse_floor),
+                )?;
+                Ok(RetiredDirectSparsePass::Promotion(replacement))
+            }
+            45 => {
+                let source = sources.animated_direct_delta.as_ref().ok_or(
+                    ShResidencyDrainError::MalformedChunk {
+                        cluster_id: 0,
+                        reason: "id-45 growth requested without streamed animated-direct metadata",
+                    },
+                )?;
+                let replacement = StreamingAnimatedPass::new(
+                    device,
+                    base,
+                    source,
+                    shape,
+                    views
+                        .intermediate_sampled
+                        .ok_or(ShResidencyDrainError::GpuCapacity {
+                            reason: "streamed id-45 growth lost its sampled intermediate atlas",
+                        })?,
+                    views.total_storage,
+                    compose_indirection,
+                    sh,
+                    uniform_bind_group_layout,
+                    Some(sparse_floor),
+                )?;
+                self.animated
+                    .as_ref()
+                    .ok_or(ShResidencyDrainError::MalformedChunk {
+                        cluster_id: 0,
+                        reason: "id-45 growth requested without an animated direct compose pass",
+                    })?;
+                Ok(RetiredDirectSparsePass::Animated(replacement))
+            }
+            _ => Err(unsupported_sparse_section(section_id)),
+        }
+    }
+
+    /// Encode only backing-buffer copies into a prevalidated candidate. This
+    /// has no CPU-visible side effect and therefore remains safe to abandon
+    /// if another family failed its construction earlier in the transaction.
+    pub(super) fn copy_to_sparse_replacement(
+        &self,
+        replacement: &RetiredDirectSparsePass,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        match replacement {
+            RetiredDirectSparsePass::Promotion(destination) => {
+                self.promotion.copy_retained_to(destination, encoder)
+            }
+            RetiredDirectSparsePass::Animated(destination) => {
+                if let Some(source) = self.animated.as_ref() {
+                    source.copy_retained_to(destination, encoder);
+                }
+            }
+        }
+    }
+
+    /// Publish a fully constructed and copy-encoded sparse candidate. No
+    /// fallible work remains at this point, so a multi-family growth can swap
+    /// every active pass atomically after its single queue submission.
+    pub(super) fn commit_sparse_replacement(
+        &mut self,
+        replacement: RetiredDirectSparsePass,
+    ) -> RetiredDirectSparsePass {
+        let retired = match replacement {
+            RetiredDirectSparsePass::Promotion(replacement) => RetiredDirectSparsePass::Promotion(
+                std::mem::replace(&mut self.promotion, replacement),
+            ),
+            RetiredDirectSparsePass::Animated(replacement) => {
+                let animated = self
+                    .animated
+                    .as_mut()
+                    .expect("prevalidated id-45 replacement requires an animated pass");
+                RetiredDirectSparsePass::Animated(std::mem::replace(animated, replacement))
+            }
+        };
+        self.refresh_ledger_bytes();
+        retired
+    }
+
     /// Preflight an entire owned family before the GPU owner queues any row.
     /// This makes a multi-family install atomic at the renderer boundary.
     pub(super) fn validate_sparse_rows(
         &self,
         section_id: u32,
-        rows: &[DirectSparseRowUpload],
+        rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         match section_id {
             41 => self.promotion.validate_sparse_rows(rows),
@@ -144,7 +370,7 @@ impl StreamingDirectCompose {
         &self,
         queue: &wgpu::Queue,
         section_id: u32,
-        rows: &[DirectSparseRowUpload],
+        rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         match section_id {
             41 => self.promotion.upload_sparse_rows(queue, rows),
@@ -215,6 +441,8 @@ impl StreamingDirectCompose {
             promotion_override,
             animated_override,
             promoted_animated_states,
+            promotion_timestamp_writes,
+            animated_timestamp_writes,
         } = inputs;
         if dirty.force_full_resident
             && (dirty.promotion.is_empty()
@@ -232,6 +460,7 @@ impl StreamingDirectCompose {
                 light_term_mask,
                 promotion_override,
                 dirty.promotion,
+                promotion_timestamp_writes,
             )?;
         }
         if !dirty.animated.is_empty() {
@@ -243,6 +472,7 @@ impl StreamingDirectCompose {
                     animated_override,
                     promoted_animated_states,
                     dirty.animated,
+                    animated_timestamp_writes,
                 )?;
             }
         }
@@ -250,19 +480,78 @@ impl StreamingDirectCompose {
     }
 
     pub(super) fn fixed_metadata_bytes(&self) -> u64 {
-        self.promotion.fixed_metadata_bytes()
-            + self
-                .animated
-                .as_ref()
-                .map_or(0, StreamingAnimatedPass::fixed_metadata_bytes)
+        self.fixed_metadata_bytes
     }
 
     pub(super) fn active_capacity_bytes(&self) -> u64 {
+        self.active_capacity_bytes
+    }
+
+    pub(super) fn promotion_active_capacity_bytes(&self) -> u64 {
         self.promotion.active_capacity_bytes()
-            + self
+    }
+
+    pub(super) fn promotion_total_capacity_bytes(&self) -> u64 {
+        self.promotion.total_capacity_bytes()
+    }
+
+    pub(super) fn animated_active_capacity_bytes(&self) -> u64 {
+        self.animated
+            .as_ref()
+            .map_or(0, StreamingAnimatedPass::active_capacity_bytes)
+    }
+
+    pub(super) fn animated_total_capacity_bytes(&self) -> u64 {
+        self.animated
+            .as_ref()
+            .map_or(0, StreamingAnimatedPass::total_capacity_bytes)
+    }
+
+    fn refresh_ledger_bytes(&mut self) {
+        self.fixed_metadata_bytes = checked_ledger_sum(&[
+            self.promotion.fixed_metadata_bytes(),
+            self.animated
+                .as_ref()
+                .map_or(0, StreamingAnimatedPass::fixed_metadata_bytes),
+        ])
+        .expect("validated direct compose fixed ledger must not overflow");
+        self.active_capacity_bytes = checked_ledger_sum(&[
+            self.promotion.active_capacity_bytes(),
+            self.animated
+                .as_ref()
+                .map_or(0, StreamingAnimatedPass::active_capacity_bytes),
+        ])
+        .expect("validated direct compose active ledger must not overflow");
+    }
+
+    pub(super) fn entry_capacity(&self, section_id: u32) -> Option<u32> {
+        match section_id {
+            41 => Some(self.promotion.entry_capacity()),
+            45 => self
                 .animated
                 .as_ref()
-                .map_or(0, StreamingAnimatedPass::active_capacity_bytes)
+                .map(StreamingAnimatedPass::entry_capacity),
+            _ => None,
+        }
+    }
+
+    pub(super) fn tile_f16_capacity(&self, section_id: u32) -> Option<u32> {
+        match section_id {
+            41 => Some(self.promotion.tile_f16_capacity()),
+            45 => self
+                .animated
+                .as_ref()
+                .map(StreamingAnimatedPass::tile_f16_capacity),
+            _ => None,
+        }
+    }
+
+    pub(super) fn copy_retained_to(&self, destination: &Self, encoder: &mut wgpu::CommandEncoder) {
+        self.promotion
+            .copy_retained_to(&destination.promotion, encoder);
+        if let (Some(source), Some(target)) = (&self.animated, &destination.animated) {
+            source.copy_retained_to(target, encoder);
+        }
     }
 }
 

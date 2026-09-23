@@ -12,7 +12,9 @@ use super::layout::{
     dynamic_grid_entry, light_term_mask_bytes, promotion_bgl_entries, sampler_entry, storage_entry,
     storage_texture_entry, texture_entry, u32_bytes, uniform_entry,
 };
-use super::sparse::{DirectSparseRowUpload, StreamingSparseBuffers, build_grid_and_sparse};
+use super::sparse::{
+    DirectSparseRowUpload, StreamingSparseBuffers, build_grid_and_sparse, checked_ledger_sum,
+};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
@@ -35,11 +37,16 @@ const BIND_ANIMATED_PROBE_INDIRECTION: u32 = 28;
 
 pub(super) struct StreamingPromotionPass {
     pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
     sparse: StreamingSparseBuffers,
     grid: ComposeGridParams,
     grid_buffer: wgpu::Buffer,
     grid_capacity: u64,
+    fixed_metadata_bytes: u64,
+    active_capacity_bytes: u64,
+    total_capacity_bytes: u64,
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
@@ -60,6 +67,7 @@ impl StreamingPromotionPass {
         output_storage: &wgpu::TextureView,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
+        sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
@@ -67,6 +75,7 @@ impl StreamingPromotionPass {
             source,
             shape,
             "Streamed Direct SH Promotion Grid Records",
+            sparse_floor,
         )?;
         let sampler = nearest_sampler(device, "Streamed Direct SH Base Sampler");
         let initial_debug_override = debug_override_bytes(DirectShDebugOverride::default());
@@ -109,32 +118,41 @@ impl StreamingPromotionPass {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Streamed Direct SH Promotion Bind Group"),
-            layout: &bgl,
-            entries: &[
-                texture_entry(0, base_view),
-                storage_texture_entry(1, output_storage),
-                sampler_entry(BIND_BASE_SAMPLER, &sampler),
-                dynamic_grid_entry(&grid_buffer),
-                storage_entry(BIND_DELTA_SUBBLOCKS, sparse.tile_words()),
-                storage_entry(BIND_AFFINITY_OFFSETS, sparse.row_pairs()),
-                storage_entry(BIND_AFFINITY_LIGHTS, sparse.lights()),
-                storage_entry(BIND_SELECTION_WEIGHTS, selection_weights),
-                uniform_entry(BIND_DEBUG_OVERRIDE, &debug_override),
-                storage_entry(BIND_DELTA_COMPACTION_META, sparse.compaction_metadata()),
-                uniform_entry(BIND_FRAME_LIGHT_TERM_MASK, &light_term_mask),
-                storage_entry(BIND_PROBE_INDIRECTION, compose_indirection),
-            ],
-        });
+        let bind_group = Self::build_bind_group(
+            device,
+            &bgl,
+            base_view,
+            output_storage,
+            &sampler,
+            &grid_buffer,
+            &sparse,
+            selection_weights,
+            &debug_override,
+            &light_term_mask,
+            compose_indirection,
+        );
+        let fixed_metadata_bytes = checked_ledger_sum(&[
+            grid_capacity,
+            sparse.fixed_metadata_bytes(),
+            light_term_mask.size(),
+            debug_override.size(),
+        ])?;
+        let active_capacity_bytes = sparse.active_capacity_bytes();
+        let total_capacity_bytes =
+            checked_ledger_sum(&[fixed_metadata_bytes, active_capacity_bytes])?;
         let limits = device.limits();
         Ok(Self {
             pipeline,
+            bind_group_layout: bgl,
             bind_group,
+            sampler,
             sparse,
             grid,
             grid_buffer,
             grid_capacity,
+            fixed_metadata_bytes,
+            active_capacity_bytes,
+            total_capacity_bytes,
             max_workgroups_x: limits.max_compute_workgroups_per_dimension,
             dynamic_alignment: limits.min_uniform_buffer_offset_alignment,
             max_buffer_size: limits.max_buffer_size,
@@ -145,17 +163,85 @@ impl StreamingPromotionPass {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn build_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        base_view: &wgpu::TextureView,
+        output_storage: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        grid_buffer: &wgpu::Buffer,
+        sparse: &StreamingSparseBuffers,
+        selection_weights: &wgpu::Buffer,
+        debug_override: &wgpu::Buffer,
+        light_term_mask: &wgpu::Buffer,
+        compose_indirection: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Streamed Direct SH Promotion Bind Group"),
+            layout,
+            entries: &[
+                texture_entry(0, base_view),
+                storage_texture_entry(1, output_storage),
+                sampler_entry(BIND_BASE_SAMPLER, sampler),
+                dynamic_grid_entry(grid_buffer),
+                storage_entry(BIND_DELTA_SUBBLOCKS, sparse.tile_words()),
+                storage_entry(BIND_AFFINITY_OFFSETS, sparse.row_pairs()),
+                storage_entry(BIND_AFFINITY_LIGHTS, sparse.lights()),
+                storage_entry(BIND_SELECTION_WEIGHTS, selection_weights),
+                uniform_entry(BIND_DEBUG_OVERRIDE, debug_override),
+                storage_entry(BIND_DELTA_COMPACTION_META, sparse.compaction_metadata()),
+                uniform_entry(BIND_FRAME_LIGHT_TERM_MASK, light_term_mask),
+                storage_entry(BIND_PROBE_INDIRECTION, compose_indirection),
+            ],
+        })
+    }
+
+    /// Rewire only the dense atlas side of this pass. The CSR backing and
+    /// dynamic-record buffers remain in their id-41 pool generation.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn rebind_dense(
+        &mut self,
+        device: &wgpu::Device,
+        shape: AtlasShape,
+        base_view: &wgpu::TextureView,
+        output_storage: &wgpu::TextureView,
+        selection_weights: &wgpu::Buffer,
+        compose_indirection: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        self.grid.atlas_dimensions = [shape.extent().width, shape.extent().height];
+        self.grid.atlas_tiles_per_row = shape.tiles_per_row;
+        self.grid.tiles_per_layer = shape.tiles_per_layer;
+        self.grid.atlas_layer_count = shape.layers;
+        self.grid.compact_atlas_tiles_per_row = shape.tiles_per_row;
+        self.grid.compact_atlas_tiles_per_layer = shape.tiles_per_layer;
+        let replacement = Self::build_bind_group(
+            device,
+            &self.bind_group_layout,
+            base_view,
+            output_storage,
+            &self.sampler,
+            &self.grid_buffer,
+            &self.sparse,
+            selection_weights,
+            &self.debug_override,
+            &self.light_term_mask,
+            compose_indirection,
+        );
+        std::mem::replace(&mut self.bind_group, replacement)
+    }
+
     pub(super) fn upload_sparse_rows(
         &self,
         queue: &wgpu::Queue,
-        rows: &[DirectSparseRowUpload],
+        rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         self.sparse.upload_rows(queue, rows)
     }
 
     pub(super) fn validate_sparse_rows(
         &self,
-        rows: &[DirectSparseRowUpload],
+        rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         self.sparse.validate_rows(rows)
     }
@@ -182,6 +268,7 @@ impl StreamingPromotionPass {
         light_term_mask: LightTermMask,
         debug_override: DirectShDebugOverride,
         dirty_ranges: &[(u32, u32)],
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) -> Result<(), ShResidencyDrainError> {
         if light_term_mask != self.last_light_term_mask {
             queue.write_buffer(
@@ -210,28 +297,47 @@ impl StreamingPromotionPass {
             self.dynamic_alignment,
             self.max_buffer_size,
             dirty_ranges,
+            timestamp_writes,
         )
     }
 
     pub(super) fn fixed_metadata_bytes(&self) -> u64 {
-        self.grid_capacity
-            + self.sparse.fixed_metadata_bytes()
-            + self.light_term_mask.size()
-            + self.debug_override.size()
+        self.fixed_metadata_bytes
     }
 
     pub(super) fn active_capacity_bytes(&self) -> u64 {
-        self.sparse.active_capacity_bytes()
+        self.active_capacity_bytes
+    }
+
+    pub(super) fn total_capacity_bytes(&self) -> u64 {
+        self.total_capacity_bytes
+    }
+
+    pub(super) const fn entry_capacity(&self) -> u32 {
+        self.sparse.entry_capacity()
+    }
+
+    pub(super) const fn tile_f16_capacity(&self) -> u32 {
+        self.sparse.tile_f16_capacity()
+    }
+
+    pub(super) fn copy_retained_to(&self, destination: &Self, encoder: &mut wgpu::CommandEncoder) {
+        self.sparse.copy_retained_to(&destination.sparse, encoder);
     }
 }
 
 pub(super) struct StreamingAnimatedPass {
     pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
     sparse: StreamingSparseBuffers,
     grid: ComposeGridParams,
     grid_buffer: wgpu::Buffer,
     grid_capacity: u64,
+    fixed_metadata_bytes: u64,
+    active_capacity_bytes: u64,
+    total_capacity_bytes: u64,
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
@@ -252,6 +358,7 @@ impl StreamingAnimatedPass {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
@@ -259,6 +366,7 @@ impl StreamingAnimatedPass {
             Some(source),
             shape,
             "Streamed Animated Direct SH Grid Records",
+            sparse_floor,
         )?;
         let descriptor_indices = if source.animation_descriptor_indices.is_empty() {
             vec![u32::MAX]
@@ -310,33 +418,42 @@ impl StreamingAnimatedPass {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Streamed Animated Direct SH Bind Group"),
-            layout: &bgl,
-            entries: &[
-                texture_entry(0, intermediate_sampled),
-                storage_texture_entry(1, output_storage),
-                sampler_entry(BIND_BASE_SAMPLER, &sampler),
-                dynamic_grid_entry(&grid_buffer),
-                storage_entry(BIND_DELTA_SUBBLOCKS, sparse.tile_words()),
-                storage_entry(BIND_AFFINITY_OFFSETS, sparse.row_pairs()),
-                storage_entry(BIND_ANIMATION_DESCRIPTORS, &sh.animation.descriptors),
-                storage_entry(BIND_ANIMATION_SAMPLES, &sh.animation.anim_samples),
-                storage_entry(BIND_AFFINITY_LIGHTS, sparse.lights()),
-                storage_entry(BIND_ANIMATION_DESCRIPTOR_INDICES, &descriptor_indices),
-                uniform_entry(BIND_ANIMATED_LIGHT_SCALE, &light_scale),
-                storage_entry(BIND_ANIMATED_COMPACTION_META, sparse.compaction_metadata()),
-                storage_entry(BIND_ANIMATED_PROBE_INDIRECTION, compose_indirection),
-            ],
-        });
+        let bind_group = Self::build_bind_group(
+            device,
+            &bgl,
+            intermediate_sampled,
+            output_storage,
+            &sampler,
+            &grid_buffer,
+            &sparse,
+            &sh.animation.descriptors,
+            &sh.animation.anim_samples,
+            &descriptor_indices,
+            &light_scale,
+            compose_indirection,
+        );
+        let fixed_metadata_bytes = checked_ledger_sum(&[
+            grid_capacity,
+            sparse.fixed_metadata_bytes(),
+            descriptor_indices.size(),
+            light_scale.size(),
+        ])?;
+        let active_capacity_bytes = sparse.active_capacity_bytes();
+        let total_capacity_bytes =
+            checked_ledger_sum(&[fixed_metadata_bytes, active_capacity_bytes])?;
         let limits = device.limits();
         Ok(Self {
             pipeline,
+            bind_group_layout: bgl,
             bind_group,
+            sampler,
             sparse,
             grid,
             grid_buffer,
             grid_capacity,
+            fixed_metadata_bytes,
+            active_capacity_bytes,
+            total_capacity_bytes,
             max_workgroups_x: limits.max_compute_workgroups_per_dimension,
             dynamic_alignment: limits.min_uniform_buffer_offset_alignment,
             max_buffer_size: limits.max_buffer_size,
@@ -346,78 +463,44 @@ impl StreamingAnimatedPass {
         })
     }
 
-    pub(super) fn upload_sparse_rows(
-        &self,
-        queue: &wgpu::Queue,
-        rows: &[DirectSparseRowUpload],
-    ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.upload_rows(queue, rows)
-    }
-
-    pub(super) fn validate_sparse_rows(
-        &self,
-        rows: &[DirectSparseRowUpload],
-    ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.validate_rows(rows)
-    }
-
-    pub(super) fn clear_row_pair(
-        &self,
-        queue: &wgpu::Queue,
-        row: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.clear_row_pair(queue, row)
-    }
-
-    pub(super) fn clear_all_row_pairs(
-        &self,
-        queue: &wgpu::Queue,
-    ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.clear_all_row_pairs(queue)
-    }
-
-    pub(super) fn dispatch(
-        &mut self,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        uniform_bind_group: &wgpu::BindGroup,
-        debug_override: AnimatedDirectShDebugOverride,
-        promoted_animated_states: &[PromotedBakedLightState],
-        dirty_ranges: &[(u32, u32)],
-    ) -> Result<(), ShResidencyDrainError> {
-        let light_scale = debug_override.bytes(promoted_animated_states);
-        if light_scale != self.last_light_scale {
-            queue.write_buffer(&self.light_scale, 0, &light_scale);
-            self.last_light_scale = light_scale;
-        }
-        dispatch_dynamic_pass(
-            queue,
-            encoder,
-            "Streamed Animated Direct SH",
-            &self.pipeline,
-            &self.bind_group,
-            Some(uniform_bind_group),
-            self.grid,
-            &self.grid_buffer,
-            self.grid_capacity,
-            self.max_workgroups_x,
-            self.dynamic_alignment,
-            self.max_buffer_size,
-            dirty_ranges,
-        )
-    }
-
-    pub(super) fn fixed_metadata_bytes(&self) -> u64 {
-        self.grid_capacity
-            + self.sparse.fixed_metadata_bytes()
-            + self.descriptor_indices.size()
-            + self.light_scale.size()
-    }
-
-    pub(super) fn active_capacity_bytes(&self) -> u64 {
-        self.sparse.active_capacity_bytes()
+    #[allow(clippy::too_many_arguments)]
+    fn build_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        intermediate_sampled: &wgpu::TextureView,
+        output_storage: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        grid_buffer: &wgpu::Buffer,
+        sparse: &StreamingSparseBuffers,
+        animation_descriptors: &wgpu::Buffer,
+        animation_samples: &wgpu::Buffer,
+        descriptor_indices: &wgpu::Buffer,
+        light_scale: &wgpu::Buffer,
+        compose_indirection: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Streamed Animated Direct SH Bind Group"),
+            layout,
+            entries: &[
+                texture_entry(0, intermediate_sampled),
+                storage_texture_entry(1, output_storage),
+                sampler_entry(BIND_BASE_SAMPLER, sampler),
+                dynamic_grid_entry(grid_buffer),
+                storage_entry(BIND_DELTA_SUBBLOCKS, sparse.tile_words()),
+                storage_entry(BIND_AFFINITY_OFFSETS, sparse.row_pairs()),
+                storage_entry(BIND_ANIMATION_DESCRIPTORS, animation_descriptors),
+                storage_entry(BIND_ANIMATION_SAMPLES, animation_samples),
+                storage_entry(BIND_AFFINITY_LIGHTS, sparse.lights()),
+                storage_entry(BIND_ANIMATION_DESCRIPTOR_INDICES, descriptor_indices),
+                uniform_entry(BIND_ANIMATED_LIGHT_SCALE, light_scale),
+                storage_entry(BIND_ANIMATED_COMPACTION_META, sparse.compaction_metadata()),
+                storage_entry(BIND_ANIMATED_PROBE_INDIRECTION, compose_indirection),
+            ],
+        })
     }
 }
+
+mod animated_runtime;
 
 #[allow(clippy::too_many_arguments)]
 fn dispatch_dynamic_pass(
@@ -434,6 +517,7 @@ fn dispatch_dynamic_pass(
     dynamic_alignment: u32,
     max_buffer_size: u64,
     dirty_ranges: &[(u32, u32)],
+    timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
 ) -> Result<(), ShResidencyDrainError> {
     let upload = build_dynamic_compose_grid_upload_for_ranges(
         grid,
@@ -456,7 +540,7 @@ fn dispatch_dynamic_pass(
     queue.write_buffer(grid_buffer, 0, &upload.bytes);
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some(label),
-        timestamp_writes: None,
+        timestamp_writes,
     });
     pass.set_pipeline(pipeline);
     if let Some(uniform_bind_group) = uniform_bind_group {

@@ -1,6 +1,8 @@
 // Capture measurement report schema and CPU-only summary math.
 // See: context/lib/rendering_pipeline.md §7.8
 
+#[cfg(test)]
+use postretro_renderer::ShStreamingAllocationSummary;
 use serde::Serialize;
 
 use super::scene::{CameraPose, CaptureScene};
@@ -283,19 +285,45 @@ struct GpuTimingPassReport {
 struct ShResidencyReportJson {
     rows: Vec<ShResidencyAllocationJson>,
     total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    streaming: Option<ShStreamingAllocationSummaryJson>,
 }
 
 impl From<ShResidencyReport> for ShResidencyReportJson {
     fn from(report: ShResidencyReport) -> Self {
+        let ShResidencyReport {
+            allocations,
+            total_bytes,
+            streaming,
+        } = report;
         Self {
-            rows: report
-                .allocations
+            rows: allocations
                 .into_iter()
                 .map(ShResidencyAllocationJson::from)
                 .collect(),
-            total_bytes: report.total_bytes,
+            total_bytes,
+            streaming: streaming.map(|summary| ShStreamingAllocationSummaryJson {
+                fixed_metadata_bytes: summary.fixed_metadata_bytes,
+                whole_resident_scatter_bytes: summary.whole_resident_scatter_bytes,
+                active_capacity_bytes: summary.active_capacity_bytes,
+                logical_occupancy_bytes: summary.logical_occupancy_bytes,
+                retiring_capacity_bytes: summary.retiring_capacity_bytes,
+                replacement_peak_bytes: summary.replacement_peak_bytes,
+            }),
         }
     }
+}
+
+/// Streaming values remain outside descriptor rows because logical occupancy
+/// and replacement peak are accounting views, not new wgpu allocations.
+#[derive(Debug, Serialize)]
+struct ShStreamingAllocationSummaryJson {
+    fixed_metadata_bytes: u64,
+    whole_resident_scatter_bytes: u64,
+    active_capacity_bytes: u64,
+    logical_occupancy_bytes: u64,
+    retiring_capacity_bytes: u64,
+    replacement_peak_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -468,6 +496,7 @@ mod tests {
                 shape: ShResidencyAllocationShape::Buffer { binding_bytes: 0 },
             }],
             total_bytes: 0,
+            streaming: None,
         };
         let json = as_json(measurement_report(
             &scene_with_measurement(),
@@ -496,6 +525,41 @@ mod tests {
             json["gpu_timing"]["reason"],
             "dev-tools-accessor-unavailable"
         );
+    }
+
+    #[test]
+    fn report_serializes_distinct_streaming_capacity_lifetimes() {
+        let accounting = ShResidencyReport {
+            allocations: Vec::new(),
+            total_bytes: 0,
+            streaming: None,
+        }
+        .with_streaming_summary(ShStreamingAllocationSummary {
+            fixed_metadata_bytes: 11,
+            whole_resident_scatter_bytes: 13,
+            active_capacity_bytes: 17,
+            logical_occupancy_bytes: 5,
+            retiring_capacity_bytes: 19,
+            replacement_peak_bytes: 36,
+        });
+        let json = as_json(measurement_report(
+            &scene_with_measurement(),
+            99,
+            Some("abc123".into()),
+            adapter(),
+            Some(accounting),
+            vec![1.0],
+            CaptureGpuTimingState::PlainBuildUnavailable,
+            Vec::new(),
+        ));
+        let streaming = &json["renderer_accounted_sh"]["streaming"];
+        assert_eq!(streaming["fixed_metadata_bytes"], 11);
+        assert_eq!(streaming["whole_resident_scatter_bytes"], 13);
+        assert_eq!(streaming["active_capacity_bytes"], 17);
+        assert_eq!(streaming["logical_occupancy_bytes"], 5);
+        assert_eq!(streaming["retiring_capacity_bytes"], 19);
+        assert_eq!(streaming["replacement_peak_bytes"], 36);
+        assert_eq!(json["renderer_accounted_sh"]["total_bytes"], 47);
     }
 
     #[test]

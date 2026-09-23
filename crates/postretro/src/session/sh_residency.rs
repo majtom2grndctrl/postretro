@@ -9,18 +9,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use postretro_level_loader::{
-    ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode, requested_streaming_mode,
+    PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode,
+    requested_streaming_mode,
 };
 use postretro_renderer::{Renderer, ShResidencySnapshot};
 use postretro_visibility::VisibleCells;
 
+use super::sh_async_workers::ShAsyncWorkers;
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
-
-/// The named development-mode failure emitted for a valid streamed map before
-/// Task 11 supplies bounded asynchronous reads.
-const ASYNC_STREAMING_NOT_IMPLEMENTED: &str = "[SH streaming] bounded async mode is not yet implemented at this checkpoint; \
-     set POSTRETRO_SH_STREAMING=sync-proof or POSTRETRO_SH_STREAMING=off";
 
 /// Controller state whose lifetime belongs to one loaded session, never to the
 /// renderer. A distinct loaded manifest replaces this object before any new
@@ -31,7 +28,9 @@ pub(crate) struct ShStreamingSession {
     /// have identical bytes/content tags yet must receive distinct nonzero
     /// controller generations.
     manifest: Arc<ShStreamManifest>,
+    mode: ShStreamingMode,
     controller: ShResidencyController,
+    workers: Option<ShAsyncWorkers>,
     /// Set only after a frame actually submitted all compose work. Its next
     /// pre-compose batch may promote the corresponding accepted clusters.
     prior_compose_submitted: bool,
@@ -43,10 +42,23 @@ impl ShStreamingSession {
         manifest: Arc<ShStreamManifest>,
         renderer: &Renderer,
     ) -> Result<Self> {
+        Self::from_renderer_with_mode(manifest, renderer, ShStreamingMode::SyncProof)
+    }
+
+    fn from_renderer_with_mode(
+        manifest: Arc<ShStreamManifest>,
+        renderer: &Renderer,
+        mode: ShStreamingMode,
+    ) -> Result<Self> {
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        Self::from_snapshot(manifest, snapshot)
+        let mut session = Self::from_snapshot(manifest.clone(), snapshot)?;
+        session.mode = mode;
+        if mode == ShStreamingMode::Async {
+            session.workers = Some(ShAsyncWorkers::new(manifest)?);
+        }
+        Ok(session)
     }
 
     /// Capture-specific spelling of [`Self::from_renderer`]. It deliberately
@@ -66,7 +78,9 @@ impl ShStreamingSession {
         let controller = ShResidencyController::new(manifest.clone(), budget_inputs(snapshot))?;
         Ok(Self {
             manifest,
+            mode: ShStreamingMode::SyncProof,
             controller,
+            workers: None,
             prior_compose_submitted: false,
         })
     }
@@ -154,6 +168,72 @@ impl ShStreamingSession {
         while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
         self.prepare_batch()
     }
+
+    /// The frame thread only drains completed ownership transfers and queues
+    /// work. Positional I/O, hash verification and decode stay on workers.
+    fn prepare_async_batch(
+        &mut self,
+        visible_cells: &VisibleCells,
+        monotonic_seconds: f64,
+    ) -> Result<ShDrainBatch> {
+        self.update_targets(visible_cells, monotonic_seconds)?;
+        let workers = self
+            .workers
+            .as_ref()
+            .context("[SH streaming] async workers absent")?;
+        while let Some(completion) = workers.try_completion().map_err(anyhow::Error::msg)? {
+            if !self
+                .controller
+                .matches_completion_identity(completion.request)
+            {
+                continue;
+            }
+            if !self.controller.matches_queued_request(completion.request) {
+                // The controller handles a departed queued item by releasing
+                // its permit; foreign generations never touch this session.
+                if completion.result.is_err() {
+                    self.controller.admit_failed_request(completion.request)?;
+                } else if let Ok(chunk) = completion.result {
+                    self.controller.admit_prepared(PreparedShCluster {
+                        generation: completion.request.generation,
+                        content_tag: completion.request.content_tag,
+                        chunk,
+                    })?;
+                }
+                continue;
+            }
+            match completion.result {
+                Ok(chunk) => {
+                    self.controller.admit_prepared(PreparedShCluster {
+                        generation: completion.request.generation,
+                        content_tag: completion.request.content_tag,
+                        chunk,
+                    })?;
+                }
+                Err(error) => {
+                    self.controller.admit_failed_request(completion.request)?;
+                    log::warn!(
+                        "[SH streaming] cluster {} read/decode failed: {error}",
+                        completion.request.cluster_id
+                    );
+                }
+            }
+        }
+        while let Some(request) = self.controller.take_next_request()? {
+            workers.submit(request).map_err(anyhow::Error::msg)?;
+        }
+        self.prepare_batch()
+    }
+}
+
+impl Drop for ShStreamingSession {
+    fn drop(&mut self) {
+        // The manager joins its workers while this session still retains the
+        // manifest/file. Cancellation never bypasses completion identity.
+        if let Some(mut workers) = self.workers.take() {
+            workers.stop();
+        }
+    }
 }
 
 impl super::Session {
@@ -180,23 +260,38 @@ impl super::Session {
             return Ok(ShDrainBatch::default());
         };
 
-        require_sync_proof_mode(requested_streaming_mode()?)?;
+        let mode = requested_streaming_mode()?;
+        require_loaded_streaming_mode(mode)?;
 
         let needs_replacement = self
             .sh_streaming
             .as_ref()
-            .is_none_or(|streaming| !streaming.is_for_manifest(manifest));
+            .is_none_or(|streaming| !streaming.is_for_manifest(manifest) || streaming.mode != mode);
         if needs_replacement {
-            self.sh_streaming = Some(ShStreamingSession::from_renderer(
+            // Join the old generation before creating a new four-worker pool.
+            // Assignment would evaluate the replacement first and briefly run
+            // eight readers across a reload.
+            self.clear_sh_streaming();
+            self.sh_streaming = Some(ShStreamingSession::from_renderer_with_mode(
                 manifest.clone(),
                 renderer,
+                mode,
             )?);
         }
 
-        self.sh_streaming
+        let streaming = self
+            .sh_streaming
             .as_mut()
-            .expect("streaming controller was initialized above")
-            .prepare_sync_proof_batch(visible_cells, monotonic_seconds)
+            .expect("streaming controller initialized above");
+        match mode {
+            ShStreamingMode::SyncProof => {
+                streaming.prepare_sync_proof_batch(visible_cells, monotonic_seconds)
+            }
+            ShStreamingMode::Async => {
+                streaming.prepare_async_batch(visible_cells, monotonic_seconds)
+            }
+            ShStreamingMode::Off => unreachable!("mode was checked above"),
+        }
     }
 
     /// Applies an outcome before the app propagates a later renderer frame
@@ -236,13 +331,24 @@ impl super::Session {
 pub(crate) fn require_sync_proof_mode(mode: ShStreamingMode) -> Result<()> {
     match mode {
         ShStreamingMode::SyncProof => Ok(()),
-        ShStreamingMode::Async => bail!(ASYNC_STREAMING_NOT_IMPLEMENTED),
+        ShStreamingMode::Async => {
+            bail!("[SH streaming] static capture requires POSTRETRO_SH_STREAMING=sync-proof")
+        }
         // The loader yields a legacy `ShStorage` for `off`, so reaching this
         // branch means the environment changed after the map load.
         ShStreamingMode::Off => bail!(
             "[SH streaming] mode changed to off after this streamed map was loaded; reload the map"
         ),
     }
+}
+
+fn require_loaded_streaming_mode(mode: ShStreamingMode) -> Result<()> {
+    if mode == ShStreamingMode::Off {
+        bail!(
+            "[SH streaming] mode changed to off after this streamed map was loaded; reload the map"
+        );
+    }
+    Ok(())
 }
 
 /// Consumes the renderer-submission proof at the following frame boundary.
@@ -307,12 +413,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_mode_gate_allows_only_sync_proof_at_this_checkpoint() {
+    fn capture_mode_gate_requires_sync_proof() {
         assert!(require_sync_proof_mode(ShStreamingMode::SyncProof).is_ok());
         let async_error = require_sync_proof_mode(ShStreamingMode::Async).unwrap_err();
-        assert!(async_error.to_string().contains("not yet implemented"));
+        assert!(async_error.to_string().contains("static capture requires"));
         let late_off_error = require_sync_proof_mode(ShStreamingMode::Off).unwrap_err();
         assert!(late_off_error.to_string().contains("changed to off"));
+        assert!(require_loaded_streaming_mode(ShStreamingMode::Async).is_ok());
     }
 
     #[test]

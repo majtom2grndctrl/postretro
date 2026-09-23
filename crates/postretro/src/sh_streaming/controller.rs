@@ -46,6 +46,7 @@ pub(crate) struct ShClusterRequest {
     pub(crate) generation: u64,
     pub(crate) content_tag: [u8; 32],
     pub(crate) cluster_id: u32,
+    pub(crate) chunk_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

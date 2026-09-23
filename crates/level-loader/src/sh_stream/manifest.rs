@@ -93,6 +93,27 @@ impl ShStreamManifest {
         &self,
         cluster_id: u32,
     ) -> Result<DecodedClusterShPayload, PrlLoadError> {
+        let bytes = self.read_encoded_cluster_with(cluster_id, |file, offset, len| {
+            read_vec_at(file, offset, len, "id-50 chunk")
+        })?;
+        self.decode_encoded_cluster(cluster_id, bytes)
+    }
+
+    /// Production positional read for a single encoded chunk.
+    pub fn read_encoded_cluster(&self, cluster_id: u32) -> Result<Vec<u8>, PrlLoadError> {
+        self.read_encoded_cluster_with(cluster_id, |file, offset, len| {
+            read_vec_at(file, offset, len, "id-50 chunk")
+        })
+    }
+
+    /// Read one encoded chunk through an injectable positional reader. Worker
+    /// tests can delay this seam without introducing a cursor or reopening the
+    /// file; production uses `read_vec_at` and platform `FileExt`.
+    pub fn read_encoded_cluster_with(
+        &self,
+        cluster_id: u32,
+        reader: impl FnOnce(&File, u64, u64) -> Result<Vec<u8>, PrlLoadError>,
+    ) -> Result<Vec<u8>, PrlLoadError> {
         let range = self.payloads.payload_range(cluster_id)?;
         let payload_entry = self
             .container
@@ -107,7 +128,17 @@ impl ShStreamManifest {
             .ok_or(ClusterShPayloadsError::SizeOverflow(
                 "id-50 chunk file offset",
             ))?;
-        let bytes = read_vec_at(&self.file, start, range.end - range.start, "id-50 chunk")?;
+        reader(&self.file, start, range.end - range.start)
+    }
+
+    /// Decode and verify the chunk against the validated manifest, including
+    /// its per-chunk BLAKE3. Ownership of the encoded vector moves into the
+    /// codec rather than being cloned for the renderer handoff.
+    pub fn decode_encoded_cluster(
+        &self,
+        cluster_id: u32,
+        bytes: Vec<u8>,
+    ) -> Result<DecodedClusterShPayload, PrlLoadError> {
         let sources = self.sources.codec_sources(&self.base);
         Ok(self.payloads.decode_chunk(
             cluster_id,

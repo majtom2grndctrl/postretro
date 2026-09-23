@@ -49,6 +49,7 @@ use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
+mod sh_async_workers;
 pub(crate) mod sh_residency;
 use sh_residency::ShStreamingSession;
 

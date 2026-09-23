@@ -247,6 +247,18 @@ impl ShResidencyController {
         self.targets.contains(&cluster_id)
     }
 
+    /// True only when every current visible/prefetch/owner target has crossed
+    /// the renderer-confirmed one-frame compose boundary. Static capture uses
+    /// this to know when its deterministic preload is complete.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    pub(crate) fn all_targets_sampleable(&self) -> bool {
+        self.targets.iter().all(|&cluster_id| {
+            self.states
+                .get(cluster_id as usize)
+                .is_some_and(|state| state.state == ClusterResidencyState::Sampleable)
+        })
+    }
+
     pub(crate) fn permits_in_use(&self) -> usize {
         self.permits_in_use
     }

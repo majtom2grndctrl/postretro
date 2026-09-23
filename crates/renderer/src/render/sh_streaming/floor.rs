@@ -35,6 +35,12 @@ const SPARSE_F16_WORD_BYTES: u64 = 4;
 pub(crate) struct InitialPoolFloor {
     pub(crate) dense_slots: u32,
     pub(crate) sparse_capacities: BTreeMap<u32, (u32, u32)>,
+    /// Exact physical backing needed for the largest canonical dense writer,
+    /// including atlas-layer padding across the coupled id-34/id-35 group.
+    pub(crate) dense_group_minimum_bytes: u64,
+    /// Exact physical backing needed for each present sparse writer family.
+    /// Fixed CSR metadata remains a separate renderer charge.
+    pub(crate) sparse_group_minimum_bytes: BTreeMap<u32, u64>,
     pub(crate) effective_floor_bytes: u64,
 }
 
@@ -94,6 +100,13 @@ pub(crate) fn plan_initial_pool_floor(
     let minimum_dense_slots = normalized_dense_minimum(minimum_dense_slots, whole_dense_slots)?;
     let mut sparse = sparse_plans(sources, minimum_sparse)?;
     validate_sparse_caps(&sparse, limits)?;
+    let dense_group_minimum_bytes = u64::from(atlas_capacity_slots(minimum_dense_slots, limits)?)
+        .checked_mul(dense_slot_bytes)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let sparse_group_minimum_bytes = sparse
+        .iter()
+        .map(|(&section_id, plan)| Ok((section_id, sparse_capacity_bytes(plan.minimum)?)))
+        .collect::<Result<BTreeMap<_, _>, ShResidencyDrainError>>()?;
 
     let fixed_and_scatter_bytes = fixed_bytes
         .checked_add(scatter_bytes)
@@ -154,6 +167,8 @@ pub(crate) fn plan_initial_pool_floor(
             .into_iter()
             .map(|(section_id, plan)| (section_id, plan.capacity))
             .collect(),
+        dense_group_minimum_bytes,
+        sparse_group_minimum_bytes,
         effective_floor_bytes,
     })
 }

@@ -205,6 +205,8 @@ pub(super) struct StreamingGpuPools {
     pub(super) fixed_metadata_bytes: u64,
     pub(super) whole_resident_scatter_bytes: u64,
     effective_floor_bytes: u64,
+    pub(super) dense_group_minimum_bytes: u64,
+    pub(super) sparse_group_minimum_bytes: std::collections::BTreeMap<u32, u64>,
     probe_occlusion_enabled: bool,
     sparse_capacity_floors: SparseCapacityFloors,
 }

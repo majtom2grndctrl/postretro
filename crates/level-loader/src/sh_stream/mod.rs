@@ -8,7 +8,7 @@ mod metadata_sparse;
 mod positional_io;
 mod projection;
 
-pub(crate) use boundary::ShStreamingMode;
+pub use boundary::ShStreamingMode;
 pub use boundary::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage};
 pub use manifest::ShStreamManifest;
 pub(crate) use manifest::load_manifest_positionally;
@@ -25,7 +25,7 @@ use crate::prl::PrlLoadError;
 
 /// Resolve the developer/test gate only after id-50 structural validation.
 /// A PRL without id 50 ignores this setting and remains legacy-compatible.
-pub(crate) fn requested_streaming_mode() -> Result<ShStreamingMode, PrlLoadError> {
+pub fn requested_streaming_mode() -> Result<ShStreamingMode, PrlLoadError> {
     match std::env::var("POSTRETRO_SH_STREAMING") {
         Err(std::env::VarError::NotPresent) => Ok(ShStreamingMode::Async),
         Ok(value) if value == "off" => Ok(ShStreamingMode::Off),

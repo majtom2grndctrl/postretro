@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
+use postretro_level_loader::requested_streaming_mode;
 use postretro_visibility::VisibleCells;
 
 use crate::render::{
@@ -21,6 +22,8 @@ use crate::scripting::map_entity::MapEntity;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::mesh_anim::MeshClipTables;
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
+use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
+use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
 
@@ -41,6 +44,7 @@ const CAPTURE_PORTAL_WALK: bool = false;
 /// collection depends on level loading, visibility, or receiver setup.
 pub(super) struct PreparedCapture {
     renderer: Renderer,
+    sh_streaming: Option<ShStreamingSession>,
     visible_render: VisibleRenderPreparation,
     view_proj: Mat4,
     eye: Vec3,
@@ -56,6 +60,11 @@ impl PreparedCapture {
         // Load synchronously: capture creates no worker thread or event loop.
         let mut world = postretro_level_loader::load_prl(&scene.map)
             .with_context(|| format!("failed to load `{}`", scene.map))?;
+        if world.sh_stream_manifest().is_some() {
+            // Validate the PRL first, then enforce Task 10's explicit-mode
+            // gate before GPU initialization can mask its named error.
+            require_sync_proof_mode(requested_streaming_mode()?)?;
+        }
 
         let [width, height] = scene.resolution;
         let mut renderer = Renderer::new_offscreen(width, height)
@@ -108,6 +117,17 @@ impl PreparedCapture {
             CAPTURE_PORTAL_WALK,
             &mut scratch,
         );
+        let sh_streaming = world
+            .sh_stream_manifest()
+            .cloned()
+            .map(|manifest| ShStreamingSession::for_capture(manifest, &renderer))
+            .transpose()?;
+        let max_preload_frames = world
+            .sh_stream_manifest()
+            .map(|manifest| manifest.cluster_count() as usize)
+            .unwrap_or(0)
+            .saturating_mul(4)
+            .saturating_add(2);
 
         // Capture has no script context or levelLoad event. Stand up only the
         // VM-free map-authored receiver state the windowed render frame collects.
@@ -144,20 +164,64 @@ impl PreparedCapture {
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         renderer.set_mesh_draws(mesh_collector.instances());
 
-        Ok(Self {
+        let mut prepared = Self {
             renderer,
+            sh_streaming,
             visible_render,
             view_proj,
             eye,
             forced_promotion_weights,
             resolution: [width, height],
-        })
+        };
+        prepared.preload_visible_sh(max_preload_frames)?;
+        Ok(prepared)
+    }
+
+    /// Capture is a fixed authored instant, so make its visible SH closure
+    /// sampleable before either PNG publication or timed measurement begins.
+    fn preload_visible_sh(&mut self, max_frames: usize) -> Result<()> {
+        let Some(streaming) = self.sh_streaming.as_mut() else {
+            return Ok(());
+        };
+        streaming.update_targets(&self.visible_render.visible_cells, 0.0)?;
+        for _ in 0..max_frames {
+            if self
+                .sh_streaming
+                .as_ref()
+                .is_some_and(ShStreamingSession::all_targets_sampleable)
+            {
+                self.renderer.reset_capture_measurement_timing();
+                return Ok(());
+            }
+            loop {
+                match self
+                    .sh_streaming
+                    .as_mut()
+                    .expect("streaming capture was initialized")
+                    .read_one_sync()?
+                {
+                    SyncReadResult::Prepared(_) => {}
+                    SyncReadResult::NoTargetReady => break,
+                }
+            }
+            let _ = self.capture_measurement_frame()?;
+        }
+        bail!("SH capture preload did not make its visible cluster closure sampleable")
+    }
+
+    fn take_sh_drain_batch(&mut self) -> Result<postretro_level_loader::ShDrainBatch> {
+        self.sh_streaming
+            .as_mut()
+            .map(ShStreamingSession::prepare_batch)
+            .transpose()
+            .map(|batch| batch.unwrap_or_default())
     }
 
     /// Render the prepared static workload through the unchanged PNG/readback
     /// capture path.
     pub(super) fn capture_frame(&mut self) -> Result<Vec<u8>> {
-        self.renderer.capture_frame_indirect(
+        let sh_drain_batch = self.take_sh_drain_batch()?;
+        let result = self.renderer.capture_frame_indirect(
             self.visible_render.camera_cull(),
             &self.visible_render.light_reachable_cell_mask,
             &self.visible_render.reachable_cell_aabbs,
@@ -174,12 +238,21 @@ impl PreparedCapture {
                 a: 1.0,
             },
             true,
-        )
+            sh_drain_batch,
+        )?;
+        if let Some(streaming) = self.sh_streaming.as_mut() {
+            streaming.apply_outcome(result.outcome, &self.renderer)?;
+            if result.frame.is_ok() {
+                streaming.mark_compose_submitted();
+            }
+        }
+        result.frame
     }
 
     /// Submit and complete one prepared static sample without PNG readback.
     pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
-        self.renderer.capture_measurement_frame_indirect(
+        let sh_drain_batch = self.take_sh_drain_batch()?;
+        let result = self.renderer.capture_measurement_frame_indirect(
             self.visible_render.camera_cull(),
             &self.visible_render.light_reachable_cell_mask,
             &self.visible_render.reachable_cell_aabbs,
@@ -196,7 +269,15 @@ impl PreparedCapture {
                 a: 1.0,
             },
             true,
-        )
+            sh_drain_batch,
+        )?;
+        if let Some(streaming) = self.sh_streaming.as_mut() {
+            streaming.apply_outcome(result.outcome, &self.renderer)?;
+            if result.frame.is_ok() {
+                streaming.mark_compose_submitted();
+            }
+        }
+        result.frame
     }
 
     /// Start a fresh GPU timing window after warmup submissions complete.

@@ -106,7 +106,10 @@ fn stream_mode_keeps_large_sh_bodies_in_the_prl_and_retains_only_metadata() {
             .affinity_lights,
         &[0]
     );
-    assert_eq!(manifest.cluster_adjacency(), &[Vec::new(), Vec::new()]);
+    assert_eq!(
+        manifest.cluster_adjacency(),
+        &[Vec::<u32>::new(), Vec::new()]
+    );
     assert_ne!(manifest.content_tag(), [0; 32]);
 
     // The raw legacy storage fields are deliberately empty in stream mode.
@@ -195,6 +198,44 @@ fn manifest_reads_the_opened_file_after_its_diagnostic_path_is_replaced() {
     let decoded = manifest.read_and_decode_cluster(0).unwrap();
     assert_eq!(decoded.cluster_id, 0);
     assert_eq!(decoded.blocks.len(), 6);
+}
+
+#[test]
+fn sync_proof_manifest_reads_every_streamed_family_from_one_real_chunk() {
+    let fixture = write_stream_fixture(Id50Body::Valid);
+    let world = load_prl_with_streaming_mode_for_test(
+        fixture.path.to_str().unwrap(),
+        ShStreamingMode::SyncProof,
+    )
+    .unwrap();
+    let manifest = world.sh_stream_manifest().unwrap();
+    let decoded = manifest.read_and_decode_cluster(0).unwrap();
+    let source_ids: Vec<_> = decoded
+        .blocks
+        .iter()
+        .map(|block| block.section_id)
+        .collect();
+    assert_eq!(
+        source_ids,
+        vec![
+            SectionId::DeltaShVolumes as u32,
+            SectionId::OctahedralShVolume as u32,
+            SectionId::OctahedralShVolume as u32,
+            SectionId::DirectShVolume as u32,
+            SectionId::DirectShDeltaVolumes as u32,
+            SectionId::AnimatedDirectShDeltaVolumes as u32,
+        ]
+    );
+    assert!(
+        decoded
+            .blocks
+            .iter()
+            .all(|block| !decoded.block_bytes(block).is_empty())
+    );
+
+    let empty = manifest.read_and_decode_cluster(1).unwrap();
+    assert!(empty.blocks.is_empty());
+    assert!(empty.bytes.is_empty());
 }
 
 #[derive(Clone, Copy)]

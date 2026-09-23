@@ -7,8 +7,13 @@ use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 
 use super::manifest::ShStreamManifest;
 use super::{PrlLoadError, stream_error};
+/// Developer/test selection resolved after a valid id-49/id-50 pair is found.
+///
+/// The app consults this only for a world that is already in
+/// [`ShStorage::Streaming`] mode, so a legacy world continues to ignore the
+/// environment variable exactly as the loader does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShStreamingMode {
+pub enum ShStreamingMode {
     Off,
     SyncProof,
     Async,

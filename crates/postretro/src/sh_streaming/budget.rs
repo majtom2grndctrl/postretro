@@ -175,6 +175,25 @@ impl ShResidencyAccounting {
             ))
     }
 
+    /// Nominal space for cluster payloads inside the renderer's effective
+    /// floor. This is a policy comparator, not a second GPU allocation charge:
+    /// logical occupancy remains a sub-ledger of the active physical pools.
+    pub(crate) fn nominal_cluster_bytes(&self) -> Result<u64, ShResidencyControllerError> {
+        self.effective_floor_bytes()?
+            .checked_sub(self.fixed_gpu.fixed_metadata_bytes)
+            .and_then(|bytes| bytes.checked_sub(self.fixed_gpu.whole_resident_scatter_bytes))
+            .ok_or(ShResidencyControllerError::AccountingUnderflow(
+                "nominal cluster budget",
+            ))
+    }
+
+    pub(crate) fn remove_logical(&mut self, bytes: u64) -> Result<(), ShResidencyControllerError> {
+        self.logical_occupancy_bytes = self.logical_occupancy_bytes.checked_sub(bytes).ok_or(
+            ShResidencyControllerError::AccountingUnderflow("logical occupancy"),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn add_logical(&mut self, bytes: u64) -> Result<(), ShResidencyControllerError> {
         self.can_add_logical(bytes)?;
         self.logical_occupancy_bytes += bytes;

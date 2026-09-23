@@ -60,6 +60,10 @@ pub struct ShResidencyReport {
     /// from descriptor rows: logical occupancy is not another GPU allocation,
     /// and a temporary retiring generation is not fixed metadata.
     pub streaming: Option<ShStreamingAllocationSummary>,
+    /// Controller-owned policy and host-payload state captured for the same
+    /// frame as `streaming`. The renderer leaves this absent because workers
+    /// and permits intentionally live above the renderer boundary.
+    pub streaming_lifecycle: Option<ShStreamingLifecycleSummary>,
 }
 
 /// Live streamed-SH accounting captured after renderer pool initialization.
@@ -77,6 +81,35 @@ pub struct ShStreamingAllocationSummary {
     pub logical_occupancy_bytes: u64,
     pub retiring_capacity_bytes: u64,
     pub replacement_peak_bytes: u64,
+}
+
+/// App-side state paired with the renderer's live streamed-pool snapshot.
+/// Values are deliberately plain data so capture can serialize them without
+/// retaining a renderer, worker, or controller handle. CPU current values
+/// are exact frame snapshots. Their high-water upper bounds sum independently
+/// checked worker and controller maxima, so the report cannot understate a
+/// transfer but does not claim that sum was one simultaneous peak.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShStreamingLifecycleSummary {
+    pub non_evictable_overshoot_bytes: u64,
+    pub encoded_current_bytes: u64,
+    pub encoded_high_water_upper_bound_bytes: u64,
+    pub decoding_current_bytes: u64,
+    pub decoding_high_water_upper_bound_bytes: u64,
+    pub ready_current_bytes: u64,
+    pub ready_high_water_upper_bound_bytes: u64,
+    pub permits_in_use: u64,
+    pub target_clusters: u64,
+    pub absent_clusters: u64,
+    pub queued_clusters: u64,
+    pub ready_clusters: u64,
+    pub installed_uncomposed_clusters: u64,
+    pub sampleable_clusters: u64,
+    pub failed_clusters: u64,
+    pub misses: u64,
+    pub installs: u64,
+    pub evictions: u64,
+    pub retries: u64,
 }
 
 impl ShResidencyReport {
@@ -97,6 +130,18 @@ impl ShResidencyReport {
             .expect("SH residency physical total overflow adding active capacity")
             .checked_add(summary.retiring_capacity_bytes)
             .expect("SH residency physical total overflow adding retiring capacity");
+        self
+    }
+
+    /// Overlay app-owned worker/policy state on the immutable install ledger
+    /// and renderer-owned live capacity snapshot. This intentionally changes
+    /// no physical total: host phases, counters, and logical overshoot are
+    /// diagnostic ledgers rather than GPU allocations.
+    pub fn with_streaming_lifecycle_summary(
+        mut self,
+        summary: ShStreamingLifecycleSummary,
+    ) -> Self {
+        self.streaming_lifecycle = Some(summary);
         self
     }
 }
@@ -160,9 +205,9 @@ impl ShAllocationLedger {
     }
 
     /// Record the one live streaming summary after its renderer-owned pools
-    /// exist. This must be called at most once for a level install; later
-    /// per-frame changes are exposed by `ShResidencySnapshot`, not by mutating
-    /// this completed install report.
+    /// exist. This must be called at most once for a level install; report
+    /// reads overlay later per-frame snapshots rather than mutating this
+    /// completed install ledger.
     pub(super) fn record_streaming_summary(&mut self, summary: ShStreamingAllocationSummary) {
         debug_assert!(self.streaming.is_none(), "streaming summary recorded twice");
         self.streaming = Some(summary);
@@ -178,6 +223,7 @@ impl ShAllocationLedger {
             allocations: self.allocations,
             total_bytes: allocation_total_bytes,
             streaming: self.streaming,
+            streaming_lifecycle: None,
         };
         match report.streaming {
             Some(summary) => report.with_streaming_summary(summary),
@@ -496,6 +542,45 @@ mod tests {
     }
 
     #[test]
+    fn non_evictable_logical_overshoot_is_not_temporary_replacement_capacity() {
+        let report = ShResidencyReport {
+            allocations: Vec::new(),
+            total_bytes: 0,
+            streaming: None,
+            streaming_lifecycle: None,
+        }
+        .with_streaming_summary(ShStreamingAllocationSummary {
+            fixed_metadata_bytes: 11,
+            active_capacity_bytes: 17,
+            retiring_capacity_bytes: 19,
+            replacement_peak_bytes: 36,
+            ..ShStreamingAllocationSummary::default()
+        })
+        .with_streaming_lifecycle_summary(ShStreamingLifecycleSummary {
+            non_evictable_overshoot_bytes: 4,
+            ..ShStreamingLifecycleSummary::default()
+        });
+
+        assert_eq!(report.total_bytes, 47);
+        assert_eq!(
+            report
+                .streaming
+                .expect("streaming pool summary")
+                .replacement_peak_bytes,
+            36,
+            "replacement peak is active plus retiring pool capacity only"
+        );
+        assert_eq!(
+            report
+                .streaming_lifecycle
+                .expect("controller lifecycle summary")
+                .non_evictable_overshoot_bytes,
+            4,
+            "logical policy demand is reported separately from replacement backing"
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "SH residency static allocation total overflow")]
     fn static_allocation_total_rejects_overflow() {
         let _ = allocation_total_bytes(&[test_allocation(u64::MAX), test_allocation(1)]);
@@ -508,6 +593,7 @@ mod tests {
             allocations: vec![test_allocation(u64::MAX)],
             total_bytes: u64::MAX,
             streaming: None,
+            streaming_lifecycle: None,
         };
         let _ = report.with_streaming_summary(ShStreamingAllocationSummary {
             fixed_metadata_bytes: 1,

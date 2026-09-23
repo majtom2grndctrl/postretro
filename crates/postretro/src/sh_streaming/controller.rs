@@ -91,6 +91,32 @@ pub(crate) struct ShEvictionKey {
     pub(crate) cluster_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ShResidencyCounters {
+    pub(crate) misses: u64,
+    pub(crate) installs: u64,
+    pub(crate) evictions: u64,
+    pub(crate) retries: u64,
+}
+
+/// Plain controller-owned state for the live SH report. GPU pool figures stay
+/// renderer-owned; this half owns permits, CPU payload phases, and policy
+/// counters so neither side has to borrow the other's lifetime state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ShResidencyControllerSnapshot {
+    pub(crate) cpu: super::budget::CpuPhaseLedger,
+    pub(crate) permits_in_use: usize,
+    pub(crate) target_clusters: usize,
+    pub(crate) absent_clusters: usize,
+    pub(crate) queued_clusters: usize,
+    pub(crate) ready_clusters: usize,
+    pub(crate) installed_uncomposed_clusters: usize,
+    pub(crate) sampleable_clusters: usize,
+    pub(crate) failed_clusters: usize,
+    pub(crate) non_evictable_overshoot_bytes: u64,
+    pub(crate) counters: ShResidencyCounters,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FailureIdentity {
     generation: u64,
@@ -155,8 +181,13 @@ pub(crate) struct ShResidencyController {
     sent_targets: BTreeSet<u32>,
     ready: BTreeMap<u32, ReadyCluster>,
     in_drain: BTreeMap<u32, u64>,
+    in_drain_evictions: BTreeSet<u32>,
     permits_in_use: usize,
     accounting: ShResidencyAccounting,
+    non_evictable_overshoot_bytes: u64,
+    overshoot_reported: bool,
+    prior_visible_misses: BTreeSet<u32>,
+    counters: ShResidencyCounters,
 }
 
 impl ShResidencyController {
@@ -212,8 +243,13 @@ impl ShResidencyController {
             sent_targets: BTreeSet::new(),
             ready: BTreeMap::new(),
             in_drain: BTreeMap::new(),
+            in_drain_evictions: BTreeSet::new(),
             permits_in_use: 0,
             accounting: ShResidencyAccounting::new(gpu_budget)?,
+            non_evictable_overshoot_bytes: 0,
+            overshoot_reported: false,
+            prior_visible_misses: BTreeSet::new(),
+            counters: ShResidencyCounters::default(),
         })
     }
 
@@ -262,6 +298,48 @@ impl ShResidencyController {
 
     pub(crate) fn permits_in_use(&self) -> usize {
         self.permits_in_use
+    }
+
+    pub(crate) fn counters(&self) -> ShResidencyCounters {
+        self.counters
+    }
+
+    pub(crate) fn non_evictable_overshoot_bytes(&self) -> u64 {
+        self.non_evictable_overshoot_bytes
+    }
+
+    pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {
+        let mut snapshot = ShResidencyControllerSnapshot {
+            cpu: self.accounting.cpu,
+            permits_in_use: self.permits_in_use,
+            target_clusters: self.targets.len(),
+            non_evictable_overshoot_bytes: self.non_evictable_overshoot_bytes,
+            counters: self.counters,
+            ..ShResidencyControllerSnapshot::default()
+        };
+        for state in &self.states {
+            match state.state {
+                ClusterResidencyState::Absent => snapshot.absent_clusters += 1,
+                ClusterResidencyState::Queued => snapshot.queued_clusters += 1,
+                ClusterResidencyState::Ready => snapshot.ready_clusters += 1,
+                ClusterResidencyState::InstalledUncomposed => {
+                    snapshot.installed_uncomposed_clusters += 1
+                }
+                ClusterResidencyState::Sampleable => snapshot.sampleable_clusters += 1,
+                ClusterResidencyState::Failed => snapshot.failed_clusters += 1,
+            }
+        }
+        snapshot
+    }
+
+    fn increment_counter(
+        counter: &mut u64,
+        label: &'static str,
+    ) -> Result<(), ShResidencyControllerError> {
+        *counter = counter
+            .checked_add(1)
+            .ok_or(ShResidencyControllerError::AccountingOverflow(label))?;
+        Ok(())
     }
 
     fn ready_for_install(&self, cluster_id: u32) -> bool {
@@ -313,6 +391,15 @@ impl ShResidencyController {
     ) -> Result<Self, ShResidencyControllerError> {
         Self::from_parts(None, topology, clock, ShGpuBudgetInputs::default())
     }
+
+    #[cfg(test)]
+    fn for_test_with_budget(
+        topology: PlannerTopology,
+        clock: &impl GenerationClock,
+        gpu_budget: ShGpuBudgetInputs,
+    ) -> Result<Self, ShResidencyControllerError> {
+        Self::from_parts(None, topology, clock, gpu_budget)
+    }
 }
 
 fn target_bitset(
@@ -335,10 +422,15 @@ fn target_bitset(
 
 fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyControllerError> {
     let mut ids = BTreeSet::new();
-    for &cluster_id in outcome.accepted.iter().chain(&outcome.dropped) {
+    for &cluster_id in outcome
+        .accepted
+        .iter()
+        .chain(&outcome.dropped)
+        .chain(&outcome.evicted)
+    {
         if !ids.insert(cluster_id) {
             return Err(ShResidencyControllerError::InvalidDrainOutcome(
-                "accepted and dropped ids overlap or repeat".into(),
+                "accepted, dropped, and evicted ids must not overlap or repeat".into(),
             ));
         }
     }

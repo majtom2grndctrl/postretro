@@ -119,7 +119,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             map_bytes,
             capture_git_revision(),
             prepared.measurement_adapter_identity(),
-            prepared.sh_residency_report(),
+            prepared.sh_residency_report()?,
             cpu_samples_ms,
             prepared.measurement_timing_state(),
             gpu_windows,

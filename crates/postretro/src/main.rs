@@ -70,6 +70,11 @@ use postretro_sim::scripting;
 // held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
+// Task 10 wires this pure controller into the session/render seam. Until then,
+// it is intentionally exercised by its focused CPU tests rather than a live
+// frame path.
+#[allow(dead_code)]
+mod sh_streaming;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;

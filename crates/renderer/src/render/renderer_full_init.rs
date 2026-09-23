@@ -230,6 +230,14 @@ pub(crate) fn build_full_renderer(
         queue,
         ShVolumeSections {
             sh: geometry.and_then(|g| g.sh_volume),
+            stream_base_present: geometry
+                .is_some_and(|g| matches!(&g.sh_storage, LevelGeometryShStorage::Streaming(_))),
+            stream_animation_descriptors: geometry.and_then(|g| match &g.sh_storage {
+                LevelGeometryShStorage::Legacy => None,
+                LevelGeometryShStorage::Streaming(manifest) => {
+                    Some(manifest.base().animation_descriptors.as_slice())
+                }
+            }),
             indirect_delta_present: geometry.and_then(|g| g.delta_sh_volumes).is_some(),
             direct: geometry.and_then(|g| g.direct_sh_volume),
             direct_delta: geometry.and_then(|g| g.direct_sh_delta_volumes),
@@ -605,7 +613,11 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources.animation,
         geometry.and_then(|g| g.animated_billboard_direct_scatter_delta_volumes),
         &uniform_bind_group_layout,
-        sh_volume_resources.grid_dimensions,
+        geometry
+            .and_then(|geometry| geometry.billboard_direct_scatter_volume)
+            .map_or(sh_volume_resources.grid_dimensions, |section| {
+                section.grid_dimensions
+            }),
         &mut sh_allocation_ledger,
     );
     // Full initialization builds only no-level bindings. Keep its accounting
@@ -637,6 +649,7 @@ pub(crate) fn build_full_renderer(
         probe_occlusion_enabled,
         sh_volume_resources,
         sh_residency_report: None,
+        sh_streaming: None,
         sdf_atlas_resources,
         sdf_shadow_pass,
         lightmap_mode,

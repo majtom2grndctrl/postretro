@@ -33,6 +33,7 @@ mod sh_compose_dispatch;
 mod sh_diagnostics;
 mod sh_indirection;
 mod sh_residency;
+mod sh_streaming;
 mod sh_volume;
 mod shadowmask;
 mod smoke;
@@ -123,6 +124,7 @@ pub use sh_residency::{
     ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
     ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
 };
+pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};

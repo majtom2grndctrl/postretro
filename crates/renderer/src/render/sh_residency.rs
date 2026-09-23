@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.8
 
 use super::sh_allocation::{
-    texture_allocation_bytes, BufferAllocation, ShAllocationKind, TextureAllocation,
+    BufferAllocation, ShAllocationKind, TextureAllocation, texture_allocation_bytes,
 };
 
 /// A PRL section or renderer-derived input cited by an SH residency row.

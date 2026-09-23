@@ -13,7 +13,8 @@ use super::layout::{
     storage_texture_entry, texture_entry, u32_bytes, uniform_entry,
 };
 use super::sparse::{
-    DirectSparseRowUpload, StreamingSparseBuffers, build_grid_and_sparse, checked_ledger_sum,
+    DirectSparseRowUpload, RetiredDirectSparseResources, StreamingSparseBuffers,
+    build_grid_and_sparse, checked_ledger_sum,
 };
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::{
@@ -46,7 +47,6 @@ pub(super) struct StreamingPromotionPass {
     grid_capacity: u64,
     fixed_metadata_bytes: u64,
     active_capacity_bytes: u64,
-    total_capacity_bytes: u64,
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
@@ -138,8 +138,6 @@ impl StreamingPromotionPass {
             debug_override.size(),
         ])?;
         let active_capacity_bytes = sparse.active_capacity_bytes();
-        let total_capacity_bytes =
-            checked_ledger_sum(&[fixed_metadata_bytes, active_capacity_bytes])?;
         let limits = device.limits();
         Ok(Self {
             pipeline,
@@ -152,7 +150,6 @@ impl StreamingPromotionPass {
             grid_capacity,
             fixed_metadata_bytes,
             active_capacity_bytes,
-            total_capacity_bytes,
             max_workgroups_x: limits.max_compute_workgroups_per_dimension,
             dynamic_alignment: limits.min_uniform_buffer_offset_alignment,
             max_buffer_size: limits.max_buffer_size,
@@ -208,7 +205,7 @@ impl StreamingPromotionPass {
         output_storage: &wgpu::TextureView,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
+    ) {
         self.grid.atlas_dimensions = [shape.extent().width, shape.extent().height];
         self.grid.atlas_tiles_per_row = shape.tiles_per_row;
         self.grid.tiles_per_layer = shape.tiles_per_layer;
@@ -228,7 +225,7 @@ impl StreamingPromotionPass {
             &self.light_term_mask,
             compose_indirection,
         );
-        std::mem::replace(&mut self.bind_group, replacement)
+        let _ = std::mem::replace(&mut self.bind_group, replacement);
     }
 
     pub(super) fn upload_sparse_rows(
@@ -309,16 +306,20 @@ impl StreamingPromotionPass {
         self.active_capacity_bytes
     }
 
-    pub(super) fn total_capacity_bytes(&self) -> u64 {
-        self.total_capacity_bytes
-    }
-
     pub(super) const fn entry_capacity(&self) -> u32 {
         self.sparse.entry_capacity()
     }
 
     pub(super) const fn tile_f16_capacity(&self) -> u32 {
         self.sparse.tile_f16_capacity()
+    }
+
+    pub(super) fn retired_sparse_capacity_bytes(&self) -> Result<u64, ShResidencyDrainError> {
+        self.sparse.retired_sparse_capacity_bytes()
+    }
+
+    pub(super) fn into_retired_sparse_resources(self) -> RetiredDirectSparseResources {
+        self.sparse.into_retired_sparse_resources()
     }
 
     pub(super) fn copy_retained_to(&self, destination: &Self, encoder: &mut wgpu::CommandEncoder) {
@@ -337,7 +338,6 @@ pub(super) struct StreamingAnimatedPass {
     grid_capacity: u64,
     fixed_metadata_bytes: u64,
     active_capacity_bytes: u64,
-    total_capacity_bytes: u64,
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
@@ -439,8 +439,6 @@ impl StreamingAnimatedPass {
             light_scale.size(),
         ])?;
         let active_capacity_bytes = sparse.active_capacity_bytes();
-        let total_capacity_bytes =
-            checked_ledger_sum(&[fixed_metadata_bytes, active_capacity_bytes])?;
         let limits = device.limits();
         Ok(Self {
             pipeline,
@@ -453,7 +451,6 @@ impl StreamingAnimatedPass {
             grid_capacity,
             fixed_metadata_bytes,
             active_capacity_bytes,
-            total_capacity_bytes,
             max_workgroups_x: limits.max_compute_workgroups_per_dimension,
             dynamic_alignment: limits.min_uniform_buffer_offset_alignment,
             max_buffer_size: limits.max_buffer_size,

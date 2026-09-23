@@ -213,7 +213,7 @@ impl PreparedCapture {
     }
 
     pub(super) fn sh_residency_report(&self) -> Option<ShResidencyReport> {
-        self.renderer.sh_residency_report().cloned()
+        self.renderer.sh_residency_report()
     }
 
     pub(super) const fn resolution(&self) -> [u32; 2] {

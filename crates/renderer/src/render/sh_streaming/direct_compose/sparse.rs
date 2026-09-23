@@ -38,6 +38,27 @@ pub(super) struct StreamingSparseBuffers {
     active_capacity_bytes: u64,
 }
 
+/// The four independently grown storage backings of one direct sparse
+/// family. A retirement ticket never retains a bind group, pipeline, dynamic
+/// grid, or dense texture through this type.
+pub(super) struct RetiredDirectSparseResources {
+    #[allow(dead_code)]
+    row_pairs: wgpu::Buffer,
+    #[allow(dead_code)]
+    lights: wgpu::Buffer,
+    #[allow(dead_code)]
+    tile_words: wgpu::Buffer,
+    #[allow(dead_code)]
+    compaction_metadata: wgpu::Buffer,
+    capacity_bytes: u64,
+}
+
+impl RetiredDirectSparseResources {
+    pub(super) const fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
+    }
+}
+
 impl StreamingSparseBuffers {
     pub(super) fn row_pairs(&self) -> &wgpu::Buffer {
         &self.row_pairs
@@ -146,6 +167,32 @@ impl StreamingSparseBuffers {
 
     pub(super) const fn tile_f16_capacity(&self) -> u32 {
         self.tile_f16_capacity
+    }
+
+    pub(super) fn retired_sparse_capacity_bytes(&self) -> Result<u64, ShResidencyDrainError> {
+        checked_sparse_backing_bytes([
+            self.row_pairs.size(),
+            self.lights.size(),
+            self.tile_words.size(),
+            self.compaction_metadata.size(),
+        ])
+    }
+
+    pub(super) fn into_retired_sparse_resources(self) -> RetiredDirectSparseResources {
+        let capacity_bytes = checked_sparse_backing_bytes([
+            self.row_pairs.size(),
+            self.lights.size(),
+            self.tile_words.size(),
+            self.compaction_metadata.size(),
+        ])
+        .expect("validated direct sparse retirement buffers must fit u64");
+        RetiredDirectSparseResources {
+            row_pairs: self.row_pairs,
+            lights: self.lights,
+            tile_words: self.tile_words,
+            compaction_metadata: self.compaction_metadata,
+            capacity_bytes,
+        }
     }
 
     pub(super) fn copy_retained_to(&self, destination: &Self, encoder: &mut wgpu::CommandEncoder) {
@@ -448,6 +495,10 @@ pub(super) fn checked_ledger_sum(parts: &[u64]) -> Result<u64, ShResidencyDrainE
     })
 }
 
+fn checked_sparse_backing_bytes(buffers: [u64; 4]) -> Result<u64, ShResidencyDrainError> {
+    checked_ledger_sum(&buffers)
+}
+
 fn u16_words(values: &[u16]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(values.len().div_ceil(2) * size_of::<u32>());
     for pair in values.chunks(2) {
@@ -529,6 +580,19 @@ mod tests {
     fn checked_ledger_sum_rejects_overflow() {
         assert_eq!(
             checked_ledger_sum(&[u64::MAX, 1]),
+            Err(ShResidencyDrainError::SlotOverflow)
+        );
+    }
+
+    #[test]
+    fn retired_sparse_backing_counts_only_its_four_storage_buffers() {
+        assert_eq!(checked_sparse_backing_bytes([8, 12, 16, 20]), Ok(56));
+    }
+
+    #[test]
+    fn retired_sparse_backing_rejects_overflow() {
+        assert_eq!(
+            checked_sparse_backing_bytes([u64::MAX, 1, 0, 0]),
             Err(ShResidencyDrainError::SlotOverflow)
         );
     }

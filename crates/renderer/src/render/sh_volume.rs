@@ -8,7 +8,9 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 #[cfg(test)]
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
-use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
+use postretro_level_format::sh_volume::{
+    AnimationDescriptor, OctahedralShProbe, OctahedralShVolumeSection,
+};
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
@@ -166,6 +168,14 @@ pub struct ShVolumeResources {
 
 pub(super) struct ShVolumeSections<'a> {
     pub sh: Option<&'a OctahedralShVolumeSection>,
+    /// Streaming omits id-34's compact body but retains valid base metadata.
+    /// Whole-resident billboard scatter must key its availability to that
+    /// metadata seam rather than the legacy compact-atlas upload path.
+    pub stream_base_present: bool,
+    /// Streaming retains curve descriptors (including their samples) as fixed
+    /// metadata while intentionally omitting id-34's compact atlas body.
+    /// Keep the normal group-3 animation buffers live from that metadata.
+    pub stream_animation_descriptors: Option<&'a [AnimationDescriptor]>,
     /// Section 27 is consumed by `ShComposeResources`, but its compose target
     /// is owned here; retain presence so the single physical total-atlas row
     /// cites both contributors without double-counting the texture.
@@ -329,6 +339,8 @@ impl ShVolumeResources {
     ) -> Self {
         let ShVolumeSections {
             sh: section,
+            stream_base_present,
+            stream_animation_descriptors,
             indirect_delta_present,
             direct: direct_section,
             direct_delta: direct_delta_section,
@@ -424,6 +436,17 @@ impl ShVolumeResources {
             (_, true) => ShResidencyAllocationState::Data,
             (true, false) => ShResidencyAllocationState::Fallback,
             (false, false) => ShResidencyAllocationState::Dummy,
+        };
+        // Streamed id-34 retains animation descriptors/samples in the shared
+        // group-3 resources even though it deliberately omits the legacy
+        // whole atlas body. Attribute those real buffers to id-34 and keep
+        // them as manifest-backed data rather than mislabeling them dummy.
+        let animation_sources =
+            source_ids([section.map(|_| 34).or(stream_base_present.then_some(34))]);
+        let animation_state = if stream_base_present {
+            ShResidencyAllocationState::Data
+        } else {
+            indirect_state
         };
 
         if let Some(sec) = usable {
@@ -545,7 +568,11 @@ impl ShVolumeResources {
         // are single-element dummies so the bind group remains valid (wgpu
         // rejects zero-sized storage buffer bindings).
         let (anim_descriptor_bytes, mut anim_sample_bytes, animated_light_count) =
-            build_animation_buffers(usable);
+            match (usable, stream_animation_descriptors) {
+                (Some(section), _) => build_animation_buffers(Some(section)),
+                (None, Some(descriptors)) => build_animation_buffers_from_descriptors(descriptors),
+                (None, None) => build_animation_buffers(None),
+            };
 
         // Append the scripted-animation region: one slot per forward descriptor
         // record, including every raw animated-baked tail row. FGD samples occupy
@@ -561,9 +588,9 @@ impl ShVolumeResources {
         );
         ledger.record_buffer(
             anim_descriptors_allocation,
-            &source_ids([section.map(|_| 34)]),
+            &animation_sources,
             true,
-            indirect_state,
+            animation_state,
         );
         let anim_descriptors_buffer = device.create_buffer_init_helper(
             "SH Animation Descriptors",
@@ -577,12 +604,12 @@ impl ShVolumeResources {
         );
         ledger.record_buffer(
             anim_samples_allocation,
-            &source_ids([section.map(|_| 34)]),
+            &animation_sources,
             true,
             if scripted_light_capacity > 0 && usable.is_none() {
                 ShResidencyAllocationState::Data
             } else {
-                indirect_state
+                animation_state
             },
         );
         let anim_samples_buffer = device.create_buffer_init_helper(
@@ -689,9 +716,10 @@ impl ShVolumeResources {
         let billboard_direct_scatter = BillboardDirectScatterResources::new(
             device,
             queue,
-            present,
-            billboard_direct_scatter_section.filter(|_| present),
-            animated_billboard_direct_scatter_delta_section.filter(|_| present),
+            present || stream_base_present,
+            billboard_direct_scatter_section.filter(|_| present || stream_base_present),
+            animated_billboard_direct_scatter_delta_section
+                .filter(|_| present || stream_base_present),
             billboard_direct_scatter_section.is_some(),
             animated_billboard_direct_scatter_delta_section.is_some(),
             ledger,

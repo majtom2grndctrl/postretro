@@ -12,7 +12,7 @@ impl StreamingAnimatedPass {
         output_storage: &wgpu::TextureView,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-    ) -> wgpu::BindGroup {
+    ) {
         self.grid.atlas_dimensions = [shape.extent().width, shape.extent().height];
         self.grid.atlas_tiles_per_row = shape.tiles_per_row;
         self.grid.tiles_per_layer = shape.tiles_per_layer;
@@ -33,7 +33,7 @@ impl StreamingAnimatedPass {
             &self.light_scale,
             compose_indirection,
         );
-        std::mem::replace(&mut self.bind_group, replacement)
+        let _ = std::mem::replace(&mut self.bind_group, replacement);
     }
 
     pub(in crate::render::sh_streaming::direct_compose) fn upload_sparse_rows(
@@ -107,16 +107,24 @@ impl StreamingAnimatedPass {
         self.active_capacity_bytes
     }
 
-    pub(in crate::render::sh_streaming::direct_compose) fn total_capacity_bytes(&self) -> u64 {
-        self.total_capacity_bytes
-    }
-
     pub(in crate::render::sh_streaming::direct_compose) const fn entry_capacity(&self) -> u32 {
         self.sparse.entry_capacity()
     }
 
     pub(in crate::render::sh_streaming::direct_compose) const fn tile_f16_capacity(&self) -> u32 {
         self.sparse.tile_f16_capacity()
+    }
+
+    pub(in crate::render::sh_streaming::direct_compose) fn retired_sparse_capacity_bytes(
+        &self,
+    ) -> Result<u64, ShResidencyDrainError> {
+        self.sparse.retired_sparse_capacity_bytes()
+    }
+
+    pub(in crate::render::sh_streaming::direct_compose) fn into_retired_sparse_resources(
+        self,
+    ) -> RetiredDirectSparseResources {
+        self.sparse.into_retired_sparse_resources()
     }
 
     pub(in crate::render::sh_streaming::direct_compose) fn copy_retained_to(

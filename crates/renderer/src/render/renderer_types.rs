@@ -761,6 +761,9 @@ pub(super) struct FullRenderer {
     /// Finished, plain-Rust accounting for the most recently installed level.
     /// It is absent until `install_level_geometry` crosses the level boundary.
     pub(super) sh_residency_report: Option<ShResidencyReport>,
+    /// Streaming-only residency ownership. The legacy whole-level path keeps
+    /// this absent and continues using its existing resources unchanged.
+    pub(super) sh_streaming: Option<sh_streaming::ShResidencyState>,
 
     /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
     /// bind-group layout is consumed only by the SDF shadow pass — NOT
@@ -1178,15 +1181,47 @@ pub(super) struct FullRenderer {
     pub(super) active_fog_aabbs: Vec<(Vec3, Vec3)>,
 }
 
+impl FullRenderer {
+    /// Stream mode swaps only the level-owned group-3 resources. Pipeline
+    /// layouts remain structurally identical, including billboard scatter's
+    /// whole-resident binding, so every consumer selects through this one seam.
+    pub(super) fn sh_bind_group(&self) -> &wgpu::BindGroup {
+        self.sh_streaming
+            .as_ref()
+            .and_then(sh_streaming::ShResidencyState::bind_group)
+            .unwrap_or(&self.sh_volume_resources.bind_group)
+    }
+
+    pub(super) fn sh_mesh_bind_group(&self) -> &wgpu::BindGroup {
+        self.sh_streaming
+            .as_ref()
+            .and_then(sh_streaming::ShResidencyState::mesh_bind_group)
+            .unwrap_or(&self.sh_volume_resources.mesh_bind_group)
+    }
+
+    pub(super) fn sh_depth_moment_view(&self) -> wgpu::TextureView {
+        self.sh_streaming
+            .as_ref()
+            .and_then(sh_streaming::ShResidencyState::depth_moment_view)
+            .unwrap_or_else(|| self.sh_volume_resources.make_depth_moment_view())
+    }
+}
+
 impl Renderer {
     /// The renderer-accounted SH residency report for the installed level.
     ///
-    /// This exposes allocation descriptions only, never GPU handles or wgpu
-    /// types, so capture can serialize it without crossing the GPU boundary.
-    pub fn sh_residency_report(&self) -> Option<&ShResidencyReport> {
-        self.full
-            .as_ref()
-            .and_then(|full| full.sh_residency_report.as_ref())
+    /// Static allocation rows are copied from install time, while a streaming
+    /// level overlays its current pool snapshot so capture observes growth and
+    /// retirement after warmup rather than stale install-time capacity.
+    pub fn sh_residency_report(&self) -> Option<ShResidencyReport> {
+        let full = self.full.as_ref()?;
+        let report = full.sh_residency_report.as_ref()?.clone();
+        match full.sh_streaming.as_ref() {
+            Some(streaming) => {
+                Some(report.with_streaming_summary(streaming.streaming_allocation_summary()))
+            }
+            None => Some(report),
+        }
     }
 
     /// Borrow the full-phase state. Panics if called before `finish_full_init`

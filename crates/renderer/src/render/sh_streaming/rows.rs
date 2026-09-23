@@ -110,35 +110,33 @@ impl ShResidencyState {
         &mut self,
         queue: &wgpu::Queue,
     ) -> Result<(), ShResidencyDrainError> {
-        let ready: Vec<_> = self.pending_promotion.iter().copied().collect();
+        let ready = promotion_sweep_candidates(&self.pending_promotion);
         for cluster_id in ready {
-            if self.owner_dependencies[cluster_id as usize]
-                .iter()
-                .all(|owner| self.sampleable.contains(owner))
+            if let Some(installed) = self.installed.get(&cluster_id)
+                && installed_cluster_is_sampleable(
+                    installed,
+                    &self.owner_dependencies[cluster_id as usize],
+                    &self.sampleable,
+                    self.indirect_compose_epoch,
+                    self.direct_compose_epoch,
+                )
             {
-                if let Some(installed) = self.installed.get(&cluster_id) {
-                    if installed.required_indirect_epoch > self.indirect_compose_epoch
-                        || installed.required_direct_epoch > self.direct_compose_epoch
-                    {
-                        continue;
-                    }
-                    let updates: Vec<_> = installed
-                        .patches
-                        .iter()
-                        .map(|patch| {
-                            self.sampled_words[patch.dense as usize] =
-                                self.compose_words[patch.dense as usize];
-                            (patch.dense, patch.mean_distance, patch.mean_sq_distance)
-                        })
-                        .collect();
-                    if let Some(gpu) = self.gpu.as_ref() {
-                        gpu.upload_sample_words_and_moments(
-                            queue,
-                            &self.sampled_words,
-                            &updates,
-                            self.grid_dimensions(),
-                        )?;
-                    }
+                let updates: Vec<_> = installed
+                    .patches
+                    .iter()
+                    .map(|patch| {
+                        self.sampled_words[patch.dense as usize] =
+                            self.compose_words[patch.dense as usize];
+                        (patch.dense, patch.mean_distance, patch.mean_sq_distance)
+                    })
+                    .collect();
+                if let Some(gpu) = self.gpu.as_ref() {
+                    gpu.upload_sample_words_and_moments(
+                        queue,
+                        &self.sampled_words,
+                        &updates,
+                        self.grid_dimensions(),
+                    )?;
                 }
                 self.pending_promotion.remove(&cluster_id);
                 self.sampleable.insert(cluster_id);
@@ -166,8 +164,11 @@ impl ShResidencyState {
         };
         let mut sample_updates = Vec::with_capacity(installed.patches.len());
         for patch in installed.patches {
-            self.compose_words[patch.dense as usize] = 0;
-            self.sampled_words[patch.dense as usize] = 0;
+            invalidate_dense_words(
+                &mut self.compose_words,
+                &mut self.sampled_words,
+                patch.dense,
+            )?;
             self.mark_indirect_dirty_for_dense(patch.dense)?;
             self.remove_indirect_base_row_ref(patch.dense)?;
             if self.direct_required {
@@ -233,4 +234,49 @@ impl ShResidencyState {
         }
         Ok(())
     }
+}
+
+/// Promotion deliberately observes compose completion from a later drain.
+/// Keeping this predicate pure makes the epoch/dependency contract testable
+/// without a renderer device and prevents a new canonical writer from being
+/// published before both its tile owner and required compose passes are ready.
+pub(super) fn installed_cluster_is_sampleable(
+    installed: &InstalledCluster,
+    owner_dependencies: &BTreeSet<u32>,
+    sampleable: &BTreeSet<u32>,
+    indirect_compose_epoch: u64,
+    direct_compose_epoch: u64,
+) -> bool {
+    owner_dependencies
+        .iter()
+        .all(|owner| sampleable.contains(owner))
+        && installed.required_indirect_epoch <= indirect_compose_epoch
+        && installed.required_direct_epoch <= direct_compose_epoch
+}
+
+/// Freeze the sweep candidate set at drain entry. Clusters installed later in
+/// the same drain wait for the next sweep, after their compute work has had a
+/// chance to encode.
+pub(super) fn promotion_sweep_candidates(pending: &BTreeSet<u32>) -> Vec<u32> {
+    pending.iter().copied().collect()
+}
+
+/// Invalidate both publicly reachable indirection mirrors before returning a
+/// dense slot to the first-fit allocator. The physical tile can retain stale
+/// texels, but neither sampling nor compose may address it after this step.
+pub(super) fn invalidate_dense_words(
+    compose_words: &mut [u32],
+    sampled_words: &mut [u32],
+    dense: u32,
+) -> Result<(), ShResidencyDrainError> {
+    let index = usize::try_from(dense).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+    let compose = compose_words
+        .get_mut(index)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let sampled = sampled_words
+        .get_mut(index)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    *compose = 0;
+    *sampled = 0;
+    Ok(())
 }

@@ -2,7 +2,8 @@
 
 use super::*;
 use postretro_level_format::cluster_directory::{
-    ClusterRangeRecord, ClusterRecord, ClusterResourceRecord,
+    ClusterRangeRecord, ClusterRangeRole, ClusterRecord, ClusterResourceDomain,
+    ClusterResourceRecord,
 };
 use postretro_level_format::sh_volume::OctahedralShProbe;
 
@@ -34,15 +35,77 @@ fn one_l0_brick() -> postretro_level_loader::ShStreamBaseMetadata {
 }
 
 fn cluster(range_start: u32) -> ClusterRecord {
+    cluster_with_ranges(range_start, 1)
+}
+
+fn cluster_with_ranges(range_start: u32, range_count: u32) -> ClusterRecord {
     ClusterRecord {
         bounds_min: [0.0; 3],
         bounds_max: [1.0; 3],
         member_start: 0,
         member_count: 0,
         range_start,
-        range_count: 1,
+        range_count,
         primitive_count: 0,
         flags: 0,
+    }
+}
+
+fn sparse_source(
+    section_id: u32,
+    animation_descriptor_indices: Vec<u32>,
+) -> postretro_level_loader::ShStreamSparseMetadata {
+    postretro_level_loader::ShStreamSparseMetadata {
+        section_id,
+        internal_version: 1,
+        affinity_dims: [1, 1, 1],
+        tile_dimension: 4,
+        tile_border: 1,
+        valid_probe_masks: vec![1],
+        cell_levels: vec![0],
+        affinity_offsets: vec![0, 1],
+        affinity_lights: vec![0],
+        animation_descriptor_indices,
+    }
+}
+
+fn direct_metadata() -> postretro_level_loader::ShStreamDirectMetadata {
+    postretro_level_loader::ShStreamDirectMetadata {
+        grid_origin: [0.0; 3],
+        cell_size: [1.0; 3],
+        grid_dimensions: [4, 4, 4],
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_dimensions: [8, 8],
+        layer_count: 1,
+        tiles_per_layer: 1,
+        atlas_tiles_per_row: 1,
+        irradiance_format: 0,
+    }
+}
+
+fn all_sparse_sources() -> postretro_level_loader::ShStreamSourceMetadata {
+    postretro_level_loader::ShStreamSourceMetadata {
+        indirect_delta: Some(sparse_source(INDIRECT_DELTA_ID, vec![0])),
+        direct: Some(direct_metadata()),
+        direct_delta: Some(sparse_source(DIRECT_DELTA_ID, Vec::new())),
+        animated_direct_delta: Some(sparse_source(ANIMATED_DIRECT_DELTA_ID, vec![0])),
+    }
+}
+
+fn range(
+    resource_index: u32,
+    start: u32,
+    count: u32,
+    owner_cluster_id: u32,
+    role: ClusterRangeRole,
+) -> ClusterRangeRecord {
+    ClusterRangeRecord {
+        resource_index,
+        start,
+        count,
+        owner_cluster_id,
+        role,
     }
 }
 
@@ -121,6 +184,103 @@ fn dense_patch_owner_is_the_lowest_cluster_containing_the_probe() {
 
     assert_eq!(state.dense_owner[0], Some(0));
     assert_eq!(state.nodes_by_owner[&0].len(), 1);
+}
+
+#[test]
+fn sparse_owner_halo_ranges_keep_the_writer_for_ids_27_41_and_45() {
+    let resources = vec![
+        ClusterResourceRecord {
+            section_id: INDIRECT_BASE_ID,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [4, 4, 4],
+        },
+        ClusterResourceRecord {
+            section_id: INDIRECT_DELTA_ID,
+            domain: ClusterResourceDomain::AffinityCell,
+            dimensions: [1, 1, 1],
+        },
+        ClusterResourceRecord {
+            section_id: DIRECT_DELTA_ID,
+            domain: ClusterResourceDomain::AffinityCell,
+            dimensions: [1, 1, 1],
+        },
+        ClusterResourceRecord {
+            section_id: ANIMATED_DIRECT_DELTA_ID,
+            domain: ClusterResourceDomain::AffinityCell,
+            dimensions: [1, 1, 1],
+        },
+    ];
+    let directory = ClusterDirectorySection {
+        runtime_cell_count: 0,
+        primitive_limit: 0,
+        cell_limit: 0,
+        clusters: vec![cluster_with_ranges(0, 4), cluster_with_ranges(4, 4)],
+        resources,
+        members: Vec::new(),
+        ranges: vec![
+            range(0, 0, 64, 1, ClusterRangeRole::Halo),
+            range(1, 0, 1, 1, ClusterRangeRole::Halo),
+            range(2, 0, 1, 1, ClusterRangeRole::Halo),
+            range(3, 0, 1, 1, ClusterRangeRole::Halo),
+            range(0, 0, 64, 1, ClusterRangeRole::Owned),
+            range(1, 0, 1, 1, ClusterRangeRole::Owned),
+            range(2, 0, 1, 1, ClusterRangeRole::Owned),
+            range(3, 0, 1, 1, ClusterRangeRole::Owned),
+        ],
+    };
+
+    let state =
+        ShResidencyState::from_parts([11; 32], &directory, &one_l0_brick(), &all_sparse_sources())
+            .expect("overlapping sparse ownership is valid");
+
+    for section_id in [INDIRECT_DELTA_ID, DIRECT_DELTA_ID, ANIMATED_DIRECT_DELTA_ID] {
+        assert_eq!(state.sparse_row_owner[&(section_id, 0)], 1);
+    }
+    // The lower-id halo must wait for each sparse canonical writer. Dense
+    // patch ownership is deliberately different and remains lower-id.
+    assert_eq!(state.dense_owner[0], Some(0));
+    assert!(state.owner_dependencies[0].contains(&1));
+}
+
+#[test]
+fn dense_patch_writer_waits_for_a_different_stored_node_owner() {
+    let directory = ClusterDirectorySection {
+        runtime_cell_count: 0,
+        primitive_limit: 0,
+        cell_limit: 0,
+        clusters: vec![cluster_with_ranges(0, 1), cluster_with_ranges(1, 1)],
+        resources: vec![ClusterResourceRecord {
+            section_id: INDIRECT_BASE_ID,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [4, 4, 4],
+        }],
+        members: Vec::new(),
+        ranges: vec![
+            range(0, 0, 1, 0, ClusterRangeRole::Owned),
+            range(0, 1, 63, 1, ClusterRangeRole::Owned),
+        ],
+    };
+    let state = ShResidencyState::from_parts(
+        [12; 32],
+        &directory,
+        &one_l0_brick(),
+        &postretro_level_loader::ShStreamSourceMetadata::default(),
+    )
+    .expect("one stored node can contain patches owned by distinct clusters");
+
+    let node = state.dense_node[1].expect("second valid probe has a stored node");
+    assert_eq!(state.dense_owner[1], Some(1));
+    assert_eq!(state.node_owner[&node], 0);
+    assert!(state.owner_dependencies[1].contains(&0));
+}
+
+#[test]
+fn base_only_manifest_does_not_require_an_id35_shared_slot_member() {
+    let state = state_with_clusters(1);
+    assert!(!state.direct_required);
+    assert!(!state.direct_compose_required);
+    assert!(state.direct_promotion_resident_rows.is_empty());
+    assert!(state.direct_animated_resident_rows.is_empty());
 }
 
 #[test]
@@ -323,4 +483,75 @@ fn halo_only_closure_requires_no_unrecorded_compose_epoch() {
         required_compose_epochs(11, 13, true, true, [INDIRECT_DELTA_ID]),
         Ok((12, 14))
     );
+}
+
+#[test]
+fn promotion_waits_for_the_next_drain_after_all_required_compose_passes() {
+    let installed = InstalledCluster {
+        patches: Vec::new(),
+        owned_nodes: Vec::new(),
+        sparse_rows: Vec::new(),
+        required_indirect_epoch: 8,
+        required_direct_epoch: 5,
+    };
+    let dependencies = BTreeSet::from([3]);
+
+    // The install drain recorded work, but sampled indirection must retain its
+    // old contents until both passes have encoded and the owner is sampleable
+    // in the next drain.
+    assert!(!rows::installed_cluster_is_sampleable(
+        &installed,
+        &dependencies,
+        &BTreeSet::new(),
+        8,
+        5,
+    ));
+    assert!(!rows::installed_cluster_is_sampleable(
+        &installed,
+        &dependencies,
+        &BTreeSet::from([3]),
+        7,
+        5,
+    ));
+    assert!(rows::installed_cluster_is_sampleable(
+        &installed,
+        &dependencies,
+        &BTreeSet::from([3]),
+        8,
+        5,
+    ));
+}
+
+#[test]
+fn promotion_sweep_defers_clusters_installed_after_its_drain_snapshot() {
+    let mut pending = BTreeSet::from([3]);
+    let this_drain = rows::promotion_sweep_candidates(&pending);
+    pending.insert(4);
+
+    assert_eq!(this_drain, vec![3]);
+    assert_eq!(rows::promotion_sweep_candidates(&pending), vec![3, 4]);
+}
+
+#[test]
+fn dense_eviction_clears_compose_and_sampled_words_before_slot_reuse() {
+    let mut slots = FirstFitRanges::default();
+    let released = slots.allocate(1).unwrap();
+    let stale_word = PROBE_INDIRECTION_VALID_BIT | (released.start << PROBE_INDIRECTION_SLOT_SHIFT);
+    let mut compose_words = vec![0, stale_word];
+    let mut sampled_words = compose_words.clone();
+    assert_eq!(
+        compose_words[1] >> PROBE_INDIRECTION_SLOT_SHIFT,
+        released.start
+    );
+
+    // This is the same ordering used by `ShResidencyState::evict`: clear both
+    // reachable words first, then return the slot for a later ready cluster.
+    rows::invalidate_dense_words(&mut compose_words, &mut sampled_words, 1).unwrap();
+    assert_eq!(compose_words[1], 0);
+    assert_eq!(sampled_words[1], 0);
+    slots.release(released).unwrap();
+
+    assert_eq!(slots.allocate(1).unwrap(), released);
+    assert_eq!(compose_words[1], 0);
+    assert_eq!(sampled_words[1], 0);
 }

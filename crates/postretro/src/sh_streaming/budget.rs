@@ -53,9 +53,9 @@ pub(crate) struct ShGpuBudgetInputs {
     pub(crate) fixed: FixedGpuCharges,
     pub(crate) pool_minima: StreamedPoolMinima,
     /// The renderer's exact initial physical floor after atlas-layer and sparse
-    /// alignment rounding.  The controller retains the family minima for
-    /// admission accounting, but must not reconstruct this total and risk
-    /// understating a rounded GPU allocation.
+    /// alignment rounding. This may be below the requested 256 MiB when the
+    /// complete level cannot fill that budget. The controller retains family
+    /// minima for admission but must not reconstruct this physical total.
     pub(crate) renderer_effective_floor_bytes: Option<u64>,
 }
 
@@ -122,10 +122,11 @@ impl ShResidencyAccounting {
             .ok_or(ShResidencyControllerError::AccountingOverflow(
                 "effective GPU floor",
             ))?;
-        let required_renderer_floor_bytes = DEFAULT_GPU_FLOOR_BYTES.max(mandatory_floor_bytes);
+        // The 256 MiB default is a requested allocation, not a mandatory
+        // physical charge: a small level can cap every family below it.
         if inputs
             .renderer_effective_floor_bytes
-            .is_some_and(|renderer_floor| renderer_floor < required_renderer_floor_bytes)
+            .is_some_and(|renderer_floor| renderer_floor < mandatory_floor_bytes)
         {
             return Err(ShResidencyControllerError::AccountingUnderflow(
                 "renderer effective GPU floor",

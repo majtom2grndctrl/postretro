@@ -212,7 +212,10 @@ at least its largest single-cluster requirement, then distributes the remaining 
 proportion to finalized whole-level streamed-family bytes. If fixed GPU metadata,
 whole-resident ids 47/48, and the sum of present-family largest minima exceeds
 256 MiB, the effective floor is that larger checked
-sum. The effective floor is reported. Pools use deterministic first-fit free ranges with
+sum. If every present family reaches its whole-level capacity first, the exact
+physical effective floor may be below the 256 MiB request; the controller must
+accept that renderer-reported figure when it covers all mandatory charges.
+The effective floor is reported. Pools use deterministic first-fit free ranges with
 coalescing. They never compact live slots.
 Ids 34 and optional 35 form one dense slot-pool group. Allocate/free the same
 slot ranges in every present member, with identical 8x8 width/height/layer

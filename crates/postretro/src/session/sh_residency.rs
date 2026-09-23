@@ -300,6 +300,10 @@ mod tests {
         assert_eq!(inputs.pool_minima.direct_delta_bytes, None);
         assert_eq!(inputs.pool_minima.animated_direct_delta_bytes, Some(3));
         assert_eq!(inputs.renderer_effective_floor_bytes, Some(41));
+        // Regression: a level whose entire SH allocation is below the 256 MiB
+        // requested floor must still accept the renderer's exact physical floor.
+        let accounting = crate::sh_streaming::budget::ShResidencyAccounting::new(inputs).unwrap();
+        assert_eq!(accounting.effective_floor_bytes().unwrap(), 41);
     }
 
     #[test]

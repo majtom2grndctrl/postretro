@@ -17,7 +17,7 @@ slice by owner decision.
 | 8 pure residency planner | Done | `a8a386351` | 12 focused planner tests; postretro check; focused code review |
 | 9 renderer cluster residency | Done | `c154bfe68`, `347c51dae` | renderer full suite: 564 passed, 1 ignored; workspace check; fmt; 44 focused streaming tests; final code review approved |
 | 10 synchronous runtime thin path | Done | `86c94c928`, `340db5a8e`, `1367d938e` | 16 focused app tests; 834 app tests (2 ignored); 206 loader tests; 569 renderer tests (1 ignored); workspace check; fmt; focused code review approved; attended Mac startup exposed and motivated shader-entry and small-map floor fixes; full workspace tests pass after floor fix; visual GPU proof remains open |
-| 11 bounded async read/decode | Pending | — | — |
+| 11 bounded async read/decode | Done | `3795e4bd2` | delayed 250 ms positional-reader tests in app and loader; completion identity/permit regression; postretro check/build; full workspace `cargo test`; fmt; strict Clippy blocked by four pre-existing level-format warnings |
 | 12 eviction, growth, hysteresis, diagnostics | Pending | — | — |
 | 13 integrated proof and measurement | Pending | — | — |
 
@@ -53,3 +53,11 @@ every frame); visual animation still needs owner confirmation. The separate
 animated-lightmap dispatch-limit failure remains. Focused renderer tests,
 workspace `cargo test`, and formatting pass. Strict Clippy still stops on four
 pre-existing level-format warnings. Disk gate: 13 GiB available, no cleanup.
+
+Phase 6 disk gate: 12 GiB available after Task 11, no cleanup. A bounded
+40-second Mac engine attempt was terminated by its hard cutoff before the map
+reached its first level frame, so it is not a visual proof. The async worker
+manager keeps four named jobs, retains one permit through ready/install/drop,
+and joins the old generation before creating a new pool on reload. The full
+workspace test suite passes; strict Clippy still stops on the same four
+pre-existing level-format warnings.

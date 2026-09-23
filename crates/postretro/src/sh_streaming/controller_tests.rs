@@ -52,6 +52,34 @@ fn queue_ready(controller: &mut ShResidencyController, expected_cluster: u32) {
     );
 }
 
+#[test]
+fn async_completion_identity_rejects_changed_hash_and_returns_departed_permit() {
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![4]));
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let request = controller.take_next_request().unwrap().unwrap();
+    let mut changed_hash = request;
+    changed_hash.chunk_hash = [99; 32];
+    assert!(!controller.matches_completion_identity(changed_hash));
+    assert!(controller.matches_queued_request(request));
+    assert_eq!(controller.permits_in_use(), 1);
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![]), HYSTERESIS_SECONDS + 1.0)
+        .unwrap();
+    // The first update begins hysteresis; the second expires it.
+    controller
+        .update_targets(
+            &VisibleCells::Culled(vec![]),
+            2.0 * HYSTERESIS_SECONDS + 1.0,
+        )
+        .unwrap();
+    assert!(!controller.matches_queued_request(request));
+    assert!(!controller.admit_failed_request(request).unwrap());
+    assert_eq!(controller.permits_in_use(), 0);
+}
+
 fn accept_ready(controller: &mut ShResidencyController) {
     let batch = controller.take_drain_batch().unwrap();
     let accepted = batch

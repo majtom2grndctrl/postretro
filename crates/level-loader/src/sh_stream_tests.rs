@@ -238,6 +238,41 @@ fn sync_proof_manifest_reads_every_streamed_family_from_one_real_chunk() {
     assert!(empty.bytes.is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn delayed_positional_reader_decodes_the_same_verified_chunk() {
+    use std::os::unix::fs::FileExt;
+    use std::time::Duration;
+
+    let fixture = write_stream_fixture(Id50Body::Valid);
+    let world = load_prl_with_streaming_mode_for_test(
+        fixture.path.to_str().unwrap(),
+        ShStreamingMode::Async,
+    )
+    .unwrap();
+    let manifest = world.sh_stream_manifest().unwrap();
+    let bytes = manifest
+        .read_encoded_cluster_with(0, |file, offset, len| {
+            std::thread::sleep(Duration::from_millis(250));
+            let mut bytes = vec![0; len as usize];
+            let mut cursor = 0;
+            while cursor < bytes.len() {
+                let read = file.read_at(&mut bytes[cursor..], offset + cursor as u64)?;
+                assert_ne!(read, 0);
+                cursor += read;
+            }
+            Ok(bytes)
+        })
+        .unwrap();
+    let decoded = manifest.decode_encoded_cluster(0, bytes).unwrap();
+    assert_eq!(decoded.cluster_id, 0);
+    assert_eq!(decoded.blocks.len(), 6);
+    assert_eq!(
+        decoded.bytes,
+        manifest.read_and_decode_cluster(0).unwrap().bytes
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Id50Body {
     Valid,

@@ -76,7 +76,41 @@ impl ShResidencyController {
             generation: self.generation,
             content_tag: self.content_tag,
             cluster_id,
+            chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
         }))
+    }
+
+    /// A failed worker completion releases exactly the request's permit. A
+    /// stale generation or changed chunk identity cannot fail a new request.
+    pub(crate) fn admit_failed_request(
+        &mut self,
+        request: ShClusterRequest,
+    ) -> Result<bool, ShResidencyControllerError> {
+        if !self.matches_completion_identity(request)
+            || self.states[request.cluster_id as usize].state != ClusterResidencyState::Queued
+        {
+            return Ok(false);
+        }
+        if !self.targets.contains(&request.cluster_id) {
+            self.release_permit()?;
+            self.states[request.cluster_id as usize].state = ClusterResidencyState::Absent;
+            return Ok(false);
+        }
+        self.mark_failed(request.cluster_id)?;
+        Ok(true)
+    }
+
+    pub(crate) fn matches_queued_request(&self, request: ShClusterRequest) -> bool {
+        self.matches_completion_identity(request)
+            && self.targets.contains(&request.cluster_id)
+            && self.states[request.cluster_id as usize].state == ClusterResidencyState::Queued
+    }
+
+    pub(crate) fn matches_completion_identity(&self, request: ShClusterRequest) -> bool {
+        request.generation == self.generation
+            && request.content_tag == self.content_tag
+            && self.topology.chunk_hashes.get(request.cluster_id as usize)
+                == Some(&request.chunk_hash)
     }
 
     /// Accepts a loader-decoded payload. Stale or departed work is dropped on

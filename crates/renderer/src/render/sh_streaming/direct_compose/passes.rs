@@ -35,6 +35,7 @@ const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
 const BIND_ANIMATED_LIGHT_SCALE: u32 = 26;
 const BIND_ANIMATED_COMPACTION_META: u32 = 27;
 const BIND_ANIMATED_PROBE_INDIRECTION: u32 = 28;
+const ANIMATED_DIRECT_COMPOSE_ENTRY_POINT: &str = "animated_compose_main";
 
 pub(super) struct StreamingPromotionPass {
     pipeline: wgpu::ComputePipeline,
@@ -414,7 +415,7 @@ impl StreamingAnimatedPass {
             label: Some("Streamed Animated Direct SH Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: Some("compose_main"),
+            entry_point: Some(ANIMATED_DIRECT_COMPOSE_ENTRY_POINT),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
@@ -553,4 +554,28 @@ fn dispatch_dynamic_pass(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ANIMATED_DIRECT_COMPOSE_ENTRY_POINT;
+
+    // Regression: streamed animated-direct SH startup selected a nonexistent WGSL entry point.
+    #[test]
+    fn streamed_animated_direct_pipeline_entry_point_exists() {
+        let source = [
+            include_str!("../../../shaders/animated_direct_sh_compose.wgsl"),
+            "\n",
+            include_str!("../../../shaders/curve_eval.wgsl"),
+            "\n",
+            super::WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("streamed animated direct SH shader should parse");
+        assert!(module.entry_points.iter().any(|entry| {
+            entry.name == ANIMATED_DIRECT_COMPOSE_ENTRY_POINT
+                && entry.stage == naga::ShaderStage::Compute
+        }));
+    }
 }

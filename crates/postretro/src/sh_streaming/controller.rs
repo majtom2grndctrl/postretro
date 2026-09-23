@@ -103,6 +103,7 @@ pub(crate) struct ShResidencyCounters {
 /// renderer-owned; this half owns permits, CPU payload phases, and policy
 /// counters so neither side has to borrow the other's lifetime state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(any(test, feature = "capture"))]
 pub(crate) struct ShResidencyControllerSnapshot {
     pub(crate) cpu: super::budget::CpuPhaseLedger,
     pub(crate) permits_in_use: usize,
@@ -253,14 +254,17 @@ impl ShResidencyController {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 
+    #[cfg(test)]
     pub(crate) fn content_tag(&self) -> [u8; 32] {
         self.content_tag
     }
 
+    #[cfg(test)]
     pub(crate) fn accounting(&self) -> ShResidencyAccounting {
         self.accounting
     }
@@ -274,12 +278,14 @@ impl ShResidencyController {
         self.accounting.update_fixed_gpu(fixed_gpu)
     }
 
+    #[cfg(test)]
     pub(crate) fn state(&self, cluster_id: u32) -> Option<ClusterResidencyState> {
         self.states
             .get(cluster_id as usize)
             .map(|state| state.state)
     }
 
+    #[cfg(test)]
     pub(crate) fn is_targeted(&self, cluster_id: u32) -> bool {
         self.targets.contains(&cluster_id)
     }
@@ -287,7 +293,7 @@ impl ShResidencyController {
     /// True only when every current visible/prefetch/owner target has crossed
     /// the renderer-confirmed one-frame compose boundary. Static capture uses
     /// this to know when its deterministic preload is complete.
-    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.targets.iter().all(|&cluster_id| {
             self.states
@@ -296,18 +302,22 @@ impl ShResidencyController {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn permits_in_use(&self) -> usize {
         self.permits_in_use
     }
 
+    #[cfg(test)]
     pub(crate) fn counters(&self) -> ShResidencyCounters {
         self.counters
     }
 
+    #[cfg(test)]
     pub(crate) fn non_evictable_overshoot_bytes(&self) -> u64 {
         self.non_evictable_overshoot_bytes
     }
 
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {
         let mut snapshot = ShResidencyControllerSnapshot {
             cpu: self.accounting.cpu,

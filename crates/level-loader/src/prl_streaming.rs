@@ -14,6 +14,13 @@ use crate::sh_stream::{
     ShStreamManifest, ShStreamingMode, load_manifest_positionally, read_container_positionally,
     read_section_positionally, read_vec_at, requested_streaming_mode,
 };
+
+type StreamingManifestLoad = (
+    std::sync::Arc<std::fs::File>,
+    prl_format::ContainerMeta,
+    Option<std::sync::Arc<ShStreamManifest>>,
+);
+
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     let limits = (
         MAX_DELTA_SECTION_BINDING_BYTES,
@@ -129,16 +136,7 @@ fn load_prl_from_retained_file(
 /// Validate the id-49/id-50 pair before consulting the mode gate. The returned
 /// handle owns the exact file opened for table parsing; the streaming branch
 /// must not reopen `path` or call the legacy whole-file constructor.
-fn load_stream_manifest_if_present(
-    path: &str,
-) -> Result<
-    (
-        std::sync::Arc<std::fs::File>,
-        prl_format::ContainerMeta,
-        Option<std::sync::Arc<ShStreamManifest>>,
-    ),
-    PrlLoadError,
-> {
+fn load_stream_manifest_if_present(path: &str) -> Result<StreamingManifestLoad, PrlLoadError> {
     let (file, container) = read_container_positionally(path)?;
     let id50_entries: Vec<_> = container
         .sections

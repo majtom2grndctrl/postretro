@@ -636,17 +636,6 @@ impl ShResidencyController {
         }
     }
 
-    /// Task 12 uses this after pressure eviction. The suppression is only for
-    /// prefetch: a newly visible cluster immediately clears it on horizon
-    /// change, while the controller never suppresses visible work itself.
-    pub(crate) fn suppress_prefetch(&mut self, cluster_id: u32) {
-        if let Some(state) = self.states.get_mut(cluster_id as usize)
-            && state.class == Some(TargetClass::Prefetch)
-        {
-            state.suppressed = true;
-        }
-    }
-
     /// Pressure recovery makes prefetch eligible again without changing the
     /// raw visibility horizon. Task 12 owns when that recovery is safe.
     pub(crate) fn clear_prefetch_suppression(&mut self) {

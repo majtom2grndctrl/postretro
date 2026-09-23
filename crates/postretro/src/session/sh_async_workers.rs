@@ -146,6 +146,7 @@ impl ShAsyncWorkers {
         }
     }
 
+    #[cfg(feature = "capture")]
     pub(super) fn phase_snapshot(&self) -> Result<CpuPhaseLedger, &'static str> {
         self.phases
             .lock()

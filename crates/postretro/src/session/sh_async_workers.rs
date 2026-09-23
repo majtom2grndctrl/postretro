@@ -12,7 +12,38 @@ use postretro_level_loader::{PrlLoadError, ShStreamManifest};
 use crate::sh_streaming::budget::CpuPhaseLedger;
 use crate::sh_streaming::controller::{MAX_STREAM_PERMITS, ShClusterRequest};
 
-type ChunkReader = dyn Fn(&ShStreamManifest, u32) -> Result<Vec<u8>, PrlLoadError> + Send + Sync;
+trait ShWorkerSource: Send + Sync {
+    fn byte_counts(&self, cluster_id: u32) -> (u64, u64);
+    fn read_encoded(&self, cluster_id: u32) -> Result<Vec<u8>, PrlLoadError>;
+    fn decode(
+        &self,
+        cluster_id: u32,
+        bytes: Vec<u8>,
+    ) -> Result<DecodedClusterShPayload, PrlLoadError>;
+}
+
+struct ManifestWorkerSource {
+    manifest: Arc<ShStreamManifest>,
+}
+
+impl ShWorkerSource for ManifestWorkerSource {
+    fn byte_counts(&self, cluster_id: u32) -> (u64, u64) {
+        let index = &self.manifest.payloads().index[cluster_id as usize];
+        (index.payload_len, index.decoded_bytes)
+    }
+
+    fn read_encoded(&self, cluster_id: u32) -> Result<Vec<u8>, PrlLoadError> {
+        self.manifest.read_encoded_cluster(cluster_id)
+    }
+
+    fn decode(
+        &self,
+        cluster_id: u32,
+        bytes: Vec<u8>,
+    ) -> Result<DecodedClusterShPayload, PrlLoadError> {
+        self.manifest.decode_encoded_cluster(cluster_id, bytes)
+    }
+}
 
 pub(super) struct ShWorkerCompletion {
     pub(super) request: ShClusterRequest,
@@ -26,6 +57,7 @@ pub(super) struct ShAsyncWorkers {
     cancel: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
     phases: Arc<Mutex<CpuPhaseLedger>>,
+    retained_manifest: Option<Arc<ShStreamManifest>>,
 }
 
 impl std::fmt::Debug for ShAsyncWorkers {
@@ -38,16 +70,14 @@ impl std::fmt::Debug for ShAsyncWorkers {
 
 impl ShAsyncWorkers {
     pub(super) fn new(manifest: Arc<ShStreamManifest>) -> std::io::Result<Self> {
-        Self::with_reader(
-            manifest,
-            Arc::new(|manifest, id| manifest.read_encoded_cluster(id)),
-        )
+        let mut workers = Self::with_source(Arc::new(ManifestWorkerSource {
+            manifest: manifest.clone(),
+        }))?;
+        workers.retained_manifest = Some(manifest);
+        Ok(workers)
     }
 
-    fn with_reader(
-        manifest: Arc<ShStreamManifest>,
-        reader: Arc<ChunkReader>,
-    ) -> std::io::Result<Self> {
+    fn with_source(source: Arc<dyn ShWorkerSource>) -> std::io::Result<Self> {
         let (requests, pending) = sync_channel(MAX_STREAM_PERMITS);
         let (completed_sender, completed) = sync_channel(MAX_STREAM_PERMITS);
         let pending = Arc::new(Mutex::new(pending));
@@ -59,63 +89,18 @@ impl ShAsyncWorkers {
             cancel,
             handles: Vec::with_capacity(MAX_STREAM_PERMITS),
             phases,
+            retained_manifest: None,
         };
         for worker_id in 0..MAX_STREAM_PERMITS {
-            let manifest = Arc::clone(&manifest);
+            let source = Arc::clone(&source);
             let pending = Arc::clone(&pending);
             let sender = completed_sender.clone();
             let cancel = Arc::clone(&manager.cancel);
             let phases = Arc::clone(&manager.phases);
-            let reader = Arc::clone(&reader);
             let handle = thread::Builder::new()
                 .name(format!("sh-probe-read-{worker_id}"))
-                .spawn(move || {
-                    worker_loop(&manifest, &pending, &sender, &cancel, &phases, &*reader)
-                })?;
+                .spawn(move || worker_loop(&pending, &sender, &cancel, &phases, &*source))?;
             manager.handles.push(handle);
-        }
-        Ok(manager)
-    }
-
-    /// A deterministic test executor exercises the same bounded channels and
-    /// teardown path without requiring a baked PRL fixture in the app crate.
-    #[cfg(test)]
-    fn with_test_executor(
-        executor: Arc<dyn Fn(ShClusterRequest) -> ShWorkerCompletion + Send + Sync>,
-    ) -> std::io::Result<Self> {
-        let (requests, pending) = sync_channel(MAX_STREAM_PERMITS);
-        let (sender, completed) = sync_channel(MAX_STREAM_PERMITS);
-        let pending = Arc::new(Mutex::new(pending));
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut manager = Self {
-            requests: Some(requests),
-            completed,
-            cancel,
-            handles: Vec::with_capacity(MAX_STREAM_PERMITS),
-            phases: Arc::new(Mutex::new(CpuPhaseLedger::default())),
-        };
-        for worker_id in 0..MAX_STREAM_PERMITS {
-            let pending = Arc::clone(&pending);
-            let sender = sender.clone();
-            let cancel = Arc::clone(&manager.cancel);
-            let executor = Arc::clone(&executor);
-            manager.handles.push(
-                thread::Builder::new()
-                    .name(format!("sh-probe-test-{worker_id}"))
-                    .spawn(move || {
-                        loop {
-                            let request =
-                                match pending.lock().expect("test request mutex poisoned").recv() {
-                                    Ok(request) if !cancel.load(Ordering::Acquire) => request,
-                                    _ => return,
-                                };
-                            let completion = executor(request);
-                            if cancel.load(Ordering::Acquire) || sender.send(completion).is_err() {
-                                return;
-                            }
-                        }
-                    })?,
-            );
         }
         Ok(manager)
     }
@@ -161,6 +146,47 @@ impl ShAsyncWorkers {
             let _ = handle.join();
         }
     }
+
+    /// Cancels this generation without waiting on an in-flight positional
+    /// read. The frame path polls the returned handles and joins only after
+    /// they have finished; process teardown still joins through `Drop`.
+    pub(super) fn begin_retirement(&mut self) -> ShWorkerRetirement {
+        self.cancel.store(true, Ordering::Release);
+        self.requests.take();
+        ShWorkerRetirement {
+            handles: self.handles.drain(..).collect(),
+            retained_manifest: self.retained_manifest.take(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ShWorkerRetirement {
+    handles: Vec<JoinHandle<()>>,
+    /// Keeps the exact opened PRL alive until every handle has joined.
+    retained_manifest: Option<Arc<ShStreamManifest>>,
+}
+
+impl ShWorkerRetirement {
+    pub(super) fn try_finish(&mut self) -> bool {
+        if !self.handles.iter().all(JoinHandle::is_finished) {
+            return false;
+        }
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+        drop(self.retained_manifest.take());
+        true
+    }
+}
+
+impl Drop for ShWorkerRetirement {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+        drop(self.retained_manifest.take());
+    }
 }
 
 impl Drop for ShAsyncWorkers {
@@ -170,21 +196,18 @@ impl Drop for ShAsyncWorkers {
 }
 
 fn worker_loop(
-    manifest: &ShStreamManifest,
     pending: &Mutex<Receiver<ShClusterRequest>>,
     completed: &SyncSender<ShWorkerCompletion>,
     cancel: &AtomicBool,
     phases: &Mutex<CpuPhaseLedger>,
-    reader: &ChunkReader,
+    source: &dyn ShWorkerSource,
 ) {
     loop {
         let request = match pending.lock().expect("SH request mutex poisoned").recv() {
             Ok(request) if !cancel.load(Ordering::Acquire) => request,
             _ => return,
         };
-        let index = &manifest.payloads().index[request.cluster_id as usize];
-        let encoded_bytes = index.payload_len;
-        let decoded_bytes = index.decoded_bytes;
+        let (encoded_bytes, decoded_bytes) = source.byte_counts(request.cluster_id);
         {
             let mut phases = phases.lock().expect("SH phase mutex poisoned");
             phases
@@ -192,7 +215,7 @@ fn worker_loop(
                 .add(encoded_bytes, "encoded worker bytes")
                 .expect("validated encoded bound");
         }
-        let encoded = reader(manifest, request.cluster_id);
+        let encoded = source.read_encoded(request.cluster_id);
         {
             let mut phases = phases.lock().expect("SH phase mutex poisoned");
             phases
@@ -211,7 +234,7 @@ fn worker_loop(
                     .add(decoded_bytes, "decoded worker bytes")
                     .expect("validated decode bound");
             }
-            let result = manifest.decode_encoded_cluster(request.cluster_id, bytes);
+            let result = source.decode(request.cluster_id, bytes);
             {
                 let mut phases = phases.lock().expect("SH phase mutex poisoned");
                 phases
@@ -250,29 +273,61 @@ fn worker_loop(
 mod tests {
     use super::*;
     use std::os::unix::fs::FileExt;
+    use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
-    #[test]
-    fn delayed_positional_reader_never_blocks_completion_drain_or_submission() {
+    struct DelayedPositionalSource {
+        file: Arc<std::fs::File>,
+        delay: Duration,
+        executions: Arc<AtomicUsize>,
+    }
+
+    impl ShWorkerSource for DelayedPositionalSource {
+        fn byte_counts(&self, _cluster_id: u32) -> (u64, u64) {
+            (7, 7)
+        }
+
+        fn read_encoded(&self, _cluster_id: u32) -> Result<Vec<u8>, PrlLoadError> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            let mut bytes = vec![0; 7];
+            self.file.read_at(&mut bytes, 4).unwrap();
+            Ok(bytes)
+        }
+
+        fn decode(
+            &self,
+            cluster_id: u32,
+            bytes: Vec<u8>,
+        ) -> Result<DecodedClusterShPayload, PrlLoadError> {
+            Ok(DecodedClusterShPayload {
+                cluster_id,
+                bytes,
+                blocks: Vec::new(),
+            })
+        }
+    }
+
+    fn delayed_source(
+        delay: Duration,
+        executions: Arc<AtomicUsize>,
+    ) -> (tempfile::TempDir, Arc<dyn ShWorkerSource>) {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("encoded.bin");
         std::fs::write(&path, b"headpayloadtail").unwrap();
-        let file = Arc::new(std::fs::File::open(path).unwrap());
-        let executor = Arc::new(move |request: ShClusterRequest| {
-            std::thread::sleep(Duration::from_millis(250));
-            let mut bytes = vec![0; 7];
-            file.read_at(&mut bytes, 4).unwrap();
-            ShWorkerCompletion {
-                request,
-                result: Ok(DecodedClusterShPayload {
-                    cluster_id: request.cluster_id,
-                    bytes,
-                    blocks: Vec::new(),
-                }),
-                ready_bytes: 0,
-            }
-        });
-        let mut workers = ShAsyncWorkers::with_test_executor(executor).unwrap();
+        let source = DelayedPositionalSource {
+            file: Arc::new(std::fs::File::open(path).unwrap()),
+            delay,
+            executions,
+        };
+        (temp, Arc::new(source))
+    }
+
+    #[test]
+    fn delayed_positional_reader_never_blocks_completion_drain_or_submission() {
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (_temp, source) = delayed_source(Duration::from_millis(250), Arc::clone(&executions));
+        let mut workers = ShAsyncWorkers::with_source(source).unwrap();
         let request = ShClusterRequest {
             generation: 17,
             content_tag: [4; 32],
@@ -293,40 +348,66 @@ mod tests {
             .expect("delayed positional completion");
         assert_eq!(completion.request, request);
         assert_eq!(completion.result.unwrap().bytes, b"payload");
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
         workers.stop();
     }
 
     #[test]
-    fn teardown_cancels_queued_work_and_joins_four_workers() {
-        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = Arc::clone(&executions);
-        let executor = Arc::new(move |request: ShClusterRequest| {
-            observed.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(50));
-            ShWorkerCompletion {
-                request,
-                result: Ok(DecodedClusterShPayload {
-                    cluster_id: request.cluster_id,
-                    bytes: Vec::new(),
-                    blocks: Vec::new(),
-                }),
-                ready_bytes: 0,
-            }
-        });
-        let mut workers = ShAsyncWorkers::with_test_executor(executor).unwrap();
+    fn delayed_reload_retires_without_blocking_and_cannot_deliver_stale_generation() {
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (_old_temp, old_source) =
+            delayed_source(Duration::from_millis(250), Arc::clone(&executions));
+        let mut workers = ShAsyncWorkers::with_source(old_source).unwrap();
         assert_eq!(workers.handles.len(), MAX_STREAM_PERMITS);
+        let old_request = |cluster_id| ShClusterRequest {
+            generation: 1,
+            content_tag: [1; 32],
+            cluster_id,
+            chunk_hash: [1; 32],
+        };
         for cluster_id in 0..MAX_STREAM_PERMITS as u32 {
-            workers
-                .submit(ShClusterRequest {
-                    generation: 1,
-                    content_tag: [0; 32],
-                    cluster_id,
-                    chunk_hash: [0; 32],
-                })
-                .unwrap();
+            workers.submit(old_request(cluster_id)).unwrap();
         }
-        workers.stop();
+        while executions.load(Ordering::SeqCst) < MAX_STREAM_PERMITS {
+            std::thread::yield_now();
+        }
+
+        let start = Instant::now();
+        let mut retirement = workers.begin_retirement();
+        assert!(start.elapsed() < Duration::from_millis(100));
         assert!(workers.handles.is_empty());
-        assert!(executions.load(Ordering::SeqCst) <= MAX_STREAM_PERMITS);
+        assert!(
+            !retirement.try_finish(),
+            "delayed positional read is still live"
+        );
+
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(retirement.try_finish());
+        assert!(retirement.handles.is_empty());
+        assert!(
+            workers.try_completion().is_err(),
+            "cancelled generation must not publish a ready completion"
+        );
+
+        // Only after all four old worker handles have joined may the next
+        // generation start, so lifecycle permits never overlap generations.
+        let (_new_temp, new_source) = delayed_source(Duration::ZERO, Arc::new(AtomicUsize::new(0)));
+        let mut replacement = ShAsyncWorkers::with_source(new_source).unwrap();
+        let new_request = ShClusterRequest {
+            generation: 2,
+            content_tag: [2; 32],
+            cluster_id: 0,
+            chunk_hash: [2; 32],
+        };
+        replacement.submit(new_request).unwrap();
+        let completion = loop {
+            if let Some(completion) = replacement.try_completion().unwrap() {
+                break completion;
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(completion.request, new_request);
+        assert_ne!(completion.request.generation, old_request(0).generation);
+        replacement.stop();
     }
 }

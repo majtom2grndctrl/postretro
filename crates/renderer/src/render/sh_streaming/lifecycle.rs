@@ -1,4 +1,5 @@
 //! Target-generation transitions and the atomic drain boundary.
+//! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency).
 
 use super::*;
 
@@ -12,16 +13,9 @@ impl ShResidencyState {
         selection_weights: &wgpu::Buffer,
         batch: ShDrainBatch,
     ) -> Result<ShDrainOutcome, ShResidencyDrainError> {
-        if batch.content_tag != self.content_tag {
-            return Ok(ShDrainOutcome {
-                dropped: batch
-                    .ready
-                    .into_iter()
-                    .map(|ready| ready.chunk.cluster_id)
-                    .collect(),
-                ..ShDrainOutcome::default()
-            });
-        }
+        // Validate the complete public handoff before target transitions,
+        // retirement, promotion, eviction, or installation can mutate state.
+        self.validate_batch_contract(&batch)?;
         self.apply_targets(queue, &batch)?;
         self.release_retired_generations();
         self.promote_completed(queue)?;
@@ -82,6 +76,15 @@ impl ShResidencyState {
             }
         }
         Ok(outcome)
+    }
+
+    pub(super) fn validate_batch_contract(
+        &self,
+        batch: &ShDrainBatch,
+    ) -> Result<(), ShResidencyDrainError> {
+        batch
+            .validate_contract(self.cluster_count, self.content_tag)
+            .map_err(|error| ShResidencyDrainError::InvalidBatch(error.to_string()))
     }
 
     fn apply_targets(

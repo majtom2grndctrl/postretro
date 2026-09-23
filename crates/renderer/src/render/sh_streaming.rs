@@ -114,6 +114,7 @@ pub struct ShResidencySnapshot {
 /// catch a violated lifetime/identity contract at the renderer boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShResidencyDrainError {
+    InvalidBatch(String),
     ContentTagMismatch,
     GenerationResetRequired {
         expected: u64,
@@ -150,6 +151,7 @@ pub enum ShResidencyDrainError {
 impl fmt::Display for ShResidencyDrainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidBatch(reason) => write!(f, "invalid SH drain batch: {reason}"),
             Self::ContentTagMismatch => {
                 write!(f, "SH drain content tag does not match renderer session")
             }

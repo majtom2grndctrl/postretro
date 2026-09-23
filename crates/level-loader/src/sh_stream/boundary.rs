@@ -62,6 +62,74 @@ pub struct ShDrainBatch {
     pub ready: Vec<PreparedShCluster>,
 }
 
+impl ShDrainBatch {
+    /// Validate the complete loader-to-renderer handoff against the immutable
+    /// manifest identity before either side mutates generation state.
+    pub fn validate_contract(
+        &self,
+        cluster_count: u32,
+        content_tag: [u8; 32],
+    ) -> Result<(), PrlLoadError> {
+        if self.generation == 0 {
+            return Err(stream_error("drain batch generation must be nonzero"));
+        }
+        if self.content_tag != content_tag {
+            return Err(stream_error(
+                "drain batch content tag does not match manifest",
+            ));
+        }
+        if self.ready.len() > 2 {
+            return Err(stream_error(
+                "drain batch exceeds the two-ready-cluster cap",
+            ));
+        }
+        let words = usize::try_from(cluster_count.div_ceil(64))
+            .map_err(|_| stream_error("cluster bitset word count exceeds usize"))?;
+        if let Some(reset) = &self.target_reset {
+            if reset.len() != words {
+                return Err(stream_error(
+                    "target reset bitset length disagrees with cluster count",
+                ));
+            }
+            if let (Some(last), remainder) = (reset.last(), cluster_count % 64)
+                && remainder != 0
+                && (*last >> remainder) != 0
+            {
+                return Err(stream_error(
+                    "target reset bitset names an out-of-range cluster",
+                ));
+            }
+        }
+        validate_sorted_cluster_ids(&self.target_add, cluster_count, "target-add")?;
+        validate_sorted_cluster_ids(&self.target_remove, cluster_count, "target-remove")?;
+        if sorted_lists_intersect(&self.target_add, &self.target_remove) {
+            return Err(stream_error(
+                "target-add and target-remove must not name the same cluster",
+            ));
+        }
+        validate_sorted_cluster_ids(&self.evictions, cluster_count, "evictions")?;
+        let mut ready_ids = std::collections::BTreeSet::new();
+        for prepared in &self.ready {
+            if prepared.generation != self.generation || prepared.content_tag != self.content_tag {
+                return Err(stream_error(
+                    "ready cluster identity does not match drain batch",
+                ));
+            }
+            if prepared.chunk.cluster_id >= cluster_count {
+                return Err(stream_error(
+                    "ready cluster id exceeds manifest cluster count",
+                ));
+            }
+            if !ready_ids.insert(prepared.chunk.cluster_id) {
+                return Err(stream_error(
+                    "drain batch contains more than one ready chunk for a cluster",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Renderer-to-controller ownership return. Deferred chunks remain owned so
 /// the controller can keep their permit and ready-byte accounting exactly once.
 #[derive(Debug, Default)]

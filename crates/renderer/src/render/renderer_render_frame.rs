@@ -12,6 +12,10 @@ use postretro_level_loader::{ShDrainBatch, ShDrainOutcome};
 #[derive(Debug)]
 pub struct ShDrainFrameResult<T> {
     pub outcome: ShDrainOutcome,
+    /// True only after all streamed compose encodes succeeded and their
+    /// command buffer was submitted. The application uses this renderer fact,
+    /// not surface acquisition or later readback success, to gate promotion.
+    pub compose_submitted: bool,
     pub frame: std::result::Result<T, anyhow::Error>,
 }
 
@@ -60,6 +64,7 @@ impl Renderer {
         // frame. It precedes surface acquisition so even a skipped frame
         // returns the ownership outcome to the session controller.
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        let mut compose_submitted = false;
         let frame = (|| -> Result<Option<PresentHandle>> {
             let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
                 return Ok(None);
@@ -71,7 +76,7 @@ impl Renderer {
                     label: Some("Frame Encoder"),
                 });
 
-            self.record_scene_passes(
+            compose_submitted = self.record_scene_passes(
                 &mut encoder,
                 Some(font_system),
                 Some(&view),
@@ -93,7 +98,11 @@ impl Renderer {
             // pass via `render_debug_ui`.
             Ok(Some(handle))
         })();
-        Ok(ShDrainFrameResult { outcome, frame })
+        Ok(ShDrainFrameResult {
+            outcome,
+            compose_submitted,
+            frame,
+        })
     }
 
     /// Record the world-scene passes shared by windowed gameplay and offscreen
@@ -116,14 +125,14 @@ impl Renderer {
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // The drawable visible-cell set; candidate-cull eligibility derives
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let frame_light_term_mask = self.frame_light_term_mask();
-        self.record_pre_scene_compute(
+        let mut compose_succeeded = self.record_pre_scene_compute(
             encoder,
             cam_vis,
             view_proj,
@@ -209,7 +218,7 @@ impl Renderer {
             self.full_mut().light_effective_brightness = eff_brightness;
             self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
-            self.record_direct_sh_pre_scene_compute(encoder);
+            compose_succeeded &= self.record_direct_sh_pre_scene_compute(encoder);
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------
@@ -662,7 +671,10 @@ impl Renderer {
         // Offscreen capture stops after fog and bloom. The windowed-only
         // wireframe/debug/viewmodel/UI/resolve tail must not enter capture bytes.
         let Some(view) = swapchain_view else {
-            return Ok(());
+            // Capture still records the streamed SH compose work above; its
+            // separate submission path uses this result to decide whether that
+            // compose may be promoted after the command buffer retires.
+            return Ok(compose_succeeded);
         };
         let font_system =
             font_system.expect("windowed gameplay rendering requires a UI font system");
@@ -902,7 +914,7 @@ impl Renderer {
             timing.encode_resolve(encoder);
         }
 
-        Ok(())
+        Ok(compose_succeeded)
     }
 
     /// Submit a windowed frame after its scene, UI, and resolve commands have
@@ -967,11 +979,13 @@ mod tests {
                 deferred: Vec::new(),
                 evicted: Vec::new(),
             },
+            compose_submitted: false,
             frame: Err(anyhow::anyhow!("surface acquisition failed")),
         };
 
         assert_eq!(result.outcome.accepted, vec![4]);
         assert_eq!(result.outcome.dropped, vec![9]);
+        assert!(!result.compose_submitted);
         assert!(result.frame.is_err());
     }
 

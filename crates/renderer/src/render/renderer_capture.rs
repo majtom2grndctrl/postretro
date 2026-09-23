@@ -50,6 +50,7 @@ impl Renderer {
         ShResidencyDrainError,
     > {
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        let mut compose_submitted = false;
         let frame = (|| -> Result<Option<CaptureGpuTimingWindow>> {
             self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
 
@@ -58,7 +59,7 @@ impl Renderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Capture Measurement Encoder"),
                 });
-            self.record_scene_passes(
+            compose_submitted = self.record_scene_passes(
                 &mut encoder,
                 None,
                 None,
@@ -83,7 +84,11 @@ impl Renderer {
             self.queue.submit(std::iter::once(encoder.finish()));
             self.complete_capture_measurement_submission()
         })();
-        Ok(ShDrainFrameResult { outcome, frame })
+        Ok(ShDrainFrameResult {
+            outcome,
+            compose_submitted,
+            frame,
+        })
     }
 
     fn complete_capture_measurement_submission(
@@ -148,7 +153,7 @@ impl Renderer {
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Vec<u8>>, ShResidencyDrainError> {
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
-        let frame = (|| -> Result<Vec<u8>> {
+        let frame = (|| -> Result<(Vec<u8>, bool)> {
             self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
 
             let mut encoder = self
@@ -156,7 +161,7 @@ impl Renderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame Capture Encoder"),
                 });
-            self.record_scene_passes(
+            let compose_succeeded = self.record_scene_passes(
                 &mut encoder,
                 None,
                 None,
@@ -185,9 +190,21 @@ impl Renderer {
                 width,
                 height,
             );
-            self.read_texture_rgba8(&capture_color, width, height, encoder)
+            let pixels = self.read_texture_rgba8(&capture_color, width, height, encoder)?;
+            Ok((pixels, compose_succeeded))
         })();
-        Ok(ShDrainFrameResult { outcome, frame })
+        // The readback helper owns submission. A successful return therefore
+        // proves compose reached the queue; failures remain conservatively
+        // unpublishable even when they occurred during post-submit readback.
+        let compose_submitted = frame
+            .as_ref()
+            .is_ok_and(|(_, compose_succeeded)| *compose_succeeded);
+        let frame = frame.map(|(pixels, _)| pixels);
+        Ok(ShDrainFrameResult {
+            outcome,
+            compose_submitted,
+            frame,
+        })
     }
 }
 

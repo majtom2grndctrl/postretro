@@ -13,7 +13,7 @@ use postretro_level_format::cluster_sh_payloads::{
 };
 use postretro_level_format::{ContainerMeta, SectionId};
 
-use super::boundary::{ShDrainBatch, sorted_lists_intersect, validate_sorted_cluster_ids};
+use super::boundary::ShDrainBatch;
 use super::metadata_base::read_base_metadata;
 use super::metadata_sparse::{read_optional_direct_metadata, read_optional_sparse_metadata};
 use super::positional_io::{read_vec_at, validate_positional_entry_bounds};
@@ -155,64 +155,7 @@ impl ShStreamManifest {
     /// This is deliberately CPU-only: target policy stays in the planner and
     /// GPU installation stays in the renderer.
     pub fn validate_drain_batch(&self, batch: &ShDrainBatch) -> Result<(), PrlLoadError> {
-        if batch.generation == 0 {
-            return Err(stream_error("drain batch generation must be nonzero"));
-        }
-        if batch.content_tag != self.content_tag {
-            return Err(stream_error(
-                "drain batch content tag does not match manifest",
-            ));
-        }
-        if batch.ready.len() > 2 {
-            return Err(stream_error(
-                "drain batch exceeds the two-ready-cluster cap",
-            ));
-        }
-        let words = usize::try_from(self.cluster_count().div_ceil(64))
-            .map_err(|_| stream_error("cluster bitset word count exceeds usize"))?;
-        if let Some(reset) = &batch.target_reset {
-            if reset.len() != words {
-                return Err(stream_error(
-                    "target reset bitset length disagrees with cluster count",
-                ));
-            }
-            if let (Some(last), remainder) = (reset.last(), self.cluster_count() % 64)
-                && remainder != 0
-                && (*last >> remainder) != 0
-            {
-                return Err(stream_error(
-                    "target reset bitset names an out-of-range cluster",
-                ));
-            }
-        }
-        validate_sorted_cluster_ids(&batch.target_add, self.cluster_count(), "target-add")?;
-        validate_sorted_cluster_ids(&batch.target_remove, self.cluster_count(), "target-remove")?;
-        if sorted_lists_intersect(&batch.target_add, &batch.target_remove) {
-            return Err(stream_error(
-                "target-add and target-remove must not name the same cluster",
-            ));
-        }
-        validate_sorted_cluster_ids(&batch.evictions, self.cluster_count(), "evictions")?;
-        let mut ready_ids = std::collections::BTreeSet::new();
-        for prepared in &batch.ready {
-            if prepared.generation != batch.generation || prepared.content_tag != batch.content_tag
-            {
-                return Err(stream_error(
-                    "ready cluster identity does not match drain batch",
-                ));
-            }
-            if prepared.chunk.cluster_id >= self.cluster_count() {
-                return Err(stream_error(
-                    "ready cluster id exceeds manifest cluster count",
-                ));
-            }
-            if !ready_ids.insert(prepared.chunk.cluster_id) {
-                return Err(stream_error(
-                    "drain batch contains more than one ready chunk for a cluster",
-                ));
-            }
-        }
-        Ok(())
+        batch.validate_contract(self.cluster_count(), self.content_tag)
     }
 
     fn validate_payloads(&self) -> Result<(), ClusterShPayloadsError> {

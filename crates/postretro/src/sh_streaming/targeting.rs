@@ -27,7 +27,9 @@ impl ShResidencyController {
             )?;
             self.last_horizon = horizon.clone();
         }
-        if horizon_changed || self.prefetch_pressure_has_cleared(&horizon)? {
+        if horizon_changed
+            || self.prefetch_pressure_has_cleared(&visible, &horizon, monotonic_seconds)?
+        {
             self.clear_prefetch_suppression();
         }
         for cluster_id in raw_departures {
@@ -37,25 +39,7 @@ impl ShResidencyController {
             self.states[cluster_id as usize].hysteresis_started_at = None;
         }
 
-        let mut classes = BTreeMap::new();
-        for &cluster_id in &visible {
-            classes.insert(cluster_id, TargetClass::Visible);
-        }
-        for &cluster_id in &horizon {
-            classes.entry(cluster_id).or_insert(TargetClass::Prefetch);
-        }
-        for (cluster_id, state) in self.states.iter().enumerate() {
-            let cluster_id = cluster_id as u32;
-            if horizon.contains(&cluster_id) || state.suppressed {
-                continue;
-            }
-            if state
-                .hysteresis_started_at
-                .is_some_and(|started_at| monotonic_seconds - started_at < HYSTERESIS_SECONDS)
-            {
-                classes.insert(cluster_id, TargetClass::Hysteresis);
-            }
-        }
+        let mut classes = self.unsuppressed_target_classes(&visible, &horizon, monotonic_seconds);
         classes.retain(|cluster_id, class| {
             *class == TargetClass::Visible || !self.states[*cluster_id as usize].suppressed
         });
@@ -90,23 +74,57 @@ impl ShResidencyController {
 
     /// Suppression survives ordinary frames so an over-budget doorway does not
     /// oscillate at the render cadence. It can clear without a horizon change
-    /// only when the raw two-hop demand itself now fits the nominal pool; the
-    /// subsequent target rebuild then admits prefetch normally.
+    /// only when the complete target set that clearing would restore, including
+    /// live hysteresis and transitive owners, fits the nominal pool.
     fn prefetch_pressure_has_cleared(
         &self,
+        visible: &BTreeSet<u32>,
         horizon: &BTreeSet<u32>,
+        monotonic_seconds: f64,
     ) -> Result<bool, ShResidencyControllerError> {
         if !self.states.iter().any(|state| state.suppressed) {
             return Ok(false);
         }
-        let demand = horizon.iter().try_fold(0u64, |total, &cluster_id| {
+
+        let mut classes = self.unsuppressed_target_classes(visible, horizon, monotonic_seconds);
+        let mut targets: BTreeSet<_> = classes.keys().copied().collect();
+        self.close_owner_targets(&mut targets, &mut classes)?;
+        let demand = targets.iter().try_fold(0u64, |total, &cluster_id| {
             total
                 .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
                 .ok_or(ShResidencyControllerError::AccountingOverflow(
-                    "prefetch pressure horizon demand",
+                    "prefetch pressure target demand",
                 ))
         })?;
         Ok(demand <= self.accounting.nominal_cluster_bytes()?)
+    }
+
+    fn unsuppressed_target_classes(
+        &self,
+        visible: &BTreeSet<u32>,
+        horizon: &BTreeSet<u32>,
+        monotonic_seconds: f64,
+    ) -> BTreeMap<u32, TargetClass> {
+        let mut classes = BTreeMap::new();
+        for &cluster_id in visible {
+            classes.insert(cluster_id, TargetClass::Visible);
+        }
+        for &cluster_id in horizon {
+            classes.entry(cluster_id).or_insert(TargetClass::Prefetch);
+        }
+        for (cluster_id, state) in self.states.iter().enumerate() {
+            let cluster_id = cluster_id as u32;
+            if horizon.contains(&cluster_id) {
+                continue;
+            }
+            if state
+                .hysteresis_started_at
+                .is_some_and(|started_at| monotonic_seconds - started_at < HYSTERESIS_SECONDS)
+            {
+                classes.insert(cluster_id, TargetClass::Hysteresis);
+            }
+        }
+        classes
     }
 
     /// Count a miss once for each continuous visible episode. Counting every

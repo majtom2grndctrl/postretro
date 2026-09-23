@@ -1,4 +1,5 @@
-//! Isolated tile uploads and compose dispatch surface for streamed SH pools.
+//! Streamed SH pool uploads and compose dispatch.
+//! See: context/lib/rendering_pipeline.md §4; context/lib/resource_management.md §8.
 
 use super::*;
 
@@ -18,6 +19,42 @@ struct IsolatedUploadSpan {
 struct MomentUploadSpan {
     origin: wgpu::Origin3d,
     bytes: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SampledWordUploadSpan {
+    dense_start: u32,
+    bytes: Vec<u8>,
+}
+
+fn pack_sampled_word_upload_spans(
+    words: &[u32],
+    updates: &[(u32, u16, u16)],
+) -> Result<Vec<SampledWordUploadSpan>, ShResidencyDrainError> {
+    // The sampled mirror only changes at promoted or invalidated probes. Keep
+    // the write volume proportional to those probes, not the full SH grid.
+    let changed: std::collections::BTreeSet<_> =
+        updates.iter().map(|&(dense, _, _)| dense).collect();
+    let mut spans: Vec<SampledWordUploadSpan> = Vec::new();
+    for dense in changed {
+        let word = *words
+            .get(dense as usize)
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        if let Some(span) = spans.last_mut()
+            && u32::try_from(span.bytes.len() / std::mem::size_of::<u32>())
+                .ok()
+                .and_then(|words| span.dense_start.checked_add(words))
+                == Some(dense)
+        {
+            span.bytes.extend_from_slice(&word.to_le_bytes());
+        } else {
+            spans.push(SampledWordUploadSpan {
+                dense_start: dense,
+                bytes: word.to_le_bytes().to_vec(),
+            });
+        }
+    }
+    Ok(spans)
 }
 
 fn pack_moment_upload_spans(
@@ -494,8 +531,13 @@ impl StreamingGpuPools {
         grid: [u32; 3],
     ) -> Result<(), ShResidencyDrainError> {
         let spans = pack_moment_upload_spans(words, updates, grid)?;
-        let bytes = u32_bytes(words);
-        queue.write_buffer(&self.sampled_indirection, 0, &bytes);
+        for span in pack_sampled_word_upload_spans(words, updates)? {
+            queue.write_buffer(
+                &self.sampled_indirection,
+                u64::from(span.dense_start) * std::mem::size_of::<u32>() as u64,
+                &span.bytes,
+            );
+        }
         for span in spans {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -691,5 +733,35 @@ mod isolated_upload_tests {
         assert_eq!(spans[1].origin, wgpu::Origin3d { x: 3, y: 0, z: 0 });
         assert_eq!(spans[2].origin, wgpu::Origin3d { x: 0, y: 1, z: 0 });
         assert_eq!(spans[2].bytes.len(), 8);
+    }
+
+    #[test]
+    fn sampled_word_uploads_scale_with_changed_probes() {
+        // Regression: promotion uploaded the complete sampled-word mirror for a few probes.
+        let mut words = vec![0; 4_096];
+        words[2] = 0x0002_0001;
+        words[3] = 0x0004_0003;
+        words[1_024] = 0x0006_0005;
+        let spans = pack_sampled_word_upload_spans(
+            &words,
+            &[(1_024, 1, 2), (2, 3, 4), (3, 5, 6), (1_024, 7, 8)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            spans,
+            [
+                SampledWordUploadSpan {
+                    dense_start: 2,
+                    bytes: u32_bytes(&[0x0002_0001, 0x0004_0003]),
+                },
+                SampledWordUploadSpan {
+                    dense_start: 1_024,
+                    bytes: u32_bytes(&[0x0006_0005]),
+                },
+            ]
+        );
+        assert_eq!(spans.iter().map(|span| span.bytes.len()).sum::<usize>(), 12);
+        assert!(spans.iter().map(|span| span.bytes.len()).sum::<usize>() < words.len() * 4);
     }
 }

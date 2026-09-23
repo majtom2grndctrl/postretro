@@ -123,3 +123,19 @@ full-suite pass predates this codec optimization. With Cargo idle, explicit
 `cargo clean -p` for the seven churn-heavy PostRetro packages removed 13.5 GiB
 of rebuildable artifacts and restored about 17 GiB free. Full post-change
 suite validation remains open.
+
+Post-reset panel checkpoint (2026-09-23): the one banked Codex reset was used
+at 1% remaining; usage refreshed successfully. Loader positional/projection,
+compiler id-50 emission, and renderer GPU capacity/growth/setup/upload tracers
+found no correctness defect. The policy panel found that suppression recovery
+counted the raw prefetch horizon but omitted its transitive owner closure;
+an unchanged view could repeatedly requeue over-budget cold work. Recovery now
+checks the full owner-closed candidate and has a 16/24-byte regression.
+Topology gained six malformed manifest-part rejection tests. Sampled probe-word
+promotion now uploads only changed coalesced spans rather than the whole mirror,
+with a scattered/adjacent/duplicate regression. Touched-crate checks, focused
+tests, formatting, and the full workspace `cargo test --quiet` pass. Strict
+Clippy still stops on the same 24 renderer findings. The renderer GPU
+growth/retirement path remains without a real GPU-copy/fence integration test;
+the panel reported this as a proof gap, not a located code defect. Phase-end
+disk gate: about 12 GiB available, no cleanup needed.

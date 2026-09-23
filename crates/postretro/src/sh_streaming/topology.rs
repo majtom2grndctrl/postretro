@@ -1,13 +1,14 @@
 //! Manifest-derived topology used by the app-side residency planner.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
-    ClusterRangeRole, ClusterResourceDomain, DENSE_OWNER_SENTINEL,
+    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain, DENSE_OWNER_SENTINEL,
 };
-use postretro_level_loader::ShStreamManifest;
+use postretro_level_format::cluster_sh_payloads::ClusterShPayloadsSection;
+use postretro_level_loader::{ShStreamBaseMetadata, ShStreamManifest};
 
 use super::controller::ShResidencyControllerError;
 
@@ -31,16 +32,28 @@ impl PlannerTopology {
     pub(super) fn from_manifest(
         manifest: &ShStreamManifest,
     ) -> Result<Self, ShResidencyControllerError> {
-        let directory = manifest.cluster_directory();
-        let cluster_count = usize::try_from(manifest.cluster_count()).map_err(|_| {
-            ShResidencyControllerError::InvalidTopology("cluster count exceeds usize".into())
-        })?;
+        Self::from_manifest_view(ManifestTopologyView {
+            directory: manifest.cluster_directory(),
+            payloads: manifest.payloads(),
+            base: manifest.base(),
+            adjacency: manifest.cluster_adjacency(),
+        })
+    }
+
+    pub(super) fn from_manifest_view(
+        manifest: ManifestTopologyView<'_>,
+    ) -> Result<Self, ShResidencyControllerError> {
+        let directory = manifest.directory;
+        let cluster_count =
+            usize::try_from(manifest.payloads.header.cluster_count).map_err(|_| {
+                ShResidencyControllerError::InvalidTopology("cluster count exceeds usize".into())
+            })?;
         if directory.clusters.len() != cluster_count {
             return Err(ShResidencyControllerError::InvalidTopology(
                 "id-49 and id-50 disagree on cluster count".into(),
             ));
         }
-        if manifest.cluster_adjacency().len() != cluster_count {
+        if manifest.adjacency.len() != cluster_count {
             return Err(ShResidencyControllerError::InvalidTopology(
                 "validated cluster adjacency disagrees with cluster count".into(),
             ));
@@ -89,7 +102,7 @@ impl PlannerTopology {
 
         let mut owners = vec![BTreeSet::new(); cluster_count];
         let streamed_sparse: BTreeSet<u32> = manifest
-            .payloads()
+            .payloads
             .sources
             .iter()
             .filter(|source| {
@@ -111,7 +124,7 @@ impl PlannerTopology {
             })?;
 
         let mut node_owner = BTreeMap::<DenseNode, u32>::new();
-        let mut patch_owner = vec![u32::MAX; manifest.base().probes.len()];
+        let mut patch_owner = vec![u32::MAX; manifest.base.probes.len()];
         for (cluster_id, _) in directory.clusters.iter().enumerate() {
             for range in cluster_ranges(directory, cluster_id)? {
                 let resource = directory
@@ -141,7 +154,7 @@ impl PlannerTopology {
                         )
                     })?;
                     if manifest
-                        .base()
+                        .base
                         .probes
                         .get(dense_index)
                         .ok_or_else(|| {
@@ -160,7 +173,7 @@ impl PlannerTopology {
                         )
                     })?;
                     *patch = (*patch).min(cluster_id as u32);
-                    let node = dense_node(manifest, dense_index)?;
+                    let node = dense_node(manifest.base, dense_index)?;
                     node_owner
                         .entry(node)
                         .and_modify(|owner| *owner = (*owner).min(cluster_id as u32))
@@ -187,7 +200,7 @@ impl PlannerTopology {
                             )
                         })?;
                         if manifest
-                            .base()
+                            .base
                             .probes
                             .get(dense_index)
                             .ok_or_else(|| {
@@ -212,7 +225,7 @@ impl PlannerTopology {
                         }
                         owners[cluster_id].insert(patch);
                         let node_owner = *node_owner
-                            .get(&dense_node(manifest, dense_index)?)
+                            .get(&dense_node(manifest.base, dense_index)?)
                             .ok_or_else(|| {
                                 ShResidencyControllerError::InvalidTopology(
                                     "dense node has no canonical writer".into(),
@@ -233,7 +246,7 @@ impl PlannerTopology {
         }
         validate_owner_graph(&owners)?;
 
-        let adjacency = manifest.cluster_adjacency().to_vec();
+        let adjacency = manifest.adjacency.to_vec();
         for (cluster_id, neighbors) in adjacency.iter().enumerate() {
             if neighbors
                 .iter()
@@ -245,13 +258,13 @@ impl PlannerTopology {
             }
         }
         let requested_resident_bytes = manifest
-            .payloads()
+            .payloads
             .index
             .iter()
             .map(|entry| entry.requested_resident_bytes)
             .collect();
         let chunk_hashes = manifest
-            .payloads()
+            .payloads
             .index
             .iter()
             .map(|entry| entry.hash)
@@ -267,6 +280,14 @@ impl PlannerTopology {
             chunk_hashes,
         })
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ManifestTopologyView<'a> {
+    pub(super) directory: &'a ClusterDirectorySection,
+    pub(super) payloads: &'a ClusterShPayloadsSection,
+    pub(super) base: &'a ShStreamBaseMetadata,
+    pub(super) adjacency: &'a [Vec<u32>],
 }
 
 fn validate_owner_graph(owners: &[BTreeSet<u32>]) -> Result<(), ShResidencyControllerError> {
@@ -322,10 +343,9 @@ struct DenseNode {
 }
 
 fn dense_node(
-    manifest: &ShStreamManifest,
+    base: &ShStreamBaseMetadata,
     dense_index: usize,
 ) -> Result<DenseNode, ShResidencyControllerError> {
-    let base = manifest.base();
     let probe = base.probes.get(dense_index).ok_or_else(|| {
         ShResidencyControllerError::InvalidTopology("dense index exceeds id-34 probes".into())
     })?;
@@ -412,6 +432,70 @@ fn checked_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sh_streaming::topology_test_fixtures::{ManifestFixture, assert_invalid_topology};
+
+    #[test]
+    fn manifest_duplicate_cell_assignment_is_rejected_before_planner_construction() {
+        let mut fixture = ManifestFixture::two_clusters();
+        fixture.duplicate_cell_assignment();
+
+        assert_invalid_topology(
+            fixture.build_topology(),
+            "assigns a runtime cell more than once",
+        );
+    }
+
+    #[test]
+    fn manifest_unassigned_cell_is_rejected_before_planner_construction() {
+        let mut fixture = ManifestFixture::two_clusters();
+        fixture.leave_cell_unassigned();
+
+        assert_invalid_topology(fixture.build_topology(), "leaves a runtime cell unassigned");
+    }
+
+    #[test]
+    fn manifest_malformed_dense_ownership_is_rejected_before_planner_construction() {
+        let mut fixture = ManifestFixture::two_clusters();
+        fixture.malformed_dense_ownership();
+
+        assert_invalid_topology(
+            fixture.build_topology(),
+            "id-34 range has non-dense ownership fields",
+        );
+    }
+
+    #[test]
+    fn manifest_out_of_range_dense_index_is_rejected_before_planner_construction() {
+        let mut fixture = ManifestFixture::two_clusters();
+        fixture.out_of_range_dense_index();
+
+        assert_invalid_topology(
+            fixture.build_topology(),
+            "dense index exceeds id-34 metadata",
+        );
+    }
+
+    #[test]
+    fn manifest_sparse_halo_owner_is_rejected_before_planner_construction() {
+        let mut fixture = ManifestFixture::two_clusters();
+        fixture.add_sparse_halo_with_owner(2);
+
+        assert_invalid_topology(
+            fixture.build_topology(),
+            "owner map names an out-of-range cluster",
+        );
+    }
+
+    #[test]
+    fn manifest_out_of_range_adjacency_is_rejected_before_planner_construction() {
+        let mut fixture = ManifestFixture::two_clusters();
+        fixture.out_of_range_adjacency();
+
+        assert_invalid_topology(
+            fixture.build_topology(),
+            "cluster 0 adjacency names an out-of-range neighbor",
+        );
+    }
 
     #[test]
     fn disconnected_owner_cycle_is_rejected_during_topology_validation() {

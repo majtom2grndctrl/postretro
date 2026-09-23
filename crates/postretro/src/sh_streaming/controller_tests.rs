@@ -816,6 +816,66 @@ fn pressure_suppresses_prefetch_persistently_without_evicting_visible_work() {
     assert!(controller.is_targeted(3));
 }
 
+// Regression: raw horizon bytes cleared suppression while its owner closure remained over budget.
+#[test]
+fn pressure_recovery_waits_until_owner_closed_horizon_fits() {
+    let mut controller = ShResidencyController::for_test_with_budget(
+        topology(
+            vec![0, 1, 2],
+            vec![vec![1], vec![0], vec![]],
+            vec![vec![], vec![2], vec![]],
+            vec![8, 8, 8],
+        ),
+        &FixedGenerationClock::new(1),
+        ShGpuBudgetInputs {
+            fixed: FixedGpuCharges {
+                fixed_metadata_bytes: 8,
+                ..FixedGpuCharges::default()
+            },
+            renderer_effective_floor_bytes: Some(24),
+            ..ShGpuBudgetInputs::default()
+        },
+    )
+    .unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    mark_sampleable(&mut controller, 0);
+    mark_sampleable(&mut controller, 1);
+    mark_sampleable(&mut controller, 2);
+
+    let pressure = controller.take_async_drain_batch().unwrap();
+    assert_eq!(pressure.target_remove, vec![1]);
+    assert_eq!(pressure.evictions, vec![1]);
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: vec![1],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 1.0)
+        .unwrap();
+    assert!(!controller.is_targeted(1));
+    assert!(!controller.is_targeted(2));
+    assert!(controller.take_next_request().unwrap().is_none());
+
+    controller
+        .update_gpu_charges(FixedGpuCharges::default())
+        .unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 2.0)
+        .unwrap();
+    assert!(controller.is_targeted(1));
+    assert!(controller.is_targeted(2));
+    assert_eq!(
+        controller.take_next_request().unwrap().unwrap().cluster_id,
+        1
+    );
+}
+
 #[test]
 fn pressure_rechecks_a_prefetch_owner_after_its_prefetch_dependent_is_suppressed() {
     let mut controller = controller_with_nominal_budget(

@@ -121,7 +121,7 @@ use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
 pub use sh_residency::{
     ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
-    ShResidencyReport, ShResidencySource,
+    ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
 };
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;

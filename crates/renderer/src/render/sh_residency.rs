@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.8
 
 use super::sh_allocation::{
-    BufferAllocation, ShAllocationKind, TextureAllocation, texture_allocation_bytes,
+    texture_allocation_bytes, BufferAllocation, ShAllocationKind, TextureAllocation,
 };
 
 /// A PRL section or renderer-derived input cited by an SH residency row.
@@ -56,17 +56,62 @@ pub struct ShResidencyAllocation {
 pub struct ShResidencyReport {
     pub allocations: Vec<ShResidencyAllocation>,
     pub total_bytes: u64,
+    /// Streaming-only live pool accounting. It intentionally remains separate
+    /// from descriptor rows: logical occupancy is not another GPU allocation,
+    /// and a temporary retiring generation is not fixed metadata.
+    pub streaming: Option<ShStreamingAllocationSummary>,
+}
+
+/// Live streamed-SH accounting captured after renderer pool initialization.
+///
+/// The values describe distinct resource lifetimes. In particular, logical
+/// occupancy is a sub-ledger of active capacity, while replacement peak is a
+/// temporary active-plus-retiring measurement rather than an additional
+/// allocation. Whole-resident billboard scatter (ids 47/48) stays separate so
+/// it cannot be claimed as a saving from streamed probe pools.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShStreamingAllocationSummary {
+    pub fixed_metadata_bytes: u64,
+    pub whole_resident_scatter_bytes: u64,
+    pub active_capacity_bytes: u64,
+    pub logical_occupancy_bytes: u64,
+    pub retiring_capacity_bytes: u64,
+    pub replacement_peak_bytes: u64,
+}
+
+impl ShResidencyReport {
+    /// Overlay a current streamed-pool snapshot on immutable install rows.
+    ///
+    /// A streaming pool may grow or retain a generation after the level's
+    /// descriptor rows have been recorded. Rebuild the physical total from
+    /// those static rows each time so a later snapshot replaces, rather than
+    /// accumulates with, the install-time live values. Whole-resident scatter
+    /// is already one of the static rows and must not be added from the
+    /// streaming summary a second time.
+    pub fn with_streaming_summary(mut self, summary: ShStreamingAllocationSummary) -> Self {
+        self.streaming = Some(summary);
+        self.total_bytes = allocation_total_bytes(&self.allocations)
+            .checked_add(summary.fixed_metadata_bytes)
+            .expect("SH residency physical total overflow adding fixed metadata")
+            .checked_add(summary.active_capacity_bytes)
+            .expect("SH residency physical total overflow adding active capacity")
+            .checked_add(summary.retiring_capacity_bytes)
+            .expect("SH residency physical total overflow adding retiring capacity");
+        self
+    }
 }
 
 /// Mutable collector passed only through level-owned SH constructors.
 pub(super) struct ShAllocationLedger {
     allocations: Vec<ShResidencyAllocation>,
+    streaming: Option<ShStreamingAllocationSummary>,
 }
 
 impl ShAllocationLedger {
     pub(super) fn new() -> Self {
         Self {
             allocations: Vec::new(),
+            streaming: None,
         }
     }
 
@@ -114,17 +159,38 @@ impl ShAllocationLedger {
         });
     }
 
+    /// Record the one live streaming summary after its renderer-owned pools
+    /// exist. This must be called at most once for a level install; later
+    /// per-frame changes are exposed by `ShResidencySnapshot`, not by mutating
+    /// this completed install report.
+    pub(super) fn record_streaming_summary(&mut self, summary: ShStreamingAllocationSummary) {
+        debug_assert!(self.streaming.is_none(), "streaming summary recorded twice");
+        self.streaming = Some(summary);
+    }
+
     fn record(&mut self, allocation: ShResidencyAllocation) {
         self.allocations.push(allocation);
     }
 
     pub(super) fn finish(self) -> ShResidencyReport {
-        let total_bytes = self.allocations.iter().map(|row| row.bytes).sum();
-        ShResidencyReport {
+        let allocation_total_bytes = allocation_total_bytes(&self.allocations);
+        let report = ShResidencyReport {
             allocations: self.allocations,
-            total_bytes,
+            total_bytes: allocation_total_bytes,
+            streaming: self.streaming,
+        };
+        match report.streaming {
+            Some(summary) => report.with_streaming_summary(summary),
+            None => report,
         }
     }
+}
+
+fn allocation_total_bytes(allocations: &[ShResidencyAllocation]) -> u64 {
+    allocations
+        .iter()
+        .try_fold(0_u64, |total, row| total.checked_add(row.bytes))
+        .expect("SH residency static allocation total overflow")
 }
 
 pub(super) fn source_ids<const N: usize>(ids: [Option<u16>; N]) -> Vec<u16> {
@@ -231,6 +297,18 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
 mod tests {
     use super::*;
     use crate::render::sh_allocation::{ShAllocationKind, TextureAllocation};
+
+    fn test_allocation(bytes: u64) -> ShResidencyAllocation {
+        ShResidencyAllocation {
+            name: "test_allocation",
+            sources: vec![ShResidencySource::Derived],
+            bytes,
+            state: ShResidencyAllocationState::Data,
+            shape: ShResidencyAllocationShape::Buffer {
+                binding_bytes: bytes,
+            },
+        }
+    }
 
     #[test]
     fn physical_bc6h_blocks_and_buffer_binding_bytes_drive_the_total() {
@@ -363,5 +441,77 @@ mod tests {
             accepted_empty.allocations[0].state,
             ShResidencyAllocationState::Data
         );
+    }
+
+    #[test]
+    fn live_streaming_summary_replaces_install_values_after_growth_and_retirement() {
+        let mut ledger = ShAllocationLedger::new();
+        ledger.record_buffer(
+            BufferAllocation {
+                kind: ShAllocationKind::BillboardComposeGrid,
+                byte_len: 13,
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+            &[47],
+            false,
+            ShResidencyAllocationState::Data,
+        );
+        ledger.record_streaming_summary(ShStreamingAllocationSummary {
+            fixed_metadata_bytes: 11,
+            whole_resident_scatter_bytes: 13,
+            active_capacity_bytes: 17,
+            logical_occupancy_bytes: 5,
+            retiring_capacity_bytes: 0,
+            replacement_peak_bytes: 17,
+        });
+
+        let installed = ledger.finish();
+        assert_eq!(
+            installed.total_bytes, 41,
+            "static id47 bytes plus fixed and active streamed allocations"
+        );
+        let report = installed.with_streaming_summary(ShStreamingAllocationSummary {
+            fixed_metadata_bytes: 11,
+            whole_resident_scatter_bytes: 13,
+            active_capacity_bytes: 23,
+            logical_occupancy_bytes: 7,
+            retiring_capacity_bytes: 19,
+            replacement_peak_bytes: 42,
+        });
+        assert_eq!(
+            report.total_bytes, 66,
+            "refresh uses live fixed + active + retiring capacity and does not double-count id47"
+        );
+        assert_eq!(
+            report.streaming,
+            Some(ShStreamingAllocationSummary {
+                fixed_metadata_bytes: 11,
+                whole_resident_scatter_bytes: 13,
+                active_capacity_bytes: 23,
+                logical_occupancy_bytes: 7,
+                retiring_capacity_bytes: 19,
+                replacement_peak_bytes: 42,
+            })
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SH residency static allocation total overflow")]
+    fn static_allocation_total_rejects_overflow() {
+        let _ = allocation_total_bytes(&[test_allocation(u64::MAX), test_allocation(1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "SH residency physical total overflow adding fixed metadata")]
+    fn live_streaming_total_rejects_overflow() {
+        let report = ShResidencyReport {
+            allocations: vec![test_allocation(u64::MAX)],
+            total_bytes: u64::MAX,
+            streaming: None,
+        };
+        let _ = report.with_streaming_summary(ShStreamingAllocationSummary {
+            fixed_metadata_bytes: 1,
+            ..Default::default()
+        });
     }
 }

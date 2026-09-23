@@ -3,6 +3,7 @@
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::sh_compose::DYNAMIC_COMPOSE_GRID_DIMS_SIZE;
 
+#[cfg(test)]
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,

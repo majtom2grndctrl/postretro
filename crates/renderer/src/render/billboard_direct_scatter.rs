@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 
 use super::sh_allocation::{
     billboard_scatter_base_allocation, billboard_scatter_composed_allocation,
-    billboard_scatter_dummy_allocation, storage_byte_len, volume_3d_fits,
+    billboard_scatter_dummy_allocation, storage_byte_len, texture_allocation_bytes, volume_3d_fits,
 };
 use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
@@ -26,6 +26,9 @@ pub(super) struct BillboardDirectScatterResources {
     pub(super) sampled_view: wgpu::TextureView,
     pub(super) composed_storage_view: Option<wgpu::TextureView>,
     animated_descriptor_indices: Vec<u32>,
+    /// Whole-resident ids 47/48 capacity. Streaming never folds this into
+    /// pooled id34/id35 accounting.
+    capacity_bytes: u64,
 }
 
 /// This decision is intentionally level-fixed. It is made while resources are
@@ -133,6 +136,7 @@ impl BillboardDirectScatterResources {
             animated_descriptor_indices: animated
                 .map(|section| section.animation_descriptor_indices.clone())
                 .unwrap_or_default(),
+            capacity_bytes: scatter_capacity_bytes(base, animated, binding_mode),
         }
     }
 
@@ -144,6 +148,48 @@ impl BillboardDirectScatterResources {
         self.has_animated_deltas
             && animation.any_active_for_descriptor_indices(&self.animated_descriptor_indices)
     }
+
+    pub(super) fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
+    }
+}
+
+fn scatter_capacity_bytes(
+    base: Option<&BillboardDirectScatterVolumeSection>,
+    animated: Option<&AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    binding_mode: BillboardScatterMode,
+) -> u64 {
+    let dimensions = match (binding_mode, base) {
+        (BillboardScatterMode::Unavailable, _) => return 0,
+        (_, Some(section)) => section.grid_dimensions,
+        _ => return 0,
+    };
+    let base_bytes = texture_allocation_bytes(billboard_scatter_base_allocation(dimensions));
+    if binding_mode != BillboardScatterMode::ComposedAnimated {
+        return base_bytes;
+    }
+    let Some(animated) = animated else {
+        debug_assert!(false, "composed scatter mode requires an id-48 companion");
+        return base_bytes;
+    };
+    let Some(storage_bytes) = scatter_storage_buffer_bytes(animated) else {
+        debug_assert!(false, "validated id-48 storage sizes must fit u64");
+        return base_bytes;
+    };
+    let composed_bytes =
+        texture_allocation_bytes(billboard_scatter_composed_allocation(dimensions));
+    let Some(total) = base_bytes
+        .checked_add(composed_bytes)
+        .and_then(|bytes| bytes.checked_add(32)) // 32-byte `ScatterGrid` uniform.
+        .and_then(|bytes| storage_bytes.into_iter().try_fold(bytes, u64::checked_add))
+    else {
+        // Device-limit validation has already rejected impossible resource
+        // sizes. Keep a conservative baseline rather than wrapping a
+        // diagnostics-only accounting value if a synthetic caller violates it.
+        log::error!("[Renderer] billboard scatter capacity accounting overflowed");
+        return base_bytes;
+    };
+    total
 }
 
 /// Append the billboard-only scatter texture to the shared group-3 layout.
@@ -274,6 +320,26 @@ fn padded_slice_bytes(
 mod tests {
     use super::*;
 
+    fn scatter_base_fixture() -> BillboardDirectScatterVolumeSection {
+        BillboardDirectScatterVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [2, 2, 2],
+            scatter_rgba: vec![0; 2 * 2 * 2 * 4],
+        }
+    }
+
+    fn animated_scatter_fixture() -> AnimatedBillboardDirectScatterDeltaVolumesSection {
+        AnimatedBillboardDirectScatterDeltaVolumesSection {
+            animation_descriptor_indices: vec![0],
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_rgba: vec![0; 64 * 4],
+        }
+    }
+
     #[test]
     fn scatter_binding_is_vertex_only_3d_texture() {
         let entry = {
@@ -391,5 +457,36 @@ mod tests {
         let mode = scatter_binding_mode(true, true, true);
         assert_eq!(mode, BillboardScatterMode::ComposedAnimated);
         assert!(mode.is_available());
+    }
+
+    #[test]
+    fn whole_resident_scatter_capacity_keeps_id48_buffers_out_of_streamed_metadata() {
+        let base = scatter_base_fixture();
+        let animated = animated_scatter_fixture();
+        let base_bytes =
+            texture_allocation_bytes(billboard_scatter_base_allocation(base.grid_dimensions));
+        let composed_bytes =
+            texture_allocation_bytes(billboard_scatter_composed_allocation(base.grid_dimensions));
+        let id48_storage = scatter_storage_buffer_bytes(&animated)
+            .expect("small fixture must have representable storage sizes")
+            .into_iter()
+            .sum::<u64>();
+        assert_eq!(
+            scatter_capacity_bytes(
+                Some(&base),
+                Some(&animated),
+                BillboardScatterMode::ComposedAnimated,
+            ),
+            base_bytes + composed_bytes + 32 + id48_storage,
+            "whole-resident id47/id48 charge includes both textures, ScatterGrid, and every id48 storage buffer",
+        );
+        assert_eq!(
+            scatter_capacity_bytes(Some(&base), None, BillboardScatterMode::StaticBase),
+            base_bytes,
+        );
+        assert_eq!(
+            scatter_capacity_bytes(None, None, BillboardScatterMode::Unavailable),
+            0,
+        );
     }
 }

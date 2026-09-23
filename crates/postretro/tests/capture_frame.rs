@@ -198,8 +198,8 @@ fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {
         "the selected point light must follow the dynamic prefix"
     );
     assert_eq!(
-        loaded.entity_shadow_lights,
-        vec![1],
+        loaded.entity_shadow_lights(),
+        &[1],
         "selection indexes must target the selected static light in global world.lights space"
     );
     assert!(
@@ -344,11 +344,7 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
     let slot = alarm
         .animated_slot
         .expect("alarm reserves an animated descriptor") as usize;
-    let descriptor = &loaded
-        .sh_volume
-        .as_ref()
-        .expect("fixture contains SH volume")
-        .animation_descriptors[slot];
+    let descriptor = &loaded.animation_descriptors()[slot];
     assert_eq!(
         descriptor.start_active, 1,
         "fixture must exercise baked start-active rest"

@@ -28,7 +28,8 @@ use super::scene::CaptureScene;
 use super::setup::{
     capture_level_geometry, capture_static_lights_and_shadow_selection, capture_view_projection,
     derive_texture_materials, install_capture_animated_promotion_bridge,
-    install_forced_active_animation_descriptors, resolve_forced_animated_promotion_rows,
+    install_forced_active_animation_descriptors,
+    resolve_forced_animated_promotion_rows_from_metadata,
 };
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
@@ -74,7 +75,7 @@ impl PreparedCapture {
             capture_static_lights_and_shadow_selection(
                 &world.lights,
                 &world.light_influences,
-                &world.entity_shadow_lights,
+                world.entity_shadow_lights(),
             );
         let geometry = capture_level_geometry(
             &world,
@@ -89,9 +90,10 @@ impl PreparedCapture {
             &world.lights,
             scene.force_active.as_deref(),
         )?;
-        let forced_promotion_weights = resolve_forced_animated_promotion_rows(
+        let forced_promotion_weights = resolve_forced_animated_promotion_rows_from_metadata(
             &world.lights,
-            world.animated_direct_sh_delta_volumes.as_ref(),
+            world.animated_direct_descriptor_indices(),
+            world.animated_direct_affinity_lights(),
             scene.force_promotion.as_deref(),
         )?;
 

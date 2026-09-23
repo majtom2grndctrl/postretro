@@ -405,6 +405,14 @@ impl Default for SpatialDiagnostics {
 /// and the visual point of diminishing returns for grazing-angle sharpness.
 pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
 
+/// SH ownership reaching the renderer installation boundary. Streaming keeps
+/// only loader metadata and a retained positional manifest; renderer pool
+/// installation arrives later through bounded drain batches.
+pub enum LevelGeometryShStorage<'a> {
+    Legacy,
+    Streaming(&'a postretro_level_loader::ShStreamManifest),
+}
+
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
     pub indices: &'a [u32],
@@ -414,6 +422,7 @@ pub struct LevelGeometry<'a> {
     /// `None` means no `OctahedralShVolumeSection`; renderer binds dummy
     /// 1×1 atlas resources and shader skips octahedral SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+    pub sh_storage: LevelGeometryShStorage<'a>,
     /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
     /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.

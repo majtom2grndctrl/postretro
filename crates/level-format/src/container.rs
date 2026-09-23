@@ -348,6 +348,31 @@ pub fn read_section_data<R: Read + Seek>(
     Ok(Some(buf))
 }
 
+/// Validate every entry in a parsed container table against a known file
+/// length without reading any section body.
+///
+/// Positional readers use this after fetching only the header and table. It
+/// keeps their bounds checks identical to [`read_section_data`] without
+/// requiring a seek cursor over the full PRL image.
+pub fn validate_container_bounds(meta: &ContainerMeta, file_len: u64) -> Result<()> {
+    for entry in &meta.sections {
+        validate_container_entry_bounds(meta, entry, file_len)?;
+    }
+    Ok(())
+}
+
+/// Validate one table entry against a known file length. Positional consumers
+/// use this for the sections they actually read, so optional legacy sections
+/// can retain their established soft-failure policy without weakening bounds
+/// checks for streamed metadata or required payloads.
+pub fn validate_container_entry_bounds(
+    meta: &ContainerMeta,
+    entry: &SectionEntry,
+    file_len: u64,
+) -> Result<()> {
+    validate_section_bounds(meta, entry, file_len).map(|_| ())
+}
+
 fn validate_section_bounds(
     meta: &ContainerMeta,
     entry: &SectionEntry,

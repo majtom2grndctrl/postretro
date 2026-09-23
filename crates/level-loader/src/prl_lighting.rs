@@ -27,6 +27,7 @@ use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, Sh
 #[cfg(test)]
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
 use crate::prl_loader::{section_validation, section_validation_from_error};
+use crate::sh_stream::{ShStreamBaseMetadata, ShStreamSparseMetadata};
 
 /// Lighting-related data assembled by the PRL loader before it is transferred
 /// into the stable `LevelWorld` fields.
@@ -106,9 +107,120 @@ pub struct LevelWorldLighting<'a> {
     pub entity_shadow_lights: &'a [u32],
     pub shadowmask_atlas: Option<&'a ShadowmaskAtlasSection>,
     pub cluster_directory: Option<&'a ClusterDirectorySection>,
+    pub sh_storage: &'a crate::sh_stream::ShStorage,
 }
 
 impl LevelWorld {
+    /// Explicit SH ownership. Streaming callers retain an immutable manifest;
+    /// legacy callers retain the original whole section bodies.
+    pub fn sh_storage(&self) -> &crate::sh_stream::ShStorage {
+        &self.sh_storage
+    }
+
+    pub fn sh_stream_manifest(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::sh_stream::ShStreamManifest>> {
+        self.sh_storage.manifest()
+    }
+
+    pub fn sh_volume(&self) -> Option<&OctahedralShVolumeSection> {
+        (!self.sh_storage.is_streaming())
+            .then_some(self.sh_volume.as_ref())
+            .flatten()
+    }
+
+    pub fn delta_sh_volumes(&self) -> Option<&DeltaShVolumesSection> {
+        (!self.sh_storage.is_streaming())
+            .then_some(self.delta_sh_volumes.as_ref())
+            .flatten()
+    }
+
+    pub fn direct_sh_volume(&self) -> Option<&DirectShVolumeSection> {
+        (!self.sh_storage.is_streaming())
+            .then_some(self.direct_sh_volume.as_ref())
+            .flatten()
+    }
+
+    pub fn direct_sh_delta_volumes(&self) -> Option<&DirectShDeltaVolumesSection> {
+        (!self.sh_storage.is_streaming())
+            .then_some(self.direct_sh_delta_volumes.as_ref())
+            .flatten()
+    }
+
+    pub fn animated_direct_sh_delta_volumes(&self) -> Option<&AnimatedDirectShDeltaVolumesSection> {
+        (!self.sh_storage.is_streaming())
+            .then_some(self.animated_direct_sh_delta_volumes.as_ref())
+            .flatten()
+    }
+
+    pub fn billboard_direct_scatter_volume(&self) -> Option<&BillboardDirectScatterVolumeSection> {
+        self.billboard_direct_scatter_volume.as_ref()
+    }
+
+    pub fn animated_billboard_direct_scatter_delta_volumes(
+        &self,
+    ) -> Option<&AnimatedBillboardDirectScatterDeltaVolumesSection> {
+        self.animated_billboard_direct_scatter_delta_volumes
+            .as_ref()
+    }
+
+    pub fn entity_shadow_lights(&self) -> &[u32] {
+        &self.entity_shadow_lights
+    }
+
+    pub fn shadowmask_atlas(&self) -> Option<&ShadowmaskAtlasSection> {
+        self.shadowmask_atlas.as_ref()
+    }
+
+    pub fn cluster_directory(&self) -> Option<&ClusterDirectorySection> {
+        self.cluster_directory.as_ref()
+    }
+
+    /// Global animation descriptors are metadata, not a streamed atlas body.
+    pub fn animation_descriptors(
+        &self,
+    ) -> &[postretro_level_format::sh_volume::AnimationDescriptor] {
+        match self.sh_stream_manifest() {
+            Some(manifest) => &manifest.base().animation_descriptors,
+            None => self
+                .sh_volume
+                .as_ref()
+                .map_or(&[], |section| &section.animation_descriptors),
+        }
+    }
+
+    /// Id-45's animation descriptor mapping remains in the streaming metadata
+    /// projection even though its CSR/tile payload is chunk-streamed.
+    pub fn animated_direct_descriptor_indices(&self) -> &[u32] {
+        match self.sh_stream_manifest() {
+            Some(manifest) => manifest
+                .sources()
+                .animated_direct_delta
+                .as_ref()
+                .map_or(&[], |metadata| &metadata.animation_descriptor_indices),
+            None => self
+                .animated_direct_sh_delta_volumes
+                .as_ref()
+                .map_or(&[], |section| &section.animation_descriptor_indices),
+        }
+    }
+
+    /// Id-45's CSR light roster remains in the streaming metadata projection.
+    /// Capture promotion uses roster positions, not the dense tile payload.
+    pub fn animated_direct_affinity_lights(&self) -> &[u32] {
+        match self.sh_stream_manifest() {
+            Some(manifest) => manifest
+                .sources()
+                .animated_direct_delta
+                .as_ref()
+                .map_or(&[], |metadata| &metadata.affinity_lights),
+            None => self
+                .animated_direct_sh_delta_volumes
+                .as_ref()
+                .map_or(&[], |section| &section.affinity_lights),
+        }
+    }
+
     /// Returns every lighting/SH input through the future storage seam.
     ///
     /// Legacy callers can keep reading the existing fields during this
@@ -117,24 +229,24 @@ impl LevelWorld {
         LevelWorldLighting {
             lights: &self.lights,
             light_influences: &self.light_influences,
-            sh_volume: self.sh_volume.as_ref(),
+            sh_volume: self.sh_volume(),
             lightmap: self.lightmap.as_ref(),
             lightmap_mode: self.lightmap_mode,
             sdf_atlas: self.sdf_atlas.as_ref(),
             chunk_light_list: self.chunk_light_list.as_ref(),
             animated_light_chunks: self.animated_light_chunks.as_ref(),
             animated_light_weight_maps: self.animated_light_weight_maps.as_ref(),
-            delta_sh_volumes: self.delta_sh_volumes.as_ref(),
-            direct_sh_volume: self.direct_sh_volume.as_ref(),
-            direct_sh_delta_volumes: self.direct_sh_delta_volumes.as_ref(),
-            animated_direct_sh_delta_volumes: self.animated_direct_sh_delta_volumes.as_ref(),
-            billboard_direct_scatter_volume: self.billboard_direct_scatter_volume.as_ref(),
+            delta_sh_volumes: self.delta_sh_volumes(),
+            direct_sh_volume: self.direct_sh_volume(),
+            direct_sh_delta_volumes: self.direct_sh_delta_volumes(),
+            animated_direct_sh_delta_volumes: self.animated_direct_sh_delta_volumes(),
+            billboard_direct_scatter_volume: self.billboard_direct_scatter_volume(),
             animated_billboard_direct_scatter_delta_volumes: self
-                .animated_billboard_direct_scatter_delta_volumes
-                .as_ref(),
-            entity_shadow_lights: &self.entity_shadow_lights,
-            shadowmask_atlas: self.shadowmask_atlas.as_ref(),
-            cluster_directory: self.cluster_directory.as_ref(),
+                .animated_billboard_direct_scatter_delta_volumes(),
+            entity_shadow_lights: self.entity_shadow_lights(),
+            shadowmask_atlas: self.shadowmask_atlas(),
+            cluster_directory: self.cluster_directory(),
+            sh_storage: self.sh_storage(),
         }
     }
 }
@@ -567,6 +679,55 @@ pub(crate) fn validate_billboard_direct_scatter_volume(
     Ok(())
 }
 
+/// Streaming-compatible form of [`validate_billboard_direct_scatter_volume`].
+/// It proves the whole-resident id-47 companion still shares id-34's global
+/// probe addressing without materializing the id-34 compact atlas.
+pub(crate) fn validate_billboard_direct_scatter_against_metadata(
+    section: &BillboardDirectScatterVolumeSection,
+    base: &ShStreamBaseMetadata,
+) -> Result<(), PrlLoadError> {
+    const SECTION: &str = "BillboardDirectScatterVolume";
+    if section.grid_origin != base.grid_origin
+        || section.cell_size != base.cell_size
+        || section.grid_dimensions != base.grid_dimensions
+    {
+        return Err(section_validation(
+            SECTION,
+            "grid metadata does not match streamed OctahedralShVolume metadata",
+        ));
+    }
+    let expected_probe_count = base.probes.len();
+    let expected_scatter_f16_count = expected_probe_count
+        .checked_mul(BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT)
+        .ok_or_else(|| section_validation(SECTION, "scatter payload length overflows usize"))?;
+    if section.scatter_rgba.len() != expected_scatter_f16_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "scatter_rgba length {}, expected {expected_scatter_f16_count}",
+                section.scatter_rgba.len(),
+            ),
+        ));
+    }
+    for (probe, expected_validity) in base.probes.iter().enumerate() {
+        let found = section.scatter_rgba[probe * BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT + 3];
+        let expected = if expected_validity.validity == 0 {
+            0
+        } else {
+            BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16
+        };
+        if found != expected {
+            return Err(section_validation(
+                SECTION,
+                format!(
+                    "scatter_rgba probe {probe} alpha {found:#06x} does not mirror streamed id-34 validity as {expected:#06x}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validate id 48's duplicated animated descriptor map and CSR layout against
 /// its authoritative id-45 sibling. Id 45 remains the owner of validity and
 /// coarsening; id 48 has only dense 4×4×4 delta values.
@@ -621,6 +782,62 @@ pub(crate) fn validate_animated_billboard_direct_scatter_delta_volumes(
                 "delta_rgba length {}, expected {expected_delta_f16_count} (= {} CSR entries × 64 RGBA16F values)",
                 section.delta_rgba.len(),
                 section.affinity_lights.len(),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Projection-compatible id-45/id-48 validation. Id 48 remains whole
+/// resident, while id 45's descriptor/CSR metadata is retained in id-50's
+/// validated streaming source projection.
+pub(crate) fn validate_animated_billboard_direct_scatter_against_metadata(
+    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    animated_direct: &ShStreamSparseMetadata,
+) -> Result<(), PrlLoadError> {
+    const SECTION: &str = "AnimatedBillboardDirectScatterDeltaVolumes";
+    if section.affinity_factor != AFFINITY_FACTOR {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_factor {} does not match streamed AnimatedDirectShDeltaVolumes factor {AFFINITY_FACTOR}",
+                section.affinity_factor,
+            ),
+        ));
+    }
+    if section.animation_descriptor_indices != animated_direct.animation_descriptor_indices {
+        return Err(section_validation(
+            SECTION,
+            "animation_descriptor_indices do not match streamed AnimatedDirectShDeltaVolumes metadata",
+        ));
+    }
+    if section.affinity_dims != animated_direct.affinity_dims {
+        return Err(section_validation(
+            SECTION,
+            "affinity_dims do not match streamed AnimatedDirectShDeltaVolumes metadata",
+        ));
+    }
+    if section.affinity_offsets != animated_direct.affinity_offsets {
+        return Err(section_validation(
+            SECTION,
+            "affinity_offsets do not match streamed AnimatedDirectShDeltaVolumes metadata",
+        ));
+    }
+    if section.affinity_lights != animated_direct.affinity_lights {
+        return Err(section_validation(
+            SECTION,
+            "affinity_lights do not match streamed AnimatedDirectShDeltaVolumes metadata",
+        ));
+    }
+    let expected_delta_f16_count = section
+        .expected_delta_f16_count()
+        .ok_or_else(|| section_validation(SECTION, "dense delta payload length overflows usize"))?;
+    if section.delta_rgba.len() != expected_delta_f16_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "delta_rgba length {}, expected {expected_delta_f16_count}",
+                section.delta_rgba.len(),
             ),
         ));
     }

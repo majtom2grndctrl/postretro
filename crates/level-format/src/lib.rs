@@ -56,6 +56,7 @@ mod section_registry;
 pub use container::{
     CURRENT_VERSION, ContainerMeta, FormatError, Header, MAGIC, Result, SectionBlob,
     SectionDescriptor, SectionEntry, read_container, read_section_data, section_data_from_bytes,
-    write_prl, write_prl_header_and_table,
+    validate_container_bounds, validate_container_entry_bounds, write_prl,
+    write_prl_header_and_table,
 };
 pub use section_registry::SectionId;

@@ -9,6 +9,12 @@ mod prl_lighting;
 #[cfg(feature = "load-prl")]
 mod prl_loader;
 mod prl_queries;
+#[cfg(feature = "load-prl")]
+mod prl_streaming;
+#[cfg(feature = "load-prl")]
+mod sh_stream;
+#[cfg(all(test, feature = "load-prl"))]
+mod sh_stream_tests;
 
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
@@ -23,4 +29,9 @@ pub use prl::{
 #[cfg(feature = "load-prl")]
 pub use prl_lighting::LevelWorldLighting;
 #[cfg(feature = "load-prl")]
-pub use prl_loader::load_prl;
+pub use prl_streaming::load_prl;
+#[cfg(feature = "load-prl")]
+pub use sh_stream::{
+    PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage, ShStreamBaseMetadata,
+    ShStreamDirectMetadata, ShStreamManifest, ShStreamSourceMetadata, ShStreamSparseMetadata,
+};

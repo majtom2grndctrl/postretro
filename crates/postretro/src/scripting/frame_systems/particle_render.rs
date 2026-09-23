@@ -369,6 +369,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: postretro_level_loader::ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,

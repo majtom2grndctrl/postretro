@@ -84,6 +84,7 @@ impl Renderer {
             lights: &[],
             light_influences: &[],
             sh_volume: None,
+            sh_storage: LevelGeometryShStorage::Legacy,
             lightmap: None,
             chunk_light_list: None,
             animated_light_chunks: None,

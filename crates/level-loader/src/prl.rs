@@ -25,6 +25,8 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cluster_directory::{ClusterDirectoryError, ClusterDirectorySection};
 #[cfg(feature = "load-prl")]
+use postretro_level_format::cluster_sh_payloads::ClusterShPayloadsError;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::data_script::DataScriptSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
@@ -61,6 +63,8 @@ use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
 use crate::prl_lighting::LoadedLighting;
+#[cfg(feature = "load-prl")]
+use crate::sh_stream::ShStorage;
 #[cfg(feature = "load-prl")]
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
 #[cfg(feature = "load-prl")]
@@ -141,6 +145,10 @@ pub enum PrlLoadError {
     FormatError(#[from] prl_format::FormatError),
     #[error(transparent)]
     ClusterDirectory(#[from] ClusterDirectoryError),
+    #[error(transparent)]
+    ClusterShPayloads(#[from] ClusterShPayloadsError),
+    #[error("invalid POSTRETRO_SH_STREAMING mode `{value}` (expected off, sync-proof, or async)")]
+    InvalidShStreamingMode { value: String },
     #[error(
         "PRL file is missing required {section} section (id {id}) — stale format; recompile with `prl-build`"
     )]
@@ -579,6 +587,12 @@ pub struct LevelWorld {
     /// section with zero grid dimensions; missing section means stale PRL.
     #[cfg(feature = "load-prl")]
     pub sh_volume: Option<OctahedralShVolumeSection>,
+    /// Explicit legacy-versus-streaming ownership for the SH families. The
+    /// legacy fields below remain public during the mechanical migration; new
+    /// consumers must use the accessors so streaming never requires bodies for
+    /// ids 27/34/35/41/45.
+    #[cfg(feature = "load-prl")]
+    pub sh_storage: ShStorage,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     #[cfg(feature = "load-prl")]
     pub lightmap: Option<LightmapSection>,
@@ -751,6 +765,8 @@ impl LevelWorld {
             light_influences: lighting.light_influences,
             #[cfg(feature = "load-prl")]
             sh_volume: lighting.sh_volume,
+            #[cfg(feature = "load-prl")]
+            sh_storage: ShStorage::Legacy,
             #[cfg(feature = "load-prl")]
             lightmap: lighting.lightmap,
             #[cfg(feature = "load-prl")]
@@ -1177,9 +1193,11 @@ mod tests {
     use crate::prl_loader::{
         convert_alpha_lights, expected_affinity_dims, load_prl_with_scatter_pack_limit,
         valid_probe_mask_for_affinity_cell,
+        validate_animated_billboard_direct_scatter_against_metadata,
         validate_animated_billboard_direct_scatter_delta_volumes, validate_cell_draw_index,
         validate_delta_sh, validate_direct_sh_delta, validate_entity_shadow_light_selection,
     };
+    use crate::sh_stream::ShStreamSparseMetadata;
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
         ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
@@ -1561,6 +1579,36 @@ mod tests {
     }
 
     #[test]
+    fn streamed_animated_billboard_scatter_requires_id45_factor() {
+        let direct = animated_direct_delta_section_for([2, 1, 1]);
+        let metadata = ShStreamSparseMetadata {
+            section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
+            internal_version: u32::from(
+                postretro_level_format::animated_direct_sh_delta_volumes::ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION,
+            ),
+            affinity_dims: direct.affinity_dims,
+            tile_dimension: direct.tile_dimension,
+            tile_border: direct.tile_border,
+            valid_probe_masks: direct.valid_probe_masks.clone(),
+            cell_levels: direct.cell_levels.clone(),
+            affinity_offsets: direct.affinity_offsets.clone(),
+            affinity_lights: direct.affinity_lights.clone(),
+            animation_descriptor_indices: direct.animation_descriptor_indices.clone(),
+        };
+        let mut scatter = animated_billboard_direct_scatter_delta_section_for(&direct);
+        assert!(
+            validate_animated_billboard_direct_scatter_against_metadata(&scatter, &metadata)
+                .is_ok()
+        );
+
+        scatter.affinity_factor = direct.affinity_factor + 1;
+        assert!(
+            validate_animated_billboard_direct_scatter_against_metadata(&scatter, &metadata)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn validate_delta_sh_accepts_matching_dims() {
         let base_dims = [8u32, 5, 1];
         let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
@@ -1799,6 +1847,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -1896,6 +1945,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -1947,6 +1997,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,

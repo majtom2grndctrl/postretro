@@ -179,6 +179,9 @@ impl Renderer {
         #[cfg(not(feature = "dev-tools"))]
         let animated_direct_sh_debug_override = AnimatedDirectShDebugOverride::default();
         let full = self.full();
+        let streamed_direct_animation_active = full.sh_streaming.as_ref().is_some_and(|state| {
+            state.direct_has_active_animation(&full.sh_volume_resources.animation)
+        });
         let direct_sh_active = full
             .promoted_static_weights
             .iter()
@@ -187,10 +190,13 @@ impl Renderer {
                 .promoted_animated_states
                 .iter()
                 .any(|state| state.weight > 0.0)
-            || full
-                .sh_volume_resources
-                .direct
-                .has_active_animated_descriptor(&full.sh_volume_resources.animation)
+            || if full.sh_streaming.is_some() {
+                streamed_direct_animation_active
+            } else {
+                full.sh_volume_resources
+                    .direct
+                    .has_active_animated_descriptor(&full.sh_volume_resources.animation)
+            }
             || direct_sh_debug_override.active()
             || animated_direct_sh_debug_override.active();
         // This intentionally keys on descriptor activity rather than the
@@ -217,24 +223,44 @@ impl Renderer {
             .frame_timing
             .as_ref()
             .map(|t| t.compute_pass_writes(TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE));
-        full.direct_sh_compose.dispatch_if_needed(
-            queue,
-            encoder,
-            DirectShComposeFrameInputs {
-                uniform_bind_group: &full.uniform_bind_group,
-                active: direct_sh_active,
-                light_term_mask: frame_light_term_mask,
-                debug_overrides: DirectShComposeDebugOverrides {
-                    promotion: direct_sh_debug_override,
-                    animated: animated_direct_sh_debug_override,
+        if let Some(streaming) = full.sh_streaming.as_mut() {
+            if let Err(error) = streaming.dispatch_direct_compose(
+                queue,
+                encoder,
+                &full.uniform_bind_group,
+                direct_sh_active,
+                frame_light_term_mask,
+                direct_sh_debug_override,
+                animated_direct_sh_debug_override,
+                &full.promoted_animated_states,
+                direct_sh_ts,
+                animated_direct_sh_ts,
+            ) {
+                // Leave the compose epoch unchanged. The next drain therefore
+                // retains miss-safe sampled words instead of promoting a
+                // partially encoded direct atlas.
+                log::error!("[Renderer] streamed direct SH compose deferred: {error}");
+            }
+        } else {
+            full.direct_sh_compose.dispatch_if_needed(
+                queue,
+                encoder,
+                DirectShComposeFrameInputs {
+                    uniform_bind_group: &full.uniform_bind_group,
+                    active: direct_sh_active,
+                    light_term_mask: frame_light_term_mask,
+                    debug_overrides: DirectShComposeDebugOverrides {
+                        promotion: direct_sh_debug_override,
+                        animated: animated_direct_sh_debug_override,
+                    },
+                    animated_promotion_states: &full.promoted_animated_states,
+                    timestamp_writes: DirectShComposeTimestampWrites {
+                        promotion: direct_sh_ts,
+                        animated: animated_direct_sh_ts,
+                    },
                 },
-                animated_promotion_states: &full.promoted_animated_states,
-                timestamp_writes: DirectShComposeTimestampWrites {
-                    promotion: direct_sh_ts,
-                    animated: animated_direct_sh_ts,
-                },
-            },
-        );
+            );
+        }
         // Shares the already-flushed descriptor/sample buffers with animated
         // direct SH. This stays before every billboard draw, so its initial
         // copy-through is visible on the first frame.
@@ -462,16 +488,35 @@ impl Renderer {
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
-            let indirect_active = full
-                .sh_compose
-                .has_active_animated_descriptor(&full.sh_volume_resources.animation);
-            full.sh_compose.dispatch_if_needed(
-                encoder,
-                &full.uniform_bind_group,
-                indirect_active,
-                frame_light_term_mask,
-                sh_compose_ts,
-            );
+            let streamed_indirect_active = full.sh_streaming.as_ref().is_some_and(|streaming| {
+                streaming.indirect_has_active_animation(&full.sh_volume_resources.animation)
+            });
+            if let Some(streaming) = full.sh_streaming.as_mut() {
+                if let Err(error) = streaming.dispatch_indirect_compose(
+                    queue,
+                    encoder,
+                    &full.uniform_bind_group,
+                    streamed_indirect_active,
+                    frame_light_term_mask,
+                    sh_compose_ts,
+                ) {
+                    // The sampled mirror remains on the previous composed
+                    // generation, so a bounded dispatch rejection is a miss
+                    // rather than an uninitialized sample.
+                    log::error!("[Renderer] streamed SH compose was deferred: {error}");
+                }
+            } else {
+                let indirect_active = full
+                    .sh_compose
+                    .has_active_animated_descriptor(&full.sh_volume_resources.animation);
+                full.sh_compose.dispatch_if_needed(
+                    encoder,
+                    &full.uniform_bind_group,
+                    indirect_active,
+                    frame_light_term_mask,
+                    sh_compose_ts,
+                );
+            }
         }
     }
 }

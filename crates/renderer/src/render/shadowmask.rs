@@ -1,6 +1,8 @@
 // Renderer-side CPU packing for static-light shadowmask world receipt.
 // Governing context: context/lib/rendering_pipeline.md
 
+#[cfg(test)]
+use super::renderer_types::LevelGeometryShStorage;
 use super::renderer_types::{LevelGeometry, PromotedBakedLightRecord, PromotedShadowPoolKind};
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::MapLight;

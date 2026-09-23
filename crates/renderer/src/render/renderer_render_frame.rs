@@ -343,7 +343,7 @@ impl Renderer {
                 render_pass.set_pipeline(&self.full().pipeline);
                 render_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-                render_pass.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+                render_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
                 render_pass.set_bind_group(4, &self.full().lightmap_resources.bind_group, &[]);
                 render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
@@ -414,7 +414,7 @@ impl Renderer {
                 ..Default::default()
             });
             mover_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            mover_pass.set_bind_group(4, &self.full().sh_volume_resources.mesh_bind_group, &[]);
+            mover_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
             self.full()
                 .kinematic_brush
                 .record_draws(&mut mover_pass, &self.full().gpu_textures);
@@ -482,7 +482,7 @@ impl Renderer {
                 // group: shared SH entries the forward/billboard/fog passes hold PLUS
                 // the dynamic-direct knobs (group 3 = instance data; group 2
                 // unallocated).
-                mesh_enc.set_bind_group(4, &self.full().sh_volume_resources.mesh_bind_group, &[]);
+                mesh_enc.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
                 self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
             }
         }
@@ -521,7 +521,7 @@ impl Renderer {
             });
             smoke_pass_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             smoke_pass_enc.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-            smoke_pass_enc.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+            smoke_pass_enc.set_bind_group(3, self.full().sh_bind_group(), &[]);
             // One shared instance buffer, drawn per collection from its own
             // 256-byte-aligned dynamic offset.
             {
@@ -598,7 +598,7 @@ impl Renderer {
                 });
                 raymarch.set_pipeline(&self.full().fog.raymarch_pipeline);
                 raymarch.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-                raymarch.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+                raymarch.set_bind_group(3, self.full().sh_bind_group(), &[]);
                 raymarch.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
                 raymarch.set_bind_group(6, &self.full().fog.bind_group, &[]);
                 raymarch.dispatch_workgroups(groups_x, groups_y, 1);
@@ -719,11 +719,7 @@ impl Renderer {
                     self.full().mesh_pass.viewmodel_uniform_bind_group(),
                     &[],
                 );
-                viewmodel_pass.set_bind_group(
-                    4,
-                    &self.full().sh_volume_resources.mesh_bind_group,
-                    &[],
-                );
+                viewmodel_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
                 self.full_mut()
                     .mesh_pass
                     .record_draws(&mut viewmodel_pass, plan);

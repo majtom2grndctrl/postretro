@@ -136,6 +136,16 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+
+        // Drop the prior generation at the level boundary. Construction waits
+        // until the fresh shared SH resources below exist, because streamed
+        // group-3 bind groups retain those always-resident animation and
+        // billboard-scatter bindings.
+        let streaming_manifest = match &geometry.sh_storage {
+            LevelGeometryShStorage::Legacy => None,
+            LevelGeometryShStorage::Streaming(manifest) => Some(*manifest),
+        };
+        full.sh_streaming = None;
         let has_multi_draw_indirect = *has_multi_draw_indirect;
         let requested_spot_resolution = *spot_shadow_map_resolution;
 
@@ -438,6 +448,16 @@ impl Renderer {
             queue,
             ShVolumeSections {
                 sh: geometry.sh_volume,
+                stream_base_present: matches!(
+                    &geometry.sh_storage,
+                    LevelGeometryShStorage::Streaming(_)
+                ),
+                stream_animation_descriptors: match &geometry.sh_storage {
+                    LevelGeometryShStorage::Legacy => None,
+                    LevelGeometryShStorage::Streaming(manifest) => {
+                        Some(manifest.base().animation_descriptors.as_slice())
+                    }
+                },
                 indirect_delta_present: geometry.delta_sh_volumes.is_some(),
                 direct: geometry.direct_sh_volume,
                 direct_delta: geometry.direct_sh_delta_volumes,
@@ -454,6 +474,31 @@ impl Renderer {
             full.probe_occlusion_enabled,
             &mut sh_allocation_ledger,
         );
+
+        if let Some(manifest) = streaming_manifest {
+            full.sh_streaming = Some(
+                sh_streaming::ShResidencyState::from_manifest(manifest)
+                    .and_then(|mut state| {
+                        state.initialize_gpu(
+                            device,
+                            queue,
+                            manifest,
+                            full.probe_occlusion_enabled,
+                            &mut full.sh_volume_resources,
+                            &full.uniform_bind_group_layout,
+                            &full.promoted_static_weight_buffer,
+                        )?;
+                        Ok(state)
+                    })
+                    // A streamed level deliberately omits the legacy bodies.
+                    // Continuing with dummy legacy bindings here would make a
+                    // valid map silently render unlit, which is substantially
+                    // worse than a named, fail-fast level-install error.
+                    .unwrap_or_else(|error| {
+                        panic!("cannot install streamed SH level resources: {error}")
+                    }),
+            );
+        }
 
         // Rebuild the mesh group-2 dynamic-direct light bind group over the
         // just-reallocated runtime buffers — the `is_dynamic`-filtered
@@ -540,9 +585,16 @@ impl Renderer {
             &full.sh_volume_resources.animation,
             geometry.animated_billboard_direct_scatter_delta_volumes,
             &full.uniform_bind_group_layout,
-            full.sh_volume_resources.grid_dimensions,
+            geometry
+                .billboard_direct_scatter_volume
+                .map_or(full.sh_volume_resources.grid_dimensions, |section| {
+                    section.grid_dimensions
+                }),
             &mut sh_allocation_ledger,
         );
+        if let Some(streaming) = full.sh_streaming.as_ref() {
+            sh_allocation_ledger.record_streaming_summary(streaming.streaming_allocation_summary());
+        }
         let sh_residency_report = sh_allocation_ledger.finish();
         full.sh_residency_report = Some(sh_residency_report);
         #[cfg(feature = "dev-tools")]
@@ -619,12 +671,23 @@ impl Renderer {
         // depth-moment texture + static-light buffers. The pass itself is always
         // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
         // which `install_level_geometry` may have just flipped.
-        let sdf_shadow_sh_grid =
-            build_sdf_shadow_sh_grid(geometry.sh_volume, full.sh_volume_resources.present);
+        let sdf_shadow_sh_grid = streaming_manifest
+            .filter(|_| full.sh_streaming.is_some())
+            .map(|manifest| {
+                let base = manifest.base();
+                build_sdf_shadow_sh_grid_from_metadata(
+                    base.grid_origin,
+                    base.cell_size,
+                    base.grid_dimensions,
+                )
+            })
+            .unwrap_or_else(|| {
+                build_sdf_shadow_sh_grid(geometry.sh_volume, full.sh_volume_resources.present)
+            });
         full.sdf_shadow_pass.rebuild_for_level(
             device,
             &full.depth_view,
-            full.sh_volume_resources.make_depth_moment_view(),
+            full.sh_depth_moment_view(),
             sdf_shadow::SdfShadowLightBuffers {
                 spec_lights: &spec_lights_buffer,
                 chunk_grid_info: &chunk_grid_info_buffer,

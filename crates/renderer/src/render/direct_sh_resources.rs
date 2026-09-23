@@ -178,6 +178,19 @@ impl DirectShResources {
         queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
     }
 
+    /// Streamed id-35 has the same receiver contract as a whole-resident
+    /// direct atlas, but its backing texture belongs to the shared renderer
+    /// slot pool. Keep this small state transition here so all later dynamic
+    /// direct updates continue to write the existing binding-16 uniform.
+    pub(super) fn enable_streamed_atlas(&mut self, queue: &wgpu::Queue) {
+        if self.has_direct {
+            return;
+        }
+        self.has_direct = true;
+        let bytes = build_dynamic_direct_params_bytes(1.0, true);
+        queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
+    }
+
     /// The Case-2 dispatch gate reads only the section-45 descriptor index map,
     /// never the indirect section-27 mapping.
     pub(super) fn has_active_animated_descriptor(&self, animation: &AnimatedLightBuffers) -> bool {

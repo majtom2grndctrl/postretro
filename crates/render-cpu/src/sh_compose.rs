@@ -11,7 +11,12 @@ use postretro_level_format::sh_reconstruct::{
     Level, kept_mask, reconstruct_l1_tile, reconstruct_l2_tile, stored_delta_tiles,
 };
 
-const COMPOSE_GRID_DIMS_SIZE: usize = 64;
+/// Stable prefix shared by legacy and dynamically-offset SH compose records.
+/// The fields through the compact-atlas geometry retain their existing offsets.
+pub const COMPOSE_GRID_DIMS_PREFIX_SIZE: usize = 64;
+/// Full dynamically-offset `GridDims` record. The 16-byte tail carries the
+/// physical tile stride and flattened affinity-row dispatch range.
+pub const DYNAMIC_COMPOSE_GRID_DIMS_SIZE: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeGridParams {
@@ -27,6 +32,19 @@ pub struct ComposeGridParams {
     /// the stored atlas geometry above exactly; the byte layout must not move.
     pub compact_atlas_tiles_per_row: u32,
     pub compact_atlas_tiles_per_layer: u32,
+}
+
+/// The dynamic portion of a compose grid record. The prefix remains a
+/// `ComposeGridParams` byte-for-byte so legacy callers may continue to pack
+/// the 64-byte uniform while residency uses fixed-size dynamic records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamicComposeGridParams {
+    pub grid: ComposeGridParams,
+    pub physical_tile_stride: u32,
+    /// Flattened x-fastest affinity-cell row at which this dispatch begins.
+    pub range_start: u32,
+    /// Number of flattened affinity-cell rows in this dispatch.
+    pub range_count: u32,
 }
 
 /// Development-only description of the storage buffers bound by an SH compose
@@ -79,6 +97,9 @@ impl ComposeStorageFootprint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeltaComposeBuffers {
     pub animated_light_count: u32,
+    /// `(start, end)` words for every affinity row. Legacy format sections
+    /// carry a prefix CSR; the CPU expands it here so streamed pool rows can
+    /// be patched independently at the existing binding.
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     pub animation_descriptor_indices: Vec<u32>,
@@ -117,6 +138,7 @@ impl DeltaComposeBuffers {
 /// decoded format section until the renderer stages it for upload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectDeltaComposeBuffers {
+    /// `(start, end)` words for every affinity row. See `DeltaComposeBuffers`.
     pub affinity_offsets: Vec<u32>,
     pub affinity_lights: Vec<u32>,
     /// One id-34-cross-checked valid-probe descriptor per affinity cell.
@@ -300,7 +322,7 @@ pub fn build_delta_buffers(
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
-            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
+            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) * 2],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
@@ -311,7 +333,7 @@ pub fn build_delta_buffers(
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        affinity_offsets: delta.affinity_offsets.clone(),
+        affinity_offsets: affinity_offset_pairs(&delta.affinity_offsets),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
@@ -336,7 +358,7 @@ pub fn build_direct_delta_buffers(
     let Some(delta) = delta else {
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DirectDeltaComposeBuffers {
-            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
+            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) * 2],
             affinity_lights: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
             cell_levels: vec![0; affinity_cell_count(affinity_dims)],
@@ -345,7 +367,7 @@ pub fn build_direct_delta_buffers(
         };
     };
     DirectDeltaComposeBuffers {
-        affinity_offsets: delta.affinity_offsets.clone(),
+        affinity_offsets: affinity_offset_pairs(&delta.affinity_offsets),
         affinity_lights: delta.affinity_lights.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
         cell_levels: delta.cell_levels.clone(),
@@ -360,6 +382,17 @@ pub fn build_direct_delta_buffers(
         ),
         affinity_dims: delta.affinity_dims,
     }
+}
+
+/// Expand the format's prefix CSR into independently patchable `(start, end)`
+/// pairs. This leaves format-owned prefixes unchanged for CPU-side payload
+/// traversal while giving legacy and streaming compose the same binding shape.
+pub fn affinity_offset_pairs(prefix: &[u32]) -> Vec<u32> {
+    let mut pairs = Vec::with_capacity(prefix.len().saturating_sub(1).saturating_mul(2));
+    for window in prefix.windows(2) {
+        pairs.extend_from_slice(window);
+    }
+    pairs
 }
 
 fn delta_entry_offsets(
@@ -574,7 +607,7 @@ pub fn build_animated_direct_delta_buffers(
         let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
-            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
+            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) * 2],
             affinity_lights: Vec::new(),
             animation_descriptor_indices: Vec::new(),
             valid_probe_masks: vec![0; affinity_cell_count(affinity_dims)],
@@ -585,7 +618,7 @@ pub fn build_animated_direct_delta_buffers(
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        affinity_offsets: delta.affinity_offsets.clone(),
+        affinity_offsets: affinity_offset_pairs(&delta.affinity_offsets),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
         valid_probe_masks: delta.valid_probe_masks.clone(),
@@ -616,8 +649,8 @@ fn affinity_cell_count(dims: [u32; 3]) -> usize {
     dims[0] as usize * dims[1] as usize * dims[2] as usize
 }
 
-pub fn build_compose_grid_bytes(params: ComposeGridParams) -> [u8; COMPOSE_GRID_DIMS_SIZE] {
-    let mut bytes = [0u8; COMPOSE_GRID_DIMS_SIZE];
+pub fn build_compose_grid_bytes(params: ComposeGridParams) -> [u8; COMPOSE_GRID_DIMS_PREFIX_SIZE] {
+    let mut bytes = [0u8; COMPOSE_GRID_DIMS_PREFIX_SIZE];
     bytes[0..4].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
     bytes[4..8].copy_from_slice(&params.grid_dimensions[1].to_ne_bytes());
     bytes[8..12].copy_from_slice(&params.grid_dimensions[2].to_ne_bytes());
@@ -635,6 +668,19 @@ pub fn build_compose_grid_bytes(params: ComposeGridParams) -> [u8; COMPOSE_GRID_
     bytes[52..56].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
     bytes[56..60].copy_from_slice(&params.compact_atlas_tiles_per_row.to_ne_bytes());
     bytes[60..64].copy_from_slice(&params.compact_atlas_tiles_per_layer.to_ne_bytes());
+    bytes
+}
+
+/// Build one 80-byte `GridDims` record for a dynamically-offset compose
+/// binding. Its first 64 bytes are exactly `build_compose_grid_bytes`.
+pub fn build_dynamic_compose_grid_bytes(
+    params: DynamicComposeGridParams,
+) -> [u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE] {
+    let mut bytes = [0u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE];
+    bytes[..COMPOSE_GRID_DIMS_PREFIX_SIZE].copy_from_slice(&build_compose_grid_bytes(params.grid));
+    bytes[64..68].copy_from_slice(&params.physical_tile_stride.to_ne_bytes());
+    bytes[68..72].copy_from_slice(&params.range_start.to_ne_bytes());
+    bytes[72..76].copy_from_slice(&params.range_count.to_ne_bytes());
     bytes
 }
 
@@ -968,9 +1014,14 @@ mod tests {
         let b = build_delta_buffers(None, [5, 2, 1]);
         assert_eq!(b.animated_light_count, 0);
         assert_eq!(b.affinity_dims, [2, 1, 1]);
-        assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
+        assert_eq!(b.affinity_offsets, vec![0, 0, 0, 0]);
         assert_eq!(b.valid_probe_masks, vec![0, 0]);
         assert!(b.entry_offsets.is_empty());
+    }
+
+    #[test]
+    fn affinity_offset_pairs_expand_a_prefix_without_cross_row_aliasing() {
+        assert_eq!(affinity_offset_pairs(&[0, 2, 2, 5]), vec![0, 2, 2, 2, 2, 5],);
     }
 
     #[test]
@@ -993,7 +1044,7 @@ mod tests {
         let b = build_delta_buffers(Some(&section), [12, 1, 1]);
         assert_eq!(b.animated_light_count, 2);
         assert_eq!(b.affinity_dims, [3, 1, 1]);
-        assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
+        assert_eq!(b.affinity_offsets, vec![0, 1, 1, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.animation_descriptor_indices, vec![4, u32::MAX]);
         assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
@@ -1023,7 +1074,7 @@ mod tests {
     fn delta_compaction_meta_places_cell_levels_before_entry_offsets() {
         let buffers = DeltaComposeBuffers {
             animated_light_count: 0,
-            affinity_offsets: vec![0, 1, 2],
+            affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             animation_descriptor_indices: Vec::new(),
             valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
@@ -1104,7 +1155,7 @@ mod tests {
     fn build_direct_delta_buffers_no_section_returns_full_empty_offsets() {
         let b = build_direct_delta_buffers(None, [5, 2, 1]);
         assert_eq!(b.affinity_dims, [2, 1, 1]);
-        assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
+        assert_eq!(b.affinity_offsets, vec![0, 0, 0, 0]);
         assert!(b.affinity_lights.is_empty());
         assert_eq!(b.valid_probe_masks, vec![0, 0]);
         assert!(b.entry_offsets.is_empty());
@@ -1128,7 +1179,7 @@ mod tests {
 
         let b = build_direct_delta_buffers(Some(&section), [12, 1, 1]);
         assert_eq!(b.affinity_dims, [3, 1, 1]);
-        assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
+        assert_eq!(b.affinity_offsets, vec![0, 1, 1, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.valid_probe_masks, vec![u64::MAX; 3]);
         assert_eq!(
@@ -1156,7 +1207,7 @@ mod tests {
     #[test]
     fn direct_delta_compaction_meta_places_cell_levels_before_entry_offsets() {
         let buffers = DirectDeltaComposeBuffers {
-            affinity_offsets: vec![0, 1, 2],
+            affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             valid_probe_masks: vec![0x0000_0000_0000_9009, 0x9009_0000_0000_0000],
             cell_levels: vec![1, 2],
@@ -1582,11 +1633,49 @@ mod tests {
             ])
         };
 
-        assert_eq!(bytes.len(), COMPOSE_GRID_DIMS_SIZE);
+        assert_eq!(bytes.len(), COMPOSE_GRID_DIMS_PREFIX_SIZE);
         assert_eq!(word(44), 20);
         assert_eq!(word(48), 400);
         assert_eq!(word(52), 3);
         assert_eq!(word(56), 20);
         assert_eq!(word(60), 400);
+    }
+
+    #[test]
+    fn dynamic_compose_grid_record_appends_stride_and_dirty_range() {
+        let grid = ComposeGridParams {
+            grid_dimensions: [2, 3, 4],
+            atlas_dimensions: [120, 60],
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_tiles_per_row: 20,
+            tiles_per_layer: 400,
+            atlas_layer_count: 3,
+            affinity_dims: [1, 2, 3],
+            compact_atlas_tiles_per_row: 20,
+            compact_atlas_tiles_per_layer: 400,
+        };
+        let legacy = build_compose_grid_bytes(grid);
+        let bytes = build_dynamic_compose_grid_bytes(DynamicComposeGridParams {
+            grid,
+            physical_tile_stride: 8,
+            range_start: 17,
+            range_count: 3,
+        });
+        let word = |offset: usize| {
+            u32::from_ne_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+
+        assert_eq!(bytes.len(), DYNAMIC_COMPOSE_GRID_DIMS_SIZE);
+        assert_eq!(&bytes[..COMPOSE_GRID_DIMS_PREFIX_SIZE], &legacy);
+        assert_eq!(word(64), 8);
+        assert_eq!(word(68), 17);
+        assert_eq!(word(72), 3);
+        assert_eq!(word(76), 0);
     }
 }

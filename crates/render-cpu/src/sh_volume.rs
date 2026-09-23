@@ -35,12 +35,20 @@ pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 ///   64..68  atlas_tiles_per_row (u32)
 ///   68..72  atlas_tile_rows   (u32)
 ///   72..76  tile_interior     (u32)
-///   76..80  _pad2             (u32)
+///   76..80  physical_tile_stride (u32)
 ///   80..84  probe_occlusion   (u32, 0 or 1)
 ///   84..88  tiles_per_layer   (u32)
 ///   88..92  atlas_layer_count (u32)
 ///   92..96  _pad3             (u32)
 pub const SH_GRID_INFO_SIZE: usize = 96;
+/// Physical tile side used by existing whole-atlas SH data. The logical tile
+/// still has a 6x6 texel footprint and its existing one-texel border.
+pub const LEGACY_SH_PHYSICAL_TILE_STRIDE: u32 = 6;
+/// Physical tile side used by an isolated streamed SH cell. The extra right
+/// and bottom texels keep the 6x6 logical tile's border semantics local.
+pub const STREAMED_SH_PHYSICAL_TILE_STRIDE: u32 = 8;
+/// The single texel used by missing-SH dummy textures.
+pub const DUMMY_SH_PHYSICAL_TILE_STRIDE: u32 = 1;
 pub const DEFAULT_PROBE_OCCLUSION: bool = true;
 pub const ANIMATION_DESCRIPTOR_SIZE: usize = 48;
 pub const ANIMATION_DESCRIPTOR_ACTIVE_OFFSET: usize = 36;
@@ -68,6 +76,9 @@ pub struct ShGridInfoParams {
     pub tile_dimension: u32,
     pub tile_border: u32,
     pub atlas_tiles_per_row: u32,
+    /// Side length of a physical atlas tile. This occupies the former padding
+    /// word at byte 76, preserving the 96-byte uniform ABI.
+    pub physical_tile_stride: u32,
     pub tiles_per_layer: u32,
     pub atlas_layer_count: u32,
     pub present: bool,
@@ -105,6 +116,7 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
         .tile_dimension
         .saturating_sub(params.tile_border.saturating_mul(2));
     bytes[72..76].copy_from_slice(&interior.to_ne_bytes());
+    bytes[76..80].copy_from_slice(&params.physical_tile_stride.to_ne_bytes());
     bytes[80..84].copy_from_slice(&(params.probe_occlusion_enabled as u32).to_ne_bytes());
     bytes[84..88].copy_from_slice(&params.tiles_per_layer.to_ne_bytes());
     bytes[88..92].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
@@ -117,7 +129,17 @@ pub fn build_animation_buffers(
     let Some(sec) = section else {
         return (dummy_descriptor_buffer(), dummy_storage_buffer(), 0);
     };
-    let animated_light_count = sec.animation_descriptors.len();
+    build_animation_buffers_from_descriptors(&sec.animation_descriptors)
+}
+
+/// Packs animation descriptors and their curve samples into the two GPU storage
+/// buffers. Streaming manifests retain these descriptors without retaining the
+/// complete SH-volume section, so this is intentionally independent of level
+/// geometry.
+pub fn build_animation_buffers_from_descriptors(
+    animation_descriptors: &[AnimationDescriptor],
+) -> (Vec<u8>, Vec<u8>, u32) {
+    let animated_light_count = animation_descriptors.len();
     if animated_light_count == 0 {
         return (dummy_descriptor_buffer(), dummy_storage_buffer(), 0);
     }
@@ -125,7 +147,7 @@ pub fn build_animation_buffers(
     let mut samples: Vec<f32> = Vec::new();
     let mut descriptors = Vec::with_capacity(animated_light_count * ANIMATION_DESCRIPTOR_SIZE);
 
-    for desc in &sec.animation_descriptors {
+    for desc in animation_descriptors {
         let brightness_offset = samples.len() as u32;
         let brightness_count = desc.brightness.len() as u32;
         samples.extend_from_slice(&desc.brightness);
@@ -398,6 +420,7 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             atlas_tiles_per_row: 11,
+            physical_tile_stride: LEGACY_SH_PHYSICAL_TILE_STRIDE,
             tiles_per_layer: 121,
             atlas_layer_count: 3,
             present: true,
@@ -416,6 +439,10 @@ mod tests {
         assert_eq!(u32::from_ne_bytes(bytes[64..68].try_into().unwrap()), 11);
         assert_eq!(u32::from_ne_bytes(bytes[68..72].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(bytes[72..76].try_into().unwrap()), 4);
+        assert_eq!(
+            u32::from_ne_bytes(bytes[76..80].try_into().unwrap()),
+            LEGACY_SH_PHYSICAL_TILE_STRIDE
+        );
         assert_eq!(u32::from_ne_bytes(bytes[80..84].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(bytes[84..88].try_into().unwrap()), 121);
         assert_eq!(u32::from_ne_bytes(bytes[88..92].try_into().unwrap()), 3);
@@ -431,6 +458,7 @@ mod tests {
             tile_dimension: 1,
             tile_border: 0,
             atlas_tiles_per_row: 1,
+            physical_tile_stride: DUMMY_SH_PHYSICAL_TILE_STRIDE,
             tiles_per_layer: 1,
             atlas_layer_count: 1,
             present: false,
@@ -458,6 +486,7 @@ mod tests {
                 tile_dimension: 1,
                 tile_border: 0,
                 atlas_tiles_per_row: 1,
+                physical_tile_stride: DUMMY_SH_PHYSICAL_TILE_STRIDE,
                 tiles_per_layer: 1,
                 atlas_layer_count: 1,
                 present: true,
@@ -471,6 +500,31 @@ mod tests {
             assert_eq!(u32::from_ne_bytes(bytes[88..92].try_into().unwrap()), 1);
             assert!(bytes[92..96].iter().all(|&b| b == 0));
         }
+    }
+
+    #[test]
+    fn grid_info_physical_tile_stride_uses_legacy_streamed_and_dummy_values() {
+        let stride = |physical_tile_stride| {
+            let bytes = build_grid_info_bytes(ShGridInfoParams {
+                grid_origin: [0.0; 3],
+                cell_size: [1.0; 3],
+                grid_dimensions: [1, 1, 1],
+                atlas_dimensions: [1, 1],
+                tile_dimension: LEGACY_SH_PHYSICAL_TILE_STRIDE,
+                tile_border: 1,
+                atlas_tiles_per_row: 1,
+                physical_tile_stride,
+                tiles_per_layer: 1,
+                atlas_layer_count: 1,
+                present: true,
+                probe_occlusion_enabled: true,
+            });
+            u32::from_ne_bytes(bytes[76..80].try_into().unwrap())
+        };
+
+        assert_eq!(stride(LEGACY_SH_PHYSICAL_TILE_STRIDE), 6);
+        assert_eq!(stride(STREAMED_SH_PHYSICAL_TILE_STRIDE), 8);
+        assert_eq!(stride(DUMMY_SH_PHYSICAL_TILE_STRIDE), 1);
     }
 
     #[test]
@@ -562,8 +616,13 @@ mod tests {
         );
 
         let (descriptors, samples, count) = build_animation_buffers(Some(&section));
+        let (descriptor_only_descriptors, descriptor_only_samples, descriptor_only_count) =
+            build_animation_buffers_from_descriptors(&section.animation_descriptors);
         assert_eq!(count, 2);
         assert_eq!(descriptors.len(), 2 * ANIMATION_DESCRIPTOR_SIZE);
+        assert_eq!(descriptor_only_descriptors, descriptors);
+        assert_eq!(descriptor_only_samples, samples);
+        assert_eq!(descriptor_only_count, count);
 
         assert_eq!(
             f32::from_ne_bytes(descriptors[0..4].try_into().unwrap()),

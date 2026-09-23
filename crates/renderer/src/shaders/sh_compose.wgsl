@@ -42,6 +42,10 @@ struct GridDims {
     atlas_layer_count: u32,
     compact_atlas_tiles_per_row: u32,
     compact_atlas_tiles_per_layer: u32,
+    physical_tile_stride: u32,
+    range_start: u32,
+    range_count: u32,
+    _pad0: u32,
 };
 
 struct GridFrame {
@@ -63,8 +67,9 @@ struct GridFrame {
 // texels packed two f16 halves per `u32`; `unpack2x16float` returns `(low,
 // high)` matching the bake's even/odd channel order.
 @group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
-// CSR offsets into `affinity_lights`, indexed by affinity-cell linear index;
-// length is `affinity_cell_count + 1` (trailing total).
+// `(start, end)` pairs into `affinity_lights`, indexed by affinity-cell linear
+// index. Legacy prefix CSR is expanded before upload so streamed rows can be
+// patched independently at this existing binding.
 @group(1) @binding(21) var<storage, read> affinity_offsets: array<u32>;
 @group(1) @binding(22) var<storage, read> descriptors: array<AnimationDescriptor>;
 @group(1) @binding(23) var<storage, read> anim_samples: array<f32>;
@@ -108,7 +113,7 @@ fn sample_compact_base_atlas(compact_slot: u32, tile_texel: vec2<u32>) -> vec4<f
     let tile_origin = vec2<u32>(
         tile_slot % compact_tiles_per_row,
         tile_slot / compact_tiles_per_row,
-    ) * grid.tile_dimension;
+    ) * grid.physical_tile_stride;
     let compact_texel = tile_origin + tile_texel;
     let uv = (vec2<f32>(compact_texel) + 0.5)
         / vec2<f32>(textureDimensions(sh_base_atlas));
@@ -224,8 +229,8 @@ fn slot_tile_origin(slot: u32) -> vec3<u32> {
     let tile_slot = slot % tiles_per_layer;
     let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
     return vec3<u32>(
-        (tile_slot % tiles_per_row) * grid.tile_dimension,
-        (tile_slot / tiles_per_row) * grid.tile_dimension,
+        (tile_slot % tiles_per_row) * grid.physical_tile_stride,
+        (tile_slot / tiles_per_row) * grid.physical_tile_stride,
         slot / tiles_per_layer,
     );
 }
@@ -369,16 +374,24 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(
-    @builtin(workgroup_id) brick: vec3<u32>,
+    @builtin(workgroup_id) workgroup: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
     // One workgroup owns one 4×4×4 affinity brick. Only the invocations that
     // own stored slots write tiles; all invocations still participate in the
     // existing shared delta reconstruction barriers.
+    if (workgroup.x >= grid.range_count) {
+        return;
+    }
+    let cell_index = grid.range_start + workgroup.x;
+    let affinity_row_width = max(grid.affinity_dims.x, 1u);
+    let affinity_layer_size = affinity_row_width * max(grid.affinity_dims.y, 1u);
+    let brick = vec3<u32>(
+        cell_index % affinity_row_width,
+        (cell_index / affinity_row_width) % max(grid.affinity_dims.y, 1u),
+        cell_index / affinity_layer_size,
+    );
     let local_probe = local_id.x + local_id.y * 8u;
-    let cell_index = brick.x
-        + brick.y * grid.affinity_dims.x
-        + brick.z * grid.affinity_dims.x * grid.affinity_dims.y;
     let probe = brick * AFFINITY_FACTOR + local_probe_coord(local_probe);
     let in_grid = !any(probe >= grid.grid_dimensions);
     let probe_index = probe.x
@@ -455,8 +468,9 @@ fn compose_main(
     }
 
     let level = cell_level(cell_index);
-    let start = affinity_offsets[cell_index];
-    let end = affinity_offsets[cell_index + 1u];
+    let offset_index = cell_index * 2u;
+    let start = affinity_offsets[offset_index];
+    let end = affinity_offsets[offset_index + 1u];
 
     if (level == 0u) {
         // Delta id 27 compacts L0/L1; L1 keeps valid brick corners by kept

@@ -15,9 +15,11 @@ pub use postretro_render_cpu::sh_volume::{
     BIND_ANIM_SAMPLES, BIND_BILLBOARD_DIRECT_SCATTER, BIND_DYNAMIC_DIRECT_PARAMS,
     BIND_SCRIPTED_LIGHT_DESCRIPTORS, BIND_SH_ATLAS_SAMPLER, BIND_SH_DEPTH_MOMENTS,
     BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS, DEFAULT_PROBE_OCCLUSION,
-    DYNAMIC_DIRECT_PARAMS_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
-    SCRIPTED_FLOATS_PER_LIGHT, SH_GRID_INFO_SIZE, ShGridInfoParams, build_animation_buffers,
-    build_grid_info_bytes, f32_to_f16_bits, probe_occlusion_seed_from_fast_env,
+    DUMMY_SH_PHYSICAL_TILE_STRIDE, DYNAMIC_DIRECT_PARAMS_SIZE, LEGACY_SH_PHYSICAL_TILE_STRIDE,
+    SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32, SCRIPTED_FLOATS_PER_LIGHT,
+    SH_GRID_INFO_SIZE, STREAMED_SH_PHYSICAL_TILE_STRIDE, ShGridInfoParams, build_animation_buffers,
+    build_animation_buffers_from_descriptors, build_grid_info_bytes, f32_to_f16_bits,
+    probe_occlusion_seed_from_fast_env,
 };
 use wgpu::util::DeviceExt;
 
@@ -621,6 +623,11 @@ impl ShVolumeResources {
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
+            physical_tile_stride: if present {
+                LEGACY_SH_PHYSICAL_TILE_STRIDE
+            } else {
+                DUMMY_SH_PHYSICAL_TILE_STRIDE
+            },
             tiles_per_layer,
             atlas_layer_count,
             present,
@@ -847,6 +854,11 @@ impl ShVolumeResources {
             tile_dimension: self.tile_dimension,
             tile_border: self.tile_border,
             atlas_tiles_per_row: self.atlas_tiles_per_row,
+            physical_tile_stride: if self.present {
+                LEGACY_SH_PHYSICAL_TILE_STRIDE
+            } else {
+                DUMMY_SH_PHYSICAL_TILE_STRIDE
+            },
             tiles_per_layer: self.tiles_per_layer,
             atlas_layer_count: self.atlas_layer_count,
             present: self.present,
@@ -1133,6 +1145,7 @@ mod tests {
             tile_dimension: 1,
             tile_border: 0,
             atlas_tiles_per_row: 1,
+            physical_tile_stride: DUMMY_SH_PHYSICAL_TILE_STRIDE,
             tiles_per_layer: 1,
             atlas_layer_count: 1,
             present: false,

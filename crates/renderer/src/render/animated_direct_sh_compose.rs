@@ -5,14 +5,15 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_animated_direct_delta_buffers, build_compose_grid_bytes,
+    ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE, build_animated_direct_delta_buffers,
 };
+use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
 use super::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
     BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
-    nearest_sampler, sampler_bgl_entry, storage_bgl_entry, storage_texture_bgl_entry,
-    texture_bgl_entry, uniform_bgl_entry,
+    dynamic_compose_grid_bgl_entry, nearest_sampler, sampler_bgl_entry, storage_bgl_entry,
+    storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
 #[cfg(test)]
@@ -24,6 +25,7 @@ use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, compose_storage_payloads,
     probe_indirection_storage_payload,
 };
+use super::sh_compose_dispatch::{DynamicComposeDispatch, build_dynamic_compose_grid_upload};
 use super::sh_indirection::WGSL_DECODE_HELPER;
 use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
@@ -102,6 +104,7 @@ const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-
 pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) pipeline: wgpu::ComputePipeline,
     pub(super) bind_group: wgpu::BindGroup,
+    pub(super) dispatches: Vec<DynamicComposeDispatch>,
     pub(super) animated_light_scale_buffer: wgpu::Buffer,
     pub(super) last_animated_light_scale_bytes: [u8; ANIMATED_LIGHT_SCALE_SIZE],
 }
@@ -240,23 +243,30 @@ pub(super) fn build_animated_direct_pass(
         contents: &probe_indirection.contents,
         usage: probe_indirection.allocation.usage,
     });
-    let grid_bytes = build_compose_grid_bytes(ComposeGridParams {
-        grid_dimensions: layout.grid_dimensions,
-        atlas_dimensions: layout.atlas_dimensions,
-        tile_dimension: layout.tile_dimension,
-        tile_border: layout.tile_border,
-        atlas_tiles_per_row: layout.atlas_tiles_per_row,
-        tiles_per_layer: layout.tiles_per_layer,
-        atlas_layer_count: layout.atlas_layer_count,
-        affinity_dims: buffers.affinity_dims,
-        // Retain the existing 64-byte uniform layout: its former compact
-        // tail now repeats the stored atlas geometry.
-        compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
-        compact_atlas_tiles_per_layer: layout.tiles_per_layer,
-    });
+    let device_limits = device.limits();
+    let grid_upload = build_dynamic_compose_grid_upload(
+        ComposeGridParams {
+            grid_dimensions: layout.grid_dimensions,
+            atlas_dimensions: layout.atlas_dimensions,
+            tile_dimension: layout.tile_dimension,
+            tile_border: layout.tile_border,
+            atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            tiles_per_layer: layout.tiles_per_layer,
+            atlas_layer_count: layout.atlas_layer_count,
+            affinity_dims: buffers.affinity_dims,
+            // The fixed 64-byte prefix repeats the stored-atlas geometry here.
+            compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            compact_atlas_tiles_per_layer: layout.tiles_per_layer,
+        },
+        LEGACY_SH_PHYSICAL_TILE_STRIDE,
+        device_limits.max_compute_workgroups_per_dimension,
+        device_limits.min_uniform_buffer_offset_alignment,
+        device_limits.max_buffer_size,
+    )
+    .expect("validated SH affinity dimensions must fit adapter-bounded compose ranges");
     let grid_allocation = buffer_allocation(
         ShAllocationKind::AnimatedDirectComposeGrid,
-        &grid_bytes,
+        &grid_upload.bytes,
         wgpu::BufferUsages::UNIFORM,
     );
     ledger.record_buffer(
@@ -267,7 +277,7 @@ pub(super) fn build_animated_direct_pass(
     );
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Grid Dims"),
-        contents: &grid_bytes,
+        contents: &grid_upload.bytes,
         usage: grid_allocation.usage,
     });
     let animated_light_scale_bytes = AnimatedDirectShDebugOverride::default().bytes(&[]);
@@ -339,7 +349,11 @@ pub(super) fn build_animated_direct_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 18,
-                resource: grid_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &grid_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
+                }),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_DELTA_SUBBLOCKS,
@@ -383,6 +397,7 @@ pub(super) fn build_animated_direct_pass(
     AnimatedDirectShComposePipeline {
         pipeline,
         bind_group,
+        dispatches: grid_upload.dispatches,
         animated_light_scale_buffer,
         last_animated_light_scale_bytes: animated_light_scale_bytes,
     }
@@ -393,7 +408,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
         storage_texture_bgl_entry(1),
-        uniform_bgl_entry(18),
+        dynamic_compose_grid_bgl_entry(),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
         storage_bgl_entry(BIND_DELTA_COMPACTION_META),
         storage_bgl_entry(BIND_AFFINITY_OFFSETS),
@@ -439,6 +454,17 @@ mod tests {
             ]
         );
         assert_eq!(storage_bindings.len(), 8);
+        assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
+            entry.binding == 18
+                && matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: Some(size),
+                    } if size.get() == DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64
+                )
+        }));
         assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
             entry.binding == BIND_ANIMATED_LIGHT_SCALE
                 && matches!(
@@ -499,7 +525,7 @@ mod tests {
     fn animated_coarsened_compose_uses_one_brick_workgroup_and_kept_shared_tiles() {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
 
-        assert!(source.contains("@builtin(workgroup_id) brick"));
+        assert!(source.contains("@builtin(workgroup_id) workgroup"));
         assert!(source.contains("var<workgroup> shared_kept_tiles"));
         assert!(source.contains(
             "return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u"

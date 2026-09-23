@@ -1,5 +1,5 @@
 //! Id-50 metadata codec, section structure checks, and public worker entry points.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs.
 
 use super::*;
 
@@ -254,6 +254,27 @@ impl ClusterShPayloadsSection {
         &self,
         inputs: ClusterShPayloadsValidationInputs<'_>,
     ) -> Result<(), ClusterShPayloadsError> {
+        self.validation_plan(inputs).map(drop)
+    }
+
+    /// Consume this metadata prefix after validating its complete directory,
+    /// source inventory, and index. The returned wrapper retains the canonical
+    /// per-cluster plans so worker decodes never rebuild whole-level state.
+    pub fn into_validated(
+        self,
+        inputs: ClusterShPayloadsValidationInputs<'_>,
+    ) -> Result<ValidatedClusterShPayloadsSection, ClusterShPayloadsError> {
+        let expected_chunks = self.validation_plan(inputs)?;
+        Ok(ValidatedClusterShPayloadsSection {
+            section: self,
+            expected_chunks,
+        })
+    }
+
+    fn validation_plan(
+        &self,
+        inputs: ClusterShPayloadsValidationInputs<'_>,
+    ) -> Result<Vec<ExpectedChunk>, ClusterShPayloadsError> {
         self.validate_structure()?;
         validate_inputs(inputs)?;
         if self.header.cluster_count != inputs.directory.clusters.len() as u32 {
@@ -273,12 +294,18 @@ impl ClusterShPayloadsSection {
         validate_source_inventory(&self.sources, inputs.sources)?;
 
         let plan = ValidationPlan::new(inputs)?;
+        let mut expected_chunks = try_vec(
+            usize::try_from(self.header.cluster_count)
+                .map_err(|_| ClusterShPayloadsError::SizeOverflow("cluster count exceeds usize"))?,
+            "validated cluster plans",
+        )?;
         for cluster_id in 0..self.header.cluster_count {
             let expected = plan.expected_chunk(cluster_id)?;
             let actual = &self.index[cluster_id as usize];
             validate_index_against_expected(cluster_id, actual, &expected)?;
+            expected_chunks.push(expected);
         }
-        Ok(())
+        Ok(expected_chunks)
     }
 
     /// Verify one previously-read chunk and retain its single allocation for a
@@ -290,7 +317,16 @@ impl ClusterShPayloadsSection {
         bytes: Vec<u8>,
         inputs: ClusterShPayloadsValidationInputs<'_>,
     ) -> Result<DecodedClusterShPayload, ClusterShPayloadsError> {
-        self.validate_against(inputs)?;
+        let expected_chunks = self.validation_plan(inputs)?;
+        self.decode_chunk_with_expected(cluster_id, bytes, &expected_chunks)
+    }
+
+    fn decode_chunk_with_expected(
+        &self,
+        cluster_id: u32,
+        bytes: Vec<u8>,
+        expected_chunks: &[ExpectedChunk],
+    ) -> Result<DecodedClusterShPayload, ClusterShPayloadsError> {
         let entry = self.index.get(cluster_id as usize).ok_or_else(|| {
             ClusterShPayloadsError::RangeOutOfBounds(format!("unknown cluster {cluster_id}"))
         })?;
@@ -307,8 +343,10 @@ impl ClusterShPayloadsSection {
         if *blake3::hash(&bytes).as_bytes() != entry.hash {
             return Err(ClusterShPayloadsError::HashMismatch { cluster_id });
         }
-        let expected = ValidationPlan::new(inputs)?.expected_chunk(cluster_id)?;
-        let blocks = validate_chunk_bytes(cluster_id, &bytes, &expected, inputs)?;
+        let expected = expected_chunks.get(cluster_id as usize).ok_or_else(|| {
+            ClusterShPayloadsError::RangeOutOfBounds(format!("unknown cluster {cluster_id}"))
+        })?;
+        let blocks = validate_chunk_bytes(cluster_id, &bytes, expected)?;
         Ok(DecodedClusterShPayload {
             cluster_id,
             bytes,
@@ -377,6 +415,32 @@ impl ClusterShPayloadsSection {
             )));
         }
         Ok(())
+    }
+}
+
+/// Fully validated id-50 metadata plus immutable per-cluster decode plans.
+/// Construction is only available through
+/// [`ClusterShPayloadsSection::into_validated`].
+#[derive(Debug)]
+pub struct ValidatedClusterShPayloadsSection {
+    section: ClusterShPayloadsSection,
+    expected_chunks: Vec<ExpectedChunk>,
+}
+
+impl ValidatedClusterShPayloadsSection {
+    pub fn section(&self) -> &ClusterShPayloadsSection {
+        &self.section
+    }
+
+    /// Verify only the selected chunk's length, hash, body layout, and semantic
+    /// records against the startup-retained validation plan.
+    pub fn decode_chunk(
+        &self,
+        cluster_id: u32,
+        bytes: Vec<u8>,
+    ) -> Result<DecodedClusterShPayload, ClusterShPayloadsError> {
+        self.section
+            .decode_chunk_with_expected(cluster_id, bytes, &self.expected_chunks)
     }
 }
 

@@ -1,5 +1,5 @@
 //! Cluster-major id-50 SH streaming codec and shared metadata validator.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs.
 //!
 //! Wire ownership, semantic validation, worker chunk decoding, and address
 //! formulas live in focused children so startup parsing stays visibly separate
@@ -38,7 +38,9 @@ mod source_validation;
 mod types;
 mod wire;
 
-pub use codec::{DecodedClusterShBlock, DecodedClusterShPayload};
+pub use codec::{
+    DecodedClusterShBlock, DecodedClusterShPayload, ValidatedClusterShPayloadsSection,
+};
 pub use types::{
     CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, CLUSTER_SH_LOGICAL_TILE_BORDER,
     CLUSTER_SH_LOGICAL_TILE_DIMENSION, CLUSTER_SH_PAYLOADS_CONTAINER_VERSION,

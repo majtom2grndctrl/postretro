@@ -4,6 +4,7 @@ use postretro_level_loader::ShStreamBaseMetadata;
 use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
 use wgpu::util::DeviceExt;
 
+use super::super::gpu::validate_storage_buffer_size;
 use super::super::{
     AtlasShape, ShResidencyDrainError, buffer_with_zeroes, checked_cell_count,
     sparse_compose_capacity, u32_bytes,
@@ -11,17 +12,17 @@ use super::super::{
 
 /// One row after the residency allocator has assigned its entry and f16 ranges.
 /// `role == 2` is a halo and never becomes a reachable compose row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in super::super) struct DirectSparseRowUpload {
+#[derive(Debug)]
+pub(in super::super) struct DirectSparseRowUpload<'a> {
     pub(in super::super) row: u32,
     pub(in super::super) role: u32,
     pub(in super::super) entry_start: u32,
     pub(in super::super) entry_end: u32,
     /// Row starts are word-aligned; entries may still have odd f16 offsets.
     pub(in super::super) tile_f16_start: u32,
-    pub(in super::super) lights: Vec<u32>,
+    pub(in super::super) lights: &'a [u32],
     pub(in super::super) entry_tile_f16_offsets: Vec<u32>,
-    pub(in super::super) tile_f16: Vec<u16>,
+    pub(in super::super) tile_f16: &'a [u16],
 }
 
 pub(super) struct StreamingSparseBuffers {
@@ -33,6 +34,8 @@ pub(super) struct StreamingSparseBuffers {
     tile_f16_capacity: u32,
     compaction_entry_offset_words: u32,
     row_count: u32,
+    fixed_metadata_bytes: u64,
+    active_capacity_bytes: u64,
 }
 
 impl StreamingSparseBuffers {
@@ -57,7 +60,7 @@ impl StreamingSparseBuffers {
     pub(super) fn upload_rows(
         &self,
         queue: &wgpu::Queue,
-        rows: &[DirectSparseRowUpload],
+        rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         self.validate_rows(rows)?;
         for row in rows {
@@ -96,7 +99,7 @@ impl StreamingSparseBuffers {
 
     pub(super) fn validate_rows(
         &self,
-        rows: &[DirectSparseRowUpload],
+        rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         for row in rows {
             self.validate_row(row)?;
@@ -130,18 +133,33 @@ impl StreamingSparseBuffers {
     }
 
     pub(super) fn fixed_metadata_bytes(&self) -> u64 {
-        self.row_pairs.size()
-            + self
-                .compaction_metadata
-                .size()
-                .saturating_sub(u64::from(self.entry_capacity) * 4)
+        self.fixed_metadata_bytes
     }
 
     pub(super) fn active_capacity_bytes(&self) -> u64 {
-        self.lights.size() + self.tile_words.size() + u64::from(self.entry_capacity) * 4
+        self.active_capacity_bytes
     }
 
-    fn validate_row(&self, row: &DirectSparseRowUpload) -> Result<(), ShResidencyDrainError> {
+    pub(super) const fn entry_capacity(&self) -> u32 {
+        self.entry_capacity
+    }
+
+    pub(super) const fn tile_f16_capacity(&self) -> u32 {
+        self.tile_f16_capacity
+    }
+
+    pub(super) fn copy_retained_to(&self, destination: &Self, encoder: &mut wgpu::CommandEncoder) {
+        copy_buffer(encoder, &self.row_pairs, &destination.row_pairs);
+        copy_buffer(encoder, &self.lights, &destination.lights);
+        copy_buffer(encoder, &self.tile_words, &destination.tile_words);
+        copy_buffer(
+            encoder,
+            &self.compaction_metadata,
+            &destination.compaction_metadata,
+        );
+    }
+
+    fn validate_row(&self, row: &DirectSparseRowUpload<'_>) -> Result<(), ShResidencyDrainError> {
         match row.role {
             2 => return Ok(()),
             1 => {}
@@ -215,15 +233,15 @@ impl StreamingSparseBuffers {
     }
 }
 
-fn is_zero_entry_row(row: &DirectSparseRowUpload) -> bool {
+fn is_zero_entry_row(row: &DirectSparseRowUpload<'_>) -> bool {
     row.entry_start == 0
         && row.entry_end == 0
         && row.entry_tile_f16_offsets.is_empty()
         && row.tile_f16.is_empty()
 }
 
-fn is_word_aligned_tile_row(row: &DirectSparseRowUpload) -> bool {
-    row.tile_f16_start & 1 == 0 && row.tile_f16.len() & 1 == 0
+fn is_word_aligned_tile_row(row: &DirectSparseRowUpload<'_>) -> bool {
+    row.tile_f16_start & 1 == 0
 }
 
 pub(super) fn build_grid_and_sparse(
@@ -232,9 +250,10 @@ pub(super) fn build_grid_and_sparse(
     source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
     shape: AtlasShape,
     label: &'static str,
+    sparse_floor: Option<(u32, u32)>,
 ) -> Result<(ComposeGridParams, StreamingSparseBuffers, wgpu::Buffer, u64), ShResidencyDrainError> {
     let (affinity_dims, masks, levels, _indices, entry_capacity, tile_f16_capacity) =
-        sparse_compose_capacity(base, source)?;
+        sparse_compose_capacity(base, source, sparse_floor)?;
     let cells = checked_cell_count(affinity_dims)?;
     let cells_usize = usize::try_from(cells).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
     let entry_len =
@@ -257,6 +276,35 @@ pub(super) fn build_grid_and_sparse(
             .ok_or(ShResidencyDrainError::SlotOverflow)?,
         0,
     );
+    for (byte_len, reason) in [
+        (
+            u64::from(cells)
+                .checked_mul(8)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?,
+            "streamed direct CSR row-pair table exceeds adapter storage limits",
+        ),
+        (
+            u64::from(entry_capacity)
+                .checked_mul(4)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?,
+            "streamed direct entry pool exceeds adapter storage limits",
+        ),
+        (
+            u64::from(tile_f16_capacity.div_ceil(2))
+                .checked_mul(4)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?,
+            "streamed direct delta tile pool exceeds adapter storage limits",
+        ),
+        (
+            u64::try_from(compaction.len())
+                .ok()
+                .and_then(|words| words.checked_mul(4))
+                .ok_or(ShResidencyDrainError::SlotOverflow)?,
+            "streamed direct compaction table exceeds adapter storage limits",
+        ),
+    ] {
+        validate_storage_buffer_size(device, byte_len, reason)?;
+    }
     let row_pairs = buffer_with_zeroes(
         device,
         "Streamed Direct SH CSR Row Pairs",
@@ -283,8 +331,18 @@ pub(super) fn build_grid_and_sparse(
     let compaction_metadata = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Streamed Direct SH Compaction Metadata"),
         contents: &u32_bytes(&compaction),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
     });
+    let (fixed_metadata_bytes, active_capacity_bytes) = sparse_ledger_bytes(
+        row_pairs.size(),
+        lights.size(),
+        tile_words.size(),
+        compaction_metadata.size(),
+        entry_capacity,
+        source.is_some(),
+    )?;
     let width = shape
         .tiles_per_row
         .checked_mul(8)
@@ -342,10 +400,52 @@ pub(super) fn build_grid_and_sparse(
                 .checked_mul(3)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?,
             row_count: cells,
+            fixed_metadata_bytes,
+            active_capacity_bytes,
         },
         grid_buffer,
         grid_capacity,
     ))
+}
+
+fn sparse_ledger_bytes(
+    row_pair_bytes: u64,
+    entry_pool_bytes: u64,
+    tile_pool_bytes: u64,
+    compaction_bytes: u64,
+    entry_capacity: u32,
+    source_present: bool,
+) -> Result<(u64, u64), ShResidencyDrainError> {
+    let compaction_entry_bytes = u64::from(entry_capacity)
+        .checked_mul(4)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let compaction_fixed_bytes = compaction_bytes
+        .checked_sub(compaction_entry_bytes)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let fixed_prefix = checked_ledger_sum(&[row_pair_bytes, compaction_fixed_bytes])?;
+    let active_capacity_bytes = source_present
+        .then(|| checked_ledger_sum(&[entry_pool_bytes, tile_pool_bytes, compaction_entry_bytes]))
+        .transpose()?
+        .unwrap_or(0);
+    let fixed_metadata_bytes = if source_present {
+        fixed_prefix
+    } else {
+        checked_ledger_sum(&[
+            fixed_prefix,
+            entry_pool_bytes,
+            tile_pool_bytes,
+            compaction_entry_bytes,
+        ])?
+    };
+    Ok((fixed_metadata_bytes, active_capacity_bytes))
+}
+
+pub(super) fn checked_ledger_sum(parts: &[u64]) -> Result<u64, ShResidencyDrainError> {
+    parts.iter().try_fold(0_u64, |total, &part| {
+        total
+            .checked_add(part)
+            .ok_or(ShResidencyDrainError::SlotOverflow)
+    })
 }
 
 fn u16_words(values: &[u16]) -> Vec<u8> {
@@ -359,21 +459,34 @@ fn u16_words(values: &[u16]) -> Vec<u8> {
     bytes
 }
 
+fn copy_buffer(
+    encoder: &mut wgpu::CommandEncoder,
+    source: &wgpu::Buffer,
+    destination: &wgpu::Buffer,
+) {
+    let size = source.size().min(destination.size());
+    if size != 0 {
+        encoder.copy_buffer_to_buffer(source, 0, destination, 0, size);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn odd_entry_offset_keeps_row_upload_word_aligned() {
+        let lights = [7];
+        let tile_f16 = [1, 2, 3, 4];
         let row = DirectSparseRowUpload {
             row: 4,
             role: 1,
             entry_start: 1,
             entry_end: 2,
             tile_f16_start: 8,
-            lights: vec![7],
+            lights: &lights,
             entry_tile_f16_offsets: vec![9],
-            tile_f16: vec![1, 2, 3, 4],
+            tile_f16: &tile_f16,
         };
         assert_eq!(row.entry_tile_f16_offsets[0] & 1, 1);
         assert!(is_word_aligned_tile_row(&row));
@@ -382,17 +495,41 @@ mod tests {
 
     #[test]
     fn owned_zero_entry_row_has_no_reachable_payload() {
+        let lights = [];
+        let tile_f16 = [];
         let row = DirectSparseRowUpload {
             row: 4,
             role: 1,
             entry_start: 0,
             entry_end: 0,
             tile_f16_start: 0,
-            lights: vec![],
+            lights: &lights,
             entry_tile_f16_offsets: vec![],
-            tile_f16: vec![],
+            tile_f16: &tile_f16,
         };
         assert!(is_zero_entry_row(&row));
         assert!(is_word_aligned_tile_row(&row));
+    }
+
+    #[test]
+    fn sparse_ledger_separates_present_active_capacity_from_fixed_metadata() {
+        assert_eq!(sparse_ledger_bytes(8, 4, 4, 20, 1, true), Ok((24, 12)));
+        assert_eq!(sparse_ledger_bytes(8, 4, 4, 20, 1, false), Ok((36, 0)));
+    }
+
+    #[test]
+    fn sparse_ledger_rejects_an_impossible_compaction_tail() {
+        assert_eq!(
+            sparse_ledger_bytes(8, 4, 4, 3, 1, true),
+            Err(ShResidencyDrainError::SlotOverflow)
+        );
+    }
+
+    #[test]
+    fn checked_ledger_sum_rejects_overflow() {
+        assert_eq!(
+            checked_ledger_sum(&[u64::MAX, 1]),
+            Err(ShResidencyDrainError::SlotOverflow)
+        );
     }
 }

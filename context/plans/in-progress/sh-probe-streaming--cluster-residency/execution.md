@@ -85,3 +85,13 @@ Phase 8 disk gate: 20.79 GiB available after the focused rebuild and Task 13
 checkpoint; no further cleanup needed. GPU frame-time, seam, and retirement
 observations are explicitly not-yet-evaluable on this host rather than treated
 as a failing implementation gate; see `measurements/sh-probe-streaming/cluster-residency.md`.
+
+Post-Task-13 warning cleanup checkpoint: `c5c6ff80d` removed obsolete SH
+streaming helpers, gated capture/test-only diagnostics, and resolved mechanical
+level-format/loader lints. Default and capture `cargo check` pass without
+streaming dead-code warnings; focused tests and full workspace `cargo test`
+pass. `cargo fmt --check` passes. Strict workspace Clippy now advances through
+level-format and loader, but stops on 24 renderer findings (mostly pre-existing
+high-arity GPU APIs and mechanical lint suggestions). Phase-end disk check:
+14.5 GiB available; no cleanup needed. Final review panel and plan landing
+remain pending an allowance/owner-scope decision, not a code or test failure.

@@ -108,3 +108,18 @@ regressions pass; touched-crate checks, `cargo fmt --check`, and full workspace
 `cargo test` pass. Strict Clippy still stops on the same 24 renderer findings.
 The panel has reviewed two bounded slices, not the entire branch. Phase-end
 disk gate: about 11 GiB available, so no cleanup was needed.
+
+Id-50 review checkpoint (2026-09-23): the codec/layout contract verifier found
+no wire mismatch. The breadth pass found that each chunk decode revalidated
+the whole directory after the manifest had already validated it at startup.
+The manifest now retains an opaque validated section with per-cluster plans;
+worker decode still checks the requested chunk's length, hash, layout, and
+semantics. The standalone decode API continues to fully validate. Multi-cluster
+malformed-byte tests and focused loader/worker tests pass; format, loader, and
+app checks and formatting pass. Strict workspace Clippy reaches the same 24
+renderer findings. A subsequent full `cargo test --quiet` rerun was stopped
+without a reported test failure when free disk fell to 6.8 GiB; the prior
+full-suite pass predates this codec optimization. With Cargo idle, explicit
+`cargo clean -p` for the seven churn-heavy PostRetro packages removed 13.5 GiB
+of rebuildable artifacts and restored about 17 GiB free. Full post-change
+suite validation remains open.

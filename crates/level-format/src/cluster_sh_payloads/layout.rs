@@ -1,60 +1,7 @@
 //! Checked shared address, atlas, sparse-row, and source helpers for id 50.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs.
 
 use super::*;
-
-pub(super) struct SparseSource<'a> {
-    pub(super) valid_probe_masks: &'a [u64],
-    pub(super) cell_levels: &'a [u8],
-    pub(super) affinity_offsets: &'a [u32],
-    pub(super) affinity_lights: &'a [u32],
-}
-
-pub(super) fn sparse_source_from_inputs<'a>(
-    sources: &'a [ClusterShPayloadsSourceMetadata<'a>],
-    section_id: u32,
-) -> Result<SparseSource<'a>, ClusterShPayloadsError> {
-    let source = sources
-        .iter()
-        .find(|source| source.section_id() == section_id)
-        .ok_or_else(|| {
-            ClusterShPayloadsError::SourceMismatch(format!("missing sparse source {section_id}"))
-        })?;
-    match source {
-        ClusterShPayloadsSourceMetadata::Sparse {
-            valid_probe_masks,
-            cell_levels,
-            affinity_offsets,
-            affinity_lights,
-            ..
-        } => Ok(SparseSource {
-            valid_probe_masks,
-            cell_levels,
-            affinity_offsets,
-            affinity_lights,
-        }),
-        ClusterShPayloadsSourceMetadata::Dense { .. } => {
-            source_mismatch(format!("source {section_id} is not sparse"))
-        }
-    }
-}
-
-pub(super) fn dense_source<'a>(
-    sources: &'a [ClusterShPayloadsSourceMetadata<'a>],
-    section_id: u32,
-) -> Result<ClusterShPayloadsSourceMetadata<'a>, ClusterShPayloadsError> {
-    let source = sources
-        .iter()
-        .find(|source| source.section_id() == section_id)
-        .copied()
-        .ok_or_else(|| {
-            ClusterShPayloadsError::SourceMismatch(format!("missing dense source {section_id}"))
-        })?;
-    if source.kind() != ClusterShPayloadsSourceKind::DenseBaseAtlas {
-        return source_mismatch(format!("source {section_id} is not dense"));
-    }
-    Ok(source)
-}
 
 pub(super) fn dense_format(
     source: ClusterShPayloadsSourceMetadata<'_>,

@@ -1,5 +1,5 @@
 //! Metadata-derived closure, ownership, and index validation for id 50.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs.
 
 use super::*;
 
@@ -9,6 +9,37 @@ pub(super) struct ExpectedBlock {
     pub(super) kind: u32,
     pub(super) element_count: u32,
     pub(super) byte_len: u64,
+    pub(super) irradiance_format: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ExpectedProbePatch {
+    pub(super) dense_index: u32,
+    pub(super) word: u32,
+    pub(super) mean_distance: u16,
+    pub(super) mean_sq_distance: u16,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ExpectedSparseRow {
+    pub(super) global_affinity_index: u32,
+    pub(super) first_entry: u32,
+    pub(super) entry_count: u32,
+    pub(super) role: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ExpectedSparseEntry {
+    pub(super) light: u32,
+    pub(super) first_tile_f16: u32,
+    pub(super) tile_f16_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ExpectedSparseBlock {
+    pub(super) rows: Vec<ExpectedSparseRow>,
+    pub(super) entries: Vec<ExpectedSparseEntry>,
+    pub(super) tile_f16_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -20,9 +51,8 @@ pub(super) struct ExpectedChunk {
     pub(super) requested_resident_bytes: u64,
     pub(super) payload_len: u64,
     pub(super) blocks: Vec<ExpectedBlock>,
-    pub(super) dense_indices: Vec<u32>,
-    pub(super) node_base_ranks: BTreeMap<usize, u32>,
-    pub(super) sparse_rows: BTreeMap<u32, Vec<u32>>,
+    pub(super) probe_patches: Vec<ExpectedProbePatch>,
+    pub(super) sparse_blocks: BTreeMap<u32, ExpectedSparseBlock>,
 }
 
 pub(super) struct ValidationPlan<'a> {
@@ -100,8 +130,36 @@ impl<'a> ValidationPlan<'a> {
         }
         let dense_patch_count = u32::try_from(dense_indices.len())
             .map_err(|_| ClusterShPayloadsError::SizeOverflow("dense patch count"))?;
+        let mut probe_patches = Vec::with_capacity(dense_indices.len());
+        for &dense_index in &dense_indices {
+            let probe = &self.inputs.base.probes[dense_index as usize];
+            let node = node_for_probe(
+                dense_index,
+                self.inputs.base,
+                affinity_dimensions(self.inputs.base.grid_dimensions)?,
+            )?
+            .ok_or_else(|| {
+                ClusterShPayloadsError::InvalidData("valid probe has no stored node".into())
+            })?;
+            let rank = node_base_ranks[&node]
+                .checked_add(local_probe_slot_offset(dense_index, self.inputs.base)?)
+                .ok_or(ClusterShPayloadsError::SizeOverflow(
+                    "chunk-local probe slot rank",
+                ))?;
+            checked_probe_slot_rank(rank)?;
+            probe_patches.push(ExpectedProbePatch {
+                dense_index,
+                word: PROBE_INDIRECTION_VALID_BIT
+                    | (u32::from(probe.density_level) & PROBE_INDIRECTION_LEVEL_MASK)
+                    | (u32::from(probe.node_scale) << PROBE_INDIRECTION_SCALE_SHIFT)
+                    | (rank << PROBE_INDIRECTION_SLOT_SHIFT),
+                mean_distance: probe.mean_distance,
+                mean_sq_distance: probe.mean_sq_distance,
+            });
+        }
 
         let mut sparse_rows = BTreeMap::new();
+        let mut sparse_blocks = BTreeMap::new();
         let mut affinity_patch_count = 0u32;
         for source in self.inputs.sources {
             if source.kind() != ClusterShPayloadsSourceKind::SparseAffinity {
@@ -114,6 +172,71 @@ impl<'a> ValidationPlan<'a> {
                         .map_err(|_| ClusterShPayloadsError::SizeOverflow("affinity row count"))?,
                 )
                 .ok_or(ClusterShPayloadsError::SizeOverflow("affinity patch count"))?;
+            let ClusterShPayloadsSourceMetadata::Sparse {
+                section_id,
+                valid_probe_masks,
+                cell_levels,
+                affinity_offsets,
+                affinity_lights,
+                ..
+            } = source
+            else {
+                unreachable!("sparse source kind has sparse metadata")
+            };
+            let mut expected_rows = Vec::with_capacity(rows.len());
+            let mut expected_entries = Vec::new();
+            let mut entry_cursor = 0u32;
+            let mut tile_cursor = 0u32;
+            for &row in &rows {
+                let start = affinity_offsets[row as usize];
+                let end = affinity_offsets[row as usize + 1];
+                let entry_count = end - start;
+                expected_rows.push(ExpectedSparseRow {
+                    global_affinity_index: row,
+                    first_entry: entry_cursor,
+                    entry_count,
+                    role: sparse_row_role(self.inputs.directory, cluster_id, *section_id, row)?
+                        as u32,
+                });
+                let level = Level::from_u8(cell_levels[row as usize]).ok_or_else(|| {
+                    ClusterShPayloadsError::SourceMismatch(format!(
+                        "source {section_id} row {row} has invalid level"
+                    ))
+                })?;
+                let tile_f16_count = u32::try_from(
+                    stored_delta_tiles(level, valid_probe_masks[row as usize])
+                        .checked_mul(delta_probe_f16_stride(CLUSTER_SH_LOGICAL_TILE_DIMENSION))
+                        .ok_or(ClusterShPayloadsError::SizeOverflow(
+                            "sparse entry tile count",
+                        ))?,
+                )
+                .map_err(|_| {
+                    ClusterShPayloadsError::SizeOverflow(
+                        "sparse entry tile count exceeds u32 wire field",
+                    )
+                })?;
+                for source_entry in start..end {
+                    expected_entries.push(ExpectedSparseEntry {
+                        light: affinity_lights[source_entry as usize],
+                        first_tile_f16: tile_cursor,
+                        tile_f16_count,
+                    });
+                    tile_cursor = tile_cursor
+                        .checked_add(tile_f16_count)
+                        .ok_or(ClusterShPayloadsError::SizeOverflow("sparse tile cursor"))?;
+                }
+                entry_cursor = entry_cursor
+                    .checked_add(entry_count)
+                    .ok_or(ClusterShPayloadsError::SizeOverflow("sparse entry cursor"))?;
+            }
+            sparse_blocks.insert(
+                *section_id,
+                ExpectedSparseBlock {
+                    rows: expected_rows,
+                    entries: expected_entries,
+                    tile_f16_count: tile_cursor,
+                },
+            );
             sparse_rows.insert(source.section_id(), rows);
         }
 
@@ -126,6 +249,7 @@ impl<'a> ValidationPlan<'a> {
                 byte_len: u64::from(dense_patch_count)
                     .checked_mul(16)
                     .ok_or(ClusterShPayloadsError::SizeOverflow("probe patch bytes"))?,
+                irradiance_format: None,
             });
             for source in self.inputs.sources {
                 if source.kind() != ClusterShPayloadsSourceKind::DenseBaseAtlas {
@@ -137,6 +261,7 @@ impl<'a> ValidationPlan<'a> {
                     kind: BLOCK_KIND_ISOLATED_ATLAS,
                     element_count: stored_tile_count,
                     byte_len,
+                    irradiance_format: Some(dense_format(*source)?),
                 });
             }
         }
@@ -176,6 +301,7 @@ impl<'a> ValidationPlan<'a> {
                 element_count: u32::try_from(rows.len())
                     .map_err(|_| ClusterShPayloadsError::SizeOverflow("sparse row count"))?,
                 byte_len: sparse_block_len(rows.len(), entry_count, tile_f16_count)?,
+                irradiance_format: None,
             });
         }
         blocks.sort_by_key(|block| (block.section_id, block.kind));
@@ -206,9 +332,8 @@ impl<'a> ValidationPlan<'a> {
             requested_resident_bytes,
             payload_len,
             blocks,
-            dense_indices,
-            node_base_ranks,
-            sparse_rows,
+            probe_patches,
+            sparse_blocks,
         })
     }
 

@@ -117,13 +117,7 @@ fn inputs<'a>(
     }
 }
 
-fn encode_expected_chunk(
-    cluster_id: u32,
-    expected: &ExpectedChunk,
-    directory: &ClusterDirectorySection,
-    base: ClusterShPayloadsBaseMetadata<'_>,
-    sources: &[ClusterShPayloadsSourceMetadata<'_>],
-) -> Vec<u8> {
+fn encode_expected_chunk(cluster_id: u32, expected: &ExpectedChunk) -> Vec<u8> {
     let mut chunk = Vec::new();
     push_u32(&mut chunk, CLUSTER_SH_PAYLOADS_VERSION);
     push_u32(&mut chunk, cluster_id);
@@ -143,33 +137,16 @@ fn encode_expected_chunk(
     for block in &expected.blocks {
         match block.kind {
             BLOCK_KIND_PROBE_PATCHES => {
-                for &index in &expected.dense_indices {
-                    let probe = &base.probes[index as usize];
-                    let node = node_for_probe(
-                        index,
-                        base,
-                        affinity_dimensions(base.grid_dimensions).unwrap(),
-                    )
-                    .unwrap()
-                    .unwrap();
-                    let rank = expected.node_base_ranks[&node]
-                        + local_probe_slot_offset(index, base).unwrap();
-                    push_u32(&mut chunk, index);
-                    push_u32(
-                        &mut chunk,
-                        PROBE_INDIRECTION_VALID_BIT
-                            | (u32::from(probe.density_level) & PROBE_INDIRECTION_LEVEL_MASK)
-                            | (u32::from(probe.node_scale) << PROBE_INDIRECTION_SCALE_SHIFT)
-                            | (rank << PROBE_INDIRECTION_SLOT_SHIFT),
-                    );
-                    chunk.extend_from_slice(&probe.mean_distance.to_le_bytes());
-                    chunk.extend_from_slice(&probe.mean_sq_distance.to_le_bytes());
+                for patch in &expected.probe_patches {
+                    push_u32(&mut chunk, patch.dense_index);
+                    push_u32(&mut chunk, patch.word);
+                    chunk.extend_from_slice(&patch.mean_distance.to_le_bytes());
+                    chunk.extend_from_slice(&patch.mean_sq_distance.to_le_bytes());
                     push_u32(&mut chunk, 0);
                 }
             }
             BLOCK_KIND_ISOLATED_ATLAS => {
-                let format =
-                    dense_format(dense_source(sources, block.section_id).unwrap()).unwrap();
+                let format = block.irradiance_format.unwrap();
                 let layout = isolated_layout(block.element_count).unwrap();
                 push_u32(&mut chunk, format);
                 push_u32(&mut chunk, block.element_count);
@@ -179,52 +156,24 @@ fn encode_expected_chunk(
                 chunk.resize(chunk.len() + (block.byte_len as usize - 20), 0);
             }
             BLOCK_KIND_SPARSE_ROWS => {
-                let source = sparse_source_from_inputs(sources, block.section_id).unwrap();
-                let rows = &expected.sparse_rows[&block.section_id];
-                let (entry_count, tile_f16_count) = sparse_counts(
-                    rows,
-                    source.valid_probe_masks,
-                    source.cell_levels,
-                    source.affinity_offsets,
-                    block.section_id,
-                )
-                .unwrap();
-                push_u32(&mut chunk, rows.len() as u32);
-                push_u32(&mut chunk, entry_count as u32);
-                push_u32(&mut chunk, tile_f16_count as u32);
+                let sparse = &expected.sparse_blocks[&block.section_id];
+                push_u32(&mut chunk, sparse.rows.len() as u32);
+                push_u32(&mut chunk, sparse.entries.len() as u32);
+                push_u32(&mut chunk, sparse.tile_f16_count);
                 push_u32(&mut chunk, 0);
-                let mut entry_cursor = 0u32;
-                for &row in rows {
-                    let start = source.affinity_offsets[row as usize];
-                    let end = source.affinity_offsets[row as usize + 1];
-                    push_u32(&mut chunk, row);
-                    push_u32(&mut chunk, entry_cursor);
-                    push_u32(&mut chunk, end - start);
-                    push_u32(
-                        &mut chunk,
-                        sparse_row_role(directory, cluster_id, block.section_id, row).unwrap()
-                            as u32,
-                    );
-                    entry_cursor += end - start;
+                for row in &sparse.rows {
+                    push_u32(&mut chunk, row.global_affinity_index);
+                    push_u32(&mut chunk, row.first_entry);
+                    push_u32(&mut chunk, row.entry_count);
+                    push_u32(&mut chunk, row.role);
                 }
-                let mut tile_cursor = 0u32;
-                for &row in rows {
-                    let start = source.affinity_offsets[row as usize];
-                    let end = source.affinity_offsets[row as usize + 1];
-                    let level = Level::from_u8(source.cell_levels[row as usize]).unwrap();
-                    let tile_count =
-                        (stored_delta_tiles(level, source.valid_probe_masks[row as usize])
-                            * delta_probe_f16_stride(CLUSTER_SH_LOGICAL_TILE_DIMENSION))
-                            as u32;
-                    for entry in start..end {
-                        push_u32(&mut chunk, source.affinity_lights[entry as usize]);
-                        push_u32(&mut chunk, tile_cursor);
-                        push_u32(&mut chunk, tile_count);
-                        push_u32(&mut chunk, 0);
-                        tile_cursor += tile_count;
-                    }
+                for entry in &sparse.entries {
+                    push_u32(&mut chunk, entry.light);
+                    push_u32(&mut chunk, entry.first_tile_f16);
+                    push_u32(&mut chunk, entry.tile_f16_count);
+                    push_u32(&mut chunk, 0);
                 }
-                chunk.resize(chunk.len() + tile_f16_count * 2, 0);
+                chunk.resize(chunk.len() + sparse.tile_f16_count as usize * 2, 0);
             }
             _ => unreachable!(),
         }
@@ -245,7 +194,7 @@ fn fixture() -> (
     let sources = sources(base);
     let plan = ValidationPlan::new(inputs(&directory, base, &sources)).unwrap();
     let expected = plan.expected_chunk(0).unwrap();
-    let chunk = encode_expected_chunk(0, &expected, &directory, base, &sources);
+    let chunk = encode_expected_chunk(0, &expected);
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 1,
@@ -294,6 +243,145 @@ fn codec_round_trips_metadata_without_reading_payload() {
         .decode_chunk(0, chunk, inputs(&directory, base, &sources))
         .unwrap();
     assert_eq!(decoded.blocks.len(), 3);
+}
+
+// Regression: every worker decode rebuilt the whole directory plan, revisiting unrelated clusters.
+#[test]
+fn validated_multi_cluster_decode_uses_only_the_requested_plan() {
+    let probes = vec![BASE_PROBE; 128];
+    let base = ClusterShPayloadsBaseMetadata {
+        grid_dimensions: [4, 4, 8],
+        tile_dimension: 6,
+        tile_border: 1,
+        irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: &probes,
+    };
+    let mut directory = ClusterDirectorySection {
+        runtime_cell_count: 2,
+        primitive_limit: 64,
+        cell_limit: 32,
+        clusters: vec![
+            ClusterRecord {
+                bounds_min: [0.0; 3],
+                bounds_max: [1.0; 3],
+                member_start: 0,
+                member_count: 1,
+                range_start: 0,
+                range_count: 1,
+                primitive_count: 0,
+                flags: 0,
+            },
+            ClusterRecord {
+                bounds_min: [1.0, 0.0, 0.0],
+                bounds_max: [2.0, 1.0, 1.0],
+                member_start: 1,
+                member_count: 1,
+                range_start: 1,
+                range_count: 1,
+                primitive_count: 0,
+                flags: 0,
+            },
+        ],
+        resources: vec![ClusterResourceRecord {
+            section_id: SectionId::OctahedralShVolume as u32,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [4, 4, 8],
+        }],
+        members: vec![0, 1],
+        ranges: vec![
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 0,
+                count: 64,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 64,
+                count: 64,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+        ],
+    };
+    let sources = vec![ClusterShPayloadsSourceMetadata::Dense {
+        section_id: SectionId::OctahedralShVolume as u32,
+        internal_version: SH_VOLUME_VERSION,
+        irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+    }];
+    let plan = ValidationPlan::new(inputs(&directory, base, &sources)).unwrap();
+    let expected: Vec<_> = (0..2)
+        .map(|cluster_id| plan.expected_chunk(cluster_id).unwrap())
+        .collect();
+    let chunks: Vec<_> = expected
+        .iter()
+        .enumerate()
+        .map(|(cluster_id, expected)| encode_expected_chunk(cluster_id as u32, expected))
+        .collect();
+    let mut payload_offset = 0u64;
+    let index: Vec<_> = expected
+        .iter()
+        .zip(&chunks)
+        .map(|(expected, chunk)| {
+            let record = ClusterShPayloadsIndexRecord {
+                payload_offset,
+                payload_len: chunk.len() as u64,
+                decoded_bytes: expected.decoded_bytes,
+                requested_resident_bytes: expected.requested_resident_bytes,
+                stored_tile_count: expected.stored_tile_count,
+                dense_patch_count: expected.dense_patch_count,
+                affinity_patch_count: expected.affinity_patch_count,
+                hash: *blake3::hash(chunk).as_bytes(),
+            };
+            payload_offset += chunk.len() as u64;
+            record
+        })
+        .collect();
+    let section = ClusterShPayloadsSection {
+        header: ClusterShPayloadsHeader {
+            cluster_count: 2,
+            source_count: 1,
+            grid_dimensions: base.grid_dimensions,
+            affinity_dimensions: [1, 1, 2],
+            payload_bytes: payload_offset,
+        },
+        sources: vec![ClusterShPayloadsSourceRecord {
+            section_id: SectionId::OctahedralShVolume as u32,
+            internal_version: SH_VOLUME_VERSION,
+            kind: ClusterShPayloadsSourceKind::DenseBaseAtlas,
+        }],
+        index,
+    };
+    let validated = section
+        .clone()
+        .into_validated(inputs(&directory, base, &sources))
+        .unwrap();
+
+    let mut malformed = chunks[0].clone();
+    malformed[0..4].copy_from_slice(&(CLUSTER_SH_PAYLOADS_VERSION + 1).to_le_bytes());
+    let mut malformed_section = section;
+    malformed_section.index[0].hash = *blake3::hash(&malformed).as_bytes();
+    let malformed_validated = malformed_section
+        .into_validated(inputs(&directory, base, &sources))
+        .unwrap();
+
+    directory.ranges[1].start = u32::MAX;
+    assert_eq!(
+        validated
+            .decode_chunk(0, chunks[0].clone())
+            .unwrap()
+            .cluster_id,
+        0
+    );
+    assert!(matches!(
+        validated.decode_chunk(0, chunks[0][..chunks[0].len() - 1].to_vec()),
+        Err(ClusterShPayloadsError::RangeOutOfBounds(_))
+    ));
+    assert!(matches!(
+        malformed_validated.decode_chunk(0, malformed),
+        Err(ClusterShPayloadsError::InvalidData(_))
+    ));
 }
 
 #[test]
@@ -475,7 +563,7 @@ fn l0_probe_patches_use_compact_valid_probe_ordinals() {
         .expected_chunk(0)
         .unwrap();
     assert_eq!(expected.stored_tile_count, 3);
-    let chunk = encode_expected_chunk(0, &expected, &directory, base, &sources);
+    let chunk = encode_expected_chunk(0, &expected);
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 1,
@@ -635,17 +723,7 @@ fn scaled_l1_node_closure_uses_one_base_rank_and_eight_tiles() {
         .unwrap();
     assert_eq!(expected.stored_tile_count, 8);
     assert_eq!(expected.dense_patch_count, 512);
-    assert_eq!(expected.node_base_ranks.len(), 1);
-    assert_eq!(
-        expected
-            .node_base_ranks
-            .values()
-            .copied()
-            .collect::<Vec<_>>(),
-        [0]
-    );
-
-    let chunk = encode_expected_chunk(0, &expected, &directory, base, &sources);
+    let chunk = encode_expected_chunk(0, &expected);
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 1,
@@ -889,7 +967,7 @@ fn direct_id_35_uses_the_shared_slot_layout_and_bc6h_formula() {
             * 2
     );
 
-    let chunk = encode_expected_chunk(0, &expected, &directory, base, &sources);
+    let chunk = encode_expected_chunk(0, &expected);
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 1,
@@ -1179,7 +1257,7 @@ fn every_sparse_source_family_contributes_its_own_rows() {
         dense_bytes + 3 * per_sparse_source
     );
 
-    let chunk = encode_expected_chunk(0, &expected, &directory, base, &sources);
+    let chunk = encode_expected_chunk(0, &expected);
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
             cluster_count: 1,

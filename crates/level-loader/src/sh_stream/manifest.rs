@@ -9,7 +9,7 @@ use postretro_level_format::SectionEntry;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsError, ClusterShPayloadsSection, ClusterShPayloadsValidationInputs,
-    DecodedClusterShPayload,
+    DecodedClusterShPayload, ValidatedClusterShPayloadsSection,
 };
 use postretro_level_format::{ContainerMeta, SectionId};
 
@@ -28,7 +28,7 @@ pub struct ShStreamManifest {
     diagnostic_path: PathBuf,
     container: ContainerMeta,
     cluster_directory: ClusterDirectorySection,
-    payloads: ClusterShPayloadsSection,
+    payloads: ValidatedClusterShPayloadsSection,
     base: ShStreamBaseMetadata,
     sources: ShStreamSourceMetadata,
     content_tag: [u8; 32],
@@ -41,7 +41,7 @@ impl ShStreamManifest {
     }
 
     pub fn cluster_count(&self) -> u32 {
-        self.payloads.header.cluster_count
+        self.payloads.section().header.cluster_count
     }
 
     pub fn cluster_directory(&self) -> &ClusterDirectorySection {
@@ -49,7 +49,7 @@ impl ShStreamManifest {
     }
 
     pub fn payloads(&self) -> &ClusterShPayloadsSection {
-        &self.payloads
+        self.payloads.section()
     }
 
     pub fn base(&self) -> &ShStreamBaseMetadata {
@@ -114,12 +114,12 @@ impl ShStreamManifest {
         cluster_id: u32,
         reader: impl FnOnce(&File, u64, u64) -> Result<Vec<u8>, PrlLoadError>,
     ) -> Result<Vec<u8>, PrlLoadError> {
-        let range = self.payloads.payload_range(cluster_id)?;
+        let range = self.payloads.section().payload_range(cluster_id)?;
         let payload_entry = self
             .container
             .find_section(SectionId::ClusterShPayloads as u32)
             .ok_or_else(|| stream_error("id 50 disappeared from validated table"))?;
-        let metadata_len = u64::try_from(self.payloads.header.metadata_len()?)
+        let metadata_len = u64::try_from(self.payloads.section().header.metadata_len()?)
             .map_err(|_| ClusterShPayloadsError::SizeOverflow("id-50 metadata length"))?;
         let start = payload_entry
             .offset
@@ -139,16 +139,7 @@ impl ShStreamManifest {
         cluster_id: u32,
         bytes: Vec<u8>,
     ) -> Result<DecodedClusterShPayload, PrlLoadError> {
-        let sources = self.sources.codec_sources(&self.base);
-        Ok(self.payloads.decode_chunk(
-            cluster_id,
-            bytes,
-            ClusterShPayloadsValidationInputs {
-                directory: &self.cluster_directory,
-                base: self.base.codec_metadata(),
-                sources: &sources,
-            },
-        )?)
+        Ok(self.payloads.decode_chunk(cluster_id, bytes)?)
     }
 
     /// Validate the renderer handoff before it crosses the loader boundary.
@@ -156,16 +147,6 @@ impl ShStreamManifest {
     /// GPU installation stays in the renderer.
     pub fn validate_drain_batch(&self, batch: &ShDrainBatch) -> Result<(), PrlLoadError> {
         batch.validate_contract(self.cluster_count(), self.content_tag)
-    }
-
-    fn validate_payloads(&self) -> Result<(), ClusterShPayloadsError> {
-        let sources = self.sources.codec_sources(&self.base);
-        self.payloads
-            .validate_against(ClusterShPayloadsValidationInputs {
-                directory: &self.cluster_directory,
-                base: self.base.codec_metadata(),
-                sources: &sources,
-            })
     }
 }
 
@@ -270,6 +251,12 @@ pub(crate) fn load_manifest_positionally(
     };
     validate_projected_sources(&base, &sources)?;
     let content_tag = streaming_content_tag(&container, cluster_directory_bytes, &metadata_bytes);
+    let codec_sources = sources.codec_sources(&base);
+    let payloads = payloads.into_validated(ClusterShPayloadsValidationInputs {
+        directory: &cluster_directory,
+        base: base.codec_metadata(),
+        sources: &codec_sources,
+    })?;
     let manifest = ShStreamManifest {
         file,
         diagnostic_path,
@@ -281,7 +268,6 @@ pub(crate) fn load_manifest_positionally(
         content_tag,
         cluster_adjacency: std::sync::OnceLock::new(),
     };
-    manifest.validate_payloads()?;
     Ok(manifest)
 }
 

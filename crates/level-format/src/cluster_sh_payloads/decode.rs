@@ -1,5 +1,5 @@
 //! Positional chunk verification for id-50 worker reads.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs.
 
 use super::*;
 
@@ -7,7 +7,6 @@ pub(super) fn validate_chunk_bytes(
     cluster_id: u32,
     bytes: &[u8],
     expected: &ExpectedChunk,
-    inputs: ClusterShPayloadsValidationInputs<'_>,
 ) -> Result<Vec<DecodedClusterShBlock>, ClusterShPayloadsError> {
     if expected.blocks.is_empty() {
         if !bytes.is_empty() {
@@ -83,21 +82,19 @@ pub(super) fn validate_chunk_bytes(
                 ClusterShPayloadsError::SizeOverflow("chunk body end exceeds usize")
             })?;
         match kind {
-            BLOCK_KIND_PROBE_PATCHES => {
-                validate_probe_patches(&bytes[body.clone()], expected, inputs)?
-            }
+            BLOCK_KIND_PROBE_PATCHES => validate_probe_patches(&bytes[body.clone()], expected)?,
             BLOCK_KIND_ISOLATED_ATLAS => validate_isolated_atlas(
                 &bytes[body.clone()],
                 expected_block.element_count,
-                dense_source(inputs.sources, section_id)?,
+                expected_block.irradiance_format.ok_or_else(|| {
+                    ClusterShPayloadsError::InvalidData(
+                        "isolated atlas lacks a validated source format".into(),
+                    )
+                })?,
             )?,
-            BLOCK_KIND_SPARSE_ROWS => validate_sparse_rows(
-                cluster_id,
-                &bytes[body.clone()],
-                section_id,
-                expected,
-                inputs,
-            )?,
+            BLOCK_KIND_SPARSE_ROWS => {
+                validate_sparse_rows(&bytes[body.clone()], section_id, expected)?
+            }
             _ => unreachable!("expected blocks use only known kinds"),
         }
         blocks.push(DecodedClusterShBlock {
@@ -122,7 +119,6 @@ pub(super) fn validate_chunk_bytes(
 fn validate_probe_patches(
     bytes: &[u8],
     expected: &ExpectedChunk,
-    inputs: ClusterShPayloadsValidationInputs<'_>,
 ) -> Result<(), ClusterShPayloadsError> {
     let expected_len = u64::from(expected.dense_patch_count)
         .checked_mul(16)
@@ -133,38 +129,19 @@ fn validate_probe_patches(
     {
         return invalid("probe patch body length is invalid".into());
     }
-    for (patch, expected_index) in expected.dense_indices.iter().enumerate() {
+    for (patch, expected_patch) in expected.probe_patches.iter().enumerate() {
         let offset = patch * 16;
         let dense_index = read_u32(bytes, offset);
         let word = read_u32(bytes, offset + 4);
         let mean_distance = read_u16(bytes, offset + 8);
         let mean_sq_distance = read_u16(bytes, offset + 10);
         let reserved = read_u32(bytes, offset + 12);
-        if dense_index != *expected_index || reserved != 0 {
+        if dense_index != expected_patch.dense_index || reserved != 0 {
             return invalid("probe patches are not strictly canonical".into());
         }
-        let probe = &inputs.base.probes[dense_index as usize];
-        let node = node_for_probe(
-            dense_index,
-            inputs.base,
-            affinity_dimensions(inputs.base.grid_dimensions)?,
-        )?
-        .ok_or_else(|| {
-            ClusterShPayloadsError::InvalidData("valid probe has no stored node".into())
-        })?;
-        let rank = expected.node_base_ranks[&node]
-            .checked_add(local_probe_slot_offset(dense_index, inputs.base)?)
-            .ok_or(ClusterShPayloadsError::SizeOverflow(
-                "chunk-local probe slot rank",
-            ))?;
-        checked_probe_slot_rank(rank)?;
-        let expected_word = PROBE_INDIRECTION_VALID_BIT
-            | (u32::from(probe.density_level) & PROBE_INDIRECTION_LEVEL_MASK)
-            | (u32::from(probe.node_scale) << PROBE_INDIRECTION_SCALE_SHIFT)
-            | (rank << PROBE_INDIRECTION_SLOT_SHIFT);
-        if word != expected_word
-            || mean_distance != probe.mean_distance
-            || mean_sq_distance != probe.mean_sq_distance
+        if word != expected_patch.word
+            || mean_distance != expected_patch.mean_distance
+            || mean_sq_distance != expected_patch.mean_sq_distance
         {
             return invalid(format!(
                 "probe patch {patch} disagrees with id 34 metadata/closure"
@@ -177,7 +154,7 @@ fn validate_probe_patches(
 fn validate_isolated_atlas(
     bytes: &[u8],
     expected_slots: u32,
-    source: ClusterShPayloadsSourceMetadata<'_>,
+    expected_format: u32,
 ) -> Result<(), ClusterShPayloadsError> {
     if bytes.len() < 20 {
         return invalid("isolated atlas body is shorter than its header".into());
@@ -187,7 +164,7 @@ fn validate_isolated_atlas(
     let width = read_u32(bytes, 8);
     let height = read_u32(bytes, 12);
     let layers = read_u32(bytes, 16);
-    if format != dense_format(source)? || slot_count != expected_slots {
+    if format != expected_format || slot_count != expected_slots {
         return invalid("isolated atlas format or slot count is invalid".into());
     }
     let layout = isolated_layout(slot_count)?;
@@ -212,16 +189,14 @@ fn validate_isolated_atlas(
 }
 
 fn validate_sparse_rows(
-    cluster_id: u32,
     bytes: &[u8],
     section_id: u32,
     expected: &ExpectedChunk,
-    inputs: ClusterShPayloadsValidationInputs<'_>,
 ) -> Result<(), ClusterShPayloadsError> {
     if bytes.len() < 16 {
         return invalid("sparse row body is shorter than its header".into());
     }
-    let rows = expected.sparse_rows.get(&section_id).ok_or_else(|| {
+    let sparse = expected.sparse_blocks.get(&section_id).ok_or_else(|| {
         ClusterShPayloadsError::InvalidData(format!("unexpected sparse source {section_id}"))
     })?;
     let row_count = read_u32(bytes, 0);
@@ -229,20 +204,15 @@ fn validate_sparse_rows(
     let tile_f16_count = read_u32(bytes, 8);
     if read_u32(bytes, 12) != 0
         || row_count
-            != u32::try_from(rows.len()).map_err(|_| {
+            != u32::try_from(sparse.rows.len()).map_err(|_| {
                 ClusterShPayloadsError::SizeOverflow("sparse row count exceeds u32 wire field")
             })?
     {
         return invalid("sparse row header is invalid".into());
     }
-    let source = sparse_source_from_inputs(inputs.sources, section_id)?;
-    let (expected_entries, expected_tiles) = sparse_counts(
-        rows,
-        source.valid_probe_masks,
-        source.cell_levels,
-        source.affinity_offsets,
-        section_id,
-    )?;
+    let expected_entries = sparse.entries.len();
+    let expected_tiles = usize::try_from(sparse.tile_f16_count)
+        .map_err(|_| ClusterShPayloadsError::SizeOverflow("sparse f16 count exceeds usize"))?;
     if entry_count
         != u32::try_from(expected_entries).map_err(|_| {
             ClusterShPayloadsError::SizeOverflow("sparse entry count exceeds u32 wire field")
@@ -267,27 +237,20 @@ fn validate_sparse_rows(
     {
         return invalid("sparse row body length is invalid".into());
     }
-    let mut entry_cursor = 0u32;
     let mut tile_cursor = 0u32;
-    for (row_index, &row) in rows.iter().enumerate() {
+    for (row_index, expected_row) in sparse.rows.iter().enumerate() {
         let offset = 16 + row_index * 16;
         let source_row = read_u32(bytes, offset);
         let first_entry = read_u32(bytes, offset + 4);
         let count = read_u32(bytes, offset + 8);
         let role = read_u32(bytes, offset + 12);
-        let expected_role = sparse_row_role(inputs.directory, cluster_id, section_id, row)?;
-        let source_count =
-            source.affinity_offsets[row as usize + 1] - source.affinity_offsets[row as usize];
-        if source_row != row
-            || first_entry != entry_cursor
-            || count != source_count
-            || role != expected_role as u32
+        if source_row != expected_row.global_affinity_index
+            || first_entry != expected_row.first_entry
+            || count != expected_row.entry_count
+            || role != expected_row.role
         {
             return invalid("sparse row record disagrees with id 49/source metadata".into());
         }
-        entry_cursor = entry_cursor
-            .checked_add(count)
-            .ok_or(ClusterShPayloadsError::SizeOverflow("sparse entry cursor"))?;
     }
     let entries_base = 16 + row_count * 16;
     for entry in 0..entry_count {
@@ -298,24 +261,10 @@ fn validate_sparse_rows(
         if read_u32(bytes, offset + 12) != 0 || first_tile != tile_cursor {
             return invalid("sparse entry offsets are invalid".into());
         }
-        let (row, source_entry) =
-            sparse_entry_location(rows, entry as u32, source.affinity_offsets)?;
-        let expected_light = source.affinity_lights[source_entry as usize];
-        let level = Level::from_u8(source.cell_levels[row as usize]).ok_or_else(|| {
-            ClusterShPayloadsError::SourceMismatch("sparse level became invalid".into())
-        })?;
-        let expected_tile_count = stored_delta_tiles(level, source.valid_probe_masks[row as usize])
-            .checked_mul(delta_probe_f16_stride(CLUSTER_SH_LOGICAL_TILE_DIMENSION))
-            .ok_or(ClusterShPayloadsError::SizeOverflow(
-                "sparse entry tile count",
-            ))?;
-        if light != expected_light
-            || tile_count
-                != u32::try_from(expected_tile_count).map_err(|_| {
-                    ClusterShPayloadsError::SizeOverflow(
-                        "sparse entry tile count exceeds u32 wire field",
-                    )
-                })?
+        let expected_entry = &sparse.entries[entry];
+        if light != expected_entry.light
+            || first_tile != expected_entry.first_tile_f16
+            || tile_count != expected_entry.tile_f16_count
         {
             return invalid("sparse entry disagrees with its source CSR namespace".into());
         }
@@ -330,26 +279,4 @@ fn validate_sparse_rows(
         return invalid("sparse tile ranges do not consume the payload".into());
     }
     Ok(())
-}
-
-fn sparse_entry_location(
-    rows: &[u32],
-    local_entry: u32,
-    offsets: &[u32],
-) -> Result<(u32, u32), ClusterShPayloadsError> {
-    let mut cursor = 0u32;
-    for &row in rows {
-        let start = offsets[row as usize];
-        let end = offsets[row as usize + 1];
-        let count = end - start;
-        if local_entry < cursor + count {
-            return Ok((row, start + local_entry - cursor));
-        }
-        cursor = cursor
-            .checked_add(count)
-            .ok_or(ClusterShPayloadsError::SizeOverflow(
-                "sparse entry location",
-            ))?;
-    }
-    invalid("sparse entry exceeds its row table".into())
 }

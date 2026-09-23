@@ -202,7 +202,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_fit_reuses_and_coalesces_ranges_without_relocating_live_slots() {
+    fn dense_growth_and_eviction_reuse_a_stale_slot_without_relocating_live_slots() {
         let mut pool = FirstFitRanges::default();
         let a = pool.allocate(3).unwrap();
         let b = pool.allocate(2).unwrap();
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_pool_reserves_zero_and_resets_pair_before_reuse() {
+    fn sparse_eviction_clears_a_reachable_pair_before_same_drain_reuse() {
         let mut pool = SparsePool::new(2);
         let (_, first_tiles) = pool.install(0, 1, 3).unwrap();
         assert_eq!(pool.row_pairs[0], [1, 2]);

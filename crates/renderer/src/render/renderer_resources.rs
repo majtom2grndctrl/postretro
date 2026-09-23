@@ -229,14 +229,8 @@ impl Renderer {
             geometry.light_influences,
             geometry.entity_shadow_lights,
         );
-        let (animated_baked_descriptor_indices, animated_baked_affinity_lights) = geometry
-            .animated_direct_sh_delta_volumes
-            .map_or((&[][..], &[][..]), |section| {
-                (
-                    section.animation_descriptor_indices.as_slice(),
-                    section.affinity_lights.as_slice(),
-                )
-            });
+        let (animated_baked_descriptor_indices, animated_baked_affinity_lights) =
+            geometry.animated_baked_roster();
         let animated_baked_candidates = animated_baked_shadow_candidates_with_direct_delta(
             geometry.lights,
             geometry.light_influences,

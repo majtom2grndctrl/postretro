@@ -491,6 +491,42 @@ pub struct LevelGeometry<'a> {
     pub texture_materials: &'a [postretro_render_data::material::Material],
 }
 
+impl LevelGeometry<'_> {
+    /// Section 45's roster is global metadata even when its tile payload is
+    /// streamed. The light bridge and renderer must reserve the same raw tail.
+    pub(crate) fn animated_baked_roster(&self) -> (&[u32], &[u32]) {
+        match &self.sh_storage {
+            LevelGeometryShStorage::Legacy => {
+                animated_baked_roster_from_sources(self.animated_direct_sh_delta_volumes, None)
+            }
+            LevelGeometryShStorage::Streaming(manifest) => animated_baked_roster_from_sources(
+                None,
+                manifest.sources().animated_direct_delta.as_ref(),
+            ),
+        }
+    }
+}
+
+fn animated_baked_roster_from_sources<'a>(
+    legacy: Option<
+        &'a postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
+    >,
+    streamed: Option<&'a postretro_level_loader::ShStreamSparseMetadata>,
+) -> (&'a [u32], &'a [u32]) {
+    if let Some(metadata) = streamed {
+        return (
+            &metadata.animation_descriptor_indices,
+            &metadata.affinity_lights,
+        );
+    }
+    legacy.map_or((&[], &[]), |section| {
+        (
+            &section.animation_descriptor_indices,
+            &section.affinity_lights,
+        )
+    })
+}
+
 /// First-guess promoted-slot budgets (cache VRAM ≈ 32 MiB spot + 12 MiB cube),
 /// tuned on §10 target hardware. See the static-light-entity-shadows plan.
 pub(crate) const MAX_PROMOTED_SPOT: usize = 8;
@@ -1248,6 +1284,34 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: streaming omits the whole id-45 section, but its retained
+    // roster must still size the forward tail and match the script bridge.
+    #[test]
+    fn streamed_animated_baked_roster_survives_without_legacy_section() {
+        let metadata = postretro_level_loader::ShStreamSparseMetadata {
+            section_id: 45,
+            internal_version: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: Vec::new(),
+            affinity_lights: vec![0, 2],
+            animation_descriptor_indices: vec![7, 3, 7],
+        };
+        let (descriptors, affinity_lights) =
+            animated_baked_roster_from_sources(None, Some(&metadata));
+
+        assert_eq!(descriptors, &[7, 3, 7]);
+        assert_eq!(affinity_lights, &[0, 2]);
+        assert_eq!(
+            scripted_light_capacity(2, 2, descriptors),
+            5 + RUNTIME_DYNAMIC_LIGHT_RESERVE,
+            "the raw three-row animated tail must reserve forward descriptor and sample slots"
+        );
+    }
 
     #[test]
     fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {

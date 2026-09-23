@@ -51,6 +51,7 @@ pub(super) struct DynamicComposeGridUpload {
 /// Splits a flattened affinity range into no-more-than-`max_workgroups_x`
 /// chunks. The dummy zero-range path retains one workgroup: the shader returns
 /// before touching shared memory, but the bind group remains valid.
+#[cfg(test)]
 pub(super) fn dynamic_compose_dispatches(
     range_count: u32,
     max_workgroups_x: u32,

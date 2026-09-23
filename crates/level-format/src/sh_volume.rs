@@ -487,6 +487,10 @@ impl OctahedralShVolumeSection {
 /// Validate an id-34 header and metadata projection without materializing its
 /// stored atlas. Streaming startup uses this to preserve the exact wire
 /// contract while retaining only the metadata it needs.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the public entry point mirrors the independently parsed id-34 header fields used by streaming startup"
+)]
 pub fn validate_metadata_projection(
     grid_dimensions: [u32; 3],
     probe_stride: u32,

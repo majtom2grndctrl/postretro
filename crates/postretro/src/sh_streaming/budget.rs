@@ -165,6 +165,7 @@ impl ShResidencyAccounting {
         Ok(DEFAULT_GPU_FLOOR_BYTES.max(mandatory))
     }
 
+    #[cfg(test)]
     pub(crate) fn requested_gpu_bytes(&self) -> Result<u64, ShResidencyControllerError> {
         self.fixed_gpu
             .fixed_metadata_bytes

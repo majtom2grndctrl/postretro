@@ -5,7 +5,7 @@ use super::*;
 
 impl ClusterShPayloadsSection {
     pub fn metadata_len_from_header(bytes: &[u8]) -> Result<usize, ClusterShPayloadsError> {
-        Ok(Self::parse_header(bytes)?.metadata_len()?)
+        Self::parse_header(bytes)?.metadata_len()
     }
 
     pub fn parse_header(bytes: &[u8]) -> Result<ClusterShPayloadsHeader, ClusterShPayloadsError> {

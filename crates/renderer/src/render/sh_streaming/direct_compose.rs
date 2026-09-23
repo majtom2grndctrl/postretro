@@ -166,13 +166,6 @@ impl StreamingDirectCompose {
         })
     }
 
-    /// A streaming direct compose instance is created only for id-41/id-45
-    /// maps. Static id-35-only maps sample their base atlas directly and never
-    /// instantiate this type, so they do not advance a direct compose epoch.
-    pub(super) const fn has_composed_output(&self) -> bool {
-        true
-    }
-
     /// Rebuild only the dense-atlas bindings. This never reallocates the
     /// direct sparse pools: id-41/id-45 capacity has its own replacement
     /// lifecycle and must not double during a 34/35 atlas layer append.

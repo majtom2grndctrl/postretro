@@ -20,10 +20,6 @@ pub(super) struct FirstFitRanges {
 }
 
 impl FirstFitRanges {
-    pub(super) fn free_capacity(&self) -> u32 {
-        self.free.values().copied().fold(0u32, u32::saturating_add)
-    }
-
     pub(super) fn allocate(&mut self, len: u32) -> Result<PoolRange, ShResidencyDrainError> {
         if len == 0 {
             return Ok(PoolRange { start: 0, len: 0 });

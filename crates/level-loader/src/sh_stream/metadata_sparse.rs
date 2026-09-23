@@ -125,9 +125,11 @@ pub(super) fn read_optional_sparse_metadata(
         read_u32(&header, 6),
         read_u32(&header, 10),
     ];
-    let descriptor_count = has_descriptor_map
-        .then(|| read_u32(&header, 14))
-        .unwrap_or(0);
+    let descriptor_count = if has_descriptor_map {
+        read_u32(&header, 14)
+    } else {
+        0
+    };
     let tile_dimension_offset = if has_descriptor_map { 18 } else { 14 };
     let tile_dimension = read_u32(&header, tile_dimension_offset);
     let tile_border = read_u32(&header, tile_dimension_offset + 4);

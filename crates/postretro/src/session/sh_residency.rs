@@ -12,13 +12,15 @@ use postretro_level_loader::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode,
     requested_streaming_mode,
 };
-use postretro_renderer::{Renderer, ShResidencySnapshot, ShStreamingLifecycleSummary};
+#[cfg(feature = "capture")]
+use postretro_renderer::ShStreamingLifecycleSummary;
+use postretro_renderer::{Renderer, ShResidencySnapshot};
 use postretro_visibility::VisibleCells;
 
 use super::sh_async_workers::ShAsyncWorkers;
-use crate::sh_streaming::budget::{
-    BytePhase, FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima,
-};
+#[cfg(feature = "capture")]
+use crate::sh_streaming::budget::BytePhase;
+use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
 
 /// Controller state whose lifetime belongs to one loaded session, never to the
@@ -40,6 +42,7 @@ pub(crate) struct ShStreamingSession {
 
 impl ShStreamingSession {
     /// Builds a controller from the renderer's actual allocation snapshot.
+    #[cfg(feature = "capture")]
     pub(crate) fn from_renderer(
         manifest: Arc<ShStreamManifest>,
         renderer: &Renderer,
@@ -66,6 +69,7 @@ impl ShStreamingSession {
     /// Capture-specific spelling of [`Self::from_renderer`]. It deliberately
     /// has no mode selection; the capture caller applies the shared Task 10
     /// gate before it creates this proof controller.
+    #[cfg(feature = "capture")]
     pub(crate) fn for_capture(
         manifest: Arc<ShStreamManifest>,
         renderer: &Renderer,
@@ -157,7 +161,7 @@ impl ShStreamingSession {
 
     /// Capture uses this to continue its deterministic preload/render loop
     /// until the complete current visible/owner closure is sampleable.
-    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    #[cfg(feature = "capture")]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.controller.all_targets_sampleable()
     }
@@ -165,6 +169,7 @@ impl ShStreamingSession {
     /// Merge the controller's frame-local policy/permit view with worker
     /// phase bytes for capture. The renderer contributes pool capacity through
     /// its own snapshot; it deliberately never reaches into this session.
+    #[cfg(feature = "capture")]
     pub(crate) fn residency_lifecycle_summary(&self) -> Result<ShStreamingLifecycleSummary> {
         let controller = self.controller.report_snapshot();
         let worker = self
@@ -399,6 +404,7 @@ impl super::Session {
 /// Applies the temporary Task 10 runtime gate after the loader has already
 /// validated a streamed manifest. Windowed play and static capture share this
 /// exact decision; legacy/off never has a manifest to reach it.
+#[cfg(any(test, feature = "capture"))]
 pub(crate) fn require_sync_proof_mode(mode: ShStreamingMode) -> Result<()> {
     match mode {
         ShStreamingMode::SyncProof => Ok(()),

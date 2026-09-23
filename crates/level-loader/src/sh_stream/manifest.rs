@@ -359,13 +359,13 @@ pub(super) fn ensure_section_floor(
     Ok(())
 }
 
-fn required_entry<'a>(
-    container: &'a ContainerMeta,
+fn required_entry(
+    container: &ContainerMeta,
     section: SectionId,
-) -> Result<&'a SectionEntry, PrlLoadError> {
+) -> Result<&SectionEntry, PrlLoadError> {
     container
         .find_section(section as u32)
-        .ok_or_else(|| PrlLoadError::StaleFormatMissingSection {
+        .ok_or(PrlLoadError::StaleFormatMissingSection {
             section: match section {
                 SectionId::OctahedralShVolume => "OctahedralShVolume",
                 SectionId::ClusterShPayloads => "ClusterShPayloads",
@@ -375,10 +375,10 @@ fn required_entry<'a>(
         })
 }
 
-fn optional_entry<'a>(
-    container: &'a ContainerMeta,
+fn optional_entry(
+    container: &ContainerMeta,
     section: SectionId,
-) -> Result<Option<&'a SectionEntry>, PrlLoadError> {
+) -> Result<Option<&SectionEntry>, PrlLoadError> {
     let entries: Vec<_> = container
         .sections
         .iter()

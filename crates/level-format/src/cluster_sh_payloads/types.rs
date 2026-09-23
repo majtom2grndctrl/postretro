@@ -275,6 +275,10 @@ pub fn source_metadata_from_sections<'a>(
     sources
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each parameter is a separately validated sparse-source wire field; grouping them would obscure the metadata projection"
+)]
 fn sparse_source<'a>(
     section_id: u32,
     internal_version: u32,

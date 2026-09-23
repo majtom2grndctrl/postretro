@@ -305,6 +305,10 @@ impl DirectShVolumeSection {
 /// Validate an id-35 header projection without retaining its atlas body.
 /// This is the metadata-only counterpart of `from_bytes` used by streaming
 /// startup.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the public entry point mirrors the independently parsed id-35 header fields used by streaming startup"
+)]
 pub fn validate_metadata_projection(
     grid_dimensions: [u32; 3],
     tile_dimension: u32,

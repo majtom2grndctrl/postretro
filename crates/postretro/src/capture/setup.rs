@@ -50,16 +50,8 @@ pub(super) fn install_capture_animated_promotion_bridge(
     if capture_lights.iter().any(|light| light.is_dynamic) {
         bail!("capture promotion bridge requires the static-only capture light list");
     }
-    let baked_descriptors = world
-        .sh_volume
-        .as_ref()
-        .map(|volume| volume.animation_descriptors.as_slice())
-        .unwrap_or(&[]);
-    let roster = world
-        .animated_direct_sh_delta_volumes
-        .as_ref()
-        .map(|section| section.animation_descriptor_indices.as_slice())
-        .unwrap_or(&[]);
+    let baked_descriptors = world.animation_descriptors();
+    let roster = world.animated_direct_descriptor_indices();
     let mut bridge = LightBridge::new();
     bridge.populate_from_level_with_influences(
         capture_lights,
@@ -223,6 +215,7 @@ pub(super) fn resolve_forced_active_animation_slots(
 /// renderer's promotion state is keyed by the roster position, so never pass
 /// the slot itself to the capture override. Duplicate slots use the runtime
 /// bridge's first-static-light identity.
+#[cfg(test)]
 pub(super) fn resolve_forced_animated_promotion_rows(
     lights: &[postretro_level_loader::MapLight],
     section: Option<
@@ -239,7 +232,30 @@ pub(super) fn resolve_forced_animated_promotion_rows(
     let section = section.ok_or_else(|| {
         anyhow!("force_promotion requires an AnimatedDirectShDeltaVolumes section")
     })?;
-    let delta_rows: HashSet<u32> = section.affinity_lights.iter().copied().collect();
+    resolve_forced_animated_promotion_rows_from_metadata(
+        lights,
+        &section.animation_descriptor_indices,
+        &section.affinity_lights,
+        Some(forced_promotions),
+    )
+}
+
+/// Streaming-compatible promotion lookup. The id-45 descriptor roster and
+/// CSR light indices are retained metadata; its f16 tile payload is not needed
+/// to resolve a capture override row.
+pub(super) fn resolve_forced_animated_promotion_rows_from_metadata(
+    lights: &[postretro_level_loader::MapLight],
+    animation_descriptor_indices: &[u32],
+    affinity_lights: &[u32],
+    forced_promotions: Option<&[ForcedAnimatedPromotion]>,
+) -> Result<Vec<(usize, f32)>> {
+    let Some(forced_promotions) = forced_promotions else {
+        return Ok(Vec::new());
+    };
+    if forced_promotions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let delta_rows: HashSet<u32> = affinity_lights.iter().copied().collect();
 
     let first_static_light_for_slot = |slot: u32| {
         lights
@@ -291,7 +307,7 @@ pub(super) fn resolve_forced_animated_promotion_rows(
         // Resolve each raw row through the same first-static descriptor-slot
         // join used by the runtime bridge and renderer candidate roster.
         for (animated_baked_index, &descriptor_index) in
-            section.animation_descriptor_indices.iter().enumerate()
+            animation_descriptor_indices.iter().enumerate()
         {
             let Some((_, runtime_light)) = first_static_light_for_slot(descriptor_index) else {
                 continue;

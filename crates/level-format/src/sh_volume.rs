@@ -484,6 +484,49 @@ impl OctahedralShVolumeSection {
     }
 }
 
+/// Validate an id-34 header and metadata projection without materializing its
+/// stored atlas. Streaming startup uses this to preserve the exact wire
+/// contract while retaining only the metadata it needs.
+pub fn validate_metadata_projection(
+    grid_dimensions: [u32; 3],
+    probe_stride: u32,
+    tile_dimension: u32,
+    tile_border: u32,
+    atlas_dimensions: [u32; 2],
+    layer_count: u32,
+    tiles_per_layer: u32,
+    atlas_tiles_per_row: u32,
+    irradiance_format: u32,
+    compact_atlas_len: u32,
+    probes: &[OctahedralShProbe],
+) -> crate::Result<()> {
+    if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
+        return Err(invalid_data(format!(
+            "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11"
+        )));
+    }
+    validate_irradiance_format(irradiance_format)?;
+    validate_octahedral_tile_geometry(tile_dimension, tile_border)?;
+    let stored_prefix = validate_probe_metadata(grid_dimensions, probes)?;
+    validate_stored_atlas_geometry(
+        stored_prefix.total_stored_tiles,
+        tile_dimension,
+        atlas_dimensions,
+        layer_count,
+        tiles_per_layer,
+        atlas_tiles_per_row,
+    )?;
+    let expected_payload_len =
+        expected_compact_atlas_len(irradiance_format, atlas_dimensions, layer_count)?;
+    if usize::try_from(compact_atlas_len).expect("u32 always fits usize") != expected_payload_len {
+        return Err(invalid_data(format!(
+            "octahedral sh volume compact_atlas_len {compact_atlas_len}, expected {expected_payload_len} for irradiance_format {irradiance_format} over {} metadata-derived stored tile(s)",
+            stored_prefix.total_stored_tiles,
+        )));
+    }
+    Ok(())
+}
+
 fn validate_octahedral_tile_geometry(tile_dimension: u32, tile_border: u32) -> crate::Result<()> {
     // The header stores N so a re-bake can change tile resolution without a
     // format break; reject only what *this runtime* cannot sample yet.

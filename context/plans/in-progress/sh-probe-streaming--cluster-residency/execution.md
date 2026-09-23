@@ -18,7 +18,7 @@ slice by owner decision.
 | 9 renderer cluster residency | Done | `c154bfe68`, `347c51dae` | renderer full suite: 564 passed, 1 ignored; workspace check; fmt; 44 focused streaming tests; final code review approved |
 | 10 synchronous runtime thin path | Done | `86c94c928`, `340db5a8e`, `1367d938e` | 16 focused app tests; 834 app tests (2 ignored); 206 loader tests; 569 renderer tests (1 ignored); workspace check; fmt; focused code review approved; attended Mac startup exposed and motivated shader-entry and small-map floor fixes; full workspace tests pass after floor fix; visual GPU proof remains open |
 | 11 bounded async read/decode | Done | `3795e4bd2` | delayed 250 ms positional-reader tests in app and loader; completion identity/permit regression; postretro check/build; full workspace `cargo test`; fmt; strict Clippy blocked by four pre-existing level-format warnings |
-| 12 eviction, growth, hysteresis, diagnostics | Pending | — | — |
+| 12 eviction, growth, hysteresis, diagnostics | Done | `ad08733a7` | 20 controller policy tests, 2 renderer release-order tests, capture JSON test, shared-target app/renderer/loader check, full workspace `cargo test`, fmt, focused code review; strict Clippy blocked by four pre-existing level-format warnings |
 | 13 integrated proof and measurement | Pending | — | — |
 
 After each completed phase, check workspace free space. If it falls below
@@ -61,3 +61,15 @@ manager keeps four named jobs, retains one permit through ready/install/drop,
 and joins the old generation before creating a new pool on reload. The full
 workspace test suite passes; strict Clippy still stops on the same four
 pre-existing level-format warnings.
+
+Owner cleanup preference (2026-09-23): on the next low-disk cleanup, wait for
+Cargo to become idle and clean a broader explicit set of churn-heavy PostRetro
+packages with `cargo clean -p` (app, renderer, level-loader, level-format,
+level-compiler as warranted), still never a bare workspace-wide `cargo clean`.
+
+Phase 7 disk gate: 10.5 GiB available after Task 12 preflight and commit; no
+cleanup needed. Sync-proof remains a deterministic no-eviction baseline, while
+async mode enables the eviction policy. Renderer-confirmed releases drive the
+controller ledger. Capture reports exact current host-phase bytes and explicit
+high-water *upper bounds* because worker and controller ledgers have independent
+historical maxima.

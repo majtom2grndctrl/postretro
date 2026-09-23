@@ -55,14 +55,8 @@ pub(crate) fn build_full_renderer(
     let dynamic_influences = filtered_level_lights.influences;
     let level_light_source_indices = filtered_level_lights.source_indices;
     let entity_shadow_indices = geometry.map(|g| g.entity_shadow_lights).unwrap_or(&[]);
-    let (animated_baked_descriptor_indices, animated_baked_affinity_lights) = geometry
-        .and_then(|g| g.animated_direct_sh_delta_volumes)
-        .map_or((&[][..], &[][..]), |section| {
-            (
-                section.animation_descriptor_indices.as_slice(),
-                section.affinity_lights.as_slice(),
-            )
-        });
+    let (animated_baked_descriptor_indices, animated_baked_affinity_lights) =
+        geometry.map_or((&[][..], &[][..]), LevelGeometry::animated_baked_roster);
     let animated_baked_candidates = animated_baked_shadow_candidates_with_direct_delta(
         full_lights,
         full_influences,

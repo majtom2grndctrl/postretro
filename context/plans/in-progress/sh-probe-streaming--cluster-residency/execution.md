@@ -41,3 +41,15 @@ regressions. Full `cargo test` passes after the floor fix; strict Clippy still
 stops on the same four level-format warnings. The bounded offscreen GPU attempt
 could not acquire a Metal adapter in this execution context and exited; no
 visual result was published. Post-fix disk gate: 14 GiB available, no cleanup.
+
+Subsequent Mac play-test follow-up: streamed id-45 retained its animated-baked
+roster in the manifest, but the renderer sized/validated its forward light tail
+from the omitted whole section. This rejected every light-bridge snapshot and
+left scripted dynamic lights at their prior values. The renderer now reads the
+roster and affinity indices from the active SH storage mode for initialization,
+reload, and capacity sizing. A bounded 45-second `campaign-test` GPU run reached
+the first level frame with no light-bridge rejection (the prior run rejected on
+every frame); visual animation still needs owner confirmation. The separate
+animated-lightmap dispatch-limit failure remains. Focused renderer tests,
+workspace `cargo test`, and formatting pass. Strict Clippy still stops on four
+pre-existing level-format warnings. Disk gate: 13 GiB available, no cleanup.

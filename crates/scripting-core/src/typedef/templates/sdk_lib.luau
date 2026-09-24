@@ -754,7 +754,7 @@ declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionD
 
 --- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
 --- `openTextEntry` opens this tree; the engine loads its descriptor from
---- `content/base/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
+--- `core/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
 declare KEYBOARD_TREE: "keyboard"
 
 --- Reserved button `onPress` action that closes the active modal. The App

@@ -1,5 +1,5 @@
 //! Compiler-owned chunk block assembly for the id-50 wire.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, CLUSTER_SH_PAYLOADS_VERSION,

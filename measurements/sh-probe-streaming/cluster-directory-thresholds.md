@@ -63,6 +63,9 @@ maximum dense set and doubled cell bound. The result is nondegenerate (181
 clusters), bounded, and does not claim an eventual resident-memory cap; Slice 3
 must reconcile its floor with the observed maximum addressed set.
 
+For subsequent live-test levers and the measurements needed before retuning, see
+[`cluster-residency.md`](cluster-residency.md#performance-levers-for-further-testing).
+
 ## Disconnected and budget-boundary fixture
 
 The compact 12-cell synthetic graph has one connected eight-cell component,

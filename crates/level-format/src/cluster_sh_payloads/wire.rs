@@ -1,5 +1,5 @@
 //! Little-endian wire primitives and named error constructors for id 50.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::*;
 

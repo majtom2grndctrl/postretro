@@ -1,5 +1,5 @@
 //! Target selection, owner closure, hysteresis, and request priority.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 

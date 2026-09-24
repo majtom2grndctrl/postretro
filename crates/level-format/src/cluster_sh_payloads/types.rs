@@ -1,5 +1,5 @@
 //! Id-50 public constants, wire types, input projections, and errors.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::*;
 

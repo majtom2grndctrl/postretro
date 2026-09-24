@@ -1,5 +1,5 @@
 //! Loader-to-renderer drain lifecycle and synchronous proof gate.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;

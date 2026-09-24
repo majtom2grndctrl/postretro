@@ -1,5 +1,5 @@
 //! Metadata-first SH streaming manifest and positional chunk reads.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs
 
 mod boundary;
 mod manifest;

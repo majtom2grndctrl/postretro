@@ -1,5 +1,5 @@
 //! App-side SH cluster residency policy and loader-to-renderer handoff.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/rendering_pipeline.md §4
 
 pub(crate) mod budget;
 pub(crate) mod controller;

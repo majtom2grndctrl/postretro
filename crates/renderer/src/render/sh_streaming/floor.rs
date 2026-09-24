@@ -1,5 +1,5 @@
 //! Pure initial-capacity planning for streamed SH pools.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md §Residency policy.
+//! See: context/lib/rendering_pipeline.md §4.
 
 use std::collections::BTreeMap;
 

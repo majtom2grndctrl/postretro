@@ -1,8 +1,8 @@
 # SH Probe Streaming — Per-Cluster Residency
 
-> Slice 3 executable draft. Parent: `context/plans/in-progress/sh-probe-streaming/`.
-> Slice 1 and Slice 2 GPU reads remain `not-yet-evaluable`; that does not block
-> this slice. All new names below are proposed design.
+> Slice 3 shipped in PR #516. Parent: `context/plans/in-progress/sh-probe-streaming/`.
+> GPU frame-time, seam, and growth-copy reads remain `not-yet-evaluable`; see
+> `execution.md` and `measurements/sh-probe-streaming/cluster-residency.md`.
 
 ## Goal
 

@@ -1,8 +1,8 @@
 # SH Probe Streaming — Cell Clustering and Cluster Directory
 
-> Slice 2 executable draft. Parent: `context/plans/in-progress/sh-probe-streaming/`.
-> Implementation has not started. All new names below are proposed design.
-> Slice 1 remains `not-yet-evaluable`; this draft does not claim a measured streaming benefit or authorize Slice 3.
+> Slice 2 shipped in PR #516. Parent: `context/plans/in-progress/sh-probe-streaming/`.
+> The spec below records the original implementation contract. Slice 1's GPU premise
+> remains `not-yet-evaluable`; this record does not claim a measured streaming benefit.
 
 ## Goal
 

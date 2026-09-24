@@ -1,5 +1,5 @@
 //! Isolated 8×8 dense-cell gathering and encoding for id-50 chunks.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_LOGICAL_TILE_DIMENSION, cluster_sh_isolated_atlas_array_layout,

@@ -1,5 +1,5 @@
 //! Checked residency accounting with separate GPU and host-phase ledgers.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/rendering_pipeline.md §4
 
 use super::controller::ShResidencyControllerError;
 

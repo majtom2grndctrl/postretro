@@ -6,6 +6,44 @@ Brief · resumable · **gated** · reads: `context/lib/rendering_pipeline.md` §
 `shadowmask-atlas-compress-at-rest` lands first. It changes bytes, never masks, and
 it ships the measurement this brief is gated on.
 
+## Re-anchor before building
+
+`shadowmask-atlas-compress-at-rest` (in `ready/`) places its two BC5 groups **side by
+side within each layer** — a `2W × H × L` texture, `W` the lightmap layer width — not
+stacked in array layers `L..2L`. Contract: `context/lib/build_pipeline.md` §PRL
+(ShadowmaskAtlas at rest) and `rendering_pipeline.md` §4 (World specular shadowmask);
+derivation in that brief's `research.md` §Group layout. Everything below was written
+against stacked groups.
+
+Invalidated, to rework before the gate's measurement is read:
+
+- **Problem, Capacity model, and the low-capacity-bands argument.** Extra groups can
+  tile within the layer, bounded by the 8192 texture dimension (≈`(8192/W)²` groups
+  with 2D tiling), not by `floor(256/L)`. The layer budget stays untouched. Capacity
+  now falls as `W` grows, not as `L` grows: many small leaves mean small `W` and ample
+  room. The scarce band is a few huge leaves, `W` ≥ 4096. `W` = 8192 already ships
+  with no shadowmask, a band this brief inherits.
+- **"The sample leaves the hoist."** Forced only when groups grow on demand. A small
+  fixed group count — four groups carry the gate's likely 5–8 outcome — may keep every
+  sample hoisted in uniform control flow. Decide this with the layout; it is no longer
+  a settled price.
+- **Open question and non-goals on two textures and array consolidation.** In-layer
+  tiling reaches capacity at one binding with BC5 bytes, so the two-texture layout is
+  dominated, not blocked. The consolidation sequencing argument likely drops out.
+- **Mechanics.** The filter compares tiled dimensions against
+  `max_texture_dimension_2d`, not a layer-group product. The placeholder is 2×1 white.
+  "Correct array layer" rows become "correct tile". The per-group half-texel clamp
+  generalizes to every tile edge, in `v` as well as `u` under 2D tiling.
+
+Still holds: the gate, greedy assignment once slots are abundant, sentinel widening
+(needed only if slots can reach 256), byte-identical output, and the double-count
+dead-zone. The overlap report now arrives on every bake (memo-carried); read it on
+`stress-warren-hallway-inspection`, the performance yardstick, as well as other
+representative content.
+
+The question the rework answers: **tile groups within the layer — row or 2D — and
+does a small fixed group count keep the hoist?**
+
 ## Gate
 
 **Do not build this until `shadowmask-atlas-compress-at-rest` has landed and reported

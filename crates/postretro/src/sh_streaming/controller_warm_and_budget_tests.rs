@@ -328,6 +328,50 @@ fn pressure_yields_the_farthest_equal_priority_prefetch_first() {
     assert!(controller.states[2].suppressed && controller.states[3].suppressed);
 }
 
+// Regression: the async frame took read requests before its drain's budget
+// policy ran, so a prefetch that policy suppressed was submitted while still
+// published as a target, and an idle issuer could read it before the republish.
+#[test]
+fn async_frame_requests_nothing_its_own_budget_policy_suppresses() {
+    let mut controller = ShResidencyController::for_test_with_cell_pairs(
+        topology(
+            vec![0, 1, 2, 3],
+            vec![Vec::new(); 4],
+            vec![Vec::new(); 4],
+            vec![8; 4],
+        ),
+        &chain_pairs(4),
+        ShGpuBudgetInputs {
+            renderer_effective_floor_bytes: Some(16),
+            ..ShGpuBudgetInputs::default()
+        },
+    )
+    .unwrap();
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .unwrap();
+    let _ = controller.take_async_drain_batch().unwrap();
+    for cluster_id in 0..3 {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+    // Three resident clusters already exceed the two-cluster pool; cluster 3,
+    // the farthest prefetch, is targeted but has never been requested.
+    assert!(controller.is_targeted(3));
+
+    let (batch, requests) = controller.take_async_drain_batch_and_requests().unwrap();
+    assert_eq!(batch.target_remove, vec![2, 3]);
+    assert!(
+        requests.is_empty(),
+        "requested {:?} after the drain suppressed it",
+        requests
+            .iter()
+            .map(|request| request.cluster_id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(controller.state(3), Some(ClusterResidencyState::Absent));
+    assert_eq!(controller.permits_in_use(), 0);
+}
+
 #[test]
 fn missing_cell_visibility_falls_back_to_two_hops_from_the_camera_cluster_and_warns_once() {
     let capture = LogCapture::start();

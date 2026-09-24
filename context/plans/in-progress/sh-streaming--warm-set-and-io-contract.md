@@ -261,6 +261,9 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
 - Controller owner-walk fixes: a diamond in the owner graph no longer reads as a cycle
   (`2b46583e8`). A dependent is no longer requested while its owner is blocked behind
   in-flight work (`fe6176c97`).
+- The async frame takes read requests only after the drain's budget policy
+  and the second publish, so no request is submitted for a cluster that the
+  same frame suppresses.
 
 ## Resolutions from T4 (landed `c36cbe9ba`)
 

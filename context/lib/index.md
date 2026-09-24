@@ -14,6 +14,7 @@
 - **Testing** → `testing_guide.md`
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
+- **SH probe streaming / cluster residency / warm set / read scheduling / streaming diagnostics** → `rendering_pipeline.md` §Cluster SH residency · ids 46/49/50: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
 - **Projectile visuals / emissive billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / animated light radius** → `rendering_pipeline.md` §4, §7.4 · `resource_management.md` §6
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation

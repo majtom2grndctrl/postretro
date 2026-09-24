@@ -1179,7 +1179,10 @@ fn owner_walk_revisiting_a_blocked_owner_is_not_a_cycle() {
         .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
         .unwrap();
     assert_eq!(
-        controller.take_next_request().unwrap().map(|r| r.cluster_id),
+        controller
+            .take_next_request()
+            .unwrap()
+            .map(|r| r.cluster_id),
         Some(3)
     );
     // Cluster 1 is now blocked behind queued 3; cluster 2 reaches 1 again.

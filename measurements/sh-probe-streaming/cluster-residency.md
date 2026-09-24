@@ -95,3 +95,32 @@ checks resumed; every resumed phase remained above the threshold, ending at 21,7
    and compare a cold rerun for deterministic bytes and report rows.
 4. Capture shader binding/tap budgets and renderer retirement/leak evidence only after a
    sampled level frame is reached.
+
+## Performance levers for further testing
+
+The current values are starting points, not measured frame-time optima. Change one lever
+at a time against a fixed map, route, resolution, adapter, and build profile. Record the
+PRL hash and whether the run used `async`, validated whole-load `off`, or `sync-proof`.
+Only `async` exercises eviction; `sync-proof` is a deterministic no-eviction proof path.
+
+| Lever (current value) | Expected trade-off | Change scope |
+| --- | --- | --- |
+| Cluster partition (64 nonempty BVH primitives / 32 runtime cells) | Smaller clusters can reduce overfetch and improve eviction granularity, but increase chunk count, directory size, and duplicated halo coverage. Larger clusters reverse that trade-off. Geometry count is a proxy, not a bound on SH bytes or meters. | Compiler constants; rebuild PRL and remeasure the cluster/payload distribution. The original three-way dry run is in `cluster-directory-thresholds.md`. |
+| Probe spacing (1.0 m default) and base-density fidelity | Coarser SH can lower bake, disk, and resident-payload costs, but changes lighting quality and the workload itself. Do not use a spacing change as an `off`-versus-`async` streaming A/B. | Existing compiler options `--sh-probe-spacing` and `--sh-density-fidelity`; rebuild PRL and perform visual checks. |
+| Prefetch horizon (2 portal-cluster hops) and departure hysteresis (2 seconds) | More look-ahead/retention can reduce cold misses and doorway churn but keeps more clusters targeted or resident. Less can lower occupancy but expose late loads and popping. | Runtime policy constants; requires a code change, not a map setting. |
+| Requested SH GPU floor (256 MiB including fixed metadata, whole-resident billboard scatter, and active pools) | A lower floor can save physical allocation but increase prefetch suppression, pool growth, or unavoidable overage. A higher floor can reduce pressure at a memory cost. The renderer may choose a smaller effective floor when the complete level cannot fill 256 MiB. | App/renderer policy constants; compare actual effective floor and pool capacity, not only the requested number. |
+| Parallel stream permits/workers (4) and installs per drain (2) | More concurrency may shorten visible misses but raises concurrent I/O/decode buffers and install bursts; less reduces transient load at the cost of latency. | Runtime policy constants; keep the host-phase and per-frame bounds in view. |
+
+First use a current id-49/id-50 campaign build to test movement, misses, ordinary
+departures, and visual seams. It does not by itself establish a memory-pressure win.
+For pressure testing, use a current-compiler build of a map whose visible/halo working
+set challenges the *effective* floor; PRL file size alone is not that measure. Check
+for ids 49/50 before treating any existing stress-map PRL as a streaming fixture.
+
+For each A/B, capture frame-time distribution and transition hitches, visible misses,
+installs/evictions, targeted and sampleable cluster counts, logical occupancy versus
+physical GPU request/effective floor, pool growth/retirement, and encoded/decoding/ready
+host high-water bounds. Inspect lighting at doorways and after fast travel. Prefer a
+repeatable camera route; static capture alone cannot exercise async eviction. A knob is
+worth changing only when those measurements identify its bottleneck and the visual
+result remains acceptable.

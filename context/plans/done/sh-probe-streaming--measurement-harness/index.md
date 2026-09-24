@@ -1,5 +1,9 @@
 # SH Probe Streaming — Measurement Harness
 
+> Slice 1 shipped in PR #516. The GPU premise comparison remains
+> `not-yet-evaluable` on the available adapter; see
+> `measurements/sh-probe-streaming/premise.md` for the terminal finding.
+
 ## Goal
 
 Build reusable disk-footprint, renderer-accounted SH-residency, and steady-state

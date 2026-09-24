@@ -177,3 +177,9 @@ then compare the same camera pose across growth and a boundary round-trip.
 Record the PRL hash, adapter, capacities, and frame snapshots. A static capture
 alone does not force growth. Do not claim this manual gate as complete until
 the observations are recorded in `measurements/sh-probe-streaming/`.
+
+Landing (2026-09-23 PDT): Tasks 1–13 and the review/preflight fixes merged to
+`main` through PR #516 (`8ce91e682`). The adapter-backed checks above remain
+open measurement work; the merge does not convert `not-yet-evaluable` into a
+passing GPU result. The parent epic remains in progress for its unbuilt Slice 4
+authored hints.

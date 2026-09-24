@@ -132,11 +132,12 @@ at half the bytes. Capacity is not blocked; capacity-with-compression is. Readin
 the two-texture layout as *the* capacity endgame overstates the block, and the
 capacity table's own arithmetic is what shows it.
 
-## Why consolidation must sequence behind the streaming epic
+## Consolidation sequencing after SH residency
 
-`context/plans/in-progress/sh-probe-streaming/` is stage 3 of the
-`large-map-spatial-residency` epic seed, whose stage 5 is "generalize the same cluster
-state to lightmap layers" — where a consolidation belongs. Three points of contact:
+SH residency (Slices 1–3 of `context/plans/in-progress/sh-probe-streaming/`)
+shipped in PR #516. Its former in-flight sequencing constraint is satisfied;
+the parent epic remains open for independent authored hints. The original
+ordering mattered at three points of contact:
 
 1. **A pinned guard.** Its acceptance includes that the SH sampler gains no binding
    and no per-fragment locate-read, and that the forward fragment texture inventory
@@ -153,9 +154,10 @@ state to lightmap layers" — where a consolidation belongs. Three points of con
    compute-written for the first time, adding a writer to the compose passes streaming
    must mark dirty on a mid-level cluster install.
 
-Order, if the two-texture layout is ever wanted: `sh-probe-streaming` → lightmap
+If the two-texture layout is ever wanted, the remaining order is lightmap
 array-consolidation → two-texture shadowmask. Neither of the one-binding layouts
-enters that chain.
+enters that chain. Mask-capacity work remains gated on measured overlap, not on
+the parent epic's authored-hints slice.
 
 ## Assignment simplifies under abundant slots
 

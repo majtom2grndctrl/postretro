@@ -1,5 +1,16 @@
 # SH Probe Streaming
 
+> **Status (2026-09-23):** Slices 1–3 shipped in PR #516 (merged as
+> `8ce91e682`); their specs are under `context/plans/done/`. Slice 4 authored
+> hints have not been drafted or implemented, so this parent epic remains in
+> progress. Adapter-backed frame-time, seam, and GPU growth-copy evidence is
+> still `not-yet-evaluable`, not a completed performance claim.
+> **Slice 4 scope clarification:** authored
+> seams cut cluster boundaries and prefer far-side warm-up while a doorway
+> hides the load. They do not delay door/portal/gameplay state. A cold opening
+> keeps the Slice 3 ambient-floor fallback. This is a best-effort load-hide
+> point, not a guaranteed door gate.
+
 > **Epic spec.** Realizes the `large-map-spatial-residency` seed, SH-first. It sets
 > direction, staging, cross-boundary constraints, and per-slice acceptance for the
 > whole epic. Each slice below is drafted into its own brief/spec before it runs;
@@ -221,11 +232,15 @@ is a manual read (no CI perf gate), never inferred from CPU time.
       coexisting representations).
 
 ### Slice 4 — Authored streaming hints
-- [ ] A streaming-seam brush entity marks a portal/door as a load-hide point; an
+- [ ] A streaming-seam brush entity marks a portal/door as a best-effort
+      load-hide point by cutting the cluster boundary and preferring far-side
+      warm-up; opening cold retains the ambient-floor miss fallback. An
       always-resident brush entity pins a cluster resident; a priority/budget hint biases
       retention. Zero hints still yields the algorithm-default baseline unchanged.
-- [ ] Hints are additive over clustering: a bake with no hints and a bake whose hints
-      match the algorithm's defaults produce the same residency behavior.
+- [ ] Hints are additive over clustering: no hints and zero-priority no-op
+      hints preserve the algorithm-default partition and residency behavior.
+      A seam coincident with an existing cluster boundary preserves partition
+      and SH payload bytes but intentionally advances far-side warm-up.
 - [ ] Hints follow the established `*_region` / `*_volume` FGD pattern (Boundary
       inventory) and validate at compile time with named errors for out-of-range values.
 
@@ -277,9 +292,9 @@ visible-cell drive) before async load and budget eviction fan out.
 
 ### Slice 4: Authored streaming hints
 Additive brush-entity hints over the default clustering: a streaming-seam marker
-(load-hide point), always-resident pin, and priority/budget bias, following the existing
+(best-effort load-hide point), always-resident pin, and priority/budget bias, following the existing
 `*_region` / `*_volume` FGD pattern and its compile-time validation. Default (no hints)
-behavior is unchanged; hints only bias the planner and clustering seeds.
+behavior is unchanged; hints constrain partition cuts and bias the planner.
 
 ## Sequencing
 
@@ -382,7 +397,7 @@ Pinned scenarios the Slice 3 brief's tests cite:
 | 2 | Prefetch vs latency | Cluster enters the prefetch horizon, then becomes visible before its load completes | Miss fallback until the generation-matched install lands; no stall, no hole |
 | 3 | Eviction under pressure | Resident set exceeds budget while a new cluster must load | Eviction draws first from clusters outside the target set (departed), coldest-first by LRU; then, under continued pressure, from prefetch clusters inside the target set, coldest-first by the same LRU/priority key as the departed tier; a visible cluster is never evicted. An evicted still-targeted prefetch cluster is suppressed from re-targeting while budget pressure persists and its prefetch coverage is unchanged, so the planner does not re-add it from the horizon next frame merely because the camera has not moved — without that persistence a stationary camera churns the prefetch set (re-target → reload → re-evict) indefinitely. Suppression clears when pressure relents or the horizon changes, so a genuine re-approach still reloads it. A departed owner eviction-pinned for a resident neighbor's accumulation (runtime ownership never transfers; Slice 3 eviction AC) is not an eligible victim — eviction skips it like a visible cluster, even though it sits in the departed tier. Eviction terminates when residency is under budget or only clusters it cannot evict remain — visible, always-resident, and eviction-pinned owners — the last two are the row 3a overshoot, not an infinite loop. A just-installed prefetch cluster is not evicted the tick it lands merely for a zero sample-recency key. (Priority bias and always-resident pins are Slice 4 hints — their retention is verified there, not in Slice 3.) |
 | 3a | Working set exceeds budget | Visible + always-resident clusters alone exceed the residency floor (whole-map = one cluster, or one cluster larger than the floor) | The floor is a relief target, not a hard cap: residency exceeds it rather than evict a visible or always-resident cluster, and the overshoot is logged once per onset (edge-triggered when residency first exceeds the floor, and again only after it drops back under and re-exceeds), never once per frame: a persistent degenerate working set overshoots every frame, and a per-frame log would spam the render hot path (`development_guide.md §6.1`). The Slice 2 clustering byte budget is held ≤ the residency floor minus always-resident overhead, so no single non-degenerate cluster forces this case; a crowded visible set of many in-budget clusters can still overshoot on a non-degenerate map, held under this same overshoot-not-evict policy. Eviction-pinned departed owners (runtime ownership never transfers; Slice 3 eviction AC) are a further over-floor source whenever a resident neighbor still accumulates against them — held under the same policy, unless the owner bakes a co-covering fallback order to shed the pin (Wire format granule) |
-| 4 | Portal into un-resident cluster | A portal becomes visible exposing a cluster not yet resident | Defined miss fallback (seam gate at authored seams; conservative placeholder elsewhere), never uninitialized atlas |
+| 4 | Portal into un-resident cluster | A portal becomes visible exposing a cluster not yet resident | Authored seams prefer far-side warm-up before opening; a cold opening and every other miss use the conservative ambient-floor placeholder, never uninitialized atlas |
 | 5 | Level reload / teardown | Level unload or reload while loads are in flight | In-flight loads are cancelled or drop at install; residency state clears. The generation counter is monotonic across level loads (never resets), or completions carry the level content identity, so a level-A completion can never alias a level-B generation and install into it |
 | 5a | Stale completion, same level | A cluster's load completes after the player retreated and the planner dropped it from the target set | The completion is dropped at install and budget is not charged. Two independent checks gate install, not one: a target-set-membership check rejects a same-level retreat completion whose cluster the planner dropped (the level-monotonic generation counter does not change on a same-level target-set edit, so it cannot catch this), while a generation/content-identity check rejects a cross-level completion — per-level cluster ids collide, so a level-A cluster-5 completion draining during level-B would pass a membership test whenever level-B targets its own cluster 5, and only the identity match keeps A's bytes out of B's slot. A completion draining alongside both must pass both |
 | 6 | Co-op divergent residency | Two peers hold different resident cluster subsets | Both render correct local lighting; logical content identity agrees at admission; residency never crosses the wire as gameplay state |
@@ -410,10 +425,10 @@ Pinned scenarios the Slice 3 brief's tests cite:
   valid map. Sized to the 6 GB GTX 1660 desktop floor (matches the existing lighting
   perf-floor hardware). The floor *number* and whether the cap is a player option or a build
   constant remain Slice 3 decisions.
-- **Miss policy default — decided (owner-accepted).** A designed seam-gate at authored
-  streaming seams (fits the theatrical set-piece ethos) plus a conservative ambient-floor SH
-  placeholder elsewhere. The exact seam-gate presentation and any per-seam authoring are
-  Slice 3/4 details.
+- **Miss policy default — clarified for Slice 4.** Authored seams are
+  best-effort warm-up points, not gameplay or visual door gates. A cold seam
+  and every other miss retain Slice 3's conservative ambient-floor SH
+  placeholder; no door waits on async residency.
 - **v11/v4 per-cluster byte-slice mechanics (Slice 3).** The cluster directory addresses
   SH data by grid-relative cell/probe index, so the directory itself is unaffected by the
   v11/v4 byte layout. What remains for Slice 3 is resolving those index ranges to

@@ -1,5 +1,5 @@
 //! Pure cluster-target policy and the synchronous SH streaming proof gate.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

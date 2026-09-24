@@ -1,5 +1,5 @@
 //! Sparse affinity-row slicing for compiler-produced id-50 chunks.
-//! See: context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;

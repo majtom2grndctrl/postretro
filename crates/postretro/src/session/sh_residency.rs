@@ -3,7 +3,7 @@
 //! The renderer sees only loader-owned drain batches and returns their outcome.
 //! This module keeps target selection, synchronous proof reads, and permit
 //! accounting on the application side. See:
-//! `context/plans/in-progress/sh-probe-streaming--cluster-residency/index.md`.
+//! `context/lib/rendering_pipeline.md` §4.
 
 use std::sync::Arc;
 

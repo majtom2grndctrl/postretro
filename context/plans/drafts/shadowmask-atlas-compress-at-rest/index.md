@@ -69,9 +69,9 @@ after upload, and every shadow reads as it did.
   with a `[Renderer]` error. The compiler emits neither; the runtime guards corrupt or
   hand-built data. Against the one-texel placeholder both samples read the same white
   texel.
-- **The upload owns GPU-only lightmap payloads.** Level install moves id 42's mask
-  payload and id 22's irradiance and direction payloads out of the loaded world into
-  the lightmap upload, which drops them once the textures exist. The world keeps each
+- **The upload owns GPU-only lightmap payloads.** Every level install — the game's and
+  the capture harness's — moves id 42's mask payload and id 22's irradiance and
+  direction payloads out of the loaded world into the lightmap upload, which drops them once the textures exist. The world keeps each
   section's header — dimensions, formats, the slot table — because atlas-dimension
   resolution and spec-light channel mapping read them, and it has no representation of
   a header whose payload was taken, so nothing can re-validate or re-upload an emptied
@@ -125,6 +125,9 @@ after upload, and every shadow reads as it did.
       mismatch. (pin: stale-payload, stale-payload-tag-collision)
 - [ ] A warm cache holding a pre-change shadowmask entry never serves it; the rebuilt
       section equals the uncached section byte-for-byte. (pin: stale-memo)
+- [ ] A second build with no edits reports a shadowmask memo hit, not a re-bake — so a
+      streamed header that drifted from the section's own encoding cannot hide behind
+      cached-equals-uncached. (pin: warm-equals-cold)
 - [ ] A level whose selected lights are all dropped ships the section at half the raw
       bytes, loads it, and renders fully lit. (pin: all-sentinel)
 
@@ -134,8 +137,13 @@ after upload, and every shadow reads as it did.
 - [ ] `2W` equal to the device's pinned texture dimension is kept; one block wider
       degrades to the placeholder with a `[Renderer]` error and no panic.
       (pin: width-boundary)
+- [ ] A section whose lightmap width is 8192 — texture width 16384 — degrades to the
+      placeholder with a `[Renderer]` error and no panic against the pinned 8192 limit;
+      4096 is kept. (pin: width-boundary)
 - [ ] A bake whose lightmap layers are 8192 wide warns naming the width and emits no
       id 42; the level loads fully lit. A bake at 4096 emits the section. (pin: wide-layer)
+- [ ] A warm rebuild of the 8192-wide bake warns again and still emits no id 42.
+      (pin: wide-layer-warm)
 - [ ] A bake given atlas dimensions that are not multiples of 4 fails with an error
       naming them, in release as in debug; it never emits a truncated payload.
       (pin: bake-misaligned)
@@ -148,6 +156,9 @@ after upload, and every shadow reads as it did.
       whose two groups differ at the seam shows no bleed from the neighbouring group.
       Proven by offscreen render on an adapter; a skipped run does not count.
       (pin: seam-bleed)
+- [ ] Samples driven at lightmap `u` = 0 and `u` = 1, for each group, read that group's
+      edge column, with neighbouring groups that differ at the seam. Baked fixtures do
+      not count: their chart gutter keeps UVs off the edge. (pin: seam-outer-halftexel)
 - [ ] Moving a light from the first group to the second leaves world-specular output
       unchanged for surfaces covered only by first-group lights; static→static world
       shadowing stays exactly zero. Proven by offscreen render on an adapter; a skipped
@@ -165,7 +176,8 @@ after upload, and every shadow reads as it did.
       (`2W × H × layer_count × 1` against `W × H × layer_count × 4`) in the per-section
       footprint report.
 - [ ] The texture description built for the atlas — BC5, `2W × H`, `layer_count`
-      layers — and its byte size, half the raw description's, are checked without a GPU.
+      layers — and its byte size, half the raw description's, are checked without a GPU,
+      and it is the same description the upload creates.
 - [ ] On a cache miss the bake holds one raw fill, one compressed output and at most one
       layer of encode scratch, and the raw fill is gone before the section is cached or
       returned.
@@ -180,6 +192,13 @@ after upload, and every shadow reads as it did.
       texture exists.
 - [ ] Payloads are released only after their upload; an install that uploads nothing
       keeps them. (pin: no-upload-install)
+- [ ] A capture install takes the payloads the same way; no install path borrows them.
+      (pin: capture-install)
+- [ ] On a level with animated lights, the animated contribution atlas matches the
+      static lightmap's dimensions after install, and animated lights render.
+      (pin: animated-after-take)
+- [ ] A level with a lightmap but no shadowmask, and a level with neither, install
+      without panic; the first releases its lightmap payloads. (pin: partial-lighting-install)
 
 **Overlap report**
 - [ ] A cold bake under `--verbose` reports peak per-texel overlap with layer count and
@@ -202,6 +221,8 @@ post-change:
 - [ ] Peak per-texel overlap under `--verbose`, recorded for the capacity brief.
 - [ ] After a level reload and a dev level cycle, second-group shadows render on the
       new level. (pin: release-then-reload)
+- [ ] A dev level cycle to a level whose lightmap width differs, and back, renders both
+      levels' lightmaps and shadowmasks correctly.
 
 ## Wire format
 
@@ -264,7 +285,11 @@ Non-binding.
   (`startup/lifecycle.rs`, past 4,000 lines — a few-line change) moves the payloads
   into geometry install before stashing the world into `App.level`.
   `level_world_to_geometry` and `LevelGeometry` carry them to `LightmapResources::new`,
-  the one constructor that uploads irradiance, direction and shadowmask.
+  the one constructor that uploads irradiance, direction and shadowmask. The capture
+  harness is the second install path: `capture/setup.rs` `capture_level_geometry`
+  spreads `level_world_to_geometry` over a borrowed world, then `capture/prepared.rs`
+  installs it. The `LevelGeometry { lightmap: None, .. }` builders in `mesh_render.rs`,
+  `particle_render.rs` and `startup/lifecycle.rs` follow the type change.
   `usable_atlas_dimensions` reads id 22's header only.
 - **Proof tooling.** Byte report and frame-time harness: `research.md` §Proof support.
 - **First slice.** Tag + encode + upload + shader on a fixture where four selected lights

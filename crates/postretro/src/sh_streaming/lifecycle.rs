@@ -226,6 +226,21 @@ impl ShResidencyController {
         self.take_drain_batch_with_eviction(true)
     }
 
+    /// One async frame's controller work after completions are admitted: the
+    /// drain batch first, then new read requests. The drain's budget policy
+    /// may suppress optional targets, so requests taken before it could name
+    /// a cluster this same frame has already dropped.
+    pub(crate) fn take_async_drain_batch_and_requests(
+        &mut self,
+    ) -> Result<(ShDrainBatch, Vec<ShClusterRequest>), ShResidencyControllerError> {
+        let batch = self.take_async_drain_batch()?;
+        let mut requests = Vec::new();
+        while let Some(request) = self.take_next_request()? {
+            requests.push(request);
+        }
+        Ok((batch, requests))
+    }
+
     fn take_drain_batch_with_eviction(
         &mut self,
         eviction_enabled: bool,

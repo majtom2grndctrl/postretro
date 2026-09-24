@@ -388,14 +388,19 @@ impl ShStreamingSession {
                 chunk,
             })?;
         }
-        while let Some(request) = self.controller.take_next_request()? {
+        // Budget policy runs inside the drain and may suppress targets. Take
+        // requests only after it, and publish its final target set before
+        // submitting them: an idle issuer wakes on a submission and would
+        // otherwise read a suppressed cluster against the earlier publish.
+        self.promote_composed_clusters();
+        let (batch, requests) = self.controller.take_async_drain_batch_and_requests()?;
+        let workers = self
+            .workers
+            .as_ref()
+            .expect("async workers were present above");
+        workers.publish_targets(self.controller.targets());
+        for request in requests {
             workers.submit(request).map_err(anyhow::Error::msg)?;
-        }
-        let batch = self.prepare_batch()?;
-        // Budget policy runs inside the batch and may suppress targets; publish
-        // again so a suppressed request is cancelled rather than read.
-        if let Some(workers) = self.workers.as_ref() {
-            workers.publish_targets(self.controller.targets());
         }
         Ok(batch)
     }

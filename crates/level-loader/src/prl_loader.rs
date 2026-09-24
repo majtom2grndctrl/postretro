@@ -3257,6 +3257,8 @@ mod tests {
                 .collect(),
             members: vec![0, 1],
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -3305,8 +3307,22 @@ mod tests {
         ));
         std::fs::remove_file(duplicate_path).unwrap();
 
+        let mut v1_internal = cluster_directory_blob(&directory);
+        v1_internal.data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let internal_version_path = write_prl_load_fixture(
+            [v1_internal],
+            "postretro_test_cluster_directory_internal_version.prl",
+        );
+        assert!(matches!(
+            load_prl(internal_version_path.to_str().unwrap()),
+            Err(PrlLoadError::ClusterDirectory(
+                ClusterDirectoryError::VersionMismatch { .. }
+            ))
+        ));
+        std::fs::remove_file(internal_version_path).unwrap();
+
         let mut wrong_container = cluster_directory_blob(&directory);
-        wrong_container.version += 1;
+        wrong_container.version = 1;
         let version_path = write_prl_load_fixture(
             [wrong_container],
             "postretro_test_cluster_directory_container_version.prl",

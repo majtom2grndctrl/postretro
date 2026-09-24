@@ -23,6 +23,8 @@ fn empty_directory() -> ClusterDirectorySection {
         resources: Vec::new(),
         members: Vec::new(),
         ranges: Vec::new(),
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     }
 }
 

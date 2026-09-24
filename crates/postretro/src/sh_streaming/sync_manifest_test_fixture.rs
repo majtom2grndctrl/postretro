@@ -86,12 +86,14 @@ pub(super) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
         runtime_cell_count: 1,
         primitive_limit: 64,
         cell_limit: 32,
-        clusters: canonical_cell_partition(&cells, &portals, &bvh, 64, 32)
+        clusters: canonical_cell_partition(&cells, &portals, &bvh, 64, 32, &[])
             .unwrap()
             .clusters,
         resources: Vec::new(),
         members: vec![0],
         ranges: Vec::new(),
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let directory_inputs = ClusterDirectoryValidationInputs {
         cells: &cells,

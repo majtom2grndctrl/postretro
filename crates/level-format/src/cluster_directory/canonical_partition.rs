@@ -28,6 +28,7 @@ pub fn canonical_cell_partition(
     bvh: &BvhSection,
     primitive_limit: u32,
     cell_limit: u32,
+    seam_portal_ids: &[u32],
 ) -> Result<CanonicalCellPartition, ClusterDirectoryError> {
     if primitive_limit == 0 || cell_limit == 0 {
         return invalid("primitive_limit and cell_limit must be positive");
@@ -54,15 +55,53 @@ pub fn canonical_cell_partition(
 
     let mut adjacency = try_vec(cell_count, "cell adjacency")?;
     adjacency.resize_with(cell_count_usize, BTreeSet::new);
+    let mut seam_portals = BTreeSet::new();
+    let mut seam_endpoints = try_vec(
+        u32_len(seam_portal_ids.len(), "seam portal count")?,
+        "seam endpoints",
+    )?;
+    let mut previous_seam = None;
+    for &portal_id in seam_portal_ids {
+        if previous_seam.is_some_and(|previous| previous >= portal_id) {
+            return Err(ClusterDirectoryError::SeamPortalOrder);
+        }
+        let portal = portals.portals.get(portal_id as usize).ok_or(
+            ClusterDirectoryError::SeamPortalOutOfRange {
+                portal: portal_id,
+                count: portals.portals.len(),
+            },
+        )?;
+        if portal.front_leaf >= cell_count || portal.back_leaf >= cell_count {
+            return Err(ClusterDirectoryError::SeamPortalCellOutOfRange {
+                portal: portal_id,
+                front: portal.front_leaf,
+                back: portal.back_leaf,
+                cell_count,
+            });
+        }
+        if portal.front_leaf == portal.back_leaf {
+            return Err(ClusterDirectoryError::SeamPortalSameCell {
+                portal: portal_id,
+                cell: portal.front_leaf,
+            });
+        }
+        seam_portals.insert(portal_id);
+        seam_endpoints.push((portal.front_leaf, portal.back_leaf));
+        previous_seam = Some(portal_id);
+    }
     for (portal_index, portal) in portals.portals.iter().enumerate() {
+        let portal_id = u32::try_from(portal_index)
+            .map_err(|_| ClusterDirectoryError::SizeOverflow("portal count"))?;
         if portal.front_leaf >= cell_count || portal.back_leaf >= cell_count {
             return invalid(format!(
                 "portal {portal_index} endpoint ({}, {}) outside {cell_count} cells",
                 portal.front_leaf, portal.back_leaf
             ));
         }
-        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
-        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
+        if !seam_portals.contains(&portal_id) {
+            adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
+            adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
+        }
     }
 
     let mut unassigned: BTreeSet<u32> = (0..cell_count).collect();
@@ -88,6 +127,9 @@ pub fn canonical_cell_partition(
             }
             let mut candidate = None;
             for &cell in &frontier {
+                if would_join_seam_endpoints(&cluster_members, cell, &seam_endpoints) {
+                    continue;
+                }
                 let Some(candidate_primitive_count) =
                     primitive_count.checked_add(primitive_counts[cell as usize])
                 else {
@@ -150,6 +192,17 @@ pub fn canonical_cell_partition(
     }
 
     Ok(CanonicalCellPartition { clusters, members })
+}
+
+fn would_join_seam_endpoints(
+    members: &[u32],
+    candidate: u32,
+    seam_endpoints: &[(u32, u32)],
+) -> bool {
+    seam_endpoints.iter().any(|&(front, back)| {
+        (candidate == front && members.contains(&back))
+            || (candidate == back && members.contains(&front))
+    })
 }
 
 fn compare_cell_keys(

@@ -107,8 +107,14 @@ pairs default to bounded asynchronous residency. Ids 47/48 billboard direct scat
 whole-resident. The fragment sampler keeps its existing depth-moment indirection, fixed
 eight-corner stencil, bindings, and taps; it performs no residency lookup.
 
-The application derives visible, two-hop-prefetch, hysteresis, and baked-owner targets
-after visibility. Authored id-49 v2 hints add persistent pinned clusters and their owner
+The application derives visible, warm-set prefetch, hysteresis, and baked-owner targets
+after visibility. The warm set depends only on the camera cell, never the view direction,
+so turning in place causes no prefetch churn. It is a bounded shortest-path walk over the
+id-46 graded cell pairs from the camera cell, stopping at a fixed count of distinct
+clusters (the camera's own included). It is cached per camera cell and ranked by
+whole-metre path distance, then wider path aperture, then cluster ID. Without a usable
+id 46 it falls back to a two-hop cluster-adjacency expansion from the camera's cluster.
+The reachability component alone is never a target set; it usually spans the whole map. Authored id-49 v2 hints add persistent pinned clusters and their owner
 closure, plus preferred `SeamWarm` targets across marked portals when the near side is
 visible—even if an opaque door blocks traversal. Seam warm-up is best effort: it does
 not change door motion, gameplay, or the visible-cell set, and a cold opening still
@@ -119,8 +125,9 @@ and their owners are never evicted for pressure. Hysteresis retains its timer co
 Pressure priority selects which optional targets yield. The planner's drain
 request may list a dependent before its lower-ID owner; the renderer computes
 a dependency-safe release sequence and returns confirmed IDs in ascending order.
-Target ordering is Visible, Pinned, SeamWarm, Prefetch, then Hysteresis; optional work
-orders by descending effective priority and cluster ID. Owner closure propagates class
+Target ordering is Visible, Pinned, SeamWarm, Prefetch, then Hysteresis; within a class,
+requests order by descending effective priority, then warm rank, then cluster ID. Under
+pressure, among equal class and priority, the farthest warm cluster yields first. Owner closure propagates class
 and optional priority to a fixed point, taking the maximum of an owner's authored value
 and same-class dependents. This policy stops at the CPU planner: it adds no renderer
 binding, shader branch, portal traversal, or visibility behavior.
@@ -128,7 +135,9 @@ Bounded workers read and decode id-50 chunks from the validated open
 file off the frame path. A completion installs only when generation, content tag, target,
 and chunk hash still match. At the one renderer drain before SH compose, evictions first
 invalidate sample words; admitted clusters install base and sparse data, then compose only
-their affected affinity rows. A newly installed cluster remains unavailable to sampling
+their affected affinity rows. Each drain admits ready clusters in priority order up to a decoded-byte budget, always
+at least one, and stops rather than skipping ahead to smaller lower-priority work, so
+frame cost tracks bytes rather than cluster count. A newly installed cluster remains unavailable to sampling
 until the next drain, after all applicable indirect and direct compose work has completed.
 The all-zero word remains the miss representation: valid neighbors are renormalized and an
 all-miss sample reaches the ambient floor. Baked owners remain installed for dependent

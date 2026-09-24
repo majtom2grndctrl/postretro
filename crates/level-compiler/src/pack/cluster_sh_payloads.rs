@@ -184,6 +184,7 @@ mod tests {
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
     use postretro_level_format::bvh::{BvhLeaf, BvhSection};
+    use postretro_level_format::cell_locator::{CellLocatorChild, CellLocatorSection};
     use postretro_level_format::cells::{CELL_FLAG_DRAWABLE, CellRecord, CellsSection};
     use postretro_level_format::cluster_directory::{
         CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
@@ -645,8 +646,8 @@ mod tests {
         bytes
     }
 
-    // Slice 4 baseline: this fixed, no-hint compiler fixture freezes the
-    // independently readable id-50 bytes before id-49 partition/wire changes.
+    // No-hint compiler fixture: hash id-50 from the production-baked canonical
+    // directory, not from an unrelated synthetic range layout.
     #[test]
     fn no_hint_two_cell_fixture_preserves_id50_hash_and_cell_membership() {
         let cells = CellsSection {
@@ -716,6 +717,45 @@ mod tests {
 
         let base = raw_octahedral_source();
         let direct = raw_direct_source(&base);
+        let emission =
+            FinalizedShEmissionView::new(&base, Some(&direct), None, None, None, None, None, None)
+                .unwrap();
+        let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let directory = crate::cluster_directory_bake::bake_cluster_directory(
+            &cells,
+            &portals,
+            &bvh,
+            &locator,
+            emission,
+            &crate::streaming_hints::ResolvedStreamingHints::default(),
+        )
+        .expect("no-hint fixture must bake a canonical directory")
+        .directory;
+        assert_eq!(directory.members, partition.members);
+        assert_eq!(directory.clusters.len(), 1);
+        assert_eq!(directory.clusters[0].member_count, 2);
+        let tempdir = tempfile::tempdir().unwrap();
+        let bytes = encoded_spool_bytes(
+            &tempdir.path().join("no-hint-fixture.prl"),
+            &directory,
+            emission,
+            sources,
+        );
+
+        assert_eq!(
+            blake3::hash(&bytes).to_hex().as_str(),
+            "60287285b1ffcbae6c889974bded26085e18df4a220bc3b528651b7b83090d47"
+        );
+    }
+
+    #[test]
+    fn synthetic_sparse_two_cluster_id50_golden_remains_stable() {
+        let base = raw_octahedral_source();
+        let direct = raw_direct_source(&base);
         let delta = raw_delta_source_for_light(7, 0x3c00);
         let direct_delta = raw_direct_delta_source(0, 0x3555);
         let animated_delta = raw_animated_direct_delta_source(11, 0x3666);
@@ -737,13 +777,12 @@ mod tests {
         let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let bytes = encoded_spool_bytes(
-            &tempdir.path().join("no-hint-fixture.prl"),
+            &tempdir.path().join("synthetic-sparse-fixture.prl"),
             &directory,
             emission,
             sources,
         );
-
-        assert_eq!(directory.members, vec![0, 1]);
+        assert_eq!(directory.clusters.len(), 2);
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
             "817ab1de29cad06ddb23245954f7617fe8f275ae96be4e4237c480800045d960"

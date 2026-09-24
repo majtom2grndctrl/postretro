@@ -134,6 +134,10 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
 /// `<payload>/baked/materials`, which is what the runtime's grandparent
 /// derivation resolves for a mod rooted at `<payload>/content/<mod>`. The two
 /// paths agree because of that layout, not because either function enforces it.
+///
+/// This is the derivation used when `--baked-root` is absent. Content outside a
+/// Cargo workspace has no layout to agree by, which is what the flag is for; see
+/// [`resolve_prm_root`].
 fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {
@@ -144,6 +148,26 @@ fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
         })
         .join("baked")
         .join("materials")
+}
+
+/// Resolve the compiled-material output root, honouring `--baked-root`.
+///
+/// `baked_root` names the directory that *contains* `materials/` — the same
+/// thing `<workspace>/baked` is in the in-repo layout — so `--baked-root
+/// /p/baked` writes `/p/baked/materials/<hex>.prm`. The engine's `--baked-root`
+/// reads that identical parent-of-`materials/` directory; the two flags are one
+/// contract, and reading the flag as `materials/` itself on either side puts
+/// writer and reader in different directories, which is the silent
+/// every-texture-is-a-placeholder failure this override exists to prevent.
+/// `baked_root_agrees_with_the_runtime_reader` asserts that agreement.
+///
+/// `None` keeps the `Cargo.toml` ancestor walk untouched, so every in-workspace
+/// bake resolves exactly the directory it resolved before the flag existed.
+fn resolve_prm_root(map_path: &Path, baked_root: Option<&Path>) -> PathBuf {
+    match baked_root {
+        Some(root) => root.join("materials"),
+        None => resolve_prm_root_via_cargo(map_path),
+    }
 }
 
 fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> {
@@ -229,11 +253,21 @@ fn bake_model_textures(
             // pinned deterministic for identical inputs, and an absolute
             // prefix both varies by machine and pushes the part that
             // identifies the texture off the end of the `largest:` lines.
+            //
+            // Separators are normalized to `/` for the same reason the prefix
+            // is stripped: the report name is the only thing identifying a
+            // bundle across runs, and `models\base-color.png` on Windows versus
+            // `models/base-color.png` elsewhere makes two machines' reports
+            // incomparable — and sorts differently, since the name is the
+            // report's sort key. The name is a reporting key only; no cache
+            // key, `.prm` filename, or filesystem path is derived from it.
+            // Matches `level_identity` in
+            // `crates/postretro/src/startup/lifecycle.rs`.
             let relative = texture_path
                 .strip_prefix(content_root)
                 .unwrap_or(texture_path);
             byte_summary.account_baked_sidecar(
-                format!("model:{}", relative.display()),
+                format!("model:{}", relative.to_string_lossy().replace('\\', "/")),
                 cache_root,
                 &key,
                 // Model rendering binds the diffuse slot and substitutes
@@ -686,6 +720,11 @@ pub struct Args {
     voxel_size: f32,
     /// Override cache directory. None = use the workspace-root default.
     cache_dir: Option<PathBuf>,
+    /// Override for the directory that *contains* `materials/`. `Some(dir)`
+    /// writes `.prm` sidecars to `<dir>/materials/`; `None` keeps the
+    /// `Cargo.toml` ancestor walk. The engine takes the same flag naming the
+    /// same directory — see `resolve_prm_root`.
+    baked_root: Option<PathBuf>,
     /// LRU size budget for the stage cache, in bytes. The cache is pruned to
     /// this at build start (oldest-used entries first). Defaults to
     /// `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
@@ -769,6 +808,7 @@ fn help_text() -> String {
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
+         --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
          --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
          --sh-delta-working-set-max-size <SIZE> Peak host-RAM budget for dense ids 27, 41, and 45 before baking; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
@@ -798,6 +838,33 @@ fn help_text() -> String {
     )
 }
 
+/// Consume the value token that must follow a value-taking flag `flag`.
+///
+/// Mirrors the engine's path-flag rule (`path_flag_value` / `resolve_map_path`
+/// in `crates/postretro/src/startup/session.rs`, which guard on
+/// `!value.starts_with("--")`): a token that begins with `--` is another
+/// option, never this flag's value, so a value-taking flag immediately
+/// followed by one is a missing-value error rather than a silent capture. This
+/// keeps the compiler consistent with the engine, which rejects
+/// `--baked-root --release` instead of taking `--release` as the path, and
+/// keeps every value-taking flag here consistent with its siblings.
+///
+/// `-o out.prl` and real paths containing single dashes are unaffected — only a
+/// leading `--` marks a token as an option. There is no `--` end-of-options
+/// terminator in this parser, so none is special-cased.
+fn flag_value<I>(args: &mut I, flag: &str) -> anyhow::Result<String>
+where
+    I: Iterator<Item = String>,
+{
+    match args.next() {
+        None => anyhow::bail!("{flag} requires a value"),
+        Some(value) if value.starts_with("--") => {
+            anyhow::bail!("{flag} requires a value, found the flag '{value}'")
+        }
+        Some(value) => Ok(value),
+    }
+}
+
 fn parse_args_from<I>(mut args: I) -> anyhow::Result<Args>
 where
     I: Iterator<Item = String>,
@@ -812,6 +879,7 @@ where
     let mut soft_shadow_samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
+    let mut baked_root: Option<PathBuf> = None;
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
     let mut delta_section_config = delta_sections::DeltaSectionConfig::default();
     let mut no_cache = false;
@@ -834,15 +902,11 @@ where
                 std::process::exit(0);
             }
             "-o" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("-o requires an output path"))?;
+                let path = flag_value(&mut args, "-o")?;
                 output = Some(PathBuf::from(path));
             }
             "-j" | "--jobs" => {
-                let jobs_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+                let jobs_str = flag_value(&mut args, &arg)?;
                 jobs = jobs_str
                     .parse::<usize>()
                     .map_err(|_| anyhow::anyhow!("{arg} must be an integer >= 1"))?;
@@ -866,18 +930,14 @@ where
                 verbose = true;
             }
             "--format" => {
-                let fmt_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--format requires a value"))?;
+                let fmt_str = flag_value(&mut args, "--format")?;
                 format = fmt_str
                     .parse::<MapFormat>()
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             "--sh-probe-spacing" => {
                 quality_flag_supplied = true;
-                let spacing_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-probe-spacing requires a value"))?;
+                let spacing_str = flag_value(&mut args, "--sh-probe-spacing")?;
                 let parsed: f32 = spacing_str.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-probe-spacing must be a positive number of meters")
                 })?;
@@ -888,9 +948,7 @@ where
             }
             "--lightmap-density" => {
                 quality_flag_supplied = true;
-                let density_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--lightmap-density requires a value"))?;
+                let density_str = flag_value(&mut args, "--lightmap-density")?;
                 let parsed: f32 = density_str.parse().map_err(|_| {
                     anyhow::anyhow!("--lightmap-density must be a positive number of meters")
                 })?;
@@ -901,9 +959,7 @@ where
             }
             "--sh-density-fidelity" => {
                 quality_flag_supplied = true;
-                let fidelity_str = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-density-fidelity requires a positive multiplier")
-                })?;
+                let fidelity_str = flag_value(&mut args, "--sh-density-fidelity")?;
                 let parsed: f32 = fidelity_str.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-density-fidelity must be a positive multiplier")
                 })?;
@@ -914,9 +970,7 @@ where
             }
             "--soft-shadow-samples" => {
                 quality_flag_supplied = true;
-                let samples_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--soft-shadow-samples requires a value"))?;
+                let samples_str = flag_value(&mut args, "--soft-shadow-samples")?;
                 let parsed: u32 = samples_str.parse().map_err(|_| {
                     anyhow::anyhow!("--soft-shadow-samples must be a positive integer")
                 })?;
@@ -930,9 +984,7 @@ where
             }
             "--sdf-voxel-size" => {
                 quality_flag_supplied = true;
-                let voxel_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sdf-voxel-size requires a value"))?;
+                let voxel_str = flag_value(&mut args, "--sdf-voxel-size")?;
                 let parsed: f32 = voxel_str.parse().map_err(|_| {
                     anyhow::anyhow!("--sdf-voxel-size must be a positive number of meters")
                 })?;
@@ -942,28 +994,30 @@ where
                 voxel_size = parsed;
             }
             "--cache-dir" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--cache-dir requires a path"))?;
+                let path = flag_value(&mut args, "--cache-dir")?;
                 cache_dir = Some(PathBuf::from(path));
             }
+            "--baked-root" => {
+                // The value is the parent of `materials/`, never `materials/`
+                // itself. The engine's flag of the same name reads the same
+                // directory.
+                let path = flag_value(&mut args, "--baked-root")?;
+                if path.is_empty() {
+                    anyhow::bail!("--baked-root requires the directory that contains materials/");
+                }
+                baked_root = Some(PathBuf::from(path));
+            }
             "--cache-max-size" => {
-                let size_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--cache-max-size requires a value"))?;
+                let size_str = flag_value(&mut args, "--cache-max-size")?;
                 cache_max_bytes = size_options::parse_size("--cache-max-size", &size_str)?;
             }
             "--sh-delta-max-size" => {
-                let size_str = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-delta-max-size requires a value"))?;
+                let size_str = flag_value(&mut args, "--sh-delta-max-size")?;
                 delta_section_config.max_payload_bytes =
                     size_options::parse_size("--sh-delta-max-size", &size_str)?;
             }
             "--sh-delta-working-set-max-size" => {
-                let size_str = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-delta-working-set-max-size requires a value")
-                })?;
+                let size_str = flag_value(&mut args, "--sh-delta-working-set-max-size")?;
                 delta_section_config.max_working_set_bytes =
                     size_options::parse_size("--sh-delta-working-set-max-size", &size_str)?;
             }
@@ -980,9 +1034,7 @@ where
             }
             "--direction-texel-scale" => {
                 quality_flag_supplied = true;
-                let scale_str = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--direction-texel-scale requires a positive power of two")
-                })?;
+                let scale_str = flag_value(&mut args, "--direction-texel-scale")?;
                 let parsed: u32 = scale_str.parse().map_err(|_| {
                     anyhow::anyhow!(
                         "--direction-texel-scale must be a positive power of two no larger than {}",
@@ -1004,21 +1056,15 @@ where
                 sh_analyze = true;
             }
             "--sh-analyze-out" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-analyze-out requires a path"))?;
+                let path = flag_value(&mut args, "--sh-analyze-out")?;
                 sh_analyze_out = Some(PathBuf::from(path));
             }
             "--sh-protect-aabb" => {
-                let spec = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-protect-aabb requires a value"))?;
+                let spec = flag_value(&mut args, "--sh-protect-aabb")?;
                 sh_protect_aabbs.push(parse_protect_aabb(&spec)?);
             }
             "--sh-density-force-level" => {
-                let value = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-density-force-level requires one of 0, 1, or 2")
-                })?;
+                let value = flag_value(&mut args, "--sh-density-force-level")?;
                 let parsed: u8 = value.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-density-force-level must be one of 0, 1, or 2")
                 })?;
@@ -1029,9 +1075,7 @@ where
                 sh_density_force_level = Some(level);
             }
             "--sh-density-force-scale" => {
-                let value = args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--sh-density-force-scale requires a value from 0 through 3")
-                })?;
+                let value = flag_value(&mut args, "--sh-density-force-scale")?;
                 let parsed: u8 = value.parse().map_err(|_| {
                     anyhow::anyhow!("--sh-density-force-scale must be a value from 0 through 3")
                 })?;
@@ -1054,7 +1098,7 @@ where
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
              [--sh-density-fidelity <MULTIPLIER>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--sh-delta-working-set-max-size <SIZE>] [--no-cache] [--release]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--sh-delta-working-set-max-size <SIZE>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -1072,6 +1116,7 @@ where
         soft_shadow_samples,
         voxel_size,
         cache_dir,
+        baked_root,
         cache_max_bytes,
         delta_section_config,
         no_cache,
@@ -1627,12 +1672,12 @@ mod tests {
     #[test]
     fn resolve_content_root_uses_map_directory_grandparent() {
         assert_eq!(
-            resolve_content_root(Path::new("content/base/maps/test.map")),
-            PathBuf::from("content/base")
+            resolve_content_root(Path::new("content/example/maps/test.map")),
+            PathBuf::from("content/example")
         );
         assert_eq!(
-            resolve_texture_root(Path::new("content/base/maps/test.map")),
-            PathBuf::from("content/base/textures")
+            resolve_texture_root(Path::new("content/example/maps/test.map")),
+            PathBuf::from("content/example/textures")
         );
     }
 
@@ -1703,7 +1748,7 @@ mod tests {
             map_entity("billboard_emitter", &[("sprite", "missing")]),
             map_entity("billboard_emitter", &[("sprite", "smoke")]),
         ];
-        let texture_root = Path::new("content/base/textures");
+        let texture_root = Path::new("content/example/textures");
         let cache_root = Path::new("baked/materials");
         let mut baked = Vec::new();
         let capture = LogCapture::start();
@@ -1738,11 +1783,11 @@ mod tests {
             map_entity("prop_mesh", &[("model", "models/malformed.gltf")]),
             map_entity("prop_mesh", &[("model", "models/second.gltf")]),
         ];
-        let content_root = Path::new("content/base");
+        let content_root = Path::new("content/example");
         let cache_root = Path::new("baked/materials");
-        let shared = PathBuf::from("content/base/models/shared.png");
-        let first_only = PathBuf::from("content/base/models/first.png");
-        let unreadable = PathBuf::from("content/base/models/unreadable.png");
+        let shared = PathBuf::from("content/example/models/shared.png");
+        let first_only = PathBuf::from("content/example/models/first.png");
+        let unreadable = PathBuf::from("content/example/models/unreadable.png");
         let mut resolved_models = Vec::new();
         let mut baked_textures = Vec::new();
 
@@ -1791,7 +1836,7 @@ mod tests {
     #[test]
     fn model_byte_report_names_textures_relative_to_the_content_root() {
         let root = unique_temp_dir("model-texture-report-name");
-        let content_root = root.join("content/base");
+        let content_root = root.join("content/example");
         let models_root = content_root.join("models");
         let cache_root = root.join("prm-cache");
         std::fs::create_dir_all(&models_root).unwrap();
@@ -1827,7 +1872,7 @@ mod tests {
     #[test]
     fn model_texture_bake_creates_and_regenerates_blake3_named_sidecar() {
         let root = unique_temp_dir("model-texture-boundary");
-        let content_root = root.join("content/base");
+        let content_root = root.join("content/example");
         let models_root = content_root.join("models");
         let cache_root = root.join("prm-cache");
         std::fs::create_dir_all(&models_root).unwrap();
@@ -1917,6 +1962,198 @@ mod tests {
         assert_eq!(writer_root, reader_root);
 
         std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    /// `--baked-root` names the parent of `materials/`. The engine's flag of the
+    /// same name reads that same parent, so this is the one place the two
+    /// binaries' readings of the value are compared: writer and reader must land
+    /// on the same `materials/` directory for one `--baked-root` value. Reading
+    /// the value as `materials/` itself on either side reproduces the silent
+    /// every-texture-is-a-placeholder defect the flag exists to close.
+    ///
+    /// The runtime side is reproduced inline — `resolve_prm_root` lives in the
+    /// `postretro` binary crate and is not importable here — exactly as
+    /// `prm_root_writer_and_reader_agree_in_dev_layout` reproduces the default
+    /// walk. The matching engine-side assertion is `prm_root_override_agrees_
+    /// with_the_compiler_writer` in `crates/postretro/src/startup/worker.rs`.
+    #[test]
+    fn baked_root_agrees_with_the_runtime_reader() {
+        let baked_root = Path::new("/project/baked");
+        // A content repository with no `Cargo.toml` anywhere above the map: the
+        // default walk is exactly what cannot be relied on here.
+        let map_path = Path::new("/project/levels/maps/e1m1.map");
+
+        let writer_root = resolve_prm_root(map_path, Some(baked_root));
+        // Reader side: the engine joins `materials` onto the same flag value,
+        // ignoring its own content-root grandparent walk.
+        let reader_root = baked_root.join("materials");
+
+        assert_eq!(writer_root, reader_root);
+        assert_eq!(writer_root, Path::new("/project/baked/materials"));
+    }
+
+    /// The flag value is the parent of `materials/`, so a sidecar lands at
+    /// `<flag>/materials/<hex>.prm` — and never at `<flag>/<hex>.prm` or
+    /// `<flag>/materials/materials/<hex>.prm`.
+    #[test]
+    fn baked_root_is_the_parent_of_the_materials_directory() {
+        let resolved = resolve_prm_root(
+            Path::new("/project/levels/maps/e1m1.map"),
+            Some(Path::new("/project/baked")),
+        );
+        assert_eq!(resolved.file_name().unwrap(), "materials");
+        assert_eq!(resolved.parent().unwrap(), Path::new("/project/baked"));
+        assert_eq!(
+            resolved.join("deadbeef.prm"),
+            Path::new("/project/baked/materials/deadbeef.prm"),
+        );
+    }
+
+    /// With the flag absent the resolver must be the pre-flag `Cargo.toml` walk,
+    /// byte for byte — every in-workspace bake keeps resolving the directory it
+    /// resolved before the override existed.
+    #[test]
+    fn absent_baked_root_keeps_the_cargo_walk() {
+        let workspace = unique_temp_dir("baked-root-default");
+        let maps_dir = workspace.join("content").join("dev").join("maps");
+        std::fs::create_dir_all(&maps_dir).unwrap();
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let map_path = maps_dir.join("level.map");
+        assert_eq!(
+            resolve_prm_root(&map_path, None),
+            resolve_prm_root_via_cargo(&map_path),
+        );
+        assert_eq!(
+            resolve_prm_root(&map_path, None),
+            workspace.join("baked").join("materials"),
+        );
+
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn baked_root_flag_parses_and_defaults_to_absent() {
+        let without = parse_args_from(["input.map".to_string()].into_iter()).unwrap();
+        assert_eq!(without.baked_root, None);
+
+        let with = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--baked-root".to_string(),
+                "/project/baked".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(with.baked_root, Some(PathBuf::from("/project/baked")));
+
+        // A value is required: a bare flag must not silently swallow the input
+        // path or resolve to the current directory.
+        assert!(
+            parse_args_from(["input.map".to_string(), "--baked-root".to_string()].into_iter())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn value_flag_rejects_a_following_option_as_its_value() {
+        // A value-taking flag whose next token looks like another option is a
+        // missing-value error, not a silent capture — the engine's own parser
+        // rejects this shape (`path_flag_value` in
+        // `crates/postretro/src/startup/session.rs`). `--baked-root` and every
+        // sibling value-taking flag must agree.
+        let err = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--baked-root".to_string(),
+                "--release".to_string(),
+                "-o".to_string(),
+                "out.prl".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("--baked-root") && err.contains("--release"),
+            "error should name the flag and the offending token, got: {err}"
+        );
+
+        // A sibling path flag: `-o` must not swallow the following option.
+        assert!(
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "-o".to_string(),
+                    "--no-cache".to_string(),
+                ]
+                .into_iter(),
+            )
+            .is_err()
+        );
+
+        // A sibling non-path value flag behaves identically.
+        assert!(
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "--cache-dir".to_string(),
+                    "--release".to_string(),
+                ]
+                .into_iter(),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_args_from(
+                [
+                    "input.map".to_string(),
+                    "--jobs".to_string(),
+                    "--verbose".to_string(),
+                ]
+                .into_iter(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn value_flag_accepts_real_values_including_single_dash_and_dashed_paths() {
+        // A real path that merely contains dashes — or is relative — must still
+        // be accepted; only a leading `--` marks a token as an option.
+        let parsed = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--baked-root".to_string(),
+                "/project/my-baked-dir".to_string(),
+                "-o".to_string(),
+                "out-01.prl".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.baked_root,
+            Some(PathBuf::from("/project/my-baked-dir"))
+        );
+        assert_eq!(parsed.output, PathBuf::from("out-01.prl"));
+
+        // A single-dash-leading value (e.g. a negative AABB coordinate) is not
+        // an option and is still consumed by its flag.
+        let parsed = parse_args_from(
+            [
+                "input.map".to_string(),
+                "--sh-protect-aabb".to_string(),
+                "-1,-2,-3,4,5,6".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.sh_protect_aabbs,
+            vec![[-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]]
+        );
     }
 
     #[test]

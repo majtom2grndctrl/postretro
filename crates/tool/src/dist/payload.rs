@@ -7,6 +7,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use super::resolve::{EntryExt, Resolved, is_prm_filename};
 
@@ -62,13 +63,7 @@ where
     RemoveTree: FnOnce(&Path) -> io::Result<()>,
     MarkPartial: FnOnce(&Path) -> Result<(), String>,
 {
-    fs::rename(payload_root, aside).map_err(|error| {
-        format!(
-            "stage 5: rename payload root {} aside to {}: {error}",
-            payload_root.display(),
-            aside.display()
-        )
-    })?;
+    rename_aside(payload_root, aside)?;
 
     let Err(remove_error) = remove_tree(aside) else {
         return Ok(());
@@ -95,6 +90,83 @@ where
         aside.display(),
         payload_root.display()
     ))
+}
+
+/// How many times the move-aside is attempted before it gives up, and the base
+/// delay between attempts (it grows linearly with the attempt number).
+const RENAME_ASIDE_ATTEMPTS: u32 = 5;
+const RENAME_ASIDE_BACKOFF: Duration = Duration::from_millis(150);
+
+/// Move the existing payload aside, retrying briefly past a transient lock.
+///
+/// Windows refuses to rename a directory while any program holds a handle
+/// *inside* it — an open file-browser window showing a subfolder, a shell whose
+/// current directory is under it, or an engine or tool still running from it —
+/// and reports it as an access denial rather than a sharing violation. Antivirus
+/// and the search indexer also take brief handles on freshly written files, so a
+/// first denial is frequently transient; a bounded retry rides those out. A
+/// denial that survives every attempt is a program that is still holding the
+/// payload open, so the final message names that cause and its remedy instead of
+/// surfacing a bare "Access is denied".
+fn rename_aside(payload_root: &Path, aside: &Path) -> Result<(), String> {
+    rename_aside_with(
+        payload_root,
+        aside,
+        || fs::rename(payload_root, aside),
+        std::thread::sleep,
+    )
+}
+
+fn rename_aside_with<Rename, Sleep>(
+    payload_root: &Path,
+    aside: &Path,
+    mut rename: Rename,
+    mut sleep: Sleep,
+) -> Result<(), String>
+where
+    Rename: FnMut() -> io::Result<()>,
+    Sleep: FnMut(Duration),
+{
+    let mut attempt = 1;
+    loop {
+        match rename() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_lock_denial(&error) && attempt < RENAME_ASIDE_ATTEMPTS => {
+                sleep(RENAME_ASIDE_BACKOFF * attempt);
+                attempt += 1;
+            }
+            Err(error) if is_lock_denial(&error) => {
+                return Err(format!(
+                    "stage 5: rename payload root {} aside to {}: {error}; another program is \
+                     holding a handle inside the existing payload, so it cannot be moved aside to \
+                     be replaced — commonly a file-browser window open inside it, a shell whose \
+                     current directory is under it, or an engine or tool still running from it. \
+                     Close whatever is browsing or running under {} and re-run.",
+                    payload_root.display(),
+                    aside.display(),
+                    payload_root.display(),
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "stage 5: rename payload root {} aside to {}: {error}",
+                    payload_root.display(),
+                    aside.display()
+                ));
+            }
+        }
+    }
+}
+
+/// Whether a rename error looks like a program holding the directory open.
+///
+/// `PermissionDenied` is the portable signal; on Windows the two raw codes that
+/// carry this — `ERROR_ACCESS_DENIED` (5, how a held descendant handle surfaces)
+/// and `ERROR_SHARING_VIOLATION` (32) — are matched directly so a future
+/// `ErrorKind` remapping cannot quietly drop them.
+fn is_lock_denial(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(5) | Some(32))
 }
 
 fn clear_stale_stage_five_siblings(output_root: &Path, package_name: &str) -> Result<(), String> {
@@ -168,6 +240,7 @@ pub(super) fn should_exclude(path: &Path, mod_root: &Path, emitted: EntryExt) ->
             file_name(path),
             Some(".gitignore" | ".gitkeep" | ".DS_Store")
         )
+        || is_build_scratch(file_name(path).unwrap_or_default())
         || matches!(
             extension(path),
             Some("map" | "ts" | "md" | "prl" | "js" | "bsp")
@@ -407,7 +480,88 @@ fn verify_entry_script_set(mod_root: &Path, emitted: EntryExt) -> Result<(), Str
 fn is_sweep_forbidden(path: &Path) -> bool {
     has_component_pair(path, "maps", "autosave")
         || matches!(file_name(path), Some(".DS_Store"))
+        || is_pack_lock(file_name(path).unwrap_or_default())
+        || is_build_scratch(file_name(path).unwrap_or_default())
         || matches!(extension(path), Some("map" | "ts" | "md" | "bsp"))
+}
+
+/// Whether `name` is one of `prl-build`'s publication locks, `.<name>.prl.pack.lock`.
+///
+/// Matched by name rather than by extension: the leading dot and the compound
+/// `.prl.pack.lock` suffix mean `Path::extension` reports a bare `lock`, which
+/// would both miss the shape that identifies these files and catch unrelated
+/// ones. See [`remove_pack_locks`] for why a distribution carries none.
+pub(crate) fn is_pack_lock(name: &str) -> bool {
+    name.starts_with('.') && name.ends_with(".prl.pack.lock")
+}
+
+/// Whether `name` is scratch a compiler writes beside its output and then
+/// renames into place or deletes: `prl-build`'s `.<name>.prl.pack-*.tmp` and
+/// `.<name>.prl.cluster-sh-*.spool`, and the texture baker's
+/// `<name>.tmp.<pid>`. Only a killed bake leaves one behind, and the author's
+/// tree is where it lands — so a copy would otherwise ship it.
+///
+/// Matched by these exact shapes, like [`is_pack_lock`], rather than by a bare
+/// `tmp` extension that a mod could legitimately use.
+pub(crate) fn is_build_scratch(name: &str) -> bool {
+    let prl_scratch = name.starts_with('.')
+        && ((name.contains(".prl.pack-") && name.ends_with(".tmp"))
+            || (name.contains(".prl.cluster-sh-") && name.ends_with(".spool")));
+    let texture_scratch = name.rsplit_once(".tmp.").is_some_and(|(stem, pid)| {
+        !stem.is_empty() && !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    prl_scratch || texture_scratch
+}
+
+/// Delete every publication lock the level bakes left inside a distribution.
+///
+/// `prl-build` writes `.<name>.prl.pack.lock` beside each `.prl` and keeps it
+/// deliberately — `crates/level-compiler/src/pack.rs` explains that unlinking it
+/// would let a waiter hold the old inode while a new compiler locks a freshly
+/// created one, so the compiler must go on leaving it behind. Packaging is
+/// nonetheless the right place to remove it: stage 6 bakes straight into the
+/// payload, *after* the assembly copy filter has run, so the filter never sees
+/// these files; and nothing recompiles a shipped `.prl` in place, while a modder
+/// who rebakes inside an SDK bundle simply recreates the lock on demand. The
+/// sweep refusal above is what stops a later change reintroducing them.
+pub(crate) fn remove_pack_locks(payload_root: &Path) -> Result<usize, String> {
+    let mut removed = 0;
+    remove_pack_locks_in(payload_root, &mut removed)?;
+    Ok(removed)
+}
+
+fn remove_pack_locks_in(directory: &Path, removed: &mut usize) -> Result<(), String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "remove publication locks: read {}: {error}",
+                directory.display()
+            ));
+        }
+    };
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("remove publication locks: read entry: {error}"))?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "remove publication locks: inspect {}: {error}",
+                path.display()
+            )
+        })?;
+        if file_type.is_dir() {
+            remove_pack_locks_in(&path, removed)?;
+            continue;
+        }
+        if is_pack_lock(entry.file_name().to_str().unwrap_or_default()) {
+            fs::remove_file(&path)
+                .map_err(|error| format!("remove publication lock {}: {error}", path.display()))?;
+            *removed += 1;
+        }
+    }
+    Ok(())
 }
 
 fn extension(path: &Path) -> Option<&str> {
@@ -453,9 +607,194 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
 
+    use std::cell::Cell;
+    use std::time::Duration;
+
     use super::{
-        EntryExt, MARKER_NAME, copy_prm_tree, replace_existing_payload_with, should_exclude,
+        EntryExt, MARKER_NAME, Resolved, copy_prm_tree, is_build_scratch, is_pack_lock,
+        remove_pack_locks, rename_aside_with, replace_existing_payload_with, should_exclude,
+        sweep_payload, write_marker,
     };
+
+    /// The published mod root these sweep tests build under. A distribution now
+    /// honors the project's declared mod root; the sweep only cares that it is a
+    /// two-component path, so this stands in for whatever a project names.
+    const PAYLOAD_MOD_ROOT: &str = "content/base";
+
+    /// Build the smallest payload the sweep accepts: one baked level and the
+    /// emitted entry script at the published mod root.
+    fn swept_payload(root: &Path) -> Vec<Resolved> {
+        let mod_dir = root.join(PAYLOAD_MOD_ROOT).join("maps");
+        fs::create_dir_all(&mod_dir).expect("payload mod root created");
+        fs::write(
+            root.join(PAYLOAD_MOD_ROOT).join(EntryExt::Js.file_name()),
+            "entry",
+        )
+        .expect("entry script written");
+        fs::write(mod_dir.join("demo.prl"), "baked").expect("level written");
+        vec![Resolved {
+            output: "maps/demo.prl".to_string(),
+            source: PathBuf::from("unused.map"),
+            args: Vec::new(),
+            lightmap_density: 0.04,
+        }]
+    }
+
+    /// `prl-build` names its publication lock `.<name>.prl.pack.lock`. The
+    /// leading dot with a compound suffix means `Path::extension` reports a bare
+    /// `lock`, so an extension check would both miss the shape that identifies
+    /// these files and catch unrelated ones.
+    #[test]
+    fn pack_locks_are_recognized_by_name_not_by_extension() {
+        assert!(is_pack_lock(".demo.prl.pack.lock"));
+        assert!(is_pack_lock(".campaign-test.prl.pack.lock"));
+
+        assert!(
+            !is_pack_lock("demo.prl.pack.lock"),
+            "the leading dot is part of the name"
+        );
+        assert!(!is_pack_lock(".demo.prl"));
+        assert!(!is_pack_lock("settings.lock"));
+        assert!(!is_pack_lock(".prl.pack.lock.txt"));
+    }
+
+    /// Stage 6 bakes straight into the payload, after the copy filter has run,
+    /// so packaging is the only place these can be caught. They may sit at any
+    /// depth, under any level name.
+    #[test]
+    fn packaging_removes_every_publication_lock_at_any_depth() {
+        let root = unique_temp_dir();
+        let maps = root.join(PAYLOAD_MOD_ROOT).join("maps");
+        let nested = maps.join("episode2");
+        fs::create_dir_all(&nested).expect("payload tree created");
+        fs::write(maps.join(".demo.prl.pack.lock"), "lock").unwrap();
+        fs::write(nested.join(".deep.prl.pack.lock"), "lock").unwrap();
+        fs::write(maps.join("demo.prl"), "baked").unwrap();
+
+        assert_eq!(remove_pack_locks(&root), Ok(2));
+        assert!(!maps.join(".demo.prl.pack.lock").exists());
+        assert!(!nested.join(".deep.prl.pack.lock").exists());
+        assert!(maps.join("demo.prl").is_file(), "the level itself stays");
+
+        // Idempotent: a payload with none reports none rather than failing.
+        assert_eq!(remove_pack_locks(&root), Ok(0));
+        remove_temp_dir(&root);
+    }
+
+    /// Removal alone would be a fix a later change could silently undo, so the
+    /// sweep refuses the pattern outright.
+    #[test]
+    fn the_sweep_refuses_a_payload_that_still_carries_a_lock() {
+        let root = unique_temp_dir();
+        let resolved = swept_payload(&root);
+        assert!(
+            sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved).is_ok(),
+            "the clean payload is the control"
+        );
+
+        fs::write(
+            root.join(PAYLOAD_MOD_ROOT)
+                .join("maps")
+                .join(".demo.prl.pack.lock"),
+            "lock",
+        )
+        .unwrap();
+        let error = sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved)
+            .expect_err("a lock in the payload is a forbidden artifact");
+        assert!(error.contains(".demo.prl.pack.lock"), "{error}");
+        remove_temp_dir(&root);
+    }
+
+    #[test]
+    fn build_scratch_is_recognized_by_its_exact_shapes() {
+        for name in [
+            ".demo.prl.pack-a1B2c3.tmp",
+            ".demo.prl.cluster-sh-XyZ09.spool",
+            "wall_n.prm.tmp.4812",
+        ] {
+            assert!(is_build_scratch(name), "{name}");
+        }
+        for name in [
+            "notes.tmp",
+            "demo.prl.pack-a1.tmp",
+            ".demo.prl",
+            "archive.spool",
+            "wall.prm.tmp.",
+            ".tmp.123",
+            "wall.prm.tmp.12a",
+        ] {
+            assert!(!is_build_scratch(name), "{name}");
+        }
+    }
+
+    /// A killed bake leaves its scratch in the author's tree, which the copy
+    /// would otherwise carry into the payload.
+    #[test]
+    fn should_exclude_rejects_scratch_a_killed_bake_left_behind() {
+        let root = mod_root();
+        for name in [
+            ".demo.prl.pack-a1B2c3.tmp",
+            ".demo.prl.cluster-sh-XyZ09.spool",
+        ] {
+            let path = root.join("maps").join(name);
+            assert!(should_exclude(&path, &root, EntryExt::Js), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn the_sweep_refuses_a_payload_that_still_carries_build_scratch() {
+        let root = unique_temp_dir();
+        let resolved = swept_payload(&root);
+        fs::write(
+            root.join(PAYLOAD_MOD_ROOT)
+                .join("maps")
+                .join(".demo.prl.cluster-sh-XyZ09.spool"),
+            "scratch",
+        )
+        .unwrap();
+        let error = sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved)
+            .expect_err("scratch in the payload is a forbidden artifact");
+        assert!(
+            error.contains(".demo.prl.cluster-sh-XyZ09.spool"),
+            "{error}"
+        );
+        remove_temp_dir(&root);
+    }
+
+    /// The marker's format is read by tooling outside this crate, so it is a
+    /// contract rather than a convenience: the stage line first, then one
+    /// outstanding level per line as a mod-root-relative `maps/<name>.prl` with
+    /// `/` separators — unchanged by where the payload publishes the mod.
+    #[test]
+    fn completion_marker_names_the_stage_then_one_relative_level_per_line() {
+        let root = unique_temp_dir();
+        let payload_root = root.join("postretro-dev");
+        fs::create_dir_all(&payload_root).expect("payload root created");
+
+        write_marker(
+            &payload_root,
+            &root,
+            "postretro-dev",
+            "stage 6",
+            &["maps/arena.prl".to_string(), "maps/e1m1.prl".to_string()],
+        )
+        .expect("marker written");
+
+        assert_eq!(
+            fs::read_to_string(payload_root.join(MARKER_NAME)).expect("marker readable"),
+            "stage 6\nmaps/arena.prl\nmaps/e1m1.prl\n"
+        );
+
+        // A finished run's marker still carries its status line, so a truncated
+        // write stays detectable.
+        write_marker(&payload_root, &root, "postretro-dev", "stage 7", &[])
+            .expect("final marker written");
+        assert_eq!(
+            fs::read_to_string(payload_root.join(MARKER_NAME)).expect("marker readable"),
+            "stage 7\n"
+        );
+        remove_temp_dir(&root);
+    }
 
     fn mod_root() -> PathBuf {
         PathBuf::from("content/dev")
@@ -581,6 +920,77 @@ mod tests {
         remove_temp_dir(&root);
     }
 
+    /// Antivirus and the search indexer take brief handles on freshly written
+    /// files, so the move-aside must survive a denial that clears on its own
+    /// rather than failing the whole distribution on the first one.
+    #[test]
+    fn rename_aside_retries_a_transient_lock_then_succeeds() {
+        let attempts = Cell::new(0u32);
+        let sleeps = Cell::new(0u32);
+        let result = rename_aside_with(
+            Path::new("payload"),
+            Path::new("aside"),
+            || {
+                let seen = attempts.get();
+                attempts.set(seen + 1);
+                if seen < 2 {
+                    Err(io::Error::from_raw_os_error(5))
+                } else {
+                    Ok(())
+                }
+            },
+            |_: Duration| sleeps.set(sleeps.get() + 1),
+        );
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(attempts.get(), 3, "two denials then one success");
+        assert_eq!(sleeps.get(), 2, "one backoff before each retry");
+    }
+
+    /// A denial that survives every attempt is a program still holding the
+    /// payload open, so the message must name that cause and the payload path
+    /// rather than surfacing a bare access-denied.
+    #[test]
+    fn rename_aside_reports_the_holder_when_the_denial_persists() {
+        let attempts = Cell::new(0u32);
+        let result = rename_aside_with(
+            Path::new("dist/postretro-dev-sdk"),
+            Path::new("dist/.aside"),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::from_raw_os_error(5))
+            },
+            |_: Duration| {},
+        );
+
+        let error = result.expect_err("a persistent denial fails");
+        assert_eq!(attempts.get(), super::RENAME_ASIDE_ATTEMPTS);
+        assert!(
+            error.contains("holding a handle inside the existing payload"),
+            "{error}"
+        );
+        assert!(error.contains("postretro-dev-sdk"), "{error}");
+    }
+
+    /// The retry is scoped to lock denials: an unrelated failure is reported at
+    /// once, with no wasted backoff.
+    #[test]
+    fn rename_aside_does_not_retry_an_unrelated_error() {
+        let attempts = Cell::new(0u32);
+        let result = rename_aside_with(
+            Path::new("payload"),
+            Path::new("aside"),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::new(io::ErrorKind::NotFound, "gone"))
+            },
+            |_: Duration| panic!("an unrelated error must not sleep or retry"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
+    }
+
     fn remove_temp_dir(root: &Path) {
         for attempt in 0..3 {
             match fs::remove_dir_all(root) {
@@ -608,10 +1018,10 @@ mod tests {
     }
 
     #[test]
-    fn should_exclude_does_not_treat_base_content_luau_as_mod_source() {
+    fn should_exclude_does_not_treat_non_mod_luau_as_mod_source() {
         let root = mod_root();
         assert!(!should_exclude(
-            Path::new("content/base/scripts/splash.luau"),
+            Path::new("content/example/scripts/splash.luau"),
             &root,
             EntryExt::Js
         ));

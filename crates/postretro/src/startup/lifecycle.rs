@@ -476,7 +476,12 @@ impl App {
     fn begin_level_load(&mut self, load: InFlightLevelLoad) {
         self.level_timings = StartupTimings::new();
         let (tx, rx) = mpsc::channel();
-        let handle = spawn_level_worker(load.map_path.clone(), load.content_root.clone(), tx);
+        let handle = spawn_level_worker(
+            load.map_path.clone(),
+            load.content_root.clone(),
+            self.baked_root.clone(),
+            tx,
+        );
         self.level_load = Some(load);
         self.level_rx = Some(rx);
         self.level_worker = Some(handle);
@@ -1650,6 +1655,8 @@ mod tests {
             nav_graph: None,
             map_path: None,
             content_root: PathBuf::from("content/dev"),
+            baked_root: None,
+            core_root: postretro_ui::CoreRoot::working_directory(),
             exit_result: Ok(()),
             camera: Camera::new(Vec3::ZERO, 0.0, 0.0),
             // Tests exercise level load/unload in the Running state, which touches
@@ -3335,12 +3342,35 @@ mod tests {
         );
     }
 
+    /// A `/`-rooted path is *not* absolute on Windows — it carries no drive
+    /// prefix, so `Path::is_absolute` is false and `level_identity` takes its
+    /// `cwd.join` branch. These fixtures carry a prefix there so the test below
+    /// exercises the absolute branch it is named for on both platforms.
+    #[cfg(windows)]
+    const OUTSIDE_CONTENT_ROOT_LEVEL: &str = "C:/tmp/test.prl";
+    #[cfg(not(windows))]
+    const OUTSIDE_CONTENT_ROOT_LEVEL: &str = "/tmp/test.prl";
+    #[cfg(windows)]
+    const ABSOLUTE_CONTENT_ROOT: &str = "C:/mods/demo";
+    #[cfg(not(windows))]
+    const ABSOLUTE_CONTENT_ROOT: &str = "/mods/demo";
+
     #[test]
     fn level_identity_keeps_outside_content_root_absolute() {
-        let root = PathBuf::from("/mods/demo");
+        let root = PathBuf::from(ABSOLUTE_CONTENT_ROOT);
+        let outside = PathBuf::from(OUTSIDE_CONTENT_ROOT_LEVEL);
+        // Guard the fixture, not just the result: if either path stops being
+        // absolute, `level_identity` silently resolves it against the working
+        // directory and this test no longer covers the case it is named for.
+        assert!(root.is_absolute(), "content-root fixture must be absolute");
+        assert!(outside.is_absolute(), "level fixture must be absolute");
+        // Outside the content root, so `strip_prefix` must not fire and the
+        // identity keeps the full absolute path.
+        assert!(!outside.starts_with(&root));
+
         assert_eq!(
-            level_identity(&LevelSource::Path(PathBuf::from("/tmp/test.prl")), &root),
-            "path:/tmp/test.prl"
+            level_identity(&LevelSource::Path(outside), &root),
+            format!("path:{OUTSIDE_CONTENT_ROOT_LEVEL}"),
         );
     }
 

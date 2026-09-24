@@ -691,6 +691,20 @@ pub(crate) struct App {
     /// sibling directories are resolved relative to this root.
     content_root: PathBuf,
 
+    /// `--baked-root` when supplied: the directory that *contains* `materials/`,
+    /// so `.prm` sidecars are read from `<baked_root>/materials/`. `None` — the
+    /// normal case — leaves the level worker's grandparent derivation alone.
+    /// Threaded to `spawn_level_worker`; `prl-build` takes the same flag with
+    /// the same meaning.
+    baked_root: Option<PathBuf>,
+
+    /// Where the engine's own `ui/` and `textures/` trees live, from
+    /// `--core-root` or, absent it, `core/` under the working directory. Two
+    /// boot-phase consumers read it: the splash decode on the first splash frame
+    /// and the built-in tree registration inside `Session::build`. Engine-owned
+    /// and independent of `content_root` — `--mod` never redirects it.
+    core_root: postretro_ui::CoreRoot,
+
     exit_result: Result<()>,
 
     camera: Camera,
@@ -12241,8 +12255,8 @@ mod tests {
             "focus rect proves layout produced usable hit geometry",
         );
 
-        let fallback_path =
-            workspace_root().join(postretro_ui::tree_asset::ui_asset_path("pauseMenu.json"));
+        let fallback_path = postretro_ui::CoreRoot::at(workspace_root().join("core"))
+            .ui_asset_path("pauseMenu.json");
         let fallback = postretro_ui::tree_asset::load_named_tree(&fallback_path)
             .expect("engine pause fallback loads");
         assert!(
@@ -13836,6 +13850,41 @@ mod tests {
         );
 
         let args = ["postretro", "maps/e1m1.prl", "--connect", "127.0.0.1:27015"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(
+            config.role,
+            netcode::NetRole::Connect {
+                addr: "127.0.0.1:27015".parse().unwrap()
+            }
+        );
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/e1m1.prl"));
+
+        // Regression: the net flag preceding the map — `postretro --host 30000
+        // content/dev/maps/campaign-test.prl`, the shape the bug report names —
+        // used to have `resolve_map_path` return "30000" as the map while
+        // `parse_net_config` correctly read it as the port. Both parsers must
+        // agree on where the port/address ends and the map begins, in whichever
+        // order the flag and the positional map appear.
+        let args = [
+            "postretro",
+            "--host",
+            "30000",
+            "content/dev/maps/campaign-test.prl",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(config.role, netcode::NetRole::Host { port: 30000 });
+        assert_eq!(
+            resolve_map_path(&args).as_deref(),
+            Some("content/dev/maps/campaign-test.prl")
+        );
+
+        let args = ["postretro", "--connect", "127.0.0.1:27015", "maps/e1m1.prl"]
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>();

@@ -7,11 +7,6 @@ description = "Development workflow commands for Postretro"
 license.workspace = true
 
 [dependencies]
-postretro-level-compiler = { workspace = true }
-postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
-postretro-model = { workspace = true }
-glam = { workspace = true }
-blake3 = { workspace = true }
-serde = { workspace = true }
+# `cargo metadata` is the only input both remaining jobs read: the crate-graph
+# reduction and the target directory a distribution's binaries land in.
 serde_json = { workspace = true }
-toml = { workspace = true }

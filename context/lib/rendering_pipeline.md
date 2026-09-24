@@ -162,7 +162,7 @@ cancelled work, read latency, decoded bytes, install CPU time (with pool-growth 
 the slowest drain that grew no pool reported apart), pool growth, misses, and evictions.
 They appear as a throttled `[SH streaming]` info log line (only when something changed),
 the dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. They guide
-tuning and gate nothing.
+tuning and gate nothing. The dev-tools SH Volumes probe markers draw on streamed maps from the streaming base metadata. A Residency marker mode colors each probe from the renderer's sampled and composed word mirrors: sampleable, installed awaiting compose, requested, miss, or invalid.
 
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.

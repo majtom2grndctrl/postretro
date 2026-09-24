@@ -23,6 +23,13 @@ use crate::{
     sh_volume::OctahedralShVolumeSection,
 };
 
+#[path = "cluster_directory/canonical_partition.rs"]
+mod canonical_partition;
+#[path = "cluster_directory/wire.rs"]
+mod wire;
+
+pub use canonical_partition::{CanonicalCellPartition, canonical_cell_partition};
+
 pub const CLUSTER_DIRECTORY_VERSION: u32 = 1;
 pub const CLUSTER_DIRECTORY_CONTAINER_VERSION: u16 = 1;
 pub const HEADER_SIZE: usize = 40;
@@ -173,150 +180,6 @@ pub struct ClusterDirectoryCoverageStats {
     pub maximum_visited_nodes_per_cluster: usize,
 }
 
-/// Canonical resource-independent partition of runtime cells.
-/// Cluster range fields remain zero until resource ranges are populated.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalCellPartition {
-    pub clusters: Vec<ClusterRecord>,
-    pub members: Vec<u32>,
-}
-
-/// Reconstruct the deterministic cell partition used by compiler output.
-///
-/// This is shared by compiler construction and runtime semantic validation so
-/// accepted section-49 membership cannot drift from the greedy frontier rule.
-pub fn canonical_cell_partition(
-    cells: &CellsSection,
-    portals: &PortalsSection,
-    bvh: &BvhSection,
-    primitive_limit: u32,
-    cell_limit: u32,
-) -> Result<CanonicalCellPartition, ClusterDirectoryError> {
-    if primitive_limit == 0 || cell_limit == 0 {
-        return invalid("primitive_limit and cell_limit must be positive");
-    }
-    let cell_count = u32_len(cells.cells.len(), "runtime cell count")?;
-    let cell_count_usize = usize_count(cell_count)?;
-    let cell_limit_usize = usize_count(cell_limit)?;
-
-    let mut primitive_counts = try_vec(cell_count, "cell primitive counts")?;
-    primitive_counts.resize(cell_count_usize, 0u32);
-    for (leaf_index, leaf) in bvh.leaves.iter().enumerate() {
-        if leaf.cell_id >= cell_count {
-            return invalid(format!(
-                "BVH leaf {leaf_index} names cell {} outside {cell_count}",
-                leaf.cell_id
-            ));
-        }
-        if leaf.index_count != 0 {
-            primitive_counts[leaf.cell_id as usize] = primitive_counts[leaf.cell_id as usize]
-                .checked_add(1)
-                .ok_or(ClusterDirectoryError::SizeOverflow("cell primitive count"))?;
-        }
-    }
-
-    let mut adjacency = try_vec(cell_count, "cell adjacency")?;
-    adjacency.resize_with(cell_count_usize, BTreeSet::new);
-    for (portal_index, portal) in portals.portals.iter().enumerate() {
-        if portal.front_leaf >= cell_count || portal.back_leaf >= cell_count {
-            return invalid(format!(
-                "portal {portal_index} endpoint ({}, {}) outside {cell_count} cells",
-                portal.front_leaf, portal.back_leaf
-            ));
-        }
-        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
-        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
-    }
-
-    let mut unassigned: BTreeSet<u32> = (0..cell_count).collect();
-    let mut clusters = try_vec(cell_count, "canonical clusters")?;
-    let mut members = try_vec(cell_count, "canonical members")?;
-    while !unassigned.is_empty() {
-        let seed = *unassigned
-            .iter()
-            .min_by(|&&left, &&right| compare_cell_keys(left, right, &cells.cells))
-            .expect("nonempty set has a seed");
-        unassigned.remove(&seed);
-        let mut cluster_members = vec![seed];
-        let mut primitive_count = primitive_counts[seed as usize];
-        let mut frontier: BTreeSet<u32> = adjacency[seed as usize]
-            .iter()
-            .copied()
-            .filter(|cell| unassigned.contains(cell))
-            .collect();
-
-        loop {
-            if cluster_members.len() >= cell_limit_usize {
-                break;
-            }
-            let mut candidate = None;
-            for &cell in &frontier {
-                let Some(candidate_primitive_count) =
-                    primitive_count.checked_add(primitive_counts[cell as usize])
-                else {
-                    // A sum beyond u32::MAX cannot fit the u32 primitive
-                    // limit, so this frontier cell is not admissible.
-                    continue;
-                };
-                if candidate_primitive_count > primitive_limit {
-                    continue;
-                }
-                if candidate.is_none_or(|(current, _)| {
-                    compare_cell_keys(cell, current, &cells.cells).is_lt()
-                }) {
-                    candidate = Some((cell, candidate_primitive_count));
-                }
-            }
-            let Some((candidate, candidate_primitive_count)) = candidate else {
-                break;
-            };
-            frontier.remove(&candidate);
-            if !unassigned.remove(&candidate) {
-                continue;
-            }
-            cluster_members.push(candidate);
-            primitive_count = candidate_primitive_count;
-            frontier.extend(
-                adjacency[candidate as usize]
-                    .iter()
-                    .copied()
-                    .filter(|cell| unassigned.contains(cell)),
-            );
-        }
-
-        cluster_members.sort_unstable();
-        let member_start = u32_len(members.len(), "canonical member start")?;
-        let member_count = u32_len(cluster_members.len(), "canonical cluster member count")?;
-        let mut bounds_min = [f32::INFINITY; 3];
-        let mut bounds_max = [f32::NEG_INFINITY; 3];
-        for &cell_id in &cluster_members {
-            let cell = &cells.cells[cell_id as usize];
-            for axis in 0..3 {
-                bounds_min[axis] = canonical_zero(bounds_min[axis].min(cell.bounds_min[axis]));
-                bounds_max[axis] = canonical_zero(bounds_max[axis].max(cell.bounds_max[axis]));
-            }
-        }
-        let flags = if member_count == 1 && primitive_count > primitive_limit {
-            CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
-        } else {
-            0
-        };
-        members.extend(cluster_members);
-        clusters.push(ClusterRecord {
-            bounds_min,
-            bounds_max,
-            member_start,
-            member_count,
-            range_start: 0,
-            range_count: 0,
-            primitive_count,
-            flags,
-        });
-    }
-
-    Ok(CanonicalCellPartition { clusters, members })
-}
-
 /// Build the canonical resource table for an emitted SH inventory.
 pub fn canonical_resource_records(
     inventory: ClusterDirectoryShInventory<'_>,
@@ -413,182 +276,6 @@ pub fn populate_canonical_resource_ranges(
 }
 
 impl ClusterDirectorySection {
-    pub fn byte_len(&self) -> Result<usize, ClusterDirectoryError> {
-        checked_wire_len(
-            self.clusters.len(),
-            self.resources.len(),
-            self.members.len(),
-            self.ranges.len(),
-        )
-    }
-
-    pub fn try_to_bytes(&self) -> Result<Vec<u8>, ClusterDirectoryError> {
-        self.validate_structure()?;
-        let len = self.byte_len()?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(len)
-            .map_err(|_| ClusterDirectoryError::AllocationFailed("encoded section"))?;
-        push_u32(&mut bytes, CLUSTER_DIRECTORY_VERSION);
-        push_u32(&mut bytes, self.runtime_cell_count);
-        push_u32(&mut bytes, u32_len(self.clusters.len(), "cluster count")?);
-        push_u32(&mut bytes, u32_len(self.resources.len(), "resource count")?);
-        push_u32(&mut bytes, u32_len(self.members.len(), "member count")?);
-        push_u32(&mut bytes, u32_len(self.ranges.len(), "range count")?);
-        push_u32(&mut bytes, self.primitive_limit);
-        push_u32(&mut bytes, self.cell_limit);
-        push_u32(&mut bytes, 0);
-        push_u32(&mut bytes, 0);
-        for cluster in &self.clusters {
-            for value in cluster.bounds_min.into_iter().chain(cluster.bounds_max) {
-                bytes.extend_from_slice(&value.to_le_bytes());
-            }
-            push_u32(&mut bytes, cluster.member_start);
-            push_u32(&mut bytes, cluster.member_count);
-            push_u32(&mut bytes, cluster.range_start);
-            push_u32(&mut bytes, cluster.range_count);
-            push_u32(&mut bytes, cluster.primitive_count);
-            push_u32(&mut bytes, cluster.flags);
-        }
-        for resource in &self.resources {
-            push_u32(&mut bytes, resource.section_id);
-            push_u32(&mut bytes, resource.domain as u32);
-            for dimension in resource.dimensions {
-                push_u32(&mut bytes, dimension);
-            }
-            push_u32(&mut bytes, 0);
-        }
-        for &member in &self.members {
-            push_u32(&mut bytes, member);
-        }
-        for range in &self.ranges {
-            push_u32(&mut bytes, range.resource_index);
-            push_u32(&mut bytes, range.start);
-            push_u32(&mut bytes, range.count);
-            push_u32(&mut bytes, range.owner_cluster_id);
-            push_u32(&mut bytes, range.role as u32);
-            push_u32(&mut bytes, 0);
-        }
-        debug_assert_eq!(bytes.len(), len);
-        Ok(bytes)
-    }
-
-    pub fn from_bytes(data: &[u8]) -> Result<Self, ClusterDirectoryError> {
-        if data.len() < HEADER_SIZE {
-            return Err(ClusterDirectoryError::InvalidData(format!(
-                "section too short for 40-byte header: got {}",
-                data.len()
-            )));
-        }
-        let version = read_u32(data, 0);
-        if version != CLUSTER_DIRECTORY_VERSION {
-            return Err(ClusterDirectoryError::VersionMismatch {
-                version,
-                expected: CLUSTER_DIRECTORY_VERSION,
-            });
-        }
-        let runtime_cell_count = read_u32(data, 4);
-        let cluster_count = read_u32(data, 8);
-        let resource_count = read_u32(data, 12);
-        let member_count = read_u32(data, 16);
-        let range_count = read_u32(data, 20);
-        let primitive_limit = read_u32(data, 24);
-        let cell_limit = read_u32(data, 28);
-        if read_u32(data, 32) != 0 || read_u32(data, 36) != 0 {
-            return Err(ClusterDirectoryError::InvalidData(
-                "header reserved fields must be zero".into(),
-            ));
-        }
-        let expected = checked_wire_len(
-            usize_count(cluster_count)?,
-            usize_count(resource_count)?,
-            usize_count(member_count)?,
-            usize_count(range_count)?,
-        )?;
-        if data.len() != expected {
-            return Err(ClusterDirectoryError::InvalidData(format!(
-                "length mismatch: expected {expected}, got {}",
-                data.len()
-            )));
-        }
-
-        let mut clusters = try_vec(cluster_count, "cluster records")?;
-        let mut cursor = HEADER_SIZE;
-        for _ in 0..cluster_count {
-            clusters.push(ClusterRecord {
-                bounds_min: [
-                    read_f32(data, cursor),
-                    read_f32(data, cursor + 4),
-                    read_f32(data, cursor + 8),
-                ],
-                bounds_max: [
-                    read_f32(data, cursor + 12),
-                    read_f32(data, cursor + 16),
-                    read_f32(data, cursor + 20),
-                ],
-                member_start: read_u32(data, cursor + 24),
-                member_count: read_u32(data, cursor + 28),
-                range_start: read_u32(data, cursor + 32),
-                range_count: read_u32(data, cursor + 36),
-                primitive_count: read_u32(data, cursor + 40),
-                flags: read_u32(data, cursor + 44),
-            });
-            cursor += CLUSTER_RECORD_SIZE;
-        }
-        let mut resources = try_vec(resource_count, "resource records")?;
-        for _ in 0..resource_count {
-            let reserved = read_u32(data, cursor + 20);
-            if reserved != 0 {
-                return Err(ClusterDirectoryError::InvalidData(format!(
-                    "resource reserved field must be zero, got {reserved}"
-                )));
-            }
-            resources.push(ClusterResourceRecord {
-                section_id: read_u32(data, cursor),
-                domain: ClusterResourceDomain::parse(read_u32(data, cursor + 4))?,
-                dimensions: [
-                    read_u32(data, cursor + 8),
-                    read_u32(data, cursor + 12),
-                    read_u32(data, cursor + 16),
-                ],
-            });
-            cursor += RESOURCE_RECORD_SIZE;
-        }
-        let mut members = try_vec(member_count, "members")?;
-        for _ in 0..member_count {
-            members.push(read_u32(data, cursor));
-            cursor += MEMBER_RECORD_SIZE;
-        }
-        let mut ranges = try_vec(range_count, "ranges")?;
-        for _ in 0..range_count {
-            let reserved = read_u32(data, cursor + 20);
-            if reserved != 0 {
-                return Err(ClusterDirectoryError::InvalidData(format!(
-                    "range reserved field must be zero, got {reserved}"
-                )));
-            }
-            ranges.push(ClusterRangeRecord {
-                resource_index: read_u32(data, cursor),
-                start: read_u32(data, cursor + 4),
-                count: read_u32(data, cursor + 8),
-                owner_cluster_id: read_u32(data, cursor + 12),
-                role: ClusterRangeRole::parse(read_u32(data, cursor + 16))?,
-            });
-            cursor += RANGE_RECORD_SIZE;
-        }
-        let section = Self {
-            runtime_cell_count,
-            primitive_limit,
-            cell_limit,
-            clusters,
-            resources,
-            members,
-            ranges,
-        };
-        section.validate_structure()?;
-        Ok(section)
-    }
-
     pub fn validate_structure(&self) -> Result<(), ClusterDirectoryError> {
         if self.primitive_limit == 0 || self.cell_limit == 0 {
             return invalid("primitive_limit and cell_limit must be positive");
@@ -893,20 +580,6 @@ fn validate_cells(
         }
     }
     Ok(())
-}
-
-fn compare_cell_keys(
-    left: u32,
-    right: u32,
-    cells: &[crate::cells::CellRecord],
-) -> std::cmp::Ordering {
-    let left_bounds = cells[left as usize].bounds_min.map(canonical_zero);
-    let right_bounds = cells[right as usize].bounds_min.map(canonical_zero);
-    left_bounds[2]
-        .total_cmp(&right_bounds[2])
-        .then_with(|| left_bounds[1].total_cmp(&right_bounds[1]))
-        .then_with(|| left_bounds[0].total_cmp(&right_bounds[0]))
-        .then_with(|| left.cmp(&right))
 }
 
 fn validate_resources(
@@ -1801,24 +1474,6 @@ fn validate_slice(
     Ok(())
 }
 
-fn checked_wire_len(
-    clusters: usize,
-    resources: usize,
-    members: usize,
-    ranges: usize,
-) -> Result<usize, ClusterDirectoryError> {
-    HEADER_SIZE
-        .checked_add(
-            clusters
-                .checked_mul(CLUSTER_RECORD_SIZE)
-                .ok_or(ClusterDirectoryError::SizeOverflow("cluster bytes"))?,
-        )
-        .and_then(|value| value.checked_add(resources.checked_mul(RESOURCE_RECORD_SIZE)?))
-        .and_then(|value| value.checked_add(members.checked_mul(MEMBER_RECORD_SIZE)?))
-        .and_then(|value| value.checked_add(ranges.checked_mul(RANGE_RECORD_SIZE)?))
-        .ok_or(ClusterDirectoryError::SizeOverflow("section byte length"))
-}
-
 fn checked_product(dimensions: [u32; 3]) -> Result<u32, ClusterDirectoryError> {
     dimensions[0]
         .checked_mul(dimensions[1])
@@ -1843,19 +1498,6 @@ fn usize_count(count: u32) -> Result<usize, ClusterDirectoryError> {
 }
 fn u32_len(len: usize, label: &'static str) -> Result<u32, ClusterDirectoryError> {
     u32::try_from(len).map_err(|_| ClusterDirectoryError::SizeOverflow(label))
-}
-fn push_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(
-        data[offset..offset + 4]
-            .try_into()
-            .expect("validated section length"),
-    )
-}
-fn read_f32(data: &[u8], offset: usize) -> f32 {
-    f32::from_bits(read_u32(data, offset))
 }
 fn canonical_zero(value: f32) -> f32 {
     if value == 0.0 { 0.0 } else { value }

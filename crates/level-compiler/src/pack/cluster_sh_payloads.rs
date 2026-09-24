@@ -183,9 +183,12 @@ mod tests {
     use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
+    use postretro_level_format::bvh::{BvhLeaf, BvhSection};
+    use postretro_level_format::cells::{CELL_FLAG_DRAWABLE, CellRecord, CellsSection};
     use postretro_level_format::cluster_directory::{
         CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
         ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+        canonical_cell_partition,
     };
     use postretro_level_format::cluster_sh_payloads::{
         CLUSTER_SH_LOGICAL_TILE_DIMENSION, CLUSTER_SH_PAYLOADS_CONTAINER_VERSION,
@@ -204,6 +207,7 @@ mod tests {
     use postretro_level_format::octahedral::{
         MAX_SH_ATLAS_DIMENSION, irradiance_array_tile_location, irradiance_atlas_array_layout,
     };
+    use postretro_level_format::portals::{PortalRecord, PortalsSection};
     use postretro_level_format::sh_reconstruct::Level;
     use postretro_level_format::sh_volume::{
         OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe, OctahedralShVolumeSection, SH_VOLUME_VERSION,
@@ -633,6 +637,111 @@ mod tests {
         let mut bytes = spool.section.metadata_bytes().unwrap();
         bytes.extend_from_slice(&std::fs::read(spool.spool.path()).unwrap());
         bytes
+    }
+
+    // Slice 4 baseline: this fixed, no-hint compiler fixture freezes the
+    // independently readable id-50 bytes before id-49 partition/wire changes.
+    #[test]
+    fn no_hint_two_cell_fixture_preserves_id50_hash_and_cell_membership() {
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0; 3],
+                    bounds_max: [1.0; 3],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+                CellRecord {
+                    bounds_min: [1.0, 0.0, 0.0],
+                    bounds_max: [2.0, 1.0, 1.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: vec![
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [1.0, 0.0, 1.0],
+            ],
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 4,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        };
+        let bvh = BvhSection {
+            nodes: Vec::new(),
+            leaves: [0, 1]
+                .into_iter()
+                .map(|cell_id| BvhLeaf {
+                    aabb_min: [cell_id as f32, 0.0, 0.0],
+                    material_bucket_id: 0,
+                    aabb_max: [cell_id as f32 + 1.0, 1.0, 1.0],
+                    index_offset: 0,
+                    index_count: 3,
+                    cell_id,
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
+                })
+                .collect(),
+            root_node_index: 0,
+        };
+        let partition = canonical_cell_partition(&cells, &portals, &bvh, 64, 32).unwrap();
+        assert_eq!(partition.members, vec![0, 1]);
+        assert_eq!(
+            partition
+                .clusters
+                .iter()
+                .map(|cluster| (cluster.member_start, cluster.member_count))
+                .collect::<Vec<_>>(),
+            vec![(0, 2)]
+        );
+
+        let base = raw_octahedral_source();
+        let direct = raw_direct_source(&base);
+        let delta = raw_delta_source_for_light(7, 0x3c00);
+        let direct_delta = raw_direct_delta_source(0, 0x3555);
+        let animated_delta = raw_animated_direct_delta_source(11, 0x3666);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![99],
+        };
+        let directory = directory_with_owned_and_halo_sparse_rows();
+        let emission = FinalizedShEmissionView::new(
+            &base,
+            Some(&direct),
+            Some(&delta),
+            Some(&selection),
+            Some(&direct_delta),
+            Some(&animated_delta),
+            None,
+            None,
+        )
+        .unwrap();
+        let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        let bytes = encoded_spool_bytes(
+            &tempdir.path().join("no-hint-fixture.prl"),
+            &directory,
+            emission,
+            sources,
+        );
+
+        assert_eq!(directory.members, vec![0, 1]);
+        assert_eq!(
+            blake3::hash(&bytes).to_hex().as_str(),
+            "817ab1de29cad06ddb23245954f7617fe8f275ae96be4e4237c480800045d960"
+        );
     }
 
     #[test]

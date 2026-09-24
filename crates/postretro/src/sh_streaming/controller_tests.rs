@@ -119,6 +119,133 @@ fn mark_sampleable(controller: &mut ShResidencyController, cluster_id: u32) {
         .unwrap();
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct NoHintControllerTick {
+    classes: Vec<(u32, TargetClass)>,
+    targets: Vec<u32>,
+    requests: Vec<u32>,
+    suppressed: Vec<u32>,
+    evictions: Vec<u32>,
+}
+
+fn no_hint_controller_tick(
+    controller: &ShResidencyController,
+    requests: Vec<u32>,
+    evictions: Vec<u32>,
+) -> NoHintControllerTick {
+    NoHintControllerTick {
+        classes: controller
+            .states
+            .iter()
+            .enumerate()
+            .filter_map(|(cluster_id, state)| state.class.map(|class| (cluster_id as u32, class)))
+            .collect(),
+        targets: controller.targets.iter().copied().collect(),
+        requests,
+        suppressed: controller
+            .states
+            .iter()
+            .enumerate()
+            .filter_map(|(cluster_id, state)| state.suppressed.then_some(cluster_id as u32))
+            .collect(),
+        evictions,
+    }
+}
+
+// Slice 4 baseline: no authored hints must retain the Slice 3 policy trace.
+// Generation, content tag, and section version are deliberately not observed.
+#[test]
+fn no_hint_controller_trace_preserves_target_request_suppression_and_eviction_order() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2, 3],
+            vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
+            vec![vec![], vec![], vec![], vec![]],
+            vec![8; 4],
+        ),
+        8,
+    );
+    let mut trace = Vec::new();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let first_batch = controller.take_async_drain_batch().unwrap();
+    assert!(first_batch.evictions.is_empty());
+    let first_request = controller.take_next_request().unwrap().unwrap().cluster_id;
+    trace.push(no_hint_controller_tick(
+        &controller,
+        vec![first_request],
+        first_batch.evictions,
+    ));
+
+    for cluster_id in [0, 1, 2] {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+    let pressure_batch = controller.take_async_drain_batch().unwrap();
+    trace.push(no_hint_controller_tick(
+        &controller,
+        Vec::new(),
+        pressure_batch.evictions.clone(),
+    ));
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: pressure_batch.evictions,
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![3]), 1.0)
+        .unwrap();
+    let recovery_batch = controller.take_async_drain_batch().unwrap();
+    let mut recovery_requests = Vec::new();
+    while let Some(request) = controller.take_next_request().unwrap() {
+        recovery_requests.push(request.cluster_id);
+    }
+    trace.push(no_hint_controller_tick(
+        &controller,
+        recovery_requests,
+        recovery_batch.evictions,
+    ));
+
+    assert_eq!(
+        trace,
+        vec![
+            NoHintControllerTick {
+                classes: vec![
+                    (0, TargetClass::Visible),
+                    (1, TargetClass::Prefetch),
+                    (2, TargetClass::Prefetch),
+                ],
+                targets: vec![0, 1, 2],
+                requests: vec![0],
+                suppressed: Vec::new(),
+                evictions: Vec::new(),
+            },
+            NoHintControllerTick {
+                classes: vec![(0, TargetClass::Visible)],
+                targets: vec![0],
+                requests: Vec::new(),
+                suppressed: vec![1, 2],
+                evictions: vec![1, 2],
+            },
+            NoHintControllerTick {
+                classes: vec![
+                    (0, TargetClass::Hysteresis),
+                    (1, TargetClass::Prefetch),
+                    (2, TargetClass::Prefetch),
+                    (3, TargetClass::Visible),
+                ],
+                targets: vec![0, 1, 2, 3],
+                requests: vec![3, 1, 2],
+                suppressed: Vec::new(),
+                evictions: Vec::new(),
+            },
+        ]
+    );
+}
+
 #[test]
 fn large_map_allocation_fixture_keeps_limited_visible_request_below_whole_load() {
     let fixture = large_map_allocation_fixture();

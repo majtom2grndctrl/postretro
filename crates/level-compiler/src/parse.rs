@@ -25,6 +25,14 @@ use postretro_level_format::fog_volumes::{
 };
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
+#[path = "parse/authoring_regions.rs"]
+mod authoring_regions;
+
+use authoring_regions::{
+    BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
+    resolve_sh_protect_aabb,
+};
+
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
 ///
 /// This is the **input precision boundary**: shambler stores coordinates as f32
@@ -1094,34 +1102,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             //
             if classname == "sh_protect_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
-                let name = props
-                    .get("name")
-                    .map(|v| v.trim().to_owned())
-                    .unwrap_or_default();
-                // Same brush-hull → world-AABB union `trigger_volume` uses; a
-                // protection volume needs only the enclosing box, none of the
-                // trigger's activation/target data.
-                let (mut min, mut max) = crate::trigger_volumes::resolve_brush_entity_aabb(
-                    &geo_map, &brush_ids, scale, &classname, &name,
-                )?;
-                // Optional `dilation` margin, expanding the box on all six faces
-                // so a probe just outside the authored brushwork is still
-                // protected. Default 0.0; negatives are an authoring error (they
-                // would shrink the volume). In world units — the same engine
-                // space the AABB and the CLI `--sh-protect-aabb` boxes live in.
-                let dilation =
-                    parse_optional_finite_f32(&props, "dilation", 0.0, &classname, &name)?;
-                if dilation < 0.0 {
-                    anyhow::bail!(
-                        "{classname} `{name}` `dilation` must be non-negative, got {dilation}"
-                    );
-                }
-                let d = dilation as f64;
-                min -= DVec3::splat(d);
-                max += DVec3::splat(d);
-                let min = min.to_array().map(|v| v as f32);
-                let max = max.to_array().map(|v| v as f32);
-                sh_protect_aabbs.push([min[0], min[1], min[2], max[0], max[1], max[2]]);
+                sh_protect_aabbs.push(resolve_sh_protect_aabb(
+                    &geo_map, &brush_ids, &props, scale, &classname,
+                )?);
                 continue;
             }
             // A `switch` is authoring sugar that desugars into two shipped
@@ -2346,84 +2329,6 @@ fn clamp_ambient_scatter(value: f32, classname: &str) -> f32 {
     }
 }
 
-/// Convex brush bounds shared by compiler-only region entities. Positions and
-/// plane distances are in engine meters; plane normals are swizzled directions
-/// and therefore deliberately do not receive the map unit scale.
-struct BrushRegionBounds {
-    min: DVec3,
-    max: DVec3,
-    planes: Vec<[f32; 4]>,
-}
-
-/// Resolve one brush entity into its world-space AABB and source-hull planes.
-///
-/// The caller owns entity-specific plane budgets and KVP validation. Returning
-/// `None` for a brush with no usable vertices matches the fog-volume path and
-/// lets a malformed invisible region stay out of the static world geometry.
-fn resolve_brush_region_bounds(
-    geo_map: &GeoMap,
-    brush_ids: &[BrushId],
-    scale: f64,
-    classname: &str,
-) -> Result<Option<BrushRegionBounds>> {
-    use shambler::brush::brush_hulls;
-    use shambler::face::{face_planes, face_vertices};
-
-    let geo_planes = face_planes(&geo_map.face_planes);
-    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
-        .iter()
-        .filter_map(|bid| {
-            geo_map
-                .brush_faces
-                .get(bid)
-                .map(|faces| (*bid, faces.clone()))
-        })
-        .collect();
-    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
-    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
-
-    let mut min = DVec3::splat(f64::INFINITY);
-    let mut max = DVec3::splat(f64::NEG_INFINITY);
-    let mut have_any = false;
-    let mut planes = Vec::new();
-    for (face_id, verts) in face_verts.iter() {
-        let mut face_seen_vertex = false;
-        for v in verts {
-            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
-            min = min.min(p);
-            max = max.max(p);
-            have_any = true;
-            face_seen_vertex = true;
-        }
-        if !face_seen_vertex {
-            continue;
-        }
-        let Some(plane) = geo_planes.get(face_id) else {
-            continue;
-        };
-        let normal = quake_to_engine(shambler_to_dvec3(plane.normal()));
-        let point = quake_to_engine(shambler_to_dvec3(&verts[0])) * scale;
-        let distance = normal.dot(point);
-        planes.push([
-            normal.x as f32,
-            normal.y as f32,
-            normal.z as f32,
-            distance as f32,
-        ]);
-    }
-    if !have_any {
-        log::warn!("[Compiler] {classname} has no usable brush vertices; skipping");
-        return Ok(None);
-    }
-    if planes.is_empty() {
-        anyhow::bail!(
-            "{classname}: brush hull yielded zero face planes — region needs a non-degenerate convex hull"
-        );
-    }
-
-    Ok(Some(BrushRegionBounds { min, max, planes }))
-}
-
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
 /// produces no usable vertices (degenerate authoring). Returns `Err` when the
@@ -2520,46 +2425,6 @@ fn resolve_fog_volume(
         planes,
         tags,
         is_ellipsoid: false,
-    }))
-}
-
-/// Resolve a brush-defined lightmap-density override. The AABB is the explicit
-/// chart-origin membership classifier; source planes remain parsed alongside it
-/// so this compiler-only brush entity follows the region-entity contract.
-fn resolve_lightmap_scale_region(
-    geo_map: &GeoMap,
-    brush_ids: &[BrushId],
-    props: &HashMap<String, String>,
-    scale: f64,
-    classname: &str,
-) -> Result<Option<MapLightmapScaleRegion>> {
-    let Some(bounds) = resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)? else {
-        return Ok(None);
-    };
-    let lightmap_scale = props
-        .get("_lightmap_scale")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value.parse::<f32>().map_err(|error| {
-                anyhow::anyhow!(
-                    "{classname} `_lightmap_scale` value `{value}` is not a valid float ({error})"
-                )
-            })
-        })
-        .transpose()?
-        .unwrap_or(1.0);
-    if !lightmap_scale.is_finite() || lightmap_scale <= 0.0 {
-        anyhow::bail!(
-            "{classname} `_lightmap_scale` must be a finite positive float, got {lightmap_scale}"
-        );
-    }
-
-    Ok(Some(MapLightmapScaleRegion {
-        min: bounds.min.to_array().map(|value| value as f32),
-        max: bounds.max.to_array().map(|value| value as f32),
-        planes: bounds.planes,
-        scale: lightmap_scale,
     }))
 }
 

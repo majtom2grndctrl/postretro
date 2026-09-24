@@ -2046,7 +2046,7 @@ mod tests {
             &crate::sh_bake::ShConfig { probe_spacing: 4.0 },
         );
 
-        let portals_section = encode_portals(&generated_portals);
+        let portals_section = encode_portals(&generated_portals).unwrap();
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
@@ -2175,7 +2175,7 @@ mod tests {
         let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
         let light_influence = encode_light_influence(&alpha_ns);
         let map_entities = encode_map_entities(&map_data.map_entities);
-        let portals = encode_portals(&generated_portals);
+        let portals = encode_portals(&generated_portals).unwrap();
         let texture_cache_keys = HashMap::new();
 
         let unique = std::time::SystemTime::now()

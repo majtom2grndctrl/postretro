@@ -79,6 +79,10 @@ impl ShComposeResources {
     /// Build the compose pipeline and bind group. When `delta` is `None` or
     /// empty, all CSR offset ranges are empty (`start == end`), so the result is
     /// a pure base→total copy.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is an explicit GPU-pipeline input; grouping would obscure ownership"
+    )]
     pub fn new(
         device: &wgpu::Device,
         sh: &ShVolumeResources,

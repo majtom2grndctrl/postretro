@@ -210,7 +210,7 @@ fn validate_storage_limits(
     limits: &wgpu::Limits,
     reason: &'static str,
 ) -> Result<(), ShResidencyDrainError> {
-    if bytes > limits.max_buffer_size || bytes > u64::from(limits.max_storage_buffer_binding_size) {
+    if bytes > limits.max_buffer_size || bytes > limits.max_storage_buffer_binding_size {
         return Err(ShResidencyDrainError::GpuCapacity { reason });
     }
     Ok(())
@@ -245,7 +245,7 @@ fn indirect_fixed_metadata_bytes(
         .map_err(|_| ShResidencyDrainError::SlotOverflow)?
         .checked_mul(4)
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let dummy_backing = (!source_present).then_some(12).unwrap_or(0);
+    let dummy_backing = if source_present { 0 } else { 12 };
     grid.checked_add(pairs)
         .and_then(|bytes| bytes.checked_add(compaction_prefix))
         .and_then(|bytes| bytes.checked_add(32))
@@ -269,7 +269,7 @@ fn direct_pass_fixed_metadata_bytes(
         .checked_mul(3)
         .and_then(|words| words.checked_mul(4))
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let dummy_backing = (!source_present).then_some(12).unwrap_or(0);
+    let dummy_backing = if source_present { 0 } else { 12 };
     grid.checked_add(pairs)
         .and_then(|bytes| bytes.checked_add(compaction_prefix))
         .and_then(|bytes| bytes.checked_add(pass_uniform_bytes))
@@ -315,11 +315,15 @@ fn dynamic_grid_bytes(rows: u32, limits: &wgpu::Limits) -> Result<u64, ShResiden
     Ok(bytes)
 }
 
+/// Sparse compose allocation data: dimensions, probe masks, cell levels,
+/// animation descriptors, and entry/tile backing floors.
+type SparseComposeCapacity = ([u32; 3], Vec<u64>, Vec<u8>, Vec<u32>, u32, u32);
+
 pub(in crate::render::sh_streaming) fn sparse_compose_capacity(
     base: &ShStreamBaseMetadata,
     source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
     sparse_floor: Option<(u32, u32)>,
-) -> Result<([u32; 3], Vec<u64>, Vec<u8>, Vec<u32>, u32, u32), ShResidencyDrainError> {
+) -> Result<SparseComposeCapacity, ShResidencyDrainError> {
     if let Some(source) = source {
         let cells = checked_cell_count(source.affinity_dims)?;
         let cells_usize =

@@ -4,13 +4,57 @@
 use super::*;
 
 /// Convert compiler portal data into a `PortalsSection` for the format crate.
-pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
-    let mut vertices = Vec::new();
-    let mut records = Vec::new();
+pub fn encode_portals(portals: &[Portal]) -> anyhow::Result<PortalsSection> {
+    checked_u32(portals.len(), "Portals portal_count")?;
+    let total_vertex_count =
+        portals
+            .iter()
+            .enumerate()
+            .try_fold(0usize, |total, (portal_index, portal)| {
+                checked_u32(
+                    total,
+                    &format!("Portals portal {portal_index} vertex_start"),
+                )?;
+                checked_u32(
+                    portal.polygon.len(),
+                    &format!("Portals portal {portal_index} vertex_count"),
+                )?;
+                checked_u32(
+                    portal.front_leaf,
+                    &format!("Portals portal {portal_index} front_leaf"),
+                )?;
+                checked_u32(
+                    portal.back_leaf,
+                    &format!("Portals portal {portal_index} back_leaf"),
+                )?;
+                total.checked_add(portal.polygon.len()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Portals vertex_count overflows usize while adding portal {portal_index}"
+                    )
+                })
+            })?;
+    checked_u32(total_vertex_count, "Portals vertex_count")?;
 
-    for portal in portals {
-        let vertex_start = vertices.len() as u32;
-        let vertex_count = portal.polygon.len() as u32;
+    let mut vertices = Vec::with_capacity(total_vertex_count);
+    let mut records = Vec::with_capacity(portals.len());
+
+    for (portal_index, portal) in portals.iter().enumerate() {
+        let vertex_start = checked_u32(
+            vertices.len(),
+            &format!("Portals portal {portal_index} vertex_start"),
+        )?;
+        let vertex_count = checked_u32(
+            portal.polygon.len(),
+            &format!("Portals portal {portal_index} vertex_count"),
+        )?;
+        let front_leaf = checked_u32(
+            portal.front_leaf,
+            &format!("Portals portal {portal_index} front_leaf"),
+        )?;
+        let back_leaf = checked_u32(
+            portal.back_leaf,
+            &format!("Portals portal {portal_index} back_leaf"),
+        )?;
 
         // Output precision boundary: narrow portal vertices from f64 to f32
         // at the PRL format write site.
@@ -21,15 +65,15 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
         records.push(PortalRecord {
             vertex_start,
             vertex_count,
-            front_leaf: portal.front_leaf as u32,
-            back_leaf: portal.back_leaf as u32,
+            front_leaf,
+            back_leaf,
         });
     }
 
-    PortalsSection {
+    Ok(PortalsSection {
         vertices,
         portals: records,
-    }
+    })
 }
 
 /// Encode runtime cells from BSP leaf records plus explicit exterior
@@ -42,10 +86,12 @@ pub fn encode_cells(
     if leaves.leaves.is_empty() {
         anyhow::bail!("cannot encode Cells: source BspLeavesSection is empty");
     }
+    checked_u32(leaves.leaves.len(), "Cells cell_count")?;
+    checked_u32(portals.portals.len(), "Cells portal_count")?;
 
     let mut portal_refs_by_cell: Vec<Vec<u32>> = vec![Vec::new(); leaves.leaves.len()];
     for (portal_idx, portal) in portals.portals.iter().enumerate() {
-        let portal_idx = portal_idx as u32;
+        let portal_idx = checked_u32(portal_idx, "Cells portal index")?;
         let front = portal.front_leaf as usize;
         let back = portal.back_leaf as usize;
         if front >= leaves.leaves.len() || back >= leaves.leaves.len() {
@@ -91,9 +137,16 @@ pub fn encode_cells(
         let (portal_ref_start, portal_ref_count) = if refs.is_empty() {
             (0, 0)
         } else {
-            let start = portal_refs.len() as u32;
+            let start = checked_u32(
+                portal_refs.len(),
+                &format!("Cells cell {cell_idx} portal_ref_start"),
+            )?;
+            let count = checked_u32(
+                refs.len(),
+                &format!("Cells cell {cell_idx} portal_ref_count"),
+            )?;
             portal_refs.extend_from_slice(refs);
-            (start, refs.len() as u32)
+            (start, count)
         };
 
         cells.push(CellRecord {
@@ -110,6 +163,7 @@ pub fn encode_cells(
             portal_ref_count,
         });
     }
+    checked_u32(portal_refs.len(), "Cells portal_ref_total")?;
 
     let section = CellsSection { cells, portal_refs };
     CellsSection::from_bytes(&section.to_bytes())?;
@@ -142,6 +196,8 @@ pub fn encode_cell_locator(tree: &BspTree) -> anyhow::Result<CellLocatorSection>
     if tree.leaves.is_empty() {
         anyhow::bail!("cannot encode CellLocator: source BspLeavesSection is empty");
     }
+    checked_u32(tree.nodes.len(), "CellLocator node_count")?;
+    let leaf_count = checked_u32(tree.leaves.len(), "CellLocator leaf_count")?;
 
     let root = if tree.nodes.is_empty() {
         CellLocatorChild::Cell(0)
@@ -149,7 +205,7 @@ pub fn encode_cell_locator(tree: &BspTree) -> anyhow::Result<CellLocatorSection>
         CellLocatorChild::Node(0)
     };
     let mut nodes = Vec::with_capacity(tree.nodes.len());
-    for node in &tree.nodes {
+    for (node_index, node) in tree.nodes.iter().enumerate() {
         nodes.push(CellLocatorNodeRecord {
             plane_normal: [
                 node.plane_normal.x as f32,
@@ -157,19 +213,115 @@ pub fn encode_cell_locator(tree: &BspTree) -> anyhow::Result<CellLocatorSection>
                 node.plane_normal.z as f32,
             ],
             plane_distance: node.plane_distance as f32,
-            front: locator_child(&node.front),
-            back: locator_child(&node.back),
+            front: locator_child(node_index, "front", &node.front)?,
+            back: locator_child(node_index, "back", &node.back)?,
         });
     }
 
     let section = CellLocatorSection { root, nodes };
-    CellLocatorSection::from_bytes(&section.to_bytes(), tree.leaves.len() as u32)?;
+    CellLocatorSection::from_bytes(&section.to_bytes(), leaf_count)?;
     Ok(section)
 }
 
-fn locator_child(child: &BspChild) -> CellLocatorChild {
+fn locator_child(
+    node_index: usize,
+    side: &'static str,
+    child: &BspChild,
+) -> anyhow::Result<CellLocatorChild> {
     match child {
-        BspChild::Node(index) => CellLocatorChild::Node(*index as u32),
-        BspChild::Leaf(index) => CellLocatorChild::Cell(*index as u32),
+        BspChild::Node(index) => Ok(CellLocatorChild::Node(checked_u32(
+            *index,
+            &format!("CellLocator node {node_index} {side} node index"),
+        )?)),
+        BspChild::Leaf(index) => Ok(CellLocatorChild::Cell(checked_u32(
+            *index,
+            &format!("CellLocator node {node_index} {side} leaf index"),
+        )?)),
+    }
+}
+
+fn checked_u32(value: usize, field: &str) -> anyhow::Result<u32> {
+    u32::try_from(value).map_err(|_| anyhow::anyhow!("{field} {value} exceeds u32::MAX"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_pointer_width = "64")]
+    fn overflowing_index() -> usize {
+        u32::MAX as usize + 1
+    }
+
+    // Regression: a portal endpoint above u32::MAX wrapped to cell zero and
+    // passed the downstream adjacency and cluster-directory validators.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn encode_portals_rejects_endpoint_that_does_not_fit_wire_id() {
+        let error = encode_portals(&[Portal {
+            polygon: Vec::new(),
+            front_leaf: overflowing_index(),
+            back_leaf: 0,
+        }])
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Portals portal 0 front_leaf {} exceeds u32::MAX",
+                overflowing_index()
+            )
+        );
+    }
+
+    // Regression: locator child ids used to wrap before id-39 validation.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn encode_cell_locator_rejects_child_that_does_not_fit_wire_id() {
+        let tree = BspTree {
+            nodes: vec![crate::partition::BspNode {
+                plane_normal: glam::DVec3::X,
+                plane_distance: 0.0,
+                front: BspChild::Leaf(overflowing_index()),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![crate::partition::BspLeaf {
+                face_indices: Vec::new(),
+                bounds: crate::partition::Aabb::empty(),
+                is_solid: false,
+                defining_planes: Vec::new(),
+            }],
+        };
+
+        let error = encode_cell_locator(&tree).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "CellLocator node 0 front leaf index {} exceeds u32::MAX",
+                overflowing_index()
+            )
+        );
+    }
+
+    // Regression: wire counts and starts must use the same checked narrowing
+    // as endpoint ids without allocating a u32::MAX-sized fixture.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn spatial_wire_counts_reject_values_above_u32_max() {
+        for field in [
+            "Portals vertex_count",
+            "Portals portal 7 vertex_start",
+            "Cells cell_count",
+            "Cells portal_ref_total",
+            "CellLocator node_count",
+            "CellLocator leaf_count",
+        ] {
+            let error = checked_u32(overflowing_index(), field).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("{field} {} exceeds u32::MAX", overflowing_index())
+            );
+        }
     }
 }

@@ -5,6 +5,10 @@ use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
 use postretro_test_log_capture::LogCapture;
 use postretro_visibility::VisibleCells;
+use std::sync::Arc;
+
+#[path = "sync_manifest_test_fixture.rs"]
+mod sync_manifest_test_fixture;
 
 fn topology(
     cell_to_cluster: Vec<u32>,
@@ -242,6 +246,63 @@ fn culled_ids(visible: &VisibleCells) -> &[u32] {
         VisibleCells::Culled(ids) => ids,
         VisibleCells::DrawAll => panic!("real fixture must stay on the culled path"),
     }
+}
+
+// Regression: synthetic ready chunks skipped the retained-file read and all CPU phase charges.
+#[test]
+fn sync_proof_reads_retained_manifest_and_releases_cpu_phases_after_install() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+    let index = &manifest.payloads().index[0];
+    let payload_len = index.payload_len;
+    let decoded_bytes = index.decoded_bytes;
+    let mut controller = ShResidencyController::with_clock(
+        manifest,
+        ShGpuBudgetInputs::default(),
+        &FixedGenerationClock::new(1),
+    )
+    .unwrap();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    assert_eq!(
+        controller.read_one_sync_at_target_time().unwrap(),
+        SyncReadResult::Prepared(0)
+    );
+    assert_eq!(controller.state(0), Some(ClusterResidencyState::Ready));
+    assert_eq!(controller.permits_in_use(), 1);
+    let cpu = controller.accounting().cpu;
+    assert_eq!(cpu.encoded.current_bytes, 0);
+    assert_eq!(cpu.encoded.high_water_bytes, payload_len);
+    assert_eq!(cpu.decoding.current_bytes, 0);
+    assert_eq!(cpu.decoding.high_water_bytes, decoded_bytes);
+    assert_eq!(cpu.ready.current_bytes, payload_len);
+    assert_eq!(cpu.ready.high_water_bytes, payload_len);
+
+    let batch = controller.take_drain_batch().unwrap();
+    assert_eq!(batch.ready.len(), 1);
+    assert_eq!(batch.ready[0].chunk.cluster_id, 0);
+    assert_eq!(batch.ready[0].chunk.bytes.len() as u64, payload_len);
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            accepted: vec![0],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+    assert_eq!(controller.accounting().cpu.ready.current_bytes, 0);
+    assert_eq!(controller.permits_in_use(), 0);
+    assert_eq!(
+        controller.state(0),
+        Some(ClusterResidencyState::InstalledUncomposed)
+    );
+    controller.promote_composed_clusters();
+    assert_eq!(controller.state(0), Some(ClusterResidencyState::Sampleable));
+    assert_eq!(
+        controller.read_one_sync_at_target_time().unwrap(),
+        SyncReadResult::NoTargetReady
+    );
 }
 
 #[test]
@@ -641,13 +702,13 @@ fn visible_dependency_owner_beats_a_hysteresis_ready_backlog() {
 }
 
 #[test]
-fn a_failure_identity_spends_only_one_leave_and_reenter_retry() {
+fn a_failure_identity_warns_once_and_spends_only_one_leave_and_reenter_retry() {
     let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
     controller
         .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
         .unwrap();
-    controller.take_next_request().unwrap().unwrap();
-    controller.mark_failed(0).unwrap();
+    let first = controller.take_next_request().unwrap().unwrap();
+    assert!(controller.admit_failed_request(first).unwrap());
 
     controller
         .update_targets(&VisibleCells::Culled(Vec::new()), 0.1)
@@ -660,8 +721,9 @@ fn a_failure_identity_spends_only_one_leave_and_reenter_retry() {
         .unwrap();
     assert_eq!(controller.state(0), Some(ClusterResidencyState::Absent));
 
-    controller.take_next_request().unwrap().unwrap();
-    controller.mark_failed(0).unwrap();
+    let retry = controller.take_next_request().unwrap().unwrap();
+    assert_eq!(retry, first);
+    assert!(!controller.admit_failed_request(retry).unwrap());
     controller
         .update_targets(&VisibleCells::Culled(Vec::new()), 2.3)
         .unwrap();
@@ -673,6 +735,55 @@ fn a_failure_identity_spends_only_one_leave_and_reenter_retry() {
         .unwrap();
     assert_eq!(controller.state(0), Some(ClusterResidencyState::Failed));
     assert!(controller.take_next_request().unwrap().is_none());
+}
+
+#[test]
+fn failure_warning_resets_when_hash_generation_or_content_tag_identity_changes() {
+    let mut controller = controller(topology(vec![0], vec![vec![]], vec![vec![]], vec![1]));
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+
+    let first = controller.take_next_request().unwrap().unwrap();
+    assert!(controller.admit_failed_request(first).unwrap());
+
+    controller.states[0].state = ClusterResidencyState::Absent;
+    let repeated = controller.take_next_request().unwrap().unwrap();
+    assert_eq!(repeated, first);
+    assert!(!controller.admit_failed_request(repeated).unwrap());
+
+    controller.topology.chunk_hashes[0] = [9; 32];
+    controller.states[0].state = ClusterResidencyState::Absent;
+    let changed_hash = controller.take_next_request().unwrap().unwrap();
+    assert_ne!(changed_hash.chunk_hash, first.chunk_hash);
+    assert!(controller.admit_failed_request(changed_hash).unwrap());
+
+    controller.generation += 1;
+    controller.states[0].state = ClusterResidencyState::Absent;
+    let changed_generation = controller.take_next_request().unwrap().unwrap();
+    assert_ne!(changed_generation.generation, changed_hash.generation);
+    assert!(controller.admit_failed_request(changed_generation).unwrap());
+
+    controller.content_tag = [7; 32];
+    controller.states[0].state = ClusterResidencyState::Absent;
+    let changed_content_tag = controller.take_next_request().unwrap().unwrap();
+    assert_ne!(
+        changed_content_tag.content_tag,
+        changed_generation.content_tag
+    );
+    assert_eq!(
+        changed_content_tag.generation,
+        changed_generation.generation
+    );
+    assert_eq!(
+        changed_content_tag.chunk_hash,
+        changed_generation.chunk_hash
+    );
+    assert!(
+        controller
+            .admit_failed_request(changed_content_tag)
+            .unwrap()
+    );
 }
 
 #[test]

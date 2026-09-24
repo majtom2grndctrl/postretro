@@ -69,7 +69,7 @@ fn validate_storage_buffer_size(
     limits: &wgpu::Limits,
     resource: &'static str,
 ) -> Result<(), ShResidencyDrainError> {
-    if bytes > limits.max_buffer_size || bytes > u64::from(limits.max_storage_buffer_binding_size) {
+    if bytes > limits.max_buffer_size || bytes > limits.max_storage_buffer_binding_size {
         return Err(ShResidencyDrainError::GpuCapacity { reason: resource });
     }
     Ok(())

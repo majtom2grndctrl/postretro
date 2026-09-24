@@ -98,12 +98,12 @@ impl StreamingSparseBuffers {
             if !row.tile_f16.is_empty() {
                 tiles.push(BufferWrite {
                     offset: u64::from(row.tile_f16_start / 2) * 4,
-                    bytes: u16_words(&row.tile_f16),
+                    bytes: u16_words(row.tile_f16),
                 });
             }
             lights.push(BufferWrite {
                 offset: u64::from(row.entry_start) * 4,
-                bytes: u32_bytes(&row.lights),
+                bytes: u32_bytes(row.lights),
             });
             let compaction_byte_offset = self
                 .compaction_entry_offset_words

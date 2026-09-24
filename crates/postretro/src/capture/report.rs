@@ -15,7 +15,6 @@ use crate::render::{
 const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v1";
 const CPU_COMPLETION_STRATEGY: &str = "device-poll-wait-after-submit";
 const CPU_COMPLETION_CADENCE: &str = "once-per-sample-frame";
-const GPU_TIMING_WINDOW_FRAMES: u32 = 120;
 
 /// Build the schema-v1 report only after all sample frames have completed.
 /// The caller owns staging and publication so a previous successful report is
@@ -28,6 +27,7 @@ pub(super) fn measurement_report(
     sh_residency: Option<ShResidencyReport>,
     cpu_samples_ms: Vec<f64>,
     timing_state: CaptureGpuTimingState,
+    gpu_partial_frames: u32,
     gpu_windows: Vec<CaptureGpuTimingWindow>,
 ) -> MeasurementReport {
     let measurement = scene
@@ -35,7 +35,7 @@ pub(super) fn measurement_report(
         .as_ref()
         .expect("measurement report requires validated measurement scene");
     let (gpu_timing, partial_frames) =
-        gpu_timing_report(timing_state, measurement.sample_frames, gpu_windows);
+        gpu_timing_report(timing_state, gpu_partial_frames, gpu_windows);
     let median_ms = percentile(&cpu_samples_ms, 0.5)
         .expect("validated measurement always has at least one CPU sample");
     let p95_ms = percentile(&cpu_samples_ms, 0.95)
@@ -94,7 +94,7 @@ pub(super) fn percentile(samples: &[f64], fraction: f64) -> Option<f64> {
 
 fn gpu_timing_report(
     state: CaptureGpuTimingState,
-    sample_frames: u32,
+    gpu_partial_frames: u32,
     windows: Vec<CaptureGpuTimingWindow>,
 ) -> (GpuTimingReportInner, Option<u32>) {
     let timing = match state {
@@ -130,8 +130,7 @@ fn gpu_timing_report(
         },
     };
     let partial_frames = if state == CaptureGpuTimingState::Active {
-        let partial = sample_frames % GPU_TIMING_WINDOW_FRAMES;
-        (partial != 0).then_some(partial)
+        (gpu_partial_frames != 0).then_some(gpu_partial_frames)
     } else {
         None
     };
@@ -529,6 +528,7 @@ mod tests {
             None,
             vec![1.0],
             CaptureGpuTimingState::NotRequested,
+            0,
             Vec::new(),
         ));
 
@@ -561,6 +561,7 @@ mod tests {
             Some(accounting),
             vec![1.0],
             CaptureGpuTimingState::PlainBuildUnavailable,
+            0,
             Vec::new(),
         ));
 
@@ -606,6 +607,7 @@ mod tests {
             Some(accounting),
             vec![1.0],
             CaptureGpuTimingState::PlainBuildUnavailable,
+            0,
             Vec::new(),
         ));
         let streaming = &json["renderer_accounted_sh"]["streaming"];
@@ -655,6 +657,7 @@ mod tests {
             Some(accounting),
             vec![1.0],
             CaptureGpuTimingState::PlainBuildUnavailable,
+            0,
             Vec::new(),
         ));
         let lifecycle = &json["renderer_accounted_sh"]["streaming_lifecycle"];
@@ -698,6 +701,7 @@ mod tests {
                 None,
                 vec![1.0],
                 state,
+                0,
                 Vec::new(),
             ));
             assert_eq!(json["gpu_timing"]["availability"], availability);
@@ -715,6 +719,7 @@ mod tests {
             None,
             vec![1.0],
             CaptureGpuTimingState::Active,
+            1,
             vec![CaptureGpuTimingWindow {
                 passes: vec![crate::render::CaptureGpuTimingPass {
                     label: "forward",
@@ -728,5 +733,24 @@ mod tests {
         assert!(json["gpu_timing"].get("reason").is_none());
         assert_eq!(json["gpu_timing"]["windows"].as_array().unwrap().len(), 1);
         assert_eq!(json["gpu_timing"]["partial_frames"], 1);
+    }
+
+    #[test]
+    fn partial_timing_frames_follow_readbacks_not_requested_sample_count() {
+        // The scene requests 121 frames. A dropped readback can leave a
+        // completed 120-sample window and no trailing partial sample.
+        let json = as_json(measurement_report(
+            &scene_with_measurement(),
+            99,
+            None,
+            adapter(),
+            None,
+            vec![1.0],
+            CaptureGpuTimingState::Active,
+            0,
+            vec![CaptureGpuTimingWindow { passes: Vec::new() }],
+        ));
+        assert_eq!(json["workload"]["sample_frames"], 121);
+        assert!(json["gpu_timing"].get("partial_frames").is_none());
     }
 }

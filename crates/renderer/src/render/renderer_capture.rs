@@ -15,6 +15,14 @@ impl Renderer {
         self.capture_gpu_timing_state
     }
 
+    /// Count only completed timestamp readbacks in the unfinished window.
+    pub fn capture_measurement_partial_timing_frames(&self) -> u32 {
+        self.full()
+            .frame_timing
+            .as_ref()
+            .map_or(0, frame_timing::FrameTiming::partial_window_samples)
+    }
+
     /// Drop timestamp-query accumulation at the warmup/sample boundary.
     ///
     /// Prepared capture calls this only after each warmup submission has

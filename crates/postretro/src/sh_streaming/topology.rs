@@ -94,7 +94,7 @@ impl PlannerTopology {
                 })?;
             }
         }
-        if cell_to_cluster.iter().any(|&cluster| cluster == u32::MAX) {
+        if cell_to_cluster.contains(&u32::MAX) {
             return Err(ShResidencyControllerError::InvalidTopology(
                 "id-49 leaves a runtime cell unassigned".into(),
             ));
@@ -395,11 +395,11 @@ fn dense_node(
     })
 }
 
-fn cluster_ranges<'a>(
-    directory: &'a postretro_level_format::cluster_directory::ClusterDirectorySection,
+fn cluster_ranges(
+    directory: &postretro_level_format::cluster_directory::ClusterDirectorySection,
     cluster_id: usize,
 ) -> Result<
-    &'a [postretro_level_format::cluster_directory::ClusterRangeRecord],
+    &[postretro_level_format::cluster_directory::ClusterRangeRecord],
     ShResidencyControllerError,
 > {
     let cluster = directory.clusters.get(cluster_id).ok_or_else(|| {

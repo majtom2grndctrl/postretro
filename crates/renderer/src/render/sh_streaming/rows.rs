@@ -224,7 +224,11 @@ impl ShResidencyState {
             // item in the same drain. The texture moments retain their baked
             // values, but their indirection word is invalid so sampling uses
             // the miss policy.
-            gpu.upload_compose_words(queue, &self.compose_words);
+            gpu.upload_changed_compose_words(
+                queue,
+                &self.compose_words,
+                sample_updates.iter().map(|&(dense, _, _)| dense),
+            )?;
             gpu.upload_sample_words_and_moments(
                 queue,
                 &self.sampled_words,

@@ -149,6 +149,13 @@ impl FrameTiming {
         self.completed_window.take()
     }
 
+    /// Successful readbacks accumulated since the last completed window.
+    /// Capture uses this instead of submitted frame count because a failed or
+    /// delayed map does not contribute a timing sample.
+    pub fn partial_window_samples(&self) -> u32 {
+        self.accum_frames
+    }
+
     /// Discard timing state at the capture warmup/sample boundary. The caller
     /// must complete any in-flight readback before reset.
     pub fn reset_window_state(&mut self) {

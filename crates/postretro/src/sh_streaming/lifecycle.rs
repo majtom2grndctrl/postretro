@@ -51,7 +51,7 @@ impl ShResidencyController {
                 Ok(SyncReadResult::Prepared(request.cluster_id))
             }
             Err(error) => {
-                self.mark_failed(request.cluster_id)?;
+                let _ = self.mark_failed(request.cluster_id)?;
                 Err(ShResidencyControllerError::SourceRead(error))
             }
         }
@@ -81,8 +81,9 @@ impl ShResidencyController {
         }))
     }
 
-    /// A failed worker completion releases exactly the request's permit. A
-    /// stale generation or changed chunk identity cannot fail a new request.
+    /// A failed worker completion releases exactly the request's permit and
+    /// returns whether its identity is eligible for the one warning. A stale
+    /// generation or changed chunk identity cannot fail a new request.
     pub(crate) fn admit_failed_request(
         &mut self,
         request: ShClusterRequest,
@@ -97,8 +98,7 @@ impl ShResidencyController {
             self.states[request.cluster_id as usize].state = ClusterResidencyState::Absent;
             return Ok(false);
         }
-        self.mark_failed(request.cluster_id)?;
-        Ok(true)
+        self.mark_failed(request.cluster_id)
     }
 
     pub(crate) fn matches_queued_request(&self, request: ShClusterRequest) -> bool {

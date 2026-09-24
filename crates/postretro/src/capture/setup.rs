@@ -1,5 +1,5 @@
-// Capture-only scene setup: light overrides, static camera, and level handoff.
-// See: context/lib/rendering_pipeline.md §7.8
+//! Capture-only scene setup: light overrides, static camera, and level handoff.
+//! See: context/lib/rendering_pipeline.md §7.8
 
 use std::collections::{BTreeMap, HashSet};
 use std::mem::size_of;
@@ -82,9 +82,8 @@ pub(super) fn install_capture_animated_promotion_bridge(
     Ok(())
 }
 
-/// Keep one geometry handoff for capture. Task 7 can replace whole SH bodies
-/// with the explicit legacy-or-streaming storage without changing this static
-/// capture preparation or the renderer call order.
+/// Capture retains `level_world_to_geometry`'s legacy-or-streaming SH storage
+/// selection and replaces only the static light-related slices.
 pub(super) fn capture_level_geometry<'a>(
     world: &'a postretro_level_loader::LevelWorld,
     texture_materials: &'a [postretro_render_data::material::Material],

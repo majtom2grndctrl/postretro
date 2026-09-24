@@ -226,7 +226,7 @@ impl StreamingPromotionPass {
             &self.light_term_mask,
             compose_indirection,
         );
-        let _ = std::mem::replace(&mut self.bind_group, replacement);
+        self.bind_group = replacement;
     }
 
     pub(super) fn upload_sparse_rows(

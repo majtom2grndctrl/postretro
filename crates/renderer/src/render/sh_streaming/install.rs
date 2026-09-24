@@ -55,14 +55,7 @@ impl ShResidencyState {
         let result = (|| {
             let sparse_rows = self.collect_sparse_rows(cluster_id, &prepared.chunk)?;
             if has_dense_payload {
-                self.allocate_owned_nodes(
-                    device,
-                    queue,
-                    sh,
-                    uniform_bind_group_layout,
-                    selection_weights,
-                    cluster_id,
-                )?;
+                self.allocate_owned_nodes(device, queue, sh, selection_weights, cluster_id)?;
             } else if self
                 .nodes_by_owner
                 .get(&cluster_id)
@@ -255,7 +248,11 @@ impl ShResidencyState {
                     &animated_direct_rows,
                 )?;
             }
-            gpu.upload_compose_words(queue, &self.compose_words);
+            gpu.upload_changed_compose_words(
+                queue,
+                &self.compose_words,
+                patches.iter().map(|patch| patch.dense),
+            )?;
         }
         let owned_nodes = self
             .nodes_by_owner
@@ -343,13 +340,11 @@ impl ShResidencyState {
         Ok(true)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn allocate_owned_nodes(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         sh: &mut crate::render::sh_volume::ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
         cluster_id: u32,
     ) -> Result<(), ShResidencyDrainError> {
@@ -377,15 +372,16 @@ impl ShResidencyState {
             && projected.capacity > gpu.shape.slots
         {
             gpu.grow_dense(
-                device,
-                queue,
-                &self.base_metadata,
-                &self.source_metadata,
                 projected.capacity,
-                probe_occlusion_enabled,
-                sh,
-                uniform_bind_group_layout,
-                selection_weights,
+                gpu::DenseGrowthInputs {
+                    device,
+                    queue,
+                    base: &self.base_metadata,
+                    sources: &self.source_metadata,
+                    probe_occlusion_enabled,
+                    sh,
+                    selection_weights,
+                },
             )?;
         }
         for node in nodes {
@@ -405,7 +401,7 @@ impl ShResidencyState {
     fn probe_occlusion_enabled(&self) -> bool {
         self.gpu
             .as_ref()
-            .map_or(false, StreamingGpuPools::probe_occlusion_enabled)
+            .is_some_and(StreamingGpuPools::probe_occlusion_enabled)
     }
 
     pub(super) fn release_retired_generations(&mut self) {

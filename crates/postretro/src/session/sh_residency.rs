@@ -23,6 +23,10 @@ use crate::sh_streaming::budget::BytePhase;
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
 
+#[cfg(test)]
+#[path = "../sh_streaming/sync_manifest_test_fixture.rs"]
+mod sync_manifest_test_fixture;
+
 /// Controller state whose lifetime belongs to one loaded session, never to the
 /// renderer. A distinct loaded manifest replaces this object before any new
 /// frame can issue a batch for the next map.
@@ -296,11 +300,12 @@ impl ShStreamingSession {
                     })?;
                 }
                 Err(error) => {
-                    self.controller.admit_failed_request(completion.request)?;
-                    log::warn!(
-                        "[SH streaming] cluster {} read/decode failed: {error}",
-                        completion.request.cluster_id
-                    );
+                    if self.controller.admit_failed_request(completion.request)? {
+                        log::warn!(
+                            "[SH streaming] cluster {} read/decode failed: {error}",
+                            completion.request.cluster_id
+                        );
+                    }
                 }
             }
         }
@@ -491,6 +496,60 @@ fn fixed_gpu_charges(snapshot: ShResidencySnapshot) -> FixedGpuCharges {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_test_log_capture::LogCapture;
+    use std::time::{Duration, Instant};
+
+    // Regression: the permitted retry for one failed worker request emitted a duplicate warning.
+    #[test]
+    fn async_worker_failure_warns_once_across_same_identity_retry() {
+        let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+        let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+        let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+        let mut session = ShStreamingSession::from_snapshot(
+            manifest,
+            ShResidencySnapshot {
+                effective_floor_bytes: 1024 * 1024,
+                ..ShResidencySnapshot::default()
+            },
+        )
+        .unwrap();
+        session.mode = ShStreamingMode::Async;
+        session.start_async_workers().unwrap();
+
+        // The manifest retains an open file. Truncating that same file after
+        // load makes both real positional worker reads fail.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        let capture = LogCapture::start();
+        let visible = VisibleCells::Culled(vec![0]);
+        let empty = VisibleCells::Culled(Vec::new());
+        session.prepare_async_batch(&visible, 0.0).unwrap();
+
+        let wait_for_failure = |session: &mut ShStreamingSession, time| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while session.controller.state(0)
+                != Some(crate::sh_streaming::controller::ClusterResidencyState::Failed)
+            {
+                assert!(Instant::now() < deadline, "worker failure did not arrive");
+                std::thread::yield_now();
+                session.prepare_async_batch(&visible, time).unwrap();
+            }
+        };
+        wait_for_failure(&mut session, 0.0);
+        capture.assert_logged_once(log::Level::Warn, "cluster 0 read/decode failed:");
+
+        session.prepare_async_batch(&empty, 0.1).unwrap();
+        session.prepare_async_batch(&empty, 2.1).unwrap();
+        session.prepare_async_batch(&visible, 2.2).unwrap();
+        assert_eq!(session.controller.counters().retries, 1);
+        wait_for_failure(&mut session, 2.2);
+        assert_eq!(session.controller.permits_in_use(), 0);
+        capture.assert_logged_once(log::Level::Warn, "cluster 0 read/decode failed:");
+    }
 
     #[test]
     fn snapshot_budget_uses_real_renderer_pool_figures() {

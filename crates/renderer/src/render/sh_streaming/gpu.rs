@@ -118,11 +118,7 @@ impl AtlasShape {
             return Ok(self);
         }
         let minimum_layers = required_slots.div_ceil(self.tiles_per_layer);
-        let layers = self
-            .layers
-            .checked_mul(2)
-            .unwrap_or(u32::MAX)
-            .max(minimum_layers);
+        let layers = self.layers.saturating_mul(2).max(minimum_layers);
         if layers > limits.max_texture_array_layers {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed dense pool cannot append enough texture-array layers",
@@ -169,6 +165,19 @@ struct RetiringDenseGeneration {
     grid_info: wgpu::Buffer,
     capacity_bytes: u64,
     complete: Arc<AtomicBool>,
+}
+
+/// Renderer state needed to replace the coupled dense atlas generation.
+/// Keeping it together makes the growth transaction's resource boundary
+/// explicit without folding its one sizing input into the bundle.
+pub(super) struct DenseGrowthInputs<'a> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) queue: &'a wgpu::Queue,
+    pub(super) base: &'a ShStreamBaseMetadata,
+    pub(super) sources: &'a ShStreamSourceMetadata,
+    pub(super) probe_occlusion_enabled: bool,
+    pub(super) sh: &'a mut ShVolumeResources,
+    pub(super) selection_weights: &'a wgpu::Buffer,
 }
 
 pub(super) struct StreamingGpuPools {
@@ -251,9 +260,7 @@ pub(super) fn validate_storage_buffer_size(
     reason: &'static str,
 ) -> Result<(), ShResidencyDrainError> {
     let limits = device.limits();
-    if byte_len > limits.max_buffer_size
-        || byte_len > u64::from(limits.max_storage_buffer_binding_size)
-    {
+    if byte_len > limits.max_buffer_size || byte_len > limits.max_storage_buffer_binding_size {
         return Err(ShResidencyDrainError::GpuCapacity { reason });
     }
     Ok(())
@@ -435,7 +442,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, ShResidencyDrainError> {
 }
 
 pub(super) fn u32_bytes(words: &[u32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(words.len() * std::mem::size_of::<u32>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(words));
     for word in words {
         bytes.extend_from_slice(&word.to_le_bytes());
     }

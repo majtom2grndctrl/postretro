@@ -47,6 +47,10 @@ fn scatter_binding_mode(
 }
 
 impl BillboardDirectScatterResources {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "GPU resource construction needs the device, queue, section availability, validated section data, and allocation ledger together"
+    )]
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

@@ -10,16 +10,18 @@ use super::*;
 impl StreamingGpuPools {
     pub(in crate::render::sh_streaming) fn grow_dense(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        base: &ShStreamBaseMetadata,
-        sources: &ShStreamSourceMetadata,
         required_slots: u32,
-        probe_occlusion_enabled: bool,
-        sh: &mut ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
-        selection_weights: &wgpu::Buffer,
+        inputs: DenseGrowthInputs<'_>,
     ) -> Result<(), ShResidencyDrainError> {
+        let DenseGrowthInputs {
+            device,
+            queue,
+            base,
+            sources,
+            probe_occlusion_enabled,
+            sh,
+            selection_weights,
+        } = inputs;
         if required_slots <= self.shape.slots {
             return Ok(());
         }
@@ -103,10 +105,10 @@ impl StreamingGpuPools {
             copy_texture(&mut encoder, source, destination, old_extent);
         }
 
-        // Submitted command buffers retain their old bindings.  Do not put
-        // those bindings in the dense retirement ticket: an indirect/direct
-        // bind group would cross-pin independently grown sparse families.
-        let _old_indirect_bind_group = self.indirect_compose.rebind_dense(
+        // Submitted command buffers retain their bindings. Drop the displaced
+        // bind groups after rewiring: putting compose groups in the dense
+        // retirement ticket would cross-pin independently grown sparse pools.
+        self.indirect_compose.rebind_dense(
             device,
             shape,
             &replacement.base_view,
@@ -114,17 +116,9 @@ impl StreamingGpuPools {
             &self.compose_indirection,
             sh,
         );
-        let _old_direct_bind_groups = if let (Some(direct), Some(views)) =
-            (self.direct_compose.as_mut(), direct_views)
-        {
-            Some(
-                direct
-                    .rebind_dense(device, shape, views, &self.compose_indirection, sh)
-                    .expect("prevalidated dense direct views make bind-group rewiring infallible"),
-            )
-        } else {
-            None
-        };
+        if let (Some(direct), Some(views)) = (self.direct_compose.as_mut(), direct_views) {
+            direct.rebind_dense(device, shape, views, &self.compose_indirection, sh);
+        }
 
         let old = DenseTextures {
             base_format: std::mem::replace(&mut self.base_format, replacement.base_format),
@@ -168,9 +162,8 @@ impl StreamingGpuPools {
             ),
         };
         let old_grid_info = std::mem::replace(&mut self.grid_info, replacement_grid_info);
-        let _old_bind_group = std::mem::replace(&mut self.bind_group, replacement_bind_group);
-        let _old_mesh_bind_group =
-            std::mem::replace(&mut self.mesh_bind_group, replacement_mesh_bind_group);
+        self.bind_group = replacement_bind_group;
+        self.mesh_bind_group = replacement_mesh_bind_group;
         self.shape = shape;
         self.probe_occlusion_enabled = probe_occlusion_enabled;
         self.active_capacity_bytes = replacement_active_capacity;
@@ -187,7 +180,6 @@ impl StreamingGpuPools {
             grid_info: old_grid_info,
             complete,
         });
-        let _ = uniform_bind_group_layout;
         Ok(())
     }
 

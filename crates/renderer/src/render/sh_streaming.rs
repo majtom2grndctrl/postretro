@@ -307,8 +307,6 @@ impl ShResidencyState {
     /// covers id-35 + id-41 and Pass B covers id-35 + id-41 + id-45. A
     /// successful two-pass encode advances the direct epoch; promotion happens
     /// at the following drain, never while the frame can still observe writes.
-    #[allow(clippy::too_many_arguments)]
-
     fn grid_dimensions(&self) -> [u32; 3] {
         self.grid_dimensions
     }

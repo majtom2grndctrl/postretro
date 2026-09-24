@@ -116,6 +116,10 @@ pub(super) struct AnimatedDirectShPassViews<'a> {
     pub(super) output_storage: &'a wgpu::TextureView,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "GPU pipeline inputs stay explicit because they have distinct resource and binding roles"
+)]
 pub(super) fn build_animated_direct_pass(
     device: &wgpu::Device,
     animation: &AnimatedLightBuffers,

@@ -1,7 +1,6 @@
 //! Deterministic compiler-only cell clustering and SH directory construction.
 //! See: context/lib/build_pipeline.md §PRL section IDs
 
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use postretro_level_format::bvh::BvhSection;
@@ -9,7 +8,7 @@ use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
     CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, ClusterDirectorySection, ClusterDirectoryValidationInputs,
-    ClusterRecord, populate_canonical_resource_ranges,
+    ClusterRecord, canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::portals::PortalsSection;
 
@@ -70,114 +69,28 @@ pub(crate) fn bake_cluster_directory_with_limits(
     );
     anyhow::ensure!(cell_limit > 0, "cluster cell limit must be positive");
     let started = Instant::now();
-    let cell_count = u32::try_from(cells.cells.len())?;
-    let mut primitive_counts = vec![0u32; cells.cells.len()];
-    for (leaf_index, leaf) in bvh.leaves.iter().enumerate() {
-        anyhow::ensure!(
-            leaf.cell_id < cell_count,
-            "BVH leaf {leaf_index} names cell {} outside {cell_count}",
-            leaf.cell_id
-        );
-        if leaf.index_count != 0 {
-            primitive_counts[leaf.cell_id as usize] = primitive_counts[leaf.cell_id as usize]
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("cell primitive count overflow"))?;
-        }
-    }
-    let mut adjacency = vec![BTreeSet::new(); cells.cells.len()];
-    for (portal_index, portal) in portals.portals.iter().enumerate() {
-        anyhow::ensure!(
-            portal.front_leaf < cell_count && portal.back_leaf < cell_count,
-            "portal {portal_index} endpoint outside {cell_count} cells"
-        );
-        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
-        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
-    }
-
-    let mut unassigned: BTreeSet<u32> = (0..cell_count).collect();
-    let mut clusters = Vec::new();
-    let mut members = Vec::with_capacity(cells.cells.len());
+    let partition = canonical_cell_partition(cells, portals, bvh, primitive_limit, cell_limit)?;
     let mut oversize_singletons = 0usize;
-    while !unassigned.is_empty() {
-        let seed = *unassigned
-            .iter()
-            .min_by(|&&a, &&b| compare_cell_keys(a, b, cells))
-            .expect("nonempty set has a seed");
-        unassigned.remove(&seed);
-        let mut cluster_members = vec![seed];
-        let mut primitive_count = primitive_counts[seed as usize];
-        let mut frontier: BTreeSet<u32> = adjacency[seed as usize]
-            .iter()
-            .copied()
-            .filter(|cell| unassigned.contains(cell))
-            .collect();
-        loop {
-            let candidate = frontier
-                .iter()
-                .copied()
-                .filter(|cell| {
-                    cluster_members.len() < cell_limit as usize
-                        && primitive_count
-                            .checked_add(primitive_counts[*cell as usize])
-                            .is_some_and(|sum| sum <= primitive_limit)
-                })
-                .min_by(|&a, &b| compare_cell_keys(a, b, cells));
-            let Some(candidate) = candidate else { break };
-            frontier.remove(&candidate);
-            if !unassigned.remove(&candidate) {
-                continue;
-            }
-            cluster_members.push(candidate);
-            primitive_count += primitive_counts[candidate as usize];
-            frontier.extend(
-                adjacency[candidate as usize]
-                    .iter()
-                    .copied()
-                    .filter(|cell| unassigned.contains(cell)),
-            );
+    for cluster in &partition.clusters {
+        if cluster.flags != CLUSTER_FLAG_INDIVISIBLE_OVERSIZE {
+            continue;
         }
-        cluster_members.sort_unstable();
-        let member_start = u32::try_from(members.len())?;
-        let member_count = u32::try_from(cluster_members.len())?;
-        let mut bounds_min = [f32::INFINITY; 3];
-        let mut bounds_max = [f32::NEG_INFINITY; 3];
-        for &cell_id in &cluster_members {
-            let cell = &cells.cells[cell_id as usize];
-            for axis in 0..3 {
-                bounds_min[axis] = canonical_zero(bounds_min[axis].min(cell.bounds_min[axis]));
-                bounds_max[axis] = canonical_zero(bounds_max[axis].max(cell.bounds_max[axis]));
-            }
-        }
-        let flags = if member_count == 1 && primitive_count > primitive_limit {
-            oversize_singletons += 1;
-            log::warn!(
-                "[Compiler] SH cluster cell {seed} is an indivisible singleton with {primitive_count} primitives, exceeding limit {primitive_limit} by {}",
-                primitive_count - primitive_limit,
-            );
-            CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
-        } else {
-            0
-        };
-        members.extend(cluster_members);
-        clusters.push(ClusterRecord {
-            bounds_min,
-            bounds_max,
-            member_start,
-            member_count,
-            range_start: 0,
-            range_count: 0,
-            primitive_count,
-            flags,
-        });
+        oversize_singletons += 1;
+        let cell = partition.members[cluster.member_start as usize];
+        log::warn!(
+            "[Compiler] SH cluster cell {cell} is an indivisible singleton with {} primitives, exceeding limit {primitive_limit} by {}",
+            cluster.primitive_count,
+            cluster.primitive_count - primitive_limit,
+        );
     }
 
     let mut directory = ClusterDirectorySection {
-        runtime_cell_count: cell_count,
+        runtime_cell_count: u32::try_from(cells.cells.len())?,
         primitive_limit,
         cell_limit,
-        clusters,
+        clusters: partition.clusters,
         resources: Vec::new(),
-        members,
+        members: partition.members,
         ranges: Vec::new(),
     };
     let inputs = ClusterDirectoryValidationInputs {
@@ -190,25 +103,14 @@ pub(crate) fn bake_cluster_directory_with_limits(
     let coverage_stats = populate_canonical_resource_ranges(&mut directory, inputs)?;
     directory.validate_semantics(inputs)?;
     let directory_bytes = directory.byte_len()?;
-    let construction_metadata_bytes = directory
-        .clusters
-        .len()
-        .checked_mul(std::mem::size_of::<ClusterRecord>())
-        .and_then(|value| value.checked_add(directory.members.len() * size_of::<u32>()))
-        .and_then(|value| {
-            value.checked_add(
-                directory.ranges.len()
-                    * size_of::<postretro_level_format::cluster_directory::ClusterRangeRecord>(),
-            )
-        })
-        .and_then(|value| value.checked_add(coverage_stats.affinity_cell_count * 2))
-        .and_then(|value| {
-            // Conservative accounting for one BTreeSet node per covering
-            // reference: key plus allocator/tree links and color/padding.
-            value.checked_add(coverage_stats.covering_references * 40)
-        })
-        .and_then(|value| value.checked_add(coverage_stats.maximum_visited_nodes_per_cluster * 20))
-        .ok_or_else(|| anyhow::anyhow!("cluster metadata byte count overflow"))?;
+    let construction_metadata_bytes = construction_metadata_bytes(
+        directory.clusters.len(),
+        directory.members.len(),
+        directory.ranges.len(),
+        coverage_stats.affinity_cell_count,
+        coverage_stats.covering_references,
+        coverage_stats.maximum_visited_nodes_per_cluster,
+    )?;
     Ok(ClusterDirectoryBake {
         stats: ClusterDirectoryBakeStats {
             elapsed: started.elapsed(),
@@ -225,18 +127,32 @@ pub(crate) fn bake_cluster_directory_with_limits(
     })
 }
 
-fn compare_cell_keys(left: u32, right: u32, cells: &CellsSection) -> std::cmp::Ordering {
-    let left_bounds = cells.cells[left as usize].bounds_min.map(canonical_zero);
-    let right_bounds = cells.cells[right as usize].bounds_min.map(canonical_zero);
-    left_bounds[2]
-        .total_cmp(&right_bounds[2])
-        .then_with(|| left_bounds[1].total_cmp(&right_bounds[1]))
-        .then_with(|| left_bounds[0].total_cmp(&right_bounds[0]))
-        .then_with(|| left.cmp(&right))
-}
+fn construction_metadata_bytes(
+    cluster_count: usize,
+    member_count: usize,
+    range_count: usize,
+    affinity_cell_count: usize,
+    covering_references: usize,
+    maximum_visited_nodes_per_cluster: usize,
+) -> anyhow::Result<usize> {
+    let cluster_bytes = cluster_count.checked_mul(size_of::<ClusterRecord>());
+    let member_bytes = member_count.checked_mul(size_of::<u32>());
+    let range_bytes = range_count.checked_mul(size_of::<
+        postretro_level_format::cluster_directory::ClusterRangeRecord,
+    >());
+    let affinity_bytes = affinity_cell_count.checked_mul(2);
+    // Conservative accounting for one BTreeSet node per covering reference:
+    // key plus allocator/tree links and color/padding.
+    let covering_reference_bytes = covering_references.checked_mul(40);
+    let visited_node_bytes = maximum_visited_nodes_per_cluster.checked_mul(20);
 
-fn canonical_zero(value: f32) -> f32 {
-    if value == 0.0 { 0.0 } else { value }
+    cluster_bytes
+        .and_then(|value| member_bytes.and_then(|bytes| value.checked_add(bytes)))
+        .and_then(|value| range_bytes.and_then(|bytes| value.checked_add(bytes)))
+        .and_then(|value| affinity_bytes.and_then(|bytes| value.checked_add(bytes)))
+        .and_then(|value| covering_reference_bytes.and_then(|bytes| value.checked_add(bytes)))
+        .and_then(|value| visited_node_bytes.and_then(|bytes| value.checked_add(bytes)))
+        .ok_or_else(|| anyhow::anyhow!("cluster metadata byte count overflow"))
 }
 
 #[cfg(test)]
@@ -289,6 +205,16 @@ mod tests {
         primitive_limit: u32,
         cell_limit: u32,
     ) -> ClusterDirectorySection {
+        bake_result(cells, portals, primitive_cells, primitive_limit, cell_limit).unwrap()
+    }
+
+    fn bake_result(
+        cells: CellsSection,
+        portals: Vec<PortalRecord>,
+        primitive_cells: &[u32],
+        primitive_limit: u32,
+        cell_limit: u32,
+    ) -> anyhow::Result<ClusterDirectorySection> {
         let portals = PortalsSection {
             vertices: Vec::new(),
             portals,
@@ -314,8 +240,7 @@ mod tests {
             primitive_limit,
             cell_limit,
         )
-        .unwrap()
-        .directory
+        .map(|baked| baked.directory)
     }
 
     #[test]
@@ -360,6 +285,46 @@ mod tests {
     }
 
     #[test]
+    fn compiler_cluster_directory_round_trips_shared_canonical_validation() {
+        let cells = CellsSection {
+            cells: vec![cell(0.0), cell(1.0), cell(2.0)],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: vec![portal(0, 1), portal(1, 2)],
+        };
+        let bvh = BvhSection {
+            nodes: Vec::new(),
+            leaves: (0..3).map(leaf).collect(),
+            root_node_index: 0,
+        };
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let sh = OctahedralShVolumeSection::placeholder();
+        let view =
+            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None).unwrap();
+        let baked =
+            bake_cluster_directory_with_limits(&cells, &portals, &bvh, &locator, view, 2, 3)
+                .unwrap();
+
+        let parsed =
+            ClusterDirectorySection::from_bytes(&baked.directory.try_to_bytes().unwrap()).unwrap();
+        parsed
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: view.inventory(),
+            })
+            .unwrap();
+        assert_eq!(parsed, baked.directory);
+    }
+
+    #[test]
     fn cluster_directory_partition_keeps_disconnected_cells_and_flags_only_indivisible_overage() {
         let cells = CellsSection {
             cells: vec![cell(0.0), cell(10.0), cell(20.0)],
@@ -373,6 +338,50 @@ mod tests {
             CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
         );
         assert_eq!(directory.clusters[2].flags, 0);
+    }
+
+    #[test]
+    fn cluster_directory_rejects_zero_limits() {
+        let cells = CellsSection {
+            cells: vec![cell(0.0)],
+            portal_refs: Vec::new(),
+        };
+        assert!(bake_result(cells.clone(), Vec::new(), &[], 0, 1).is_err());
+        assert!(bake_result(cells, Vec::new(), &[], 1, 0).is_err());
+    }
+
+    #[test]
+    fn cluster_directory_rejects_portal_endpoint_outside_cells() {
+        let cells = CellsSection {
+            cells: vec![cell(0.0)],
+            portal_refs: Vec::new(),
+        };
+        assert!(bake_result(cells, vec![portal(0, 1)], &[], 1, 1).is_err());
+    }
+
+    #[test]
+    fn construction_metadata_bytes_reports_overflow_before_allocation() {
+        // Regression: stats multiplication could wrap before checked addition.
+        assert!(construction_metadata_bytes(usize::MAX, 0, 0, 0, 0, 0).is_err());
+        assert!(construction_metadata_bytes(0, usize::MAX, 0, 0, 0, 0).is_err());
+        assert!(construction_metadata_bytes(0, 0, usize::MAX, 0, 0, 0).is_err());
+        assert!(construction_metadata_bytes(0, 0, 0, usize::MAX, 0, 0).is_err());
+        assert!(construction_metadata_bytes(0, 0, 0, 0, usize::MAX, 0).is_err());
+        assert!(construction_metadata_bytes(0, 0, 0, 0, 0, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn construction_metadata_bytes_preserves_normal_accounting() {
+        let expected = 2 * size_of::<ClusterRecord>()
+            + 3 * size_of::<u32>()
+            + 5 * size_of::<postretro_level_format::cluster_directory::ClusterRangeRecord>()
+            + 7 * 2
+            + 11 * 40
+            + 13 * 20;
+        assert_eq!(
+            construction_metadata_bytes(2, 3, 5, 7, 11, 13).unwrap(),
+            expected
+        );
     }
 
     #[test]

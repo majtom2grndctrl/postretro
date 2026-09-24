@@ -293,6 +293,10 @@ impl PreparedCapture {
         self.renderer.capture_measurement_timing_state()
     }
 
+    pub(super) fn measurement_partial_timing_frames(&self) -> u32 {
+        self.renderer.capture_measurement_partial_timing_frames()
+    }
+
     pub(super) fn sh_residency_report(&self) -> Result<Option<ShResidencyReport>> {
         let report = self.renderer.sh_residency_report();
         let Some(streaming) = self.sh_streaming.as_ref() else {

@@ -22,20 +22,19 @@ struct MomentUploadSpan {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct SampledWordUploadSpan {
+struct WordUploadSpan {
     dense_start: u32,
     bytes: Vec<u8>,
 }
 
-fn pack_sampled_word_upload_spans(
+fn pack_word_upload_spans(
     words: &[u32],
-    updates: &[(u32, u16, u16)],
-) -> Result<Vec<SampledWordUploadSpan>, ShResidencyDrainError> {
-    // The sampled mirror only changes at promoted or invalidated probes. Keep
-    // the write volume proportional to those probes, not the full SH grid.
-    let changed: std::collections::BTreeSet<_> =
-        updates.iter().map(|&(dense, _, _)| dense).collect();
-    let mut spans: Vec<SampledWordUploadSpan> = Vec::new();
+    changed: impl IntoIterator<Item = u32>,
+) -> Result<Vec<WordUploadSpan>, ShResidencyDrainError> {
+    // Install, promotion, and eviction can each touch only a few probes in a
+    // large grid. Sort and deduplicate their indices before merging neighbors.
+    let changed: std::collections::BTreeSet<_> = changed.into_iter().collect();
+    let mut spans: Vec<WordUploadSpan> = Vec::new();
     for dense in changed {
         let word = *words
             .get(dense as usize)
@@ -48,7 +47,7 @@ fn pack_sampled_word_upload_spans(
         {
             span.bytes.extend_from_slice(&word.to_le_bytes());
         } else {
-            spans.push(SampledWordUploadSpan {
+            spans.push(WordUploadSpan {
                 dense_start: dense,
                 bytes: word.to_le_bytes().to_vec(),
             });
@@ -346,6 +345,22 @@ impl StreamingGpuPools {
         queue.write_buffer(&self.compose_indirection, 0, &bytes);
     }
 
+    pub(in crate::render::sh_streaming) fn upload_changed_compose_words(
+        &self,
+        queue: &wgpu::Queue,
+        words: &[u32],
+        changed: impl IntoIterator<Item = u32>,
+    ) -> Result<(), ShResidencyDrainError> {
+        for span in pack_word_upload_spans(words, changed)? {
+            queue.write_buffer(
+                &self.compose_indirection,
+                u64::from(span.dense_start) * std::mem::size_of::<u32>() as u64,
+                &span.bytes,
+            );
+        }
+        Ok(())
+    }
+
     pub(in crate::render::sh_streaming) fn dispatch_indirect_compose<'a>(
         &self,
         queue: &wgpu::Queue,
@@ -531,7 +546,7 @@ impl StreamingGpuPools {
         grid: [u32; 3],
     ) -> Result<(), ShResidencyDrainError> {
         let spans = pack_moment_upload_spans(words, updates, grid)?;
-        for span in pack_sampled_word_upload_spans(words, updates)? {
+        for span in pack_word_upload_spans(words, updates.iter().map(|&(dense, _, _)| dense))? {
             queue.write_buffer(
                 &self.sampled_indirection,
                 u64::from(span.dense_start) * std::mem::size_of::<u32>() as u64,
@@ -742,20 +757,16 @@ mod isolated_upload_tests {
         words[2] = 0x0002_0001;
         words[3] = 0x0004_0003;
         words[1_024] = 0x0006_0005;
-        let spans = pack_sampled_word_upload_spans(
-            &words,
-            &[(1_024, 1, 2), (2, 3, 4), (3, 5, 6), (1_024, 7, 8)],
-        )
-        .unwrap();
+        let spans = pack_word_upload_spans(&words, [1_024, 2, 3, 1_024]).unwrap();
 
         assert_eq!(
             spans,
             [
-                SampledWordUploadSpan {
+                WordUploadSpan {
                     dense_start: 2,
                     bytes: u32_bytes(&[0x0002_0001, 0x0004_0003]),
                 },
-                SampledWordUploadSpan {
+                WordUploadSpan {
                     dense_start: 1_024,
                     bytes: u32_bytes(&[0x0006_0005]),
                 },
@@ -763,5 +774,45 @@ mod isolated_upload_tests {
         );
         assert_eq!(spans.iter().map(|span| span.bytes.len()).sum::<usize>(), 12);
         assert!(spans.iter().map(|span| span.bytes.len()).sum::<usize>() < words.len() * 4);
+    }
+
+    #[test]
+    fn compose_word_uploads_cover_only_installed_or_evicted_dense_probes() {
+        let mut words = vec![0; 4_096];
+        words[1] = 0x1111_1111; // An unchanged resident probe.
+        words[2] = 0x2222_2222;
+        words[3] = 0x3333_3333;
+        words[1_024] = 0x4444_4444;
+
+        let installed = pack_word_upload_spans(&words, [1_024, 3, 2, 2]).unwrap();
+        assert_eq!(
+            installed,
+            [
+                WordUploadSpan {
+                    dense_start: 2,
+                    bytes: u32_bytes(&[words[2], words[3]]),
+                },
+                WordUploadSpan {
+                    dense_start: 1_024,
+                    bytes: u32_bytes(&[words[1_024]]),
+                },
+            ]
+        );
+
+        words[2] = 0;
+        words[3] = 0;
+        let evicted = pack_word_upload_spans(&words, [3, 2]).unwrap();
+        assert_eq!(
+            evicted,
+            [WordUploadSpan {
+                dense_start: 2,
+                bytes: u32_bytes(&[0, 0]),
+            }]
+        );
+        assert!(pack_word_upload_spans(&words, []).unwrap().is_empty());
+        assert!(matches!(
+            pack_word_upload_spans(&words, [words.len() as u32]),
+            Err(ShResidencyDrainError::SlotOverflow)
+        ));
     }
 }

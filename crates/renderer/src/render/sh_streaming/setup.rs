@@ -270,6 +270,10 @@ impl ShResidencyState {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "GPU initialization keeps explicit GPU resources and streaming metadata at the renderer boundary."
+    )]
     pub(in crate::render) fn initialize_gpu(
         &mut self,
         device: &wgpu::Device,

@@ -139,3 +139,41 @@ Clippy still stops on the same 24 renderer findings. The renderer GPU
 growth/retirement path remains without a real GPU-copy/fence integration test;
 the panel reported this as a proof gap, not a located code defect. Phase-end
 disk gate: about 12 GiB available, no cleanup needed.
+
+Final review and preflight checkpoint (2026-09-23): bounded review panels
+approved the compiler/format, app/capture, and renderer repair slices after
+their findings were addressed. Compiler and format now share the exact greedy
+id-49 partition and reject a connected but noncanonical three-cell partition;
+compiler spatial publication checks every portal and locator wire narrowing.
+Format locator validation rejects out-of-range terminal cells instead of
+indexing them. Renderer install/eviction updates only changed compose
+indirection words. Retry warnings are once per full generation/content-tag/
+cluster/hash identity, with a real async-worker failure/retry log test. A real
+retained-manifest sync-proof fixture verifies positional read/decode and CPU
+phase ledger release. Capture reports partial GPU timing frames from completed
+readbacks, not requested sample frames. The user elected to clear strict
+Clippy's renderer backlog in this epic; strict workspace Clippy now passes.
+
+Final preflight: `cargo fmt --check` passed; `cargo clippy --target-dir
+target/preflight-clippy -- -D warnings` passed; full workspace `cargo test`
+passed; `cargo test -p postretro --bin postretro --features capture --quiet`
+passed (859 passed, 2 ignored). Focused format, compiler, sync-proof,
+capture-report, warning-log, and renderer word-upload tests passed. The full
+test run emitted one unrelated `MapData` dead-field warning in the compiler's
+test build; strict normal workspace Clippy is warning-free. Disk dipped below
+10 GiB during focused builds: two explicit `cargo clean -p` passes across the
+seven churn-heavy PostRetro packages removed 5.4 GiB then no further files;
+the isolated target created for focused checks was subsequently cleaned with
+`cargo clean --target-dir target/preflight-clippy`, removing 14.0 GiB of
+rebuildable output. Final phase disk gate: about 10.6 GiB free, no cleanup.
+
+GPU growth-copy/fence integrity and visible seam/frame-time proof remain
+`not-yet-evaluable`, not a passing automated assertion. The review audit found
+no code defect but confirmed that current CPU tests do not read back actual
+dense/sparse copied bytes. On an adapter-backed host, force each present SH
+family beyond initial capacity; verify copied old extents/prefixes, one retiring
+generation and same-family deferral, callback retirement at the next drain,
+then compare the same camera pose across growth and a boundary round-trip.
+Record the PRL hash, adapter, capacities, and frame snapshots. A static capture
+alone does not force growth. Do not claim this manual gate as complete until
+the observations are recorded in `measurements/sh-probe-streaming/`.

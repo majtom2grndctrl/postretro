@@ -39,7 +39,7 @@ impl StreamingIndirectCompose {
             compose_indirection,
             &self.compaction_metadata,
         );
-        let _ = std::mem::replace(&mut self.bind_group, replacement);
+        self.bind_group = replacement;
     }
 
     pub(in crate::render::sh_streaming::gpu) fn validate_sparse_row(

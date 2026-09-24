@@ -123,6 +123,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             prepared.sh_residency_report()?,
             cpu_samples_ms,
             prepared.measurement_timing_state(),
+            prepared.measurement_partial_timing_frames(),
             gpu_windows,
         );
         let staged_report = stage_measurement_report(

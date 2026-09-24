@@ -42,6 +42,10 @@ fn direct_dispatch_rows(
 }
 
 impl ShResidencyState {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the frame boundary must pass the queue, encoder, uniform binding, direct-compose state, and separate promotion/animated timing-pass inputs together"
+    )]
     pub(in crate::render) fn dispatch_direct_compose<'a>(
         &mut self,
         queue: &wgpu::Queue,

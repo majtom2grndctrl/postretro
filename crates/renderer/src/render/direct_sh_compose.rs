@@ -114,6 +114,20 @@ struct DirectShComposePipeline {
     animated_add: Option<AnimatedDirectShComposePipeline>,
 }
 
+/// Inputs shared by the promotion compute-pass constructor. They are one
+/// level-load transaction: GPU resources, baked inputs, and residency
+/// bookkeeping must stay in lockstep when the pass is built.
+struct PromotionPassInputs<'a> {
+    device: &'a wgpu::Device,
+    direct: &'a DirectShResources,
+    probe_indirection_words: &'a [u32],
+    delta: Option<&'a DirectShDeltaVolumesSection>,
+    weights_buffer: &'a wgpu::Buffer,
+    direct_delta_present: bool,
+    sh_section_present: bool,
+    ledger: &'a mut ShAllocationLedger,
+}
+
 pub(crate) struct DirectShComposeResources {
     pipeline: Option<DirectShComposePipeline>,
 }
@@ -154,7 +168,7 @@ impl DirectShComposeResources {
             ),
             // Section 45 absent: Pass A still performs base copy-through so
             // the static-direct mask works even without promotion deltas.
-            None => Self::new_case1(
+            None => Self::new_case1(PromotionPassInputs {
                 device,
                 direct,
                 probe_indirection_words,
@@ -163,46 +177,29 @@ impl DirectShComposeResources {
                 direct_delta_present,
                 sh_section_present,
                 ledger,
-            ),
+            }),
         }
     }
 
-    fn new_case1(
-        device: &wgpu::Device,
-        direct: &DirectShResources,
-        probe_indirection_words: &[u32],
-        delta: Option<&DirectShDeltaVolumesSection>,
-        weights_buffer: &wgpu::Buffer,
-        direct_delta_present: bool,
-        sh_section_present: bool,
-        ledger: &mut ShAllocationLedger,
-    ) -> Self {
-        if !direct.has_direct_base {
+    fn new_case1(mut inputs: PromotionPassInputs<'_>) -> Self {
+        if !inputs.direct.has_direct_base {
             return Self::disabled();
         }
-        let delta = delta.filter(|delta| !delta.affinity_lights.is_empty());
-        let Some(composed_storage_view) = direct.composed_storage_view.as_ref() else {
+        inputs.delta = inputs
+            .delta
+            .filter(|delta| !delta.affinity_lights.is_empty());
+        let Some(composed_storage_view) = inputs.direct.composed_storage_view.as_ref() else {
             return Self::disabled();
         };
-        let Some(layout) = direct.compose_layout else {
+        let Some(layout) = inputs.direct.compose_layout else {
             return Self::disabled();
         };
-        let pipeline = build_promotion_pass(
-            device,
-            direct,
-            layout,
-            probe_indirection_words,
-            delta,
-            weights_buffer,
-            composed_storage_view,
-            direct_delta_present,
-            sh_section_present,
-            ledger,
-        );
+        let selected_light_count = inputs.delta.map_or(0, |delta| delta.affinity_lights.len());
+        let pipeline = build_promotion_pass(layout, composed_storage_view, inputs);
 
         log::info!(
             "[Renderer] Direct SH compose: {} selected-light CSR entr(y/ies), atlas {}×{}",
-            delta.map_or(0, |delta| delta.affinity_lights.len()),
+            selected_light_count,
             layout.atlas_dimensions[0],
             layout.atlas_dimensions[1],
         );
@@ -243,16 +240,18 @@ impl DirectShComposeResources {
         // absent id35/id41 inputs through the existing dummy base and empty CSR
         // buffers, then writes the intermediate that Pass B always consumes.
         let mut pass_a = build_promotion_pass(
-            device,
-            direct,
             layout,
-            probe_indirection_words,
-            delta,
-            weights_buffer,
             intermediate_storage_view,
-            direct_delta_present,
-            sh_section_present,
-            ledger,
+            PromotionPassInputs {
+                device,
+                direct,
+                probe_indirection_words,
+                delta,
+                weights_buffer,
+                direct_delta_present,
+                sh_section_present,
+                ledger,
+            },
         );
         pass_a.animated_add = Some(build_animated_direct_pass(
             device,
@@ -362,17 +361,20 @@ impl DirectShComposeResources {
 }
 
 fn build_promotion_pass(
-    device: &wgpu::Device,
-    direct: &DirectShResources,
     layout: DirectAtlasLayout,
-    probe_indirection_words: &[u32],
-    delta: Option<&DirectShDeltaVolumesSection>,
-    weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
-    direct_delta_present: bool,
-    sh_section_present: bool,
-    ledger: &mut ShAllocationLedger,
+    inputs: PromotionPassInputs<'_>,
 ) -> DirectShComposePipeline {
+    let PromotionPassInputs {
+        device,
+        direct,
+        probe_indirection_words,
+        delta,
+        weights_buffer,
+        direct_delta_present,
+        sh_section_present,
+        ledger,
+    } = inputs;
     let storage = DirectPromotionStorage::new(delta, layout.grid_dimensions);
     // The instrumentation covers both cases. The promotion pass binds only
     // id-41 storage; runtime weights and Case 2's id-45 pass are excluded.

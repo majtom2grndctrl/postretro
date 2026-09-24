@@ -173,10 +173,151 @@ pub struct ClusterDirectoryCoverageStats {
     pub maximum_visited_nodes_per_cluster: usize,
 }
 
-/// Build the canonical resource table for an emitted SH inventory.
+/// Canonical resource-independent partition of runtime cells.
+/// Cluster range fields remain zero until resource ranges are populated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalCellPartition {
+    pub clusters: Vec<ClusterRecord>,
+    pub members: Vec<u32>,
+}
+
+/// Reconstruct the deterministic cell partition used by compiler output.
 ///
-/// This is shared by compiler construction and semantic validation so final
-/// section-presence filtering cannot drift between the two paths.
+/// This is shared by compiler construction and runtime semantic validation so
+/// accepted section-49 membership cannot drift from the greedy frontier rule.
+pub fn canonical_cell_partition(
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    bvh: &BvhSection,
+    primitive_limit: u32,
+    cell_limit: u32,
+) -> Result<CanonicalCellPartition, ClusterDirectoryError> {
+    if primitive_limit == 0 || cell_limit == 0 {
+        return invalid("primitive_limit and cell_limit must be positive");
+    }
+    let cell_count = u32_len(cells.cells.len(), "runtime cell count")?;
+    let cell_count_usize = usize_count(cell_count)?;
+    let cell_limit_usize = usize_count(cell_limit)?;
+
+    let mut primitive_counts = try_vec(cell_count, "cell primitive counts")?;
+    primitive_counts.resize(cell_count_usize, 0u32);
+    for (leaf_index, leaf) in bvh.leaves.iter().enumerate() {
+        if leaf.cell_id >= cell_count {
+            return invalid(format!(
+                "BVH leaf {leaf_index} names cell {} outside {cell_count}",
+                leaf.cell_id
+            ));
+        }
+        if leaf.index_count != 0 {
+            primitive_counts[leaf.cell_id as usize] = primitive_counts[leaf.cell_id as usize]
+                .checked_add(1)
+                .ok_or(ClusterDirectoryError::SizeOverflow("cell primitive count"))?;
+        }
+    }
+
+    let mut adjacency = try_vec(cell_count, "cell adjacency")?;
+    adjacency.resize_with(cell_count_usize, BTreeSet::new);
+    for (portal_index, portal) in portals.portals.iter().enumerate() {
+        if portal.front_leaf >= cell_count || portal.back_leaf >= cell_count {
+            return invalid(format!(
+                "portal {portal_index} endpoint ({}, {}) outside {cell_count} cells",
+                portal.front_leaf, portal.back_leaf
+            ));
+        }
+        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
+        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
+    }
+
+    let mut unassigned: BTreeSet<u32> = (0..cell_count).collect();
+    let mut clusters = try_vec(cell_count, "canonical clusters")?;
+    let mut members = try_vec(cell_count, "canonical members")?;
+    while !unassigned.is_empty() {
+        let seed = *unassigned
+            .iter()
+            .min_by(|&&left, &&right| compare_cell_keys(left, right, &cells.cells))
+            .expect("nonempty set has a seed");
+        unassigned.remove(&seed);
+        let mut cluster_members = vec![seed];
+        let mut primitive_count = primitive_counts[seed as usize];
+        let mut frontier: BTreeSet<u32> = adjacency[seed as usize]
+            .iter()
+            .copied()
+            .filter(|cell| unassigned.contains(cell))
+            .collect();
+
+        loop {
+            if cluster_members.len() >= cell_limit_usize {
+                break;
+            }
+            let mut candidate = None;
+            for &cell in &frontier {
+                let Some(candidate_primitive_count) =
+                    primitive_count.checked_add(primitive_counts[cell as usize])
+                else {
+                    // A sum beyond u32::MAX cannot fit the u32 primitive
+                    // limit, so this frontier cell is not admissible.
+                    continue;
+                };
+                if candidate_primitive_count > primitive_limit {
+                    continue;
+                }
+                if candidate.is_none_or(|(current, _)| {
+                    compare_cell_keys(cell, current, &cells.cells).is_lt()
+                }) {
+                    candidate = Some((cell, candidate_primitive_count));
+                }
+            }
+            let Some((candidate, candidate_primitive_count)) = candidate else {
+                break;
+            };
+            frontier.remove(&candidate);
+            if !unassigned.remove(&candidate) {
+                continue;
+            }
+            cluster_members.push(candidate);
+            primitive_count = candidate_primitive_count;
+            frontier.extend(
+                adjacency[candidate as usize]
+                    .iter()
+                    .copied()
+                    .filter(|cell| unassigned.contains(cell)),
+            );
+        }
+
+        cluster_members.sort_unstable();
+        let member_start = u32_len(members.len(), "canonical member start")?;
+        let member_count = u32_len(cluster_members.len(), "canonical cluster member count")?;
+        let mut bounds_min = [f32::INFINITY; 3];
+        let mut bounds_max = [f32::NEG_INFINITY; 3];
+        for &cell_id in &cluster_members {
+            let cell = &cells.cells[cell_id as usize];
+            for axis in 0..3 {
+                bounds_min[axis] = canonical_zero(bounds_min[axis].min(cell.bounds_min[axis]));
+                bounds_max[axis] = canonical_zero(bounds_max[axis].max(cell.bounds_max[axis]));
+            }
+        }
+        let flags = if member_count == 1 && primitive_count > primitive_limit {
+            CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
+        } else {
+            0
+        };
+        members.extend(cluster_members);
+        clusters.push(ClusterRecord {
+            bounds_min,
+            bounds_max,
+            member_start,
+            member_count,
+            range_start: 0,
+            range_count: 0,
+            primitive_count,
+            flags,
+        });
+    }
+
+    Ok(CanonicalCellPartition { clusters, members })
+}
+
+/// Build the canonical resource table for an emitted SH inventory.
 pub fn canonical_resource_records(
     inventory: ClusterDirectoryShInventory<'_>,
 ) -> Result<Vec<ClusterResourceRecord>, ClusterDirectoryError> {
@@ -240,8 +381,8 @@ pub fn canonical_resource_records(
 }
 
 /// Populate canonical resource rows and grid-relative ranges for an already
-/// partitioned directory. Partition selection remains compiler-owned; the
-/// sparse coverage derivation is shared with load-time validation.
+/// partitioned directory. Sparse coverage derivation is shared with load-time
+/// validation.
 pub fn populate_canonical_resource_ranges(
     directory: &mut ClusterDirectorySection,
     inputs: ClusterDirectoryValidationInputs<'_>,
@@ -695,96 +836,60 @@ fn validate_cells(
             cells.cells.len()
         ));
     }
-    let mut primitive_counts = vec![0u32; cells.cells.len()];
-    for (leaf_index, leaf) in bvh.leaves.iter().enumerate() {
-        if leaf.cell_id >= directory.runtime_cell_count {
+    let canonical = canonical_cell_partition(
+        cells,
+        portals,
+        bvh,
+        directory.primitive_limit,
+        directory.cell_limit,
+    )?;
+    for cluster_id in 0..directory.clusters.len().max(canonical.clusters.len()) {
+        let Some(cluster) = directory.clusters.get(cluster_id) else {
             return invalid(format!(
-                "BVH leaf {leaf_index} names cell {} outside {}",
-                leaf.cell_id, directory.runtime_cell_count
+                "directory is missing canonical greedy partition cluster {cluster_id}"
             ));
-        }
-        if leaf.index_count != 0 {
-            primitive_counts[leaf.cell_id as usize] = primitive_counts[leaf.cell_id as usize]
-                .checked_add(1)
-                .ok_or(ClusterDirectoryError::SizeOverflow("cell primitive count"))?;
-        }
-    }
-    let mut adjacency = vec![BTreeSet::new(); cells.cells.len()];
-    for (portal_index, portal) in portals.portals.iter().enumerate() {
-        if portal.front_leaf >= directory.runtime_cell_count
-            || portal.back_leaf >= directory.runtime_cell_count
-        {
+        };
+        let Some(expected) = canonical.clusters.get(cluster_id) else {
             return invalid(format!(
-                "portal {portal_index} endpoint ({}, {}) outside {} cells",
-                portal.front_leaf, portal.back_leaf, directory.runtime_cell_count
+                "cluster {cluster_id} is not present in the canonical greedy partition"
             ));
-        }
-        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
-        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
-    }
-
-    let mut previous_seed: Option<u32> = None;
-    for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+        };
         let member_begin = cluster.member_start as usize;
         let member_end = member_begin + cluster.member_count as usize;
         let members = &directory.members[member_begin..member_end];
-        let seed = *members
-            .iter()
-            .min_by(|&&left, &&right| compare_cell_keys(left, right, &cells.cells))
-            .expect("structure validation requires a cluster member");
-        if let Some(previous) = previous_seed {
-            if compare_cell_keys(previous, seed, &cells.cells).is_ge() {
-                return invalid(format!(
-                    "cluster {cluster_id} seed cell {seed} is not in canonical seed-key order"
-                ));
-            }
+        let expected_begin = expected.member_start as usize;
+        let expected_end = expected_begin + expected.member_count as usize;
+        let expected_members = &canonical.members[expected_begin..expected_end];
+        if members != expected_members {
+            let first_difference = members
+                .iter()
+                .zip(expected_members)
+                .position(|(actual, canonical)| actual != canonical)
+                .unwrap_or_else(|| members.len().min(expected_members.len()));
+            return invalid(format!(
+                "cluster {cluster_id} member position {first_difference} disagrees with canonical greedy partition: actual {:?}, canonical {:?}",
+                members.get(first_difference),
+                expected_members.get(first_difference)
+            ));
         }
-        previous_seed = Some(seed);
-        let mut bounds_min = [f32::INFINITY; 3];
-        let mut bounds_max = [f32::NEG_INFINITY; 3];
-        let mut primitive_count = 0u32;
-        for &cell_id in members {
-            let cell = &cells.cells[cell_id as usize];
-            for axis in 0..3 {
-                bounds_min[axis] = canonical_zero(bounds_min[axis].min(cell.bounds_min[axis]));
-                bounds_max[axis] = canonical_zero(bounds_max[axis].max(cell.bounds_max[axis]));
-            }
-            primitive_count = primitive_count
-                .checked_add(primitive_counts[cell_id as usize])
-                .ok_or(ClusterDirectoryError::SizeOverflow(
-                    "cluster primitive count",
-                ))?;
-        }
-        if !float_array_bits_equal(bounds_min, cluster.bounds_min)
-            || !float_array_bits_equal(bounds_max, cluster.bounds_max)
+        if !float_array_bits_equal(expected.bounds_min, cluster.bounds_min)
+            || !float_array_bits_equal(expected.bounds_max, cluster.bounds_max)
         {
             return invalid(format!(
                 "cluster {cluster_id} bounds do not equal the exact member union"
             ));
         }
-        if primitive_count != cluster.primitive_count {
+        if expected.primitive_count != cluster.primitive_count {
             return invalid(format!(
-                "cluster {cluster_id} primitive_count {} disagrees with BVH count {primitive_count}",
-                cluster.primitive_count
+                "cluster {cluster_id} primitive_count {} disagrees with canonical BVH count {}",
+                cluster.primitive_count, expected.primitive_count
             ));
         }
-        if members.len() > 1 {
-            let member_set: BTreeSet<u32> = members.iter().copied().collect();
-            let mut visited = BTreeSet::new();
-            let mut queue = VecDeque::from([members[0]]);
-            while let Some(cell) = queue.pop_front() {
-                if !visited.insert(cell) {
-                    continue;
-                }
-                for &neighbor in &adjacency[cell as usize] {
-                    if member_set.contains(&neighbor) && !visited.contains(&neighbor) {
-                        queue.push_back(neighbor);
-                    }
-                }
-            }
-            if visited.len() != members.len() {
-                return invalid(format!("cluster {cluster_id} is not portal-connected"));
-            }
+        if expected.flags != cluster.flags {
+            return invalid(format!(
+                "cluster {cluster_id} flags {:#x} disagree with canonical flags {:#x}",
+                cluster.flags, expected.flags
+            ));
         }
     }
     Ok(())
@@ -1263,6 +1368,7 @@ fn derive_ranges_with_counts(
             }
             let cell = locate_cell(
                 inputs.cell_locator,
+                directory.runtime_cell_count,
                 probe_position(probe_coords(probe, base.grid_dimensions), base),
             )?;
             coverage[cell_to_cluster[cell as usize] as usize].insert(brick_index);
@@ -1273,7 +1379,11 @@ fn derive_ranges_with_counts(
                 (brick_coords(brick_index, affinity_dims)[axis] * 4)
                     .min(base.grid_dimensions[axis] - 1)
             });
-            let cell = locate_cell(inputs.cell_locator, probe_position(origin, base))?;
+            let cell = locate_cell(
+                inputs.cell_locator,
+                directory.runtime_cell_count,
+                probe_position(origin, base),
+            )?;
             coverage[cell_to_cluster[cell as usize] as usize].insert(brick_index);
         }
     }
@@ -1490,6 +1600,7 @@ fn validate_affinity_ownership(
 
 fn locate_cell(
     locator: &CellLocatorSection,
+    runtime_cell_count: u32,
     point: [f32; 3],
 ) -> Result<u32, ClusterDirectoryError> {
     let mut child = locator.root;
@@ -1500,7 +1611,14 @@ fn locate_cell(
         }
         remaining -= 1;
         match child {
-            CellLocatorChild::Cell(cell) => return Ok(cell),
+            CellLocatorChild::Cell(cell) => {
+                if cell >= runtime_cell_count {
+                    return invalid(format!(
+                        "cell locator terminal cell {cell} outside {runtime_cell_count} runtime cells"
+                    ));
+                }
+                return Ok(cell);
+            }
             CellLocatorChild::Node(index) => {
                 let node = locator.nodes.get(index as usize).ok_or_else(|| {
                     ClusterDirectoryError::InvalidData(format!(
@@ -2221,6 +2339,139 @@ mod tests {
         };
         assert!(matches!(
             directory.validate_semantics(inputs),
+            Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_semantics_rejects_connected_noncanonical_greedy_membership() {
+        let cells = cells(3);
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: vec![
+                PortalRecord {
+                    vertex_start: 0,
+                    vertex_count: 0,
+                    front_leaf: 0,
+                    back_leaf: 1,
+                },
+                PortalRecord {
+                    vertex_start: 0,
+                    vertex_count: 0,
+                    front_leaf: 1,
+                    back_leaf: 2,
+                },
+            ],
+        };
+        let bvh = BvhSection {
+            nodes: Vec::new(),
+            leaves: (0..3)
+                .map(|cell_id| BvhLeaf {
+                    aabb_min: [cell_id as f32, 0.0, 0.0],
+                    material_bucket_id: 0,
+                    aabb_max: [cell_id as f32 + 1.0, 1.0, 1.0],
+                    index_offset: 0,
+                    index_count: 3,
+                    cell_id,
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
+                })
+                .collect(),
+            root_node_index: 0,
+        };
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        // Regression: [0], [1, 2] is connected and within both limits, but the
+        // pinned greedy rule emits [0, 1], [2].
+        let directory = ClusterDirectorySection {
+            runtime_cell_count: 3,
+            primitive_limit: 2,
+            cell_limit: 3,
+            clusters: vec![
+                ClusterRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [1.0, 1.0, 1.0],
+                    member_start: 0,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 1,
+                    flags: 0,
+                },
+                ClusterRecord {
+                    bounds_min: [1.0, 0.0, 0.0],
+                    bounds_max: [3.0, 1.0, 1.0],
+                    member_start: 1,
+                    member_count: 2,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 2,
+                    flags: 0,
+                },
+            ],
+            resources: Vec::new(),
+            members: vec![0, 1, 2],
+            ranges: Vec::new(),
+        };
+        directory.validate_structure().unwrap();
+
+        let error = directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(error, ClusterDirectoryError::InvalidData(_)));
+        assert!(error.to_string().contains("canonical greedy partition"));
+    }
+
+    #[test]
+    fn cluster_directory_semantics_rejects_locator_terminal_cell_outside_runtime_count() {
+        let cells = cells(1);
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = empty_bvh();
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(1),
+            nodes: Vec::new(),
+        };
+        let mut probes = vec![OctahedralShProbe::default()];
+        probes[0].validity = 1;
+        let base = base_volume([1, 1, 1], probes);
+        let mut directory = one_cell_directory();
+        directory.resources = vec![ClusterResourceRecord {
+            section_id: 34,
+            domain: ClusterResourceDomain::DenseProbe,
+            dimensions: [1, 1, 1],
+        }];
+        directory.clusters[0].range_count = 1;
+        directory.ranges = vec![ClusterRangeRecord {
+            resource_index: 0,
+            start: 0,
+            count: 1,
+            owner_cluster_id: DENSE_OWNER_SENTINEL,
+            role: ClusterRangeRole::Dense,
+        }];
+
+        // Regression: malformed locator terminals previously indexed cell_to_cluster and panicked.
+        assert!(matches!(
+            directory.validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory {
+                    octahedral: Some(&base),
+                    ..Default::default()
+                },
+            }),
             Err(ClusterDirectoryError::InvalidData(_))
         ));
     }

@@ -33,7 +33,7 @@ impl StreamingAnimatedPass {
             &self.light_scale,
             compose_indirection,
         );
-        let _ = std::mem::replace(&mut self.bind_group, replacement);
+        self.bind_group = replacement;
     }
 
     pub(in crate::render::sh_streaming::direct_compose) fn upload_sparse_rows(
@@ -66,6 +66,10 @@ impl StreamingAnimatedPass {
         self.sparse.clear_all_row_pairs(queue)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "GPU dispatch keeps queue, encoder, bindings, dirty ranges, and timestamp writes explicit."
+    )]
     pub(in crate::render::sh_streaming::direct_compose) fn dispatch(
         &mut self,
         queue: &wgpu::Queue,

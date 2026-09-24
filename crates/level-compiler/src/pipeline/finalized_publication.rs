@@ -78,7 +78,7 @@ pub(super) struct FinalizedClusterMetadataInputs<'a> {
 pub(super) fn build_finalized_cluster_metadata<'a>(
     inputs: FinalizedClusterMetadataInputs<'a>,
 ) -> anyhow::Result<FinalizedClusterMetadata<'a>> {
-    let portals = pack::encode_portals(inputs.generated_portals);
+    let portals = pack::encode_portals(inputs.generated_portals)?;
     let cells = pack::encode_cells(inputs.leaves, &portals, inputs.exterior_leaves)?;
     let locator = pack::encode_cell_locator(inputs.tree)?;
     let bvh = pack::bvh_with_chunk_ranges(inputs.bvh, inputs.bvh_chunk_ranges);

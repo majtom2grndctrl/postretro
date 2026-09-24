@@ -83,8 +83,8 @@ pub(super) struct DirectSparseReplacement {
 }
 
 enum DirectSparseReplacementCarrier {
-    Promotion(StreamingPromotionPass),
-    Animated(StreamingAnimatedPass),
+    Promotion(Box<StreamingPromotionPass>),
+    Animated(Box<StreamingAnimatedPass>),
 }
 
 impl DirectSparseReplacement {
@@ -169,7 +169,6 @@ impl StreamingDirectCompose {
     /// Rebuild only the dense-atlas bindings. This never reallocates the
     /// direct sparse pools: id-41/id-45 capacity has its own replacement
     /// lifecycle and must not double during a 34/35 atlas layer append.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn rebind_dense(
         &mut self,
         device: &wgpu::Device,
@@ -177,13 +176,11 @@ impl StreamingDirectCompose {
         views: StreamingDirectViews<'_>,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) {
         let promotion_output = if self.animated.is_some() {
             views
                 .intermediate_storage
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed animated direct compose lost its intermediate atlas",
-                })?
+                .expect("prevalidated animated direct growth has an intermediate storage view")
         } else {
             views.total_storage
         };
@@ -201,16 +198,12 @@ impl StreamingDirectCompose {
                 shape,
                 views
                     .intermediate_sampled
-                    .ok_or(ShResidencyDrainError::GpuCapacity {
-                        reason:
-                            "streamed animated direct compose lost its sampled intermediate atlas",
-                    })?,
+                    .expect("prevalidated animated direct growth has an intermediate sampled view"),
                 views.total_storage,
                 compose_indirection,
                 sh,
             );
         }
-        Ok(())
     }
 
     /// Build one sparse backing candidate without changing the live direct
@@ -253,7 +246,7 @@ impl StreamingDirectCompose {
                     Some(sparse_floor),
                 )?;
                 Ok(DirectSparseReplacement {
-                    carrier: DirectSparseReplacementCarrier::Promotion(replacement),
+                    carrier: DirectSparseReplacementCarrier::Promotion(Box::new(replacement)),
                 })
             }
             45 => {
@@ -286,7 +279,7 @@ impl StreamingDirectCompose {
                         reason: "id-45 growth requested without an animated direct compose pass",
                     })?;
                 Ok(DirectSparseReplacement {
-                    carrier: DirectSparseReplacementCarrier::Animated(replacement),
+                    carrier: DirectSparseReplacementCarrier::Animated(Box::new(replacement)),
                 })
             }
             _ => Err(unsupported_sparse_section(section_id)),
@@ -322,14 +315,14 @@ impl StreamingDirectCompose {
     ) -> RetiredDirectSparsePass {
         let resources = match replacement.carrier {
             DirectSparseReplacementCarrier::Promotion(replacement) => {
-                std::mem::replace(&mut self.promotion, replacement).into_retired_sparse_resources()
+                std::mem::replace(&mut self.promotion, *replacement).into_retired_sparse_resources()
             }
             DirectSparseReplacementCarrier::Animated(replacement) => {
                 let animated = self
                     .animated
                     .as_mut()
                     .expect("prevalidated id-45 replacement requires an animated pass");
-                std::mem::replace(animated, replacement).into_retired_sparse_resources()
+                std::mem::replace(animated, *replacement).into_retired_sparse_resources()
             }
         };
         self.refresh_ledger_bytes();

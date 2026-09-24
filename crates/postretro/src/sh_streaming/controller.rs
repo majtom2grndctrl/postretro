@@ -361,7 +361,7 @@ impl ShResidencyController {
                 })
     }
 
-    fn mark_failed(&mut self, cluster_id: u32) -> Result<(), ShResidencyControllerError> {
+    fn mark_failed(&mut self, cluster_id: u32) -> Result<bool, ShResidencyControllerError> {
         let identity = FailureIdentity {
             generation: self.generation,
             content_tag: self.content_tag,
@@ -370,9 +370,13 @@ impl ShResidencyController {
         };
         self.release_permit()?;
         let state = &mut self.states[cluster_id as usize];
-        let retry_spent = state
+        let same_identity = state
             .failure
-            .is_some_and(|failure| failure.identity == identity && failure.retry_spent);
+            .is_some_and(|failure| failure.identity == identity);
+        let retry_spent = same_identity && state.failure.is_some_and(|failure| failure.retry_spent);
+        // The retained failure survives its one permitted leave/re-enter
+        // retry, so the retry cannot emit the same identity's warning again.
+        let should_warn = !same_identity;
         state.state = ClusterResidencyState::Failed;
         state.failure = Some(FailureState {
             identity,
@@ -380,7 +384,7 @@ impl ShResidencyController {
             left_target: false,
             left_target_horizon_revision: None,
         });
-        Ok(())
+        Ok(should_warn)
     }
 
     fn release_ready_charge(&mut self, bytes: u64) -> Result<(), ShResidencyControllerError> {

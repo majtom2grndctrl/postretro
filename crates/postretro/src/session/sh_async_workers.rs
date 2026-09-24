@@ -154,7 +154,7 @@ impl ShAsyncWorkers {
         self.cancel.store(true, Ordering::Release);
         self.requests.take();
         ShWorkerRetirement {
-            handles: self.handles.drain(..).collect(),
+            handles: std::mem::take(&mut self.handles),
             retained_manifest: self.retained_manifest.take(),
         }
     }

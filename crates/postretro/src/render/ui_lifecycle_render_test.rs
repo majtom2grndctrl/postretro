@@ -423,10 +423,13 @@ fn mod_theme_token_overrides_engine_default_in_a_rendered_panel() {
     );
 }
 
+/// An on-disk TTF for the runtime font-load path. The repository ships no mod
+/// font, so this borrows the `ui` crate's own `assets/fonts/` — the same files it
+/// embeds. Test-only reach across crate directories; production runtime fonts come
+/// from mod content.
 fn workspace_font(file_name: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("content/base/fonts")
+        .join("../ui/assets/fonts")
         .join(file_name)
 }
 

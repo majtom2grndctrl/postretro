@@ -45,7 +45,7 @@ blender --background --python tools/blender_model_rebake.py -- \
 Then bake the atlas into the runtime `.prm` cache:
 
 ```sh
-cargo run -p xtask -- bake-model-textures <out.gltf>
+postretro-tool bake-model-textures <out.gltf>
 ```
 
 ### `texture-tool/`

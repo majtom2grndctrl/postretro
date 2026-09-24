@@ -7,7 +7,7 @@ use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use super::manifest::{Manifest, Recipe};
+use crate::manifest::{Manifest, Recipe};
 
 /// The script extension that the release runtime must receive at the mod root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,8 +29,13 @@ impl EntryExt {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     /// The mod-root-relative output path, retaining its `maps/` prefix.
+    ///
+    /// It stays relative to the *mod root*, never to a payload directory, which
+    /// is what lets a payload publish the mod under a different name without
+    /// disturbing the scan, the completion marker, or the runtime's own
+    /// catalog lookups.
     pub(crate) output: String,
-    /// The workspace source passed to `prl-build`.
+    /// The project source passed to `prl-build`.
     pub(crate) source: PathBuf,
     /// Recipe flags other than dist-owned `--release`, `--no-tui`, and `-o`.
     pub(crate) args: Vec<String>,
@@ -39,7 +44,7 @@ pub(crate) struct Resolved {
 }
 
 /// The level compiler's CLI default. Its defining module belongs to the
-/// compiler binary target, so xtask deliberately keeps this small CLI mirror.
+/// compiler binary target, so the tool deliberately keeps this small CLI mirror.
 pub(crate) const DEFAULT_LIGHTMAP_DENSITY_METERS: f32 = 0.04;
 
 /// The two mutually-exclusive script inputs did not identify a script to emit.
@@ -150,14 +155,14 @@ fn is_map_literal_byte(byte: u8) -> bool {
 pub(crate) fn resolve_map_set(
     scanned: &BTreeSet<String>,
     manifest: &Manifest,
-    workspace: &Path,
+    project_root: &Path,
 ) -> Result<Vec<Resolved>, String> {
     let recipes: BTreeMap<&str, &Recipe> = manifest
         .recipes
         .iter()
         .map(|recipe| (recipe.output.as_str(), recipe))
         .collect();
-    let mod_root = workspace.join(&manifest.package.mod_root);
+    let mod_root = project_root.join(&manifest.package.mod_root);
     let mut problems = Vec::new();
 
     if scanned.is_empty() {
@@ -178,7 +183,7 @@ pub(crate) fn resolve_map_set(
         let recipe = recipes.get(output.as_str()).copied();
         let source = recipe
             .and_then(|recipe| recipe.source.as_deref())
-            .map(|source| workspace.join(source))
+            .map(|source| project_root.join(source))
             .unwrap_or_else(|| default_map_source(&mod_root, output));
 
         if !source.is_file() {
@@ -227,7 +232,7 @@ impl fmt::Display for GuardRefusal {
         match self {
             Self::NotUnderDist(path) => write!(
                 formatter,
-                "payload root {} violates the containment rule: it must lie strictly under workspace dist/",
+                "payload root {} violates the containment rule: it must lie strictly under the project's dist/",
                 path.display()
             ),
             Self::NotADirectory(path) => write!(
@@ -244,12 +249,24 @@ impl fmt::Display for GuardRefusal {
     }
 }
 
-/// Prove that `payload_root` is a removable root strictly under `workspace/dist`.
+/// Prove that `payload_root` is a removable root strictly under `<project>/dist`.
+///
+/// The refusals fire in a deliberate order, each leaving less unproven than the
+/// last: containment, then the root's own file type, then provenance.
+///
+/// Containment anchors on the project marker's directory rather than on a
+/// repository checkout. In the engine's own repository `<project>/dist` is
+/// gitignored and holds no committed input, but an arbitrary content repository
+/// makes no such promise, so containment alone no longer carries the safety
+/// argument — it bounds the blast radius to one directory the project owns, and
+/// the **provenance** check (a completion marker or an engine binary at the
+/// root's own top level) is what proves a `dist` run produced what is about to
+/// be deleted.
 pub(crate) fn guard_payload_root(
     payload_root: &Path,
-    workspace: &Path,
+    project_root: &Path,
 ) -> Result<(), GuardRefusal> {
-    let dist_root = workspace.join("dist");
+    let dist_root = project_root.join("dist");
     if !is_strictly_under(payload_root, &dist_root).unwrap_or(false) {
         return Err(GuardRefusal::NotUnderDist(payload_root.to_path_buf()));
     }
@@ -287,14 +304,10 @@ pub(crate) fn guard_payload_root(
     }
 }
 
-/// Compare a candidate and ancestor after canonicalizing each nearest existing
-/// ancestor and then applying the missing tail to that canonical location.
-pub(crate) fn is_at_or_under(path: &Path, ancestor: &Path) -> io::Result<bool> {
-    let path = canonicalize_nearest_existing(path)?;
-    let ancestor = canonicalize_nearest_existing(ancestor)?;
-    Ok(path.starts_with(&ancestor))
-}
-
+/// Compare a candidate and ancestor component-wise over canonicalized paths,
+/// never as a string prefix, so a sibling named `dist-old` is outside and a
+/// symlink under `dist/` that resolves elsewhere is outside, while a project
+/// reached through a symlink keeps its own `dist/` usable.
 fn is_strictly_under(path: &Path, ancestor: &Path) -> io::Result<bool> {
     let path = canonicalize_nearest_existing(path)?;
     let ancestor = canonicalize_nearest_existing(ancestor)?;
@@ -357,18 +370,18 @@ mod tests {
 
     static TEMP_SUFFIX: AtomicU64 = AtomicU64::new(0);
 
-    struct TempWorkspace {
+    struct TempProject {
         root: PathBuf,
     }
 
-    impl TempWorkspace {
+    impl TempProject {
         fn new() -> Self {
             let suffix = TEMP_SUFFIX.fetch_add(1, Ordering::Relaxed);
             let root = std::env::temp_dir().join(format!(
                 "postretro-dist-resolve-{}-{suffix}",
                 std::process::id()
             ));
-            fs::create_dir_all(&root).expect("create temporary workspace");
+            fs::create_dir_all(&root).expect("create temporary project");
             Self { root }
         }
 
@@ -377,7 +390,7 @@ mod tests {
         }
     }
 
-    impl Drop for TempWorkspace {
+    impl Drop for TempProject {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
@@ -385,7 +398,7 @@ mod tests {
 
     fn manifest(recipes: &str) -> Manifest {
         Manifest::parse(&format!(
-            "[package]\nname = \"dev\"\nmod_root = \"content/dev\"\n{recipes}"
+            "[package]\nname = \"dev\"\nmod = \"dev\"\n{recipes}"
         ))
         .expect("manifest parses")
     }
@@ -425,9 +438,9 @@ mod tests {
 
     #[test]
     fn resolver_uses_recipe_and_stem_default_sources() {
-        let workspace = TempWorkspace::new();
-        let recipe_source = workspace.path("sources/renamed.map");
-        let default_source = workspace.path("content/dev/maps/default.map");
+        let project = TempProject::new();
+        let recipe_source = project.path("sources/renamed.map");
+        let default_source = project.path("content/dev/maps/default.map");
         fs::create_dir_all(recipe_source.parent().unwrap()).unwrap();
         fs::create_dir_all(default_source.parent().unwrap()).unwrap();
         fs::write(&recipe_source, "recipe").unwrap();
@@ -445,7 +458,7 @@ args = ["--lightmap-density", "0.02"]
             "maps/recipe.prl".to_string(),
         ]);
 
-        let resolved = resolve_map_set(&scanned, &manifest, &workspace.root).unwrap();
+        let resolved = resolve_map_set(&scanned, &manifest, &project.root).unwrap();
         assert_eq!(resolved[0].output, "maps/default.prl");
         assert_eq!(resolved[0].source, default_source);
         assert!(resolved[0].args.is_empty());
@@ -456,11 +469,11 @@ args = ["--lightmap-density", "0.02"]
 
     #[test]
     fn resolver_aggregates_multiple_missing_defaults() {
-        let workspace = TempWorkspace::new();
+        let project = TempProject::new();
         let manifest = manifest("");
         let scanned = BTreeSet::from(["maps/one.prl".to_string(), "maps/two.prl".to_string()]);
 
-        let error = resolve_map_set(&scanned, &manifest, &workspace.root).unwrap_err();
+        let error = resolve_map_set(&scanned, &manifest, &project.root).unwrap_err();
         assert!(
             error.contains("default source for `maps/one.prl`"),
             "{error}"
@@ -473,9 +486,9 @@ args = ["--lightmap-density", "0.02"]
 
     #[test]
     fn resolver_rejects_orphan_recipe_empty_set_and_missing_recipe_source() {
-        let workspace = TempWorkspace::new();
+        let project = TempProject::new();
         let orphan = manifest("\n[[recipes]]\noutput = \"maps/orphan.prl\"\n");
-        let error = resolve_map_set(&BTreeSet::new(), &orphan, &workspace.root).unwrap_err();
+        let error = resolve_map_set(&BTreeSet::new(), &orphan, &project.root).unwrap_err();
         assert!(error.contains("no maps/*.prl literals"), "{error}");
         assert!(
             error.contains("recipe `maps/orphan.prl` is orphaned"),
@@ -488,7 +501,7 @@ args = ["--lightmap-density", "0.02"]
         let error = resolve_map_set(
             &BTreeSet::from(["maps/custom.prl".to_string()]),
             &missing,
-            &workspace.root,
+            &project.root,
         )
         .unwrap_err();
         assert!(error.contains("recipe `maps/custom.prl`"), "{error}");
@@ -497,9 +510,9 @@ args = ["--lightmap-density", "0.02"]
 
     #[test]
     fn guard_permits_first_and_completed_default_payloads() {
-        let workspace = TempWorkspace::new();
-        let payload = workspace.path("dist/postretro-dev");
-        assert!(guard_payload_root(&payload, &workspace.root).is_ok());
+        let project = TempProject::new();
+        let payload = project.path("dist/postretro-dev");
+        assert!(guard_payload_root(&payload, &project.root).is_ok());
 
         fs::create_dir_all(&payload).unwrap();
         fs::write(
@@ -511,60 +524,76 @@ args = ["--lightmap-density", "0.02"]
             "engine",
         )
         .unwrap();
-        assert!(guard_payload_root(&payload, &workspace.root).is_ok());
+        assert!(guard_payload_root(&payload, &project.root).is_ok());
     }
 
     #[test]
     fn guard_refuses_all_outside_dist_cases_on_containment() {
-        let workspace = TempWorkspace::new();
+        let project = TempProject::new();
         let outside_temp =
             std::env::temp_dir().join(format!("postretro-outside-{}", std::process::id()));
         for payload in [
-            workspace.path("context/plans"),
-            workspace.path("target/ship/postretro-dev"),
+            project.path("context/plans"),
+            project.path("target/ship/postretro-dev"),
             outside_temp.join("postretro-dev"),
-            workspace.path("dist-old/ship"),
-            workspace.path("baked/materials"),
-            workspace.path("dist"),
+            project.path("dist-old/ship"),
+            project.path("baked/materials"),
+            project.path("dist"),
         ] {
             assert_refusal(
-                guard_payload_root(&payload, &workspace.root),
+                guard_payload_root(&payload, &project.root),
                 GuardRefusal::NotUnderDist(payload),
             );
         }
     }
 
+    /// Containment no longer anchors on a repository checkout — it anchors on
+    /// the project marker's directory, which is the only thing an arbitrary
+    /// content repository has. Two projects side by side each own their own
+    /// `dist/` and nothing of the other's.
+    #[test]
+    fn containment_anchors_on_the_marker_directory_not_on_a_checkout() {
+        let projects = TempProject::new();
+        let mine = projects.path("mine");
+        let theirs = projects.path("theirs");
+        fs::create_dir_all(mine.join("dist")).unwrap();
+        fs::create_dir_all(theirs.join("dist")).unwrap();
+
+        assert!(guard_payload_root(&mine.join("dist/game"), &mine).is_ok());
+        let intruder = theirs.join("dist/game");
+        assert_refusal(
+            guard_payload_root(&intruder, &mine),
+            GuardRefusal::NotUnderDist(intruder),
+        );
+    }
+
     #[test]
     fn guard_permits_nested_output_root() {
-        let workspace = TempWorkspace::new();
+        let project = TempProject::new();
         assert!(
-            guard_payload_root(
-                &workspace.path("dist/nightly/postretro-dev"),
-                &workspace.root
-            )
-            .is_ok()
+            guard_payload_root(&project.path("dist/nightly/postretro-dev"), &project.root).is_ok()
         );
     }
 
     #[test]
     fn guard_checks_provenance_without_rejecting_collectable_or_known_states() {
-        let workspace = TempWorkspace::new();
-        let unknown = workspace.path("dist/notes");
+        let project = TempProject::new();
+        let unknown = project.path("dist/notes");
         fs::create_dir_all(&unknown).unwrap();
         fs::write(unknown.join("stray"), "stray").unwrap();
         assert_refusal(
-            guard_payload_root(&unknown, &workspace.root),
+            guard_payload_root(&unknown, &project.root),
             GuardRefusal::NoProvenance(unknown.clone()),
         );
         fs::remove_file(unknown.join("stray")).unwrap();
-        assert!(guard_payload_root(&unknown, &workspace.root).is_ok());
+        assert!(guard_payload_root(&unknown, &project.root).is_ok());
 
         for (name, marker, binary) in [
             ("complete", false, true),
             ("incomplete", true, false),
             ("both", true, true),
         ] {
-            let payload = workspace.path(&format!("dist/{name}"));
+            let payload = project.path(&format!("dist/{name}"));
             fs::create_dir_all(&payload).unwrap();
             if marker {
                 fs::write(payload.join(".dist-incomplete"), "stage 5\n").unwrap();
@@ -581,7 +610,7 @@ args = ["--lightmap-density", "0.02"]
                 .unwrap();
             }
             assert!(
-                guard_payload_root(&payload, &workspace.root).is_ok(),
+                guard_payload_root(&payload, &project.root).is_ok(),
                 "{name}"
             );
         }
@@ -589,22 +618,22 @@ args = ["--lightmap-density", "0.02"]
 
     #[cfg(unix)]
     #[test]
-    fn guard_canonicalizes_symlinked_payloads_and_workspaces() {
+    fn guard_canonicalizes_symlinked_payloads_and_projects() {
         use std::os::unix::fs::symlink;
 
-        let workspace = TempWorkspace::new();
-        fs::create_dir_all(workspace.path("dist")).unwrap();
-        fs::create_dir_all(workspace.path("content/dev")).unwrap();
-        symlink(workspace.path("content/dev"), workspace.path("dist/link")).unwrap();
-        let escaped = workspace.path("dist/link/maps");
+        let project = TempProject::new();
+        fs::create_dir_all(project.path("dist")).unwrap();
+        fs::create_dir_all(project.path("content/dev")).unwrap();
+        symlink(project.path("content/dev"), project.path("dist/link")).unwrap();
+        let escaped = project.path("dist/link/maps");
         assert_refusal(
-            guard_payload_root(&escaped, &workspace.root),
+            guard_payload_root(&escaped, &project.root),
             GuardRefusal::NotUnderDist(escaped),
         );
 
-        let real = workspace.path("real-checkout");
+        let real = project.path("real-checkout");
         fs::create_dir_all(real.join("dist")).unwrap();
-        let checkout = workspace.path("checkout-link");
+        let checkout = project.path("checkout-link");
         symlink(&real, &checkout).unwrap();
         assert!(guard_payload_root(&checkout.join("dist/postretro-dev"), &checkout).is_ok());
     }
@@ -614,19 +643,19 @@ args = ["--lightmap-density", "0.02"]
     fn guard_refuses_files_and_symlinks_before_provenance() {
         use std::os::unix::fs::symlink;
 
-        let workspace = TempWorkspace::new();
-        fs::create_dir_all(workspace.path("dist/real")).unwrap();
-        let file = workspace.path("dist/notes.txt");
+        let project = TempProject::new();
+        fs::create_dir_all(project.path("dist/real")).unwrap();
+        let file = project.path("dist/notes.txt");
         fs::write(&file, "not a directory").unwrap();
         assert_refusal(
-            guard_payload_root(&file, &workspace.root),
+            guard_payload_root(&file, &project.root),
             GuardRefusal::NotADirectory(file.clone()),
         );
 
-        let link = workspace.path("dist/link");
-        symlink(workspace.path("dist/real"), &link).unwrap();
+        let link = project.path("dist/link");
+        symlink(project.path("dist/real"), &link).unwrap();
         assert_refusal(
-            guard_payload_root(&link, &workspace.root),
+            guard_payload_root(&link, &project.root),
             GuardRefusal::NotADirectory(link),
         );
     }

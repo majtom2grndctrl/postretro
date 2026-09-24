@@ -35,8 +35,10 @@ autosave/
 baked/
 .build-caches/
 
-# Distribution artifacts
-dist/
+# Distribution artifacts. Anchored at the repository root: the pattern is about
+# the one output tree `dist` and `sdk-dist` write, not about every directory
+# named `dist` — `crates/tool/src/dist/` is source.
+/dist/
 
 # Local agent tool binaries
 tools/local-bin/

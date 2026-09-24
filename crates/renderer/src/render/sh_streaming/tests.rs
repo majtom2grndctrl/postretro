@@ -418,13 +418,15 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         install_cpu: InstallCpuCounters::default(),
         gpu: None,
     };
-    state.refresh_indirect_resident_rows();
+    state.indirect_resident_rows = state.rebuilt_resident_rows()[0].clone();
     assert_eq!(state.indirect_resident_rows, BTreeSet::from([2]));
-    decrement_row_ref(&mut state.indirect_base_row_refs, 2).unwrap();
-    state.refresh_indirect_resident_rows();
+    state
+        .release_row_refs(RowRefTable::IndirectBase, 2, 1)
+        .unwrap();
     assert_eq!(state.indirect_resident_rows, BTreeSet::from([2]));
-    decrement_row_ref(&mut state.indirect_delta_row_refs, 2).unwrap();
-    state.refresh_indirect_resident_rows();
+    state
+        .release_row_refs(RowRefTable::IndirectDelta, 2, 1)
+        .unwrap();
     assert!(state.indirect_resident_rows.is_empty());
     state.indirect_dirty_rows.insert(2);
     state.direct_promotion_dirty_rows.insert(4);

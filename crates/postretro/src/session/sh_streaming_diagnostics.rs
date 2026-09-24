@@ -89,7 +89,7 @@ impl ShStreamingLogWindow {
     }
 }
 
-fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 16] {
+fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 17] {
     [
         d.misses,
         d.installs,
@@ -107,6 +107,7 @@ fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 16] {
         d.install_cpu_total_micros,
         d.pool_growth_events,
         d.pool_growth_bytes,
+        d.pool_growth_cpu_micros,
     ]
 }
 
@@ -124,11 +125,12 @@ fn format_line(
          {misses} misses, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
          {discarded} discarded ({discarded_bytes}), {budget_limited} budget-limited drains, \
          {growths} pool growths (+{growth_bytes}), install CPU {install_ms:.2} ms \
+         (growth {growth_ms:.2} ms) \
          | now: {targets} targets ({warm} warm), {sampleable} sampleable, {queued} queued, \
          {ready} ready, {permits}/{MAX_STREAM_PERMITS} permits, pool {occupancy} of {capacity}, \
          read latency p50 {p50:.1} / p95 {p95:.1} / max {read_max:.1} ms, \
          decode max {decode_max:.1} ms, largest drain {largest_drain}, \
-         slowest install {slowest_install_ms:.2} ms",
+         slowest install {slowest_install_ms:.2} ms (steady {slowest_steady_ms:.2} ms)",
         reads = delta(|d| d.reads_issued),
         coalesced = delta(|d| d.coalesced_reads),
         read_bytes = format_bytes(delta(|d| d.read_bytes)),
@@ -145,6 +147,7 @@ fn format_line(
         growths = delta(|d| d.pool_growth_events),
         growth_bytes = format_bytes(delta(|d| d.pool_growth_bytes)),
         install_ms = delta(|d| d.install_cpu_total_micros) as f64 / 1000.0,
+        growth_ms = delta(|d| d.pool_growth_cpu_micros) as f64 / 1000.0,
         targets = now.target_clusters,
         warm = now.warm_clusters,
         sampleable = now.sampleable_clusters,
@@ -159,6 +162,7 @@ fn format_line(
         decode_max = now.decode_latency_max_ms,
         largest_drain = format_bytes(now.max_drain_decoded_bytes),
         slowest_install_ms = now.install_cpu_max_drain_micros as f64 / 1000.0,
+        slowest_steady_ms = now.install_cpu_max_steady_drain_micros as f64 / 1000.0,
     )
 }
 
@@ -225,6 +229,27 @@ mod tests {
         assemble_live_diagnostics(&mut live, &controller, None, None);
         assert_eq!(live.reads_issued, 7);
         assert_eq!(live.install_cpu_total_micros, 11);
+    }
+
+    #[test]
+    fn log_line_separates_growth_cost_from_steady_install_cost() {
+        let before = ShStreamingLiveDiagnostics::default();
+        let now = ShStreamingLiveDiagnostics {
+            install_cpu_total_micros: 12_000,
+            pool_growth_cpu_micros: 7_500,
+            install_cpu_max_drain_micros: 9_000,
+            install_cpu_max_steady_drain_micros: 3_250,
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        let line = format_line(5.0, &before, &now);
+        assert!(
+            line.contains("install CPU 12.00 ms (growth 7.50 ms)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("slowest install 9.00 ms (steady 3.25 ms)"),
+            "{line}"
+        );
     }
 
     #[test]

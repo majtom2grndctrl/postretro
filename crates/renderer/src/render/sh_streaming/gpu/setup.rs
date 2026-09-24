@@ -461,6 +461,8 @@ impl StreamingGpuPools {
             probe_occlusion_enabled,
             sparse_capacity_floors: sparse_capacity_floors.clone(),
             growth: PoolGrowthCounters::default(),
+            staging: StagingPool::default(),
+            upload_scratch: Vec::new(),
         })
     }
 }

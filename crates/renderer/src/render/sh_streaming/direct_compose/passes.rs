@@ -7,6 +7,7 @@ use postretro_render_cpu::sh_volume::STREAMED_SH_PHYSICAL_TILE_STRIDE;
 use wgpu::util::DeviceExt;
 
 use super::super::ShResidencyDrainError;
+use super::super::gpu::StagedUploads;
 use super::layout::{
     ANIMATED_LIGHT_SCALE_SIZE, DEBUG_OVERRIDE_SIZE, animated_bgl_entries, debug_override_bytes,
     dynamic_grid_entry, light_term_mask_bytes, promotion_bgl_entries, sampler_entry, storage_entry,
@@ -231,10 +232,10 @@ impl StreamingPromotionPass {
 
     pub(super) fn upload_sparse_rows(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.upload_rows(queue, rows)
+        self.sparse.upload_rows(uploads, rows)
     }
 
     pub(super) fn validate_sparse_rows(
@@ -246,10 +247,10 @@ impl StreamingPromotionPass {
 
     pub(super) fn clear_row_pair(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.clear_row_pair(queue, row)
+        self.sparse.clear_row_pair(uploads, row)
     }
 
     pub(super) fn clear_all_row_pairs(

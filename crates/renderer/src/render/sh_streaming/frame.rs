@@ -252,8 +252,10 @@ impl ShResidencyState {
             install_cpu_total_micros: self.install_cpu.total_micros,
             install_cpu_max_drain_micros: self.install_cpu.max_drain_micros,
             install_cpu_last_drain_micros: self.install_cpu.last_drain_micros,
+            install_cpu_max_steady_drain_micros: self.install_cpu.max_steady_drain_micros,
             pool_growth_events: pool_growth.events,
             pool_growth_bytes: pool_growth.bytes,
+            pool_growth_cpu_micros: pool_growth.cpu_micros,
         }
     }
 

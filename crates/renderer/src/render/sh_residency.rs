@@ -132,8 +132,10 @@ pub struct ShStreamingLifecycleSummary {
     pub install_cpu_total_micros: u64,
     pub install_cpu_max_drain_micros: u64,
     pub install_cpu_last_drain_micros: u64,
+    pub install_cpu_max_steady_drain_micros: u64,
     pub pool_growth_events: u64,
     pub pool_growth_bytes: u64,
+    pub pool_growth_cpu_micros: u64,
 }
 
 impl ShResidencyReport {

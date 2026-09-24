@@ -8,41 +8,60 @@ use std::time::Duration;
 use super::ShResidencySnapshot;
 
 /// Cumulative CPU time the renderer spent installing ready clusters, measured
-/// once per drain that carried at least one ready cluster.
+/// once per drain that carried at least one ready cluster. A drain that grew
+/// no pool is a steady-state drain; its maximum is tracked apart so a growth
+/// transaction cannot hide the steady per-drain cost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct InstallCpuCounters {
     pub(super) total_micros: u64,
     pub(super) max_drain_micros: u64,
     pub(super) last_drain_micros: u64,
+    pub(super) max_steady_drain_micros: u64,
 }
 
 impl InstallCpuCounters {
-    pub(super) fn record_drain(&mut self, elapsed: Duration) {
-        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    pub(super) fn record_drain(&mut self, elapsed: Duration, grew_pool: bool) {
+        let micros = duration_micros(elapsed);
         self.total_micros = self.total_micros.saturating_add(micros);
         self.max_drain_micros = self.max_drain_micros.max(micros);
         self.last_drain_micros = micros;
+        if !grew_pool {
+            self.max_steady_drain_micros = self.max_steady_drain_micros.max(micros);
+        }
     }
 }
 
 /// Cumulative physical growth of the streamed pools. One event is one pool
 /// family (the coupled dense atlas, or one sparse CSR family) whose capacity
-/// grew; bytes are the active physical capacity each growth transaction added.
+/// grew; bytes are the active physical capacity each growth transaction added;
+/// CPU time covers each successful growth transaction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PoolGrowthCounters {
     pub(super) events: u64,
     pub(super) bytes: u64,
+    pub(super) cpu_micros: u64,
 }
 
 impl PoolGrowthCounters {
-    pub(super) fn record(&mut self, pools_grown: usize, previous_bytes: u64, grown_bytes: u64) {
+    pub(super) fn record(
+        &mut self,
+        pools_grown: usize,
+        previous_bytes: u64,
+        grown_bytes: u64,
+        elapsed: Duration,
+    ) {
         self.events = self
             .events
             .saturating_add(u64::try_from(pools_grown).unwrap_or(u64::MAX));
         self.bytes = self
             .bytes
             .saturating_add(grown_bytes.saturating_sub(previous_bytes));
+        self.cpu_micros = self.cpu_micros.saturating_add(duration_micros(elapsed));
     }
+}
+
+fn duration_micros(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// One frame's view of SH streaming for the dev-tools Streaming tab and the
@@ -88,8 +107,10 @@ pub struct ShStreamingLiveDiagnostics {
     pub install_cpu_total_micros: u64,
     pub install_cpu_max_drain_micros: u64,
     pub install_cpu_last_drain_micros: u64,
+    pub install_cpu_max_steady_drain_micros: u64,
     pub pool_growth_events: u64,
     pub pool_growth_bytes: u64,
+    pub pool_growth_cpu_micros: u64,
 }
 
 impl ShStreamingLiveDiagnostics {
@@ -102,8 +123,10 @@ impl ShStreamingLiveDiagnostics {
         self.install_cpu_total_micros = snapshot.install_cpu_total_micros;
         self.install_cpu_max_drain_micros = snapshot.install_cpu_max_drain_micros;
         self.install_cpu_last_drain_micros = snapshot.install_cpu_last_drain_micros;
+        self.install_cpu_max_steady_drain_micros = snapshot.install_cpu_max_steady_drain_micros;
         self.pool_growth_events = snapshot.pool_growth_events;
         self.pool_growth_bytes = snapshot.pool_growth_bytes;
+        self.pool_growth_cpu_micros = snapshot.pool_growth_cpu_micros;
     }
 }
 
@@ -114,15 +137,17 @@ mod tests {
     #[test]
     fn install_cpu_counters_track_total_max_and_last_drain() {
         let mut counters = InstallCpuCounters::default();
-        counters.record_drain(Duration::from_micros(40));
-        counters.record_drain(Duration::from_micros(90));
-        counters.record_drain(Duration::from_micros(15));
+        counters.record_drain(Duration::from_micros(40), false);
+        counters.record_drain(Duration::from_micros(90), true);
+        counters.record_drain(Duration::from_micros(15), false);
         assert_eq!(
             counters,
             InstallCpuCounters {
                 total_micros: 145,
                 max_drain_micros: 90,
                 last_drain_micros: 15,
+                // The 90 µs drain grew a pool, so it is not a steady drain.
+                max_steady_drain_micros: 40,
             }
         );
     }
@@ -133,20 +158,21 @@ mod tests {
             total_micros: u64::MAX - 1,
             ..InstallCpuCounters::default()
         };
-        counters.record_drain(Duration::from_micros(10));
+        counters.record_drain(Duration::from_micros(10), false);
         assert_eq!(counters.total_micros, u64::MAX);
     }
 
     #[test]
     fn pool_growth_counts_each_family_and_the_capacity_added() {
         let mut counters = PoolGrowthCounters::default();
-        counters.record(1, 1024, 4096);
-        counters.record(2, 4096, 6144);
+        counters.record(1, 1024, 4096, Duration::from_micros(700));
+        counters.record(2, 4096, 6144, Duration::from_micros(300));
         assert_eq!(
             counters,
             PoolGrowthCounters {
                 events: 3,
                 bytes: 3072 + 2048,
+                cpu_micros: 1_000,
             }
         );
     }
@@ -165,8 +191,10 @@ mod tests {
             install_cpu_total_micros: 700,
             install_cpu_max_drain_micros: 300,
             install_cpu_last_drain_micros: 100,
+            install_cpu_max_steady_drain_micros: 80,
             pool_growth_events: 2,
             pool_growth_bytes: 4096,
+            pool_growth_cpu_micros: 250,
             ..ShResidencySnapshot::default()
         });
         assert_eq!(live.target_clusters, 9);
@@ -177,7 +205,9 @@ mod tests {
         assert_eq!(live.install_cpu_total_micros, 700);
         assert_eq!(live.install_cpu_max_drain_micros, 300);
         assert_eq!(live.install_cpu_last_drain_micros, 100);
+        assert_eq!(live.install_cpu_max_steady_drain_micros, 80);
         assert_eq!(live.pool_growth_events, 2);
         assert_eq!(live.pool_growth_bytes, 4096);
+        assert_eq!(live.pool_growth_cpu_micros, 250);
     }
 }

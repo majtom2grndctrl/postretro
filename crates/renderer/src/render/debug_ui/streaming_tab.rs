@@ -127,6 +127,10 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 4] {
                     ),
                 ),
                 (
+                    "Install CPU max steady drain",
+                    format_micros(d.install_cpu_max_steady_drain_micros),
+                ),
+                (
                     "Install CPU total",
                     format_micros(d.install_cpu_total_micros),
                 ),
@@ -137,6 +141,7 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 4] {
             rows: vec![
                 ("Growth events", d.pool_growth_events.to_string()),
                 ("Capacity added", format_bytes(d.pool_growth_bytes)),
+                ("Growth CPU", format_micros(d.pool_growth_cpu_micros)),
             ],
         },
     ]
@@ -216,6 +221,8 @@ mod tests {
             pool_growth_bytes: 2048,
             install_cpu_last_drain_micros: 420,
             install_cpu_max_drain_micros: 1_500,
+            install_cpu_max_steady_drain_micros: 600,
+            pool_growth_cpu_micros: 900,
             ..ShStreamingLiveDiagnostics::default()
         };
         let sections = streaming_sections(&diagnostics);
@@ -236,7 +243,9 @@ mod tests {
             value("Installs", "Install CPU last/max drain"),
             "420 µs / 1.50 ms"
         );
+        assert_eq!(value("Installs", "Install CPU max steady drain"), "600 µs");
         assert_eq!(value("Pool growth", "Growth events"), "3");
         assert_eq!(value("Pool growth", "Capacity added"), "2.0 KiB");
+        assert_eq!(value("Pool growth", "Growth CPU"), "900 µs");
     }
 }

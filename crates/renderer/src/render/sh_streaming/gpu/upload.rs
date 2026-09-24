@@ -3,22 +3,23 @@
 
 use super::*;
 
-// A queue.write_texture call creates a Metal staging buffer. Keep each write
-// bounded, but combine adjacent canonical tiles so first-frame installation
-// does not make one driver allocation per 8x8 tile.
-const MAX_TILES_PER_UPLOAD: u32 = 128;
+/// Largest upload scratch vector kept between batches. Budgeted drains stage
+/// well under this; an oversized cluster's scratch is released after use.
+const MAX_RETAINED_UPLOAD_SCRATCH_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IsolatedUploadSpan {
-    local_slot: u32,
-    live_slot: u32,
-    tiles: u32,
-}
-
+/// One copy region of the depth-moment volume: `rows` texel rows of equal
+/// width stacked in y, tightly packed.
 #[derive(Debug, PartialEq, Eq)]
 struct MomentUploadSpan {
     origin: wgpu::Origin3d,
+    rows: u32,
     bytes: Vec<u8>,
+}
+
+impl MomentUploadSpan {
+    fn row_bytes(&self) -> usize {
+        self.bytes.len() / self.rows as usize
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,33 +28,37 @@ struct WordUploadSpan {
     bytes: Vec<u8>,
 }
 
+/// Longest run of unchanged words a span re-uploads to join its neighbors.
+/// Each word mirror equals its GPU buffer outside the changed set (every
+/// mutation is uploaded in the drain that makes it, and a rolled-back install
+/// uploads nothing), so a filled gap rewrites identical values. One copy
+/// command costs far more than a kilobyte of staging.
+const WORD_SPAN_MAX_GAP: u32 = 256;
+
 fn pack_word_upload_spans(
     words: &[u32],
     changed: impl IntoIterator<Item = u32>,
 ) -> Result<Vec<WordUploadSpan>, ShResidencyDrainError> {
-    // Install, promotion, and eviction can each touch only a few probes in a
-    // large grid. Sort and deduplicate their indices before merging neighbors.
-    let changed: std::collections::BTreeSet<_> = changed.into_iter().collect();
-    let mut spans: Vec<WordUploadSpan> = Vec::new();
+    let mut changed: Vec<u32> = changed.into_iter().collect();
+    changed.sort_unstable();
+    changed.dedup();
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
     for dense in changed {
-        let word = *words
-            .get(dense as usize)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        if let Some(span) = spans.last_mut()
-            && u32::try_from(span.bytes.len() / std::mem::size_of::<u32>())
-                .ok()
-                .and_then(|words| span.dense_start.checked_add(words))
-                == Some(dense)
-        {
-            span.bytes.extend_from_slice(&word.to_le_bytes());
-        } else {
-            spans.push(WordUploadSpan {
-                dense_start: dense,
-                bytes: word.to_le_bytes().to_vec(),
-            });
+        if dense as usize >= words.len() {
+            return Err(ShResidencyDrainError::SlotOverflow);
+        }
+        match ranges.last_mut() {
+            Some((_, end)) if dense - *end <= WORD_SPAN_MAX_GAP => *end = dense + 1,
+            _ => ranges.push((dense, dense + 1)),
         }
     }
-    Ok(spans)
+    Ok(ranges
+        .into_iter()
+        .map(|(start, end)| WordUploadSpan {
+            dense_start: start,
+            bytes: u32_bytes(&words[start as usize..end as usize]),
+        })
+        .collect())
 }
 
 fn pack_moment_upload_spans(
@@ -68,135 +73,97 @@ fn pack_moment_upload_spans(
     let total = xy
         .checked_mul(grid[2])
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    // The last update wins exactly as it did with ordered per-probe queue writes.
-    let mut latest = std::collections::BTreeMap::new();
-    for &(dense, mean, mean_sq) in updates {
+    // The last update wins exactly as it did with ordered per-probe queue
+    // writes. A stable sort keeps duplicates in update order.
+    for &(dense, _, _) in updates {
         if dense >= total || dense as usize >= words.len() {
             return Err(ShResidencyDrainError::SlotOverflow);
         }
-        latest.insert(dense, (mean, mean_sq));
     }
-    let mut spans: Vec<MomentUploadSpan> = Vec::new();
+    let mut latest = updates.to_vec();
+    latest.sort_by_key(|&(dense, _, _)| dense);
+    latest.dedup_by(|later, earlier| {
+        if later.0 == earlier.0 {
+            *earlier = *later;
+            true
+        } else {
+            false
+        }
+    });
+    // Texel rows first: one per run of consecutive probes along x.
+    let mut row_spans: Vec<MomentUploadSpan> = Vec::new();
     let mut previous_dense: Option<u32> = None;
-    for (dense, (mean, mean_sq)) in latest {
+    for (dense, mean, mean_sq) in latest {
         let x = dense % grid[0];
         let y = (dense / grid[0]) % grid[1];
         let z = dense / xy;
         let word = words[dense as usize];
-        let contiguous = previous_dense
-            .is_some_and(|previous| previous.checked_add(1) == Some(dense))
-            && x != 0
-            && spans
-                .last()
-                .is_some_and(|span| span.bytes.len() < MAX_TILES_PER_UPLOAD as usize * 8);
+        let contiguous =
+            previous_dense.is_some_and(|previous| previous.checked_add(1) == Some(dense)) && x != 0;
         if !contiguous {
-            spans.push(MomentUploadSpan {
+            row_spans.push(MomentUploadSpan {
                 origin: wgpu::Origin3d { x, y, z },
+                rows: 1,
                 bytes: Vec::new(),
             });
         }
-        let span = spans.last_mut().expect("the first probe starts a span");
+        let span = row_spans.last_mut().expect("the first probe starts a span");
         for value in [mean, mean_sq, word as u16, (word >> 16) as u16] {
             span.bytes.extend_from_slice(&value.to_le_bytes());
         }
         previous_dense = Some(dense);
     }
+    // Then stack rows of equal x extent on consecutive y into one region; a
+    // cluster's box of probes becomes about one copy per z slice.
+    let mut spans: Vec<MomentUploadSpan> = Vec::new();
+    let mut open = std::collections::HashMap::<(u32, u32, usize), usize>::new();
+    for row in row_spans {
+        let key = (row.origin.z, row.origin.x, row.bytes.len());
+        if let Some(&index) = open.get(&key) {
+            let region = &mut spans[index];
+            if region.origin.y + region.rows == row.origin.y {
+                region.rows += 1;
+                region.bytes.extend_from_slice(&row.bytes);
+                continue;
+            }
+        }
+        open.insert(key, spans.len());
+        spans.push(row);
+    }
     Ok(spans)
 }
 
-fn isolated_upload_spans(
-    local_to_live: &std::collections::BTreeMap<u32, u32>,
-    local_tiles_per_row: u32,
-    live_tiles_per_row: u32,
-) -> Vec<IsolatedUploadSpan> {
-    let mut spans: Vec<IsolatedUploadSpan> = Vec::new();
-    for (&local_slot, &live_slot) in local_to_live {
-        if let Some(last) = spans.last_mut()
-            && last.tiles < MAX_TILES_PER_UPLOAD
-            && last.local_slot + last.tiles == local_slot
-            && last.live_slot + last.tiles == live_slot
-            && last.local_slot / local_tiles_per_row == local_slot / local_tiles_per_row
-            && last.live_slot / live_tiles_per_row == live_slot / live_tiles_per_row
-        {
-            last.tiles += 1;
-        } else {
-            spans.push(IsolatedUploadSpan {
-                local_slot,
-                live_slot,
-                tiles: 1,
-            });
+impl StreamingGpuPools {
+    /// Start an upload batch on the pools' reusable scratch vector.
+    pub(in crate::render::sh_streaming) fn begin_uploads(
+        &mut self,
+        reserve: usize,
+    ) -> StagedUploads {
+        StagedUploads::from_scratch(std::mem::take(&mut self.upload_scratch), reserve)
+    }
+
+    /// Submit one recorded upload batch through the pools' staging buffers and
+    /// keep its scratch vector for the next batch, unless it grew past the
+    /// retention cap.
+    pub(in crate::render::sh_streaming) fn submit_uploads(
+        &mut self,
+        uploads: StagedUploads,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let scratch = uploads.submit(&mut self.staging, device, queue);
+        if scratch.capacity() <= MAX_RETAINED_UPLOAD_SCRATCH_BYTES {
+            self.upload_scratch = scratch;
         }
     }
-    spans
-}
 
-fn pack_isolated_upload_span(
-    payload: &[u8],
-    format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-    span: IsolatedUploadSpan,
-    scratch: &mut Vec<u8>,
-) -> Result<u32, ShResidencyDrainError> {
-    let local_tiles_per_row = width / PHYSICAL_TILE_DIMENSION;
-    let local_tiles_per_layer = local_tiles_per_row
-        .checked_mul(height / PHYSICAL_TILE_DIMENSION)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let local_layer = span.local_slot / local_tiles_per_layer;
-    let local_in_layer = span.local_slot % local_tiles_per_layer;
-    let local_x = (local_in_layer % local_tiles_per_row) * PHYSICAL_TILE_DIMENSION;
-    let local_y = (local_in_layer / local_tiles_per_row) * PHYSICAL_TILE_DIMENSION;
-    let (source_row_bytes, tile_row_bytes, source_rows, tile_rows, source_x, source_y) =
-        match format {
-            wgpu::TextureFormat::Bc6hRgbUfloat => (
-                width / 4 * 16,
-                32,
-                height / 4,
-                2,
-                local_x / 4 * 16,
-                local_y / 4,
-            ),
-            wgpu::TextureFormat::Rgba16Float => (width * 8, 64, height, 8, local_x * 8, local_y),
-            _ => unreachable!("streamed SH base formats are validated"),
-        };
-    let packed_row_bytes = tile_row_bytes * span.tiles;
-    let packed_len = usize::try_from(packed_row_bytes)
-        .ok()
-        .and_then(|row| row.checked_mul(tile_rows as usize))
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    scratch.resize(packed_len, 0);
-    for row in 0..tile_rows {
-        let source = u64::from(local_layer)
-            .checked_mul(u64::from(source_rows))
-            .and_then(|layer_rows| layer_rows.checked_add(u64::from(source_y + row)))
-            .and_then(|rows| rows.checked_mul(u64::from(source_row_bytes)))
-            .and_then(|bytes| bytes.checked_add(u64::from(source_x)))
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let source = usize::try_from(source).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let target = row as usize * packed_row_bytes as usize;
-        let source_end = source
-            .checked_add(packed_row_bytes as usize)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        scratch[target..target + packed_row_bytes as usize].copy_from_slice(
-            payload
-                .get(source..source_end)
-                .ok_or(ShResidencyDrainError::MalformedChunk {
-                    cluster_id: 0,
-                    reason: "isolated atlas tile span is truncated",
-                })?,
-        );
-    }
-    Ok(packed_row_bytes)
-}
-
-impl StreamingGpuPools {
     /// Upload only canonical nodes from an id-50 isolated atlas block. No
     /// decoded cluster body survives this call.
     pub(in crate::render::sh_streaming) fn validate_isolated_tiles(
         &self,
         expected_format: wgpu::TextureFormat,
         block: &[u8],
-        local_to_live_slot: &std::collections::BTreeMap<u32, u32>,
+        local_to_live_slot: &[SlotRun],
     ) -> Result<(), ShResidencyDrainError> {
         if block.len() < 20 {
             return Err(ShResidencyDrainError::MalformedChunk {
@@ -258,10 +225,13 @@ impl StreamingGpuPools {
                 reason: "isolated atlas payload is truncated",
             });
         }
-        if local_to_live_slot
-            .iter()
-            .any(|(&local, &live)| local >= slots || live >= self.shape.slots)
-        {
+        if local_to_live_slot.iter().any(|run| {
+            run.local.checked_add(run.len).is_none_or(|end| end > slots)
+                || run
+                    .live
+                    .checked_add(run.len)
+                    .is_none_or(|end| end > self.shape.slots)
+        }) {
             return Err(ShResidencyDrainError::SlotOverflow);
         }
         Ok(())
@@ -269,11 +239,11 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn upload_isolated_tiles(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         destination: &wgpu::Texture,
         expected_format: wgpu::TextureFormat,
         block: &[u8],
-        local_to_live_slot: &std::collections::BTreeMap<u32, u32>,
+        local_to_live_slot: &[SlotRun],
     ) -> Result<(), ShResidencyDrainError> {
         self.validate_isolated_tiles(expected_format, block, local_to_live_slot)?;
         let format = read_u32(block, 0)?;
@@ -283,14 +253,10 @@ impl StreamingGpuPools {
         debug_assert!(width > 0 && height > 0);
         debug_assert_eq!(width % PHYSICAL_TILE_DIMENSION, 0);
         debug_assert_eq!(height % PHYSICAL_TILE_DIMENSION, 0);
-        let local_tiles_per_row = width / PHYSICAL_TILE_DIMENSION;
         let payload = &block[20..];
+        let plan = plan_isolated_uploads(local_to_live_slot, self.shape.tiles_per_row);
         let mut scratch = Vec::new();
-        for span in isolated_upload_spans(
-            local_to_live_slot,
-            local_tiles_per_row,
-            self.shape.tiles_per_row,
-        ) {
+        for &span in &plan.spans {
             let target_layer = span.live_slot / self.shape.tiles_per_layer;
             let target_in_layer = span.live_slot % self.shape.tiles_per_layer;
             let target_x = (target_in_layer % self.shape.tiles_per_row) * PHYSICAL_TILE_DIMENSION;
@@ -300,38 +266,30 @@ impl StreamingGpuPools {
                 expected_format,
                 width,
                 height,
+                &plan,
                 span,
                 &mut scratch,
             )?;
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: destination,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: target_x,
-                        y: target_y,
-                        z: target_layer,
-                    },
-                    aspect: wgpu::TextureAspect::All,
+            uploads.write_texture(
+                destination,
+                wgpu::Origin3d {
+                    x: target_x,
+                    y: target_y,
+                    z: target_layer,
                 },
                 &scratch,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(
-                        if expected_format == wgpu::TextureFormat::Bc6hRgbUfloat {
-                            2
-                        } else {
-                            8
-                        },
-                    ),
+                bytes_per_row,
+                if expected_format == wgpu::TextureFormat::Bc6hRgbUfloat {
+                    2
+                } else {
+                    8
                 },
                 wgpu::Extent3d {
                     width: PHYSICAL_TILE_DIMENSION * span.tiles,
                     height: PHYSICAL_TILE_DIMENSION,
                     depth_or_array_layers: 1,
                 },
-            );
+            )?;
         }
         Ok(())
     }
@@ -347,16 +305,16 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn upload_changed_compose_words(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         words: &[u32],
         changed: impl IntoIterator<Item = u32>,
     ) -> Result<(), ShResidencyDrainError> {
         for span in pack_word_upload_spans(words, changed)? {
-            queue.write_buffer(
+            uploads.write_buffer(
                 &self.compose_indirection,
                 u64::from(span.dense_start) * std::mem::size_of::<u32>() as u64,
                 &span.bytes,
-            );
+            )?;
         }
         Ok(())
     }
@@ -452,10 +410,10 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn upload_indirect_sparse_rows(
         &mut self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         rows: &[&super::super::SparseInstallPlan],
     ) -> Result<(), ShResidencyDrainError> {
-        self.indirect_compose.upload_sparse_rows(queue, rows)
+        self.indirect_compose.upload_sparse_rows(uploads, rows)
     }
 
     pub(in crate::render::sh_streaming) fn validate_indirect_sparse_row(
@@ -470,7 +428,7 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn upload_direct_sparse_rows(
         &mut self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         section_id: u32,
         rows: &[super::super::direct_compose::DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
@@ -479,7 +437,7 @@ impl StreamingGpuPools {
             .ok_or(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed direct sparse upload requested without a direct compose pool",
             })?
-            .upload_sparse_rows(queue, section_id, rows)
+            .upload_sparse_rows(uploads, section_id, rows)
     }
 
     pub(in crate::render::sh_streaming) fn validate_direct_sparse_rows(
@@ -497,10 +455,10 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn clear_indirect_sparse_row(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
-        self.indirect_compose.clear_row_pair(queue, row)
+        self.indirect_compose.clear_row_pair(uploads, row)
     }
 
     pub(in crate::render::sh_streaming) fn clear_all_indirect_sparse_rows(
@@ -512,7 +470,7 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn clear_direct_sparse_row(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         section_id: u32,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
@@ -521,7 +479,7 @@ impl StreamingGpuPools {
             .ok_or(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed direct sparse clear requested without a direct compose pool",
             })?
-            .clear_sparse_row_pair(queue, section_id, row)
+            .clear_sparse_row_pair(uploads, section_id, row)
     }
 
     pub(in crate::render::sh_streaming) fn clear_all_direct_sparse_rows(
@@ -540,39 +498,34 @@ impl StreamingGpuPools {
 
     pub(in crate::render::sh_streaming) fn upload_sample_words_and_moments(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         words: &[u32],
         updates: &[(u32, u16, u16)],
         grid: [u32; 3],
     ) -> Result<(), ShResidencyDrainError> {
         let spans = pack_moment_upload_spans(words, updates, grid)?;
         for span in pack_word_upload_spans(words, updates.iter().map(|&(dense, _, _)| dense))? {
-            queue.write_buffer(
+            uploads.write_buffer(
                 &self.sampled_indirection,
                 u64::from(span.dense_start) * std::mem::size_of::<u32>() as u64,
                 &span.bytes,
-            );
+            )?;
         }
         for span in spans {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.depth_moments,
-                    mip_level: 0,
-                    origin: span.origin,
-                    aspect: wgpu::TextureAspect::All,
-                },
+            let row_bytes =
+                u32::try_from(span.row_bytes()).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+            uploads.write_texture(
+                &self.depth_moments,
+                span.origin,
                 &span.bytes,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(span.bytes.len() as u32),
-                    rows_per_image: Some(1),
-                },
+                row_bytes,
+                span.rows,
                 wgpu::Extent3d {
-                    width: span.bytes.len() as u32 / 8,
-                    height: 1,
+                    width: row_bytes / 8,
+                    height: span.rows,
                     depth_or_array_layers: 1,
                 },
-            );
+            )?;
         }
         Ok(())
     }
@@ -597,118 +550,8 @@ impl StreamingGpuPools {
 }
 
 #[cfg(test)]
-mod isolated_upload_tests {
+mod upload_packing_tests {
     use super::*;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn adjacent_tiles_coalesce_without_crossing_source_or_destination_rows() {
-        // Regression: one Metal staging allocation per 8x8 tile stalled the first level frame.
-        let slots = BTreeMap::from([(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]);
-        assert_eq!(
-            isolated_upload_spans(&slots, 4, 3),
-            [
-                IsolatedUploadSpan {
-                    local_slot: 0,
-                    live_slot: 0,
-                    tiles: 3
-                },
-                IsolatedUploadSpan {
-                    local_slot: 3,
-                    live_slot: 3,
-                    tiles: 1
-                },
-                IsolatedUploadSpan {
-                    local_slot: 4,
-                    live_slot: 4,
-                    tiles: 2
-                },
-            ]
-        );
-
-        let scattered = BTreeMap::from([(0, 0), (1, 1), (2, 5), (3, 6)]);
-        assert_eq!(
-            isolated_upload_spans(&scattered, 8, 8),
-            [
-                IsolatedUploadSpan {
-                    local_slot: 0,
-                    live_slot: 0,
-                    tiles: 2
-                },
-                IsolatedUploadSpan {
-                    local_slot: 2,
-                    live_slot: 5,
-                    tiles: 2
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn upload_spans_remain_bounded_even_on_wide_atlas_rows() {
-        let slots = (0..130).map(|slot| (slot, slot)).collect();
-        assert_eq!(
-            isolated_upload_spans(&slots, 256, 256),
-            [
-                IsolatedUploadSpan {
-                    local_slot: 0,
-                    live_slot: 0,
-                    tiles: 128
-                },
-                IsolatedUploadSpan {
-                    local_slot: 128,
-                    live_slot: 128,
-                    tiles: 2
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn packed_span_preserves_bc6h_and_rgba16f_source_rows() {
-        let span = IsolatedUploadSpan {
-            local_slot: 1,
-            live_slot: 7,
-            tiles: 2,
-        };
-        let mut scratch = Vec::new();
-        let bc6h: Vec<u8> = (0..192).map(|index| index as u8).collect();
-        assert_eq!(
-            pack_isolated_upload_span(
-                &bc6h,
-                wgpu::TextureFormat::Bc6hRgbUfloat,
-                24,
-                8,
-                span,
-                &mut scratch,
-            )
-            .unwrap(),
-            64
-        );
-        assert_eq!(&scratch[..64], &bc6h[32..96]);
-        assert_eq!(&scratch[64..], &bc6h[128..192]);
-
-        let rgba: Vec<u8> = (0..1536).map(|index| index as u8).collect();
-        assert_eq!(
-            pack_isolated_upload_span(
-                &rgba,
-                wgpu::TextureFormat::Rgba16Float,
-                24,
-                8,
-                span,
-                &mut scratch,
-            )
-            .unwrap(),
-            128
-        );
-        for row in 0..8 {
-            let source = row * 192 + 64;
-            assert_eq!(
-                &scratch[row * 128..(row + 1) * 128],
-                &rgba[source..source + 128]
-            );
-        }
-    }
 
     #[test]
     fn depth_moment_updates_coalesce_rows_and_keep_last_duplicate() {
@@ -751,6 +594,35 @@ mod isolated_upload_tests {
     }
 
     #[test]
+    fn depth_moment_rows_of_equal_extent_stack_into_one_region() {
+        // Regression: one copy per probe row made promotion cost scale with
+        // a cluster's row count.
+        let grid = [4, 3, 2];
+        let words = vec![0; 24];
+        // Rows y=0..2 of x=1..3 in slice z=0, then x=1..3 at y=1 in z=1, then
+        // a narrower row that cannot join.
+        let mut updates = Vec::new();
+        for y in 0..2 {
+            for x in 1..3 {
+                updates.push((x + y * 4, 1, 2));
+            }
+        }
+        updates.extend([(1 + 4 + 12, 3, 4), (2 + 4 + 12, 3, 4), (1 + 8 + 12, 5, 6)]);
+        let spans = pack_moment_upload_spans(&words, &updates, grid).unwrap();
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| (span.origin, span.rows, span.bytes.len()))
+                .collect::<Vec<_>>(),
+            [
+                (wgpu::Origin3d { x: 1, y: 0, z: 0 }, 2, 32),
+                (wgpu::Origin3d { x: 1, y: 1, z: 1 }, 1, 16),
+                (wgpu::Origin3d { x: 1, y: 2, z: 1 }, 1, 8),
+            ]
+        );
+    }
+
+    #[test]
     fn sampled_word_uploads_scale_with_changed_probes() {
         // Regression: promotion uploaded the complete sampled-word mirror for a few probes.
         let mut words = vec![0; 4_096];
@@ -774,6 +646,31 @@ mod isolated_upload_tests {
         );
         assert_eq!(spans.iter().map(|span| span.bytes.len()).sum::<usize>(), 12);
         assert!(spans.iter().map(|span| span.bytes.len()).sum::<usize>() < words.len() * 4);
+    }
+
+    #[test]
+    fn word_spans_bridge_short_gaps_from_the_mirror() {
+        let mut words = vec![0; 4_096];
+        words[10] = 0xa;
+        words[11] = 0xb; // Unchanged, but inside a bridgeable gap.
+        words[12] = 0xc;
+        // One word past the longest bridgeable gap after index 12.
+        let far = 13 + WORD_SPAN_MAX_GAP + 1;
+        words[far as usize] = 0xd;
+        let spans = pack_word_upload_spans(&words, [12, 10, far]).unwrap();
+        assert_eq!(
+            spans,
+            [
+                WordUploadSpan {
+                    dense_start: 10,
+                    bytes: u32_bytes(&[0xa, 0xb, 0xc]),
+                },
+                WordUploadSpan {
+                    dense_start: far,
+                    bytes: u32_bytes(&[0xd]),
+                },
+            ]
+        );
     }
 
     #[test]

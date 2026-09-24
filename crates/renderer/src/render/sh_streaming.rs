@@ -38,6 +38,7 @@ mod lifecycle;
 mod ownership;
 mod patches;
 mod payload;
+mod row_refs;
 mod rows;
 mod setup;
 mod sparse_install;
@@ -49,12 +50,14 @@ pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
-use gpu::StreamingGpuPools;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
+use gpu::{StagedUploads, StreamingGpuPools};
 use install::InstallGpu;
-use install_journal::{InstallJournal, RowRefTable, RowSet};
+use install_journal::InstallJournal;
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
+use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
+use row_refs::{RowRefTable, RowSet, decrement_row_ref, increment_row_ref, row_counts};
 
 const PROBE_PATCH_BLOCK: u32 = 0;
 const ISOLATED_ATLAS_BLOCK: u32 = 1;
@@ -123,10 +126,15 @@ pub struct ShResidencySnapshot {
     /// Install time of the most recent drain that carried ready work, in
     /// microseconds.
     pub install_cpu_last_drain_micros: u64,
+    /// Largest install time of a drain that grew no pool, in microseconds.
+    pub install_cpu_max_steady_drain_micros: u64,
     /// Streamed pool families whose physical capacity grew, cumulative.
     pub pool_growth_events: u64,
     /// Active physical capacity those growths added, cumulative.
     pub pool_growth_bytes: u64,
+    /// Cumulative CPU microseconds spent inside pool growth transactions;
+    /// part of `install_cpu_total_micros`.
+    pub pool_growth_cpu_micros: u64,
 }
 
 /// A malformed renderer handoff is never repaired by inventing an address.
@@ -246,27 +254,6 @@ struct InstalledProbe {
     dense: u32,
     mean_distance: u16,
     mean_sq_distance: u16,
-}
-
-fn increment_row_ref(refs: &mut BTreeMap<u32, u32>, row: u32) -> Result<(), ShResidencyDrainError> {
-    let count = refs.entry(row).or_insert(0);
-    *count = count
-        .checked_add(1)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    Ok(())
-}
-
-fn decrement_row_ref(refs: &mut BTreeMap<u32, u32>, row: u32) -> Result<(), ShResidencyDrainError> {
-    let count = refs
-        .get_mut(&row)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    *count = count
-        .checked_sub(1)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    if *count == 0 {
-        refs.remove(&row);
-    }
-    Ok(())
 }
 
 /// Renderer-local stream state.  It is constructed from loader metadata only;

@@ -148,9 +148,16 @@ halo clusters, so a physical light accumulates once and an owner cannot be evict
 under a resident boundary.
 
 An install journals every residency change and undoes it newest-first on failure, so its
-cost scales with the cluster being installed rather than the map. Streaming diagnostics
+cost scales with the cluster being installed rather than the map. Install and eviction
+update affinity-row refcounts and resident-row unions once per touched row, never per
+probe and never by rebuilding a union. Each install, and each drain's promotion and
+eviction work, reaches the GPU as one upload batch: every write packs into one recycled
+mapped staging buffer and one command buffer of copies, because each queue write call
+allocates its own driver staging. Pool growth builds replacement buffers without
+CPU-side zero payloads. Streaming diagnostics
 are always-on counters covering reads, coalescing, discarded and cancelled work, read
-latency, decoded bytes, install CPU time, pool growth, misses, and evictions. They appear
+latency, decoded bytes, install CPU time (with pool-growth time and the slowest drain that
+grew no pool reported apart), pool growth, misses, and evictions. They appear
 as a throttled `[SH streaming]` info log line (only when something changed), the
 dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. They guide
 tuning and gate nothing.

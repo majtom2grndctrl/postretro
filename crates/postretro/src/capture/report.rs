@@ -370,8 +370,10 @@ struct ShStreamingLifecycleSummaryJson {
     install_cpu_total_micros: u64,
     install_cpu_max_drain_micros: u64,
     install_cpu_last_drain_micros: u64,
+    install_cpu_max_steady_drain_micros: u64,
     pool_growth_events: u64,
     pool_growth_bytes: u64,
+    pool_growth_cpu_micros: u64,
 }
 
 impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
@@ -415,8 +417,10 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             install_cpu_total_micros: summary.install_cpu_total_micros,
             install_cpu_max_drain_micros: summary.install_cpu_max_drain_micros,
             install_cpu_last_drain_micros: summary.install_cpu_last_drain_micros,
+            install_cpu_max_steady_drain_micros: summary.install_cpu_max_steady_drain_micros,
             pool_growth_events: summary.pool_growth_events,
             pool_growth_bytes: summary.pool_growth_bytes,
+            pool_growth_cpu_micros: summary.pool_growth_cpu_micros,
         }
     }
 }
@@ -697,6 +701,8 @@ mod tests {
             read_latency_p95_ms: 4.5,
             budget_limited_drains: 13,
             install_cpu_max_drain_micros: 14,
+            install_cpu_max_steady_drain_micros: 15,
+            pool_growth_cpu_micros: 16,
             ..ShStreamingLifecycleSummary::default()
         });
         let json = as_json(measurement_report(
@@ -724,6 +730,8 @@ mod tests {
         assert_eq!(lifecycle["read_latency_p95_ms"], 4.5);
         assert_eq!(lifecycle["budget_limited_drains"], 13);
         assert_eq!(lifecycle["install_cpu_max_drain_micros"], 14);
+        assert_eq!(lifecycle["install_cpu_max_steady_drain_micros"], 15);
+        assert_eq!(lifecycle["pool_growth_cpu_micros"], 16);
         assert_eq!(lifecycle["pool_growth_bytes"], 0);
     }
 

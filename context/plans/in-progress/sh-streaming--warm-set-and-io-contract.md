@@ -268,6 +268,12 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
 - Sync-proof mode (which capture requires) counts its frame-thread reads into
   session-owned read stats: one uncoalesced read per chunk, with latency covering read
   plus decode. The capture report's I/O fields are therefore real, not zero.
+- `ShDrainBatch::validate_contract` kept the retired two-ready-cluster cap after
+  decision 12, so any map whose clusters fit more than two per 8 MiB drain failed its
+  first drain ("drain batch exceeds the two-ready-cluster cap" on `campaign-test`).
+  `stress-warren-mini` never tripped it because two of its clusters already fill the
+  budget. The boundary now checks identity and structure only; ready count stays
+  controller policy.
 
 ## Resolutions from T4 (landed `c36cbe9ba`)
 

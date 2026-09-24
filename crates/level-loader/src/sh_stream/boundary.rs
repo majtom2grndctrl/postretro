@@ -65,6 +65,10 @@ pub struct ShDrainBatch {
 impl ShDrainBatch {
     /// Validate the complete loader-to-renderer handoff against the immutable
     /// manifest identity before either side mutates generation state.
+    ///
+    /// How many ready clusters a batch carries is controller policy (the
+    /// decoded-byte install budget, which always admits one cluster), so the
+    /// boundary checks identity and structure, never count or size.
     pub fn validate_contract(
         &self,
         cluster_count: u32,
@@ -76,11 +80,6 @@ impl ShDrainBatch {
         if self.content_tag != content_tag {
             return Err(stream_error(
                 "drain batch content tag does not match manifest",
-            ));
-        }
-        if self.ready.len() > 2 {
-            return Err(stream_error(
-                "drain batch exceeds the two-ready-cluster cap",
             ));
         }
         let words = usize::try_from(cluster_count.div_ceil(64))

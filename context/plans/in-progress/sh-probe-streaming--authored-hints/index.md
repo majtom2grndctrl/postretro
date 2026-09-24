@@ -190,7 +190,9 @@ placeholder rather than stale or uninitialized atlas data.
       check records adapter, fixture, mode, and whether seam pops were seen;
       two explicit `--no-cache` bakes verify id-49/id-50 determinism. Record
       `not-yet-evaluable` only when GPU proof is unavailable, not as a substitute
-      for a missing fixture or run procedure.
+      for a missing fixture or run procedure. Frame-time and visual observations
+      are tuning inputs, not feature-existence gates; malformed format data and
+      behavioral regressions remain correctness gates.
 
 ## Invariants
 
@@ -322,6 +324,9 @@ memory/target diagnostics, and unavailable GPU evidence explicitly under
 `measurements/sh-probe-streaming/`. Update durable compiler/renderer contracts
 and FGD authoring docs. Review the integrated diff across
 compiler→format→loader→planner→renderer and fix findings before landing.
+Manual frame-time and visual observations guide subsequent tuning; they do not
+gate the feature's existence. Deterministic wire bytes, loader validation, and
+controller/renderer correctness regressions remain gates.
 
 ## Sequencing
 

@@ -367,7 +367,7 @@ mod tests {
         CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection,
     };
     use postretro_level_format::portals::PortalRecord;
-    use postretro_level_format::{SectionId, read_container, read_section_data};
+    use postretro_level_format::{SectionId, read_container, validate_container_bounds};
 
     fn box_region(min: [f32; 3], max: [f32; 3]) -> MapStreamingHintRegion {
         MapStreamingHintRegion {
@@ -577,13 +577,13 @@ mod tests {
         compile_hinted_doorway(&second);
         for section_id in [SectionId::ClusterDirectory, SectionId::ClusterShPayloads] {
             assert_eq!(
-                section_from_prl(&first, section_id),
-                section_from_prl(&second, section_id),
+                section_from_container_meta(&first, section_id),
+                section_from_container_meta(&second, section_id),
                 "two --no-cache bakes must preserve exact {section_id:?} bytes",
             );
             assert_eq!(
-                section_from_prl(&first, section_id),
-                section_from_prl(&committed_fixture, section_id),
+                section_from_container_meta(&first, section_id),
+                section_from_container_meta(&committed_fixture, section_id),
                 "the committed fixture must remain synchronized with exact {section_id:?} bytes",
             );
         }
@@ -630,16 +630,35 @@ mod tests {
     }
 
     fn directory_from_prl(path: &Path) -> ClusterDirectorySection {
-        ClusterDirectorySection::from_bytes(&section_from_prl(path, SectionId::ClusterDirectory))
-            .expect("compiled section 49 must decode")
+        ClusterDirectorySection::from_bytes(&section_from_container_meta(
+            path,
+            SectionId::ClusterDirectory,
+        ))
+        .expect("compiled section 49 must decode")
     }
 
-    fn section_from_prl(path: &Path, section_id: SectionId) -> Vec<u8> {
+    /// Extract a section by the production container table's offset and size.
+    /// This deliberately avoids an extraction CLI so the cold-bake determinism
+    /// test exercises the same PRL framing contract the loader consumes.
+    fn section_from_container_meta(path: &Path, section_id: SectionId) -> Vec<u8> {
         let bytes = std::fs::read(path).expect("compiled PRL must be readable");
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = Cursor::new(&bytes);
         let meta = read_container(&mut cursor).expect("compiled PRL container must decode");
-        read_section_data(&mut cursor, &meta, section_id as u32)
-            .expect("compiled PRL section lookup must succeed")
-            .unwrap_or_else(|| panic!("compiled PRL is missing {section_id:?}"))
+        validate_container_bounds(
+            &meta,
+            u64::try_from(bytes.len()).expect("file size fits u64"),
+        )
+        .expect("compiled PRL container bounds must validate");
+        let entry = meta
+            .find_section(section_id as u32)
+            .unwrap_or_else(|| panic!("compiled PRL is missing {section_id:?}"));
+        let start = usize::try_from(entry.offset).expect("section offset fits usize");
+        let end = start
+            .checked_add(usize::try_from(entry.size).expect("section size fits usize"))
+            .expect("section range does not overflow usize");
+        bytes
+            .get(start..end)
+            .expect("validated section range is available")
+            .to_vec()
     }
 }

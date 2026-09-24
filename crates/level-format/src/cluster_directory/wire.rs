@@ -2,10 +2,10 @@
 //! See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{
-    CLUSTER_DIRECTORY_VERSION, CLUSTER_RECORD_SIZE, ClusterDirectoryError, ClusterDirectorySection,
-    ClusterRangeRecord, ClusterRangeRole, ClusterResourceDomain, ClusterResourceRecord,
-    HEADER_SIZE, MEMBER_RECORD_SIZE, RANGE_RECORD_SIZE, RESOURCE_RECORD_SIZE, try_vec, u32_len,
-    usize_count,
+    CLUSTER_DIRECTORY_VERSION, CLUSTER_HINT_RECORD_SIZE, CLUSTER_RECORD_SIZE,
+    ClusterDirectoryError, ClusterDirectorySection, ClusterHintRecord, ClusterRangeRecord,
+    ClusterRangeRole, ClusterResourceDomain, ClusterResourceRecord, HEADER_SIZE,
+    MEMBER_RECORD_SIZE, RANGE_RECORD_SIZE, RESOURCE_RECORD_SIZE, try_vec, u32_len, usize_count,
 };
 
 impl ClusterDirectorySection {
@@ -15,6 +15,8 @@ impl ClusterDirectorySection {
             self.resources.len(),
             self.members.len(),
             self.ranges.len(),
+            self.seam_portal_ids.len(),
+            self.cluster_hints.len(),
         )
     }
 
@@ -33,8 +35,14 @@ impl ClusterDirectorySection {
         push_u32(&mut bytes, u32_len(self.ranges.len(), "range count")?);
         push_u32(&mut bytes, self.primitive_limit);
         push_u32(&mut bytes, self.cell_limit);
-        push_u32(&mut bytes, 0);
-        push_u32(&mut bytes, 0);
+        push_u32(
+            &mut bytes,
+            u32_len(self.seam_portal_ids.len(), "seam portal count")?,
+        );
+        push_u32(
+            &mut bytes,
+            u32_len(self.cluster_hints.len(), "cluster hint count")?,
+        );
         for cluster in &self.clusters {
             for value in cluster.bounds_min.into_iter().chain(cluster.bounds_max) {
                 bytes.extend_from_slice(&value.to_le_bytes());
@@ -65,6 +73,15 @@ impl ClusterDirectorySection {
             push_u32(&mut bytes, range.role as u32);
             push_u32(&mut bytes, 0);
         }
+        for &portal_id in &self.seam_portal_ids {
+            push_u32(&mut bytes, portal_id);
+        }
+        for hint in &self.cluster_hints {
+            push_u32(&mut bytes, hint.cluster_id);
+            push_u32(&mut bytes, hint.flags);
+            push_u32(&mut bytes, hint.priority);
+            push_u32(&mut bytes, 0);
+        }
         debug_assert_eq!(bytes.len(), len);
         Ok(bytes)
     }
@@ -90,16 +107,15 @@ impl ClusterDirectorySection {
         let range_count = read_u32(data, 20);
         let primitive_limit = read_u32(data, 24);
         let cell_limit = read_u32(data, 28);
-        if read_u32(data, 32) != 0 || read_u32(data, 36) != 0 {
-            return Err(ClusterDirectoryError::InvalidData(
-                "header reserved fields must be zero".into(),
-            ));
-        }
+        let seam_portal_count = read_u32(data, 32);
+        let cluster_hint_count = read_u32(data, 36);
         let expected = checked_wire_len(
             usize_count(cluster_count)?,
             usize_count(resource_count)?,
             usize_count(member_count)?,
             usize_count(range_count)?,
+            usize_count(seam_portal_count)?,
+            usize_count(cluster_hint_count)?,
         )?;
         if data.len() != expected {
             return Err(ClusterDirectoryError::InvalidData(format!(
@@ -172,6 +188,28 @@ impl ClusterDirectorySection {
             });
             cursor += RANGE_RECORD_SIZE;
         }
+        let mut seam_portal_ids = try_vec(seam_portal_count, "seam portal ids")?;
+        for _ in 0..seam_portal_count {
+            seam_portal_ids.push(read_u32(data, cursor));
+            cursor += MEMBER_RECORD_SIZE;
+        }
+        let mut cluster_hints = try_vec(cluster_hint_count, "cluster hints")?;
+        for hint_index in 0..cluster_hint_count {
+            let reserved = read_u32(data, cursor + 12);
+            if reserved != 0 {
+                return Err(ClusterDirectoryError::ClusterHintReserved {
+                    hint: hint_index,
+                    reserved,
+                });
+            }
+            cluster_hints.push(ClusterHintRecord {
+                cluster_id: read_u32(data, cursor),
+                flags: read_u32(data, cursor + 4),
+                priority: read_u32(data, cursor + 8),
+            });
+            cursor += CLUSTER_HINT_RECORD_SIZE;
+        }
+        debug_assert_eq!(cursor, expected);
         let section = Self {
             runtime_cell_count,
             primitive_limit,
@@ -180,6 +218,8 @@ impl ClusterDirectorySection {
             resources,
             members,
             ranges,
+            seam_portal_ids,
+            cluster_hints,
         };
         section.validate_structure()?;
         Ok(section)
@@ -191,6 +231,8 @@ fn checked_wire_len(
     resources: usize,
     members: usize,
     ranges: usize,
+    seam_portals: usize,
+    cluster_hints: usize,
 ) -> Result<usize, ClusterDirectoryError> {
     HEADER_SIZE
         .checked_add(
@@ -201,6 +243,8 @@ fn checked_wire_len(
         .and_then(|value| value.checked_add(resources.checked_mul(RESOURCE_RECORD_SIZE)?))
         .and_then(|value| value.checked_add(members.checked_mul(MEMBER_RECORD_SIZE)?))
         .and_then(|value| value.checked_add(ranges.checked_mul(RANGE_RECORD_SIZE)?))
+        .and_then(|value| value.checked_add(seam_portals.checked_mul(MEMBER_RECORD_SIZE)?))
+        .and_then(|value| value.checked_add(cluster_hints.checked_mul(CLUSTER_HINT_RECORD_SIZE)?))
         .ok_or(ClusterDirectoryError::SizeOverflow("section byte length"))
 }
 

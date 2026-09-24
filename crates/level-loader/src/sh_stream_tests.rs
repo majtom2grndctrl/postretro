@@ -631,6 +631,8 @@ fn cluster_directory(
         resources: Vec::new(),
         members: vec![0, 1],
         ranges: Vec::new(),
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells,

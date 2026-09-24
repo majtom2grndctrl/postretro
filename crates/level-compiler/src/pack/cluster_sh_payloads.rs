@@ -491,6 +491,8 @@ mod tests {
             resources,
             members: vec![0],
             ranges,
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -592,6 +594,8 @@ mod tests {
             resources,
             members: vec![0, 1],
             ranges,
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -623,6 +627,8 @@ mod tests {
                 owner_cluster_id: DENSE_OWNER_SENTINEL,
                 role: ClusterRangeRole::Dense,
             }],
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -697,7 +703,7 @@ mod tests {
                 .collect(),
             root_node_index: 0,
         };
-        let partition = canonical_cell_partition(&cells, &portals, &bvh, 64, 32).unwrap();
+        let partition = canonical_cell_partition(&cells, &portals, &bvh, 64, 32, &[]).unwrap();
         assert_eq!(partition.members, vec![0, 1]);
         assert_eq!(
             partition

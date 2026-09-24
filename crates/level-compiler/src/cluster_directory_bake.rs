@@ -69,7 +69,8 @@ pub(crate) fn bake_cluster_directory_with_limits(
     );
     anyhow::ensure!(cell_limit > 0, "cluster cell limit must be positive");
     let started = Instant::now();
-    let partition = canonical_cell_partition(cells, portals, bvh, primitive_limit, cell_limit)?;
+    let partition =
+        canonical_cell_partition(cells, portals, bvh, primitive_limit, cell_limit, &[])?;
     let mut oversize_singletons = 0usize;
     for cluster in &partition.clusters {
         if cluster.flags != CLUSTER_FLAG_INDIVISIBLE_OVERSIZE {
@@ -92,6 +93,8 @@ pub(crate) fn bake_cluster_directory_with_limits(
         resources: Vec::new(),
         members: partition.members,
         ranges: Vec::new(),
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells,

@@ -41,6 +41,8 @@ impl ManifestFixture {
                 resources: vec![dense_resource],
                 members: vec![0, 1],
                 ranges: vec![dense_range(0), dense_range(1)],
+                seam_portal_ids: Vec::new(),
+                cluster_hints: Vec::new(),
             },
             payloads: ClusterShPayloadsSection {
                 header: ClusterShPayloadsHeader {

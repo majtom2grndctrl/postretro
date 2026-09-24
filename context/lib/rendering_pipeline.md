@@ -108,7 +108,15 @@ whole-resident. The fragment sampler keeps its existing depth-moment indirection
 eight-corner stencil, bindings, and taps; it performs no residency lookup.
 
 The application derives visible, two-hop-prefetch, hysteresis, and baked-owner targets
-after visibility. Bounded workers read and decode id-50 chunks from the validated open
+after visibility. Authored id-49 v2 hints add persistent pinned clusters and their owner
+closure, plus preferred `SeamWarm` targets across marked portals when the near side is
+visible—even if an opaque door blocks traversal. Seam warm-up is best effort: it does
+not change door motion, gameplay, or the visible-cell set, and a cold opening still
+uses the ambient-floor miss fallback. Priority 0–3 ranks only pressure-eligible seam
+warm-up and prefetch work; visible and pinned demand wins regardless of priority.
+Only owner-safe prefetch and seam-warm targets may yield under budget pressure; pins
+and their owners are never evicted for pressure. Hysteresis retains its timer contract.
+Bounded workers read and decode id-50 chunks from the validated open
 file off the frame path. A completion installs only when generation, content tag, target,
 and chunk hash still match. At the one renderer drain before SH compose, evictions first
 invalidate sample words; admitted clusters install base and sparse data, then compose only

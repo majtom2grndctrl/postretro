@@ -145,7 +145,8 @@ placeholder rather than stale or uninitialized atlas data.
 ## Acceptance criteria
 
 - [ ] A no-hint bake retains the pre-slice canonical cell membership and id-50
-      SH content, and a controller fixture with all hint values zero produces
+      SH content against a tiny pre-slice golden section hash, and a controller
+      fixture with all hint values zero produces
       the same normalized per-tick class/target/request/suppression/eviction
       cluster IDs and order as before, excluding version/generation/content tag.
 - [ ] Each brush class is available in `postretro.fgd`; compile rejects zero/
@@ -173,10 +174,13 @@ placeholder rather than stale or uninitialized atlas data.
 - [ ] A pinned cluster and its owner closure remain targeted across empty
       visibility and budget pressure, never evict; excess protected demand
       warns once per onset and drops the warning latch after recovery. A
-      bounded-capacity fixture reports the named GPU capacity error rather
-      than evicting or indefinitely deferring a required pin.
-- [ ] Under pressure, higher priority SeamWarm/Prefetch clusters request and
-      ready-install before lower priority peers of the same class and survive
+      GPU-free controller fixture proves pin retention; a separate pure
+      renderer-capacity fixture reports the named `GpuCapacity` error for
+      impossible growth. Review confirms the live handoff never silently
+      selects a pin as an eviction victim.
+- [ ] Under pressure, higher priority SeamWarm/Prefetch clusters among
+      simultaneously eligible, owner-safe peers request and ready-install
+      before lower priority peers of the same class and survive
       them longer, while visible work wins
       regardless of authored priority. Zero-priority ordering matches the
       Slice 3 baseline and stationary suppression does not churn; seam
@@ -208,6 +212,9 @@ submodule, and the canonical partition/wire helpers around
 existing bytes, tests, and callers. Freeze a no-hint controller trace fixture
 before later tasks change ranking: compare per-tick class/target/request/
 suppression/eviction IDs and order, excluding version/generation/content tag.
+Freeze the current compiler's id-50 section hash and cell-membership list on
+a tiny fixed no-hint fixture before the wire/partition edits, so AC1 has a
+real pre-slice baseline rather than a newly invented expectation.
 This precedes edits in those files.
 
 ### Task 2 — Authoring parse
@@ -227,7 +234,16 @@ so this task compiles independently.
 ### Task 3 — Versioned directory and canonical cuts
 
 Implement id-49 v2 encode/decode, checked size/layout, semantic validation,
-and seam-constrained canonical partition in level-format. Update every
+and seam-constrained canonical partition in level-format. Internal `u32`
+version word 0 and container `u16` version become 2. The 40-byte LE header
+keeps words 1–7; offsets 32/36 hold seam/hint counts. Existing tables keep
+their order and layout, followed by sorted unique seam portal `u32` IDs and
+sorted unique 16-byte hints `(cluster_id u32, flags u32 [pin bit 0], priority
+u32 0..=3, reserved u32 zero)`. Empty lists have zero counts and no sentinel;
+reject bad order/range/flags/reserved/no-op records and v1/mixed versions by
+named errors. A marked portal cuts traversal and forbids a cluster containing
+both endpoints, even through another portal route; no seam retains the old
+seed key, limits, and membership. Update every
 compiler/loader/test constructor to pass empty seam/hint lists until Task 4
 resolves authored geometry; this task remains independently buildable. Update
 section table version and loader version checks. Keep old
@@ -240,7 +256,14 @@ Define `ResolvedStreamingHints { seam_portal_ids, pinned_cell_ids,
 cell_priorities }` (proposed compiler-owned name, with `cell_priorities`
 holding `(cell_id, priority)` pairs) and resolve Task 2's
 engine-space hints against generated/packed portal polygons and packed runtime
-cells in `build_finalized_cluster_metadata`. Pass the result from
+cells in `build_finalized_cluster_metadata`. A seam clips a valid convex
+portal polygon against the brush hull using the existing 0.01 m portal
+tolerance as a broad check and zero-epsilon certification; intersection area
+must exceed `1e-12` m² and the hull interior must have positive depth on
+both portal-plane sides. Face/edge/point-only contact does not match.
+Pins and priority map by positive-volume overlap between cell AABB and
+resolved brush AABB; overlapping priority takes max in `0..=3`, and zero
+emits no record. Pass the result from
 `pipeline.rs` through `cluster_directory_bake.rs`. After Task 3's partition,
 emit one merged, sorted `ClusterHintRecord` per affected cluster; never put
 hint flags in `ClusterRecord.flags`, whose bit 0 already means indivisible
@@ -260,13 +283,23 @@ Pass validated portal IDs/endpoints and cluster hints from
 `ShResidencyController::update_targets`, request and ready-install ranking,
 suppression, eviction, and overshoot handling with Pin and SeamWarm classes.
 Propagate `(class, effective priority)` through owner closure to a fixed
-point, revisiting an owner on same-class priority rise. Keep `main.rs`'s
+point, revisiting an owner on same-class priority rise. Class rank is
+Visible, Pinned, SeamWarm, Prefetch, Hysteresis. Only owner-safe Prefetch and
+then SeamWarm may yield under pressure; Hysteresis stays until its timer
+expires and pins/visible never yield. Effective priority is max of own and
+same-class dependent authored priorities only for SeamWarm/Prefetch; it is
+zero for protected classes. Request/ready order is `(class, descending
+priority, cluster ID)`. Pressure victim order is `(Prefetch before SeamWarm,
+ascending priority, oldest visible time, oldest target time, cluster ID)`;
+expired departures keep the old time/time/ID comparator. Keep `main.rs`'s
 pre-compose drain and renderer data contract unchanged; the planner consumes
 the existing visible-cell signal, while seam endpoints derive from the
 loaded portal table. A seam entering `SeamWarm` clears stale suppression for
 its target/owner closure even if two-hop membership is unchanged. Preserve
 all zero-priority ties. Impossible GPU growth reports the named capacity
-error, never an implicit pin eviction. Add controller/session tests for pins,
+error, never an implicit pin eviction. Prove pin retention in a GPU-free
+controller test and impossible growth in a separate pure renderer-capacity
+test; review the handoff between them. Add controller/session tests for pins,
 owner retention, pressure rank, no-hint trace, stale generation, and fallback.
 Add one headless cross-crate test loading Task 4's compiled doorway fixture,
 deriving closed-door near-side visibility through the real visibility path,

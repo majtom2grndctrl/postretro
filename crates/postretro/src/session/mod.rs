@@ -51,6 +51,7 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 
 mod sh_async_workers;
 pub(crate) mod sh_residency;
+mod sh_streaming_diagnostics;
 use sh_async_workers::ShWorkerRetirement;
 use sh_residency::ShStreamingSession;
 

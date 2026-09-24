@@ -273,6 +273,78 @@ fn delayed_positional_reader_decodes_the_same_verified_chunk() {
     );
 }
 
+#[test]
+fn chunk_file_range_is_absolute_and_empty_for_a_canonical_empty_cluster() {
+    let fixture = write_stream_fixture(Id50Body::Valid);
+    let world = load_prl_with_streaming_mode_for_test(
+        fixture.path.to_str().unwrap(),
+        ShStreamingMode::Async,
+    )
+    .unwrap();
+    let manifest = world.sh_stream_manifest().unwrap();
+    let id50 = manifest
+        .container()
+        .find_section(SectionId::ClusterShPayloads as u32)
+        .unwrap();
+    let region_start = id50.offset + fixture.id50_metadata_len as u64;
+    let chunk_len = manifest.payloads().index[0].payload_len;
+
+    let chunk = manifest.chunk_file_range(0).unwrap();
+    assert_eq!(chunk, region_start..region_start + chunk_len);
+    let empty = manifest.chunk_file_range(1).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.start, chunk.end);
+    assert!(manifest.chunk_file_range(2).is_err(), "unknown cluster");
+
+    // The span read returns exactly the bytes the per-chunk decode verifies.
+    let bytes = manifest.read_file_span(chunk).unwrap();
+    let decoded = manifest.decode_encoded_cluster(0, bytes).unwrap();
+    assert_eq!(decoded.blocks.len(), 6);
+    assert!(manifest.read_file_span(empty).unwrap().is_empty());
+}
+
+#[test]
+fn read_file_span_rejects_ranges_outside_the_id50_payload_region() {
+    let fixture = write_stream_fixture(Id50Body::Valid);
+    let world = load_prl_with_streaming_mode_for_test(
+        fixture.path.to_str().unwrap(),
+        ShStreamingMode::Async,
+    )
+    .unwrap();
+    let manifest = world.sh_stream_manifest().unwrap();
+    let id50 = manifest
+        .container()
+        .find_section(SectionId::ClusterShPayloads as u32)
+        .unwrap();
+    let region_start = id50.offset + fixture.id50_metadata_len as u64;
+    let region_end = id50.offset + id50.size;
+
+    let rejected = [
+        // Starts inside the id-50 metadata prefix.
+        region_start - 1..region_start + 4,
+        // Runs past the end of the section.
+        region_end - 4..region_end + 1,
+        // Entirely before the section.
+        0..8,
+        // Reversed.
+        region_start + 4..region_start,
+    ];
+    for range in rejected {
+        let error = manifest.read_file_span(range.clone()).unwrap_err();
+        assert!(
+            format!("{error}").contains("outside the id-50 payload region"),
+            "{range:?}: unexpected error {error}"
+        );
+    }
+    assert_eq!(
+        manifest
+            .read_file_span(region_start..region_end)
+            .unwrap()
+            .len() as u64,
+        region_end - region_start
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Id50Body {
     Valid,

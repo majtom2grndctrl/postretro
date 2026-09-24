@@ -4259,6 +4259,10 @@ impl ApplicationHandler for App {
                                 let timing_snapshot = renderer.frame_timing_snapshot().cloned();
                                 let panel_state = &mut debug_ui.panel_state;
                                 let sh_state = &mut debug_ui.sh_diagnostics_state;
+                                let sh_streaming_live = session
+                                    .sh_streaming
+                                    .as_ref()
+                                    .map(|streaming| streaming.live_diagnostics());
                                 let ctx_clone = debug_ui.ctx.clone();
                                 let full_output = ctx_clone.run_ui(raw_input, |ui| {
                                     let ctx = ui.ctx();
@@ -4283,7 +4287,7 @@ impl ApplicationHandler for App {
                                             &trigger_rows,
                                             &door_occluder_diagnostics.mover_rows,
                                             &door_occluder_diagnostics.blocked_portal_ids,
-                                            None,
+                                            sh_streaming_live,
                                         );
                                     }
                                 });

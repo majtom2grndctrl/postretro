@@ -90,7 +90,6 @@ impl ShResidencyController {
     /// set before the read. It returns to `Absent` with its permit released
     /// even if the cluster is targeted again by now: no bytes were read, so
     /// the next request simply re-issues it. Never a failure, never a warning.
-    #[cfg_attr(not(test), allow(dead_code))] // Consumed by the ordered-I/O issuer.
     pub(crate) fn admit_cancelled_request(
         &mut self,
         request: ShClusterRequest,
@@ -128,6 +127,7 @@ impl ShResidencyController {
         self.mark_failed(request.cluster_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn matches_queued_request(&self, request: ShClusterRequest) -> bool {
         self.matches_completion_identity(request)
             && self.targets.contains(&request.cluster_id)

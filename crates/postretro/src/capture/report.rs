@@ -351,6 +351,27 @@ struct ShStreamingLifecycleSummaryJson {
     installs: u64,
     evictions: u64,
     retries: u64,
+    warm_clusters: u64,
+    cancelled_requests: u64,
+    discarded_reads: u64,
+    discarded_read_bytes: u64,
+    decoded_bytes_installed: u64,
+    last_drain_decoded_bytes: u64,
+    max_drain_decoded_bytes: u64,
+    budget_limited_drains: u64,
+    reads_issued: u64,
+    coalesced_reads: u64,
+    read_bytes: u64,
+    gap_bytes: u64,
+    read_latency_p50_ms: f32,
+    read_latency_p95_ms: f32,
+    read_latency_max_ms: f32,
+    decode_latency_max_ms: f32,
+    install_cpu_total_micros: u64,
+    install_cpu_max_drain_micros: u64,
+    install_cpu_last_drain_micros: u64,
+    pool_growth_events: u64,
+    pool_growth_bytes: u64,
 }
 
 impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
@@ -375,6 +396,27 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             installs: summary.installs,
             evictions: summary.evictions,
             retries: summary.retries,
+            warm_clusters: summary.warm_clusters,
+            cancelled_requests: summary.cancelled_requests,
+            discarded_reads: summary.discarded_reads,
+            discarded_read_bytes: summary.discarded_read_bytes,
+            decoded_bytes_installed: summary.decoded_bytes_installed,
+            last_drain_decoded_bytes: summary.last_drain_decoded_bytes,
+            max_drain_decoded_bytes: summary.max_drain_decoded_bytes,
+            budget_limited_drains: summary.budget_limited_drains,
+            reads_issued: summary.reads_issued,
+            coalesced_reads: summary.coalesced_reads,
+            read_bytes: summary.read_bytes,
+            gap_bytes: summary.gap_bytes,
+            read_latency_p50_ms: summary.read_latency_p50_ms,
+            read_latency_p95_ms: summary.read_latency_p95_ms,
+            read_latency_max_ms: summary.read_latency_max_ms,
+            decode_latency_max_ms: summary.decode_latency_max_ms,
+            install_cpu_total_micros: summary.install_cpu_total_micros,
+            install_cpu_max_drain_micros: summary.install_cpu_max_drain_micros,
+            install_cpu_last_drain_micros: summary.install_cpu_last_drain_micros,
+            pool_growth_events: summary.pool_growth_events,
+            pool_growth_bytes: summary.pool_growth_bytes,
         }
     }
 }
@@ -648,6 +690,14 @@ mod tests {
             installs: 8,
             evictions: 9,
             retries: 10,
+            warm_clusters: 8,
+            reads_issued: 11,
+            coalesced_reads: 3,
+            gap_bytes: 12,
+            read_latency_p95_ms: 4.5,
+            budget_limited_drains: 13,
+            install_cpu_max_drain_micros: 14,
+            ..ShStreamingLifecycleSummary::default()
         });
         let json = as_json(measurement_report(
             &scene_with_measurement(),
@@ -667,6 +717,14 @@ mod tests {
         assert_eq!(lifecycle["permits_in_use"], 2);
         assert_eq!(lifecycle["sampleable_clusters"], 5);
         assert_eq!(lifecycle["retries"], 10);
+        assert_eq!(lifecycle["warm_clusters"], 8);
+        assert_eq!(lifecycle["reads_issued"], 11);
+        assert_eq!(lifecycle["coalesced_reads"], 3);
+        assert_eq!(lifecycle["gap_bytes"], 12);
+        assert_eq!(lifecycle["read_latency_p95_ms"], 4.5);
+        assert_eq!(lifecycle["budget_limited_drains"], 13);
+        assert_eq!(lifecycle["install_cpu_max_drain_micros"], 14);
+        assert_eq!(lifecycle["pool_growth_bytes"], 0);
     }
 
     #[test]

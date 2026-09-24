@@ -11,6 +11,7 @@ use postretro_level_format::sh_reconstruct::{
 
 use super::debug_lines::DebugLineRenderer;
 use super::sh_indirection::decode_probe_indirection_word;
+use super::sh_streaming::ShResidencyState;
 use super::sh_volume::{DeltaVolumeMeta, ShVolumeResources};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::sh_compose::f16_bits_to_f32;
@@ -26,6 +27,10 @@ pub enum MarkerMode {
     Uniform,
     /// Each marker tinted by the probe's averaged baked irradiance.
     Irradiance,
+    /// Each probe colored by what the renderer's residency mirrors say the
+    /// shader can actually sample right now. Only meaningful while a
+    /// streaming session is active — see `sh_diagnostics_residency`.
+    Residency,
 }
 
 /// Panel-bound diagnostic state. Mirrors `DiagnosticsState::seeded` discipline:
@@ -63,7 +68,10 @@ impl Default for ShDiagnosticsState {
 
 /// Probe storage is z-major: `idx = x + y*Nx + z*Nx*Ny`. Centralized here so
 /// the SH bake layout and the diagnostic reader cannot drift apart silently.
-fn probe_index(x: u32, y: u32, z: u32, dims: [u32; 3]) -> usize {
+/// Shared with `sh_diagnostics_residency` — the streamed `ShStreamBaseMetadata`
+/// probe list uses the same x-fastest order (see
+/// `ShStreamBaseMetadata::codec_metadata` and the loader's affinity-cell math).
+pub(super) fn probe_index(x: u32, y: u32, z: u32, dims: [u32; 3]) -> usize {
     let nx = dims[0] as usize;
     let ny = dims[1] as usize;
     (x as usize) + (y as usize) * nx + (z as usize) * nx * ny
@@ -76,7 +84,7 @@ fn delta_volume_visible(state: &ShDiagnosticsState, index: usize) -> bool {
     state.per_light_visible.get(index).copied().unwrap_or(true)
 }
 
-const COLOR_BASE_AABB: [u8; 4] = [255, 220, 80, 255];
+pub(super) const COLOR_BASE_AABB: [u8; 4] = [255, 220, 80, 255];
 const COLOR_DELTA_AABB: [u8; 4] = [200, 120, 255, 255];
 /// Cell whose center sits in a runtime cell that the portal-reachable set covers
 /// for the current frame (i.e., visible per portal traversal / frustum).
@@ -84,9 +92,9 @@ const COLOR_CELL_VISIBLE: [u8; 4] = [0, 230, 60, 200];
 /// Cell whose center sits in a cell culled by portal traversal / frustum
 /// for the current frame, or in a solid cell with no portal reach.
 const COLOR_CELL_CULLED: [u8; 4] = [0, 220, 220, 200];
-const COLOR_PROBE_VALID: [u8; 4] = [60, 230, 80, 255];
-const COLOR_PROBE_INVALID: [u8; 4] = [230, 60, 60, 255];
-const COLOR_PROBE_UNIFORM: [u8; 4] = [230, 230, 230, 255];
+pub(super) const COLOR_PROBE_VALID: [u8; 4] = [60, 230, 80, 255];
+pub(super) const COLOR_PROBE_INVALID: [u8; 4] = [230, 60, 60, 255];
+pub(super) const COLOR_PROBE_UNIFORM: [u8; 4] = [230, 230, 230, 255];
 const COLOR_PROBE_DENSITY_L0: [u8; 4] = [60, 230, 80, 255];
 const COLOR_PROBE_DENSITY_L1: [u8; 4] = [255, 210, 60, 255];
 const COLOR_PROBE_DENSITY_L2: [u8; 4] = [90, 150, 255, 255];
@@ -94,7 +102,7 @@ const COLOR_PROBE_DENSITY_L2: [u8; 4] = [90, 150, 255, 255];
 /// Map an id-34 density-level byte to the marker color. The loader validates
 /// the byte, but rendering an unexpected value as red makes a malformed CPU
 /// mirror obvious without adding any diagnostic work to the frame loop.
-fn density_level_marker_color(level: u8, scale: u8) -> [u8; 4] {
+pub(super) fn density_level_marker_color(level: u8, scale: u8) -> [u8; 4] {
     let base = match level {
         0 => COLOR_PROBE_DENSITY_L0,
         1 => COLOR_PROBE_DENSITY_L1,
@@ -128,9 +136,20 @@ fn irradiance_marker_color(irradiance: [f32; 3]) -> [u8; 4] {
 /// Emit one frame of SH diagnostic line segments. Driven entirely by the
 /// toggles in `state` — enabled overlays continue rendering after the debug
 /// panel is dismissed, and only un-checking a toggle hides its geometry.
+///
+/// `streaming` is the active streamed residency session, if any. A streamed
+/// map never populates `sh.present` or its id-34 mirrors (the compact atlas
+/// body is intentionally omitted — see
+/// context/lib/rendering_pipeline.md "Cluster SH residency"), so that case
+/// delegates to `sh_diagnostics_residency`, which sources grid geometry,
+/// validity, density level, and node scale from the streaming session's own
+/// base metadata. No whole-loaded SH volume and no streaming session means
+/// there is nothing to draw.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit(
     state: &ShDiagnosticsState,
     sh: &ShVolumeResources,
+    streaming: Option<&ShResidencyState>,
     delta_vols: &[DeltaVolumeMeta],
     camera_pos: Vec3,
     world: &LevelWorld,
@@ -142,6 +161,16 @@ pub(super) fn emit(
     // the buffer lifecycle and never clobbers segments produced by other
     // debug-line producers in the same frame.
     if !sh.present {
+        if let Some(residency) = streaming {
+            super::sh_diagnostics_residency::emit(
+                state,
+                residency,
+                camera_pos,
+                world,
+                visible_cell_mask,
+                lines,
+            );
+        }
         return;
     }
 
@@ -194,8 +223,12 @@ pub(super) fn emit(
 
 // Cohesive single-call overlay params; grouping would add an abstraction with
 // one caller and break parallelism with the sibling `emit_markers`.
+/// `pub(super)` so `sh_diagnostics_residency` can reuse the same cell-coloring
+/// logic for a streamed map's grid — cell visibility coloring depends only on
+/// grid geometry and the portal-reachable mask, not on where the SH data
+/// itself lives.
 #[allow(clippy::too_many_arguments)]
-fn emit_cells(
+pub(super) fn emit_cells(
     state: &ShDiagnosticsState,
     dims: [u32; 3],
     origin: Vec3,
@@ -297,6 +330,11 @@ fn emit_markers(
                         let irradiance = sh.probe_irradiance.get(idx).copied().unwrap_or([0.0; 3]);
                         irradiance_marker_color(irradiance)
                     }
+                    // Residency has no meaning against a whole-loaded SH
+                    // volume — it is only reachable while a streaming session
+                    // is active, which never sets `sh.present` (see
+                    // `sh_diagnostics_residency::emit`).
+                    MarkerMode::Residency => continue,
                 };
                 lines.push_marker(pos, state.marker_scale, color);
             }

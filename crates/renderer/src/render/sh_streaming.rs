@@ -38,6 +38,8 @@ mod lifecycle;
 mod ownership;
 mod patches;
 mod payload;
+#[cfg(feature = "dev-tools")]
+mod probe_diagnostics;
 mod row_refs;
 mod rows;
 mod setup;
@@ -57,6 +59,8 @@ use install_journal::InstallJournal;
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
 use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
+#[cfg(feature = "dev-tools")]
+pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
 use row_refs::{RowRefTable, RowSet, decrement_row_ref, increment_row_ref, row_counts};
 
 const PROBE_PATCH_BLOCK: u32 = 0;

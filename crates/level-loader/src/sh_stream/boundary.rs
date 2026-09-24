@@ -107,7 +107,10 @@ impl ShDrainBatch {
                 "target-add and target-remove must not name the same cluster",
             ));
         }
-        validate_sorted_cluster_ids(&self.evictions, cluster_count, "evictions")?;
+        // The planner may list a dependent before a lower-ID owner. The
+        // renderer computes its own dependency-safe release sequence, so
+        // eviction IDs must be unique and in range, but not numerically sorted.
+        validate_unique_cluster_ids(&self.evictions, cluster_count, "evictions")?;
         let mut ready_ids = std::collections::BTreeSet::new();
         for prepared in &self.ready {
             if prepared.generation != self.generation || prepared.content_tag != self.content_tag {
@@ -156,6 +159,27 @@ pub(super) fn validate_sorted_cluster_ids(
         return Err(stream_error(format!(
             "{label} must be sorted and deduplicated"
         )));
+    }
+    Ok(())
+}
+
+fn validate_unique_cluster_ids(
+    ids: &[u32],
+    cluster_count: u32,
+    label: &'static str,
+) -> Result<(), PrlLoadError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for &id in ids {
+        if id >= cluster_count {
+            return Err(stream_error(format!(
+                "{label} contains an out-of-range cluster id"
+            )));
+        }
+        if !seen.insert(id) {
+            return Err(stream_error(format!(
+                "{label} contains a duplicate cluster id"
+            )));
+        }
     }
     Ok(())
 }

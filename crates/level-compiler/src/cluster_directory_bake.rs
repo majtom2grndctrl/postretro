@@ -1,18 +1,21 @@
 //! Deterministic compiler-only cell clustering and SH directory construction.
 //! See: context/lib/build_pipeline.md §PRL section IDs
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
-    CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, ClusterDirectorySection, ClusterDirectoryValidationInputs,
-    ClusterRecord, canonical_cell_partition, populate_canonical_resource_ranges,
+    CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection,
+    ClusterDirectoryValidationInputs, ClusterHintRecord, ClusterRecord, canonical_cell_partition,
+    populate_canonical_resource_ranges,
 };
 use postretro_level_format::portals::PortalsSection;
 
 use crate::pack::FinalizedShEmissionView;
+use crate::streaming_hints::ResolvedStreamingHints;
 
 /// Defaults selected by the bounded Slice-2 threshold exercise.
 pub const DEFAULT_PRIMITIVE_LIMIT: u32 = 64;
@@ -42,18 +45,20 @@ pub(crate) fn bake_cluster_directory(
     bvh: &BvhSection,
     cell_locator: &CellLocatorSection,
     sh: FinalizedShEmissionView<'_>,
+    streaming_hints: &ResolvedStreamingHints,
 ) -> anyhow::Result<ClusterDirectoryBake> {
-    bake_cluster_directory_with_limits(
+    bake_cluster_directory_with_hints_and_limits(
         cells,
         portals,
         bvh,
         cell_locator,
         sh,
-        DEFAULT_PRIMITIVE_LIMIT,
-        DEFAULT_CELL_LIMIT,
+        streaming_hints,
+        (DEFAULT_PRIMITIVE_LIMIT, DEFAULT_CELL_LIMIT),
     )
 }
 
+#[cfg(test)]
 pub(crate) fn bake_cluster_directory_with_limits(
     cells: &CellsSection,
     portals: &PortalsSection,
@@ -63,13 +68,41 @@ pub(crate) fn bake_cluster_directory_with_limits(
     primitive_limit: u32,
     cell_limit: u32,
 ) -> anyhow::Result<ClusterDirectoryBake> {
+    let empty_streaming_hints = ResolvedStreamingHints::default();
+    bake_cluster_directory_with_hints_and_limits(
+        cells,
+        portals,
+        bvh,
+        cell_locator,
+        sh,
+        &empty_streaming_hints,
+        (primitive_limit, cell_limit),
+    )
+}
+
+fn bake_cluster_directory_with_hints_and_limits(
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    bvh: &BvhSection,
+    cell_locator: &CellLocatorSection,
+    sh: FinalizedShEmissionView<'_>,
+    streaming_hints: &ResolvedStreamingHints,
+    (primitive_limit, cell_limit): (u32, u32),
+) -> anyhow::Result<ClusterDirectoryBake> {
     anyhow::ensure!(
         primitive_limit > 0,
         "cluster primitive limit must be positive"
     );
     anyhow::ensure!(cell_limit > 0, "cluster cell limit must be positive");
     let started = Instant::now();
-    let partition = canonical_cell_partition(cells, portals, bvh, primitive_limit, cell_limit)?;
+    let partition = canonical_cell_partition(
+        cells,
+        portals,
+        bvh,
+        primitive_limit,
+        cell_limit,
+        &streaming_hints.seam_portal_ids,
+    )?;
     let mut oversize_singletons = 0usize;
     for cluster in &partition.clusters {
         if cluster.flags != CLUSTER_FLAG_INDIVISIBLE_OVERSIZE {
@@ -84,6 +117,7 @@ pub(crate) fn bake_cluster_directory_with_limits(
         );
     }
 
+    let cluster_hints = cluster_hints_for_partition(&partition, cells, streaming_hints)?;
     let mut directory = ClusterDirectorySection {
         runtime_cell_count: u32::try_from(cells.cells.len())?,
         primitive_limit,
@@ -92,6 +126,8 @@ pub(crate) fn bake_cluster_directory_with_limits(
         resources: Vec::new(),
         members: partition.members,
         ranges: Vec::new(),
+        seam_portal_ids: streaming_hints.seam_portal_ids.clone(),
+        cluster_hints,
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells,
@@ -125,6 +161,89 @@ pub(crate) fn bake_cluster_directory_with_limits(
         },
         directory,
     })
+}
+
+fn cluster_hints_for_partition(
+    partition: &postretro_level_format::cluster_directory::CanonicalCellPartition,
+    cells: &CellsSection,
+    streaming_hints: &ResolvedStreamingHints,
+) -> anyhow::Result<Vec<ClusterHintRecord>> {
+    let cell_count = cells.cells.len();
+    let mut cluster_by_cell = vec![None; cell_count];
+    for (cluster_index, cluster) in partition.clusters.iter().enumerate() {
+        let cluster_id = u32::try_from(cluster_index)?;
+        let member_end = cluster
+            .member_start
+            .checked_add(cluster.member_count)
+            .ok_or_else(|| {
+                anyhow::anyhow!("canonical cluster {cluster_id} member range overflows")
+            })?;
+        let members = partition
+            .members
+            .get(usize::try_from(cluster.member_start)?..usize::try_from(member_end)?)
+            .ok_or_else(|| {
+                anyhow::anyhow!("canonical cluster {cluster_id} member range exceeds member list")
+            })?;
+        for &cell_id in members {
+            let slot = cluster_by_cell
+                .get_mut(usize::try_from(cell_id)?)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "canonical cluster {cluster_id} names runtime cell {cell_id} out of range"
+                    )
+                })?;
+            anyhow::ensure!(
+                slot.replace(cluster_id).is_none(),
+                "canonical partition assigns runtime cell {cell_id} to more than one cluster",
+            );
+        }
+    }
+
+    let mut policy_by_cluster = BTreeMap::<u32, (bool, u32)>::new();
+    let mut previous_pin = None;
+    for &cell_id in &streaming_hints.pinned_cell_ids {
+        anyhow::ensure!(
+            previous_pin.is_none_or(|previous| previous < cell_id),
+            "resolved streaming pinned-cell IDs must be strictly ascending",
+        );
+        let cluster_id = cluster_id_for_cell(cell_id, &cluster_by_cell)?;
+        policy_by_cluster.entry(cluster_id).or_default().0 = true;
+        previous_pin = Some(cell_id);
+    }
+
+    let mut previous_priority_cell = None;
+    for &(cell_id, priority) in &streaming_hints.cell_priorities {
+        anyhow::ensure!(
+            previous_priority_cell.is_none_or(|previous| previous < cell_id),
+            "resolved streaming priority cell IDs must be strictly ascending",
+        );
+        anyhow::ensure!(
+            (1..=3).contains(&priority),
+            "resolved streaming priority for cell {cell_id} must be in 1..=3",
+        );
+        let cluster_id = cluster_id_for_cell(cell_id, &cluster_by_cell)?;
+        let policy = policy_by_cluster.entry(cluster_id).or_default();
+        policy.1 = policy.1.max(priority);
+        previous_priority_cell = Some(cell_id);
+    }
+
+    Ok(policy_by_cluster
+        .into_iter()
+        .map(|(cluster_id, (pinned, priority))| ClusterHintRecord {
+            cluster_id,
+            flags: if pinned { CLUSTER_HINT_FLAG_PINNED } else { 0 },
+            priority,
+        })
+        .collect())
+}
+
+fn cluster_id_for_cell(cell_id: u32, cluster_by_cell: &[Option<u32>]) -> anyhow::Result<u32> {
+    cluster_by_cell
+        .get(usize::try_from(cell_id)?)
+        .and_then(|cluster_id| *cluster_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("resolved streaming hint names runtime cell {cell_id} out of range")
+        })
 }
 
 fn construction_metadata_bytes(
@@ -322,6 +441,68 @@ mod tests {
             })
             .unwrap();
         assert_eq!(parsed, baked.directory);
+    }
+
+    #[test]
+    fn resolved_hints_cut_partition_and_merge_cluster_policy_records() {
+        let cells = CellsSection {
+            cells: vec![cell(0.0), cell(1.0)],
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: vec![portal(0, 1)],
+        };
+        let bvh = BvhSection {
+            nodes: Vec::new(),
+            leaves: vec![leaf(0), leaf(1)],
+            root_node_index: 0,
+        };
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let sh = OctahedralShVolumeSection::placeholder();
+        let view =
+            FinalizedShEmissionView::new(&sh, None, None, None, None, None, None, None).unwrap();
+        let hints = ResolvedStreamingHints {
+            seam_portal_ids: vec![0],
+            pinned_cell_ids: vec![0],
+            cell_priorities: vec![(1, 2), (1, 3)],
+        };
+
+        let error = match bake_cluster_directory(&cells, &portals, &bvh, &locator, view, &hints) {
+            Ok(_) => panic!("duplicate priority cells must be rejected before directory emission"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("strictly ascending"));
+
+        let hints = ResolvedStreamingHints {
+            seam_portal_ids: vec![0],
+            pinned_cell_ids: vec![0],
+            cell_priorities: vec![(1, 3)],
+        };
+        let baked = bake_cluster_directory(&cells, &portals, &bvh, &locator, view, &hints).unwrap();
+        assert_eq!(baked.directory.seam_portal_ids, vec![0]);
+        assert_eq!(baked.directory.members, vec![0, 1]);
+        assert_eq!(baked.directory.clusters.len(), 2);
+        assert_eq!(
+            baked.directory.cluster_hints,
+            vec![
+                ClusterHintRecord {
+                    cluster_id: 0,
+                    flags: CLUSTER_HINT_FLAG_PINNED,
+                    priority: 0,
+                },
+                ClusterHintRecord {
+                    cluster_id: 1,
+                    flags: 0,
+                    priority: 3,
+                },
+            ]
+        );
+        assert_eq!(baked.directory.clusters[0].flags, 0);
+        assert_eq!(baked.directory.clusters[1].flags, 0);
     }
 
     #[test]

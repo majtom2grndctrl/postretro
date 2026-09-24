@@ -23,15 +23,24 @@ use crate::{
     sh_volume::OctahedralShVolumeSection,
 };
 
-pub const CLUSTER_DIRECTORY_VERSION: u32 = 1;
-pub const CLUSTER_DIRECTORY_CONTAINER_VERSION: u16 = 1;
+#[path = "cluster_directory/canonical_partition.rs"]
+mod canonical_partition;
+#[path = "cluster_directory/wire.rs"]
+mod wire;
+
+pub use canonical_partition::{CanonicalCellPartition, canonical_cell_partition};
+
+pub const CLUSTER_DIRECTORY_VERSION: u32 = 2;
+pub const CLUSTER_DIRECTORY_CONTAINER_VERSION: u16 = 2;
 pub const HEADER_SIZE: usize = 40;
 pub const CLUSTER_RECORD_SIZE: usize = 48;
 pub const RESOURCE_RECORD_SIZE: usize = 24;
 pub const MEMBER_RECORD_SIZE: usize = 4;
 pub const RANGE_RECORD_SIZE: usize = 24;
+pub const CLUSTER_HINT_RECORD_SIZE: usize = 16;
 
 pub const CLUSTER_FLAG_INDIVISIBLE_OVERSIZE: u32 = 1;
+pub const CLUSTER_HINT_FLAG_PINNED: u32 = 1;
 pub const DENSE_OWNER_SENTINEL: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +111,17 @@ pub struct ClusterRangeRecord {
     pub role: ClusterRangeRole,
 }
 
+/// Compiler-authored policy metadata for one canonical cluster.
+///
+/// The fourth on-wire word is reserved and deliberately omitted here: it is
+/// required to be zero while decoding and is not a semantic input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterHintRecord {
+    pub cluster_id: u32,
+    pub flags: u32,
+    pub priority: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClusterDirectorySection {
     pub runtime_cell_count: u32,
@@ -111,12 +131,58 @@ pub struct ClusterDirectorySection {
     pub resources: Vec<ClusterResourceRecord>,
     pub members: Vec<u32>,
     pub ranges: Vec<ClusterRangeRecord>,
+    /// Sorted, unique portal IDs whose endpoints must not share a cluster.
+    pub seam_portal_ids: Vec<u32>,
+    /// Sorted, non-no-op policy records keyed by canonical cluster ID.
+    pub cluster_hints: Vec<ClusterHintRecord>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ClusterDirectoryError {
     #[error("ClusterDirectoryVersionMismatch: version {version}, expected {expected}")]
     VersionMismatch { version: u32, expected: u32 },
+    #[error("ClusterDirectorySeamPortalOrder: portal ids must be strictly ascending")]
+    SeamPortalOrder,
+    #[error("ClusterDirectorySeamPortalOutOfRange: portal {portal}, count {count}")]
+    SeamPortalOutOfRange { portal: u32, count: usize },
+    #[error(
+        "ClusterDirectorySeamPortalCellOutOfRange: portal {portal}, endpoints ({front}, {back}), cell count {cell_count}"
+    )]
+    SeamPortalCellOutOfRange {
+        portal: u32,
+        front: u32,
+        back: u32,
+        cell_count: u32,
+    },
+    #[error("ClusterDirectorySeamPortalSameCell: portal {portal}, cell {cell}")]
+    SeamPortalSameCell { portal: u32, cell: u32 },
+    #[error(
+        "ClusterDirectorySeamPortalSameCluster: portal {portal}, endpoints ({front}, {back}), cluster {cluster}"
+    )]
+    SeamPortalSameCluster {
+        portal: u32,
+        front: u32,
+        back: u32,
+        cluster: u32,
+    },
+    #[error("ClusterDirectoryHintOrder: cluster ids must be strictly ascending")]
+    ClusterHintOrder,
+    #[error("ClusterDirectoryHintClusterOutOfRange: hint {hint}, cluster {cluster}, count {count}")]
+    ClusterHintClusterOutOfRange {
+        hint: usize,
+        cluster: u32,
+        count: u32,
+    },
+    #[error("ClusterDirectoryHintFlagsInvalid: hint {hint}, flags {flags:#x}")]
+    ClusterHintFlagsInvalid { hint: usize, flags: u32 },
+    #[error("ClusterDirectoryHintPriorityOutOfRange: hint {hint}, priority {priority}")]
+    ClusterHintPriorityOutOfRange { hint: usize, priority: u32 },
+    #[error("ClusterDirectoryHintNoOp: hint {hint}")]
+    ClusterHintNoOp { hint: usize },
+    #[error("ClusterDirectoryHintReserved: hint {hint}, reserved {reserved}")]
+    ClusterHintReserved { hint: u32, reserved: u32 },
+    #[error("ClusterDirectoryCanonicalPartitionMismatch: {0}")]
+    CanonicalPartitionMismatch(String),
     #[error("ClusterDirectoryInvalidData: {0}")]
     InvalidData(String),
     #[error("ClusterDirectoryCellOutOfRange: cluster {cluster}, cell {cell}, cell limit {limit}")]
@@ -171,150 +237,6 @@ pub struct ClusterDirectoryCoverageStats {
     pub active_affinity_cell_count: usize,
     pub covering_references: usize,
     pub maximum_visited_nodes_per_cluster: usize,
-}
-
-/// Canonical resource-independent partition of runtime cells.
-/// Cluster range fields remain zero until resource ranges are populated.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalCellPartition {
-    pub clusters: Vec<ClusterRecord>,
-    pub members: Vec<u32>,
-}
-
-/// Reconstruct the deterministic cell partition used by compiler output.
-///
-/// This is shared by compiler construction and runtime semantic validation so
-/// accepted section-49 membership cannot drift from the greedy frontier rule.
-pub fn canonical_cell_partition(
-    cells: &CellsSection,
-    portals: &PortalsSection,
-    bvh: &BvhSection,
-    primitive_limit: u32,
-    cell_limit: u32,
-) -> Result<CanonicalCellPartition, ClusterDirectoryError> {
-    if primitive_limit == 0 || cell_limit == 0 {
-        return invalid("primitive_limit and cell_limit must be positive");
-    }
-    let cell_count = u32_len(cells.cells.len(), "runtime cell count")?;
-    let cell_count_usize = usize_count(cell_count)?;
-    let cell_limit_usize = usize_count(cell_limit)?;
-
-    let mut primitive_counts = try_vec(cell_count, "cell primitive counts")?;
-    primitive_counts.resize(cell_count_usize, 0u32);
-    for (leaf_index, leaf) in bvh.leaves.iter().enumerate() {
-        if leaf.cell_id >= cell_count {
-            return invalid(format!(
-                "BVH leaf {leaf_index} names cell {} outside {cell_count}",
-                leaf.cell_id
-            ));
-        }
-        if leaf.index_count != 0 {
-            primitive_counts[leaf.cell_id as usize] = primitive_counts[leaf.cell_id as usize]
-                .checked_add(1)
-                .ok_or(ClusterDirectoryError::SizeOverflow("cell primitive count"))?;
-        }
-    }
-
-    let mut adjacency = try_vec(cell_count, "cell adjacency")?;
-    adjacency.resize_with(cell_count_usize, BTreeSet::new);
-    for (portal_index, portal) in portals.portals.iter().enumerate() {
-        if portal.front_leaf >= cell_count || portal.back_leaf >= cell_count {
-            return invalid(format!(
-                "portal {portal_index} endpoint ({}, {}) outside {cell_count} cells",
-                portal.front_leaf, portal.back_leaf
-            ));
-        }
-        adjacency[portal.front_leaf as usize].insert(portal.back_leaf);
-        adjacency[portal.back_leaf as usize].insert(portal.front_leaf);
-    }
-
-    let mut unassigned: BTreeSet<u32> = (0..cell_count).collect();
-    let mut clusters = try_vec(cell_count, "canonical clusters")?;
-    let mut members = try_vec(cell_count, "canonical members")?;
-    while !unassigned.is_empty() {
-        let seed = *unassigned
-            .iter()
-            .min_by(|&&left, &&right| compare_cell_keys(left, right, &cells.cells))
-            .expect("nonempty set has a seed");
-        unassigned.remove(&seed);
-        let mut cluster_members = vec![seed];
-        let mut primitive_count = primitive_counts[seed as usize];
-        let mut frontier: BTreeSet<u32> = adjacency[seed as usize]
-            .iter()
-            .copied()
-            .filter(|cell| unassigned.contains(cell))
-            .collect();
-
-        loop {
-            if cluster_members.len() >= cell_limit_usize {
-                break;
-            }
-            let mut candidate = None;
-            for &cell in &frontier {
-                let Some(candidate_primitive_count) =
-                    primitive_count.checked_add(primitive_counts[cell as usize])
-                else {
-                    // A sum beyond u32::MAX cannot fit the u32 primitive
-                    // limit, so this frontier cell is not admissible.
-                    continue;
-                };
-                if candidate_primitive_count > primitive_limit {
-                    continue;
-                }
-                if candidate.is_none_or(|(current, _)| {
-                    compare_cell_keys(cell, current, &cells.cells).is_lt()
-                }) {
-                    candidate = Some((cell, candidate_primitive_count));
-                }
-            }
-            let Some((candidate, candidate_primitive_count)) = candidate else {
-                break;
-            };
-            frontier.remove(&candidate);
-            if !unassigned.remove(&candidate) {
-                continue;
-            }
-            cluster_members.push(candidate);
-            primitive_count = candidate_primitive_count;
-            frontier.extend(
-                adjacency[candidate as usize]
-                    .iter()
-                    .copied()
-                    .filter(|cell| unassigned.contains(cell)),
-            );
-        }
-
-        cluster_members.sort_unstable();
-        let member_start = u32_len(members.len(), "canonical member start")?;
-        let member_count = u32_len(cluster_members.len(), "canonical cluster member count")?;
-        let mut bounds_min = [f32::INFINITY; 3];
-        let mut bounds_max = [f32::NEG_INFINITY; 3];
-        for &cell_id in &cluster_members {
-            let cell = &cells.cells[cell_id as usize];
-            for axis in 0..3 {
-                bounds_min[axis] = canonical_zero(bounds_min[axis].min(cell.bounds_min[axis]));
-                bounds_max[axis] = canonical_zero(bounds_max[axis].max(cell.bounds_max[axis]));
-            }
-        }
-        let flags = if member_count == 1 && primitive_count > primitive_limit {
-            CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
-        } else {
-            0
-        };
-        members.extend(cluster_members);
-        clusters.push(ClusterRecord {
-            bounds_min,
-            bounds_max,
-            member_start,
-            member_count,
-            range_start: 0,
-            range_count: 0,
-            primitive_count,
-            flags,
-        });
-    }
-
-    Ok(CanonicalCellPartition { clusters, members })
 }
 
 /// Build the canonical resource table for an emitted SH inventory.
@@ -413,182 +335,6 @@ pub fn populate_canonical_resource_ranges(
 }
 
 impl ClusterDirectorySection {
-    pub fn byte_len(&self) -> Result<usize, ClusterDirectoryError> {
-        checked_wire_len(
-            self.clusters.len(),
-            self.resources.len(),
-            self.members.len(),
-            self.ranges.len(),
-        )
-    }
-
-    pub fn try_to_bytes(&self) -> Result<Vec<u8>, ClusterDirectoryError> {
-        self.validate_structure()?;
-        let len = self.byte_len()?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(len)
-            .map_err(|_| ClusterDirectoryError::AllocationFailed("encoded section"))?;
-        push_u32(&mut bytes, CLUSTER_DIRECTORY_VERSION);
-        push_u32(&mut bytes, self.runtime_cell_count);
-        push_u32(&mut bytes, u32_len(self.clusters.len(), "cluster count")?);
-        push_u32(&mut bytes, u32_len(self.resources.len(), "resource count")?);
-        push_u32(&mut bytes, u32_len(self.members.len(), "member count")?);
-        push_u32(&mut bytes, u32_len(self.ranges.len(), "range count")?);
-        push_u32(&mut bytes, self.primitive_limit);
-        push_u32(&mut bytes, self.cell_limit);
-        push_u32(&mut bytes, 0);
-        push_u32(&mut bytes, 0);
-        for cluster in &self.clusters {
-            for value in cluster.bounds_min.into_iter().chain(cluster.bounds_max) {
-                bytes.extend_from_slice(&value.to_le_bytes());
-            }
-            push_u32(&mut bytes, cluster.member_start);
-            push_u32(&mut bytes, cluster.member_count);
-            push_u32(&mut bytes, cluster.range_start);
-            push_u32(&mut bytes, cluster.range_count);
-            push_u32(&mut bytes, cluster.primitive_count);
-            push_u32(&mut bytes, cluster.flags);
-        }
-        for resource in &self.resources {
-            push_u32(&mut bytes, resource.section_id);
-            push_u32(&mut bytes, resource.domain as u32);
-            for dimension in resource.dimensions {
-                push_u32(&mut bytes, dimension);
-            }
-            push_u32(&mut bytes, 0);
-        }
-        for &member in &self.members {
-            push_u32(&mut bytes, member);
-        }
-        for range in &self.ranges {
-            push_u32(&mut bytes, range.resource_index);
-            push_u32(&mut bytes, range.start);
-            push_u32(&mut bytes, range.count);
-            push_u32(&mut bytes, range.owner_cluster_id);
-            push_u32(&mut bytes, range.role as u32);
-            push_u32(&mut bytes, 0);
-        }
-        debug_assert_eq!(bytes.len(), len);
-        Ok(bytes)
-    }
-
-    pub fn from_bytes(data: &[u8]) -> Result<Self, ClusterDirectoryError> {
-        if data.len() < HEADER_SIZE {
-            return Err(ClusterDirectoryError::InvalidData(format!(
-                "section too short for 40-byte header: got {}",
-                data.len()
-            )));
-        }
-        let version = read_u32(data, 0);
-        if version != CLUSTER_DIRECTORY_VERSION {
-            return Err(ClusterDirectoryError::VersionMismatch {
-                version,
-                expected: CLUSTER_DIRECTORY_VERSION,
-            });
-        }
-        let runtime_cell_count = read_u32(data, 4);
-        let cluster_count = read_u32(data, 8);
-        let resource_count = read_u32(data, 12);
-        let member_count = read_u32(data, 16);
-        let range_count = read_u32(data, 20);
-        let primitive_limit = read_u32(data, 24);
-        let cell_limit = read_u32(data, 28);
-        if read_u32(data, 32) != 0 || read_u32(data, 36) != 0 {
-            return Err(ClusterDirectoryError::InvalidData(
-                "header reserved fields must be zero".into(),
-            ));
-        }
-        let expected = checked_wire_len(
-            usize_count(cluster_count)?,
-            usize_count(resource_count)?,
-            usize_count(member_count)?,
-            usize_count(range_count)?,
-        )?;
-        if data.len() != expected {
-            return Err(ClusterDirectoryError::InvalidData(format!(
-                "length mismatch: expected {expected}, got {}",
-                data.len()
-            )));
-        }
-
-        let mut clusters = try_vec(cluster_count, "cluster records")?;
-        let mut cursor = HEADER_SIZE;
-        for _ in 0..cluster_count {
-            clusters.push(ClusterRecord {
-                bounds_min: [
-                    read_f32(data, cursor),
-                    read_f32(data, cursor + 4),
-                    read_f32(data, cursor + 8),
-                ],
-                bounds_max: [
-                    read_f32(data, cursor + 12),
-                    read_f32(data, cursor + 16),
-                    read_f32(data, cursor + 20),
-                ],
-                member_start: read_u32(data, cursor + 24),
-                member_count: read_u32(data, cursor + 28),
-                range_start: read_u32(data, cursor + 32),
-                range_count: read_u32(data, cursor + 36),
-                primitive_count: read_u32(data, cursor + 40),
-                flags: read_u32(data, cursor + 44),
-            });
-            cursor += CLUSTER_RECORD_SIZE;
-        }
-        let mut resources = try_vec(resource_count, "resource records")?;
-        for _ in 0..resource_count {
-            let reserved = read_u32(data, cursor + 20);
-            if reserved != 0 {
-                return Err(ClusterDirectoryError::InvalidData(format!(
-                    "resource reserved field must be zero, got {reserved}"
-                )));
-            }
-            resources.push(ClusterResourceRecord {
-                section_id: read_u32(data, cursor),
-                domain: ClusterResourceDomain::parse(read_u32(data, cursor + 4))?,
-                dimensions: [
-                    read_u32(data, cursor + 8),
-                    read_u32(data, cursor + 12),
-                    read_u32(data, cursor + 16),
-                ],
-            });
-            cursor += RESOURCE_RECORD_SIZE;
-        }
-        let mut members = try_vec(member_count, "members")?;
-        for _ in 0..member_count {
-            members.push(read_u32(data, cursor));
-            cursor += MEMBER_RECORD_SIZE;
-        }
-        let mut ranges = try_vec(range_count, "ranges")?;
-        for _ in 0..range_count {
-            let reserved = read_u32(data, cursor + 20);
-            if reserved != 0 {
-                return Err(ClusterDirectoryError::InvalidData(format!(
-                    "range reserved field must be zero, got {reserved}"
-                )));
-            }
-            ranges.push(ClusterRangeRecord {
-                resource_index: read_u32(data, cursor),
-                start: read_u32(data, cursor + 4),
-                count: read_u32(data, cursor + 8),
-                owner_cluster_id: read_u32(data, cursor + 12),
-                role: ClusterRangeRole::parse(read_u32(data, cursor + 16))?,
-            });
-            cursor += RANGE_RECORD_SIZE;
-        }
-        let section = Self {
-            runtime_cell_count,
-            primitive_limit,
-            cell_limit,
-            clusters,
-            resources,
-            members,
-            ranges,
-        };
-        section.validate_structure()?;
-        Ok(section)
-    }
-
     pub fn validate_structure(&self) -> Result<(), ClusterDirectoryError> {
         if self.primitive_limit == 0 || self.cell_limit == 0 {
             return invalid("primitive_limit and cell_limit must be positive");
@@ -605,9 +351,11 @@ impl ClusterDirectorySection {
                 || !self.members.is_empty()
                 || !self.resources.is_empty()
                 || !self.ranges.is_empty()
+                || !self.seam_portal_ids.is_empty()
+                || !self.cluster_hints.is_empty()
             {
                 return invalid(
-                    "standalone empty directory must contain no clusters, members, resources, or ranges",
+                    "standalone empty directory must contain no clusters, members, resources, ranges, seams, or hints",
                 );
             }
             return Ok(());
@@ -696,6 +444,40 @@ impl ClusterDirectorySection {
         }
         if expected_range_start as usize != self.ranges.len() {
             return invalid("cluster range slices do not consume the range table");
+        }
+
+        for pair in self.seam_portal_ids.windows(2) {
+            if pair[0] >= pair[1] {
+                return Err(ClusterDirectoryError::SeamPortalOrder);
+            }
+        }
+        let cluster_count = u32_len(self.clusters.len(), "cluster count")?;
+        for (hint_index, hint) in self.cluster_hints.iter().enumerate() {
+            if hint.cluster_id >= cluster_count {
+                return Err(ClusterDirectoryError::ClusterHintClusterOutOfRange {
+                    hint: hint_index,
+                    cluster: hint.cluster_id,
+                    count: cluster_count,
+                });
+            }
+            if hint.flags & !CLUSTER_HINT_FLAG_PINNED != 0 {
+                return Err(ClusterDirectoryError::ClusterHintFlagsInvalid {
+                    hint: hint_index,
+                    flags: hint.flags,
+                });
+            }
+            if hint.priority > 3 {
+                return Err(ClusterDirectoryError::ClusterHintPriorityOutOfRange {
+                    hint: hint_index,
+                    priority: hint.priority,
+                });
+            }
+            if hint.flags == 0 && hint.priority == 0 {
+                return Err(ClusterDirectoryError::ClusterHintNoOp { hint: hint_index });
+            }
+            if hint_index > 0 && self.cluster_hints[hint_index - 1].cluster_id >= hint.cluster_id {
+                return Err(ClusterDirectoryError::ClusterHintOrder);
+            }
         }
 
         for (index, resource) in self.resources.iter().enumerate() {
@@ -836,21 +618,23 @@ fn validate_cells(
             cells.cells.len()
         ));
     }
+    validate_seam_portals(directory, portals)?;
     let canonical = canonical_cell_partition(
         cells,
         portals,
         bvh,
         directory.primitive_limit,
         directory.cell_limit,
+        &directory.seam_portal_ids,
     )?;
     for cluster_id in 0..directory.clusters.len().max(canonical.clusters.len()) {
         let Some(cluster) = directory.clusters.get(cluster_id) else {
-            return invalid(format!(
+            return canonical_mismatch(format!(
                 "directory is missing canonical greedy partition cluster {cluster_id}"
             ));
         };
         let Some(expected) = canonical.clusters.get(cluster_id) else {
-            return invalid(format!(
+            return canonical_mismatch(format!(
                 "cluster {cluster_id} is not present in the canonical greedy partition"
             ));
         };
@@ -866,7 +650,7 @@ fn validate_cells(
                 .zip(expected_members)
                 .position(|(actual, canonical)| actual != canonical)
                 .unwrap_or_else(|| members.len().min(expected_members.len()));
-            return invalid(format!(
+            return canonical_mismatch(format!(
                 "cluster {cluster_id} member position {first_difference} disagrees with canonical greedy partition: actual {:?}, canonical {:?}",
                 members.get(first_difference),
                 expected_members.get(first_difference)
@@ -875,18 +659,18 @@ fn validate_cells(
         if !float_array_bits_equal(expected.bounds_min, cluster.bounds_min)
             || !float_array_bits_equal(expected.bounds_max, cluster.bounds_max)
         {
-            return invalid(format!(
+            return canonical_mismatch(format!(
                 "cluster {cluster_id} bounds do not equal the exact member union"
             ));
         }
         if expected.primitive_count != cluster.primitive_count {
-            return invalid(format!(
+            return canonical_mismatch(format!(
                 "cluster {cluster_id} primitive_count {} disagrees with canonical BVH count {}",
                 cluster.primitive_count, expected.primitive_count
             ));
         }
         if expected.flags != cluster.flags {
-            return invalid(format!(
+            return canonical_mismatch(format!(
                 "cluster {cluster_id} flags {:#x} disagree with canonical flags {:#x}",
                 cluster.flags, expected.flags
             ));
@@ -895,18 +679,52 @@ fn validate_cells(
     Ok(())
 }
 
-fn compare_cell_keys(
-    left: u32,
-    right: u32,
-    cells: &[crate::cells::CellRecord],
-) -> std::cmp::Ordering {
-    let left_bounds = cells[left as usize].bounds_min.map(canonical_zero);
-    let right_bounds = cells[right as usize].bounds_min.map(canonical_zero);
-    left_bounds[2]
-        .total_cmp(&right_bounds[2])
-        .then_with(|| left_bounds[1].total_cmp(&right_bounds[1]))
-        .then_with(|| left_bounds[0].total_cmp(&right_bounds[0]))
-        .then_with(|| left.cmp(&right))
+fn validate_seam_portals(
+    directory: &ClusterDirectorySection,
+    portals: &PortalsSection,
+) -> Result<(), ClusterDirectoryError> {
+    let mut cell_clusters = try_vec(directory.runtime_cell_count, "seam cell clusters")?;
+    cell_clusters.resize(directory.runtime_cell_count as usize, 0u32);
+    for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+        let member_begin = cluster.member_start as usize;
+        let member_end = member_begin + cluster.member_count as usize;
+        for &cell in &directory.members[member_begin..member_end] {
+            cell_clusters[cell as usize] = cluster_id as u32;
+        }
+    }
+    for &portal_id in &directory.seam_portal_ids {
+        let portal = portals.portals.get(portal_id as usize).ok_or(
+            ClusterDirectoryError::SeamPortalOutOfRange {
+                portal: portal_id,
+                count: portals.portals.len(),
+            },
+        )?;
+        if portal.front_leaf >= directory.runtime_cell_count
+            || portal.back_leaf >= directory.runtime_cell_count
+        {
+            return Err(ClusterDirectoryError::SeamPortalCellOutOfRange {
+                portal: portal_id,
+                front: portal.front_leaf,
+                back: portal.back_leaf,
+                cell_count: directory.runtime_cell_count,
+            });
+        }
+        if portal.front_leaf == portal.back_leaf {
+            return Err(ClusterDirectoryError::SeamPortalSameCell {
+                portal: portal_id,
+                cell: portal.front_leaf,
+            });
+        }
+        if cell_clusters[portal.front_leaf as usize] == cell_clusters[portal.back_leaf as usize] {
+            return Err(ClusterDirectoryError::SeamPortalSameCluster {
+                portal: portal_id,
+                front: portal.front_leaf,
+                back: portal.back_leaf,
+                cluster: cell_clusters[portal.front_leaf as usize],
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_resources(
@@ -1801,24 +1619,6 @@ fn validate_slice(
     Ok(())
 }
 
-fn checked_wire_len(
-    clusters: usize,
-    resources: usize,
-    members: usize,
-    ranges: usize,
-) -> Result<usize, ClusterDirectoryError> {
-    HEADER_SIZE
-        .checked_add(
-            clusters
-                .checked_mul(CLUSTER_RECORD_SIZE)
-                .ok_or(ClusterDirectoryError::SizeOverflow("cluster bytes"))?,
-        )
-        .and_then(|value| value.checked_add(resources.checked_mul(RESOURCE_RECORD_SIZE)?))
-        .and_then(|value| value.checked_add(members.checked_mul(MEMBER_RECORD_SIZE)?))
-        .and_then(|value| value.checked_add(ranges.checked_mul(RANGE_RECORD_SIZE)?))
-        .ok_or(ClusterDirectoryError::SizeOverflow("section byte length"))
-}
-
 fn checked_product(dimensions: [u32; 3]) -> Result<u32, ClusterDirectoryError> {
     dimensions[0]
         .checked_mul(dimensions[1])
@@ -1844,19 +1644,6 @@ fn usize_count(count: u32) -> Result<usize, ClusterDirectoryError> {
 fn u32_len(len: usize, label: &'static str) -> Result<u32, ClusterDirectoryError> {
     u32::try_from(len).map_err(|_| ClusterDirectoryError::SizeOverflow(label))
 }
-fn push_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(
-        data[offset..offset + 4]
-            .try_into()
-            .expect("validated section length"),
-    )
-}
-fn read_f32(data: &[u8], offset: usize) -> f32 {
-    f32::from_bits(read_u32(data, offset))
-}
 fn canonical_zero(value: f32) -> f32 {
     if value == 0.0 { 0.0 } else { value }
 }
@@ -1868,6 +1655,11 @@ fn float_array_bits_equal(a: [f32; 3], b: [f32; 3]) -> bool {
 }
 fn invalid<T>(message: impl Into<String>) -> Result<T, ClusterDirectoryError> {
     Err(ClusterDirectoryError::InvalidData(message.into()))
+}
+fn canonical_mismatch<T>(message: impl Into<String>) -> Result<T, ClusterDirectoryError> {
+    Err(ClusterDirectoryError::CanonicalPartitionMismatch(
+        message.into(),
+    ))
 }
 fn resource_mismatch<T>(message: impl Into<String>) -> Result<T, ClusterDirectoryError> {
     Err(ClusterDirectoryError::ResourceMismatch(message.into()))
@@ -1894,6 +1686,8 @@ mod tests {
             resources: Vec::new(),
             members: Vec::new(),
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -1915,6 +1709,8 @@ mod tests {
             resources: Vec::new(),
             members: vec![0],
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -1983,10 +1779,10 @@ mod tests {
     }
 
     #[test]
-    fn cluster_directory_parser_rejects_version_reserved_length_and_unknown_values() {
+    fn cluster_directory_parser_rejects_v1_counts_length_and_unknown_values() {
         let bytes = empty_directory().try_to_bytes().unwrap();
         let mut bad = bytes.clone();
-        bad[0..4].copy_from_slice(&2u32.to_le_bytes());
+        bad[0..4].copy_from_slice(&1u32.to_le_bytes());
         assert!(matches!(
             ClusterDirectorySection::from_bytes(&bad),
             Err(ClusterDirectoryError::VersionMismatch { .. })
@@ -2024,6 +1820,114 @@ mod tests {
         assert!(matches!(
             ClusterDirectorySection::from_bytes(&bytes),
             Err(ClusterDirectoryError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_v2_appends_seams_and_cluster_hints_after_legacy_tables() {
+        let mut section = one_cell_directory();
+        section.clusters[0].primitive_count = 65;
+        section.clusters[0].flags = CLUSTER_FLAG_INDIVISIBLE_OVERSIZE;
+        section.seam_portal_ids = vec![1, 2];
+        section.cluster_hints = vec![ClusterHintRecord {
+            cluster_id: 0,
+            flags: CLUSTER_HINT_FLAG_PINNED,
+            priority: 3,
+        }];
+        let bytes = section.try_to_bytes().unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()), 1);
+        assert_eq!(
+            bytes.len(),
+            HEADER_SIZE
+                + CLUSTER_RECORD_SIZE
+                + MEMBER_RECORD_SIZE
+                + 2 * MEMBER_RECORD_SIZE
+                + CLUSTER_HINT_RECORD_SIZE
+        );
+        assert_eq!(
+            ClusterDirectorySection::from_bytes(&bytes).unwrap(),
+            section
+        );
+        assert_eq!(
+            ClusterDirectorySection::from_bytes(&bytes)
+                .unwrap()
+                .clusters[0]
+                .flags,
+            CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
+        );
+
+        let seam_start = HEADER_SIZE + CLUSTER_RECORD_SIZE + MEMBER_RECORD_SIZE;
+        let mut malformed_order = bytes.clone();
+        malformed_order[seam_start + MEMBER_RECORD_SIZE..seam_start + 2 * MEMBER_RECORD_SIZE]
+            .copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            ClusterDirectorySection::from_bytes(&malformed_order),
+            Err(ClusterDirectoryError::SeamPortalOrder)
+        ));
+
+        let mut malformed = bytes;
+        let hint_reserved_offset = malformed.len() - 4;
+        malformed[hint_reserved_offset..].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            ClusterDirectorySection::from_bytes(&malformed),
+            Err(ClusterDirectoryError::ClusterHintReserved { .. })
+        ));
+    }
+
+    #[test]
+    fn cluster_directory_rejects_noncanonical_hint_records() {
+        let mut section = one_cell_directory();
+        section.seam_portal_ids = vec![1, 1];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::SeamPortalOrder)
+        ));
+
+        let mut section = one_cell_directory();
+        section.cluster_hints = vec![ClusterHintRecord {
+            cluster_id: 0,
+            flags: 0,
+            priority: 0,
+        }];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::ClusterHintNoOp { .. })
+        ));
+
+        let mut section = one_cell_directory();
+        section.cluster_hints = vec![ClusterHintRecord {
+            cluster_id: 0,
+            flags: 2,
+            priority: 0,
+        }];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::ClusterHintFlagsInvalid { .. })
+        ));
+
+        let mut section = one_cell_directory();
+        section.cluster_hints = vec![ClusterHintRecord {
+            cluster_id: 0,
+            flags: 0,
+            priority: 4,
+        }];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::ClusterHintPriorityOutOfRange { .. })
+        ));
+
+        let mut section = one_cell_directory();
+        section.cluster_hints = vec![ClusterHintRecord {
+            cluster_id: 1,
+            flags: CLUSTER_HINT_FLAG_PINNED,
+            priority: 0,
+        }];
+        assert!(matches!(
+            section.validate_structure(),
+            Err(ClusterDirectoryError::ClusterHintClusterOutOfRange { .. })
         ));
     }
 
@@ -2187,6 +2091,8 @@ mod tests {
                     role: ClusterRangeRole::Halo,
                 },
             ],
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         };
         section.validate_structure().unwrap();
         section.ranges[1].owner_cluster_id = 1;
@@ -2216,6 +2122,8 @@ mod tests {
             resources: Vec::new(),
             members: vec![0, 0],
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         };
         assert!(matches!(
             section.validate_structure(),
@@ -2299,6 +2207,8 @@ mod tests {
             resources: Vec::new(),
             members: vec![0, 1],
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         };
         let mut bvh = empty_bvh();
         bvh.leaves.push(BvhLeaf {
@@ -2330,7 +2240,7 @@ mod tests {
         };
         assert!(matches!(
             directory.validate_semantics(inputs),
-            Err(ClusterDirectoryError::InvalidData(_))
+            Err(ClusterDirectoryError::CanonicalPartitionMismatch(_))
         ));
         directory.clusters[0].bounds_max[0] = 3.0;
         let inputs = ClusterDirectoryValidationInputs {
@@ -2339,7 +2249,7 @@ mod tests {
         };
         assert!(matches!(
             directory.validate_semantics(inputs),
-            Err(ClusterDirectoryError::InvalidData(_))
+            Err(ClusterDirectoryError::CanonicalPartitionMismatch(_))
         ));
     }
 
@@ -2414,6 +2324,8 @@ mod tests {
             resources: Vec::new(),
             members: vec![0, 1, 2],
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         };
         directory.validate_structure().unwrap();
 
@@ -2426,8 +2338,130 @@ mod tests {
                 sh: ClusterDirectoryShInventory::default(),
             })
             .unwrap_err();
-        assert!(matches!(error, ClusterDirectoryError::InvalidData(_)));
+        assert!(matches!(
+            error,
+            ClusterDirectoryError::CanonicalPartitionMismatch(_)
+        ));
         assert!(error.to_string().contains("canonical greedy partition"));
+    }
+
+    #[test]
+    fn canonical_partition_cuts_a_seam_even_when_an_alternate_route_connects_its_cells() {
+        let cells = cells(3);
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: vec![
+                PortalRecord {
+                    vertex_start: 0,
+                    vertex_count: 0,
+                    front_leaf: 0,
+                    back_leaf: 1,
+                },
+                PortalRecord {
+                    vertex_start: 0,
+                    vertex_count: 0,
+                    front_leaf: 0,
+                    back_leaf: 2,
+                },
+                PortalRecord {
+                    vertex_start: 0,
+                    vertex_count: 0,
+                    front_leaf: 2,
+                    back_leaf: 1,
+                },
+            ],
+        };
+        let bvh = empty_bvh();
+        let no_hints = canonical_cell_partition(&cells, &portals, &bvh, 8, 3, &[]).unwrap();
+        assert_eq!(no_hints.members, vec![0, 1, 2]);
+        assert_eq!(no_hints.clusters.len(), 1);
+
+        let cut = canonical_cell_partition(&cells, &portals, &bvh, 8, 3, &[0]).unwrap();
+        assert_eq!(cut.members, vec![0, 2, 1]);
+        assert_eq!(
+            cut.clusters
+                .iter()
+                .map(|cluster| cluster.member_count)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let cut_directory = ClusterDirectorySection {
+            runtime_cell_count: 3,
+            primitive_limit: 8,
+            cell_limit: 3,
+            clusters: cut.clusters,
+            resources: Vec::new(),
+            members: cut.members,
+            ranges: Vec::new(),
+            seam_portal_ids: vec![0],
+            cluster_hints: Vec::new(),
+        };
+        cut_directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory::default(),
+            })
+            .unwrap();
+
+        let mut out_of_range = cut_directory.clone();
+        out_of_range.seam_portal_ids = vec![3];
+        let error = out_of_range
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ClusterDirectoryError::SeamPortalOutOfRange { .. }
+        ));
+
+        let mut same_cell_portals = portals.clone();
+        same_cell_portals.portals[0].back_leaf = 0;
+        let error = cut_directory
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &same_cell_portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ClusterDirectoryError::SeamPortalSameCell { .. }
+        ));
+
+        let noncanonical = ClusterDirectorySection {
+            clusters: no_hints.clusters,
+            members: no_hints.members,
+            seam_portal_ids: vec![0],
+            ..cut_directory
+        };
+        let error = noncanonical
+            .validate_semantics(ClusterDirectoryValidationInputs {
+                cells: &cells,
+                portals: &portals,
+                bvh: &bvh,
+                cell_locator: &locator,
+                sh: ClusterDirectoryShInventory::default(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ClusterDirectoryError::SeamPortalSameCluster { .. }
+        ));
     }
 
     #[test]

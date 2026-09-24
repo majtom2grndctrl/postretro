@@ -595,6 +595,34 @@
     dilation(float) : "AABB expansion in world/engine meters. Use about half a probe cell when the brush hugs a probe-brick edge." : "0"
 ]
 
+// Compiler-only SH streaming hints. Each entity owns exactly one finite,
+// positive-volume convex brush; the compiler peels it before BSP, collision,
+// visibility, lightmap, SDF, and navmesh construction. The hull only
+// influences later SH cluster metadata and never creates a runtime entity.
+//
+// A seam must pass through generated portal area with brush interior on both
+// portal-plane sides. It cuts clustering and asks the runtime planner to warm
+// the far side while the near side is visible; it does not block or change a
+// door, gameplay, or portal visibility.
+@SolidClass = streaming_seam_volume : "SH streaming seam and far-side warm-up (brush)"
+[
+]
+
+// Pin every SH cluster with a runtime-cell AABB that overlaps this brush by
+// positive volume. The pin and its baked owner closure stay targeted under
+// pressure; an empty overlap is a compiler error.
+@SolidClass = stream_resident_volume : "Keep overlapping SH streaming clusters resident (brush)"
+[
+]
+
+// Rank only optional SeamWarm/Prefetch work for overlapping runtime cells.
+// Overlaps take the maximum value. Priority does not reorder visible or pinned
+// work, and zero emits no policy record; an empty overlap is a compiler error.
+@SolidClass = stream_priority_region : "Rank optional SH streaming work under pressure (brush)"
+[
+    _stream_priority(integer) : "Optional-work priority (0 = no hint, 3 = highest). Blank uses 0." : "0"
+]
+
 // Semantic fog point entities.
 //
 // Modder pattern for adding a new fog shape:

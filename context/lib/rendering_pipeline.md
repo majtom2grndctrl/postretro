@@ -116,6 +116,14 @@ uses the ambient-floor miss fallback. Priority 0–3 ranks only pressure-eligibl
 warm-up and prefetch work; visible and pinned demand wins regardless of priority.
 Only owner-safe prefetch and seam-warm targets may yield under budget pressure; pins
 and their owners are never evicted for pressure. Hysteresis retains its timer contract.
+Pressure priority selects which optional targets yield. The planner's drain
+request may list a dependent before its lower-ID owner; the renderer computes
+a dependency-safe release sequence and returns confirmed IDs in ascending order.
+Target ordering is Visible, Pinned, SeamWarm, Prefetch, then Hysteresis; optional work
+orders by descending effective priority and cluster ID. Owner closure propagates class
+and optional priority to a fixed point, taking the maximum of an owner's authored value
+and same-class dependents. This policy stops at the CPU planner: it adds no renderer
+binding, shader branch, portal traversal, or visibility behavior.
 Bounded workers read and decode id-50 chunks from the validated open
 file off the frame path. A completion installs only when generation, content tag, target,
 and chunk hash still match. At the one renderer drain before SH compose, evictions first

@@ -1,0 +1,119 @@
+// Game: Generic
+// Format: Standard
+// Minimal two-room doorway. The divider leaves an 80 x 160 map-unit opening;
+// the seam spans its portal plane, a near-side cell is pinned, and the far
+// side carries priority 3.
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_floor_grey 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) debug_floor_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 1 0 0 ) debug_floor_grey 0 0 0 1 1
+( 0 256 0 ) ( 1 256 0 ) ( 0 256 1 ) debug_floor_grey 0 0 0 1 1
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) debug_floor_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) debug_floor_grey 0 0 0 1 1
+}
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_ceiling_grey 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 1 0 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 256 0 ) ( 1 256 0 ) ( 0 256 1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 240 ) ( 1 0 240 ) ( 0 1 240 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_wall_grey 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 1 0 0 ) debug_wall_grey 0 0 0 1 1
+( 0 16 0 ) ( 1 16 0 ) ( 0 16 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_wall_grey 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 240 0 ) ( 0 240 1 ) ( 1 240 0 ) debug_wall_grey 0 0 0 1 1
+( 0 256 0 ) ( 1 256 0 ) ( 0 256 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_wall_grey 0 0 0 1 1
+( 16 0 0 ) ( 16 0 1 ) ( 16 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 16 0 ) ( 0 16 1 ) ( 1 16 0 ) debug_wall_grey 0 0 0 1 1
+( 0 240 0 ) ( 1 240 0 ) ( 0 240 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+{
+( 496 0 0 ) ( 496 1 0 ) ( 496 0 1 ) debug_wall_grey 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 16 0 ) ( 0 16 1 ) ( 1 16 0 ) debug_wall_grey 0 0 0 1 1
+( 0 240 0 ) ( 1 240 0 ) ( 0 240 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+{
+( 240 0 0 ) ( 240 1 0 ) ( 240 0 1 ) debug_wall_grey 0 0 0 1 1
+( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 16 0 ) ( 0 16 1 ) ( 1 16 0 ) debug_wall_grey 0 0 0 1 1
+( 0 96 0 ) ( 1 96 0 ) ( 0 96 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+{
+( 240 0 0 ) ( 240 1 0 ) ( 240 0 1 ) debug_wall_grey 0 0 0 1 1
+( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 176 0 ) ( 0 176 1 ) ( 1 176 0 ) debug_wall_grey 0 0 0 1 1
+( 0 240 0 ) ( 1 240 0 ) ( 0 240 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+{
+( 240 0 0 ) ( 240 1 0 ) ( 240 0 1 ) debug_wall_grey 0 0 0 1 1
+( 272 0 0 ) ( 272 0 1 ) ( 272 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) debug_wall_grey 0 0 0 1 1
+( 0 176 0 ) ( 1 176 0 ) ( 0 176 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 160 ) ( 1 0 160 ) ( 0 1 160 ) debug_wall_grey 0 0 0 1 1
+( 0 0 240 ) ( 0 1 240 ) ( 1 0 240 ) debug_wall_grey 0 0 0 1 1
+}
+}
+{
+"classname" "streaming_seam_volume"
+"origin" "256 136 80"
+{
+( 236 0 0 ) ( 236 1 0 ) ( 236 0 1 ) debug_wall_grey 0 0 0 1 1
+( 276 0 0 ) ( 276 0 1 ) ( 276 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 84 0 ) ( 0 84 1 ) ( 1 84 0 ) debug_wall_grey 0 0 0 1 1
+( 0 188 0 ) ( 1 188 0 ) ( 0 188 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 -8 ) ( 1 0 -8 ) ( 0 1 -8 ) debug_wall_grey 0 0 0 1 1
+( 0 0 176 ) ( 0 1 176 ) ( 1 0 176 ) debug_wall_grey 0 0 0 1 1
+}
+}
+{
+"classname" "stream_resident_volume"
+"origin" "0 0 0"
+{
+( 32 0 0 ) ( 32 1 0 ) ( 32 0 1 ) debug_wall_grey 0 0 0 1 1
+( 64 0 0 ) ( 64 0 1 ) ( 64 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) debug_wall_grey 0 0 0 1 1
+( 0 160 0 ) ( 1 160 0 ) ( 0 160 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 32 ) ( 1 0 32 ) ( 0 1 32 ) debug_wall_grey 0 0 0 1 1
+( 0 0 64 ) ( 0 1 64 ) ( 1 0 64 ) debug_wall_grey 0 0 0 1 1
+}
+}
+{
+"classname" "stream_priority_region"
+"origin" "392 128 120"
+"_stream_priority" "3"
+{
+( 320 0 0 ) ( 320 1 0 ) ( 320 0 1 ) debug_wall_grey 0 0 0 1 1
+( 464 0 0 ) ( 464 0 1 ) ( 464 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 32 0 ) ( 0 32 1 ) ( 1 32 0 ) debug_wall_grey 0 0 0 1 1
+( 0 224 0 ) ( 1 224 0 ) ( 0 224 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 16 ) ( 1 0 16 ) ( 0 1 16 ) debug_wall_grey 0 0 0 1 1
+( 0 0 224 ) ( 0 1 224 ) ( 1 0 224 ) debug_wall_grey 0 0 0 1 1
+}
+}

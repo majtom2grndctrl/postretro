@@ -4,7 +4,9 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-use postretro_level_format::cluster_directory::ClusterDirectorySection;
+use postretro_level_format::cluster_directory::{
+    ClusterDirectorySection, ClusterDirectoryValidationInputs,
+};
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_HEADER_SIZE,
     ClusterShPayloadsSection,
@@ -17,6 +19,7 @@ use postretro_level_format::{
 pub(super) fn validate_readback(
     file: &mut File,
     expected_sections: &[SectionDescriptor],
+    cluster_directory_validation: Option<ClusterDirectoryValidationInputs<'_>>,
 ) -> anyhow::Result<()> {
     file.seek(SeekFrom::Start(0))?;
     let meta = read_container(&mut *file)?;
@@ -71,7 +74,7 @@ pub(super) fn validate_readback(
             );
             if expected.section_id == SectionId::ClusterDirectory as u32 {
                 ClusterDirectorySection::from_bytes(&actual).map_err(|error| {
-                    anyhow::anyhow!("section 49 failed same-handle semantic read-back: {error}")
+                    anyhow::anyhow!("section 49 failed same-handle structural read-back: {error}")
                 })?;
             }
         }
@@ -81,8 +84,36 @@ pub(super) fn validate_readback(
         expected_offset == file_len,
         "section table ends at {expected_offset}, but the file is {file_len} bytes",
     );
+    if let Some(inputs) = cluster_directory_validation {
+        validate_cluster_directory_semantics_readback(file, &meta, inputs)?;
+    }
 
     Ok(())
+}
+
+/// Validate staged id 49 with the finalized metadata that produced it.
+///
+/// Structural decode alone cannot prove canonical cell membership, seam
+/// endpoint cuts, or resource ranges. The compiler already retains those
+/// finalized sections through publication, so borrow them instead of decoding
+/// duplicate SH payloads from the staged file.
+fn validate_cluster_directory_semantics_readback(
+    file: &mut File,
+    meta: &postretro_level_format::ContainerMeta,
+    inputs: ClusterDirectoryValidationInputs<'_>,
+) -> anyhow::Result<()> {
+    let directory_bytes = read_section_data(file, meta, SectionId::ClusterDirectory as u32)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "section 49 is required when finalized ClusterDirectory metadata is supplied"
+            )
+        })?;
+    let directory = ClusterDirectorySection::from_bytes(&directory_bytes).map_err(|error| {
+        anyhow::anyhow!("section 49 failed same-handle structural read-back: {error}")
+    })?;
+    directory.validate_semantics(inputs).map_err(|error| {
+        anyhow::anyhow!("section 49 failed same-handle semantic read-back: {error}")
+    })
 }
 
 /// Validate id 50 while retaining at most its metadata prefix and one chunk.
@@ -167,4 +198,126 @@ fn validate_cluster_sh_payloads_readback(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use postretro_level_format::bvh::BvhSection;
+    use postretro_level_format::cell_locator::{CellLocatorChild, CellLocatorSection};
+    use postretro_level_format::cells::{CellRecord, CellsSection};
+    use postretro_level_format::cluster_directory::{
+        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectoryShInventory,
+    };
+    use postretro_level_format::portals::PortalsSection;
+    use postretro_level_format::{SectionBlob, write_prl};
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[test]
+    fn cluster_directory_semantics_borrow_finalized_metadata() {
+        let directory = ClusterDirectorySection {
+            runtime_cell_count: 0,
+            primitive_limit: 1,
+            cell_limit: 1,
+            clusters: Vec::new(),
+            resources: Vec::new(),
+            members: Vec::new(),
+            ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
+        };
+        let directory_bytes = directory
+            .try_to_bytes()
+            .expect("empty directory should encode");
+        let descriptors = [SectionDescriptor {
+            section_id: SectionId::ClusterDirectory as u32,
+            version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            byte_len: u64::try_from(directory_bytes.len()).expect("directory length fits u64"),
+        }];
+        let mut staged = NamedTempFile::new().expect("staged PRL should open");
+        write_prl(
+            staged.as_file_mut(),
+            &[SectionBlob {
+                section_id: SectionId::ClusterDirectory as u32,
+                version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+                data: directory_bytes,
+            }],
+        )
+        .expect("directory-only PRL should encode");
+        staged
+            .as_file_mut()
+            .flush()
+            .expect("staged PRL should flush");
+
+        let empty_cells = CellsSection {
+            cells: Vec::new(),
+            portal_refs: Vec::new(),
+        };
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let bvh = BvhSection {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            root_node_index: 0,
+        };
+        let locator = CellLocatorSection {
+            root: CellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let empty_inputs = ClusterDirectoryValidationInputs {
+            cells: &empty_cells,
+            portals: &portals,
+            bvh: &bvh,
+            cell_locator: &locator,
+            sh: ClusterDirectoryShInventory::default(),
+        };
+        validate_readback(staged.as_file_mut(), &descriptors, Some(empty_inputs))
+            .expect("borrowed metadata validates without staged SH companion sections");
+
+        let mut missing_directory = NamedTempFile::new().expect("staged PRL should open");
+        write_prl(missing_directory.as_file_mut(), &[])
+            .expect("empty PRL should encode for missing-directory coverage");
+        let missing_error =
+            validate_readback(missing_directory.as_file_mut(), &[], Some(empty_inputs))
+                .expect_err("finalized ClusterDirectory metadata requires staged id 49");
+        assert!(
+            missing_error.to_string().contains(
+                "section 49 is required when finalized ClusterDirectory metadata is supplied"
+            ),
+            "unexpected missing-directory error: {missing_error:#}",
+        );
+
+        let cells_with_one_runtime_cell = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [1.0, 1.0, 1.0],
+                flags: 0,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let mismatched_inputs = ClusterDirectoryValidationInputs {
+            cells: &cells_with_one_runtime_cell,
+            portals: &portals,
+            bvh: &bvh,
+            cell_locator: &locator,
+            sh: ClusterDirectoryShInventory::default(),
+        };
+        let error = validate_readback(staged.as_file_mut(), &descriptors, Some(mismatched_inputs))
+            .expect_err("same-handle id 49 validation must use borrowed finalized cells");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime_cell_count 0 disagrees with Cells count 1"),
+            "unexpected semantic read-back error: {error:#}",
+        );
+    }
 }

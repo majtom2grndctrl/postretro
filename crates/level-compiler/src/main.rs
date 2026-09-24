@@ -55,6 +55,7 @@ pub mod sh_hierarchy;
 pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
 pub mod size_options;
+pub mod streaming_hints;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;

@@ -26,7 +26,9 @@ use postretro_level_format::cells::{
     CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
 };
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
-use postretro_level_format::cluster_directory::CLUSTER_DIRECTORY_CONTAINER_VERSION;
+use postretro_level_format::cluster_directory::{
+    CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectoryValidationInputs,
+};
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -87,7 +89,12 @@ pub use spatial::{encode_cell_locator, encode_cells, encode_portals};
 #[path = "pack_output.rs"]
 mod pack_output;
 
-use pack_output::{PlannedSection, report_section_footprint, write_and_validate_sections};
+#[cfg(test)]
+use pack_output::write_and_validate_sections;
+use pack_output::{
+    PlannedSection, report_section_footprint,
+    write_and_validate_sections_with_cluster_directory_validation,
+};
 
 #[path = "pack/section_plan.rs"]
 mod section_plan;
@@ -575,6 +582,11 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     let billboard_direct_scatter_volume = finalized_sh.billboard;
     let animated_billboard_direct_scatter_delta_volumes = finalized_sh.animated_billboard_delta;
     let owned_cluster_bake;
+    // The standalone pack helper has no parsed MapData or generated portal
+    // geometry. Its historical/default path must therefore remain explicitly
+    // no-hint; the production pipeline resolves authored hints before it calls
+    // this packer with a prebuilt directory.
+    let empty_streaming_hints = crate::streaming_hints::ResolvedStreamingHints::default();
     let cluster_bake = match prebuilt_cluster {
         Some((_, bake)) => bake,
         None => {
@@ -584,6 +596,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
                 &bvh_section,
                 &locator_section,
                 finalized_sh,
+                &empty_streaming_hints,
             )?;
             &owned_cluster_bake
         }
@@ -658,7 +671,17 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         .map(|section| section.payload_bytes)
         .max()
         .unwrap_or(0);
-    write_and_validate_sections(output, sections)?;
+    write_and_validate_sections_with_cluster_directory_validation(
+        output,
+        sections,
+        Some(ClusterDirectoryValidationInputs {
+            cells: &cells_section,
+            portals,
+            bvh: &bvh_section,
+            cell_locator: &locator_section,
+            sh: finalized_sh.inventory(),
+        }),
+    )?;
 
     for section in &footprint.sections {
         match section.section_name {

@@ -10,8 +10,8 @@ mod projection;
 
 pub use boundary::ShStreamingMode;
 pub use boundary::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage};
-pub use manifest::ShStreamManifest;
 pub(crate) use manifest::load_manifest_positionally;
+pub use manifest::{ShStreamManifest, ShStreamSeamPortal};
 #[cfg(test)]
 pub(crate) use positional_io::observe_positional_reads;
 pub(crate) use positional_io::{

@@ -131,6 +131,8 @@ fn state_with_clusters(cluster_count: u32) -> ShResidencyState {
                 role: ClusterRangeRole::Owned,
             })
             .collect(),
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     ShResidencyState::from_parts(
         [9; 32],
@@ -186,6 +188,8 @@ fn dense_patch_owner_is_the_lowest_cluster_containing_the_probe() {
                 role: ClusterRangeRole::Owned,
             },
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let state = ShResidencyState::from_parts(
         [7; 32],
@@ -240,6 +244,8 @@ fn sparse_owner_halo_ranges_keep_the_writer_for_ids_27_41_and_45() {
             range(2, 0, 1, 1, ClusterRangeRole::Owned),
             range(3, 0, 1, 1, ClusterRangeRole::Owned),
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
 
     let state =
@@ -272,6 +278,8 @@ fn dense_patch_writer_waits_for_a_different_stored_node_owner() {
             range(0, 0, 1, 0, ClusterRangeRole::Owned),
             range(0, 1, 63, 1, ClusterRangeRole::Owned),
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let state = ShResidencyState::from_parts(
         [12; 32],
@@ -312,6 +320,8 @@ fn paired_direct_manifest_refuses_a_chunk_missing_id35() {
             }],
             members: Vec::new(),
             ranges: vec![range(0, 0, 64, 0, ClusterRangeRole::Owned)],
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         },
         &one_l0_brick(),
         &all_sparse_sources(),

@@ -116,18 +116,6 @@ fn streaming_hint_brushes_preserve_every_non_sh_prl_section() {
     // geometry reaches the BSP, collision, lightmap, SDF, or navmesh stages.
     hinted_map.push_str(
         r#"{
-"classname" "streaming_seam_volume"
-"origin" "32 32 32"
-{
-( 0 0 0 ) ( 0 32 0 ) ( 0 0 32 ) stream_hint_seam 0 0 0 1 1
-( 32 0 0 ) ( 32 0 32 ) ( 32 32 0 ) stream_hint_seam 0 0 0 1 1
-( 0 0 0 ) ( 0 0 32 ) ( 32 0 0 ) stream_hint_seam 0 0 0 1 1
-( 0 32 0 ) ( 32 32 0 ) ( 0 32 32 ) stream_hint_seam 0 0 0 1 1
-( 0 0 0 ) ( 32 0 0 ) ( 0 32 0 ) stream_hint_seam 0 0 0 1 1
-( 0 0 32 ) ( 0 32 32 ) ( 32 0 32 ) stream_hint_seam 0 0 0 1 1
-}
-}
-{
 "classname" "stream_resident_volume"
 "origin" "64 32 32"
 {
@@ -184,10 +172,10 @@ fn streaming_hint_brushes_preserve_every_non_sh_prl_section() {
         );
     }
 
-    // Task 2 intentionally has no SH hint consumer. Assert byte-level equality
-    // for every current and future non-SH section, including optional products
-    // when they are present in this fixture. SH data and the cluster-directory
-    // seam are deliberately excluded until their later slice-specific tests.
+    // Assert byte-level equality for every current and future non-SH section,
+    // including optional products when they are present in this fixture.
+    // The separate doorway fixture exercises valid seam cuts; this sealed SDF
+    // fixture has no generated portal through the authored seam brush.
     let is_sh_section = |section_id: &u32| {
         matches!(
             SectionId::from_u32(*section_id),

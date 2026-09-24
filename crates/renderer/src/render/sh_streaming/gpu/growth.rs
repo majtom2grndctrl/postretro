@@ -166,6 +166,8 @@ impl StreamingGpuPools {
         self.mesh_bind_group = replacement_mesh_bind_group;
         self.shape = shape;
         self.probe_occlusion_enabled = probe_occlusion_enabled;
+        self.growth
+            .record(1, self.active_capacity_bytes, replacement_active_capacity);
         self.active_capacity_bytes = replacement_active_capacity;
 
         queue.submit(std::iter::once(encoder.finish()));
@@ -444,6 +446,11 @@ impl StreamingGpuPools {
             });
         }
         self.sparse_capacity_floors = floors;
+        self.growth.record(
+            sections_to_grow.len(),
+            self.active_capacity_bytes,
+            replacement_active_capacity,
+        );
         self.active_capacity_bytes = replacement_active_capacity;
         Ok(())
     }

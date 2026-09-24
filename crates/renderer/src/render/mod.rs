@@ -126,7 +126,7 @@ pub use sh_residency::{
     ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
     ShStreamingLifecycleSummary,
 };
-pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot};
+pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot, ShStreamingLiveDiagnostics};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};

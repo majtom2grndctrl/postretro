@@ -199,6 +199,10 @@ impl ShResidencyState {
             .gpu
             .as_ref()
             .map_or(0, |gpu| gpu.whole_resident_scatter_bytes);
+        let pool_growth = self
+            .gpu
+            .as_ref()
+            .map_or_else(PoolGrowthCounters::default, |gpu| gpu.growth);
         let logical_occupancy_bytes = self.logical_occupancy_bytes();
         ShResidencySnapshot {
             generation: self.generation,
@@ -245,6 +249,11 @@ impl ShResidencyState {
                 .checked_add(retiring_capacity_bytes)
                 .expect("validated streamed GPU capacities must not overflow u64"),
             whole_resident_scatter_bytes,
+            install_cpu_total_micros: self.install_cpu.total_micros,
+            install_cpu_max_drain_micros: self.install_cpu.max_drain_micros,
+            install_cpu_last_drain_micros: self.install_cpu.last_drain_micros,
+            pool_growth_events: pool_growth.events,
+            pool_growth_bytes: pool_growth.bytes,
         }
     }
 

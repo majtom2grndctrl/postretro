@@ -4283,6 +4283,7 @@ impl ApplicationHandler for App {
                                             &trigger_rows,
                                             &door_occluder_diagnostics.mover_rows,
                                             &door_occluder_diagnostics.blocked_portal_ids,
+                                            None,
                                         );
                                     }
                                 });

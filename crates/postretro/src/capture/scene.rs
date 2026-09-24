@@ -28,6 +28,18 @@ pub(crate) struct CaptureScene {
     /// one-frame capture cannot advance the normal ramp, so these expose known
     /// `(1 - w)` / `w` splits for same-adapter golden comparisons.
     pub(crate) force_promotion: Option<Vec<ForcedAnimatedPromotion>>,
+    /// Optional repeated-frame measurement of this otherwise static capture
+    /// workload. Omitting it preserves the legacy single-readback path.
+    pub(crate) measurement: Option<CaptureMeasurement>,
+}
+
+/// Author-controlled output and bounds for a repeated static capture run.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct CaptureMeasurement {
+    pub(crate) report: String,
+    pub(crate) warmup_frames: u32,
+    pub(crate) sample_frames: u32,
 }
 
 /// An authored, single-instant active state for tagged baked animated lights.
@@ -70,6 +82,12 @@ pub(crate) enum SceneError {
     EmptyMap,
     #[error("invalid capture scene: output must not be empty")]
     EmptyOutput,
+    #[error("invalid capture scene: measurement report must not be empty")]
+    EmptyMeasurementReport,
+    #[error("invalid capture scene: measurement warmup_frames must be in 1..=10000, got {value}")]
+    MeasurementWarmupFramesOutOfRange { value: u32 },
+    #[error("invalid capture scene: measurement sample_frames must be in 1..=100000, got {value}")]
+    MeasurementSampleFramesOutOfRange { value: u32 },
     #[error("invalid capture scene: force_active tag must not be empty")]
     EmptyForcedAnimLightTag,
     #[error("invalid capture scene: force_promotion tag must not be empty")]
@@ -115,6 +133,21 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if scene.output.trim().is_empty() {
         return Err(SceneError::EmptyOutput);
+    }
+    if let Some(measurement) = &scene.measurement {
+        if measurement.report.trim().is_empty() {
+            return Err(SceneError::EmptyMeasurementReport);
+        }
+        if !(1..=10_000).contains(&measurement.warmup_frames) {
+            return Err(SceneError::MeasurementWarmupFramesOutOfRange {
+                value: measurement.warmup_frames,
+            });
+        }
+        if !(1..=100_000).contains(&measurement.sample_frames) {
+            return Err(SceneError::MeasurementSampleFramesOutOfRange {
+                value: measurement.sample_frames,
+            });
+        }
     }
     if let Some(forced_lights) = &scene.force_active {
         for light in forced_lights {
@@ -206,6 +239,10 @@ mod tests {
     fn parse_scene_applies_default_fov() {
         let scene = parse_scene(SCENE_WITH_DEFAULT_FOV).expect("scene must parse");
         assert_eq!(scene.camera.fov_deg, DEFAULT_FOV_DEG);
+        assert!(
+            scene.measurement.is_none(),
+            "an omitted measurement block must retain the legacy one-frame capture path"
+        );
     }
 
     #[test]
@@ -258,6 +295,60 @@ mod tests {
                 weight: 0.5,
             }])
         );
+    }
+
+    #[test]
+    fn parse_scene_accepts_measurement_v1_fields() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"measurement\": { \"report\": \"capture.json\", \"warmup_frames\": 12, \"sample_frames\": 240 }",
+        );
+
+        let scene = parse_scene(&json).expect("measurement scene must parse");
+        assert_eq!(
+            scene.measurement,
+            Some(CaptureMeasurement {
+                report: "capture.json".into(),
+                warmup_frames: 12,
+                sample_frames: 240,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_scene_rejects_invalid_measurement_bounds_and_unknown_fields() {
+        for (field, value) in [
+            ("warmup_frames", "0"),
+            ("warmup_frames", "10001"),
+            ("sample_frames", "0"),
+            ("sample_frames", "100001"),
+        ] {
+            let json = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!(
+                    "\"output\": \"capture.png\", \"measurement\": {{ \"report\": \"capture.json\", \"{field}\": {value}, \"{}\": {} }}",
+                    if field == "warmup_frames" { "sample_frames" } else { "warmup_frames" },
+                    if field == "warmup_frames" { "1" } else { "1" },
+                ),
+            );
+            assert!(parse_scene(&json).is_err(), "{field}={value} must fail");
+        }
+
+        let empty = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"measurement\": { \"report\": \"  \", \"warmup_frames\": 1, \"sample_frames\": 1 }",
+        );
+        assert!(matches!(
+            parse_scene(&empty),
+            Err(SceneError::EmptyMeasurementReport)
+        ));
+
+        let unknown = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"measurement\": { \"report\": \"capture.json\", \"warmup_frames\": 1, \"sample_frames\": 1, \"unexpected\": true }",
+        );
+        let err = parse_scene(&unknown).expect_err("unknown measurement field must fail");
+        assert!(err.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -336,6 +427,7 @@ mod tests {
                 radiance: [f32::NAN, 0.0, 0.0],
             }]),
             force_promotion: None,
+            measurement: None,
         };
         assert!(matches!(
             validate_scene(&scene),

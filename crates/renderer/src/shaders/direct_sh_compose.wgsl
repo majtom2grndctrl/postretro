@@ -14,8 +14,12 @@ struct GridDims {
     atlas_tiles_per_row: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
+    compact_atlas_tiles_per_row: u32,
+    compact_atlas_tiles_per_layer: u32,
+    physical_tile_stride: u32,
+    range_start: u32,
+    range_count: u32,
     _pad0: u32,
-    _pad1: u32,
 };
 
 struct DebugOverride {
@@ -175,8 +179,8 @@ fn slot_tile_origin(slot: u32) -> vec3<u32> {
     let tile_slot = slot % tiles_per_layer;
     let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
     return vec3<u32>(
-        (tile_slot % tiles_per_row) * grid.tile_dimension,
-        (tile_slot / tiles_per_row) * grid.tile_dimension,
+        (tile_slot % tiles_per_row) * grid.physical_tile_stride,
+        (tile_slot / tiles_per_row) * grid.physical_tile_stride,
         slot / tiles_per_layer,
     );
 }
@@ -307,15 +311,23 @@ fn selection_weight(selection_index: u32) -> f32 {
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(
-    @builtin(workgroup_id) brick: vec3<u32>,
+    @builtin(workgroup_id) workgroup: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
     // One workgroup owns one 4×4×4 affinity brick. Only stored-slot owners
     // write; the remaining invocations still participate in shared barriers.
+    if (workgroup.x >= grid.range_count) {
+        return;
+    }
+    let cell_index = grid.range_start + workgroup.x;
+    let affinity_row_width = max(grid.affinity_dims.x, 1u);
+    let affinity_layer_size = affinity_row_width * max(grid.affinity_dims.y, 1u);
+    let brick = vec3<u32>(
+        cell_index % affinity_row_width,
+        (cell_index / affinity_row_width) % max(grid.affinity_dims.y, 1u),
+        cell_index / affinity_layer_size,
+    );
     let local_probe = local_id.x + local_id.y * 8u;
-    let cell_index = brick.x
-        + brick.y * grid.affinity_dims.x
-        + brick.z * grid.affinity_dims.x * grid.affinity_dims.y;
     let probe = brick * AFFINITY_FACTOR + local_probe_coord(local_probe);
     let in_grid = !any(probe >= grid.grid_dimensions);
     let probe_index = probe.x
@@ -400,15 +412,16 @@ fn compose_main(
     }
 
     let level = cell_level(cell_index);
-    let start = affinity_offsets[cell_index];
-    let end = affinity_offsets[cell_index + 1u];
+    let offset_index = cell_index * 2u;
+    let start = affinity_offsets[offset_index];
+    let end = affinity_offsets[offset_index + 1u];
 
     if (level == 0u) {
         // L0 omits invalid probes, so read its compact payload directly. Id-41 L1
         // retains valid brick corners in kept-rank order; base atlases id-34 and
         // id-35 share eight reserved zero-filled L1 corner slots. Avoid loading 64
         // tiles into shared memory.
-        if (output_is_stored && use_promotion_subtraction) {
+        if (output_is_stored && use_promotion_subtraction && local_probe_is_kept(cell_index, local_probe)) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let w = selection_weight(affinity_lights[entry]);

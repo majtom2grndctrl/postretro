@@ -6,18 +6,22 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
-use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
-use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
+#[cfg(test)]
+use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+use postretro_level_format::sh_volume::{
+    AnimationDescriptor, OctahedralShProbe, OctahedralShVolumeSection,
+};
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
     BIND_ANIM_SAMPLES, BIND_BILLBOARD_DIRECT_SCATTER, BIND_DYNAMIC_DIRECT_PARAMS,
     BIND_SCRIPTED_LIGHT_DESCRIPTORS, BIND_SH_ATLAS_SAMPLER, BIND_SH_DEPTH_MOMENTS,
     BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS, DEFAULT_PROBE_OCCLUSION,
-    DYNAMIC_DIRECT_PARAMS_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
-    SCRIPTED_FLOATS_PER_LIGHT, SH_GRID_INFO_SIZE, ShGridInfoParams, build_animation_buffers,
-    build_grid_info_bytes, f32_to_f16_bits, probe_occlusion_seed_from_fast_env,
+    DUMMY_SH_PHYSICAL_TILE_STRIDE, DYNAMIC_DIRECT_PARAMS_SIZE, LEGACY_SH_PHYSICAL_TILE_STRIDE,
+    SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32, SCRIPTED_FLOATS_PER_LIGHT,
+    SH_GRID_INFO_SIZE, STREAMED_SH_PHYSICAL_TILE_STRIDE, ShGridInfoParams, build_animation_buffers,
+    build_animation_buffers_from_descriptors, build_grid_info_bytes, f32_to_f16_bits,
+    probe_occlusion_seed_from_fast_env,
 };
 use wgpu::util::DeviceExt;
 
@@ -29,7 +33,21 @@ use super::direct_sh_resources::{
     DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
 };
+#[cfg(any(feature = "dev-tools", test))]
+use super::sh_allocation::texture_allocation_bytes;
+use super::sh_allocation::{
+    ShAllocationKind, buffer_allocation, depth_moment_allocation, indirect_base_atlas_allocation,
+    indirect_base_atlas_dummy_allocation, indirect_total_atlas_allocation,
+    scripted_light_descriptor_bytes, scripted_light_sample_reserve_bytes, volume_3d_fits,
+};
+#[cfg(feature = "dev-tools")]
+use super::sh_atlas::base_atlas_format_label;
+use super::sh_atlas::{
+    create_total_atlas_texture, upload_compact_base_atlas_dummy, upload_compact_base_atlas_texture,
+    upload_depth_moment_texture,
+};
 use super::sh_indirection::build_probe_indirection_words;
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 
 /// Dev-tools marker color while the composed dense-atlas readback has not yet
 /// completed. This deliberately replaces the removed CPU-side base-atlas
@@ -150,6 +168,18 @@ pub struct ShVolumeResources {
 
 pub(super) struct ShVolumeSections<'a> {
     pub sh: Option<&'a OctahedralShVolumeSection>,
+    /// Streaming omits id-34's compact body but retains valid base metadata.
+    /// Whole-resident billboard scatter must key its availability to that
+    /// metadata seam rather than the legacy compact-atlas upload path.
+    pub stream_base_present: bool,
+    /// Streaming retains curve descriptors (including their samples) as fixed
+    /// metadata while intentionally omitting id-34's compact atlas body.
+    /// Keep the normal group-3 animation buffers live from that metadata.
+    pub stream_animation_descriptors: Option<&'a [AnimationDescriptor]>,
+    /// Section 27 is consumed by `ShComposeResources`, but its compose target
+    /// is owned here; retain presence so the single physical total-atlas row
+    /// cites both contributors without double-counting the texture.
+    pub indirect_delta_present: bool,
     pub direct: Option<&'a DirectShVolumeSection>,
     pub direct_delta: Option<&'a DirectShDeltaVolumesSection>,
     pub animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
@@ -305,9 +335,13 @@ impl ShVolumeResources {
         sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         let ShVolumeSections {
             sh: section,
+            stream_base_present,
+            stream_animation_descriptors,
+            indirect_delta_present,
             direct: direct_section,
             direct_delta: direct_delta_section,
             animated_direct_delta: animated_direct_delta_section,
@@ -396,21 +430,57 @@ impl ShVolumeResources {
             .map(|s| vec![PROBE_IRRADIANCE_PLACEHOLDER; s.probes.len()])
             .unwrap_or_default();
 
+        let indirect_sources =
+            source_ids([section.map(|_| 34), indirect_delta_present.then_some(27)]);
+        let indirect_state = match (section.is_some(), usable.is_some()) {
+            (_, true) => ShResidencyAllocationState::Data,
+            (true, false) => ShResidencyAllocationState::Fallback,
+            (false, false) => ShResidencyAllocationState::Dummy,
+        };
+        // Streamed id-34 retains animation descriptors/samples in the shared
+        // group-3 resources even though it deliberately omits the legacy
+        // whole atlas body. Attribute those real buffers to id-34 and keep
+        // them as manifest-backed data rather than mislabeling them dummy.
+        let animation_sources =
+            source_ids([section.map(|_| 34).or(stream_base_present.then_some(34))]);
+        let animation_state = if stream_base_present {
+            ShResidencyAllocationState::Data
+        } else {
+            indirect_state
+        };
+
         if let Some(sec) = usable {
-            base_atlas_texture = upload_compact_base_atlas_texture(device, queue, sec);
-            total_atlas_texture = create_total_atlas_texture(
-                device,
+            let base_allocation = indirect_base_atlas_allocation(Some(sec));
+            ledger.record_texture(
+                base_allocation,
+                &source_ids([section.map(|_| 34)]),
+                false,
+                ShResidencyAllocationState::Data,
+            );
+            base_atlas_texture =
+                upload_compact_base_atlas_texture(device, queue, sec, base_allocation);
+            let total_allocation = indirect_total_atlas_allocation(
                 sec.atlas_dimensions,
                 sec.layer_count,
-                "SH Total Octahedral Atlas",
+                cfg!(feature = "dev-tools"),
             );
+            ledger.record_texture(total_allocation, &indirect_sources, false, indirect_state);
+            total_atlas_texture =
+                create_total_atlas_texture(device, total_allocation, "SH Total Octahedral Atlas");
             let moments = pack_probe_depth_moments(
                 &sec.probes,
                 sec.grid_dimensions,
                 &probe_indirection_words,
             );
+            let depth_allocation = depth_moment_allocation(sec.grid_dimensions);
+            ledger.record_texture(
+                depth_allocation,
+                &source_ids([section.map(|_| 34)]),
+                false,
+                ShResidencyAllocationState::Data,
+            );
             depth_moment_texture =
-                upload_depth_moment_texture(device, queue, sec.grid_dimensions, &moments);
+                upload_depth_moment_texture(device, queue, &moments, depth_allocation);
             grid_origin = sec.grid_origin;
             cell_size = sec.cell_size;
             grid_dimensions = sec.grid_dimensions;
@@ -423,10 +493,31 @@ impl ShVolumeResources {
             present = true;
         } else {
             let dummy = dummy_depth_moment_payload();
-            base_atlas_texture = upload_compact_base_atlas_dummy(device, queue);
-            total_atlas_texture =
-                create_total_atlas_texture(device, [1, 1], 1, "SH Total Octahedral Atlas Dummy");
-            depth_moment_texture = upload_depth_moment_texture(device, queue, [1, 1, 1], &dummy);
+            let base_allocation = indirect_base_atlas_dummy_allocation();
+            ledger.record_texture(
+                base_allocation,
+                &source_ids([section.map(|_| 34)]),
+                false,
+                indirect_state,
+            );
+            base_atlas_texture = upload_compact_base_atlas_dummy(device, queue, base_allocation);
+            let total_allocation =
+                indirect_total_atlas_allocation([1, 1], 1, cfg!(feature = "dev-tools"));
+            ledger.record_texture(total_allocation, &indirect_sources, false, indirect_state);
+            total_atlas_texture = create_total_atlas_texture(
+                device,
+                total_allocation,
+                "SH Total Octahedral Atlas Dummy",
+            );
+            let depth_allocation = depth_moment_allocation([1, 1, 1]);
+            ledger.record_texture(
+                depth_allocation,
+                &source_ids([section.map(|_| 34)]),
+                false,
+                indirect_state,
+            );
+            depth_moment_texture =
+                upload_depth_moment_texture(device, queue, &dummy, depth_allocation);
             grid_origin = [0.0; 3];
             cell_size = [1.0; 3];
             grid_dimensions = [1, 1, 1];
@@ -446,7 +537,7 @@ impl ShVolumeResources {
         // on-disk payload metric.
         #[cfg(feature = "dev-tools")]
         {
-            let allocation = compact_base_atlas_allocation(usable);
+            let allocation = indirect_base_atlas_allocation(usable);
             let (serialized_bytes, valid_probe_count, probe_count) = section
                 .map(|sec| {
                     (
@@ -465,7 +556,7 @@ impl ShVolumeResources {
                 allocation.extent.width,
                 allocation.extent.height,
                 allocation.extent.depth_or_array_layers,
-                base_atlas_allocation_bytes(allocation),
+                texture_allocation_bytes(allocation),
                 serialized_bytes,
                 valid_probe_count,
                 probe_count,
@@ -477,35 +568,78 @@ impl ShVolumeResources {
         // are single-element dummies so the bind group remains valid (wgpu
         // rejects zero-sized storage buffer bindings).
         let (anim_descriptor_bytes, mut anim_sample_bytes, animated_light_count) =
-            build_animation_buffers(usable);
+            match (usable, stream_animation_descriptors) {
+                (Some(section), _) => build_animation_buffers(Some(section)),
+                (None, Some(descriptors)) => build_animation_buffers_from_descriptors(descriptors),
+                (None, None) => build_animation_buffers(None),
+            };
 
         // Append the scripted-animation region: one slot per forward descriptor
         // record, including every raw animated-baked tail row. FGD samples occupy
         // [0, scripted_sample_byte_offset); scripted samples follow.
         let scripted_sample_byte_offset = anim_sample_bytes.len();
-        let scripted_region_bytes = scripted_light_capacity * SCRIPTED_FLOATS_PER_LIGHT * 4;
+        let scripted_region_bytes = scripted_light_sample_reserve_bytes(scripted_light_capacity);
         anim_sample_bytes.extend(std::iter::repeat_n(0u8, scripted_region_bytes));
 
+        let anim_descriptors_allocation = buffer_allocation(
+            ShAllocationKind::AnimatedLightDescriptors,
+            &anim_descriptor_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        ledger.record_buffer(
+            anim_descriptors_allocation,
+            &animation_sources,
+            true,
+            animation_state,
+        );
         let anim_descriptors_buffer = device.create_buffer_init_helper(
             "SH Animation Descriptors",
             &anim_descriptor_bytes,
+            anim_descriptors_allocation.usage,
+        );
+        let anim_samples_allocation = buffer_allocation(
+            ShAllocationKind::AnimatedLightSamples,
+            &anim_sample_bytes,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        ledger.record_buffer(
+            anim_samples_allocation,
+            &animation_sources,
+            true,
+            if scripted_light_capacity > 0 && usable.is_none() {
+                ShResidencyAllocationState::Data
+            } else {
+                animation_state
+            },
         );
         let anim_samples_buffer = device.create_buffer_init_helper(
             "SH Animation Samples",
             &anim_sample_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            anim_samples_allocation.usage,
         );
 
         // wgpu rejects zero-sized storage buffers; pad to one slot for empty maps.
         // The forward loop has no lights in that case, so the dummy is never read.
-        let scripted_descriptor_slots = scripted_light_capacity.max(1);
-        let scripted_descriptor_bytes =
-            vec![0u8; scripted_descriptor_slots * ANIMATION_DESCRIPTOR_SIZE];
+        let scripted_descriptor_bytes = scripted_light_descriptor_bytes(scripted_light_capacity);
+        let scripted_descriptor_allocation = buffer_allocation(
+            ShAllocationKind::ScriptedLightDescriptors,
+            &scripted_descriptor_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        ledger.record_buffer(
+            scripted_descriptor_allocation,
+            &[],
+            true,
+            if scripted_light_capacity > 0 {
+                ShResidencyAllocationState::Data
+            } else {
+                ShResidencyAllocationState::Dummy
+            },
+        );
         let scripted_light_descriptors_buffer = device.create_buffer_init_helper(
             "Scripted Light Descriptors",
             &scripted_descriptor_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            scripted_descriptor_allocation.usage,
         );
 
         let grid_info_bytes = build_grid_info_bytes(ShGridInfoParams {
@@ -516,15 +650,31 @@ impl ShVolumeResources {
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
+            physical_tile_stride: if present {
+                LEGACY_SH_PHYSICAL_TILE_STRIDE
+            } else {
+                DUMMY_SH_PHYSICAL_TILE_STRIDE
+            },
             tiles_per_layer,
             atlas_layer_count,
             present,
             probe_occlusion_enabled,
         });
+        let grid_info_allocation = buffer_allocation(
+            ShAllocationKind::GridInfo,
+            &grid_info_bytes,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        ledger.record_buffer(
+            grid_info_allocation,
+            &source_ids([section.map(|_| 34)]),
+            section.is_none(),
+            indirect_state,
+        );
         let grid_info_buffer = device.create_buffer_init_helper(
             "SH Grid Info Uniform",
             &grid_info_bytes,
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            grid_info_allocation.usage,
         );
 
         let base_atlas_view = base_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -560,13 +710,19 @@ impl ShVolumeResources {
             direct_delta_section,
             animated_direct_delta_section,
             usable.map(DirectAtlasLayout::from_sh_section),
+            direct_section.is_some(),
+            ledger,
         );
         let billboard_direct_scatter = BillboardDirectScatterResources::new(
             device,
             queue,
-            present,
-            billboard_direct_scatter_section.filter(|_| present),
-            animated_billboard_direct_scatter_delta_section.filter(|_| present),
+            present || stream_base_present,
+            billboard_direct_scatter_section.filter(|_| present || stream_base_present),
+            animated_billboard_direct_scatter_delta_section
+                .filter(|_| present || stream_base_present),
+            billboard_direct_scatter_section.is_some(),
+            animated_billboard_direct_scatter_delta_section.is_some(),
+            ledger,
         );
 
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -726,6 +882,11 @@ impl ShVolumeResources {
             tile_dimension: self.tile_dimension,
             tile_border: self.tile_border,
             atlas_tiles_per_row: self.atlas_tiles_per_row,
+            physical_tile_stride: if self.present {
+                LEGACY_SH_PHYSICAL_TILE_STRIDE
+            } else {
+                DUMMY_SH_PHYSICAL_TILE_STRIDE
+            },
             tiles_per_layer: self.tiles_per_layer,
             atlas_layer_count: self.atlas_layer_count,
             present: self.present,
@@ -872,249 +1033,7 @@ fn dummy_depth_moment_payload() -> [u16; 4] {
 }
 
 fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
-    grid_dimensions[0] > 0
-        && grid_dimensions[1] > 0
-        && grid_dimensions[2] > 0
-        && grid_dimensions[0] <= limits.max_texture_dimension_3d
-        && grid_dimensions[1] <= limits.max_texture_dimension_3d
-        && grid_dimensions[2] <= limits.max_texture_dimension_3d
-}
-
-/// Upload v11's node-aware base-volume stored-tile atlas without re-expanding it. BC6H blobs
-/// remain compressed through upload and hardware-decode only in the compose
-/// pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
-///
-/// A valid section with zero valid probes has zero compact dimensions. Compose
-/// will bind only invalid indirection words, but wgpu still needs a nonzero
-/// texture: BC6H uses its minimum valid 4×4 zero block and the uncompressed
-/// path uses one 1×1 zero texel.
-#[derive(Clone, Copy)]
-struct BaseAtlasAllocation {
-    format: wgpu::TextureFormat,
-    extent: wgpu::Extent3d,
-}
-
-fn compact_base_atlas_allocation(
-    section: Option<&OctahedralShVolumeSection>,
-) -> BaseAtlasAllocation {
-    let Some(section) = section else {
-        return BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Rgba16Float,
-            extent: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        };
-    };
-
-    let empty_compact_atlas = section.atlas_dimensions[0] == 0
-        || section.atlas_dimensions[1] == 0
-        || section.layer_count == 0;
-    match section.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            extent: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-        },
-        IRRADIANCE_FORMAT_BC6H => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            extent: wgpu::Extent3d {
-                width: section.atlas_dimensions[0].div_ceil(4) * 4,
-                height: section.atlas_dimensions[1].div_ceil(4) * 4,
-                depth_or_array_layers: section.layer_count,
-            },
-        },
-        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Rgba16Float,
-            extent: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        },
-        IRRADIANCE_FORMAT_RGBA16F => BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Rgba16Float,
-            extent: wgpu::Extent3d {
-                width: section.atlas_dimensions[0],
-                height: section.atlas_dimensions[1],
-                depth_or_array_layers: section.layer_count,
-            },
-        },
-        // `OctahedralShVolumeSection::from_bytes` rejects unknown tags. Keep
-        // this match exhaustive so manually-constructed test data cannot be
-        // uploaded under a silently reinterpreted format.
-        unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
-    }
-}
-
-#[cfg(any(feature = "dev-tools", test))]
-fn base_atlas_allocation_bytes(allocation: BaseAtlasAllocation) -> u64 {
-    let extent = allocation.extent;
-    match allocation.format {
-        wgpu::TextureFormat::Bc6hRgbUfloat => {
-            u64::from(extent.width.div_ceil(4))
-                * u64::from(extent.height.div_ceil(4))
-                * u64::from(extent.depth_or_array_layers)
-                * 16
-        }
-        wgpu::TextureFormat::Rgba16Float => {
-            u64::from(extent.width)
-                * u64::from(extent.height)
-                * u64::from(extent.depth_or_array_layers)
-                * 8
-        }
-        _ => unreachable!("base SH atlas allocation only uses BC6H or Rgba16Float"),
-    }
-}
-
-fn upload_compact_base_atlas_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    section: &OctahedralShVolumeSection,
-) -> wgpu::Texture {
-    let empty_compact_atlas = section.atlas_dimensions[0] == 0
-        || section.atlas_dimensions[1] == 0
-        || section.layer_count == 0;
-    let zero_bc6h = [0u8; 16];
-    let zero_rgba16f = [0u8; 8];
-    let allocation = compact_base_atlas_allocation(Some(section));
-    let contents = match section.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => zero_bc6h.as_slice(),
-        IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => zero_rgba16f.as_slice(),
-        IRRADIANCE_FORMAT_BC6H | IRRADIANCE_FORMAT_RGBA16F => section.compact_atlas.as_slice(),
-        unknown => panic!("unsupported compact SH irradiance format tag {unknown}"),
-    };
-
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("SH Base Octahedral Atlas"),
-            size: allocation.extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: allocation.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        contents,
-    )
-}
-
-/// Dummy for the no-usable-probes path. It is `Rgba16Float` because every
-/// compose indirection word is a sentinel, so the texture is never sampled.
-fn upload_compact_base_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    let zero_texel = [0u8; 8];
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("SH Base Octahedral Atlas Dummy"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &zero_texel,
-    )
-}
-
-#[cfg(feature = "dev-tools")]
-fn base_atlas_format_label(format: wgpu::TextureFormat) -> &'static str {
-    match format {
-        wgpu::TextureFormat::Bc6hRgbUfloat => "BC6H",
-        wgpu::TextureFormat::Rgba16Float => "Rgba16Float",
-        _ => unreachable!("base SH atlas allocation only uses BC6H or Rgba16Float"),
-    }
-}
-
-fn upload_depth_moment_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    grid: [u32; 3],
-    data_u16: &[u16],
-) -> wgpu::Texture {
-    let size = wgpu::Extent3d {
-        width: grid[0].max(1),
-        height: grid[1].max(1),
-        depth_or_array_layers: grid[2].max(1),
-    };
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("SH Depth Moments"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D3,
-        format: wgpu::TextureFormat::Rgba16Uint,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    let byte_slice = u16_slice_to_bytes(data_u16);
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &byte_slice,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(8 * size.width),
-            rows_per_image: Some(size.height),
-        },
-        size,
-    );
-
-    texture
-}
-
-/// Create the stored-tile total octahedral atlas texture. No data is uploaded
-/// — wgpu zero-initializes; the compose pass overwrites every stored texel.
-fn create_total_atlas_texture(
-    device: &wgpu::Device,
-    atlas_dimensions: [u32; 2],
-    layer_count: u32,
-    label: &str,
-) -> wgpu::Texture {
-    // dev-tools reads back the composed atlas for the irradiance probe-marker
-    // overlay, which needs COPY_SRC. The flag is only added under the feature so
-    // release builds — where the readback path is compiled out — keep the
-    // minimal usage.
-    #[allow(unused_mut)]
-    let mut usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
-    #[cfg(feature = "dev-tools")]
-    {
-        usage |= wgpu::TextureUsages::COPY_SRC;
-    }
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: atlas_dimensions[0].max(1),
-            height: atlas_dimensions[1].max(1),
-            depth_or_array_layers: layer_count.max(1),
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
-        usage,
-        view_formats: &[],
-    })
+    volume_3d_fits(grid_dimensions, limits)
 }
 
 // --- Minor wgpu helper shims (local to this module) ---
@@ -1163,27 +1082,24 @@ mod tests {
 
     #[test]
     fn base_atlas_allocation_bytes_uses_physical_bc6h_blocks() {
-        let allocation = BaseAtlasAllocation {
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            extent: wgpu::Extent3d {
-                width: 12,
-                height: 8,
-                depth_or_array_layers: 3,
-            },
-        };
+        let mut section = OctahedralShVolumeSection::placeholder();
+        section.irradiance_format = IRRADIANCE_FORMAT_BC6H;
+        section.atlas_dimensions = [12, 8];
+        section.layer_count = 3;
+        let allocation = indirect_base_atlas_allocation(Some(&section));
 
-        assert_eq!(base_atlas_allocation_bytes(allocation), 288);
+        assert_eq!(texture_allocation_bytes(allocation), 288);
     }
 
     #[test]
     fn missing_sh_base_atlas_reports_rgba16f_dummy_allocation() {
-        let allocation = compact_base_atlas_allocation(None);
+        let allocation = indirect_base_atlas_allocation(None);
 
         assert_eq!(allocation.format, wgpu::TextureFormat::Rgba16Float);
         assert_eq!(allocation.extent.width, 1);
         assert_eq!(allocation.extent.height, 1);
         assert_eq!(allocation.extent.depth_or_array_layers, 1);
-        assert_eq!(base_atlas_allocation_bytes(allocation), 8);
+        assert_eq!(texture_allocation_bytes(allocation), 8);
     }
 
     #[test]
@@ -1257,6 +1173,7 @@ mod tests {
             tile_dimension: 1,
             tile_border: 0,
             atlas_tiles_per_row: 1,
+            physical_tile_stride: DUMMY_SH_PHYSICAL_TILE_STRIDE,
             tiles_per_layer: 1,
             atlas_layer_count: 1,
             present: false,

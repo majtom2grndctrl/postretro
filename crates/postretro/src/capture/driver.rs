@@ -1,40 +1,52 @@
 // Synchronous offscreen capture of world geometry and authored receivers.
 // See: context/lib/rendering_pipeline.md §7.8
 
-use std::collections::{BTreeMap, HashSet};
+#[cfg(test)]
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(test)]
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
-use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
-use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
-use postretro_visibility::{CameraCullVisibility, VisibleCells};
+#[cfg(test)]
+use postretro_entities::ComponentKind;
+#[cfg(test)]
+use postretro_entities::EntityRegistry;
 
-use crate::camera;
-use crate::render::{ClearColor, LevelGeometry, Renderer, level_world_to_geometry};
-use crate::runtime_movers::{
-    ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
+use super::prepared::PreparedCapture;
+use super::report::measurement_report;
+use super::scene::parse_scene;
+#[cfg(test)]
+use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion};
+#[cfg(test)]
+use super::setup::{
+    capture_static_lights_and_shadow_selection, capture_view_projection,
+    forced_active_animation_descriptor, resolve_forced_active_animation_slots,
+    resolve_forced_animated_promotion_rows, validate_forced_animation_slot_bounds,
 };
-use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
-use crate::scripting::map_entity::MapEntity;
-use crate::scripting_systems::hit_zones::HitZoneStore;
+
+#[cfg(test)]
+use super::prepared::{
+    capture_mesh_models, collect_capture_receiver_draws, spawn_capture_receiver_registry,
+};
+#[cfg(test)]
+use crate::camera;
+#[cfg(test)]
+use crate::runtime_movers::KinematicMoverRenderCollector;
+#[cfg(test)]
 use crate::scripting_systems::light_bridge::LightBridge;
-use crate::scripting_systems::mesh_anim::MeshClipTables;
+#[cfg(test)]
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
-use crate::startup::session::content_root_from_map;
-use crate::startup::worker::derive_prm_root_dev_layout;
-
-use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion, parse_scene};
-
-/// Portal-walk capture controls diagnostics only; capture has no diagnostic
-/// consumer, so avoid allocating a one-frame trace.
-const CAPTURE_PORTAL_WALK: bool = false;
+#[cfg(test)]
+use postretro_entities::ComponentValue;
+#[cfg(test)]
+use postretro_visibility::VisibleCells;
 const MAX_UNIQUE_FILE_ATTEMPTS: usize = 1024;
 static NEXT_UNIQUE_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -67,658 +79,93 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     reject_output_source_aliases(output_path, map_path, scene_path)?;
     preflight_output_path(output_path)?;
 
-    // Load synchronously: capture creates no worker thread or event loop.
-    let mut world = postretro_level_loader::load_prl(&scene.map)
-        .with_context(|| format!("failed to load `{}`", scene.map))?;
+    let report_path = scene
+        .measurement
+        .as_ref()
+        .map(|measurement| {
+            let report_path = Path::new(&measurement.report);
+            reject_output_source_aliases(report_path, map_path, scene_path)?;
+            reject_path_alias(report_path, output_path, "capture PNG output")?;
+            preflight_output_path(report_path)?;
+            Ok::<_, anyhow::Error>(report_path)
+        })
+        .transpose()?;
 
-    let [width, height] = scene.resolution;
-    let mut renderer = Renderer::new_offscreen(width, height)
-        .context("failed to initialize offscreen frame capture renderer")?;
+    let mut prepared = PreparedCapture::prepare(&scene)?;
+    let [width, height] = prepared.resolution();
 
-    let texture_materials = derive_texture_materials(&world.texture_names);
-    let content_root = content_root_from_map(Some(&scene.map));
-    let prm_cache_root = derive_prm_root_dev_layout(&content_root);
-    renderer.install_textures(
-        &world.texture_names,
-        &world.texture_cache_keys,
-        &prm_cache_root,
-        &texture_materials,
-    );
-    renderer.normalize_world_uvs(&mut world);
-    let (static_lights, static_light_influences, static_entity_shadow_lights) =
-        capture_static_lights_and_shadow_selection(
-            &world.lights,
-            &world.light_influences,
-            &world.entity_shadow_lights,
+    if let Some(measurement) = &scene.measurement {
+        let map_bytes = fs::metadata(map_path)
+            .with_context(|| format!("failed to inspect capture map `{}`", map_path.display()))?
+            .len();
+        for _ in 0..measurement.warmup_frames {
+            let _ = prepared.capture_measurement_frame()?;
+        }
+        // Warmup may have completed a full timing window. It belongs to setup,
+        // never to sample statistics or report output.
+        prepared.reset_measurement_timing();
+
+        let mut cpu_samples_ms = Vec::with_capacity(measurement.sample_frames as usize);
+        let mut gpu_windows = Vec::new();
+        for _ in 0..measurement.sample_frames {
+            let sample_start = Instant::now();
+            if let Some(window) = prepared.capture_measurement_frame()? {
+                gpu_windows.push(window);
+            }
+            cpu_samples_ms.push(sample_start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        let report = measurement_report(
+            &scene,
+            map_bytes,
+            capture_git_revision(),
+            prepared.measurement_adapter_identity(),
+            prepared.sh_residency_report()?,
+            cpu_samples_ms,
+            prepared.measurement_timing_state(),
+            prepared.measurement_partial_timing_frames(),
+            gpu_windows,
         );
-    let geometry = LevelGeometry {
-        lights: &static_lights,
-        light_influences: &static_light_influences,
-        entity_shadow_lights: &static_entity_shadow_lights,
-        ..level_world_to_geometry(&world, &texture_materials)
-    };
-    renderer.install_level_geometry(&geometry);
-    let forced_active_writes = install_forced_active_animation_descriptors(
-        &mut renderer,
-        &world.lights,
-        scene.force_active.as_deref(),
-    )?;
-    let forced_promotion_weights = resolve_forced_animated_promotion_rows(
-        &world.lights,
-        world.animated_direct_sh_delta_volumes.as_ref(),
-        scene.force_promotion.as_deref(),
-    )?;
-
-    let eye = Vec3::from_array(scene.camera.position);
-    let view_proj = capture_view_projection(&scene.camera, width, height);
-    let mut scratch = Vec::new();
-    let (visibility, _frustum) = postretro_visibility::determine_visible_cells(
-        eye,
-        view_proj,
-        &world,
-        &[],
-        CAPTURE_PORTAL_WALK,
-        &mut scratch,
-    );
-    let visible_cells = visibility.visible_cells;
-    let fog_reachable = visibility.fog_reachable;
-    let stats = visibility.stats;
-    let light_reachable_cell_mask = light_reachable_cell_mask(&world, &fog_reachable);
-    let reachable_cell_aabbs = reachable_cell_aabbs(&world, &fog_reachable);
-
-    // Capture has no script context or levelLoad event. Stand up only the
-    // VM-free map-authored receiver state the windowed render frame collects.
-    let mut registry = spawn_capture_receiver_registry(&world)?;
-    if !forced_promotion_weights.is_empty() {
-        install_capture_animated_promotion_bridge(
-            &mut renderer,
-            &world,
-            &static_lights,
-            &static_light_influences,
-            &mut registry,
-            &forced_active_writes,
+        let staged_report = stage_measurement_report(
+            report_path.expect("measurement report path was preflighted"),
+            &report,
         )?;
-    }
-    for model in capture_mesh_models(&registry)? {
-        renderer
-            .load_skinned_model(&model, &content_root, &prm_cache_root)
-            .ok_or_else(|| anyhow!("failed to load capture receiver model `{model}`"))?;
-    }
-    let mut mover_collector = KinematicMoverRenderCollector::new();
-    let mut mesh_collector = MeshRenderCollector::new();
-    collect_capture_receiver_draws(
-        &registry,
-        &world,
-        &visible_cells,
-        eye,
-        &mut mover_collector,
-        &mut mesh_collector,
-    );
-    renderer.set_kinematic_mover_draws(
-        mover_collector.instances(),
-        mover_collector.shadow_instances(),
-    );
-    renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
-    renderer.set_mesh_draws(mesh_collector.instances());
 
-    let rgba = renderer.capture_frame_indirect(
-        CameraCullVisibility {
-            cells: &visible_cells,
-            path: stats.path,
-        },
-        &light_reachable_cell_mask,
-        &reachable_cell_aabbs,
-        &fog_reachable,
-        Some(stats.camera_cell),
-        view_proj,
-        eye,
-        &[],
-        &forced_promotion_weights,
-        ClearColor {
-            r: 0.05,
-            g: 0.05,
-            b: 0.08,
-            a: 1.0,
-        },
-        true,
-    )?;
+        // The only readback is after all timed work. `scene_color` readback is
+        // already RGBA8 sRGB; PNG publication remains the legacy atomic path.
+        let rgba = prepared.capture_frame()?;
+        write_capture_png(output_path, &rgba, width, height)?;
+        publish_staged_measurement_report(
+            staged_report,
+            report_path.expect("measurement report path was preflighted"),
+        )?;
+    } else {
+        let rgba = prepared.capture_frame()?;
 
-    // `scene_color` readback is already RGBA8 sRGB. Write only after all
-    // rendering succeeded, so invalid input or GPU failures never touch output.
-    write_capture_png(output_path, &rgba, width, height)?;
+        // `scene_color` readback is already RGBA8 sRGB. Write only after all
+        // rendering succeeded, so invalid input or GPU failures never touch output.
+        write_capture_png(output_path, &rgba, width, height)?;
+    }
 
     Ok(())
-}
-
-/// Materialize just the VM-free receivers capture can render at a loaded
-/// instant. This deliberately does not call `install_world_cpu`: that path
-/// also runs data scripts and fires `levelLoad`.
-fn spawn_capture_receiver_registry(
-    world: &postretro_level_loader::LevelWorld,
-) -> Result<EntityRegistry> {
-    let mut registry = EntityRegistry::new();
-    spawn_loaded_kinematic_movers(&mut registry, world, ENGINE_AUTO_CLOSE_MS)
-        .context("failed to spawn capture kinematic movers")?;
-
-    // `MapEntity` is the scripting-facing adapter over PRL records. Built-in
-    // dispatch is VM-free, so this gives capture the exact map-authored
-    // `prop_mesh` spawn contract without admitting the data-script sweep.
-    let map_entities: Vec<MapEntity> = world.map_entities.iter().cloned().map(Into::into).collect();
-    let mut dispatch = ClassnameDispatch::new();
-    register_builtins(&mut dispatch);
-    apply_classname_dispatch(&map_entities, &dispatch, &mut registry);
-
-    Ok(registry)
-}
-
-/// Validate model handles placed by capture's built-in map dispatch. An empty
-/// prop handle must fail capture instead of silently removing its draw.
-/// The renderer cache key is this verbatim string, so
-/// load it before the mesh collector submits an instance using the same handle.
-fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<String>> {
-    let mut seen = HashSet::new();
-    let mut models = Vec::new();
-    for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
-        let ComponentValue::Mesh(mesh) = value else {
-            continue;
-        };
-        if mesh.model.is_empty() {
-            bail!("capture prop_mesh receiver {id:?} has an absent or empty `model` key");
-        }
-        if seen.insert(mesh.model.clone()) {
-            models.push(mesh.model.clone());
-        }
-    }
-    Ok(models)
-}
-
-/// Mirror the windowed render-frame collector calls for capture's spawned
-/// receivers. A single-instant capture has no tick history or animation clock:
-/// alpha is therefore 1.0 and animation time is 0.0.
-fn collect_capture_receiver_draws(
-    registry: &EntityRegistry,
-    world: &postretro_level_loader::LevelWorld,
-    visible_cells: &VisibleCells,
-    eye: Vec3,
-    mover_collector: &mut KinematicMoverRenderCollector,
-    mesh_collector: &mut MeshRenderCollector,
-) {
-    mover_collector.collect(registry, world, visible_cells, 1.0);
-
-    let clip_tables = MeshClipTables::new();
-    let hit_zones = HitZoneStore::new();
-    mesh_collector.collect_with_hit_zones(
-        registry,
-        world,
-        visible_cells,
-        1.0,
-        0.0,
-        &clip_tables,
-        eye,
-        &hit_zones,
-    );
-}
-
-/// Seed capture-only authored active states after the level install has restored
-/// the baked descriptor mirror. `capture_frame_indirect` flushes these writes
-/// in its first `update_per_frame_uniforms` call.
-fn install_forced_active_animation_descriptors(
-    renderer: &mut Renderer,
-    lights: &[postretro_level_loader::MapLight],
-    forced_lights: Option<&[ForcedAnimLight]>,
-) -> Result<Vec<(u32, [f32; 3])>> {
-    let writes = resolve_forced_active_animation_slots(lights, forced_lights)?;
-    validate_forced_animation_slot_bounds(&writes, renderer.animated_compose_descriptor_count())?;
-    for &(slot, radiance) in &writes {
-        renderer
-            .write_animated_compose_descriptor(slot, &forced_active_animation_descriptor(radiance));
-    }
-    Ok(writes)
-}
-
-/// Capture normally remains the v1, delta-only path. A forced promoted still
-/// is the one exception: materialize the same bridge tail windowed gameplay
-/// emits, then let the renderer pin the already-assigned row's `w`. This keeps
-/// the capture VM-free and single-instant while exercising the real forward
-/// descriptor, rest cone, slot, and depth-cache seams. The bridge still starts
-/// from capture's compact static-only list; the raw section-45 roster supplies
-/// promotion identity without restoring the authored dynamic tier.
-fn install_capture_animated_promotion_bridge(
-    renderer: &mut Renderer,
-    world: &postretro_level_loader::LevelWorld,
-    capture_lights: &[postretro_level_loader::MapLight],
-    capture_light_influences: &[postretro_render_data::influence::LightInfluence],
-    registry: &mut EntityRegistry,
-    forced_active_writes: &[(u32, [f32; 3])],
-) -> Result<()> {
-    if capture_lights.iter().any(|light| light.is_dynamic) {
-        bail!("capture promotion bridge requires the static-only capture light list");
-    }
-    let baked_descriptors = world
-        .sh_volume
-        .as_ref()
-        .map(|volume| volume.animation_descriptors.as_slice())
-        .unwrap_or(&[]);
-    let roster = world
-        .animated_direct_sh_delta_volumes
-        .as_ref()
-        .map(|section| section.animation_descriptor_indices.as_slice())
-        .unwrap_or(&[]);
-    let mut bridge = LightBridge::new();
-    bridge.populate_from_level_with_influences(
-        capture_lights,
-        capture_light_influences,
-        baked_descriptors,
-        registry,
-        (renderer.scripted_sample_byte_offset() / size_of::<f32>()) as u32,
-    );
-    bridge.set_animated_baked_promotion_roster(roster);
-    apply_forced_active_capture_light_components(registry, forced_active_writes)?;
-    let update = bridge
-        .update(registry, 0.0, 1.0)
-        .ok_or_else(|| anyhow!("capture promotion needs at least one map light"))?;
-    if !update.has_dirty_data {
-        bail!("capture promotion bridge did not emit its animated forward tail");
-    }
-    if !renderer.upload_light_bridge_snapshot(
-        update.lights_bytes,
-        update.influence_bytes,
-        update.descriptor_bytes,
-        update.samples_bytes,
-        update.effective_brightness,
-        update.animated_window_brightness,
-        update.compose_descriptor_writes,
-    ) {
-        bail!("capture promotion light snapshot exceeds renderer capacity");
-    }
-    Ok(())
-}
-
-/// The existing `force_active` descriptor only owns Pass B. When a forced
-/// still also promotes, update the bridge-owned light so the forward term uses
-/// identical radiance. The bridge then writes the same 48-byte compose
-/// descriptor, proving a forced `w=0` scene remains byte-identical to v1.
-fn apply_forced_active_capture_light_components(
-    registry: &mut EntityRegistry,
-    forced_active_writes: &[(u32, [f32; 3])],
-) -> Result<()> {
-    let forced_by_slot: BTreeMap<_, _> = forced_active_writes.iter().copied().collect();
-    if forced_by_slot.is_empty() {
-        return Ok(());
-    }
-    let light_ids: Vec<_> = registry
-        .iter_with_kind(ComponentKind::Light)
-        .map(|(id, _)| id)
-        .collect();
-    for id in light_ids {
-        let mut component = registry
-            .get_component::<LightComponent>(id)
-            .with_context(|| format!("read capture light component {id:?}"))?
-            .clone();
-        let Some(&radiance) = component
-            .animated_slot
-            .and_then(|slot| forced_by_slot.get(&slot))
-        else {
-            continue;
-        };
-        component.color = radiance;
-        component.intensity = 1.0;
-        component.animation = None;
-        registry
-            .set_component(id, component)
-            .with_context(|| format!("write forced capture light component {id:?}"))?;
-    }
-    Ok(())
-}
-
-/// Validate the complete batch before any write. The installed renderer count
-/// is authoritative: an unusable SH section can leave only a dummy buffer.
-fn validate_forced_animation_slot_bounds(
-    writes: &[(u32, [f32; 3])],
-    descriptor_count: u32,
-) -> Result<()> {
-    for &(slot, _) in writes {
-        if slot >= descriptor_count {
-            bail!(
-                "force_active animated slot {slot} is outside the installed descriptor count {descriptor_count}"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Resolve authored tags against the complete map-light list. Capture's
-/// static-only forward-light filter has a compacted index space, while
-/// `animated_slot` names the independently indexed SH compose descriptor.
-fn resolve_forced_active_animation_slots(
-    lights: &[postretro_level_loader::MapLight],
-    forced_lights: Option<&[ForcedAnimLight]>,
-) -> Result<Vec<(u32, [f32; 3])>> {
-    let Some(forced_lights) = forced_lights else {
-        return Ok(Vec::new());
-    };
-
-    // Keying writes by slot both deduplicates multi-light tag matches and gives
-    // the renderer a stable write order independent of `world.lights` order.
-    let mut slot_radiance = BTreeMap::new();
-    for forced in forced_lights {
-        let mut tag_found = false;
-        let mut animated_slot_found = false;
-        for light in lights {
-            if !light.tags.iter().any(|tag| tag == &forced.tag) {
-                continue;
-            }
-            tag_found = true;
-            let Some(slot) = light.animated_slot else {
-                continue;
-            };
-            animated_slot_found = true;
-            match slot_radiance.entry(slot) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(forced.radiance);
-                }
-                std::collections::btree_map::Entry::Occupied(entry)
-                    if *entry.get() == forced.radiance => {}
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    bail!(
-                        "force_active tag `{}` resolves to an animated descriptor with conflicting radiance",
-                        forced.tag
-                    );
-                }
-            }
-        }
-        if !tag_found {
-            bail!(
-                "force_active tag `{}` does not match a map light",
-                forced.tag
-            );
-        }
-        if !animated_slot_found {
-            bail!(
-                "force_active tag `{}` does not match an animated map light",
-                forced.tag
-            );
-        }
-    }
-
-    Ok(slot_radiance.into_iter().collect())
-}
-
-/// Resolve capture promotion tags through the section-45 raw roster. A
-/// `MapLight::animated_slot` is only the compose-descriptor lookup key; the
-/// renderer's promotion state is keyed by the roster position, so never pass
-/// the slot itself to the capture override. Duplicate slots use the runtime
-/// bridge's first-static-light identity.
-fn resolve_forced_animated_promotion_rows(
-    lights: &[postretro_level_loader::MapLight],
-    section: Option<
-        &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
-    >,
-    forced_promotions: Option<&[ForcedAnimatedPromotion]>,
-) -> Result<Vec<(usize, f32)>> {
-    let Some(forced_promotions) = forced_promotions else {
-        return Ok(Vec::new());
-    };
-    if forced_promotions.is_empty() {
-        return Ok(Vec::new());
-    }
-    let section = section.ok_or_else(|| {
-        anyhow!("force_promotion requires an AnimatedDirectShDeltaVolumes section")
-    })?;
-    let delta_rows: HashSet<u32> = section.affinity_lights.iter().copied().collect();
-
-    let first_static_light_for_slot = |slot: u32| {
-        lights
-            .iter()
-            .enumerate()
-            .find(|(_, light)| !light.is_dynamic && light.animated_slot == Some(slot))
-    };
-
-    let mut rows = BTreeMap::new();
-    for forced in forced_promotions {
-        let mut tag_found = false;
-        let mut animated_light_found = false;
-        let mut roster_row_found = false;
-        for (light_index, light) in lights.iter().enumerate() {
-            if !light.tags.iter().any(|tag| tag == &forced.tag) {
-                continue;
-            }
-            tag_found = true;
-            if light.is_dynamic {
-                continue;
-            }
-            let Some(slot) = light.animated_slot else {
-                continue;
-            };
-            animated_light_found = true;
-            let Some((runtime_light_index, _)) = first_static_light_for_slot(slot) else {
-                continue;
-            };
-            if runtime_light_index != light_index {
-                bail!(
-                    "force_promotion tag `{}` matches duplicate animated slot {slot} at map-light index {light_index}, but runtime section-45 identity resolves to the first static map light at index {runtime_light_index}",
-                    forced.tag
-                );
-            }
-        }
-        if !tag_found {
-            bail!(
-                "force_promotion tag `{}` does not match a map light",
-                forced.tag
-            );
-        }
-        if !animated_light_found {
-            bail!(
-                "force_promotion tag `{}` does not match an animated baked map light",
-                forced.tag
-            );
-        }
-
-        // Resolve each raw row through the same first-static descriptor-slot
-        // join used by the runtime bridge and renderer candidate roster.
-        for (animated_baked_index, &descriptor_index) in
-            section.animation_descriptor_indices.iter().enumerate()
-        {
-            let Some((_, runtime_light)) = first_static_light_for_slot(descriptor_index) else {
-                continue;
-            };
-            if !runtime_light.tags.iter().any(|tag| tag == &forced.tag) {
-                continue;
-            }
-            roster_row_found = true;
-            if !delta_rows.contains(&(animated_baked_index as u32)) {
-                bail!(
-                    "force_promotion tag `{}` resolves to section-45 AnimatedBakedLights row {animated_baked_index}, but that row has no affinity/direct delta and is not promotion-eligible",
-                    forced.tag
-                );
-            }
-            match rows.entry(animated_baked_index) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(forced.weight);
-                }
-                std::collections::btree_map::Entry::Occupied(entry)
-                    if (*entry.get() - forced.weight).abs() <= 1.0e-6 => {}
-                std::collections::btree_map::Entry::Occupied(_) => {
-                    bail!(
-                        "force_promotion tag `{}` resolves to an animated-baked row with conflicting weights",
-                        forced.tag
-                    );
-                }
-            }
-        }
-        if !roster_row_found {
-            bail!(
-                "force_promotion tag `{}` has no section-45 AnimatedBakedLights row",
-                forced.tag
-            );
-        }
-    }
-    Ok(rows.into_iter().collect())
-}
-
-/// Build the active/no-curve compose descriptor through the shared descriptor
-/// packer. With `animation: None` and `active_without_animation: true`, the
-/// radiance lands in `base_color` and `color_count` remains zero.
-fn forced_active_animation_descriptor(
-    radiance: [f32; 3],
-) -> [u8; postretro_render_cpu::sh_volume::ANIMATION_DESCRIPTOR_SIZE] {
-    let component = LightComponent {
-        origin: [0.0; 3],
-        light_type: LightKind::Point,
-        intensity: 1.0,
-        color: radiance,
-        falloff_model: FalloffKind::Linear,
-        falloff_range: 0.0,
-        cone_angle_inner: None,
-        cone_angle_outer: None,
-        cone_direction: None,
-        is_dynamic: false,
-        animated_slot: None,
-        follow_transform: false,
-        carrier: None,
-        animation: None,
-    };
-    crate::scripting_systems::light_bridge::pack_animation_descriptor(
-        &component, 0, 0, radiance, true, None,
-    )
-}
-
-/// Preserve capture's static-only light input while translating global PRL
-/// selection indices into the same compact static-light index space. Keep one
-/// output selection entry per input entry so shadowmask channels stay aligned.
-fn capture_static_lights_and_shadow_selection(
-    lights: &[postretro_level_loader::MapLight],
-    influences: &[postretro_render_data::influence::LightInfluence],
-    entity_shadow_lights: &[u32],
-) -> (
-    Vec<postretro_level_loader::MapLight>,
-    Vec<postretro_render_data::influence::LightInfluence>,
-    Vec<u32>,
-) {
-    let mut global_to_static = vec![u32::MAX; lights.len()];
-    let mut static_lights = Vec::with_capacity(lights.len());
-    let mut static_influences = Vec::with_capacity(lights.len());
-    for (global_index, light) in lights.iter().enumerate() {
-        if light.is_dynamic {
-            continue;
-        }
-        global_to_static[global_index] = static_lights.len() as u32;
-        static_lights.push(light.clone());
-        static_influences.push(influences.get(global_index).cloned().unwrap_or(
-            postretro_render_data::influence::LightInfluence {
-                center: glam::Vec3::ZERO,
-                radius: f32::MAX,
-            },
-        ));
-    }
-
-    let static_entity_shadow_lights = entity_shadow_lights
-        .iter()
-        .map(|&global_index| {
-            global_to_static
-                .get(global_index as usize)
-                .copied()
-                .unwrap_or(u32::MAX)
-        })
-        .collect();
-
-    (
-        static_lights,
-        static_influences,
-        static_entity_shadow_lights,
-    )
-}
-
-fn derive_texture_materials(
-    texture_names: &[String],
-) -> Vec<postretro_render_data::material::Material> {
-    let mut warned = HashSet::new();
-    texture_names
-        .iter()
-        .map(|name| {
-            let warned_count = warned.len();
-            let material = postretro_render_data::material::derive_material(name, &mut warned);
-            let prefix = postretro_render_data::material::parse_prefix(name);
-            if material == postretro_render_data::material::Material::Default
-                && !prefix.is_empty()
-                && warned.len() > warned_count
-            {
-                log::warn!(
-                    "[Material] Unknown prefix '{}' in texture '{}' — using default material",
-                    prefix,
-                    name,
-                );
-            }
-            material
-        })
-        .collect()
-}
-
-/// Build the static capture camera directly so the scene's independently
-/// authored FOV is honored rather than adding a transient presentation offset.
-fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4 {
-    let aspect = width as f32 / height as f32;
-    let fov = camera.fov_deg.to_radians();
-    let vfov = 2.0 * ((fov / 2.0).tan() / aspect).atan();
-    let yaw = camera.yaw_deg.to_radians();
-    let pitch = camera.pitch_deg.to_radians();
-    let look_dir = Vec3::new(
-        -yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        -yaw.cos() * pitch.cos(),
-    );
-    let eye = Vec3::from_array(camera.position);
-    Mat4::perspective_rh(vfov, aspect, camera::NEAR, camera::FAR)
-        * Mat4::look_at_rh(eye, eye + look_dir, Vec3::Y)
-}
-
-/// Mirror `App::redraw`: an empty fog-reachable list is the DrawAll sentinel,
-/// so an empty mask keeps every cell-assigned light eligible.
-fn light_reachable_cell_mask(
-    world: &postretro_level_loader::LevelWorld,
-    fog_reachable: &[u32],
-) -> Vec<bool> {
-    if fog_reachable.is_empty() {
-        return Vec::new();
-    }
-    let mut mask = vec![false; world.cell_count()];
-    for &id in fog_reachable {
-        let index = id as usize;
-        if index < mask.len() {
-            mask[index] = true;
-        }
-    }
-    mask
-}
-
-/// Mirror `App::redraw`: shadow eligibility follows the wider fog/light
-/// reachability set, including empty but portal-reachable cells.
-fn reachable_cell_aabbs(
-    world: &postretro_level_loader::LevelWorld,
-    fog_reachable: &[u32],
-) -> Vec<(Vec3, Vec3)> {
-    if fog_reachable.is_empty() {
-        return Vec::new();
-    }
-    fog_reachable
-        .iter()
-        .filter_map(|&id| world.cells.get(id as usize))
-        .map(|cell| (cell.bounds_min, cell.bounds_max))
-        .collect()
 }
 
 /// Reject an output that resolves to either capture input. Existing paths are
 /// canonicalized, so relative, absolute, and symlink spellings compare by the
 /// file they name rather than by their source text.
 fn reject_output_source_aliases(output: &Path, map: &Path, scene: &Path) -> Result<()> {
-    let output_key = path_alias_key(output)?;
     for (label, source) in [("map", map), ("scene JSON", scene)] {
-        if output_key == path_alias_key(source)? {
-            bail!(
-                "output path must not alias the capture {label}: `{}`",
-                output.display()
-            );
-        }
+        reject_path_alias(output, source, &format!("capture {label}"))?;
+    }
+    Ok(())
+}
+
+fn reject_path_alias(output: &Path, source: &Path, source_label: &str) -> Result<()> {
+    if path_alias_key(output)? == path_alias_key(source)? {
+        bail!(
+            "output path must not alias the {source_label}: `{}`",
+            output.display()
+        );
     }
     Ok(())
 }
@@ -849,6 +296,68 @@ fn write_capture_png(output: &Path, rgba: &[u8], width: u32, height: u32) -> Res
         .with_context(|| format!("failed to finalize capture PNG `{}`", output.display()))?;
     temporary.persist();
     Ok(())
+}
+
+/// Serialize the completed report beside its final path but keep it unnamed
+/// until the final PNG has published. `CaptureTempFile::Drop` removes this
+/// staged sibling on any later capture or PNG error.
+fn stage_measurement_report(
+    output: &Path,
+    report: &impl serde::Serialize,
+) -> Result<CaptureTempFile> {
+    let mut temporary = create_capture_temp_file(output)?;
+    let temporary_path = temporary.path().to_owned();
+    {
+        let file = temporary.file_mut();
+        serde_json::to_writer_pretty(&mut *file, report).with_context(|| {
+            format!("failed to encode measurement report `{}`", output.display())
+        })?;
+        file.write_all(b"\n").with_context(|| {
+            format!(
+                "failed to finalize measurement report `{}`",
+                temporary_path.display()
+            )
+        })?;
+        file.flush().with_context(|| {
+            format!(
+                "failed to flush measurement report `{}`",
+                temporary_path.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "failed to sync measurement report `{}`",
+                temporary_path.display()
+            )
+        })?;
+    }
+    temporary.close();
+    Ok(temporary)
+}
+
+fn publish_staged_measurement_report(mut temporary: CaptureTempFile, output: &Path) -> Result<()> {
+    temporary.close();
+    fs::rename(temporary.path(), output).with_context(|| {
+        format!(
+            "failed to finalize measurement report `{}`",
+            output.display()
+        )
+    })?;
+    temporary.persist();
+    Ok(())
+}
+
+fn capture_git_revision() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let revision = String::from_utf8(output.stdout).ok()?;
+    let revision = revision.trim();
+    (!revision.is_empty()).then(|| revision.to_owned())
 }
 
 /// A newly-created capture file that removes itself unless it is renamed into
@@ -1451,6 +960,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn measurement_report_must_not_alias_scene_map_or_png_output() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let map = directory.path().join("level.prl");
+        let scene = directory.path().join("scene.json");
+        let png = directory.path().join("capture.png");
+        fs::write(&map, b"map").expect("map fixture");
+        fs::write(&scene, b"scene").expect("scene fixture");
+
+        assert!(reject_output_source_aliases(&map, &map, &scene).is_err());
+        assert!(reject_output_source_aliases(&scene, &map, &scene).is_err());
+        assert!(reject_path_alias(&png, &png, "capture PNG output").is_err());
+        assert!(
+            reject_path_alias(
+                &directory.path().join("measurement.json"),
+                &png,
+                "capture PNG output"
+            )
+            .is_ok()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn output_symlink_alias_and_non_regular_target_are_rejected() {
@@ -1488,6 +1019,34 @@ mod tests {
         assert_eq!(
             fs::read_dir(directory.path()).expect("directory").count(),
             1
+        );
+    }
+
+    #[test]
+    fn staged_measurement_report_preserves_prior_report_until_final_publication() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let report = directory.path().join("measurement.json");
+        fs::write(&report, b"prior successful report").expect("prior report");
+
+        let staged = stage_measurement_report(&report, &serde_json::json!({ "run": "new" }))
+            .expect("stage replacement report");
+        assert_eq!(
+            fs::read(&report).expect("prior report stays visible"),
+            b"prior successful report"
+        );
+        drop(staged);
+        assert_eq!(
+            fs::read(&report).expect("prior report stays visible after staged failure"),
+            b"prior successful report"
+        );
+
+        let staged = stage_measurement_report(&report, &serde_json::json!({ "run": "new" }))
+            .expect("stage replacement report");
+        publish_staged_measurement_report(staged, &report).expect("publish report last");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&report).expect("report"))
+                .expect("published JSON")["run"],
+            "new"
         );
     }
 

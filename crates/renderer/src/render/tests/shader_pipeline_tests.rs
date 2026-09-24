@@ -151,6 +151,7 @@ fn forward_wgsl_dummy_buffers_meet_shader_min_binding_size() {
         tile_dimension: 1,
         tile_border: 0,
         atlas_tiles_per_row: 1,
+        physical_tile_stride: sh_volume::DUMMY_SH_PHYSICAL_TILE_STRIDE,
         tiles_per_layer: 1,
         atlas_layer_count: 1,
         present: false,

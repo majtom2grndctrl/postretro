@@ -12,8 +12,9 @@ use postretro_level_format::lightmap::{
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, IrradianceAtlasArrayLayout,
-    MAX_SH_ATLAS_LAYERS, irradiance_array_tile_location, irradiance_atlas_array_layout,
-    irradiance_interior_texel_direction, irradiance_tile_source_texel,
+    MAX_SH_ATLAS_DIMENSION, MAX_SH_ATLAS_LAYERS, irradiance_array_tile_location,
+    irradiance_atlas_array_layout, irradiance_interior_texel_direction,
+    irradiance_tile_source_texel,
 };
 use postretro_level_format::sh_volume::{
     ANIMATED_SLOT_NONE, AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralAtlasTexel,
@@ -35,7 +36,6 @@ use crate::partition::{BspTree, find_leaf_for_point};
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 const RAYS_PER_PROBE: u32 = 256;
-pub(crate) const MAX_SH_ATLAS_DIMENSION: u32 = 8192;
 
 /// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
 const BOUNCE_ALBEDO: f32 = 0.45;
@@ -1800,6 +1800,22 @@ mod tests {
         let second = sh_atlas_array_layout(grid, tile_dimension).unwrap();
         assert_eq!(layout, second);
         assert_eq!(seen.into_iter().filter(|&used| used).count(), total);
+    }
+
+    #[test]
+    fn compiler_and_streaming_codec_share_the_format_owned_atlas_cap() {
+        assert_eq!(
+            MAX_SH_ATLAS_DIMENSION,
+            postretro_level_format::octahedral::MAX_SH_ATLAS_DIMENSION
+        );
+        let slots = [257, 1, 1];
+        assert_eq!(
+            sh_atlas_array_layout(slots, 8).unwrap(),
+            postretro_level_format::cluster_sh_payloads::cluster_sh_isolated_atlas_array_layout(
+                slots[0]
+            )
+            .unwrap()
+        );
     }
 
     #[test]

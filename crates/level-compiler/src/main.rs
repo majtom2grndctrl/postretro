@@ -15,6 +15,8 @@ pub mod cell_draw_index_bake;
 pub mod cell_visibility_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
+mod cli;
+pub mod cluster_directory_bake;
 pub mod delta_drop_policy;
 pub mod delta_sections;
 pub mod delta_sh_bake;
@@ -72,6 +74,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::Context as _;
+#[cfg(test)]
+use cli::default_jobs_for;
+use cli::{
+    ReporterMode, TerminalStreams, TuiPreference, default_jobs, parse_protect_aabb,
+    select_reporter_mode,
+};
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::light_membership::LightMembershipManifest;
@@ -221,7 +229,9 @@ fn bake_model_textures(
             // pinned deterministic for identical inputs, and an absolute
             // prefix both varies by machine and pushes the part that
             // identifies the texture off the end of the `largest:` lines.
-            let relative = texture_path.strip_prefix(content_root).unwrap_or(texture_path);
+            let relative = texture_path
+                .strip_prefix(content_root)
+                .unwrap_or(texture_path);
             byte_summary.account_baked_sidecar(
                 format!("model:{}", relative.display()),
                 cache_root,
@@ -642,57 +652,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TuiPreference {
-    Auto,
-    Force,
-    Disable,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReporterMode {
-    Plain,
-    Tui,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TerminalStreams {
-    stdin: bool,
-    stdout: bool,
-    stderr: bool,
-}
-
-fn select_reporter_mode(
-    preference: TuiPreference,
-    streams: TerminalStreams,
-) -> anyhow::Result<ReporterMode> {
-    let all_terminals = streams.stdin && streams.stdout && streams.stderr;
-    match (preference, all_terminals) {
-        (TuiPreference::Disable, _) => Ok(ReporterMode::Plain),
-        (TuiPreference::Force, true) | (TuiPreference::Auto, true) => Ok(ReporterMode::Tui),
-        (TuiPreference::Auto, false) => Ok(ReporterMode::Plain),
-        (TuiPreference::Force, false) => anyhow::bail!(
-            "--tui requires stdin, stdout, and stderr to all be attached to terminals"
-        ),
-    }
-}
-
-fn default_jobs_for(logical_cores: usize) -> usize {
-    match logical_cores {
-        0 | 1 => 1,
-        2..=8 => logical_cores - 1,
-        _ => logical_cores - 2,
-    }
-}
-
-fn default_jobs() -> usize {
-    default_jobs_for(
-        std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1),
-    )
 }
 
 #[derive(Debug)]
@@ -1128,43 +1087,6 @@ where
         sh_density_force_level,
         sh_density_force_scale,
     })
-}
-
-/// Parse a `--sh-protect-aabb minx,miny,minz,maxx,maxy,maxz` value into a
-/// world-space AABB. Each of the six comma-separated fields must be a finite
-/// number, and each max must be >= its matching min.
-fn parse_protect_aabb(spec: &str) -> anyhow::Result<[f32; 6]> {
-    let parts: Vec<&str> = spec.split(',').collect();
-    if parts.len() != 6 {
-        anyhow::bail!(
-            "--sh-protect-aabb expects 6 comma-separated numbers \
-             (minx,miny,minz,maxx,maxy,maxz), got {}",
-            parts.len()
-        );
-    }
-    let mut v = [0.0f32; 6];
-    for (i, part) in parts.iter().enumerate() {
-        let parsed: f32 = part.trim().parse().map_err(|_| {
-            anyhow::anyhow!(
-                "--sh-protect-aabb field {} is not a number: {part:?}",
-                i + 1
-            )
-        })?;
-        if !parsed.is_finite() {
-            anyhow::bail!("--sh-protect-aabb field {} must be finite", i + 1);
-        }
-        v[i] = parsed;
-    }
-    for axis in 0..3 {
-        if v[axis + 3] < v[axis] {
-            anyhow::bail!(
-                "--sh-protect-aabb max[{axis}] ({}) must be >= min[{axis}] ({})",
-                v[axis + 3],
-                v[axis]
-            );
-        }
-    }
-    Ok(v)
 }
 
 /// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn

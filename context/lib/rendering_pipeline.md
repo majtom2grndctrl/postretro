@@ -100,6 +100,32 @@ Compiler tests pin the seams that keep direct and indirect disjoint: tier routin
 
 **Probe depth moments.** Each ShVolume probe record carries two baked f16 depth moments alongside the octahedral irradiance data — mean ray distance `E[d]` and mean squared distance `E[d²]` — accumulated over the same 256-ray sphere loop. Sky-miss rays contribute sentinel `4 × length(cell_size)` (4× the full 3D cell diagonal). The Chebyshev runtime interpolant consumes these to weight each probe by visibility and suppress through-wall indirect light leak. Probe record layout: see `build_pipeline.md` §PRL section IDs.
 
+**Cluster SH residency.** A valid id-49/id-50 pair streams ids 27/34/35/41/45
+through renderer-owned pools. The loader validates that pair before selecting a runtime
+mode; `off` is therefore a compatibility whole-load path only for valid data, while valid
+pairs default to bounded asynchronous residency. Ids 47/48 billboard direct scatter stay
+whole-resident. The fragment sampler keeps its existing depth-moment indirection, fixed
+eight-corner stencil, bindings, and taps; it performs no residency lookup.
+
+The application derives visible, two-hop-prefetch, hysteresis, and baked-owner targets
+after visibility. Bounded workers read and decode id-50 chunks from the validated open
+file off the frame path. A completion installs only when generation, content tag, target,
+and chunk hash still match. At the one renderer drain before SH compose, evictions first
+invalidate sample words; admitted clusters install base and sparse data, then compose only
+their affected affinity rows. A newly installed cluster remains unavailable to sampling
+until the next drain, after all applicable indirect and direct compose work has completed.
+The all-zero word remains the miss representation: valid neighbors are renormalized and an
+all-miss sample reaches the ambient floor. Baked owners remain installed for dependent
+halo clusters, so a physical light accumulates once and an owner cannot be evicted out from
+under a resident boundary.
+
+The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
+active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
+Encoded, decoding, and ready host payloads are separate checked phase ledgers. Growth
+preserves live offsets by GPU-to-GPU copy and may hold one active and one retiring pool
+generation; retirement capacity and replacement peak are reported separately from
+non-evictable logical overshoot.
+
 **Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. Script sample slots preserve runtime-present authored map-light order (`_bake_only` omitted). Runtime-spawned dynamic lights draw from renderer-owned reserved capacity; a despawned runtime light's slot is reclaimed, so the reserve bounds peak-concurrent live lights, not cumulative spawns — a high-churn light source must despawn to free capacity.
 
 Forward light, influence, and descriptor record arrays share three ordered regions: a compact dynamic-tier prefix, a raw animated-baked tail, then a selected-static suffix. The dynamic prefix is bounded by the peak-concurrent runtime light count. The raw tail keeps one record per animated-baked roster row, including holes, so animation descriptors and promotion identity remain stable. The descriptor-bearing prefix ends after that tail; compiler-selected static records append without descriptors. Brightness uses separate namespaces: dynamic effective brightness is keyed to `level_lights`, while animated lookahead brightness is keyed to `AnimatedBakedLights` indices. World, billboard, and fog direct loops exclude the raw tail. World promotion and the legacy billboard path separately consume the selected-static suffix; scatter billboards consume the dynamic prefix only. Movers and skinned meshes consume the complete layout for animated-baked and selected-static promotion handoff. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict. The animated-lightmap atlas is sampled by the forward pass only when the cell it belongs to passes the portal-traversed `VisibleCells` bitmask — any future pass that draws animated-lit geometry must share the same visibility gate or skip animated-lit chunks entirely.
@@ -179,7 +205,13 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
    - **Tree walk** (`bvh_cull.wgsl`) — the runtime fallback. Walks the whole global BVH in one invocation; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's slot. Selected for `DrawAll`, non-portal `Culled` fallbacks (solid-cell / exterior / no-portals), and the out-of-range visible-cell case above. Shadow cone cull (step 6) always uses the tree walk.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
 4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
-5. **SH and billboard-scatter compose passes** (compute) — the indirect SH pass reads the static base octahedral irradiance atlas and per-light animated delta tile data; evaluates animation curves for each light at the current frame time; accumulates the mask-selected contributions and writes the shared stored-slot composed indirect atlas. The static-indirect bit selects the base and the animated-indirect bit gates every delta accumulation path. Dropped-valid delta probes reconstruct strictly within their 4×4×4 brick; base L1 probes reconstruct across their complete aligned node. For each CSR entry, all coarsened compose passes load each brick's kept lattice once into workgroup memory, while L0 probes keep direct reads. It dispatches only when its composed atlas would change — on level-load copy-through, while any animated indirect light is active, once when activity returns to zero, and whenever the current mask differs from the mask that produced the atlas — and writes every stored slot across the full affinity grid when it does (no per-cell culling). The direct SH pass is the static-entity-shadow sibling: whenever usable base direct SH is present, it writes the shared stored-slot composed direct atlas with static and animated contributions selected by their mask bits; promotion subtraction is enabled only with dynamic direct. It composes even without selected direct deltas, copying the base when baked direct is enabled and writing zero when it is disabled, so the baked-direct-static mask can isolate base direct SH. It dispatches on level-load copy-through, while any weight is nonzero, once when weights return to all-zero, and whenever the current mask differs from the mask that produced the atlas; maps without usable direct SH allocate no composed direct atlas and keep the no-direct binding behavior. The animated billboard-scatter sibling copies section 47 then accumulates section 48's dense deltas with the shared descriptors, time, and mask; static-only maps bind section 47 directly. All compose passes run before the depth prepass and before their consumers sample the results. See §4 "Animated SH delta volumes" and "Promoted static lights".
+5. **SH residency drain and compose passes** (compute) — legacy whole-load composition
+   retains its full-affinity-grid dispatch whenever its composed atlas changes. In streamed
+   mode, the renderer drains accepted cluster work once before every SH compose path. It
+   samples the prior installed-and-composed set while new cluster data composes, and
+   promotes that data only at the following drain. Streamed indirect and direct families dispatch only coalesced
+   affinity-row ranges; they never dispatch arbitrary dense indices or unrelated whole-map
+   rows. The indirect SH pass reads the static base octahedral irradiance atlas and per-light animated delta tile data; evaluates animation curves for each light at the current frame time; accumulates the mask-selected contributions and writes the shared stored-slot composed indirect atlas. The static-indirect bit selects the base and the animated-indirect bit gates every delta accumulation path. Dropped-valid delta probes reconstruct strictly within their 4×4×4 brick; base L1 probes reconstruct across their complete aligned node. For each CSR entry, all coarsened compose passes load each brick's kept lattice once into workgroup memory, while L0 probes keep direct reads. It dispatches only when its composed atlas would change — on level-load copy-through, while any animated indirect light is active, once when activity returns to zero, and whenever the current mask differs from the mask that produced the atlas. The direct SH pass is the static-entity-shadow sibling: whenever usable base direct SH is present, it writes the shared stored-slot composed direct atlas with static and animated contributions selected by their mask bits; promotion subtraction is enabled only with dynamic direct. It composes even without selected direct deltas, copying the base when baked direct is enabled and writing zero when it is disabled, so the baked-direct-static mask can isolate base direct SH. It dispatches on level-load copy-through, while any weight is nonzero, once when weights return to all-zero, and whenever the current mask differs from the mask that produced the atlas; maps without usable direct SH allocate no composed direct atlas and keep the no-direct binding behavior. The animated billboard-scatter sibling keeps its whole-resident path: it copies section 47 then accumulates section 48's dense deltas with the shared descriptors, time, and mask; static-only maps bind section 47 directly. All compose passes run before the depth prepass and before their consumers sample the results. See §4 "Animated SH delta volumes" and "Promoted static lights".
 6. **Shadow cone cull** (compute) — for each occupied spot-shadow slot that needs a world-depth update, dispatches BVH traversal gated by that slot's cone frustum only. The visible-cells buffer is all-ones: an occluder outside the camera's portal-visible set can still cast a shadow onto a visible receiver. Each slot writes into its own sub-region of a single shared indirect buffer. A second instance of the same cull pipeline serves the cube pool: one sub-region per `(cube slot, face)` layer, gated by that face's 90° perspective frustum (dispatched inside step 8). Runs after the camera cull compute pass and before the shadow depth render passes. This cull serves static world geometry only. Skinned and rigid-instance occluders are outside the world BVH and CPU cone-culled per slot in steps 7–8. Warm promoted-static and dynamic-cache slots skip these sub-region dispatches because their static world depth is already cached.
 
 7. **Spot-shadow depth passes** — one live-pool render pass per occupied dynamic slot; slots with no ranked light are skipped. An uncached slot clears to the far plane, then draws static world from its indirect sub-region via `multi_draw_indexed_indirect` per material bucket (same per-bucket contiguous layout as §5) and live entity occluders. A cold dynamic-cache key clears and fills its cache layer with static world. Each cached frame copies that layer to the live pool before the entity pass loads it and adds current occluders; a warm key skips the world cull and cache raster pass. **Fallback:** when no BVH is present (no-BVH maps), a required world pass draws all world geometry. Skinned dynamic casters include portal-visible meshes plus explicitly authored shadow-only meshes; the latter stay eligible outside camera PVS. Broader off-PVS mesh retention for promoted-static relevance does not enter dynamic slots. Rigid mover occluders are position-only depth draws, CPU cone-culled from every present mover's world AABB per slot; camera-PVS culling limits their beauty pass only. Movers are the first caller of this generic rigid-occluder path. Promoted static spot slots use a dedicated promoted-depth cache sized to `MAX_PROMOTED_SPOT` layers at the selected spot resolution: on assignment/reassignment the world pass renders once into the cache layer, which entity receivers sample directly; every frame the live pool layer clears to the far plane and every retained statically relevant skinned caster and rigid entity occluder draws into it, so the slot holds entity depth only. Movers never enter the static-depth cache. Runs before the depth pre-pass so shadow maps are fully written before the forward pass samples them.
@@ -335,6 +367,14 @@ then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the
 readback (per the boundary rule).
 
+**Capture measurement.** An optional measurement mode prepares the same static
+capture scene once, warms it up, then renders repeated samples without PNG readback in the
+timed loop. CPU samples cover completed GPU work through a renderer-owned submit/wait
+boundary, not command enqueue time. GPU timing reuses the existing timestamp-query gate;
+unsupported or incomplete timing is named as absent, never reported as zero. Warmup timing
+state is discarded before samples. The normal PNG publishes before the staged measurement
+report, so a failed run cannot leave a new valid-looking report.
+
 Capture is VM-free and single-instant: no script VM, no trigger firing, no game
 tick — one authored frame. Byte-stable across runs on one adapter; adapter
 rounding rules out cross-adapter goldens, so regressions compare same-adapter
@@ -363,6 +403,15 @@ row's crossfade `w`; it neither grants a slot nor changes ranking or cache
 allocation. This makes a VM-free rest-pose sequence compare the v1 `w=0` flat
 delta byte-for-byte with known promoted splits. An omitted `force_promotion`
 leaves the legacy capture path unchanged.
+
+**Planned SH residency accounting.** The renderer records requested bytes for every
+level-owned SH texture and buffer at the allocation decision that creates it. Each physical
+allocation counts once, including dummy and fallback resources; shared views do not count
+as new allocations, while equal contents in separate resources do. Data-backed rows name
+their PRL section ids and compose-only resources are marked derived. This is renderer
+allocation accounting, not driver-reported process VRAM: opaque driver padding and
+unrelated renderer resources remain outside the total. Non-renderer callers receive plain
+report values, never `wgpu` types or handles.
 
 ---
 
@@ -483,6 +532,11 @@ Camera position and orientation produce a view matrix each frame, feeding:
 ### GPU Pass Timing
 
 Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing; for a normal dev launch use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run`. With dev-tools enabled, use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools --`. Cargo flags before `--` go to the engine `cargo run`; args after it go to postretro. Requires adapter support for both `TIMESTAMP_QUERY` (pass-descriptor timestamps) and `TIMESTAMP_QUERY_INSIDE_ENCODERS` (multi-pass/copy brackets); silently disabled if either feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`, `direct_sh_compose`, `animated_direct_sh_compose`, `promoted_depth_cache_upper`, `dynamic_spot_depth_upper`, `dynamic_cube_depth_upper`, `smoke`, `bloom`, `billboard_direct_scatter_compose`. The two dynamic spans are intentionally upper bounds over interleaved cache, entity-pool, and promoted work; their 120-frame cache log reports exact skipped world passes and cull dispatches, which is the primary warm-cache savings proof. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
+
+Offscreen measurement collects only complete 120-sample windows after warmup and
+reports a trailing partial window only as a count. Disabled, unsupported, inaccessible,
+and not-yet-windowed states remain distinct so missing GPU data cannot be mistaken for a
+zero-cost pass.
 
 ### Debug-Line Renderer
 

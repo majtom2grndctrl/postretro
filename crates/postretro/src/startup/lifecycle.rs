@@ -806,16 +806,8 @@ impl App {
             (
                 world.lights.clone(),
                 world.light_influences.clone(),
-                world
-                    .sh_volume
-                    .as_ref()
-                    .map(|section| section.animation_descriptors.clone())
-                    .unwrap_or_default(),
-                world
-                    .animated_direct_sh_delta_volumes
-                    .as_ref()
-                    .map(|section| section.animation_descriptor_indices.clone())
-                    .unwrap_or_default(),
+                world.animation_descriptors().to_vec(),
+                world.animated_direct_descriptor_indices().to_vec(),
                 (renderer.scripted_sample_byte_offset() / 4) as u32,
             )
         };
@@ -1478,12 +1470,6 @@ pub(crate) struct ConnectedClientTriggerPoolInstallFixture {
 }
 
 #[cfg(test)]
-pub(crate) fn install_connected_client_trigger_pool_fixture_for_test()
--> ConnectedClientTriggerPoolInstallFixture {
-    tests::install_connected_client_trigger_pool_fixture()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, VecDeque};
@@ -1741,6 +1727,8 @@ mod tests {
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
+                sh_streaming: None,
+                sh_worker_retirement: None,
                 options_bridge: options::OptionsBridge::new(),
                 player_options: options::PlayerOptions::default(),
                 settings_path: None,
@@ -2122,6 +2110,7 @@ mod tests {
             lights: Vec::new(),
             light_influences: Vec::new(),
             sh_volume: None,
+            sh_storage: postretro_level_loader::ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: Default::default(),
             sdf_atlas: None,
@@ -2146,6 +2135,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         }
     }
 

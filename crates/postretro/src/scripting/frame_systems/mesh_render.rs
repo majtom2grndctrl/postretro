@@ -465,7 +465,7 @@ fn presentation_body_rotation(
 }
 
 fn selected_static_shadow_light_reaches_bounds(world: &LevelWorld, bounds: &Aabb) -> bool {
-    world.entity_shadow_lights.iter().any(|&light_index| {
+    world.entity_shadow_lights().iter().any(|&light_index| {
         let influence = world
             .light_influences
             .get(light_index as usize)
@@ -635,6 +635,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: postretro_level_loader::ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -659,6 +660,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         }
     }
 

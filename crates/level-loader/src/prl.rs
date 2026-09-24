@@ -23,6 +23,10 @@ use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::cluster_directory::{ClusterDirectoryError, ClusterDirectorySection};
+#[cfg(feature = "load-prl")]
+use postretro_level_format::cluster_sh_payloads::ClusterShPayloadsError;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::data_script::DataScriptSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
@@ -58,6 +62,10 @@ use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
+use crate::prl_lighting::LoadedLighting;
+#[cfg(feature = "load-prl")]
+use crate::sh_stream::ShStorage;
+#[cfg(feature = "load-prl")]
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
 #[cfg(feature = "load-prl")]
 use postretro_render_data::influence::LightInfluence;
@@ -92,6 +100,7 @@ pub struct CellVisibility {
 }
 
 impl CellVisibility {
+    #[cfg_attr(not(feature = "load-prl"), allow(dead_code))]
     pub(crate) fn new(component_ids: Vec<u32>, coupled_pairs: Vec<CoupledCellPair>) -> Self {
         Self {
             component_ids,
@@ -109,11 +118,11 @@ impl CellVisibility {
         self.coupled_pairs.iter()
     }
 
-    fn perceivable(&self, a: CellId, b: CellId) -> bool {
+    pub(crate) fn perceivable(&self, a: CellId, b: CellId) -> bool {
         self.component_ids.get(a) == self.component_ids.get(b)
     }
 
-    fn coupled_pair(&self, a: CellId, b: CellId) -> Option<CoupledCellPair> {
+    pub(crate) fn coupled_pair(&self, a: CellId, b: CellId) -> Option<CoupledCellPair> {
         if a == b {
             return None;
         }
@@ -134,6 +143,12 @@ pub enum PrlLoadError {
     IoError(#[from] std::io::Error),
     #[error("PRL format error: {0}")]
     FormatError(#[from] prl_format::FormatError),
+    #[error(transparent)]
+    ClusterDirectory(#[from] ClusterDirectoryError),
+    #[error(transparent)]
+    ClusterShPayloads(#[from] ClusterShPayloadsError),
+    #[error("invalid POSTRETRO_SH_STREAMING mode `{value}` (expected off, sync-proof, or async)")]
+    InvalidShStreamingMode { value: String },
     #[error(
         "PRL file is missing required {section} section (id {id}) — stale format; recompile with `prl-build`"
     )]
@@ -572,6 +587,12 @@ pub struct LevelWorld {
     /// section with zero grid dimensions; missing section means stale PRL.
     #[cfg(feature = "load-prl")]
     pub sh_volume: Option<OctahedralShVolumeSection>,
+    /// Explicit legacy-versus-streaming ownership for the SH families. The
+    /// legacy fields below remain public during the mechanical migration; new
+    /// consumers must use the accessors so streaming never requires bodies for
+    /// ids 27/34/35/41/45.
+    #[cfg(feature = "load-prl")]
+    pub sh_storage: ShStorage,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     #[cfg(feature = "load-prl")]
     pub lightmap: Option<LightmapSection>,
@@ -677,6 +698,10 @@ pub struct LevelWorld {
     /// maps, where the section must be omitted.
     #[cfg(feature = "load-prl")]
     pub cell_draw_index: Option<CellDrawIndex>,
+    /// Validated cell-cluster metadata (PRL section 49). This is inert CPU
+    /// data until the residency slice adds an explicit consumer.
+    #[cfg(feature = "load-prl")]
+    pub cluster_directory: Option<ClusterDirectorySection>,
 }
 
 impl LevelWorld {
@@ -699,6 +724,8 @@ impl LevelWorld {
 
         #[cfg(feature = "load-prl")]
         let face_meta_count: usize = cells.iter().map(|cell| cell.face_count as usize).sum();
+        #[cfg(feature = "load-prl")]
+        let lighting = LoadedLighting::default();
 
         Ok(Self {
             #[cfg(feature = "load-prl")]
@@ -733,39 +760,42 @@ impl LevelWorld {
                 root_node_index: 0,
             },
             #[cfg(feature = "load-prl")]
-            lights: vec![],
+            lights: lighting.lights,
             #[cfg(feature = "load-prl")]
-            light_influences: vec![],
+            light_influences: lighting.light_influences,
             #[cfg(feature = "load-prl")]
-            sh_volume: None,
+            sh_volume: lighting.sh_volume,
             #[cfg(feature = "load-prl")]
-            lightmap: None,
+            sh_storage: ShStorage::Legacy,
             #[cfg(feature = "load-prl")]
-            lightmap_mode: LightmapMode::Shadowed,
+            lightmap: lighting.lightmap,
             #[cfg(feature = "load-prl")]
-            sdf_atlas: None,
+            lightmap_mode: lighting.lightmap_mode,
             #[cfg(feature = "load-prl")]
-            chunk_light_list: None,
+            sdf_atlas: lighting.sdf_atlas,
             #[cfg(feature = "load-prl")]
-            animated_light_chunks: None,
+            chunk_light_list: lighting.chunk_light_list,
             #[cfg(feature = "load-prl")]
-            animated_light_weight_maps: None,
+            animated_light_chunks: lighting.animated_light_chunks,
             #[cfg(feature = "load-prl")]
-            delta_sh_volumes: None,
+            animated_light_weight_maps: lighting.animated_light_weight_maps,
             #[cfg(feature = "load-prl")]
-            direct_sh_volume: None,
+            delta_sh_volumes: lighting.delta_sh_volumes,
             #[cfg(feature = "load-prl")]
-            direct_sh_delta_volumes: None,
+            direct_sh_volume: lighting.direct_sh_volume,
             #[cfg(feature = "load-prl")]
-            animated_direct_sh_delta_volumes: None,
+            direct_sh_delta_volumes: lighting.direct_sh_delta_volumes,
             #[cfg(feature = "load-prl")]
-            billboard_direct_scatter_volume: None,
+            animated_direct_sh_delta_volumes: lighting.animated_direct_sh_delta_volumes,
             #[cfg(feature = "load-prl")]
-            animated_billboard_direct_scatter_delta_volumes: None,
+            billboard_direct_scatter_volume: lighting.billboard_direct_scatter_volume,
             #[cfg(feature = "load-prl")]
-            entity_shadow_lights: Vec::new(),
+            animated_billboard_direct_scatter_delta_volumes: lighting
+                .animated_billboard_direct_scatter_delta_volumes,
             #[cfg(feature = "load-prl")]
-            shadowmask_atlas: None,
+            entity_shadow_lights: lighting.entity_shadow_lights,
+            #[cfg(feature = "load-prl")]
+            shadowmask_atlas: lighting.shadowmask_atlas,
             #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
@@ -786,165 +816,9 @@ impl LevelWorld {
             navmesh: None,
             #[cfg(feature = "load-prl")]
             cell_draw_index: None,
+            #[cfg(feature = "load-prl")]
+            cluster_directory: lighting.cluster_directory,
         })
-    }
-
-    /// Locate the runtime cell containing `position`.
-    ///
-    /// On-plane positions choose the front child, matching the temporary
-    /// compiler-side BSP traversal.
-    pub fn locate_cell(&self, position: Vec3) -> usize {
-        let mut current = self.cell_locator_root;
-
-        loop {
-            match current {
-                CellLocatorChild::Cell(cell_idx) => return cell_idx,
-                CellLocatorChild::Node(node_idx) => {
-                    let node = &self.cell_locator_nodes[node_idx];
-                    let side = node.plane_normal.dot(position) - node.plane_distance;
-                    current = if side >= 0.0 { node.front } else { node.back };
-                }
-            }
-        }
-    }
-
-    /// Trace the same point-to-cell descent as [`Self::locate_cell`] for
-    /// diagnostics. Keeps UI code from duplicating locator traversal.
-    #[cfg(any(feature = "dev-tools", test))]
-    pub fn trace_locate_cell(&self, position: Vec3) -> CellLocatorTrace {
-        let mut current = self.cell_locator_root;
-        let mut steps = Vec::new();
-
-        loop {
-            match current {
-                CellLocatorChild::Cell(result_cell) => {
-                    return CellLocatorTrace {
-                        root: self.cell_locator_root,
-                        steps,
-                        result_cell,
-                    };
-                }
-                CellLocatorChild::Node(node_index) => {
-                    let node = &self.cell_locator_nodes[node_index];
-                    let signed_distance = node.plane_normal.dot(position) - node.plane_distance;
-                    let (selected_side, selected_child) = if signed_distance >= 0.0 {
-                        (CellLocatorSide::Front, node.front)
-                    } else {
-                        (CellLocatorSide::Back, node.back)
-                    };
-                    steps.push(CellLocatorTraceStep {
-                        node_index,
-                        signed_distance,
-                        selected_side,
-                        selected_child,
-                    });
-                    current = selected_child;
-                }
-            }
-        }
-    }
-
-    pub fn cell_count(&self) -> usize {
-        self.cells.len()
-    }
-
-    /// Whether two cells share the conservative portal-reachability component.
-    /// Missing baked data deliberately treats every pair as perceivable.
-    pub fn perceivable(&self, a: CellId, b: CellId) -> bool {
-        self.cell_visibility
-            .as_ref()
-            .map(|visibility| visibility.perceivable(a, b))
-            .unwrap_or(true)
-    }
-
-    /// Baked consumer-neutral coupling axes for two cells.
-    ///
-    /// Graded axes are absent when the optional section or its pair record is
-    /// absent.
-    pub fn coupling(&self, a: CellId, b: CellId) -> CouplingTuple {
-        let perceivable = self.perceivable(a, b);
-        let pair = self
-            .cell_visibility
-            .as_ref()
-            .and_then(|visibility| visibility.coupled_pair(a, b));
-        CouplingTuple {
-            perceivable,
-            distance: pair.map(|pair| pair.distance),
-            aperture: pair.map(|pair| pair.aperture),
-        }
-    }
-
-    pub fn total_face_count(&self) -> u32 {
-        #[cfg(feature = "load-prl")]
-        {
-            self.face_meta.len() as u32
-        }
-
-        #[cfg(not(feature = "load-prl"))]
-        {
-            self.cells.iter().map(|cell| cell.face_count).sum()
-        }
-    }
-
-    pub fn cell_portal_count(&self, cell_idx: usize) -> usize {
-        let Some((start, end)) = self.cell_portal_range(cell_idx) else {
-            return 0;
-        };
-        self.cell_portal_refs
-            .get(start..end)
-            .map_or(0, <[u32]>::len)
-    }
-
-    pub fn cell_portal_index(&self, cell_idx: usize, offset: usize) -> Option<usize> {
-        let (start, end) = self.cell_portal_range(cell_idx)?;
-        let idx = start.checked_add(offset)?;
-        if idx >= end {
-            return None;
-        }
-        self.cell_portal_refs
-            .get(idx)
-            .map(|&portal| portal as usize)
-    }
-
-    pub fn cell_is_solid(&self, cell_idx: usize) -> bool {
-        self.cells
-            .get(cell_idx)
-            .map(|cell| cell.is_solid)
-            .unwrap_or(false)
-    }
-
-    pub fn cell_face_count(&self, cell_idx: usize) -> u32 {
-        self.cells
-            .get(cell_idx)
-            .map(|cell| cell.face_count)
-            .unwrap_or(0)
-    }
-
-    pub fn cell_bounds(&self, cell_idx: usize) -> Option<(Vec3, Vec3)> {
-        self.cells
-            .get(cell_idx)
-            .map(|cell| (cell.bounds_min, cell.bounds_max))
-    }
-
-    pub fn spawn_position(&self) -> Vec3 {
-        let mut mins = Vec3::splat(f32::MAX);
-        let mut maxs = Vec3::splat(f32::MIN);
-        for cell in &self.cells {
-            if cell.is_solid || cell.face_count == 0 {
-                continue;
-            }
-            mins = mins.min(cell.bounds_min);
-            maxs = maxs.max(cell.bounds_max);
-        }
-        (mins + maxs) * 0.5
-    }
-
-    fn cell_portal_range(&self, cell_idx: usize) -> Option<(usize, usize)> {
-        let cell = self.cells.get(cell_idx)?;
-        let start = cell.portal_ref_start as usize;
-        let count = cell.portal_ref_count as usize;
-        let end = start.checked_add(count)?;
-        Some((start, end))
     }
 }
 
@@ -1255,6 +1129,27 @@ mod visibility_only_validation_tests {
         assert_eq!(visibility.component_ids(), &[0, 0, 1]);
         assert_eq!(visibility.coupled_pairs().count(), 1);
     }
+
+    #[cfg(feature = "load-prl")]
+    #[test]
+    fn visibility_only_world_exposes_empty_legacy_lighting_through_the_view() {
+        let world = LevelWorld::new_visibility_only(
+            vec![cell(0, 0)],
+            vec![],
+            CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .unwrap();
+
+        let lighting = world.lighting();
+        assert!(lighting.lights.is_empty());
+        assert!(lighting.sh_volume.is_none());
+        assert!(lighting.direct_sh_volume.is_none());
+        assert!(lighting.entity_shadow_lights.is_empty());
+        assert!(lighting.cluster_directory.is_none());
+    }
 }
 
 #[cfg(all(test, not(feature = "load-prl")))]
@@ -1298,9 +1193,11 @@ mod tests {
     use crate::prl_loader::{
         convert_alpha_lights, expected_affinity_dims, load_prl_with_scatter_pack_limit,
         valid_probe_mask_for_affinity_cell,
+        validate_animated_billboard_direct_scatter_against_metadata,
         validate_animated_billboard_direct_scatter_delta_volumes, validate_cell_draw_index,
         validate_delta_sh, validate_direct_sh_delta, validate_entity_shadow_light_selection,
     };
+    use crate::sh_stream::ShStreamSparseMetadata;
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
         ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
@@ -1314,6 +1211,10 @@ mod tests {
     };
     use postretro_level_format::cells::{
         CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
+    };
+    use postretro_level_format::cluster_directory::{
+        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
+        ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
     };
     use postretro_level_format::fog_volumes::{
         FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES,
@@ -1459,6 +1360,110 @@ mod tests {
         }
     }
 
+    fn valid_empty_animated_cluster_directory() -> ClusterDirectorySection {
+        ClusterDirectorySection {
+            runtime_cell_count: 2,
+            primitive_limit: 64,
+            cell_limit: 64,
+            clusters: vec![
+                ClusterRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    member_start: 0,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 1,
+                    flags: 0,
+                },
+                ClusterRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    member_start: 1,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 1,
+                    flags: 0,
+                },
+            ],
+            resources: [
+                (
+                    SectionId::OctahedralShVolume,
+                    ClusterResourceDomain::DenseProbe,
+                ),
+                (
+                    SectionId::AnimatedDirectShDeltaVolumes,
+                    ClusterResourceDomain::AffinityCell,
+                ),
+                (
+                    SectionId::BillboardDirectScatterVolume,
+                    ClusterResourceDomain::DenseProbe,
+                ),
+                (
+                    SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+                    ClusterResourceDomain::AffinityCell,
+                ),
+            ]
+            .into_iter()
+            .map(|(section, domain)| ClusterResourceRecord {
+                section_id: section as u32,
+                domain,
+                dimensions: [1, 1, 1],
+            })
+            .collect(),
+            members: vec![0, 1],
+            ranges: Vec::new(),
+        }
+    }
+
+    fn direct_sh_cluster_directory() -> ClusterDirectorySection {
+        let mut directory = valid_empty_animated_cluster_directory();
+        directory.resources = [
+            (
+                SectionId::OctahedralShVolume,
+                ClusterResourceDomain::DenseProbe,
+            ),
+            (SectionId::DirectShVolume, ClusterResourceDomain::DenseProbe),
+            (
+                SectionId::DirectShDeltaVolumes,
+                ClusterResourceDomain::AffinityCell,
+            ),
+        ]
+        .into_iter()
+        .map(|(section, domain)| ClusterResourceRecord {
+            section_id: section as u32,
+            domain,
+            dimensions: [1, 1, 1],
+        })
+        .collect();
+        directory.ranges = vec![
+            ClusterRangeRecord {
+                resource_index: 0,
+                start: 0,
+                count: 1,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+            ClusterRangeRecord {
+                resource_index: 1,
+                start: 0,
+                count: 1,
+                owner_cluster_id: DENSE_OWNER_SENTINEL,
+                role: ClusterRangeRole::Dense,
+            },
+            ClusterRangeRecord {
+                resource_index: 2,
+                start: 0,
+                count: 1,
+                owner_cluster_id: 0,
+                role: ClusterRangeRole::Owned,
+            },
+        ];
+        directory.clusters[0].range_count = 3;
+        directory
+    }
+
     /// One complete affinity brick at L2: valid metadata but only one stored
     /// tile. This is the smallest fixture that can violate I2 against an L0
     /// delta cell while preserving id-34's v11 node-aware stored-geometry contract.
@@ -1570,6 +1575,36 @@ mod tests {
         scatter.affinity_dims = [1, 2, 1];
         assert!(
             validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_err()
+        );
+    }
+
+    #[test]
+    fn streamed_animated_billboard_scatter_requires_id45_factor() {
+        let direct = animated_direct_delta_section_for([2, 1, 1]);
+        let metadata = ShStreamSparseMetadata {
+            section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
+            internal_version: u32::from(
+                postretro_level_format::animated_direct_sh_delta_volumes::ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION,
+            ),
+            affinity_dims: direct.affinity_dims,
+            tile_dimension: direct.tile_dimension,
+            tile_border: direct.tile_border,
+            valid_probe_masks: direct.valid_probe_masks.clone(),
+            cell_levels: direct.cell_levels.clone(),
+            affinity_offsets: direct.affinity_offsets.clone(),
+            affinity_lights: direct.affinity_lights.clone(),
+            animation_descriptor_indices: direct.animation_descriptor_indices.clone(),
+        };
+        let mut scatter = animated_billboard_direct_scatter_delta_section_for(&direct);
+        assert!(
+            validate_animated_billboard_direct_scatter_against_metadata(&scatter, &metadata)
+                .is_ok()
+        );
+
+        scatter.affinity_factor = direct.affinity_factor + 1;
+        assert!(
+            validate_animated_billboard_direct_scatter_against_metadata(&scatter, &metadata)
+                .is_err()
         );
     }
 
@@ -1812,6 +1847,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -1836,6 +1872,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         }
     }
 
@@ -1908,6 +1945,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -1932,6 +1970,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         };
         assert_eq!(world.locate_cell(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1958,6 +1997,7 @@ mod tests {
             lights: vec![],
             light_influences: vec![],
             sh_volume: None,
+            sh_storage: ShStorage::Legacy,
             lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
@@ -1982,6 +2022,7 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+            cluster_directory: None,
         };
 
         let spawn = world.spawn_position();
@@ -2385,6 +2426,14 @@ mod tests {
             section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
             version: 1,
             data: section.to_bytes(),
+        }
+    }
+
+    fn cluster_directory_blob(section: ClusterDirectorySection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::ClusterDirectory as u32,
+            version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            data: section.try_to_bytes().unwrap(),
         }
     }
 
@@ -5907,6 +5956,7 @@ mod tests {
         };
         let animated_scatter =
             animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let directory = valid_empty_animated_cluster_directory();
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -5914,6 +5964,7 @@ mod tests {
             billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
             animated_direct_sh_delta_blob(animated_direct),
             animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            cluster_directory_blob(directory.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -5926,6 +5977,7 @@ mod tests {
             .expect("a valid empty id-45/id-48 pair must keep billboard scatter");
 
         assert!(world.billboard_direct_scatter_volume.is_some());
+        assert_eq!(world.cluster_directory, Some(directory));
         assert_eq!(
             world.animated_billboard_direct_scatter_delta_volumes,
             Some(animated_scatter),
@@ -5950,6 +6002,7 @@ mod tests {
         let animated_scatter =
             animated_billboard_direct_scatter_delta_section_for(&animated_direct);
         let animated_scatter_bytes = animated_scatter.to_bytes();
+        let directory = valid_empty_animated_cluster_directory();
         let test_cap = u64::try_from(animated_scatter_bytes.len() - 1)
             .expect("fixture size must fit the scatter-cap type");
         let sections = vec![
@@ -5963,6 +6016,7 @@ mod tests {
                 version: 1,
                 data: animated_scatter_bytes,
             },
+            cluster_directory_blob(directory),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -5974,6 +6028,7 @@ mod tests {
         let world = load_prl_with_scatter_pack_limit(tmp.to_str().unwrap(), test_cap)
             .expect("oversized optional id 48 must preserve level load");
         assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(world.cluster_directory.is_none());
         assert!(
             world
                 .animated_billboard_direct_scatter_delta_volumes
@@ -6192,6 +6247,7 @@ mod tests {
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
             vec![0],
         );
+        let directory = direct_sh_cluster_directory();
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
@@ -6211,6 +6267,16 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: CellLocatorSection {
+                    root: FormatCellLocatorChild::Cell(0),
+                    nodes: Vec::new(),
+                }
+                .to_bytes(),
+            },
+            cluster_directory_blob(directory.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -6221,6 +6287,7 @@ mod tests {
 
         assert_eq!(world.entity_shadow_lights, vec![0]);
         assert!(world.direct_sh_delta_volumes.is_some());
+        assert_eq!(world.cluster_directory, Some(directory));
         assert!(
             world.shadowmask_atlas.is_none(),
             "missing ShadowmaskAtlas must not clear EntityShadowLights or direct SH deltas"

@@ -1,12 +1,13 @@
 # Shadowmask Atlas — BC5 Compress-at-Rest — Research
 
-Grounding for `index.md`, read at 8ce91e682 (after the `sh-probe-streaming` merge).
+Grounding for `index.md`, read at 8e4753ce1 (after the `sh-probe-streaming` merge).
 Facts cited by symbol; the brief holds the decisions, this file holds the
 investigation. No line numbers — they stale.
 
-Capacity-side grounding — the layer budget, the binding ceiling, the assignment
-rewrite, consolidation and streaming sequencing — lives in
-`shadowmask-atlas-mask-capacity/research.md`.
+Capacity-side grounding — the binding ceiling, the assignment rewrite, consolidation
+and streaming sequencing — lives in `shadowmask-atlas-mask-capacity/research.md`. Its
+capacity table assumes groups stacked in array layers; side-by-side groups (below)
+change its arithmetic.
 
 ## The id-42 surface today
 
@@ -22,8 +23,32 @@ rewrite, consolidation and streaming sequencing — lives in
   the shared atlas (`ShadowmaskFill::new` from `PreparedAtlas`); the loader rejects a
   mismatch. A dropped light frees zero bytes.
 
-**No byte magnitude is recorded anywhere.** `lighting-scale--sh-base-atlas-at-rest-slimming`
-measured ids 34, 35, 27, 41 and 45 on `campaign-test` and omitted 42.
+## Measured basis
+
+Yardstick: `stress-warren-hallway-inspection`. Section table of
+`content/dev/maps/stress-warren-hallway-inspection.prl` (built 2026-08-31, read
+directly from the container directory):
+
+| Section | Payload | Bytes |
+|---|---|---|
+| 22 Lightmap — irradiance | BC6H, 84 × 512² | 22.0 MB |
+| 22 Lightmap — direction | `OCT_RGBA8` in that build | 88.1 MB |
+| 42 ShadowmaskAtlas | raw `Rgba8Unorm`, 84 × 512², 338 selected lights | 88.1 MB |
+| every other section | — | ≈12 MB |
+| total | — | 210.5 MB |
+
+The current compiler emits direction as `DIRECTION_FORMAT_OCT_RG8`
+(`lightmap_bake.rs`), so a fresh bake's direction plane is 44 MB and id 22 ≈66 MB.
+Id 42 is then the largest section. Its format has not changed since that build.
+
+Earlier record: `lighting-scale--shadowmask-cold-working-set/research.md` measured id 42
+at 37.7 MB on the warren and projected 1.29 GB at density 0.04, "not shippable on this
+map". `lighting-scale--sh-base-atlas-at-rest-slimming` measured ids 34, 35, 27, 41 and
+45 on `campaign-test` and omitted 42. A local `campaign-test` build (reported by
+direction review, not re-read here) has id 42 at 67.1 MB against id 22 at 25.2 MB.
+
+BC5 halves id 42 to 44 MB at rest and in VRAM. It does not rescue the density-0.04
+projection (≈646 MB); nothing here claims it does.
 
 ## Where compression happens, and where id 42's encode lands
 
@@ -57,40 +82,42 @@ one representation. The streamed writer is the drift risk.
 Rejected alternative: encode at emit like id 35. It would either re-encode on every
 warm build or cache raw, and the footprint rule forbids an encode during reporting.
 
-## Lightmap layer budget
+## Group layout: side by side
 
-Two BC5 groups need `2 × layer_count ≤ 256` (`REQUIRED_MAX_TEXTURE_ARRAY_LAYERS`,
-`renderer_init_resources.rs`). The compiler allows `MAX_ATLAS_LAYERS = 256`
-(`lightmap_bake.rs`), so as first drafted a 129–256-layer level would degrade to fully
-lit — a silent regression on content that works today.
+Two BC5 groups need somewhere to sit. Stacked in array layers `L..2L`, they need
+`2L ≤ 256` (`REQUIRED_MAX_TEXTURE_ARRAY_LAYERS`), while the compiler allows
+`MAX_ATLAS_LAYERS = 256`. The 129–256-layer band is reachable: `pack_layers` sizes one
+shared square layer to host the largest BVH leaf (`choose_layer_dim`) and spills the
+rest into further layers, so a level of many small leaves gets small, numerous layers
+(the capacity brief's research: 65 layers at 128² ≈ 1,700 m² of lit surface). Observed
+counts are 1–84 locally, and 19 and 36 in `lighting-scale--lightmap-bake-scaling`;
+the yardstick is 84.
 
-The band is reachable. `pack_layers` sizes one shared square layer dimension via
-`choose_layer_dim` to host the largest single BVH leaf (doubling from
-`MIN_ATLAS_DIMENSION`, capped at `MAX_ATLAS_DIMENSION = 8192`), then packs leaves in
-order and rolls a leaf that does not fit, whole, to a fresh layer. A level of many small
-leaves gets a small dimension and many layers; `shadowmask-atlas-mask-capacity`'s
-research estimates 65 layers at 128² as roughly 1,700 m² of lit surface.
-`_lightmap_density` does not steer it. Overflow past 256 returns
-`LightmapBakeError::LayerOverflow` today.
+Side by side, the texture is `2W × H × L` and the layer grid is the lightmap's own.
+Cost is identical — bytes, slot table, binding, sample count — and:
+- No layer budget is spent, so the packer and every lightmap-shaped section are
+  untouched, and the capacity brief keeps the whole layer budget for growth.
+- It stays on the lightmap layer grid, the residency granularity
+  `context/research/spatial-streaming.md` §6 names; `sh-probe-streaming` keeps a door
+  open for a lightmap-layer subscriber.
+- It spends width, which is plentiful exactly where layers are scarce: small layers mean
+  many layers, and small `W` doubles easily.
 
-Fix: when a pack would exceed the budget, double the dimension and repack. Quartering
-layers per doubling, 128 layers at 8192² is far past any real level, so the cap is
-unreachable in practice. Levels within budget are untouched, byte for byte.
+Seam. The sampler is `ClampToEdge` + `Linear` ("Lightmap Sampler (Linear)",
+`lighting/lightmap.rs`). Clamping the lightmap `u` to `[0.5/W, 1 − 0.5/W]` before
+mapping it into a half (`(g + u') / 2`) reproduces clamp-to-edge per group, so bilinear
+taps never cross the seam. One mip level, so no mip bleed. `W` is a power of two ≥ 64,
+so the seam falls on a BC block boundary and no block mixes groups.
 
-Alternatives weighed:
-- Compile-time warning with runtime fallback — leaves the regression in place.
-- Fail the bake — breaks maps that compile today.
-- Build the capacity brief first — it grows groups inside the same budget, so it narrows
-  the band rather than closing it, and it is gated on this brief's overlap report.
+The gap: `2W ≤ 8192` (`REQUIRED_MAX_TEXTURE_DIMENSION_2D`). A level with 8192-wide
+layers cannot seat it — one BVH leaf of roughly 26,800 m² of lit surface. The widest
+observed is 4096 (`movement-feel`), where `2W` is exactly 8192. The bake warns and
+omits the section there.
 
-Seams: `prepare_atlas` calls `pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density)`
-on both its static-lights and no-static-lights branches; tests pass a small `max_dim`,
-so the budget wants to be a parameter the same way for fixtures. Downstream: the
-`"lightmap_section"` memo keys on the prepared atlas layout (`build_pipeline.md`
-§Build Cache), so a repacked level misses. Confirm the per-light layer, shadowmask and
-animated weight-map keys fold the layout too, or bump their versions. Durable
-revision at promotion: `build_pipeline.md` §Compiler pipeline step 10 (spill "up to a
-fixed layer cap").
+Rejected: stacked groups plus a packer bound that grows layer size past 128 layers.
+It works, but it changes id 22's layout on large levels, invalidates downstream memos
+there, spends the layer budget streaming and capacity both want, and solves a ceiling
+only the stacked layout creates.
 
 ## Versioning
 
@@ -126,8 +153,8 @@ Fixing the group count at two keeps the brief small:
 
 - **The slot table needs no change.** A grown group count would push slots past `0..3`
   and collide with the `0xFF` sentinel.
-- **The samples stay hoisted.** Both layers (`lightmap_layer`,
-  `lightmap_layer + layer_count`) follow from `lightmap_layer` alone.
+- **The samples stay hoisted.** Both samples read the fragment's own lightmap layer at
+  a `u` derived from its lightmap UV alone.
 - **No capacity floor**, so no raw fallback and no dependence on overlap frequency.
 
 ## Why BC5 only, not raw behind the tag
@@ -180,13 +207,20 @@ on this data. No BC7-unorm encoder exists in-tree; `bc7-color-textures` owns tha
 
 ## Runtime lifecycle — the double residency
 
-Chosen shape: the upload owns the payload. Install moves it out of the world and the
-upload drops it; the world keeps slot table and dims. A clear-in-place alternative would
-leave a header whose length arithmetic its empty data contradicts, reachable through
-`LevelWorld::lighting()` (`prl_lighting.rs`) — guardable with a filter length check,
-but ownership makes the state unrepresentable instead. `Vec::clear` alone also keeps
-the allocation.
+Chosen shape: the upload owns the payload, for id 42's masks and id 22's irradiance and
+direction alike. Install moves them out of the world and the upload drops them; the
+world keeps headers. A clear-in-place alternative would leave a header whose length
+arithmetic its empty data contradicts, reachable through `LevelWorld::lighting()`
+(`prl_lighting.rs`) — guardable with a filter length check, but ownership makes the
+state unrepresentable instead. `Vec::clear` alone also keeps the allocation.
 
+Id 22: `LevelWorld.lightmap: Option<LightmapSection>` holds `irradiance: Vec<u8>` and
+`direction: Vec<u8>`. After install, `usable_atlas_dimensions` reads its header (dims)
+for the animated lightmap; the payloads are read only by `LightmapResources::new`,
+which uploads irradiance, direction and shadowmask together. No reader in
+`crates/postretro` or the loader after install. Other GPU-only sections on the
+yardstick are ≤3.3 MB or streamed, so ids 22 and 42 carry the whole CPU win (≈110 MB
+fresh).
 
 - **Load.** `load_prl_from_container` → `LoadedLighting.shadowmask_atlas` →
   `LevelWorld.shadowmask_atlas` (`pub`, `level-loader/src/prl.rs`); accessor
@@ -215,7 +249,8 @@ the allocation.
 | Memo write | BC5 section only, streamed | 0.5× raw |
 | Pack | BC5 section, one payload at a time | 0.5× raw |
 
-Runtime: file bytes → `from_bytes` copy (as today) → GPU upload → CPU payload cleared.
+Runtime: file bytes → `from_bytes` copy (as today) → GPU upload → payload dropped with
+the upload.
 
 ## Proof support
 
@@ -231,14 +266,16 @@ Runtime: file bytes → `from_bytes` copy (as today) → GPU upload → CPU payl
   `measurements/sh-probe-streaming/premise.md` records one unattended run on this Mac
   that could not initialize an adapter — plan an attended run. Its resident-byte
   ledger covers SH only.
-- **Fixtures.** Focused, with selected specular lights; the ratio is codec-intrinsic
-  and the error texel-local. No stress map.
+- **Fixtures.** Automated rows use focused fixtures with selected specular lights; the
+  ratio is codec-intrinsic and the error texel-local. Manual rows run on the yardstick,
+  `stress-warren-hallway-inspection`, freshly baked on both sides of the change.
 
 ## Prior commitments preserved
 
 - `rendering_pipeline.md` §4 World specular shadowmask: absent, rejected or dropped
   data is fully lit; the world-only signal stays independent of pool-shadow promotion
-  and its crossfade. Extended to an over-budget or misaligned BC5 section.
+  and its crossfade. Extended to a too-wide or misaligned BC5 section and to the
+  omitted wide-layer section.
 - `rendering_pipeline.md` §4 Promoted static lights: static→static world shadowing is
   exactly zero via the union-subtraction dead-zone. Group addressing changes mask
   location and encoding, not the union term.
@@ -259,7 +296,7 @@ change is nearly free (`development_guide.md` §1.6).
 
 ## Prior-art and collision map
 
-- **No plan owns id-42 size, RAM or VRAM.**
+- **No plan owns id-42 size, RAM or VRAM, or id 22's CPU residency.**
 - `lighting-scale--shadowmask-cold-working-set` (done) — restructured assignment;
   compile-time RAM only; named "bounding the output below its on-disk size" a format
   question. This brief does not touch assignment.
@@ -273,6 +310,10 @@ change is nearly free (`development_guide.md` §1.6).
 - `large-map-spatial-residency` — lightmap streaming is a seed only ("keep lightmaps
   whole initially"). BC5 blocks are no harder to stream per layer than id 22's BC6H.
 - `bc7-color-textures` (draft) — owns BC7. Not a dependency.
+- **Door: id 22 direction as BC5.** Octahedral RG8 is BC5's other home case; it would
+  take the yardstick's direction plane from 44 MB to 22 MB with the same encoder. Open
+  question is shading fidelity of block-compressed octahedral direction, not bytes. No
+  plan owns it.
 - `shadowmask-atlas-mask-capacity` (draft, gated) — gated on this brief's overlap report.
 
 ## Orderings and edges
@@ -282,18 +323,16 @@ change is nearly free (`development_guide.md` §1.6).
 | format-edges | empty selection, single light, full four-slot table | tag in header; `from_bytes` recomputes length from the tag | byte-exact round-trip |
 | stale-payload | pre-change raw id-42 payload | `from_bytes` rejects on tag; loader's malformed path | warning names the mismatch; fully lit; no panic |
 | misaligned | BC5 dims not multiples of 4 | `from_bytes` rejects before any upload | fully lit; `encode_bc5_rg`'s debug_assert never the only guard |
-| budget-boundary | `2 × layer_count` at the pinned maximum | filter evaluates the product before texture creation | equal kept; one greater → placeholder |
-| second-group-light | slot 2 or 3 | helper samples both layers hoisted, returns the four-lane vec4 | the light's shadow renders; first-group output unchanged |
-| placeholder-second-group | slot 2 or 3 against the 1-layer placeholder | group offset `textureNumLayers / 2 = 0`, layer clamped | fully lit, in range |
+| width-boundary | `2W` at the device's pinned texture dimension | filter compares `2W` before texture creation | equal kept; wider → placeholder |
+| second-group-light | slot 2 or 3 | helper samples both halves hoisted at one layer, returns the four-lane vec4 | the light's shadow renders; first-group output unchanged |
+| placeholder-second-group | slot 2 or 3 against the 1×1 placeholder | group width is zero; helper guards it (or placeholder is two texels wide) | fully lit, in range, no NaN coordinate |
+| seam-bleed | mask edge at a group's outer column, neighbouring group differs | `u` clamped half a texel inside the group before mapping | each group reads only its own texels |
+| wide-layer | lightmap layers 8192 wide | bake checks `2W` before the fill | named warning; no id 42; fully lit; 4096 still emits |
 | warm-equals-cold | memo hit vs miss | streamed writer and `to_bytes` share the header layout | identical bytes |
-| release-then-reload | reload after the payload was cleared | fresh disk read; nothing re-uploads from `App.level` | correct atlas |
+| release-then-reload | reload after the payloads were taken | fresh disk read; nothing re-uploads from `App.level` | correct lightmap and shadowmask |
 | stale-payload-tag-collision | pre-change payload whose bytes at the tag position equal a valid tag (slot bytes are `0..3`/`0xFF`, padding and high header bytes zero) | tag value chosen so no pre-change byte pattern matches it | rejected by format, not by length; fully lit; no panic |
 | stale-memo | warm cache holding a pre-change raw shadowmask entry | stage-version bump misses the key; a same-key raw entry fails `from_bytes` and re-bakes (`corrupt shadowmask atlas, re-baking`) | never served; rebuilt section equals uncached |
-| all-sentinel | every selected slot is the sentinel (all selected lights invalid) | section still emitted — `empty_section_for_dimensions` builds it — tagged BC5 over `2 × layer_count` layers | half raw bytes; loads; fully lit |
+| all-sentinel | every selected slot is the sentinel (all selected lights invalid) | section still emitted — `empty_section_for_dimensions` builds it — tagged BC5 at `2W × H × L` | half raw bytes; loads; fully lit |
 | bake-misaligned | bake handed a non-4-aligned atlas (every `SharedAtlas` test fixture in `shadowmask_bake.rs` is 5×5) | alignment checked before encode in every profile; `encode_bc5_rg` only `debug_assert`s and drops remainder blocks in release | error naming the dims; never a truncated payload; existing fixtures move to 4-aligned dims |
-| no-upload-install | install with no renderer | world stashed before any upload | payload retained; release never precedes upload |
-| budget-permit | level packs within 128 layers | packer takes today's path; no repack | prepared atlas byte-identical to the pre-change packer |
-| budget-boundary | pack needs exactly 128 vs 129 layers | overflow check at the budget, then double dimension and repack from scratch | 128 keeps dimension; 129 grows it and lands ≤ 128; leaf cohesion kept |
-| layout-selection-independent | same geometry, with and without selected shadowmask lights | budget is unconditional | identical layout |
-| repacked-end-to-end | level repacked to a larger dimension | shadowmask shares the repacked dims; `2 × layer_count ≤ 256` | loads and resolves masks; never the placeholder |
+| no-upload-install | install with no renderer | world stashed before any upload | id 22 and id 42 payloads retained; release never precedes upload |
 | overlap-memo-hit | warm rebuild with no edits | memo carries peak overlap beside the section; hit reports it without building the graph | same value as the cold bake; shipped section unchanged |

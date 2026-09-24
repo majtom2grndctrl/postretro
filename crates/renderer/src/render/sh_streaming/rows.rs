@@ -12,14 +12,6 @@ impl ShResidencyState {
         Ok(())
     }
 
-    pub(super) fn add_indirect_base_row_ref(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        increment_row_ref(&mut self.indirect_base_row_refs, row)
-    }
-
     pub(super) fn remove_indirect_base_row_ref(
         &mut self,
         dense: u32,
@@ -44,14 +36,6 @@ impl ShResidencyState {
         self.direct_promotion_dirty_rows.insert(row);
         self.direct_animated_dirty_rows.insert(row);
         Ok(())
-    }
-
-    pub(super) fn add_direct_base_row_ref(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        increment_row_ref(&mut self.direct_base_row_refs, row)
     }
 
     pub(super) fn remove_direct_base_row_ref(

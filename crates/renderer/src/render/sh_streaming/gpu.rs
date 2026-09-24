@@ -26,7 +26,7 @@ use super::direct_compose::{
     DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose,
     StreamingDirectComposeFrameInputs, StreamingDirectDirtyRanges, StreamingDirectViews,
 };
-use super::{ShResidencyDrainError, SparseCapacityFloors};
+use super::{PoolGrowthCounters, ShResidencyDrainError, SparseCapacityFloors};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
@@ -218,6 +218,7 @@ pub(super) struct StreamingGpuPools {
     pub(super) sparse_group_minimum_bytes: std::collections::BTreeMap<u32, u64>,
     probe_occlusion_enabled: bool,
     sparse_capacity_floors: SparseCapacityFloors,
+    pub(super) growth: PoolGrowthCounters,
 }
 
 pub(super) fn checked_cell_count(dimensions: [u32; 3]) -> Result<u32, ShResidencyDrainError> {

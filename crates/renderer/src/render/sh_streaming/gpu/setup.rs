@@ -460,6 +460,7 @@ impl StreamingGpuPools {
             sparse_group_minimum_bytes,
             probe_occlusion_enabled,
             sparse_capacity_floors: sparse_capacity_floors.clone(),
+            growth: PoolGrowthCounters::default(),
         })
     }
 }

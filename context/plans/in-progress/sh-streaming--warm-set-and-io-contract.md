@@ -265,6 +265,10 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
   and the second publish, so no request is submitted for a cluster that the
   same frame suppresses.
 
+- Sync-proof mode (which capture requires) counts its frame-thread reads into
+  session-owned read stats: one uncoalesced read per chunk, with latency covering read
+  plus decode. The capture report's I/O fields are therefore real, not zero.
+
 ## Resolutions from T4 (landed `c36cbe9ba`)
 
 - Real-content install cost was dominated by per-call wgpu queue writes, each paying its

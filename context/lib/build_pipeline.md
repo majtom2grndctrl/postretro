@@ -667,6 +667,8 @@ The gate is one-sided. A directory holding content and **no** marker was produce
 
 Packaging removes them. Both outputs delete every lock in the finished tree before the sweep, and both sweeps refuse one that survived, which is what stops a later change reintroducing them. Nothing recompiles a shipped `.prl` in place, and a modder who rebakes inside an SDK bundle recreates the lock on demand, so removal costs nothing. The refusal matches on the file's name rather than its extension: `.prl.pack.lock` is a compound suffix behind a leading dot, and the single extension a path API reports for it is a bare `lock` — too narrow to identify these files and too broad to be safe.
 
+Compiler scratch is the other build leftover: `prl-build`'s `.<name>.prl.pack-*.tmp` and `.<name>.prl.cluster-sh-*.spool`, and the texture baker's `<name>.tmp.<pid>`, each renamed into place or deleted on success. Only a killed bake strands one, and it strands it in the author's tree, so both copy filters skip these exact shapes and both sweeps refuse them — matched by name for the same reason as the lock, since a bare `tmp` extension is one a mod could legitimately use.
+
 ### Shipped level set
 
 The levels a payload ships are the `maps/<name>.prl` string literals in the entry script stage 2 emitted, found by a textual scan. The mod's catalog is the record of which levels the mod offers, and the emitted bundle carries every catalog `path` as a literal; the maps directory holds fixtures, feature demos, and capture rigs under the same extension as the sources behind offered levels, and tells them apart by nothing.

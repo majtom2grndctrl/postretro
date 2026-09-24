@@ -5,23 +5,34 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use postretro_level_loader::{
-    PreparedShCluster, PrlLoadError, ShDrainBatch, ShDrainOutcome, ShStreamManifest,
+    CellVisibility, PreparedShCluster, PrlLoadError, ShDrainBatch, ShDrainOutcome, ShStreamManifest,
 };
 use thiserror::Error;
 
 use super::budget::{FixedGpuCharges, ShGpuBudgetInputs, ShResidencyAccounting};
 use super::generation::{GenerationClock, ProcessGenerationClock};
 use super::topology::PlannerTopology;
+use super::warm_set::{WarmSet, WarmSource};
 
 #[path = "lifecycle.rs"]
 mod lifecycle;
+#[path = "pressure.rs"]
+mod pressure;
 #[path = "targeting.rs"]
 mod targeting;
 
+/// Cluster-hop radius of the warm-set fallback used without usable id 46.
 pub(crate) const PREFETCH_HOPS: u8 = 2;
+/// Warm-set size cap in distinct clusters, including the camera's own.
+pub(crate) const WARM_SET_CLUSTERS: usize = 8;
+/// Bounds one warm walk, which runs only when the camera changes cell.
+pub(crate) const WARM_WALK_MAX_SETTLED_CELLS: usize = 4096;
 pub(crate) const HYSTERESIS_SECONDS: f64 = 2.0;
-pub(crate) const MAX_STREAM_PERMITS: usize = 4;
-pub(crate) const MAX_INSTALLS_PER_DRAIN: usize = 2;
+/// A permit covers one cluster from request until install, drop, or failure.
+pub(crate) const MAX_STREAM_PERMITS: usize = 8;
+/// Decoded bytes handed to the renderer per drain. The first eligible cluster
+/// is always admitted, so one oversized chunk can still install.
+pub(crate) const MAX_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClusterResidencyState {
@@ -47,6 +58,9 @@ pub(crate) struct ShClusterRequest {
     pub(crate) content_tag: [u8; 32],
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
+    /// The cluster's class was `Visible` or `Pinned` (owner closure included)
+    /// when requested. Mandatory reads are served before optional ones.
+    pub(crate) mandatory: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,23 +142,38 @@ pub(crate) struct ShEvictionKey {
     pub(crate) cluster_id: u32,
 }
 
+/// Cumulative since controller creation, except `last_drain_decoded_bytes`
+/// (a gauge) and `max_drain_decoded_bytes` (a high-water mark).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ShResidencyCounters {
     pub(crate) misses: u64,
     pub(crate) installs: u64,
     pub(crate) evictions: u64,
     pub(crate) retries: u64,
+    /// Completed reads that admission dropped as stale, not targeted, or
+    /// duplicate, and their decoded bytes.
+    pub(crate) discarded_reads: u64,
+    pub(crate) discarded_read_bytes: u64,
+    pub(crate) cancelled_requests: u64,
+    /// Decoded bytes handed to the renderer in drain batches. A chunk the
+    /// renderer defers is counted again when it is handed over again.
+    pub(crate) decoded_bytes_installed: u64,
+    /// Decoded bytes of the most recent drain that handed over any cluster.
+    pub(crate) last_drain_decoded_bytes: u64,
+    pub(crate) max_drain_decoded_bytes: u64,
+    /// Drains that left eligible ready work behind because of the byte budget.
+    pub(crate) budget_limited_drains: u64,
 }
 
 /// Plain controller-owned state for the live SH report. GPU pool figures stay
 /// renderer-owned; this half owns permits, CPU payload phases, and policy
 /// counters so neither side has to borrow the other's lifetime state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg(any(test, feature = "capture"))]
 pub(crate) struct ShResidencyControllerSnapshot {
     pub(crate) cpu: super::budget::CpuPhaseLedger,
     pub(crate) permits_in_use: usize,
     pub(crate) target_clusters: usize,
+    pub(crate) warm_clusters: usize,
     pub(crate) absent_clusters: usize,
     pub(crate) queued_clusters: usize,
     pub(crate) ready_clusters: usize,
@@ -210,6 +239,9 @@ struct ReadyCluster {
 pub(crate) struct ShResidencyController {
     manifest: Option<Arc<ShStreamManifest>>,
     topology: PlannerTopology,
+    warm_source: WarmSource,
+    /// Cached for `warm.camera_cell()`; recomputed only when that cell changes.
+    warm: WarmSet,
     generation: u64,
     content_tag: [u8; 32],
     states: Vec<ClusterState>,
@@ -232,25 +264,37 @@ pub(crate) struct ShResidencyController {
 }
 
 impl ShResidencyController {
+    /// `cell_visibility` is the same level's loaded id-46 section; the
+    /// controller builds its own per-cell adjacency from it.
     pub(crate) fn new(
         manifest: Arc<ShStreamManifest>,
         gpu_budget: ShGpuBudgetInputs,
+        cell_visibility: Option<&CellVisibility>,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::with_clock(manifest, gpu_budget, &ProcessGenerationClock)
+        Self::with_clock(
+            manifest,
+            gpu_budget,
+            cell_visibility,
+            &ProcessGenerationClock,
+        )
     }
 
     pub(crate) fn with_clock(
         manifest: Arc<ShStreamManifest>,
         gpu_budget: ShGpuBudgetInputs,
+        cell_visibility: Option<&CellVisibility>,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
         let topology = PlannerTopology::from_manifest(&manifest)?;
-        Self::from_parts(Some(manifest), topology, clock, gpu_budget)
+        let warm_source =
+            WarmSource::from_cell_visibility(cell_visibility, topology.cell_to_cluster.len());
+        Self::from_parts(Some(manifest), topology, warm_source, clock, gpu_budget)
     }
 
     fn from_parts(
         manifest: Option<Arc<ShStreamManifest>>,
         topology: PlannerTopology,
+        warm_source: WarmSource,
         clock: &impl GenerationClock,
         gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
@@ -273,6 +317,8 @@ impl ShResidencyController {
         Ok(Self {
             manifest,
             topology,
+            warm_source,
+            warm: WarmSet::default(),
             generation,
             content_tag,
             states: vec![ClusterState::default(); cluster_count],
@@ -331,6 +377,13 @@ impl ShResidencyController {
         self.targets.contains(&cluster_id)
     }
 
+    /// The current target set, published to the I/O issuer for pre-read
+    /// cancellation.
+    #[cfg_attr(not(test), allow(dead_code))] // Consumed by the ordered-I/O issuer.
+    pub(crate) fn targets(&self) -> &BTreeSet<u32> {
+        &self.targets
+    }
+
     /// True only when every current visible/prefetch/owner target has crossed
     /// the renderer-confirmed one-frame compose boundary. Static capture uses
     /// this to know when its deterministic preload is complete.
@@ -358,12 +411,13 @@ impl ShResidencyController {
         self.non_evictable_overshoot_bytes
     }
 
-    #[cfg(any(test, feature = "capture"))]
+    #[cfg_attr(not(any(test, feature = "capture")), allow(dead_code))] // Diagnostics surfaces.
     pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {
         let mut snapshot = ShResidencyControllerSnapshot {
             cpu: self.accounting.cpu,
             permits_in_use: self.permits_in_use,
             target_clusters: self.targets.len(),
+            warm_clusters: self.warm.len(),
             non_evictable_overshoot_bytes: self.non_evictable_overshoot_bytes,
             counters: self.counters,
             ..ShResidencyControllerSnapshot::default()
@@ -387,10 +441,23 @@ impl ShResidencyController {
         counter: &mut u64,
         label: &'static str,
     ) -> Result<(), ShResidencyControllerError> {
+        Self::add_to_counter(counter, 1, label)
+    }
+
+    fn add_to_counter(
+        counter: &mut u64,
+        amount: u64,
+        label: &'static str,
+    ) -> Result<(), ShResidencyControllerError> {
         *counter = counter
-            .checked_add(1)
+            .checked_add(amount)
             .ok_or(ShResidencyControllerError::AccountingOverflow(label))?;
         Ok(())
+    }
+
+    /// Rank of a cluster in the current warm set; non-warm clusters rank last.
+    fn warm_rank(&self, cluster_id: u32) -> u32 {
+        self.warm.rank(cluster_id)
     }
 
     fn ready_for_install(&self, cluster_id: u32) -> bool {
@@ -439,12 +506,13 @@ impl ShResidencyController {
         Ok(())
     }
 
+    /// Test controllers have no id 46, so they use the cluster-hop fallback.
     #[cfg(test)]
     fn for_test(
         topology: PlannerTopology,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_parts(None, topology, clock, ShGpuBudgetInputs::default())
+        Self::for_test_with_budget(topology, clock, ShGpuBudgetInputs::default())
     }
 
     #[cfg(test)]
@@ -453,7 +521,29 @@ impl ShResidencyController {
         clock: &impl GenerationClock,
         gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_parts(None, topology, clock, gpu_budget)
+        let warm_source = WarmSource::resolve(
+            None::<(usize, &[postretro_level_loader::CoupledCellPair])>,
+            topology.cell_to_cluster.len(),
+        );
+        Self::from_parts(None, topology, warm_source, clock, gpu_budget)
+    }
+
+    /// A test controller whose warm walk runs over the given id-46 pairs.
+    #[cfg(test)]
+    fn for_test_with_cell_pairs(
+        topology: PlannerTopology,
+        pairs: &[postretro_level_loader::CoupledCellPair],
+        gpu_budget: ShGpuBudgetInputs,
+    ) -> Result<Self, ShResidencyControllerError> {
+        let cell_count = topology.cell_to_cluster.len();
+        let warm_source = WarmSource::resolve(Some((cell_count, pairs)), cell_count);
+        Self::from_parts(
+            None,
+            topology,
+            warm_source,
+            &super::generation::FixedGenerationClock::new(1),
+            gpu_budget,
+        )
     }
 }
 
@@ -502,3 +592,6 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
 #[cfg(test)]
 #[path = "controller_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "controller_warm_and_budget_tests.rs"]
+mod warm_and_budget_tests;

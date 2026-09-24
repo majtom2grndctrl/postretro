@@ -228,7 +228,24 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
 
 **Landing:** `cargo test -p xtask layering_invariants_hold` passes; `/preflight` green.
 
+## Resolutions from T2 (landed `bf133414b`)
+
+- Warm rank orders requests within every class, not only Prefetch. The install drain
+  order stays `(class, Reverse(priority), cluster_id)`.
+- In the id-46 fallback every cluster has warm rank 0, so the legacy ordering holds.
+- A camera cell outside the id-49 map is `InvalidTopology`. An id 46 with zero pairs is
+  usable, and the warm set is then the camera cluster alone.
+- `last_drain_decoded_bytes` updates only on drains that hand over at least one cluster.
+  A deferred chunk is counted in `decoded_bytes_installed` again when it is handed over again.
+- The warm set is built in `sh_streaming/warm_set.rs`. Pressure and eviction ordering
+  moved to `sh_streaming/pressure.rs`.
+
 ## Open questions
+
+- **Count-only warm bound on fine-grained maps.** On `stress-warren-mini` (923 cells,
+  482 clusters) eight clusters reach only about eight cells from the camera. A distance
+  floor, or a byte bound, may suit such maps better than a fixed count. To revisit with
+  diagnostics; for the owner.
 
 - Default magnitudes (`WARM_SET_CLUSTERS`, coalescing caps, byte budget, permits) are
   first guesses to be tuned from the new diagnostics on real content; changing them is not

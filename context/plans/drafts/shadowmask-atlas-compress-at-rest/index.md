@@ -13,11 +13,13 @@ An observed cost on the performance yardstick. On `stress-warren-hallway-inspect
 (84 lightmap layers at 512²), PRL id 42 (`ShadowmaskAtlasSection`) is 88 MB: the
 largest section in the level and the only baked atlas still stored raw. No bake or emit
 stage compresses it, so the `Rgba8Unorm` payload sits uncompressed on disk, in VRAM,
-and in CPU RAM for the whole level lifetime. Id 22's irradiance and direction payloads
-(≈66 MB fresh) share that last residency: nothing reads them after upload, yet the
-loaded world holds them until unload. `lighting-scale--shadowmask-cold-working-set`
-already recorded id 42 at 37.7 MB on the warren, and 1.29 GB at density 0.04. The
-masks are independent, spatially smooth `[0,1]` visibility scalars — BC4's home case,
+and in CPU RAM for the whole level lifetime. It grows with the atlas:
+`lighting-scale--shadowmask-cold-working-set` recorded this map at 37.7 MB from an
+older 36-layer artifact, 88 MB at today's 84 layers, 323 MB at density 0.08, and a
+projected 1.29 GB at 0.04. Id 22's irradiance and direction payloads (≈66 MB fresh)
+share the CPU residency: nothing reads them after upload, yet the loaded world holds
+them until unload. One constructor uploads all three payloads at one install seam, so
+id 42's CPU copy and id 22's leave through the same change. The masks are independent, spatially smooth `[0,1]` visibility scalars — BC4's home case,
 and BC5 is two BC4 blocks in one. When this lands, id 42 ships and uploads as BC5 at
 half the payload bytes, no GPU-only lightmap or shadowmask payload stays on the CPU
 after upload, and every shadow reads as it did.
@@ -41,8 +43,8 @@ after upload, and every shadow reads as it did.
 - **Pre-change payloads are rejected by name, not migrated.** They fail `from_bytes`
   with an error naming the format mismatch and load fully lit through the loader's
   existing malformed-section path. Fixtures re-bake (`development_guide.md` §1.6). The
-  container-entry version for id 42 advances, but the in-payload tag is the reject —
-  the loader does not check id 42's entry version.
+  in-payload tag is the reject; the loader does not check id 42's container-entry
+  version.
 - **Encode in the bake, before the pack seam.** The whole-section memo then stores
   compressed blocks, so a warm build neither re-encodes nor caches raw, and the pack seam
   keeps receiving a finished section. The shadowmask stage version advances.
@@ -52,28 +54,28 @@ after upload, and every shadow reads as it did.
 - **One sampling helper absorbs the layout.** The atlas read returns the four masks in
   today's shape — `(g0.r, g0.g, g1.r, g1.g)` — from two samples at the same layer, so
   the per-light select and both decode paths (promoted-union subtraction, world
-  specular) keep their shape. Each sample clamps the lightmap `u` half a texel inside
-  its group's width before mapping it into that half, which reproduces today's
-  clamp-to-edge exactly, so bilinear filtering never blends one group into the other.
-  Both coordinates derive from the fragment's lightmap UV and layer alone, so the
+  specular) keep their shape. Each group samples as if it were its own clamp-to-edge
+  texture, so bilinear filtering never blends one group into the other. Both
+  coordinates derive from the fragment's lightmap UV and layer alone, so the
   samples stay hoisted outside every light loop in uniform control flow. Cost: at most
   one extra sample per active decode path per fragment, independent of light count.
 - **A level whose lightmap layers are already 8192 wide gets no shadowmask, loudly.**
   `2W` would exceed the pinned 8192 texture dimension. The bake names the level and the
   width in a warning and omits id 42; the level renders fully lit, as
-  `rendering_pipeline.md` §4 commits for absent data. Reaching it takes a single BVH
-  leaf of roughly 26,800 m² of lit surface; no observed level is wider than 4096. The
-  capacity brief inherits this band.
+  `rendering_pipeline.md` §4 commits for absent data. No observed level is wider than
+  4096 (`research.md` §Group layout). The capacity brief inherits this band.
 - **Malformed data degrades to fully lit, never raw.** A `2W` over the device's
   texture dimension or dimensions not 4-aligned resolve to the all-visible placeholder
-  with a `[Renderer]` error. The compiler emits neither; the runtime guards corrupt or
-  hand-built data. Against the one-texel placeholder both samples read the same white
-  texel.
+  with a `[Renderer]` error. The compiler emits neither and `from_bytes` rejects
+  misalignment first; the renderer keeps its own guard for hand-built geometry. The
+  placeholder is 2×1 white, so each group's half is one real texel.
 - **The upload owns GPU-only lightmap payloads.** Every level install — the game's and
   the capture harness's — moves id 42's mask payload and id 22's irradiance and
-  direction payloads out of the loaded world into the lightmap upload, which drops them once the textures exist. The world keeps each
-  section's header — dimensions, formats, the slot table — because atlas-dimension
-  resolution and spec-light channel mapping read them, and it has no representation of
+  direction payloads out of the loaded world into the lightmap upload, which drops them
+  once the textures exist. The world keeps each
+  section's header — dimensions, formats, the slot table — because install-time
+  atlas-dimension resolution and spec-light channel mapping read them, and it has no
+  representation of
   a header whose payload was taken, so nothing can re-validate or re-upload an emptied
   section. An install with no renderer moves nothing. Every load or reload re-reads the
   level from disk.
@@ -82,23 +84,25 @@ after upload, and every shadow reads as it did.
   Format and width change behind the same group-4 binding, so the forward texture
   inventory is unchanged. Lightmap atlas dimensions are powers of two ≥ 64, so `2W` is
   block-aligned and the seam falls on a block boundary.
-- **Compile-time peak is bounded at 1.5× the raw fill plus one layer.** The raw fill,
-  its BC5 output and one layer's encode scratch coexist only inside the finish step; the
-  raw buffer drops before the section leaves the stage. Runtime residency falls: id 42's
-  VRAM halves, and GPU-only payloads leave the CPU after upload.
+- **Compile-time peak is bounded at 1.5× the raw fill plus at most three raw layers of
+  scratch**, and only inside the finish step; the section leaves the stage holding BC5
+  alone. Runtime residency falls: id 42's VRAM halves, and GPU-only payloads leave the
+  CPU after upload.
 - **Report peak per-texel overlap under `--verbose`, on every bake.** Not acted on
   here; it is the capacity brief's missing premise. The count comes from the overlap
   graph, which only a memo miss builds, so the memo carries it beside the section and a
-  hit reports it too. The shipped section does not carry it — no runtime reader.
+  hit reports it too; a hit whose count is missing is treated as a miss. A bake that
+  omits id 42 for width reports the omission instead of a count. The shipped section
+  does not carry it — no runtime reader.
 
 ### Non-goals
 
 - **Mask capacity above four.** `shadowmask-atlas-mask-capacity`. Unmeasured and
   unreported, so it must not gate a certain win.
 - **A runtime raw decode path**, including as an A/B toggle.
-- **Compressing id 22's direction plane.** Octahedral RG8 is BC5's other home case, but
-  whether direction survives block compression is a shading-fidelity question this brief
-  does not answer. `research.md` records the door.
+- **Compressing id 22's direction plane.** `build_pipeline.md` commits that direction
+  is never compressed or linearly filtered, because octahedral lerp is not slerp.
+  Reopening that is its own fidelity decision; `research.md` records the bytes at stake.
 - **BC7.** `bc7-color-textures` owns it; BC7 models cross-channel correlation four
   independent masks lack.
 - **Streaming the shadowmask.** `sh-probe-streaming` excludes lightmap residency and its
@@ -132,7 +136,7 @@ after upload, and every shadow reads as it did.
       bytes, loads it, and renders fully lit. (pin: all-sentinel)
 
 **Degradation**
-- [ ] A sentinel slot reads fully lit. A second-group slot against the one-texel
+- [ ] A sentinel slot reads fully lit. A second-group slot against the 2×1
       placeholder reads fully lit without addressing outside the bound texture.
 - [ ] `2W` equal to the device's pinned texture dimension is kept; one block wider
       degrades to the placeholder with a `[Renderer]` error and no panic.
@@ -144,6 +148,8 @@ after upload, and every shadow reads as it did.
       id 42; the level loads fully lit. A bake at 4096 emits the section. (pin: wide-layer)
 - [ ] A warm rebuild of the 8192-wide bake warns again and still emits no id 42.
       (pin: wide-layer-warm)
+- [ ] A hand-built section with dimensions not multiples of 4, handed to the renderer
+      past the wire check, reaches the placeholder with a `[Renderer]` error.
 - [ ] A bake given atlas dimensions that are not multiples of 4 fails with an error
       naming them, in release as in debug; it never emits a truncated payload.
       (pin: bake-misaligned)
@@ -178,9 +184,9 @@ after upload, and every shadow reads as it did.
 - [ ] The texture description built for the atlas — BC5, `2W × H`, `layer_count`
       layers — and its byte size, half the raw description's, are checked without a GPU,
       and it is the same description the upload creates.
-- [ ] On a cache miss the bake holds one raw fill, one compressed output and at most one
-      layer of encode scratch, and the raw fill is gone before the section is cached or
-      returned.
+- [ ] On a cache miss the bake holds one raw fill, one compressed output and at most
+      three raw layers of encode scratch, and the raw fill is gone before the section is
+      cached or returned.
 - [ ] Re-baking twice yields a byte-identical section across differing worker-thread
       counts, and a cached-warm section equals the uncached one byte-for-byte.
 - [ ] Measured and reported, not gated: max and mean per-channel absolute error of the
@@ -188,8 +194,8 @@ after upload, and every shadow reads as it did.
 
 **Lifecycle**
 - [ ] After install, the loaded world holds id 42's slot table and dimensions and id 22's
-      header, and none of their payloads; each payload's allocation is freed once its
-      texture exists.
+      header, and has no place to hold their payloads. The release itself is measured
+      manually.
 - [ ] Payloads are released only after their upload; an install that uploads nothing
       keeps them. (pin: no-upload-install)
 - [ ] A capture install takes the payloads the same way; no install path borrows them.
@@ -211,7 +217,9 @@ On `stress-warren-hallway-inspection`, freshly baked, pre-change commit against
 post-change:
 - [ ] Id 42 and id 22 section byte counts, layer count and atlas dimensions, and the
       bake's peak RSS — the compile-time bound's evidence — in the landing note.
-- [ ] Process RSS after level install, before and after — the CPU release's evidence.
+- [ ] Process memory after level install, before and after, with the texture bytes from
+      the section arithmetic subtracted so only the CPU release remains — unified
+      memory counts GPU textures against the process. Name the metric.
 - [ ] Offscreen capture of a view with selected non-SDF static specular lights: highlights
       and their occluded regions read unchanged against the pre-change capture. Look at
       both images; a distribution check passes on an image that lost its contrast.
@@ -250,7 +258,9 @@ Non-binding.
 - **Encode seam.** `ShadowmaskFill::finish` (`shadowmask_bake/fill.rs`) moves raw RGBA
   into the section; `empty_section_for_dimensions` builds sections too and must emit the
   same tagged shape. Per layer, lay RGBA's R,G into the left half and B,A into the right
-  half of a `2W × H` RG image and run `bc5::encode_bc5_rg` once at width `2W`. Put the
+  half of a `2W × H` image and run `bc5::encode_bc5_rg` once at width `2W`. It takes
+  RGBA8 input and returns a fresh buffer, which is where the three-layer scratch bound
+  comes from; writing blocks in place would shrink it. Put the
   encode in its own submodule — `shadowmask_bake.rs` is past 4,000 lines and gains no
   new responsibility here.
 - **Cache writer.** `cache_shadowmask_section_then_complete` streams its own copy of the
@@ -259,18 +269,18 @@ Non-binding.
   `SHADOWMASK_ATLAS_STAGE_VERSION`; its test pins the value.
 - **Wide-layer omit.** The bake knows `W` from the prepared atlas; omit the section
   before the fill runs, so no raw buffer is allocated for a section that will not ship.
-- **Pack seam.** `pack/section_plan.rs` `build_finalized_section_plan` plans id 42; its
-  container-entry version argument is the one to advance. `pack_output::report_section_footprint`
+- **Pack seam.** `pack/section_plan.rs` `build_finalized_section_plan` plans id 42;
+  advance its container-entry version argument as housekeeping — nothing checks it. `pack_output::report_section_footprint`
   is the byte report (`prl-build -v`).
 - **Renderer.** `filter_usable_shadowmask_section` and `upload_shadowmask_texture`
   (`lighting/lightmap.rs`): compare `2W` against `max_texture_dimension_2d`, reject
   misalignment, upload `Bc5RgUnorm` at `2W × H × L`. `upload_placeholder_shadowmask`
-  stays `Rgba8Unorm` 1×1×1 white.
+  becomes `Rgba8Unorm` 2×1×1 white.
 - **Shader.** `sample_shadowmask_atlas` in `forward.wgsl` is the only atlas read; its
   call sites are the promoted-union subtraction and the hoisted specular sample in
-  `fs_main`. Group width in texels is `textureDimensions(shadowmask_atlas).x / 2`, which
-  is zero against the 1×1 placeholder — guard it, or make the placeholder two texels
-  wide so each half is one white texel. Sharing one sample pair
+  `fs_main`. Clamp the lightmap `u` to `[0.5/W, 1 − 0.5/W]`, with `W` =
+  `textureDimensions(shadowmask_atlas).x / 2`, then map it to `(g + u') / 2`; this
+  reproduces clamp-to-edge per group (`research.md` §Group layout). Sharing one sample pair
   across both paths is permitted where their gating conditions allow.
 - **Guards that change.** `forward_shader_shadowmask_fallback_clamps_multilayer_indices`
   pins today's sample count and clamp text; rewrite it to the new shape.

@@ -110,7 +110,9 @@ taps never cross the seam. One mip level, so no mip bleed. `W` is a power of two
 so the seam falls on a BC block boundary and no block mixes groups.
 
 The gap: `2W ≤ 8192` (`REQUIRED_MAX_TEXTURE_DIMENSION_2D`). A level with 8192-wide
-layers cannot seat it — one BVH leaf of roughly 26,800 m² of lit surface. The widest
+layers cannot seat it — at default density (0.04 m/texel) one BVH leaf of roughly
+26,800 m² of lit surface, or a single chart longer than about 164 m
+(`choose_layer_dim` grows for the widest chart too). The widest
 observed is 4096 (`movement-feel`), where `2W` is exactly 8192. The bake warns and
 omits the section there.
 
@@ -181,7 +183,7 @@ on this data. No BC7-unorm encoder exists in-tree; `bc7-color-textures` owns tha
   `max_texture_dimension_2d`, `layer_count <= max_texture_array_layers`. The limit is
   pinned by `REQUIRED_MAX_TEXTURE_ARRAY_LAYERS = 256` (`renderer_init_resources.rs`).
   No BC alignment check.
-- Placeholder: `upload_placeholder_shadowmask`, 1×1×1 `Rgba8Unorm` white.
+- Placeholder: `upload_placeholder_shadowmask`, 1×1×1 `Rgba8Unorm` white. Becomes 2×1 under side-by-side groups.
 - `TEXTURE_COMPRESSION_BC` is in `request_renderer_device`'s required features; the
   renderer bails without it, so a no-BC-adapter row is unreachable. Nothing checks BC5
   filterability separately (BC6H has `bc6h_irradiance_filterable`); BC5 unorm is
@@ -245,7 +247,7 @@ fresh).
 | Phase | Coexisting representations | Bound |
 |---|---|---|
 | Fill | raw RGBA buffer, `W × H × L × 4` | as today |
-| Finish (encode) | raw buffer + BC5 output (`W × H × L × 2`) + one layer's RG scratch | ≈1.5× raw + one layer |
+| Finish (encode) | raw buffer + BC5 output (`W × H × L × 2`) + one layer's `2W × H × 4` input image (two raw layers) + that call's returned blocks (half a raw layer) | ≈1.5× raw + ≤ 3 raw layers |
 | Memo write | BC5 section only, streamed | 0.5× raw |
 | Pack | BC5 section, one payload at a time | 0.5× raw |
 
@@ -311,9 +313,10 @@ change is nearly free (`development_guide.md` §1.6).
   whole initially"). BC5 blocks are no harder to stream per layer than id 22's BC6H.
 - `bc7-color-textures` (draft) — owns BC7. Not a dependency.
 - **Door: id 22 direction as BC5.** Octahedral RG8 is BC5's other home case; it would
-  take the yardstick's direction plane from 44 MB to 22 MB with the same encoder. Open
-  question is shading fidelity of block-compressed octahedral direction, not bytes. No
-  plan owns it.
+  take the yardstick's direction plane from 44 MB to 22 MB with the same encoder.
+  `build_pipeline.md` commits that direction is never compressed or linearly filtered
+  (octahedral lerp is not slerp), so opening it overturns a durable commitment on
+  fidelity grounds. No plan owns it.
 - `shadowmask-atlas-mask-capacity` (draft, gated) — gated on this brief's overlap report.
 
 ## Orderings and edges
@@ -325,7 +328,7 @@ change is nearly free (`development_guide.md` §1.6).
 | misaligned | BC5 dims not multiples of 4 | `from_bytes` rejects before any upload | fully lit; `encode_bc5_rg`'s debug_assert never the only guard |
 | width-boundary | `2W` at the device's pinned texture dimension | filter compares `2W` before texture creation; `W` is 4-aligned, so the smallest over-limit `2W` is 8200 and `W` = 8192 is the case a `W`-only compare keeps | equal kept; wider → placeholder |
 | second-group-light | slot 2 or 3 | helper samples both halves hoisted at one layer, returns the four-lane vec4 | the light's shadow renders; first-group output unchanged |
-| placeholder-second-group | slot 2 or 3 against the 1×1 placeholder | group width is zero; helper guards it (or placeholder is two texels wide) | fully lit, in range, no NaN coordinate |
+| placeholder-second-group | slot 2 or 3 against the 2×1 placeholder | group width one texel; right half is its own white texel | fully lit, in range, no NaN coordinate |
 | seam-bleed | mask edge at a group's outer column, neighbouring group differs | `u` clamped half a texel inside the group before mapping | each group reads only its own texels |
 | wide-layer | lightmap layers 8192 wide | bake checks `2W` before the fill | named warning; no id 42; fully lit; 4096 still emits |
 | warm-equals-cold | memo hit vs miss | streamed writer and `to_bytes` share the header layout; a drifted streamed header fails `from_bytes` and silently re-bakes, so the second build must log a hit | identical bytes, and a logged hit |
@@ -340,6 +343,7 @@ change is nearly free (`development_guide.md` §1.6).
 | animated-after-take | level with animated lights installs after id 22's payload split | atlas sizing (`usable_atlas_dimensions`) reads the retained header before `LightmapResources::new` takes the payload | animated atlas dims equal the static atlas; animated lights render |
 | wide-layer-warm | warm rebuild of an 8192-wide level | memo key includes `W`; omission precedes memo probe and fill; nothing cached for an omitted section | warning on every build; no id 42; no memo entry; no raw fill. Prove at the stage seam with a synthetic wide shared atlas |
 | partial-lighting-install | id 22 without id 42; neither | install moves whatever is present | id 22 payloads taken; shadowmask placeholder; nothing to move when both absent; no panic |
-| placeholder-shape | second-group slot against the placeholder | exactly one of: helper guards zero group width with a 1×1 placeholder, or a 2×1 placeholder — Decision and Path name the same one | fully lit, in range, no NaN |
+| placeholder-shape | second-group slot against the placeholder | 2×1 white placeholder; group width one texel | fully lit, in range, no NaN |
 | raw-byte-tests | existing tests that read id-42 payload bytes (`pipeline/lightmap_stage.rs` assumes `width*height*4`; `shadowmask_bake.rs` asserts exact raw 64/128/255 values) | BC4 does not preserve interior values exactly | those assertions decode the payload or inspect the pre-encode fill |
-| overlap-memo-hit | warm rebuild with no edits | memo carries peak overlap beside the section; hit reports it without building the graph | same value as the cold bake; shipped section unchanged |
+| overlap-memo-hit | warm rebuild with no edits | memo carries peak overlap beside the section; hit reports it without building the graph; entries evict independently (`StageCache` LRU), so a missing count turns the hit into a miss | same value as the cold bake; shipped section unchanged |
+| overlap-wide-omit | 8192-wide level, section omitted | omission precedes the graph | report names the omission, no count |

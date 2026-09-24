@@ -633,5 +633,6 @@ fn admission_counts_every_discarded_completed_read() {
 
     let counters = controller.counters();
     assert_eq!(counters.discarded_reads, 3);
-    assert_eq!(counters.discarded_read_bytes, 12);
+    // Three discarded reads of 7 encoded bytes each, not their decoded size.
+    assert_eq!(counters.discarded_read_bytes, 21);
 }

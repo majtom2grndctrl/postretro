@@ -56,8 +56,9 @@ capture report. Measurements guide tuning; none of them gate the capability.
    when the gap between them is ≤ `COALESCE_MAX_GAP_BYTES` and the merged span is ≤
    `COALESCE_MAX_SPAN_BYTES`. Gap bytes are read and discarded. A single chunk larger than
    the span cap is read alone.
-9. **Pre-read cancellation.** Each frame after target update, the session publishes the
-   controller's target set to a shared atomic bitset. The issuer checks it immediately
+9. **Pre-read cancellation.** Each frame, after the target update and again after the
+   drain batch's budget policy, the session publishes the controller's target set to a
+   shared atomic bitset. The issuer checks it immediately
    before issuing a read; a request whose cluster is not targeted is not read and returns
    a `Cancelled` completion. Consequence: a deeper queue does not waste disk bandwidth on
    departed work.
@@ -122,7 +123,8 @@ capture report. Measurements guide tuning; none of them gate the capability.
   - `report_snapshot()` becomes unconditionally compiled (drop its `cfg`), and its
     snapshot type gains `warm_clusters: usize`.
   - `ShResidencyCounters` gains: `discarded_reads`, `discarded_read_bytes` (a
-    completed read that admission dropped as stale, not targeted, or duplicate),
+    completed read that admission dropped as stale, not targeted, or duplicate; bytes are
+    the encoded chunk length, the same unit as `read_bytes`),
     `cancelled_requests`, `decoded_bytes_installed` (sum over clusters handed to the
     renderer in batches), `last_drain_decoded_bytes`, `max_drain_decoded_bytes`,
     `budget_limited_drains` (drains that left eligible ready work behind because of the

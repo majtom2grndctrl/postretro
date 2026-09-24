@@ -305,6 +305,7 @@ impl ShResidencyController {
         let cluster_count = topology.cluster_count();
         if topology.owners.len() != cluster_count
             || topology.requested_resident_bytes.len() != cluster_count
+            || topology.encoded_chunk_bytes.len() != cluster_count
             || topology.chunk_hashes.len() != cluster_count
         {
             return Err(ShResidencyControllerError::InvalidTopology(

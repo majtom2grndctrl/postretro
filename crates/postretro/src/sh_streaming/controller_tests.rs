@@ -54,6 +54,9 @@ pub(super) fn hinted_topology(
         authored_priorities,
         owners,
         requested_resident_bytes,
+        // Distinct from `prepared`'s four decoded bytes, so tests can tell
+        // encoded and decoded accounting apart.
+        encoded_chunk_bytes: vec![7; cluster_count],
         chunk_hashes: (0..cluster_count)
             .map(|cluster_id| [cluster_id as u8; 32])
             .collect(),

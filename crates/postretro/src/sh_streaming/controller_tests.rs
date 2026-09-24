@@ -1,3 +1,4 @@
+use super::super::topology::SeamPortalEndpoint;
 use super::*;
 use crate::sh_streaming::generation::FixedGenerationClock;
 use glam::{Mat4, Vec3};
@@ -16,12 +17,41 @@ fn topology(
     owners: Vec<Vec<u32>>,
     requested_resident_bytes: Vec<u64>,
 ) -> PlannerTopology {
+    hinted_topology(
+        cell_to_cluster,
+        adjacency,
+        owners,
+        requested_resident_bytes,
+        Vec::new(),
+        Default::default(),
+        Vec::new(),
+    )
+}
+
+fn hinted_topology(
+    cell_to_cluster: Vec<u32>,
+    adjacency: Vec<Vec<u32>>,
+    owners: Vec<Vec<u32>>,
+    requested_resident_bytes: Vec<u64>,
+    seam_portals: Vec<SeamPortalEndpoint>,
+    pinned_clusters: std::collections::BTreeSet<u32>,
+    authored_priorities: Vec<u32>,
+) -> PlannerTopology {
     let cluster_count = adjacency.len();
     assert_eq!(owners.len(), cluster_count);
     assert_eq!(requested_resident_bytes.len(), cluster_count);
+    let authored_priorities = if authored_priorities.is_empty() {
+        vec![0; cluster_count]
+    } else {
+        assert_eq!(authored_priorities.len(), cluster_count);
+        authored_priorities
+    };
     PlannerTopology {
         cell_to_cluster,
         adjacency,
+        seam_portals,
+        pinned_clusters,
+        authored_priorities,
         owners,
         requested_resident_bytes,
         chunk_hashes: (0..cluster_count)
@@ -117,6 +147,459 @@ fn mark_sampleable(controller: &mut ShResidencyController, cluster_id: u32) {
         .accounting
         .add_logical(controller.topology.requested_resident_bytes[cluster_id as usize])
         .unwrap();
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NoHintControllerTick {
+    classes: Vec<(u32, TargetClass)>,
+    targets: Vec<u32>,
+    requests: Vec<u32>,
+    suppressed: Vec<u32>,
+    evictions: Vec<u32>,
+}
+
+fn no_hint_controller_tick(
+    controller: &ShResidencyController,
+    requests: Vec<u32>,
+    evictions: Vec<u32>,
+) -> NoHintControllerTick {
+    NoHintControllerTick {
+        classes: controller
+            .states
+            .iter()
+            .enumerate()
+            .filter_map(|(cluster_id, state)| state.class.map(|class| (cluster_id as u32, class)))
+            .collect(),
+        targets: controller.targets.iter().copied().collect(),
+        requests,
+        suppressed: controller
+            .states
+            .iter()
+            .enumerate()
+            .filter_map(|(cluster_id, state)| state.suppressed.then_some(cluster_id as u32))
+            .collect(),
+        evictions,
+    }
+}
+
+// Slice 4 baseline: no authored hints must retain the Slice 3 policy trace.
+// Generation, content tag, and section version are deliberately not observed.
+#[test]
+fn no_hint_controller_trace_preserves_target_request_suppression_and_eviction_order() {
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2, 3],
+            vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
+            vec![vec![], vec![], vec![], vec![]],
+            vec![8; 4],
+        ),
+        8,
+    );
+    let mut trace = Vec::new();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let first_batch = controller.take_async_drain_batch().unwrap();
+    assert!(first_batch.evictions.is_empty());
+    let first_request = controller.take_next_request().unwrap().unwrap().cluster_id;
+    trace.push(no_hint_controller_tick(
+        &controller,
+        vec![first_request],
+        first_batch.evictions,
+    ));
+
+    for cluster_id in [0, 1, 2] {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+    let pressure_batch = controller.take_async_drain_batch().unwrap();
+    trace.push(no_hint_controller_tick(
+        &controller,
+        Vec::new(),
+        pressure_batch.evictions.clone(),
+    ));
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            evicted: pressure_batch.evictions,
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![3]), 1.0)
+        .unwrap();
+    let recovery_batch = controller.take_async_drain_batch().unwrap();
+    let mut recovery_requests = Vec::new();
+    while let Some(request) = controller.take_next_request().unwrap() {
+        recovery_requests.push(request.cluster_id);
+    }
+    trace.push(no_hint_controller_tick(
+        &controller,
+        recovery_requests,
+        recovery_batch.evictions,
+    ));
+
+    assert_eq!(
+        trace,
+        vec![
+            NoHintControllerTick {
+                classes: vec![
+                    (0, TargetClass::Visible),
+                    (1, TargetClass::Prefetch),
+                    (2, TargetClass::Prefetch),
+                ],
+                targets: vec![0, 1, 2],
+                requests: vec![0],
+                suppressed: Vec::new(),
+                evictions: Vec::new(),
+            },
+            NoHintControllerTick {
+                classes: vec![(0, TargetClass::Visible)],
+                targets: vec![0],
+                requests: Vec::new(),
+                suppressed: vec![1, 2],
+                evictions: vec![1, 2],
+            },
+            NoHintControllerTick {
+                classes: vec![
+                    (0, TargetClass::Hysteresis),
+                    (1, TargetClass::Prefetch),
+                    (2, TargetClass::Prefetch),
+                    (3, TargetClass::Visible),
+                ],
+                targets: vec![0, 1, 2, 3],
+                requests: vec![3, 1, 2],
+                suppressed: Vec::new(),
+                evictions: Vec::new(),
+            },
+        ]
+    );
+}
+
+/// This uses the production portal visibility traversal with a blocked doorway
+/// rather than constructing `VisibleCells` by hand. The authored seam remains
+/// a planner-only overlay: the far cell is still absent from render visibility.
+#[test]
+fn closed_door_visibility_promotes_only_the_loader_resolved_seam_endpoint() {
+    let world = LevelWorld::new_visibility_only(
+        vec![
+            CellData {
+                bounds_min: Vec3::new(0.0, -1.0, -1.0),
+                bounds_max: Vec3::new(1.0, 1.0, 1.0),
+                face_start: 0,
+                face_count: 1,
+                portal_ref_start: 0,
+                portal_ref_count: 1,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: true,
+            },
+            CellData {
+                bounds_min: Vec3::new(1.0, -1.0, -1.0),
+                bounds_max: Vec3::new(2.0, 1.0, 1.0),
+                face_start: 1,
+                face_count: 1,
+                portal_ref_start: 1,
+                portal_ref_count: 1,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: true,
+            },
+        ],
+        vec![0, 0],
+        CellLocatorChild::Cell(0),
+        Vec::new(),
+        vec![postretro_level_loader::PortalData {
+            polygon: vec![
+                Vec3::new(1.0, -0.5, -0.5),
+                Vec3::new(1.0, 0.5, -0.5),
+                Vec3::new(1.0, 0.5, 0.5),
+                Vec3::new(1.0, -0.5, 0.5),
+            ],
+            front_cell: 0,
+            back_cell: 1,
+        }],
+        true,
+    )
+    .expect("doorway visibility world must be valid");
+    let eye = Vec3::new(0.25, 0.0, 0.0);
+    let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 16.0)
+        * Mat4::look_at_rh(eye, eye + Vec3::X, Vec3::Y);
+    let (visibility, _) = postretro_visibility::determine_visible_cells(
+        eye,
+        view_proj,
+        &world,
+        &[true],
+        false,
+        &mut Vec::new(),
+    );
+    assert_eq!(culled_ids(&visibility.visible_cells), &[0]);
+
+    let mut controller = controller(hinted_topology(
+        vec![0, 1],
+        vec![vec![1], vec![0]],
+        vec![vec![], vec![]],
+        vec![4, 4],
+        vec![SeamPortalEndpoint {
+            portal_id: 0,
+            front_cluster_id: 0,
+            back_cluster_id: 1,
+        }],
+        Default::default(),
+        vec![0, 3],
+    ));
+    controller
+        .update_targets(&visibility.visible_cells, 0.0)
+        .unwrap();
+    assert_eq!(controller.state(1), Some(ClusterResidencyState::Absent));
+    assert_eq!(controller.states[1].class, Some(TargetClass::SeamWarm));
+    assert_eq!(controller.states[1].effective_priority, 3);
+    assert_eq!(culled_ids(&visibility.visible_cells), &[0]);
+}
+
+/// Cross-crate fixture proof: this PRL was baked from Task 4's committed
+/// doorway source, then loaded through the public loader before the planner
+/// sees its validated seam endpoints. The blocked door exercises the same
+/// render-preparation visibility path used by the app.
+#[test]
+fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint() {
+    let map_source = include_str!("../../../../content/dev/maps/sh-streaming-hinted-door.map");
+    assert!(map_source.contains("\"classname\" \"streaming_seam_volume\""));
+    assert!(map_source.contains("\"classname\" \"stream_resident_volume\""));
+    assert!(map_source.contains("\"_stream_priority\" \"3\""));
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl");
+    let world = postretro_level_loader::load_prl(fixture.to_str().unwrap())
+        .expect("committed hinted doorway PRL must load");
+    let manifest = Arc::clone(
+        world
+            .sh_stream_manifest()
+            .expect("hinted doorway must retain an SH streaming manifest"),
+    );
+    let seam = *manifest
+        .seam_portals()
+        .first()
+        .expect("fixture must retain one resolved seam portal");
+    let mut closed_portals = vec![false; world.portals.len()];
+    for seam in manifest.seam_portals() {
+        let portal_index = usize::try_from(seam.portal_id).unwrap();
+        closed_portals[portal_index] = true;
+    }
+    assert_eq!(
+        closed_portals.iter().filter(|&&closed| closed).count(),
+        6,
+        "fixture's doorway resolves all six authored seam portal polygons"
+    );
+    assert!(
+        closed_portals.iter().any(|&closed| !closed),
+        "the visibility proof keeps unrelated portal traversal open"
+    );
+    assert!(
+        manifest
+            .cluster_directory()
+            .cluster_hints
+            .iter()
+            .any(|hint| hint.flags != 0),
+        "fixture keeps Task 4 pin coverage while leaving the seam far side unpinned"
+    );
+    assert!(
+        manifest
+            .cluster_directory()
+            .cluster_hints
+            .iter()
+            .any(|hint| hint.priority == 3),
+        "fixture keeps Task 4 priority coverage"
+    );
+
+    let portal = &world.portals[seam.portal_id as usize];
+    let near_cell = u32::try_from(portal.front_cell).unwrap();
+    let far_cell = u32::try_from(portal.back_cell).unwrap();
+    let near_bounds = &world.cells[near_cell as usize];
+    let eye = (near_bounds.bounds_min + near_bounds.bounds_max) * 0.5;
+    let portal_center = portal.polygon.iter().copied().sum::<Vec3>() / portal.polygon.len() as f32;
+    let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 128.0)
+        * Mat4::look_at_rh(eye, portal_center, Vec3::Y);
+    let visible = crate::render_preparation::VisibleRenderPreparation::for_level(
+        &world,
+        eye,
+        view_proj,
+        &closed_portals,
+        false,
+        &mut Vec::new(),
+    )
+    .visible_cells;
+    assert!(culled_ids(&visible).contains(&near_cell));
+    assert!(
+        !culled_ids(&visible).contains(&far_cell),
+        "closed doorway must not expand render VisibleCells"
+    );
+
+    let mut controller = ShResidencyController::with_clock(
+        manifest,
+        ShGpuBudgetInputs::default(),
+        &FixedGenerationClock::new(1),
+    )
+    .unwrap();
+    let visible_before = culled_ids(&visible).to_vec();
+    controller.update_targets(&visible, 0.0).unwrap();
+    let far_cluster = controller.topology.cell_to_cluster[far_cell as usize];
+    assert_eq!(
+        controller.states[far_cluster as usize].class,
+        Some(TargetClass::SeamWarm),
+        "validated seam metadata warms the exact far endpoint before the door opens"
+    );
+    assert_eq!(
+        culled_ids(&visible),
+        visible_before,
+        "planner never changes VisibleCells"
+    );
+}
+
+#[test]
+fn resident_pins_and_owner_closure_survive_empty_visibility_and_pressure() {
+    let mut controller = controller_with_nominal_budget(
+        hinted_topology(
+            vec![0, 1],
+            vec![vec![], vec![]],
+            vec![vec![], vec![0]],
+            vec![8, 8],
+            Vec::new(),
+            std::collections::BTreeSet::from([1]),
+            vec![0, 3],
+        ),
+        1,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(Vec::new()), 0.0)
+        .unwrap();
+    assert_eq!(
+        controller.targets.iter().copied().collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert_eq!(controller.states[0].class, Some(TargetClass::Pinned));
+    assert_eq!(controller.states[1].class, Some(TargetClass::Pinned));
+
+    mark_sampleable(&mut controller, 0);
+    mark_sampleable(&mut controller, 1);
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert!(batch.evictions.is_empty());
+    assert!(controller.states.iter().all(|state| !state.suppressed));
+    assert_eq!(
+        controller.report_snapshot().non_evictable_overshoot_bytes,
+        15,
+        "pins retain their closure instead of being silently selected as victims"
+    );
+}
+
+#[test]
+fn seam_activation_unsuppresses_its_owner_closure_without_a_horizon_change() {
+    let mut controller = controller_with_nominal_budget(
+        hinted_topology(
+            vec![0, 1, 2],
+            vec![vec![1, 2], vec![0, 2], vec![0, 1]],
+            vec![vec![], vec![2], vec![]],
+            vec![4; 3],
+            vec![SeamPortalEndpoint {
+                portal_id: 0,
+                front_cluster_id: 0,
+                back_cluster_id: 1,
+            }],
+            Default::default(),
+            vec![0, 1, 3],
+        ),
+        1,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![2]), 0.0)
+        .unwrap();
+    assert_eq!(
+        controller.last_horizon,
+        std::collections::BTreeSet::from([0, 1, 2])
+    );
+    controller.states[1].suppressed = true;
+    controller.states[2].suppressed = true;
+
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 1.0)
+        .unwrap();
+    assert_eq!(
+        controller.last_horizon,
+        std::collections::BTreeSet::from([0, 1, 2])
+    );
+    assert_eq!(controller.states[1].class, Some(TargetClass::SeamWarm));
+    assert_eq!(controller.states[1].effective_priority, 1);
+    assert_eq!(controller.states[2].class, Some(TargetClass::SeamWarm));
+    assert_eq!(controller.states[2].effective_priority, 3);
+    assert!(!controller.states[1].suppressed);
+    assert!(!controller.states[2].suppressed);
+}
+
+#[test]
+fn optional_priority_orders_requests_and_pressure_before_seam_work() {
+    let mut controller = controller_with_nominal_budget(
+        hinted_topology(
+            vec![0, 1, 2, 3],
+            vec![vec![1, 2], vec![0], vec![0], vec![]],
+            vec![vec![], vec![], vec![], vec![]],
+            vec![4; 4],
+            vec![SeamPortalEndpoint {
+                portal_id: 7,
+                front_cluster_id: 0,
+                back_cluster_id: 3,
+            }],
+            Default::default(),
+            vec![0, 1, 3, 0],
+        ),
+        4,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    let mut requests = Vec::new();
+    while let Some(request) = controller.take_next_request().unwrap() {
+        requests.push(request.cluster_id);
+    }
+    assert_eq!(requests, vec![0, 3, 2, 1]);
+
+    for cluster_id in [1, 2, 3] {
+        controller.states[cluster_id].state = ClusterResidencyState::Sampleable;
+        controller
+            .accounting
+            .add_logical(controller.topology.requested_resident_bytes[cluster_id])
+            .unwrap();
+    }
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![1, 2]);
+    assert!(controller.states[0].class == Some(TargetClass::Visible));
+}
+
+#[test]
+fn pressure_keeps_high_priority_optional_when_its_cluster_id_is_lower() {
+    let mut controller = controller_with_nominal_budget(
+        hinted_topology(
+            vec![0, 1, 2],
+            vec![vec![1, 2], vec![0], vec![0]],
+            vec![vec![], vec![], vec![]],
+            vec![4; 3],
+            Vec::new(),
+            Default::default(),
+            vec![0, 3, 1],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    for cluster_id in 0..3 {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![2]);
+    assert!(controller.targets.contains(&1));
+    assert!(!controller.states[1].suppressed);
+    assert!(!controller.targets.contains(&2));
+    assert!(controller.states[2].suppressed);
 }
 
 #[test]
@@ -1012,6 +1495,38 @@ fn pressure_rechecks_a_prefetch_owner_after_its_prefetch_dependent_is_suppressed
     assert!(controller.is_targeted(0));
     assert!(!controller.is_targeted(1));
     assert!(!controller.is_targeted(2));
+    assert_eq!(controller.non_evictable_overshoot_bytes(), 0);
+}
+
+#[test]
+fn pressure_owner_recheck_does_not_log_a_transient_overshoot() {
+    let capture = LogCapture::start();
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2],
+            vec![vec![1], vec![0, 2], vec![1]],
+            vec![vec![], vec![2], vec![]],
+            vec![8, 8, 8],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    for cluster_id in 0..3 {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![1, 2]);
+    assert_eq!(
+        controller.report_snapshot().non_evictable_overshoot_bytes,
+        0
+    );
+    capture.assert_not_logged(
+        log::Level::Warn,
+        "non-evictable logical demand exceeds the effective floor",
+    );
 }
 
 #[test]

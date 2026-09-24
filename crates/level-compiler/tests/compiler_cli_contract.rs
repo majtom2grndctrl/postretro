@@ -1,6 +1,7 @@
 // Compiler subprocess contracts for reporter selection, plain output, and deterministic bakes.
 // See: context/lib/build_pipeline.md §Progress reporting, controls, and logging
 
+use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -71,6 +72,138 @@ impl Drop for TempBuildDir {
 
 fn compile_fixture(input: &Path, output: &Path, jobs: usize) -> Output {
     compile_fixture_with_irradiance_format(input, output, jobs, true, None)
+}
+
+/// Read raw PRL payloads with their container versions, preserving all section
+/// IDs so a comparison can cover optional non-SH products as they are added.
+fn section_payloads(path: &Path) -> BTreeMap<u32, (u16, Vec<u8>)> {
+    let bytes = std::fs::read(path).expect("read compiled PRL");
+    let mut cursor = Cursor::new(bytes);
+    let metadata = read_container(&mut cursor).expect("read PRL container");
+    metadata
+        .sections
+        .iter()
+        .map(|entry| {
+            let payload = read_section_data(&mut cursor, &metadata, entry.section_id)
+                .expect("read listed PRL section")
+                .expect("listed PRL section must have a payload");
+            (entry.section_id, (entry.version, payload))
+        })
+        .collect()
+}
+
+#[test]
+fn streaming_hint_brushes_preserve_every_non_sh_prl_section() {
+    let workspace = workspace_root();
+    let mut baseline_map =
+        std::fs::read_to_string(workspace.join("content/dev/maps/sdf-shadow-test.map"))
+            .expect("read sealed SDF fixture");
+    // The source fixture supplies the SDF light and a sealed interior. Add one
+    // conventional static light so the comparison exercises lightmap output.
+    baseline_map.push_str(
+        r#"{
+"classname" "light"
+"origin" "896 256 192"
+"light" "300"
+"_color" "255 255 255"
+"_falloff_range" "800"
+"style" "0"
+}
+"#,
+    );
+    let mut hinted_map = baseline_map.clone();
+    // These lie inside the same tiny world but must be peeled before static
+    // geometry reaches the BSP, collision, lightmap, SDF, or navmesh stages.
+    hinted_map.push_str(
+        r#"{
+"classname" "stream_resident_volume"
+"origin" "64 32 32"
+{
+( 0 0 0 ) ( 0 32 0 ) ( 0 0 32 ) stream_hint_resident 0 0 0 1 1
+( 32 0 0 ) ( 32 0 32 ) ( 32 32 0 ) stream_hint_resident 0 0 0 1 1
+( 0 0 0 ) ( 0 0 32 ) ( 32 0 0 ) stream_hint_resident 0 0 0 1 1
+( 0 32 0 ) ( 32 32 0 ) ( 0 32 32 ) stream_hint_resident 0 0 0 1 1
+( 0 0 0 ) ( 32 0 0 ) ( 0 32 0 ) stream_hint_resident 0 0 0 1 1
+( 0 0 32 ) ( 0 32 32 ) ( 32 0 32 ) stream_hint_resident 0 0 0 1 1
+}
+}
+{
+"classname" "stream_priority_region"
+"origin" "96 32 32"
+"_stream_priority" "3"
+{
+( 0 0 0 ) ( 0 32 0 ) ( 0 0 32 ) stream_hint_priority 0 0 0 1 1
+( 32 0 0 ) ( 32 0 32 ) ( 32 32 0 ) stream_hint_priority 0 0 0 1 1
+( 0 0 0 ) ( 0 0 32 ) ( 32 0 0 ) stream_hint_priority 0 0 0 1 1
+( 0 32 0 ) ( 32 32 0 ) ( 0 32 32 ) stream_hint_priority 0 0 0 1 1
+( 0 0 0 ) ( 32 0 0 ) ( 0 32 0 ) stream_hint_priority 0 0 0 1 1
+( 0 0 32 ) ( 0 32 32 ) ( 32 0 32 ) stream_hint_priority 0 0 0 1 1
+}
+}
+"#,
+    );
+
+    let temp = TempBuildDir::new();
+    let baseline_input = temp.0.join("baseline.map");
+    let hinted_input = temp.0.join("hinted.map");
+    let baseline_output = temp.0.join("baseline.prl");
+    let hinted_output = temp.0.join("hinted.prl");
+    std::fs::write(&baseline_input, baseline_map).expect("write baseline map");
+    std::fs::write(&hinted_input, hinted_map).expect("write hinted map");
+    assert_success(&compile_fixture(&baseline_input, &baseline_output, 1), 1);
+    assert_success(&compile_fixture(&hinted_input, &hinted_output, 1), 1);
+
+    let baseline_sections = section_payloads(&baseline_output);
+    let hinted_sections = section_payloads(&hinted_output);
+    // Geometry and BVH are the persisted sources of the runtime collision
+    // world, so their equality is the collision proof at the PRL boundary.
+    for section in [
+        SectionId::Cells,
+        SectionId::Portals,
+        SectionId::Geometry,
+        SectionId::Bvh,
+        SectionId::Lightmap,
+        SectionId::SdfAtlas,
+        SectionId::NavMesh,
+    ] {
+        assert!(
+            baseline_sections.contains_key(&(section as u32)),
+            "fixture must exercise {section:?}"
+        );
+    }
+
+    // Assert byte-level equality for every current and future non-SH section,
+    // including optional products when they are present in this fixture.
+    // This sealed SDF fixture covers resident/priority peeling; the separate
+    // doorway fixture exercises valid seam cuts.
+    let is_sh_section = |section_id: &u32| {
+        matches!(
+            SectionId::from_u32(*section_id),
+            Some(
+                SectionId::DeltaShVolumes
+                    | SectionId::OctahedralShVolume
+                    | SectionId::DirectShVolume
+                    | SectionId::DirectShDeltaVolumes
+                    | SectionId::AnimatedDirectShDeltaVolumes
+                    | SectionId::BillboardDirectScatterVolume
+                    | SectionId::AnimatedBillboardDirectScatterDeltaVolumes
+                    | SectionId::ClusterDirectory
+                    | SectionId::ClusterShPayloads
+            )
+        )
+    };
+    let baseline_non_sh = baseline_sections
+        .into_iter()
+        .filter(|(section_id, _)| !is_sh_section(section_id))
+        .collect::<BTreeMap<_, _>>();
+    let hinted_non_sh = hinted_sections
+        .into_iter()
+        .filter(|(section_id, _)| !is_sh_section(section_id))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        hinted_non_sh, baseline_non_sh,
+        "compiler-only streaming hint brushes must preserve every non-SH PRL section"
+    );
 }
 
 fn compile_fixture_with_irradiance_format(

@@ -33,6 +33,6 @@ pub use prl_streaming::load_prl;
 #[cfg(feature = "load-prl")]
 pub use sh_stream::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage, ShStreamBaseMetadata,
-    ShStreamDirectMetadata, ShStreamManifest, ShStreamSourceMetadata, ShStreamSparseMetadata,
-    ShStreamingMode, requested_streaming_mode,
+    ShStreamDirectMetadata, ShStreamManifest, ShStreamSeamPortal, ShStreamSourceMetadata,
+    ShStreamSparseMetadata, ShStreamingMode, requested_streaming_mode,
 };

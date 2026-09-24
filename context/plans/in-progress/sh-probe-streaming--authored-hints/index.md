@@ -117,10 +117,14 @@ remains protected until its timer expires.
 
 Request and ready-install order is `(class rank, descending effective priority,
 cluster ID)`, with class rank Visible, Pinned, SeamWarm, Prefetch, Hysteresis.
-Pressure yields `(Prefetch before SeamWarm, ascending effective priority,
+Pressure selects victims to suppress by `(Prefetch before SeamWarm, ascending effective priority,
 oldest visible time, oldest target time, cluster ID)`; departed eviction after
 hysteresis retains its existing `(oldest visible time, oldest target time,
-cluster ID)` order. Thus all-zero/no-hint inputs retain each old ordering.
+cluster ID)` order. Once victims are selected, the planner may request
+dependent-before-owner evictions in nonnumeric order. The renderer recomputes
+a dependency-safe release sequence and returns confirmed IDs sorted; that
+release order does not change which optional target survives. Thus all-zero/no-hint inputs retain
+each old ordering.
 A newly activated seam clears stale suppression for its warm target and
 required owners even if the ordinary two-hop horizon has not changed.
 Hysteresis and suppression remain time-based. Overshoot
@@ -190,7 +194,9 @@ placeholder rather than stale or uninitialized atlas data.
       check records adapter, fixture, mode, and whether seam pops were seen;
       two explicit `--no-cache` bakes verify id-49/id-50 determinism. Record
       `not-yet-evaluable` only when GPU proof is unavailable, not as a substitute
-      for a missing fixture or run procedure.
+      for a missing fixture or run procedure. Frame-time and visual observations
+      are tuning inputs, not feature-existence gates; malformed format data and
+      behavioral regressions remain correctness gates.
 
 ## Invariants
 
@@ -289,9 +295,11 @@ then SeamWarm may yield under pressure; Hysteresis stays until its timer
 expires and pins/visible never yield. Effective priority is max of own and
 same-class dependent authored priorities only for SeamWarm/Prefetch; it is
 zero for protected classes. Request/ready order is `(class, descending
-priority, cluster ID)`. Pressure victim order is `(Prefetch before SeamWarm,
+priority, cluster ID)`. Pressure victim selection order is `(Prefetch before SeamWarm,
 ascending priority, oldest visible time, oldest target time, cluster ID)`;
-expired departures keep the old time/time/ID comparator. Keep `main.rs`'s
+expired departures keep the old time/time/ID comparator. Drain eviction
+requests may be dependent-first; confirmed renderer outcomes remain sorted.
+Keep `main.rs`'s
 pre-compose drain and renderer data contract unchanged; the planner consumes
 the existing visible-cell signal, while seam endpoints derive from the
 loaded portal table. A seam entering `SeamWarm` clears stale suppression for
@@ -322,6 +330,9 @@ memory/target diagnostics, and unavailable GPU evidence explicitly under
 `measurements/sh-probe-streaming/`. Update durable compiler/renderer contracts
 and FGD authoring docs. Review the integrated diff across
 compiler→format→loader→planner→renderer and fix findings before landing.
+Manual frame-time and visual observations guide subsequent tuning; they do not
+gate the feature's existence. Deterministic wire bytes, loader validation, and
+controller/renderer correctness regressions remain gates.
 
 ## Sequencing
 

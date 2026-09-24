@@ -23,7 +23,27 @@ fn empty_directory() -> ClusterDirectorySection {
         resources: Vec::new(),
         members: Vec::new(),
         ranges: Vec::new(),
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     }
+}
+
+#[test]
+fn drain_accepts_dependent_first_evictions_but_rejects_duplicate_ids() {
+    let batch = ShDrainBatch {
+        generation: 1,
+        content_tag: [7; 32],
+        evictions: vec![1, 0],
+        ..ShDrainBatch::default()
+    };
+    batch
+        .validate_contract(2, [7; 32])
+        .expect("dependent-before-owner eviction order is valid");
+    let duplicate = ShDrainBatch {
+        evictions: vec![1, 1],
+        ..batch
+    };
+    assert!(duplicate.validate_contract(2, [7; 32]).is_err());
 }
 
 fn entry(section_id: SectionId, size: u64) -> SectionEntry {

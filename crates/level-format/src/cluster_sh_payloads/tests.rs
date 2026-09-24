@@ -79,6 +79,8 @@ fn directory(with_sparse: bool) -> ClusterDirectorySection {
         resources,
         members: vec![0],
         ranges,
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     }
 }
 
@@ -304,6 +306,8 @@ fn validated_multi_cluster_decode_uses_only_the_requested_plan() {
                 role: ClusterRangeRole::Dense,
             },
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let sources = vec![ClusterShPayloadsSourceMetadata::Dense {
         section_id: SectionId::OctahedralShVolume as u32,
@@ -711,6 +715,8 @@ fn scaled_l1_node_closure_uses_one_base_rank_and_eight_tiles() {
             owner_cluster_id: DENSE_OWNER_SENTINEL,
             role: ClusterRangeRole::Dense,
         }],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let sources = vec![ClusterShPayloadsSourceMetadata::Dense {
         section_id: SectionId::OctahedralShVolume as u32,
@@ -833,6 +839,8 @@ fn sparse_sources_reject_scaled_or_too_coarse_base_storage() {
                 role: ClusterRangeRole::Dense,
             },
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let masks = [u64::MAX; 8];
     let scaled_levels = [Level::L1.to_u8(); 8];
@@ -1091,6 +1099,8 @@ fn canonical_dense_and_sparse_owners_are_the_only_resident_charge() {
                 role: ClusterRangeRole::Dense,
             },
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let plan = ValidationPlan::new(inputs(&directory, base, &sources)).unwrap();
     let owner = plan.expected_chunk(0).unwrap();
@@ -1232,6 +1242,8 @@ fn every_sparse_source_family_contributes_its_own_rows() {
                 role: ClusterRangeRole::Owned,
             },
         ],
+        seam_portal_ids: Vec::new(),
+        cluster_hints: Vec::new(),
     };
     let expected = ValidationPlan::new(inputs(&directory, base, &sources))
         .unwrap()

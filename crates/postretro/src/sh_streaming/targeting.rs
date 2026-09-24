@@ -28,9 +28,9 @@ impl ShResidencyController {
             self.last_horizon = horizon.clone();
         }
         if horizon_changed
-            || self.prefetch_pressure_has_cleared(&visible, &horizon, monotonic_seconds)?
+            || self.optional_pressure_has_cleared(&visible, &horizon, monotonic_seconds)?
         {
-            self.clear_prefetch_suppression();
+            self.clear_optional_suppression();
         }
         for cluster_id in raw_departures {
             self.states[cluster_id as usize].hysteresis_started_at = Some(monotonic_seconds);
@@ -39,29 +39,53 @@ impl ShResidencyController {
             self.states[cluster_id as usize].hysteresis_started_at = None;
         }
 
-        let mut classes = self.unsuppressed_target_classes(&visible, &horizon, monotonic_seconds);
-        classes.retain(|cluster_id, class| {
-            *class == TargetClass::Visible || !self.states[*cluster_id as usize].suppressed
+        let mut classes =
+            self.unsuppressed_target_classes(&visible, &horizon, monotonic_seconds)?;
+        let seam_warm: BTreeSet<_> = classes
+            .iter()
+            .filter_map(|(&cluster_id, directive)| {
+                (directive.class == TargetClass::SeamWarm).then_some(cluster_id)
+            })
+            .collect();
+        let seam_activated: Vec<_> = seam_warm
+            .difference(&self.last_seam_warm)
+            .copied()
+            .collect();
+        for cluster_id in seam_activated {
+            self.clear_suppression_for_owner_closure(cluster_id)?;
+        }
+        self.last_seam_warm = seam_warm;
+
+        classes.retain(|cluster_id, directive| {
+            !directive.class.is_pressure_eligible() || !self.states[*cluster_id as usize].suppressed
         });
 
         let mut targets: BTreeSet<u32> = classes.keys().copied().collect();
         self.close_owner_targets(&mut targets, &mut classes)?;
         self.transition_failed_retries(&targets)?;
         self.drop_departed_ready(&targets)?;
-        for (&cluster_id, class) in &classes {
+        for (&cluster_id, directive) in &classes {
             let state = &mut self.states[cluster_id as usize];
-            state.class = Some(*class);
+            if !directive.class.is_pressure_eligible() {
+                // A prior optional classification cannot leave newly visible,
+                // pinned, or retained work suppressed. These classes never
+                // yield to pressure.
+                state.suppressed = false;
+            }
+            state.class = Some(directive.class);
+            state.effective_priority = directive.effective_priority;
             // Hysteresis preserves raw-horizon departure time separately;
             // target time remains the LRU tie-break input.
-            if *class != TargetClass::Hysteresis {
+            if directive.class != TargetClass::Hysteresis {
                 state.last_target_time = Some(monotonic_seconds);
             }
-            if *class == TargetClass::Visible {
+            if directive.class == TargetClass::Visible {
                 state.last_visible_time = Some(monotonic_seconds);
             }
         }
         for &cluster_id in self.targets.difference(&targets) {
             self.states[cluster_id as usize].class = None;
+            self.states[cluster_id as usize].effective_priority = 0;
             if let Some(failure) = &mut self.states[cluster_id as usize].failure {
                 failure.left_target = true;
                 failure.left_target_horizon_revision = Some(self.horizon_revision);
@@ -76,7 +100,7 @@ impl ShResidencyController {
     /// oscillate at the render cadence. It can clear without a horizon change
     /// only when the complete target set that clearing would restore, including
     /// live hysteresis and transitive owners, fits the nominal pool.
-    fn prefetch_pressure_has_cleared(
+    fn optional_pressure_has_cleared(
         &self,
         visible: &BTreeSet<u32>,
         horizon: &BTreeSet<u32>,
@@ -86,14 +110,14 @@ impl ShResidencyController {
             return Ok(false);
         }
 
-        let mut classes = self.unsuppressed_target_classes(visible, horizon, monotonic_seconds);
+        let mut classes = self.unsuppressed_target_classes(visible, horizon, monotonic_seconds)?;
         let mut targets: BTreeSet<_> = classes.keys().copied().collect();
         self.close_owner_targets(&mut targets, &mut classes)?;
         let demand = targets.iter().try_fold(0u64, |total, &cluster_id| {
             total
                 .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
                 .ok_or(ShResidencyControllerError::AccountingOverflow(
-                    "prefetch pressure target demand",
+                    "optional pressure target demand",
                 ))
         })?;
         Ok(demand <= self.accounting.nominal_cluster_bytes()?)
@@ -104,13 +128,46 @@ impl ShResidencyController {
         visible: &BTreeSet<u32>,
         horizon: &BTreeSet<u32>,
         monotonic_seconds: f64,
-    ) -> BTreeMap<u32, TargetClass> {
+    ) -> Result<BTreeMap<u32, TargetDirective>, ShResidencyControllerError> {
         let mut classes = BTreeMap::new();
         for &cluster_id in visible {
-            classes.insert(cluster_id, TargetClass::Visible);
+            Self::merge_directive(
+                &mut classes,
+                cluster_id,
+                TargetDirective::new(TargetClass::Visible, 0),
+            );
+        }
+        for &cluster_id in &self.topology.pinned_clusters {
+            Self::merge_directive(
+                &mut classes,
+                cluster_id,
+                TargetDirective::new(TargetClass::Pinned, 0),
+            );
+        }
+        for seam in &self.topology.seam_portals {
+            let far = if visible.contains(&seam.front_cluster_id) {
+                Some(seam.back_cluster_id)
+            } else if visible.contains(&seam.back_cluster_id) {
+                Some(seam.front_cluster_id)
+            } else {
+                None
+            };
+            if let Some(cluster_id) = far {
+                let priority = self.authored_priority(cluster_id)?;
+                Self::merge_directive(
+                    &mut classes,
+                    cluster_id,
+                    TargetDirective::new(TargetClass::SeamWarm, priority),
+                );
+            }
         }
         for &cluster_id in horizon {
-            classes.entry(cluster_id).or_insert(TargetClass::Prefetch);
+            let priority = self.authored_priority(cluster_id)?;
+            Self::merge_directive(
+                &mut classes,
+                cluster_id,
+                TargetDirective::new(TargetClass::Prefetch, priority),
+            );
         }
         for (cluster_id, state) in self.states.iter().enumerate() {
             let cluster_id = cluster_id as u32;
@@ -121,10 +178,14 @@ impl ShResidencyController {
                 .hysteresis_started_at
                 .is_some_and(|started_at| monotonic_seconds - started_at < HYSTERESIS_SECONDS)
             {
-                classes.insert(cluster_id, TargetClass::Hysteresis);
+                Self::merge_directive(
+                    &mut classes,
+                    cluster_id,
+                    TargetDirective::new(TargetClass::Hysteresis, 0),
+                );
             }
         }
-        classes
+        Ok(classes)
     }
 
     /// Count a miss once for each continuous visible episode. Counting every
@@ -210,13 +271,13 @@ impl ShResidencyController {
     fn close_owner_targets(
         &self,
         targets: &mut BTreeSet<u32>,
-        classes: &mut BTreeMap<u32, TargetClass>,
+        classes: &mut BTreeMap<u32, TargetDirective>,
     ) -> Result<(), ShResidencyControllerError> {
         let mut queue: VecDeque<_> = classes
             .iter()
-            .map(|(&cluster_id, &class)| (cluster_id, class))
+            .map(|(&cluster_id, &directive)| (cluster_id, directive))
             .collect();
-        while let Some((cluster_id, dependent_class)) = queue.pop_front() {
+        while let Some((cluster_id, dependent_directive)) = queue.pop_front() {
             let owners = self
                 .topology
                 .owners
@@ -231,23 +292,91 @@ impl ShResidencyController {
                     ));
                 }
                 targets.insert(owner);
+                // An optional dependent carries its effective priority into
+                // the owner closure, but the owner's own authored priority
+                // can only strengthen that same optional class. Protected
+                // classes deliberately remain priority zero.
+                let owner_directive = TargetDirective::new(
+                    dependent_directive.class,
+                    if dependent_directive.class.is_pressure_eligible() {
+                        dependent_directive
+                            .effective_priority
+                            .max(self.authored_priority(owner)?)
+                    } else {
+                        0
+                    },
+                );
                 let should_visit = match classes.entry(owner) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(dependent_class);
+                        entry.insert(owner_directive);
                         true
                     }
                     std::collections::btree_map::Entry::Occupied(mut entry)
-                        if dependent_class < *entry.get() =>
+                        if owner_directive.supersedes(*entry.get()) =>
                     {
-                        entry.insert(dependent_class);
+                        entry.insert(owner_directive);
                         true
                     }
                     std::collections::btree_map::Entry::Occupied(_) => false,
                 };
                 if should_visit {
-                    queue.push_back((owner, dependent_class));
+                    queue.push_back((owner, owner_directive));
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn merge_directive(
+        classes: &mut BTreeMap<u32, TargetDirective>,
+        cluster_id: u32,
+        candidate: TargetDirective,
+    ) {
+        match classes.get_mut(&cluster_id) {
+            Some(current) if candidate.supersedes(*current) => *current = candidate,
+            Some(_) => {}
+            None => {
+                classes.insert(cluster_id, candidate);
+            }
+        }
+    }
+
+    fn authored_priority(&self, cluster_id: u32) -> Result<u32, ShResidencyControllerError> {
+        self.topology
+            .authored_priorities
+            .get(cluster_id as usize)
+            .copied()
+            .ok_or_else(|| {
+                ShResidencyControllerError::InvalidTopology(
+                    "target cluster exceeds authored priority table".into(),
+                )
+            })
+    }
+
+    fn clear_suppression_for_owner_closure(
+        &mut self,
+        cluster_id: u32,
+    ) -> Result<(), ShResidencyControllerError> {
+        let mut pending = VecDeque::from([cluster_id]);
+        let mut seen = BTreeSet::new();
+        while let Some(cluster_id) = pending.pop_front() {
+            if !seen.insert(cluster_id) {
+                continue;
+            }
+            let state = self.states.get_mut(cluster_id as usize).ok_or_else(|| {
+                ShResidencyControllerError::InvalidTopology(
+                    "seam target exceeds controller state".into(),
+                )
+            })?;
+            state.suppressed = false;
+            let owners = self
+                .topology
+                .owners
+                .get(cluster_id as usize)
+                .ok_or_else(|| {
+                    ShResidencyControllerError::InvalidTopology("owner map is incomplete".into())
+                })?;
+            pending.extend(owners.iter().copied());
         }
         Ok(())
     }
@@ -328,6 +457,7 @@ impl ShResidencyController {
                 self.states[cluster_id as usize]
                     .class
                     .unwrap_or(TargetClass::Hysteresis),
+                std::cmp::Reverse(self.states[cluster_id as usize].effective_priority),
                 cluster_id,
             )
         });

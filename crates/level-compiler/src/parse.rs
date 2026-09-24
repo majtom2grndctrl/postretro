@@ -16,14 +16,28 @@ use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
     LightType, MapAssembly, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover,
-    MapKinematicWaypoint, MapLight, MapLightmapScaleRegion, MapTriggerVolume, NavParams,
-    TextureProjection,
+    MapKinematicWaypoint, MapLight, MapLightmapScaleRegion, MapStreamingHintRegion,
+    MapStreamingPriorityRegion, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{
     DEFAULT_WORLD_GRAVITY_MPS2, MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME,
 };
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
+
+#[path = "parse/authoring_regions.rs"]
+mod authoring_regions;
+#[path = "parse/streaming_hint_source.rs"]
+mod streaming_hint_source;
+#[cfg(test)]
+#[path = "parse/streaming_hint_tests.rs"]
+mod streaming_hint_tests;
+
+use authoring_regions::{
+    BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
+    resolve_sh_protect_aabb, resolve_streaming_hint_region, resolve_streaming_priority_region,
+};
+use streaming_hint_source::reject_invalid_streaming_hint_source_hulls;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
 ///
@@ -71,7 +85,7 @@ fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
 /// Parse an origin string like "-192 25.6 167.736" into a DVec3.
 ///
 /// Parses directly to f64 — no precision cast from f32.
-fn parse_origin(s: &str) -> Option<DVec3> {
+pub(super) fn parse_origin(s: &str) -> Option<DVec3> {
     let parts: Vec<f64> = s
         .split_whitespace()
         .filter_map(|p| p.parse().ok())
@@ -660,6 +674,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // name is decoded back to its space-containing form at the texture-read
     // boundary below. See `context/lib/build_pipeline.md` §Texture name resolution.
     let map_text = encode_quoted_brush_textures(&raw_map_text);
+    reject_invalid_streaming_hint_source_hulls(&map_text, scale)?;
 
     let shalrath_map: shambler::shalrath::repr::Map = map_text
         .parse()
@@ -798,6 +813,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // Brush-defined scale overrides are preserved in source entity order. Chart
     // planning uses that order to make overlapping regions last-defined-wins.
     let mut lightmap_scale_regions: Vec<MapLightmapScaleRegion> = Vec::new();
+    // Compiler-only authored SH streaming metadata. These brushes are peeled
+    // before static BSP inputs; later tasks resolve the retained canonical hulls
+    // against generated portals and runtime cells.
+    let mut streaming_seam_regions: Vec<MapStreamingHintRegion> = Vec::new();
+    let mut stream_resident_regions: Vec<MapStreamingHintRegion> = Vec::new();
+    let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
@@ -1055,6 +1076,26 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // paths. Editor groups are already flattened into static world brushes.
         let has_brushes = !brush_ids.is_empty();
 
+        // Streaming hints are compiler-only brush entities. Reject a point
+        // entity before the generic `has_brushes` branch so it cannot fall
+        // through to runtime classname dispatch as inert, invisible content.
+        if matches!(
+            classname.as_str(),
+            "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+        ) && !has_brushes
+        {
+            let location = match origin {
+                Some(origin) if origin.is_finite() => {
+                    format!("at ({:.3}, {:.3}, {:.3}) m", origin.x, origin.y, origin.z)
+                }
+                Some(_) => "at a non-finite authored origin".to_string(),
+                None => "at an entity without an authored origin".to_string(),
+            };
+            anyhow::bail!(
+                "{classname} {location} has no brushes — streaming hints require exactly one convex brush"
+            );
+        }
+
         // A brushless `switch` has nothing to desugar: no geometry to fold, no
         // hull to grow. Falling through to the point-entity tail below would emit
         // a `MapEntityRecord` that the runtime drops at `debug!` as an
@@ -1079,6 +1120,45 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         }
 
         if has_brushes {
+            if matches!(
+                classname.as_str(),
+                "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+            ) {
+                if brush_ids.len() != 1 {
+                    let location = match origin {
+                        Some(origin) if origin.is_finite() => {
+                            format!("at ({:.3}, {:.3}, {:.3}) m", origin.x, origin.y, origin.z)
+                        }
+                        Some(_) => "at a non-finite authored origin".to_string(),
+                        None => "at an entity without an authored origin".to_string(),
+                    };
+                    anyhow::bail!(
+                        "{classname} {location} owns {} brushes — streaming hints require exactly one convex brush",
+                        brush_ids.len()
+                    );
+                }
+
+                let props = collect_entity_properties(&geo_map, entity_id);
+                match classname.as_str() {
+                    "streaming_seam_volume" => {
+                        streaming_seam_regions.push(resolve_streaming_hint_region(
+                            &geo_map, &brush_ids, scale, &classname, origin,
+                        )?)
+                    }
+                    "stream_resident_volume" => {
+                        stream_resident_regions.push(resolve_streaming_hint_region(
+                            &geo_map, &brush_ids, scale, &classname, origin,
+                        )?)
+                    }
+                    "stream_priority_region" => {
+                        stream_priority_regions.push(resolve_streaming_priority_region(
+                            &geo_map, &brush_ids, &props, scale, &classname, origin,
+                        )?)
+                    }
+                    _ => unreachable!("streaming hint classname was pre-filtered"),
+                }
+                continue;
+            }
             if classname == "trigger_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
                 trigger_volumes.push(crate::trigger_volumes::resolve_trigger_volume(
@@ -1094,34 +1174,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             //
             if classname == "sh_protect_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
-                let name = props
-                    .get("name")
-                    .map(|v| v.trim().to_owned())
-                    .unwrap_or_default();
-                // Same brush-hull → world-AABB union `trigger_volume` uses; a
-                // protection volume needs only the enclosing box, none of the
-                // trigger's activation/target data.
-                let (mut min, mut max) = crate::trigger_volumes::resolve_brush_entity_aabb(
-                    &geo_map, &brush_ids, scale, &classname, &name,
-                )?;
-                // Optional `dilation` margin, expanding the box on all six faces
-                // so a probe just outside the authored brushwork is still
-                // protected. Default 0.0; negatives are an authoring error (they
-                // would shrink the volume). In world units — the same engine
-                // space the AABB and the CLI `--sh-protect-aabb` boxes live in.
-                let dilation =
-                    parse_optional_finite_f32(&props, "dilation", 0.0, &classname, &name)?;
-                if dilation < 0.0 {
-                    anyhow::bail!(
-                        "{classname} `{name}` `dilation` must be non-negative, got {dilation}"
-                    );
-                }
-                let d = dilation as f64;
-                min -= DVec3::splat(d);
-                max += DVec3::splat(d);
-                let min = min.to_array().map(|v| v as f32);
-                let max = max.to_array().map(|v| v as f32);
-                sh_protect_aabbs.push([min[0], min[1], min[2], max[0], max[1], max[2]]);
+                sh_protect_aabbs.push(resolve_sh_protect_aabb(
+                    &geo_map, &brush_ids, &props, scale, &classname,
+                )?);
                 continue;
             }
             // A `switch` is authoring sugar that desugars into two shipped
@@ -1490,6 +1545,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         uniform_grid_optout,
         fog_volumes,
         lightmap_scale_regions,
+        streaming_seam_regions,
+        stream_resident_regions,
+        stream_priority_regions,
         fog_pixel_scale,
         initial_gravity,
         lightmap_density,
@@ -2346,84 +2404,6 @@ fn clamp_ambient_scatter(value: f32, classname: &str) -> f32 {
     }
 }
 
-/// Convex brush bounds shared by compiler-only region entities. Positions and
-/// plane distances are in engine meters; plane normals are swizzled directions
-/// and therefore deliberately do not receive the map unit scale.
-struct BrushRegionBounds {
-    min: DVec3,
-    max: DVec3,
-    planes: Vec<[f32; 4]>,
-}
-
-/// Resolve one brush entity into its world-space AABB and source-hull planes.
-///
-/// The caller owns entity-specific plane budgets and KVP validation. Returning
-/// `None` for a brush with no usable vertices matches the fog-volume path and
-/// lets a malformed invisible region stay out of the static world geometry.
-fn resolve_brush_region_bounds(
-    geo_map: &GeoMap,
-    brush_ids: &[BrushId],
-    scale: f64,
-    classname: &str,
-) -> Result<Option<BrushRegionBounds>> {
-    use shambler::brush::brush_hulls;
-    use shambler::face::{face_planes, face_vertices};
-
-    let geo_planes = face_planes(&geo_map.face_planes);
-    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
-        .iter()
-        .filter_map(|bid| {
-            geo_map
-                .brush_faces
-                .get(bid)
-                .map(|faces| (*bid, faces.clone()))
-        })
-        .collect();
-    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
-    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
-
-    let mut min = DVec3::splat(f64::INFINITY);
-    let mut max = DVec3::splat(f64::NEG_INFINITY);
-    let mut have_any = false;
-    let mut planes = Vec::new();
-    for (face_id, verts) in face_verts.iter() {
-        let mut face_seen_vertex = false;
-        for v in verts {
-            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
-            min = min.min(p);
-            max = max.max(p);
-            have_any = true;
-            face_seen_vertex = true;
-        }
-        if !face_seen_vertex {
-            continue;
-        }
-        let Some(plane) = geo_planes.get(face_id) else {
-            continue;
-        };
-        let normal = quake_to_engine(shambler_to_dvec3(plane.normal()));
-        let point = quake_to_engine(shambler_to_dvec3(&verts[0])) * scale;
-        let distance = normal.dot(point);
-        planes.push([
-            normal.x as f32,
-            normal.y as f32,
-            normal.z as f32,
-            distance as f32,
-        ]);
-    }
-    if !have_any {
-        log::warn!("[Compiler] {classname} has no usable brush vertices; skipping");
-        return Ok(None);
-    }
-    if planes.is_empty() {
-        anyhow::bail!(
-            "{classname}: brush hull yielded zero face planes — region needs a non-degenerate convex hull"
-        );
-    }
-
-    Ok(Some(BrushRegionBounds { min, max, planes }))
-}
-
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
 /// produces no usable vertices (degenerate authoring). Returns `Err` when the
@@ -2436,8 +2416,9 @@ fn resolve_fog_volume(
     scale: f64,
     classname: &str,
 ) -> Result<Option<MapFogVolume>> {
-    let Some(BrushRegionBounds { min, max, planes }) =
-        resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)?
+    let Some(BrushRegionBounds {
+        min, max, planes, ..
+    }) = resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)?
     else {
         return Ok(None);
     };
@@ -2520,46 +2501,6 @@ fn resolve_fog_volume(
         planes,
         tags,
         is_ellipsoid: false,
-    }))
-}
-
-/// Resolve a brush-defined lightmap-density override. The AABB is the explicit
-/// chart-origin membership classifier; source planes remain parsed alongside it
-/// so this compiler-only brush entity follows the region-entity contract.
-fn resolve_lightmap_scale_region(
-    geo_map: &GeoMap,
-    brush_ids: &[BrushId],
-    props: &HashMap<String, String>,
-    scale: f64,
-    classname: &str,
-) -> Result<Option<MapLightmapScaleRegion>> {
-    let Some(bounds) = resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)? else {
-        return Ok(None);
-    };
-    let lightmap_scale = props
-        .get("_lightmap_scale")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value.parse::<f32>().map_err(|error| {
-                anyhow::anyhow!(
-                    "{classname} `_lightmap_scale` value `{value}` is not a valid float ({error})"
-                )
-            })
-        })
-        .transpose()?
-        .unwrap_or(1.0);
-    if !lightmap_scale.is_finite() || lightmap_scale <= 0.0 {
-        anyhow::bail!(
-            "{classname} `_lightmap_scale` must be a finite positive float, got {lightmap_scale}"
-        );
-    }
-
-    Ok(Some(MapLightmapScaleRegion {
-        min: bounds.min.to_array().map(|value| value as f32),
-        max: bounds.max.to_array().map(|value| value as f32),
-        planes: bounds.planes,
-        scale: lightmap_scale,
     }))
 }
 

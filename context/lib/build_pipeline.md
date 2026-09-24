@@ -285,6 +285,12 @@ Pins and max-on-overlap priority are per-cluster hints; they never reuse the exi
 cluster-record flags, whose bit 0 marks an oversized singleton. With no hints, the
 canonical partition and id-50 content remain unchanged. The loader and compiler
 readback reject malformed hints or noncanonical membership, including a v1 directory.
+Authoring stays compiler-only: each streaming-hint entity owns exactly one finite,
+positive-volume convex brush. A seam must cut through a generated portal with positive
+area and interior depth on both sides; resident and priority regions must overlap at
+least one runtime-cell AABB by positive volume. `_stream_priority` is an integer from
+0 through 3 (blank is 0); zero emits no priority record. These brushes never enter BSP,
+geometry, collision, gameplay, visibility, lightmap, SDF, or navmesh output.
 The uncached `ClusterDirectory` metadata stage runs after every bake and final SH-family
 presence decision and before section serialization. The chosen limits and bounded dry-run
 evidence live in `measurements/sh-probe-streaming/cluster-directory-thresholds.md`.

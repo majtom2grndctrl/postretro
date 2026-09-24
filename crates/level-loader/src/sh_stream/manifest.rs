@@ -19,6 +19,23 @@ use super::metadata_sparse::{read_optional_direct_metadata, read_optional_sparse
 use super::positional_io::{read_vec_at, validate_positional_entry_bounds};
 use super::projection::{ShStreamBaseMetadata, ShStreamSourceMetadata, validate_projected_sources};
 use super::{PrlLoadError, stream_error};
+
+/// One validated id-49 seam portal projected to the clusters at its two
+/// endpoints. The controller needs this alongside ordinary cluster adjacency:
+/// a closed door may remove the far cell from render visibility while an
+/// authored seam still warms its lighting cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShStreamSeamPortal {
+    pub portal_id: u32,
+    pub front_cluster_id: u32,
+    pub back_cluster_id: u32,
+}
+
+#[derive(Debug)]
+struct ClusterPortalTopology {
+    adjacency: Vec<Vec<u32>>,
+    seam_portals: Vec<ShStreamSeamPortal>,
+}
 /// Immutable, validated handle for a streaming PRL session. The file is opened
 /// exactly once at load; worker jobs use positional reads against this handle
 /// and never reopen the diagnostic path.
@@ -32,7 +49,7 @@ pub struct ShStreamManifest {
     base: ShStreamBaseMetadata,
     sources: ShStreamSourceMetadata,
     content_tag: [u8; 32],
-    cluster_adjacency: std::sync::OnceLock<Vec<Vec<u32>>>,
+    cluster_portal_topology: std::sync::OnceLock<ClusterPortalTopology>,
 }
 
 impl ShStreamManifest {
@@ -72,19 +89,35 @@ impl ShStreamManifest {
     /// topology. It is installed exactly once during the successful level
     /// load, after directory semantic validation.
     pub fn cluster_adjacency(&self) -> &[Vec<u32>] {
-        self.cluster_adjacency
+        &self
+            .cluster_portal_topology
             .get()
             .expect("successful streaming manifest installs validated cluster adjacency")
-            .as_slice()
+            .adjacency
     }
 
-    pub(crate) fn install_cluster_adjacency(
+    /// Marked portal IDs with their validated endpoint cluster IDs. This is
+    /// intentionally distinct from adjacency: it preserves authored seams
+    /// without changing the visibility graph used by gameplay and rendering.
+    pub fn seam_portals(&self) -> &[ShStreamSeamPortal] {
+        &self
+            .cluster_portal_topology
+            .get()
+            .expect("successful streaming manifest installs validated seam portals")
+            .seam_portals
+    }
+
+    pub(crate) fn install_cluster_portal_topology(
         &self,
         adjacency: Vec<Vec<u32>>,
+        seam_portals: Vec<ShStreamSeamPortal>,
     ) -> Result<(), PrlLoadError> {
-        self.cluster_adjacency
-            .set(adjacency)
-            .map_err(|_| stream_error("cluster adjacency was installed more than once"))
+        self.cluster_portal_topology
+            .set(ClusterPortalTopology {
+                adjacency,
+                seam_portals,
+            })
+            .map_err(|_| stream_error("cluster portal topology was installed more than once"))
     }
 
     /// Read and validate one indexed payload chunk through the retained file.
@@ -266,7 +299,7 @@ pub(crate) fn load_manifest_positionally(
         base,
         sources,
         content_tag,
-        cluster_adjacency: std::sync::OnceLock::new(),
+        cluster_portal_topology: std::sync::OnceLock::new(),
     };
     Ok(manifest)
 }

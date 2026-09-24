@@ -83,7 +83,7 @@ pub(crate) use crate::prl_streaming::{
 };
 #[cfg(test)]
 use crate::sh_stream::ShStreamingMode;
-use crate::sh_stream::{ShStorage, ShStreamManifest};
+use crate::sh_stream::{ShStorage, ShStreamManifest, ShStreamSeamPortal};
 
 /// Conservative desktop floor for one sparse SH delta section bound as a
 /// storage buffer. This is intentionally a loader policy rather than a wire
@@ -1275,10 +1275,10 @@ pub(crate) fn validate_cell_draw_index(
     Ok(())
 }
 
-fn cluster_adjacency_from_portals(
+fn cluster_portal_topology_from_portals(
     directory: &ClusterDirectorySection,
     portals: &PortalsSection,
-) -> Result<Vec<Vec<u32>>, PrlLoadError> {
+) -> Result<(Vec<Vec<u32>>, Vec<ShStreamSeamPortal>), PrlLoadError> {
     let runtime_cell_count = usize::try_from(directory.runtime_cell_count).map_err(|_| {
         section_validation(
             "ClusterDirectory",
@@ -1317,7 +1317,8 @@ fn cluster_adjacency_from_portals(
         }
     }
     let mut adjacency = vec![BTreeSet::new(); directory.clusters.len()];
-    for portal in &portals.portals {
+    let mut seam_portals = Vec::with_capacity(directory.seam_portal_ids.len());
+    for (portal_id, portal) in portals.portals.iter().enumerate() {
         let front = cell_to_cluster
             .get(portal.front_leaf as usize)
             .and_then(|cluster| *cluster)
@@ -1340,11 +1341,35 @@ fn cluster_adjacency_from_portals(
             adjacency[front as usize].insert(back);
             adjacency[back as usize].insert(front);
         }
+        let portal_id = u32::try_from(portal_id)
+            .map_err(|_| section_validation("ClusterDirectory", "portal id exceeds u32"))?;
+        if directory.seam_portal_ids.binary_search(&portal_id).is_ok() {
+            if front == back {
+                return Err(section_validation(
+                    "ClusterDirectory",
+                    "validated seam portal endpoints share a cluster",
+                ));
+            }
+            seam_portals.push(ShStreamSeamPortal {
+                portal_id,
+                front_cluster_id: front,
+                back_cluster_id: back,
+            });
+        }
     }
-    Ok(adjacency
-        .into_iter()
-        .map(|neighbors| neighbors.into_iter().collect())
-        .collect())
+    if seam_portals.len() != directory.seam_portal_ids.len() {
+        return Err(section_validation(
+            "ClusterDirectory",
+            "validated seam portal id is absent from portal topology",
+        ));
+    }
+    Ok((
+        adjacency
+            .into_iter()
+            .map(|neighbors| neighbors.into_iter().collect())
+            .collect(),
+        seam_portals,
+    ))
 }
 
 fn validate_streamed_direct_delta_selection(
@@ -2841,10 +2866,11 @@ pub(crate) fn load_prl_from_container(
                     .as_ref(),
             },
         })?;
-        manifest.install_cluster_adjacency(cluster_adjacency_from_portals(
+        let (adjacency, seam_portals) = cluster_portal_topology_from_portals(
             directory,
             portals_section.as_ref().unwrap_or(&empty_portals),
-        )?)?;
+        )?;
+        manifest.install_cluster_portal_topology(adjacency, seam_portals)?;
         Some(directory.clone())
     } else {
         match parsed_cluster_directory {
@@ -3257,6 +3283,8 @@ mod tests {
                 .collect(),
             members: vec![0, 1],
             ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
         }
     }
 
@@ -3305,8 +3333,22 @@ mod tests {
         ));
         std::fs::remove_file(duplicate_path).unwrap();
 
+        let mut v1_internal = cluster_directory_blob(&directory);
+        v1_internal.data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        let internal_version_path = write_prl_load_fixture(
+            [v1_internal],
+            "postretro_test_cluster_directory_internal_version.prl",
+        );
+        assert!(matches!(
+            load_prl(internal_version_path.to_str().unwrap()),
+            Err(PrlLoadError::ClusterDirectory(
+                ClusterDirectoryError::VersionMismatch { .. }
+            ))
+        ));
+        std::fs::remove_file(internal_version_path).unwrap();
+
         let mut wrong_container = cluster_directory_blob(&directory);
-        wrong_container.version += 1;
+        wrong_container.version = 1;
         let version_path = write_prl_load_fixture(
             [wrong_container],
             "postretro_test_cluster_directory_container_version.prl",

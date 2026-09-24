@@ -39,7 +39,9 @@ use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 use super::{pack, portals};
 use crate::cluster_directory_bake::ClusterDirectoryBake;
 use crate::geometry::GeometryResult;
+use crate::map_data::{MapStreamingHintRegion, MapStreamingPriorityRegion};
 use crate::partition::BspTree;
+use crate::streaming_hints::resolve_streaming_hints;
 
 /// Final post-bake data shared by directory construction and serialization.
 ///
@@ -55,6 +57,9 @@ pub(super) struct FinalizedClusterMetadata<'a> {
 /// Inputs that determine the final cluster-directory metadata inventory.
 pub(super) struct FinalizedClusterMetadataInputs<'a> {
     pub(super) generated_portals: &'a [portals::Portal],
+    pub(super) streaming_seam_regions: &'a [MapStreamingHintRegion],
+    pub(super) stream_resident_regions: &'a [MapStreamingHintRegion],
+    pub(super) stream_priority_regions: &'a [MapStreamingPriorityRegion],
     pub(super) leaves: &'a BspLeavesSection,
     pub(super) tree: &'a BspTree,
     pub(super) exterior_leaves: &'a HashSet<usize>,
@@ -94,12 +99,21 @@ pub(super) fn build_finalized_cluster_metadata<'a>(
         inputs.animated_billboard_direct_scatter_delta_volumes,
     )?;
     let sh_pack = pack::FinalizedShPack::new(emission, sources)?;
+    let streaming_hints = resolve_streaming_hints(
+        inputs.streaming_seam_regions,
+        inputs.stream_resident_regions,
+        inputs.stream_priority_regions,
+        inputs.generated_portals,
+        &portals,
+        &cells,
+    )?;
     let cluster_directory = crate::cluster_directory_bake::bake_cluster_directory(
         &cells,
         &portals,
         &bvh,
         &locator,
         sh_pack.emission,
+        &streaming_hints,
     )?;
 
     Ok(FinalizedClusterMetadata {

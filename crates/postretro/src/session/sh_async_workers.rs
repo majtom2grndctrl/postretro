@@ -333,6 +333,7 @@ mod tests {
             content_tag: [4; 32],
             cluster_id: 0,
             chunk_hash: [7; 32],
+            mandatory: true,
         };
         let start = Instant::now();
         workers.submit(request).unwrap();
@@ -364,6 +365,7 @@ mod tests {
             content_tag: [1; 32],
             cluster_id,
             chunk_hash: [1; 32],
+            mandatory: true,
         };
         for cluster_id in 0..MAX_STREAM_PERMITS as u32 {
             workers.submit(old_request(cluster_id)).unwrap();
@@ -398,6 +400,7 @@ mod tests {
             content_tag: [2; 32],
             cluster_id: 0,
             chunk_hash: [2; 32],
+            mandatory: true,
         };
         replacement.submit(new_request).unwrap();
         let completion = loop {

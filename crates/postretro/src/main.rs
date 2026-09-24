@@ -3987,10 +3987,16 @@ impl ApplicationHandler for App {
                     // Prepare the controller while no borrowed draw collection
                     // is live. The actual drain still occurs as the first step
                     // inside `render_frame_indirect`, before scene recording.
+                    // The warm set follows the same locator cell that seeded
+                    // portal visibility this frame.
                     let sh_drain_batch = match session.prepare_sh_streaming_drain(
                         sh_stream_manifest.as_ref(),
+                        self.level
+                            .as_ref()
+                            .and_then(|world| world.cell_visibility.as_ref()),
                         renderer,
                         &visible_cells,
+                        self.level.as_ref().map(|_| stats.camera_cell as usize),
                         self.script_time,
                     ) {
                         Ok(batch) => batch,

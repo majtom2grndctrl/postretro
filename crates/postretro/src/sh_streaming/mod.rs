@@ -7,3 +7,4 @@ pub(crate) mod generation;
 mod topology;
 #[cfg(test)]
 mod topology_test_fixtures;
+mod warm_set;

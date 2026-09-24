@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use postretro_level_loader::{
-    PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode,
-    requested_streaming_mode,
+    CellVisibility, PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest,
+    ShStreamingMode, requested_streaming_mode,
 };
 #[cfg(feature = "capture")]
 use postretro_renderer::ShStreamingLifecycleSummary;
@@ -46,23 +46,31 @@ pub(crate) struct ShStreamingSession {
 
 impl ShStreamingSession {
     /// Builds a controller from the renderer's actual allocation snapshot.
+    /// `cell_visibility` is the same level's id-46 section, if loaded.
     #[cfg(feature = "capture")]
     pub(crate) fn from_renderer(
         manifest: Arc<ShStreamManifest>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
     ) -> Result<Self> {
-        Self::from_renderer_with_mode(manifest, renderer, ShStreamingMode::SyncProof)
+        Self::from_renderer_with_mode(
+            manifest,
+            cell_visibility,
+            renderer,
+            ShStreamingMode::SyncProof,
+        )
     }
 
     fn from_renderer_with_mode(
         manifest: Arc<ShStreamManifest>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         mode: ShStreamingMode,
     ) -> Result<Self> {
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        let mut session = Self::from_snapshot(manifest.clone(), snapshot)?;
+        let mut session = Self::from_snapshot(manifest.clone(), snapshot, cell_visibility)?;
         session.mode = mode;
         Ok(session)
     }
@@ -73,16 +81,19 @@ impl ShStreamingSession {
     #[cfg(feature = "capture")]
     pub(crate) fn for_capture(
         manifest: Arc<ShStreamManifest>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
     ) -> Result<Self> {
-        Self::from_renderer(manifest, renderer)
+        Self::from_renderer(manifest, cell_visibility, renderer)
     }
 
     fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
+        cell_visibility: Option<&CellVisibility>,
     ) -> Result<Self> {
-        let controller = ShResidencyController::new(manifest.clone(), budget_inputs(snapshot))?;
+        let controller =
+            ShResidencyController::new(manifest.clone(), budget_inputs(snapshot), cell_visibility)?;
         Ok(Self {
             manifest,
             mode: ShStreamingMode::SyncProof,
@@ -107,15 +118,17 @@ impl ShStreamingSession {
         self.workers.as_mut().map(ShAsyncWorkers::begin_retirement)
     }
 
-    /// Updates the controller from one real visibility result. Capture uses
-    /// the same method with its deterministic fixed cell set.
+    /// Updates the controller from one real visibility result and the
+    /// locator's camera cell (`None` without a level). Capture uses the same
+    /// method with its deterministic fixed cell set.
     pub(crate) fn update_targets(
         &mut self,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<()> {
         self.controller
-            .update_targets(visible_cells, monotonic_seconds)
+            .update_targets(visible_cells, camera_cell, monotonic_seconds)
             .map_err(Into::into)
     }
 
@@ -243,15 +256,16 @@ impl ShStreamingSession {
         })
     }
 
-    /// Synchronous proof policy: fill the four controller permits from the
+    /// Synchronous proof policy: fill the controller permits from the
     /// current target set, then submit at most the controller's bounded drain
     /// batch. The remaining ready items retain their permits for a later frame.
     fn prepare_sync_proof_batch(
         &mut self,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
-        self.update_targets(visible_cells, monotonic_seconds)?;
+        self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
         while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
         self.prepare_batch()
     }
@@ -261,9 +275,10 @@ impl ShStreamingSession {
     fn prepare_async_batch(
         &mut self,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
-        self.update_targets(visible_cells, monotonic_seconds)?;
+        self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
         let Some(workers) = self.workers.as_ref() else {
             // A prior generation may still be finishing an uncancellable OS
             // read. Publish target deltas and miss fallback without waiting;
@@ -355,13 +370,17 @@ impl super::Session {
     }
 
     /// Creates/replaces the session controller for a streamed map, updates it
-    /// from the exact visible cells for this frame, and returns its one bounded
-    /// pre-compose batch. Legacy maps bypass the environment gate completely.
+    /// from the exact visible cells and camera cell for this frame, and returns
+    /// its one bounded pre-compose batch. `cell_visibility` is read only when
+    /// a controller is created for `manifest`, and must come from the same
+    /// level. Legacy maps bypass the environment gate completely.
     pub(crate) fn prepare_sh_streaming_drain(
         &mut self,
         manifest: Option<&Arc<ShStreamManifest>>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
         self.poll_sh_worker_retirement();
@@ -383,6 +402,7 @@ impl super::Session {
             self.clear_sh_streaming();
             self.sh_streaming = Some(ShStreamingSession::from_renderer_with_mode(
                 manifest.clone(),
+                cell_visibility,
                 renderer,
                 mode,
             )?);
@@ -397,10 +417,10 @@ impl super::Session {
         }
         match mode {
             ShStreamingMode::SyncProof => {
-                streaming.prepare_sync_proof_batch(visible_cells, monotonic_seconds)
+                streaming.prepare_sync_proof_batch(visible_cells, camera_cell, monotonic_seconds)
             }
             ShStreamingMode::Async => {
-                streaming.prepare_async_batch(visible_cells, monotonic_seconds)
+                streaming.prepare_async_batch(visible_cells, camera_cell, monotonic_seconds)
             }
             ShStreamingMode::Off => unreachable!("mode was checked above"),
         }
@@ -511,6 +531,7 @@ mod tests {
                 effective_floor_bytes: 1024 * 1024,
                 ..ShResidencySnapshot::default()
             },
+            world.cell_visibility.as_ref(),
         )
         .unwrap();
         session.mode = ShStreamingMode::Async;
@@ -527,7 +548,7 @@ mod tests {
         let capture = LogCapture::start();
         let visible = VisibleCells::Culled(vec![0]);
         let empty = VisibleCells::Culled(Vec::new());
-        session.prepare_async_batch(&visible, 0.0).unwrap();
+        session.prepare_async_batch(&visible, Some(0), 0.0).unwrap();
 
         let wait_for_failure = |session: &mut ShStreamingSession, time| {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -536,15 +557,18 @@ mod tests {
             {
                 assert!(Instant::now() < deadline, "worker failure did not arrive");
                 std::thread::yield_now();
-                session.prepare_async_batch(&visible, time).unwrap();
+                session
+                    .prepare_async_batch(&visible, Some(0), time)
+                    .unwrap();
             }
         };
         wait_for_failure(&mut session, 0.0);
         capture.assert_logged_once(log::Level::Warn, "cluster 0 read/decode failed:");
 
-        session.prepare_async_batch(&empty, 0.1).unwrap();
-        session.prepare_async_batch(&empty, 2.1).unwrap();
-        session.prepare_async_batch(&visible, 2.2).unwrap();
+        // No camera cell stands for the camera leaving; its warm set departs.
+        session.prepare_async_batch(&empty, None, 0.1).unwrap();
+        session.prepare_async_batch(&empty, None, 2.1).unwrap();
+        session.prepare_async_batch(&visible, Some(0), 2.2).unwrap();
         assert_eq!(session.controller.counters().retries, 1);
         wait_for_failure(&mut session, 2.2);
         assert_eq!(session.controller.permits_in_use(), 0);

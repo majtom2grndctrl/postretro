@@ -398,7 +398,7 @@ mod tests {
 
     fn manifest(recipes: &str) -> Manifest {
         Manifest::parse(&format!(
-            "[package]\nname = \"dev\"\nmod_root = \"content/dev\"\n{recipes}"
+            "[package]\nname = \"dev\"\nmod = \"dev\"\n{recipes}"
         ))
         .expect("manifest parses")
     }

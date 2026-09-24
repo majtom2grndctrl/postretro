@@ -64,19 +64,17 @@ The marker:
 ```toml
 [package]
 name = "my-game"
-mod_root = "content/base"
+mod = "base"
 ```
 
-**`mod_root` must be exactly two `/`-separated components.** `content/base` is
-the conventional choice and the one a distribution publishes into anyway, so
-using it in your own repository keeps every path identical between development
-and a shipped payload.
+**`mod` is a name, not a path.** It names the directory under `content/`, so
+`mod = "base"` is `content/base`. `base` is the conventional choice, and the
+distribution publishes it at the same `content/base`, so every path stays
+identical between development and a shipped payload.
 
-Two components is not a naming preference. The engine locates your baked
-material sidecars by walking up two levels from the content root it mounted, so
-`content/base` resolves `baked/materials` at your project root. A content root
-nested one level deeper or shallower sends that walk somewhere else, and the
-result is not an error — see "The one mistake that does not fail" below.
+Every mod lives directly under `content/` for a reason. The engine locates your
+baked material sidecars by walking up two levels from the mod it mounted, so
+`content/base` resolves `baked/materials` at your project root.
 
 Suggested `.gitignore`:
 
@@ -117,9 +115,10 @@ postretro-tool run
 That launches the install's authoring engine with the working directory pinned to
 your project root, your content mounted, and the baked materials root already
 pointed at your `baked/`. Anything the tool does not recognize forwards straight
-to the engine, so `postretro-tool run content/base/maps/arena.prl` opens that
-level directly, and engine flags you pass yourself win over the tool's defaults
-rather than being shadowed.
+to the engine, so `postretro-tool run maps/arena.prl` opens that level directly.
+A level path is relative to your mod's folder, not the project root, so there is
+no `content/base/` to type. Engine flags you pass yourself win over the tool's
+defaults rather than being shadowed.
 
 To recompile one level, call the compiler directly:
 
@@ -188,10 +187,10 @@ It finds your project the same way everything else does and writes into your
 project's `baked/materials/`.
 
 Persisted and replicated script state needs a durable identity ledger at
-`<mod_root>/identity.json`. After adding a slot:
+`content/<mod>/identity.json`. After adding a slot:
 
 ```bash
-postretro-tool mint-identity content/base
+postretro-tool mint-identity base
 ```
 
 Commit the updated file with your content. See `docs/scripting-reference.md`.

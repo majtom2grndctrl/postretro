@@ -366,7 +366,7 @@ export type LevelManifest = {
 --- owner's value every ~60 seconds and on clean exit; it travels via that
 --- player's join seed. `readonly` blocks script writes. A mod-owned persisted writable or replicated slot requires
 --- a minted `<mod-root>/identity.json` entry; run
---- `postretro-tool mint-identity <mod-root>`. Keep its durable key when
+--- `postretro-tool mint-identity <mod>`. Keep its durable key when
 --- renaming the store or slot.
 --- `perOwner = true` creates a separate host-side value for each player seat.
 --- It permits omitted `network` (host-local) or `"ownerPrivate"`; `"shared"`

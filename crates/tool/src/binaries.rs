@@ -12,6 +12,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::flag::{self, match_flag};
+
 /// Run a child to completion, treating a non-zero status as an error.
 pub(crate) fn run_checked(command: &mut Command, label: &str) -> Result<(), String> {
     let status = command
@@ -71,20 +73,17 @@ impl Helper {
         }
     }
 
-    /// The helper a flag names, or `None` when it names no helper at all. The
-    /// inverse of [`Helper::flag`], and the single place the six flag spellings
-    /// are recognised.
-    pub(crate) fn from_flag(flag: &str) -> Option<Self> {
-        Some(match flag {
-            "--release-engine" => Self::ReleaseEngine,
-            "--engine" => Self::AuthoringEngine,
-            "--prl-build" => Self::PrlBuild,
-            "--scripts-build" => Self::ScriptsBuild,
-            "--mint-identity" => Self::MintIdentity,
-            "--tool" => Self::Tool,
-            _ => return None,
-        })
-    }
+    /// Every variant, tried in this order when a token is checked against all
+    /// six flag spellings at once ([`Overrides::absorb`],
+    /// [`Overrides::absorb_only`]).
+    pub(crate) const ALL: [Self; 6] = [
+        Self::ReleaseEngine,
+        Self::AuthoringEngine,
+        Self::PrlBuild,
+        Self::ScriptsBuild,
+        Self::MintIdentity,
+        Self::Tool,
+    ];
 
     /// Paths tried in order, relative to the directory holding the tool.
     fn candidates(self) -> &'static [&'static str] {
@@ -160,21 +159,22 @@ impl Overrides {
         }
     }
 
-    /// Record a recognized override flag. Returns `false` when `flag` names no
-    /// helper, leaving the caller's own flag handling to run.
+    /// Record a recognized override flag, in split (`--flag value`) or equals
+    /// (`--flag=value`) form. Returns `0` when `token` names no helper,
+    /// leaving the caller's own flag handling to run; otherwise the number of
+    /// argument-list tokens consumed (1 or 2), for the caller to advance by.
     ///
     /// Every helper flag is recognised — the caller vouches that it drives all
     /// of them (`dist` and `sdk-dist`). A command that drives only some must use
     /// [`Overrides::absorb_only`] so it rejects the rest instead of swallowing an
     /// override it will never read.
-    ///
-    /// `value` is the token after the flag; its absence is this function's error
-    /// to report, since it is the one that knows the flag takes a path.
-    pub(crate) fn absorb(&mut self, flag: &str, value: Option<&OsString>) -> Result<bool, String> {
-        match Helper::from_flag(flag) {
-            Some(helper) => self.record(helper, flag, value),
-            None => Ok(false),
+    pub(crate) fn absorb(&mut self, token: &str, next: Option<&OsString>) -> Result<usize, String> {
+        for helper in Helper::ALL {
+            if let Some(matched) = match_flag(token, next, helper.flag()) {
+                return self.record(helper, matched);
+            }
         }
+        Ok(0)
     }
 
     /// Like [`Overrides::absorb`], but only the helpers in `allowed` are this
@@ -182,47 +182,53 @@ impl Overrides {
     /// with a clear error rather than silently recorded — a command that never
     /// reads an override should not quietly accept the flag that sets it.
     ///
-    /// A flag naming no helper at all still returns `false`, leaving the caller's
+    /// A flag naming no helper at all still returns `0`, leaving the caller's
     /// own flag handling (engine passthrough, positional arguments) to run.
     pub(crate) fn absorb_only(
         &mut self,
-        flag: &str,
-        value: Option<&OsString>,
+        token: &str,
+        next: Option<&OsString>,
         allowed: &[Helper],
-    ) -> Result<bool, String> {
-        let Some(helper) = Helper::from_flag(flag) else {
-            return Ok(false);
-        };
-        if !allowed.contains(&helper) {
-            let accepted = allowed
-                .iter()
-                .map(|helper| helper.flag())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let accepted = if accepted.is_empty() {
-                "no helper flags".to_string()
-            } else {
-                format!("only {accepted}")
+    ) -> Result<usize, String> {
+        for helper in Helper::ALL {
+            let Some(matched) = match_flag(token, next, helper.flag()) else {
+                continue;
             };
-            return Err(format!(
-                "{flag} is not a helper flag this command uses (it accepts {accepted})"
-            ));
+            if !allowed.contains(&helper) {
+                let accepted = allowed
+                    .iter()
+                    .map(|helper| helper.flag())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let accepted = if accepted.is_empty() {
+                    "no helper flags".to_string()
+                } else {
+                    format!("only {accepted}")
+                };
+                return Err(format!(
+                    "{} is not a helper flag this command uses (it accepts {accepted})",
+                    helper.flag()
+                ));
+            }
+            return self.record(helper, matched);
         }
-        self.record(helper, flag, value)
+        Ok(0)
     }
 
     /// Store one resolved helper override, rejecting a missing path or a repeat.
-    fn record(
-        &mut self,
-        helper: Helper,
-        flag: &str,
-        value: Option<&OsString>,
-    ) -> Result<bool, String> {
-        let value = value.ok_or_else(|| format!("{flag} requires a path to the binary"))?;
-        if self.slot(helper).replace(PathBuf::from(value)).is_some() {
+    fn record(&mut self, helper: Helper, matched: flag::Matched) -> Result<usize, String> {
+        let flag = helper.flag();
+        let value = matched
+            .value
+            .ok_or_else(|| format!("{flag} requires a path to the binary"))?;
+        if self
+            .slot(helper)
+            .replace(PathBuf::from(value.into_owned()))
+            .is_some()
+        {
             return Err(format!("{flag} may be given only once"));
         }
-        Ok(true)
+        Ok(matched.tokens)
     }
 
     /// Resolve one helper: the explicit flag if given, else the first candidate
@@ -318,7 +324,7 @@ mod tests {
 
         assert_eq!(
             overrides.absorb("--prl-build", Some(&value)),
-            Ok(true),
+            Ok(2),
             "a helper flag is consumed here"
         );
         assert_eq!(
@@ -327,7 +333,7 @@ mod tests {
         );
         assert_eq!(
             overrides.absorb("--out", Some(&value)),
-            Ok(false),
+            Ok(0),
             "an unrelated flag is left to the command's own parser"
         );
     }
@@ -338,8 +344,49 @@ mod tests {
         assert!(overrides.absorb("--engine", None).is_err());
 
         let value = OsString::from("/build/postretro");
-        assert_eq!(overrides.absorb("--engine", Some(&value)), Ok(true));
+        assert_eq!(overrides.absorb("--engine", Some(&value)), Ok(2));
         assert!(overrides.absorb("--engine", Some(&value)).is_err());
+    }
+
+    /// Regression: a helper override only ever matched `--flag value`, so
+    /// `--engine=/build/postretro` compared unequal and, for a command like
+    /// `run` that forwards unrecognized tokens, reached the engine untouched.
+    #[test]
+    fn absorb_accepts_the_equals_form_and_consumes_one_token() {
+        let mut overrides = Overrides::default();
+        assert_eq!(
+            overrides.absorb("--engine=/build/postretro", None),
+            Ok(1),
+            "the equals form is recognized and consumes only its own token"
+        );
+        assert_eq!(
+            overrides.get(Helper::AuthoringEngine),
+            Some(Path::new("/build/postretro"))
+        );
+    }
+
+    /// A repeat is a repeat whichever form supplied the first value.
+    #[test]
+    fn absorb_rejects_a_repeat_across_split_and_equals_forms() {
+        let mut overrides = Overrides::default();
+        let value = OsString::from("/build/postretro");
+        overrides.absorb("--engine", Some(&value)).unwrap();
+        let error = overrides
+            .absorb("--engine=/other/postretro", None)
+            .expect_err("a second --engine in the other form is still a repeat");
+        assert!(error.contains("--engine"), "{error}");
+        assert!(error.contains("only once"), "{error}");
+    }
+
+    /// `--engine=` names the flag but supplies nothing after the `=`.
+    #[test]
+    fn absorb_rejects_an_empty_equals_value() {
+        let mut overrides = Overrides::default();
+        let error = overrides
+            .absorb("--engine=", None)
+            .expect_err("an empty value after `=` must not be accepted silently");
+        assert!(error.contains("--engine"), "{error}");
+        assert_eq!(overrides.get(Helper::AuthoringEngine), None);
     }
 
     #[test]
@@ -349,7 +396,7 @@ mod tests {
 
         assert_eq!(
             overrides.absorb_only("--mint-identity", Some(&value), &[Helper::MintIdentity]),
-            Ok(true),
+            Ok(2),
             "the one helper this set allows is recorded"
         );
         assert_eq!(
@@ -358,9 +405,25 @@ mod tests {
         );
         assert_eq!(
             overrides.absorb_only("--out", Some(&value), &[Helper::MintIdentity]),
-            Ok(false),
+            Ok(0),
             "a flag that names no helper is left to the command's own parser"
         );
+    }
+
+    /// The equals form is refused just as loudly as the split form when it
+    /// names a helper outside the allowed set.
+    #[test]
+    fn absorb_only_refuses_the_equals_form_of_a_disallowed_helper() {
+        let mut overrides = Overrides::default();
+        let error = overrides
+            .absorb_only(
+                "--scripts-build=/build/scripts-build",
+                None,
+                &[Helper::MintIdentity],
+            )
+            .expect_err("a disallowed helper is rejected in either form");
+        assert!(error.contains("--scripts-build"), "{error}");
+        assert_eq!(overrides.get(Helper::ScriptsBuild), None);
     }
 
     #[test]

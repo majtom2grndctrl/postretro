@@ -18,7 +18,7 @@ pub(crate) use postretro_scripting_core::store_bridge::{
 
 const DEFINE_STORE_DOC: &str = "Build a typed state-store handle for ModManifestInput.stores. \
      Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. \
-     A persisted writable or replicated slot requires a minted <mod-root>/identity.json entry; run postretro-tool mint-identity <mod-root> and keep its durable key across renames. \
+     A persisted writable or replicated slot requires a minted <mod-root>/identity.json entry; run postretro-tool mint-identity <mod> and keep its durable key across renames. \
      Calling this builder does not mutate engine state. Returns a frozen store handle whose top-level leaves carry stable slot names plus SDK-only value kinds. \
      Pass that handle to defineMod({ stores: [store] }); defineMod resolves declaration data before the manifest crosses the FFI. Definition context.";
 

@@ -13831,6 +13831,41 @@ mod tests {
             }
         );
         assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/e1m1.prl"));
+
+        // Regression: the net flag preceding the map — `postretro --host 30000
+        // content/dev/maps/campaign-test.prl`, the shape the bug report names —
+        // used to have `resolve_map_path` return "30000" as the map while
+        // `parse_net_config` correctly read it as the port. Both parsers must
+        // agree on where the port/address ends and the map begins, in whichever
+        // order the flag and the positional map appear.
+        let args = [
+            "postretro",
+            "--host",
+            "30000",
+            "content/dev/maps/campaign-test.prl",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(config.role, netcode::NetRole::Host { port: 30000 });
+        assert_eq!(
+            resolve_map_path(&args).as_deref(),
+            Some("content/dev/maps/campaign-test.prl")
+        );
+
+        let args = ["postretro", "--connect", "127.0.0.1:27015", "maps/e1m1.prl"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(
+            config.role,
+            netcode::NetRole::Connect {
+                addr: "127.0.0.1:27015".parse().unwrap()
+            }
+        );
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/e1m1.prl"));
     }
 
     // --- Animation clock accumulation (scripting.md §10.3) ---

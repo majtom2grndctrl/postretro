@@ -39,10 +39,10 @@ Authoring runs, asset bakes, the weapon-mount solver, and distribution assembly 
 
 ```bash
 cargo run -p postretro-tool -- --help                     # full usage
-cargo run -p postretro-tool -- run --install-root . content/dev/maps/campaign-test.prl
+cargo run -p postretro-tool -- run --install-root . maps/campaign-test.prl
 cargo run -p postretro-tool -- bake-model-textures <scene.gltf>
 cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> --check
-cargo run -p postretro-tool -- mint-identity content/dev
+cargo run -p postretro-tool -- mint-identity dev
 ```
 
 Human-facing docs live in `docs/` and are copied verbatim into every SDK bundle. Every command there must be runnable by someone holding only a bundle — `cargo run -p xtask -- …` belongs here, never in `docs/`.

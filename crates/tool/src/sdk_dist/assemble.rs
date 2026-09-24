@@ -87,8 +87,8 @@ pub(super) fn assemble_bundle(
     // The mod tree ships WITH its .map/.ts sources, but committed stale generated
     // .prl/.js are dropped: fresh .prl come from stage 6's level bake and the
     // fresh entry .js is installed just below. It publishes under the project's
-    // own declared mod root — the same path the bundle's own `dist` re-publishes,
-    // and the one the `postretro.toml` written below names.
+    // own declared mod — the same path the bundle's own `dist` re-publishes,
+    // since the `postretro.toml` written below names the same mod.
     let mod_root_rel = project.mod_root_rel();
     let bundle_mod_root = target.bundle_root.join(mod_root_rel);
     let mod_copied = copy_bundle_tree(&project.mod_root(), &bundle_mod_root, true)?;
@@ -110,7 +110,7 @@ pub(super) fn assemble_bundle(
     // Already rendered and validated up front (`sdk_dist::run`), so a recipe
     // source outside the shipped mod tree failed before this tree was written.
     write_bundle_file(target.bundle_root, MARKER_FILE, bundle_manifest)?;
-    emit_launcher(target.bundle_root, target.bundle_name, mod_root_rel)?;
+    emit_launcher(target.bundle_root, target.bundle_name, project.mod_name())?;
     write_bundle_file(
         target.bundle_root,
         "README.md",

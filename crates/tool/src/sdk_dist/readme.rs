@@ -10,9 +10,9 @@ use super::{BIN_DIR, RELEASE_ENGINE_STEM};
 
 /// Render the bundle's own project marker.
 ///
-/// The bundle publishes the mod under the source project's own declared
-/// `mod_root`, so its marker names the same path — a recipe source inside the
-/// mod tree is carried over verbatim. A source pointing *outside* the mod tree
+/// The bundle publishes the mod under the source project's own declared `mod`,
+/// so its marker names the same mod — a recipe source inside the mod tree is
+/// carried over verbatim. A source pointing *outside* the mod tree
 /// is refused here, on the author's machine: the bundle ships no tree that
 /// source could come from, so carrying its path into the marker would only make
 /// the recipient's own `dist` fail at stage 3 with `missing map source`, far
@@ -43,8 +43,8 @@ fn render(manifest: &Manifest) -> Result<String, String> {
          # its presence is what lets `bin/postretro-tool dist` find the tree it is standing in.\n\
          [package]\n\
          name = \"{}\"\n\
-         mod_root = \"{mod_root}\"\n",
-        manifest.package.name
+         mod = \"{}\"\n",
+        manifest.package.name, manifest.package.mod_name
     );
 
     let source_prefix = format!("{mod_root}/");
@@ -177,19 +177,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundle_manifest_publishes_the_mod_at_the_projects_own_mod_root() {
-        let manifest =
-            Manifest::parse("[package]\nname = \"postretro-dev\"\nmod_root = \"content/dev\"\n")
-                .expect("manifest parses");
+    fn bundle_manifest_publishes_the_projects_own_mod() {
+        let manifest = Manifest::parse("[package]\nname = \"postretro-dev\"\nmod = \"dev\"\n")
+            .expect("manifest parses");
 
         let rendered = render_bundle_manifest(&manifest).expect("the emitted marker parses");
         assert!(rendered.contains("name = \"postretro-dev\""), "{rendered}");
-        // The bundle keeps the source project's mod root rather than renaming to
-        // a fixed `content/base`.
-        assert!(
-            rendered.contains("mod_root = \"content/dev\""),
-            "{rendered}"
-        );
+        // The bundle keeps the source project's mod rather than renaming to a
+        // fixed `base`, and names it — never its `content/` path.
+        assert!(rendered.contains("mod = \"dev\""), "{rendered}");
         // It must survive its own parser, or the bundle ships a project nothing
         // can open.
         Manifest::parse(&rendered).expect("the emitted bundle manifest parses");
@@ -198,7 +194,7 @@ mod tests {
     #[test]
     fn bundle_manifest_carries_an_in_tree_recipe_source_verbatim() {
         let manifest = Manifest::parse(
-            "[package]\nname = \"dev\"\nmod_root = \"content/dev\"\n\
+            "[package]\nname = \"dev\"\nmod = \"dev\"\n\
              \n[[recipes]]\noutput = \"maps/arena.prl\"\n\
              source = \"content/dev/sources/arena.map\"\n\
              args = [\"--lightmap-density\", \"0.02\"]\n",
@@ -229,7 +225,7 @@ mod tests {
     #[test]
     fn bundle_manifest_refuses_a_recipe_source_outside_the_mod_tree() {
         let manifest = Manifest::parse(
-            "[package]\nname = \"dev\"\nmod_root = \"content/dev\"\n\
+            "[package]\nname = \"dev\"\nmod = \"dev\"\n\
              \n[[recipes]]\noutput = \"maps/shared.prl\"\n\
              source = \"external/shared.map\"\n",
         )
@@ -250,7 +246,7 @@ mod tests {
     #[test]
     fn a_marker_that_would_not_parse_fails_the_run_instead_of_shipping() {
         let manifest = Manifest::parse(
-            "[package]\nname = \"dev\"\nmod_root = \"content/dev\"\n\
+            "[package]\nname = \"dev\"\nmod = \"dev\"\n\
              \n[[recipes]]\noutput = \"maps/a.prl\"\n\
              args = [\"--lightmap-density\", \"0.02\"]\n",
         )

@@ -62,19 +62,18 @@ lets the tool find the tree it is standing in:
 ```toml
 [package]
 name = "my-game"
-mod_root = "content/base"
+mod = "base"
 ```
 
 `name` is the payload's folder name. It must be a single path component — no
 slashes, no `..`.
 
-`mod_root` is where your authored content lives inside the project, relative to
-the marker. It must be **exactly two `/`-separated components**, and its first
-component may not be `dist`. Two components is not a style rule: the engine
-finds the baked material sidecars by walking up two levels from the content root
-it mounted. A mod root nested deeper or shallower sends that walk to a directory
-your sidecars are not in, and every world texture then renders as a placeholder
-with a warning in the log and no error anywhere.
+`mod` is your mod's name: the directory under the project's `content/` that
+holds your authored content, so `mod = "base"` means `content/base`. It is a
+name, not a path — no slashes, no `..` — because every mod lives directly under
+`content/`. That placement is not a style rule: the engine finds the baked
+material sidecars by walking up two levels from the mod it mounted, which lands
+at the project root only for `content/<mod>`.
 
 An SDK bundle ships its own `postretro.toml` at the bundle root, already
 correct, so the bundle is a project you can build from immediately.
@@ -143,12 +142,11 @@ Two of those names are load-bearing.
 descriptors, the boot splash, the font licences. It sits outside `content/`
 precisely so that mounting a game never redirects it.
 
-`content/base` is your game's own tree — the mod root this example's
-`postretro.toml` declares. A payload publishes under whatever mod root your
-project names, keeping that path rather than renaming it; the name must be two
-path components because the engine's sidecar walk depends on that shape, and
-`content/base` is the recommended convention for a game. The launcher mounts
-your declared root for you.
+`content/base` is your game's own tree — the mod this example's
+`postretro.toml` declares. A payload publishes `content/<mod>` under whatever
+mod your project names, keeping that name rather than renaming it, and `base` is
+the recommended convention for a game. The launcher mounts your declared mod for
+you.
 
 A payload is correct only as a whole tree with the working directory pinned to
 its root. The launcher does that pinning itself, so it works from a shortcut or
@@ -159,7 +157,7 @@ a double-click. Do not flatten the folder, and do not move `core/`.
 The shipped level set is the `maps/<name>.prl` paths written **literally** in
 your mod's emitted entry-script catalog. To add or drop a shipped level, add or
 remove that catalog entry, then make sure its source map exists at
-`<mod_root>/maps/<name>.map`.
+`content/<mod>/maps/<name>.map`.
 
 A path the script assembles at runtime rather than writing as a literal ships
 nothing and reports nothing — no stage ever saw the level, so the recipient gets

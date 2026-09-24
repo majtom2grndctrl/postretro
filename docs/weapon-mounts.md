@@ -29,7 +29,7 @@ They are directions in the **raw-source frame**, before the corrective rotation
 is baked. They are not axes copied from the grip/scale-only output.
 
 ```bash
-cargo run -p xtask -- solve-weapon-mount content/dev/models/limitator/model.gltf \
+bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
   --weapon content/dev/models/ar_4/model.gltf \
   --mount-joint hand_r \
   --barrel 0 1 0 \
@@ -70,7 +70,7 @@ persisted Euler is the rotation applied during the final bake.
 Normally, verify the final asset without re-supplying axes or Euler values:
 
 ```bash
-cargo run -p xtask -- solve-weapon-mount content/dev/models/limitator/model.gltf \
+bin/postretro-tool solve-weapon-mount content/dev/models/limitator/model.gltf \
   --weapon content/dev/models/ar_4/model.gltf \
   --mount-joint hand_r \
   --check
@@ -95,7 +95,7 @@ For a projectile weapon, read its viewmodel's rigid `"muzzle"` socket to get a
 paste-ready descriptor value:
 
 ```bash
-cargo run -p xtask -- solve-weapon-mount --read-muzzle-offset \
+bin/postretro-tool solve-weapon-mount --read-muzzle-offset \
   content/dev/models/ar_4/model.gltf
 ```
 

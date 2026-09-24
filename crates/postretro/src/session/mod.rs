@@ -377,7 +377,11 @@ impl Session {
     /// place. `Session::build` returns `Err` on a runtime-construction failure;
     /// the install path stores it in `exit_result` and exits boot.
     /// See: context/lib/boot_sequence.md §1.
-    pub(crate) fn build(raw_args: &[String], boot_timings: &mut StartupTimings) -> Result<Self> {
+    pub(crate) fn build(
+        raw_args: &[String],
+        core_root: &postretro_ui::CoreRoot,
+        boot_timings: &mut StartupTimings,
+    ) -> Result<Self> {
         // 1. Player options load first so the loaded look preferences seed the
         //    `InputSystem` constructed below. On first boot (no file present),
         //    write defaults so the human gets an editable starting file. Runtime
@@ -418,10 +422,12 @@ impl Session {
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
-        // `AnchoredTree` is authored in `content/base/ui/<file>.json` and loaded
+        // `AnchoredTree` is authored in `<core root>/ui/<file>.json` and loaded
         // from disk so a layout edit + reload changes it with no Rust change. A
         // missing/malformed asset warns once and skips the registration — that
-        // screen is unavailable, the engine still runs.
+        // screen is unavailable, the engine still runs. `core_root` comes from
+        // `--core-root`, resolved once at boot; absent, it is `core/` under the
+        // working directory, unchanged.
         //
         // The HUD registers under `HUD_NAME` and resolves as the always-on bottom
         // passthrough layer each frame. The pause menu, frontend menu, and
@@ -431,24 +437,28 @@ impl Session {
             let registry = modal_stack.registry_mut();
             postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
+                core_root,
                 postretro_ui::tree_asset::HUD_NAME,
                 "hud.json",
                 true,
             );
             postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
+                core_root,
                 postretro_ui::demo::PAUSE_MENU_NAME,
                 "pauseMenu.json",
                 false,
             );
             postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
+                core_root,
                 postretro_ui::demo::FRONTEND_MENU_NAME,
                 "frontendMenu.json",
                 false,
             );
             postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
+                core_root,
                 postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
                 false,

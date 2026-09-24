@@ -601,6 +601,44 @@ mod tests {
             .collect()
     }
 
+    /// A publication-output path under the system temp directory, unique per
+    /// process and per test thread.
+    ///
+    /// The thread name is sanitized rather than interpolated raw. `cargo test`
+    /// names each thread after the test path it runs (`pack::pack_output::tests::…`),
+    /// and `::` is not legal in a Windows filename — so building a path from the
+    /// raw name failed there with os error 123, for every test that used one.
+    /// Every character that is not portable in a path component is replaced, not
+    /// `::` specifically, so a test added later cannot reintroduce the bug with a
+    /// differently illegal name.
+    ///
+    /// The name is kept rather than swapped for a counter because these land in
+    /// a directory shared with the rest of the system: it is what identifies
+    /// which test left one behind. Pass an empty `extension` for a path the test
+    /// creates as a directory.
+    fn temp_output_path(stem: &str, extension: &str) -> PathBuf {
+        let thread = std::thread::current();
+        let sanitized: String = thread
+            .name()
+            .unwrap_or("test")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+
+        let mut name = format!("postretro-{stem}-{}-{sanitized}", std::process::id());
+        if !extension.is_empty() {
+            name.push('.');
+            name.push_str(extension);
+        }
+        std::env::temp_dir().join(name)
+    }
+
     fn remove_publication_test_artifacts(output: &Path) {
         for path in staging_artifacts(output) {
             std::fs::remove_file(path).expect("publish artifact should be removable");
@@ -617,11 +655,7 @@ mod tests {
         write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
         expected_error: &str,
     ) {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-one-shot-section-{case}-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path(&format!("one-shot-section-{case}"), "prl");
         let previous_bytes = b"previous valid PRL";
         std::fs::write(&output, previous_bytes).expect("should create previous output");
 
@@ -778,11 +812,7 @@ mod tests {
 
     #[test]
     fn streamed_write_matches_legacy_container_bytes_and_file_readback() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack", "prl");
         let legacy_sections = vec![
             postretro_level_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
@@ -820,11 +850,7 @@ mod tests {
 
     #[test]
     fn one_shot_section_writer_streams_chunks_without_a_payload_vec() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-one-shot-section-writer-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("one-shot-section-writer", "prl");
 
         write_and_validate_sections(
             &output,
@@ -899,11 +925,7 @@ mod tests {
 
     #[test]
     fn section_footprint_matches_flushed_container_payload_portion() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-section-footprint-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("section-footprint", "prl");
         let sections = vec![
             PlannedSection::new(SectionId::Geometry as u32, 1, 3, || Ok(vec![1, 2, 3])),
             PlannedSection::new(9_001, 1, 5, || Ok(vec![4, 5, 6, 7, 8])),
@@ -933,11 +955,7 @@ mod tests {
 
     #[test]
     fn streamed_write_rejects_declared_payload_length_mismatch() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-mismatch-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-mismatch", "prl");
         let error = write_and_validate_sections(
             &output,
             vec![PlannedSection::new(
@@ -963,11 +981,7 @@ mod tests {
 
     #[test]
     fn streamed_write_replaces_existing_output_without_staging_artifacts() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-replace-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-replace", "prl");
         std::fs::write(&output, b"previous valid PRL").expect("should create previous output");
 
         write_and_validate_sections(
@@ -1001,11 +1015,7 @@ mod tests {
 
     #[test]
     fn streamed_write_failure_preserves_existing_output_and_cleans_staging() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-preserve-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-preserve", "prl");
         let previous_bytes = b"previous valid PRL";
         std::fs::write(&output, previous_bytes).expect("should create previous output");
 
@@ -1041,11 +1051,7 @@ mod tests {
     // Regression: failed compilation replaced a directory at the requested output path.
     #[test]
     fn streamed_write_rejects_directory_output_before_staging() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-directory-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-directory", "");
         std::fs::create_dir(&output).expect("should create directory output fixture");
 
         let error = write_and_validate_sections(
@@ -1071,11 +1077,7 @@ mod tests {
     // Regression: cleanup must not unlink a replacement installed before its identity check.
     #[test]
     fn failed_staging_cleanup_preserves_replacement_swapped_before_identity_check() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-cleanup-identity-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-cleanup-identity", "prl");
         let file_name = output.file_name().expect("test output has a file name");
         let staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
         let staged_path = staged.path().to_path_buf();
@@ -1103,11 +1105,7 @@ mod tests {
     // Regression: read-back reopened a replaced staging pathname and could publish its valid bytes.
     #[test]
     fn staged_readback_and_publish_remain_bound_to_original_file() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-staged-identity-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-staged-identity", "prl");
         let file_name = output.file_name().expect("test output has a file name");
         let original_output = OutputIdentity::capture(&output).expect("output should be absent");
         let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
@@ -1161,11 +1159,7 @@ mod tests {
     fn streamed_write_rejects_symlink_output_before_staging() {
         use std::os::unix::fs::symlink;
 
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-symlink-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-symlink", "prl");
         let target = output.with_extension("target");
         std::fs::write(&target, b"symlink target").expect("should create symlink target");
         symlink(&target, &output).expect("should create output symlink");
@@ -1200,11 +1194,7 @@ mod tests {
     // Regression: Windows backup publication could strand the original after an output race.
     #[test]
     fn publication_rejects_nonregular_output_replacement_without_moving_original() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-output-race-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-output-race", "prl");
         let original = output.with_extension("original");
         let previous_bytes = b"previous valid PRL";
         std::fs::write(&output, previous_bytes).expect("should create previous output");
@@ -1237,11 +1227,7 @@ mod tests {
     // Regression: publication overwrote an output installed after its precondition check.
     #[test]
     fn publication_rejects_regular_output_replaced_after_precondition() {
-        let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-regular-race-{}-{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let output = temp_output_path("streamed-pack-regular-race", "prl");
         let original = output.with_extension("original");
         std::fs::write(&output, b"original output").expect("should create original output");
         let original_output = OutputIdentity::capture(&output).expect("output should be regular");

@@ -14,21 +14,23 @@ pub const FRONTEND_MENU_NAME: &str = "frontendMenu";
 /// Read a committed UI descriptor JSON anchored to the repo root (NOT runtime
 /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors
 /// the `tree_asset`/keyboard precedent: `CARGO_MANIFEST_DIR` + `../..` reaches the
-/// workspace root, then `content/base/ui/<name>`. Test-only — the engine loads
-/// these via the cwd-relative `tree_asset` path at boot.
+/// workspace root, then the workspace's own `core/`. Test-only — the engine
+/// resolves its root from argv at boot.
 #[cfg(any(test, feature = "test-fixtures"))]
 fn load_ui_fixture(name: &str) -> super::descriptor::AnchoredTree {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("content/base/ui")
-        .join(name);
+    let path = super::core_root::CoreRoot::at(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("core"),
+    )
+    .ui_asset_path(name);
     let bytes = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("fixture '{}' exists: {e}", path.display()));
     serde_json::from_str(&bytes)
         .unwrap_or_else(|e| panic!("fixture '{}' deserializes: {e}", path.display()))
 }
 
-/// The shipped HUD descriptor (`content/base/ui/hud.json`). The HUD is now
+/// The shipped HUD descriptor (`core/ui/hud.json`). The HUD is now
 /// JSON-authored; the demo's behavioral tests (here and `demo_ui_gate_test`) load
 /// it from the source of truth rather than a hand-assembled builder.
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -36,7 +38,7 @@ pub fn build_demo_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("hud.json")
 }
 
-/// The shipped pause-menu descriptor (`content/base/ui/pauseMenu.json`). Only
+/// The shipped pause-menu descriptor (`core/ui/pauseMenu.json`). Only
 /// this crate's own tests consume it (its `test-fixtures` siblings are used
 /// cross-crate; this one is not), so it stays `#[cfg(test)]`-only.
 #[cfg(test)]
@@ -44,7 +46,7 @@ pub(crate) fn build_pause_menu_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("pauseMenu.json")
 }
 
-/// The shipped frontend-menu descriptor (`content/base/ui/frontendMenu.json`).
+/// The shipped frontend-menu descriptor (`core/ui/frontendMenu.json`).
 #[cfg(any(test, feature = "test-fixtures"))]
 pub fn build_frontend_menu_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("frontendMenu.json")

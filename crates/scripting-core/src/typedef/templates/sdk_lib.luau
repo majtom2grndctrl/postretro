@@ -754,7 +754,7 @@ declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionD
 
 --- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
 --- `openTextEntry` opens this tree; the engine loads its descriptor from
---- `content/base/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
+--- `core/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
 declare KEYBOARD_TREE: "keyboard"
 
 --- Reserved button `onPress` action that closes the active modal. The App
@@ -878,7 +878,7 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle)
 --- `network = "ownerPrivate"`; `network = "shared"` is for global slots. A mod-owned
 --- persisted writable or replicated slot requires a minted
 --- `<mod-root>/identity.json` entry; run
---- `cargo run -p xtask -- mint-identity <mod-root>` and keep its durable key
+--- `postretro-tool mint-identity <mod>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
   { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }

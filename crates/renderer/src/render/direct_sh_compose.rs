@@ -794,9 +794,9 @@ mod tests {
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
     #[cfg(feature = "dev-tools")]
-    use postretro_test_log_capture::LogCapture;
-    #[cfg(feature = "dev-tools")]
     use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
+    #[cfg(feature = "dev-tools")]
+    use postretro_test_log_capture::LogCapture;
 
     #[cfg(feature = "dev-tools")]
     fn direct_delta_fixture() -> DirectShDeltaVolumesSection {
@@ -1071,7 +1071,7 @@ mod tests {
             ComposeStorageFootprint {
                 delta_subblocks_bytes: 4,
                 delta_compaction_meta_bytes: 24,
-                affinity_offsets_bytes: 12,
+                affinity_offsets_bytes: 16,
                 affinity_lights_bytes: 4,
                 animation_descriptor_indices_bytes: 0,
             }
@@ -1082,7 +1082,7 @@ mod tests {
 
         capture.assert_logged_once(
             Level::Info,
-            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (24 B), affinity_offsets 0.00 MiB (12 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (44 B)",
+            "DIRECT SH compose id-41 promotion @group(0) storage footprint: delta_subblocks 0.00 MiB (4 B), delta_compaction_meta 0.00 MiB (24 B), affinity_offsets 0.00 MiB (16 B), affinity_lights 0.00 MiB (4 B), animation_descriptor_indices 0.00 MiB (0 B) - total 0.00 MiB (48 B)",
         );
     }
 

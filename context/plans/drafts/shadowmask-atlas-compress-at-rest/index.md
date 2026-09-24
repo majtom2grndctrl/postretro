@@ -13,10 +13,14 @@ A developer-raised anticipated need, not an observed defect. PRL id 42
 (`ShadowmaskAtlasSection`) is the only baked atlas still stored raw: no bake or emit
 stage compresses it, so its `Rgba8Unorm` payload sits uncompressed on disk, in CPU RAM
 for the whole level lifetime, and in VRAM. The masks are independent, spatially smooth
-`[0,1]` visibility scalars — BC4's home case, and BC5 is two BC4 blocks in one. When
-this lands, id 42 is stored and uploaded as BC5 at half the payload bytes, the CPU copy
-is released once uploaded, and every shadow reads as it did. No id-42 byte magnitude is
-recorded anywhere in the repo; the landing note records one, before and after.
+`[0,1]` visibility scalars — BC4's home case, and BC5 is two BC4 blocks in one. Two BC5
+groups spend two array layers per lightmap layer against a 256-layer device budget, and
+the lightmap packer today lets an ordinary mid-size level pass 128 layers: it sizes
+layers to the largest BVH leaf and spills the rest, and authors cannot steer the count.
+When this lands, id 42 is stored and uploaded as BC5 at half the payload bytes, the CPU
+copy is released once uploaded, the packer holds every level within the budget two
+groups need, and every shadow reads as it did on every level. No id-42 byte magnitude
+is recorded anywhere in the repo; the landing note records one, before and after.
 
 ## Decisions
 
@@ -35,10 +39,9 @@ recorded anywhere in the repo; the landing note records one, before and after.
   existing malformed-section path. Fixtures re-bake (`development_guide.md` §1.6). The
   container-entry version for id 42 advances, but the in-payload tag is the reject —
   the loader does not check id 42's entry version.
-- **Encode in the bake, at the fill's finish, not at the pack seam.** The whole-section
-  memo then stores compressed blocks, and the pack seam keeps receiving a finished
-  section whose byte length is arithmetic (`build_pipeline.md` §Build Cache,
-  planned-section footprint rule). The shadowmask stage version advances.
+- **Encode in the bake, before the pack seam.** The whole-section memo then stores
+  compressed blocks, so a warm build neither re-encodes nor caches raw, and the pack seam
+  keeps receiving a finished section. The shadowmask stage version advances.
 - **Byte-identical output; the BC6H lossy exemption is not taken.**
   `static-light-shadowmask-cache-addendum` guarantees cached-warm equals uncached for
   this section, and `bc5.rs` is a pure serial function, so the guarantee survives.
@@ -46,17 +49,30 @@ recorded anywhere in the repo; the landing note records one, before and after.
   today's shape — `(g0.r, g0.g, g1.r, g1.g)` — from two samples, so the per-light
   select and both decode paths (promoted-union subtraction, world specular) keep their
   shape. Both group layers derive from `lightmap_layer` alone, so the samples stay
-  hoisted outside every light loop in uniform control flow. Cost: one extra sample per
-  active decode path per fragment, independent of light count.
-- **Over budget or misaligned degrades to fully lit, never raw.** Two groups need
-  `2 × layer_count` within the pinned array-layer maximum; a BC5 atlas needs 4-aligned
-  dimensions. Either failure resolves to the all-visible placeholder, as
+  hoisted outside every light loop in uniform control flow. Cost: at most one extra
+  sample per active decode path per fragment, independent of light count.
+- **The lightmap packer bounds the layer count at half the device array budget.** When
+  a pack would exceed 128 layers, the packer doubles the shared layer dimension and
+  repacks rather than adding layers, keeping leaf cohesion. Levels already within the
+  budget pack exactly as today. The budget holds whether or not the level selects any
+  shadowmask lights, so the atlas layout never depends on light selection. This also
+  retires today's hard layer-overflow failure short of the 8192² dimension cap. It
+  changes atlas preparation (`build_pipeline.md` §Compiler pipeline, atlas
+  preparation), and downstream memos keyed on the prepared layout miss on repacked
+  levels.
+- **Over budget or misaligned data degrades to fully lit, never raw.** The compiler
+  never emits either; the runtime still guards against corrupt or hand-built data. Two
+  groups need `2 × layer_count` within the pinned array-layer maximum; a BC5 atlas
+  needs 4-aligned dimensions. Either failure resolves to the all-visible placeholder, as
   `rendering_pipeline.md` §4 commits for rejected data. The placeholder clamp covers
   the second group's layer.
-- **Release the CPU payload at level install.** After geometry install uploads the
-  atlas and before the world is stashed, clear the payload bytes and keep the section
-  present with its slot table — spec-light channel mapping keys on presence. No reader
-  follows the upload, and every load or reload re-reads the level from disk.
+- **The upload owns the payload.** Level install moves the payload out of the loaded
+  world into the atlas upload, which drops it once the texture exists. The world keeps
+  the slot table and atlas dimensions — spec-light channel mapping keys on their
+  presence — and has no representation of a header without its payload, so nothing can
+  re-validate or re-upload an emptied section. An install with no renderer moves
+  nothing. It rides with BC5 because both answer the same double residency of one
+  section, and every load or reload re-reads the level from disk.
 - **No new device requirement, binding, or padding.** `TEXTURE_COMPRESSION_BC` is
   already required at device acquisition. Format and layer count change behind the same
   group-4 binding, so the forward texture inventory is unchanged. Lightmap atlas
@@ -65,9 +81,10 @@ recorded anywhere in the repo; the landing note records one, before and after.
   its BC5 output and one layer's encode scratch coexist only inside the finish step; the
   raw buffer drops before the section leaves the stage. Runtime residency falls: VRAM
   halves, CPU goes to zero after upload.
-- **Report peak per-texel overlap under `--verbose`.** Not acted on here. It is the
-  capacity brief's missing premise, and it costs a counter in a loop the bake already
-  runs.
+- **Report peak per-texel overlap under `--verbose`, on every bake.** Not acted on
+  here; it is the capacity brief's missing premise. The count comes from the overlap
+  graph, which only a memo miss builds, so the memo carries it beside the section and a
+  hit reports it too. The shipped section does not carry it — no runtime reader.
 
 ### Non-goals
 
@@ -79,7 +96,9 @@ recorded anywhere in the repo; the landing note records one, before and after.
 - **Streaming the shadowmask.** `sh-probe-streaming` excludes lightmap residency and its
   cluster directory admits no id 42. Bytes per resident texel are orthogonal to which
   texels are resident.
-- **Array consolidation, selection eligibility and ranking.** Unchanged.
+- **Lightmap array consolidation.** `shadowmask-atlas-mask-capacity` owns it; only a
+  second shadowmask binding needs it.
+- **Selection eligibility and ranking.** Unchanged.
 
 ## Acceptance
 
@@ -99,6 +118,18 @@ recorded anywhere in the repo; the landing note records one, before and after.
       section equals the uncached section byte-for-byte. (pin: stale-memo)
 - [ ] A level whose selected lights are all dropped ships the section at half the raw
       bytes, loads it, and renders fully lit. (pin: all-sentinel)
+
+**Layer budget**
+- [ ] A level whose pack fits within 128 layers yields a prepared atlas byte-identical
+      to the pre-change packer's. (pin: budget-permit)
+- [ ] A pack of exactly 128 layers keeps its layer dimension; one that would need 129
+      packs at a larger power-of-two dimension into at most 128 layers, with every
+      leaf's charts on one layer. (pin: budget-boundary)
+- [ ] A level that fails today with a layer-overflow error above 256 layers now packs.
+- [ ] The same geometry packs to the same layout with and without selected shadowmask
+      lights. (pin: layout-selection-independent)
+- [ ] A repacked level's shadowmask loads and resolves its masks rather than falling to
+      the placeholder. (pin: repacked-end-to-end)
 
 **Degradation**
 - [ ] A sentinel slot reads fully lit. A second-group slot against the one-layer
@@ -139,10 +170,15 @@ recorded anywhere in the repo; the landing note records one, before and after.
       encode against the raw masks, recorded in the landing note.
 
 **Lifecycle**
-- [ ] After install, the shadowmask payload holds no allocation — capacity zero, not
-      merely zero length — and the slot table remains.
+- [ ] After install, the loaded world holds the slot table and atlas dimensions and no
+      shadowmask payload; the payload's allocation is freed once the texture exists.
 - [ ] The payload is released only after the atlas upload; an install that uploads
       nothing keeps it. (pin: no-upload-install)
+
+**Overlap report**
+- [ ] A cold bake under `--verbose` reports peak per-texel overlap with layer count and
+      format; a warm memo hit reports the same value; a non-verbose bake gains no line.
+      (pin: overlap-memo-hit)
 
 ### Manual
 
@@ -158,8 +194,8 @@ recorded anywhere in the repo; the landing note records one, before and after.
       specular lights. Pin fixture, machine class, build profile, worker count and
       cache mode per `testing_guide.md` §Resource bounds. May need an attended run on
       this Mac.
-- [ ] `--verbose` reports peak per-texel overlap with layer count and format; a
-      non-verbose bake gains no line.
+- [ ] `campaign-test`'s peak per-texel overlap under `--verbose`, recorded in the
+      landing note for the capacity brief.
 - [ ] After a level reload and a dev level cycle, second-group shadows render on the
       new level. (pin: release-then-reload)
 
@@ -209,9 +245,19 @@ Non-binding.
   pins today's sample count and clamp text; rewrite it to the new shape.
   `forward_pipeline_sampled_texture_request_matches_bgl_definitions` must stay green
   untouched.
-- **CPU release.** `install_level_payload` (`startup/lifecycle.rs`, past 4,000 lines —
-  a few-line insertion, not a new responsibility) installs geometry, then stashes the
-  world into `App.level`; the release goes between.
+- **Packer.** `lightmap_bake::pack_layers` / `choose_layer_dim`, called from
+  `prepare_atlas` on both branches. The overflow check today returns
+  `LayerOverflow` at `MAX_ATLAS_LAYERS`; the budget becomes a parameter so fixtures can
+  pass a small one alongside their small `max_dim`. `research.md` §Lightmap layer budget.
+- **Overlap memo.** The peak count comes from `build_analytic_overlap_graph_in_order`,
+  which only a shadowmask memo miss runs; the memo entry carries it (a sibling entry or
+  an in-entry field is the executor's call) without adding it to the shipped section.
+- **Payload ownership.** `LevelWorld.shadowmask_atlas` (`level-loader/src/prl.rs`,
+  accessor via `LevelWorld::lighting()`) splits into a retained slot table plus dims
+  and a movable payload. `install_level_payload` (`startup/lifecycle.rs`, past 4,000
+  lines — a few-line change) moves the payload into geometry install before stashing
+  the world into `App.level`. `level_world_to_geometry` and `LevelGeometry` carry the
+  owned payload to `upload_shadowmask_texture`.
 - **Proof tooling.** Byte report and frame-time harness: `research.md` §Proof support.
 - **First slice.** Tag + encode + upload + shader on a fixture where four selected lights
   overlap across both groups, checked by capture. It falsifies the wire, codec, upload

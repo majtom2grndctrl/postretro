@@ -57,6 +57,41 @@ one representation. The streamed writer is the drift risk.
 Rejected alternative: encode at emit like id 35. It would either re-encode on every
 warm build or cache raw, and the footprint rule forbids an encode during reporting.
 
+## Lightmap layer budget
+
+Two BC5 groups need `2 × layer_count ≤ 256` (`REQUIRED_MAX_TEXTURE_ARRAY_LAYERS`,
+`renderer_init_resources.rs`). The compiler allows `MAX_ATLAS_LAYERS = 256`
+(`lightmap_bake.rs`), so as first drafted a 129–256-layer level would degrade to fully
+lit — a silent regression on content that works today.
+
+The band is reachable. `pack_layers` sizes one shared square layer dimension via
+`choose_layer_dim` to host the largest single BVH leaf (doubling from
+`MIN_ATLAS_DIMENSION`, capped at `MAX_ATLAS_DIMENSION = 8192`), then packs leaves in
+order and rolls a leaf that does not fit, whole, to a fresh layer. A level of many small
+leaves gets a small dimension and many layers; `shadowmask-atlas-mask-capacity`'s
+research estimates 65 layers at 128² as roughly 1,700 m² of lit surface.
+`_lightmap_density` does not steer it. Overflow past 256 returns
+`LightmapBakeError::LayerOverflow` today.
+
+Fix: when a pack would exceed the budget, double the dimension and repack. Quartering
+layers per doubling, 128 layers at 8192² is far past any real level, so the cap is
+unreachable in practice. Levels within budget are untouched, byte for byte.
+
+Alternatives weighed:
+- Compile-time warning with runtime fallback — leaves the regression in place.
+- Fail the bake — breaks maps that compile today.
+- Build the capacity brief first — it grows groups inside the same budget, so it narrows
+  the band rather than closing it, and it is gated on this brief's overlap report.
+
+Seams: `prepare_atlas` calls `pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density)`
+on both its static-lights and no-static-lights branches; tests pass a small `max_dim`,
+so the budget wants to be a parameter the same way for fixtures. Downstream: the
+`"lightmap_section"` memo keys on the prepared atlas layout (`build_pipeline.md`
+§Build Cache), so a repacked level misses. Confirm the per-light layer, shadowmask and
+animated weight-map keys fold the layout too, or bump their versions. Durable
+revision at promotion: `build_pipeline.md` §Compiler pipeline step 10 (spill "up to a
+fixed layer cap").
+
 ## Versioning
 
 `PlannedSection::new(SectionId::ShadowmaskAtlas, 1, ..)` — id 42's container-entry
@@ -144,6 +179,14 @@ on this data. No BC7-unorm encoder exists in-tree; `bc7-color-textures` owns tha
   changes with the helper.
 
 ## Runtime lifecycle — the double residency
+
+Chosen shape: the upload owns the payload. Install moves it out of the world and the
+upload drops it; the world keeps slot table and dims. A clear-in-place alternative would
+leave a header whose length arithmetic its empty data contradicts, reachable through
+`LevelWorld::lighting()` (`prl_lighting.rs`) — guardable with a filter length check,
+but ownership makes the state unrepresentable instead. `Vec::clear` alone also keeps
+the allocation.
+
 
 - **Load.** `load_prl_from_container` → `LoadedLighting.shadowmask_atlas` →
   `LevelWorld.shadowmask_atlas` (`pub`, `level-loader/src/prl.rs`); accessor
@@ -249,3 +292,8 @@ change is nearly free (`development_guide.md` §1.6).
 | all-sentinel | every selected slot is the sentinel (all selected lights invalid) | section still emitted — `empty_section_for_dimensions` builds it — tagged BC5 over `2 × layer_count` layers | half raw bytes; loads; fully lit |
 | bake-misaligned | bake handed a non-4-aligned atlas (every `SharedAtlas` test fixture in `shadowmask_bake.rs` is 5×5) | alignment checked before encode in every profile; `encode_bc5_rg` only `debug_assert`s and drops remainder blocks in release | error naming the dims; never a truncated payload; existing fixtures move to 4-aligned dims |
 | no-upload-install | install with no renderer | world stashed before any upload | payload retained; release never precedes upload |
+| budget-permit | level packs within 128 layers | packer takes today's path; no repack | prepared atlas byte-identical to the pre-change packer |
+| budget-boundary | pack needs exactly 128 vs 129 layers | overflow check at the budget, then double dimension and repack from scratch | 128 keeps dimension; 129 grows it and lands ≤ 128; leaf cohesion kept |
+| layout-selection-independent | same geometry, with and without selected shadowmask lights | budget is unconditional | identical layout |
+| repacked-end-to-end | level repacked to a larger dimension | shadowmask shares the repacked dims; `2 × layer_count ≤ 256` | loads and resolves masks; never the placeholder |
+| overlap-memo-hit | warm rebuild with no edits | memo carries peak overlap beside the section; hit reports it without building the graph | same value as the cold bake; shipped section unchanged |

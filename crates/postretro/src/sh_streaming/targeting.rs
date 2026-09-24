@@ -481,11 +481,10 @@ impl ShResidencyController {
     ) -> Result<Option<u32>, ShResidencyControllerError> {
         for &owner in &self.topology.owners[cluster_id as usize] {
             match self.states[owner as usize].state {
-                ClusterResidencyState::Absent => {
-                    if let Some(missing) = self.first_missing_owner(owner, visiting)? {
-                        return Ok(Some(missing));
-                    }
-                }
+                // An absent owner either yields the next cluster to request or
+                // is itself blocked behind in-flight work; either way its
+                // dependents wait rather than being requested ahead of it.
+                ClusterResidencyState::Absent => return self.first_missing_owner(owner, visiting),
                 ClusterResidencyState::Sampleable => {}
                 ClusterResidencyState::Failed
                 | ClusterResidencyState::Queued

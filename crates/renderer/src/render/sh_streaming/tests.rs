@@ -512,11 +512,10 @@ fn malformed_target_transition_leaves_the_live_session_unchanged() {
 }
 
 #[test]
-fn over_cap_ready_batch_is_rejected_before_renderer_state_changes() {
-    let mut state = state_with_clusters(3);
-    state.generation = 5;
-    state.generation_has_reset = true;
-    state.targets = BTreeSet::from([0]);
+fn ready_batch_over_the_retired_two_install_cap_passes_the_contract() {
+    // The controller's decoded-byte budget decides how many clusters a drain
+    // carries; small-cluster maps routinely hand over more than two.
+    let state = state_with_clusters(3);
     let batch = ShDrainBatch {
         generation: 5,
         content_tag: state.content_tag,
@@ -529,12 +528,9 @@ fn over_cap_ready_batch_is_rejected_before_renderer_state_changes() {
         ..ShDrainBatch::default()
     };
 
-    let error = state.validate_batch_contract(&batch).unwrap_err();
-    assert!(matches!(error, ShResidencyDrainError::InvalidBatch(_)));
-    assert_eq!(state.generation, 5);
-    assert_eq!(state.targets, BTreeSet::from([0]));
-    assert!(state.installed.is_empty());
-    assert!(state.pending_promotion.is_empty());
+    state
+        .validate_batch_contract(&batch)
+        .expect("ready count is install-budget policy, not a boundary rule");
 }
 
 #[test]

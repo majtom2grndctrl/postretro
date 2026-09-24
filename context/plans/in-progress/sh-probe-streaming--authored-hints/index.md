@@ -117,10 +117,14 @@ remains protected until its timer expires.
 
 Request and ready-install order is `(class rank, descending effective priority,
 cluster ID)`, with class rank Visible, Pinned, SeamWarm, Prefetch, Hysteresis.
-Pressure yields `(Prefetch before SeamWarm, ascending effective priority,
+Pressure selects victims to suppress by `(Prefetch before SeamWarm, ascending effective priority,
 oldest visible time, oldest target time, cluster ID)`; departed eviction after
 hysteresis retains its existing `(oldest visible time, oldest target time,
-cluster ID)` order. Thus all-zero/no-hint inputs retain each old ordering.
+cluster ID)` order. Once victims are selected, the planner may request
+dependent-before-owner evictions in nonnumeric order. The renderer recomputes
+a dependency-safe release sequence and returns confirmed IDs sorted; that
+release order does not change which optional target survives. Thus all-zero/no-hint inputs retain
+each old ordering.
 A newly activated seam clears stale suppression for its warm target and
 required owners even if the ordinary two-hop horizon has not changed.
 Hysteresis and suppression remain time-based. Overshoot
@@ -291,9 +295,11 @@ then SeamWarm may yield under pressure; Hysteresis stays until its timer
 expires and pins/visible never yield. Effective priority is max of own and
 same-class dependent authored priorities only for SeamWarm/Prefetch; it is
 zero for protected classes. Request/ready order is `(class, descending
-priority, cluster ID)`. Pressure victim order is `(Prefetch before SeamWarm,
+priority, cluster ID)`. Pressure victim selection order is `(Prefetch before SeamWarm,
 ascending priority, oldest visible time, oldest target time, cluster ID)`;
-expired departures keep the old time/time/ID comparator. Keep `main.rs`'s
+expired departures keep the old time/time/ID comparator. Drain eviction
+requests may be dependent-first; confirmed renderer outcomes remain sorted.
+Keep `main.rs`'s
 pre-compose drain and renderer data contract unchanged; the planner consumes
 the existing visible-cell signal, while seam endpoints derive from the
 loaded portal table. A seam entering `SeamWarm` clears stale suppression for

@@ -74,7 +74,7 @@ pub(super) fn validate_readback(
             );
             if expected.section_id == SectionId::ClusterDirectory as u32 {
                 ClusterDirectorySection::from_bytes(&actual).map_err(|error| {
-                    anyhow::anyhow!("section 49 failed same-handle semantic read-back: {error}")
+                    anyhow::anyhow!("section 49 failed same-handle structural read-back: {error}")
                 })?;
             }
         }

@@ -28,9 +28,9 @@ impl ShResidencyController {
             self.last_horizon = horizon.clone();
         }
         if horizon_changed
-            || self.prefetch_pressure_has_cleared(&visible, &horizon, monotonic_seconds)?
+            || self.optional_pressure_has_cleared(&visible, &horizon, monotonic_seconds)?
         {
-            self.clear_prefetch_suppression();
+            self.clear_optional_suppression();
         }
         for cluster_id in raw_departures {
             self.states[cluster_id as usize].hysteresis_started_at = Some(monotonic_seconds);
@@ -100,7 +100,7 @@ impl ShResidencyController {
     /// oscillate at the render cadence. It can clear without a horizon change
     /// only when the complete target set that clearing would restore, including
     /// live hysteresis and transitive owners, fits the nominal pool.
-    fn prefetch_pressure_has_cleared(
+    fn optional_pressure_has_cleared(
         &self,
         visible: &BTreeSet<u32>,
         horizon: &BTreeSet<u32>,
@@ -117,7 +117,7 @@ impl ShResidencyController {
             total
                 .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
                 .ok_or(ShResidencyControllerError::AccountingOverflow(
-                    "prefetch pressure target demand",
+                    "optional pressure target demand",
                 ))
         })?;
         Ok(demand <= self.accounting.nominal_cluster_bytes()?)

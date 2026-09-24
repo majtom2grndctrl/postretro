@@ -60,9 +60,13 @@ seam planner warms the exact opposite endpoint.
 
 ## No-hint preservation and controller diagnostics
 
-The fixed no-hint compiler test retained cell membership `[0, 1]`, one cluster
-range `(member_start=0, member_count=2)`, and the pre-slice id-50 BLAKE3 hash
-`817ab1de29cad06ddb23245954f7617fe8f275ae96be4e4237c480800045d960`.
+The fixed no-hint compiler test retained cell membership `[0, 1]` and one
+cluster range `(member_start=0, member_count=2)`. It now hashes id-50 emitted
+from that same production-baked canonical directory:
+`60287285b1ffcbae6c889974bded26085e18df4a220bc3b528651b7b83090d47`.
+The earlier `817ab1de29cad06ddb23245954f7617fe8f275ae96be4e4237c480800045d960`
+hash remains frozen as a separately named synthetic two-cluster sparse-row
+codec golden; it was not the hash of this canonical no-hint partition.
 
 The normalized controller trace intentionally excludes wire version,
 generation, and content tag. It still matches the Slice 3 baseline:

@@ -574,6 +574,35 @@ fn optional_priority_orders_requests_and_pressure_before_seam_work() {
 }
 
 #[test]
+fn pressure_keeps_high_priority_optional_when_its_cluster_id_is_lower() {
+    let mut controller = controller_with_nominal_budget(
+        hinted_topology(
+            vec![0, 1, 2],
+            vec![vec![1, 2], vec![0], vec![0]],
+            vec![vec![], vec![], vec![]],
+            vec![4; 3],
+            Vec::new(),
+            Default::default(),
+            vec![0, 3, 1],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    for cluster_id in 0..3 {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![2]);
+    assert!(controller.targets.contains(&1));
+    assert!(!controller.states[1].suppressed);
+    assert!(!controller.targets.contains(&2));
+    assert!(controller.states[2].suppressed);
+}
+
+#[test]
 fn large_map_allocation_fixture_keeps_limited_visible_request_below_whole_load() {
     let fixture = large_map_allocation_fixture();
     let mut controller = ShResidencyController::for_test_with_budget(
@@ -1466,6 +1495,38 @@ fn pressure_rechecks_a_prefetch_owner_after_its_prefetch_dependent_is_suppressed
     assert!(controller.is_targeted(0));
     assert!(!controller.is_targeted(1));
     assert!(!controller.is_targeted(2));
+    assert_eq!(controller.non_evictable_overshoot_bytes(), 0);
+}
+
+#[test]
+fn pressure_owner_recheck_does_not_log_a_transient_overshoot() {
+    let capture = LogCapture::start();
+    let mut controller = controller_with_nominal_budget(
+        topology(
+            vec![0, 1, 2],
+            vec![vec![1], vec![0, 2], vec![1]],
+            vec![vec![], vec![2], vec![]],
+            vec![8, 8, 8],
+        ),
+        8,
+    );
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), 0.0)
+        .unwrap();
+    for cluster_id in 0..3 {
+        mark_sampleable(&mut controller, cluster_id);
+    }
+
+    let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.evictions, vec![1, 2]);
+    assert_eq!(
+        controller.report_snapshot().non_evictable_overshoot_bytes,
+        0
+    );
+    capture.assert_not_logged(
+        log::Level::Warn,
+        "non-evictable logical demand exceeds the effective floor",
+    );
 }
 
 #[test]

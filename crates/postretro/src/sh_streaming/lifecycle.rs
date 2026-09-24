@@ -241,17 +241,11 @@ impl ShResidencyController {
 
     /// Enforce the CPU-side policy budget without pretending it is a second
     /// GPU allocation. Active pool capacity is renderer-owned; this budget
-    /// only ranks logical working-set demand to decide which cold prefetch may
+    /// only ranks logical working-set demand to decide which cold optional work may
     /// be suppressed before the renderer has to grow a pool.
     fn apply_budget_policy(&mut self) -> Result<(), ShResidencyControllerError> {
         let nominal = self.accounting.nominal_cluster_bytes()?;
-        let protected = self.non_evictable_target_bytes()?;
-        self.set_non_evictable_overshoot(protected.saturating_sub(nominal));
-
         let mut projected = self.projected_logical_demand()?;
-        if projected <= nominal {
-            return Ok(());
-        }
 
         // Only cold optional work is pressure-eligible. A target owner is
         // pinned while any other target still depends on it; owner closure is
@@ -298,6 +292,10 @@ impl ShResidencyController {
             self.targets.remove(&cluster_id);
             projected = projected.saturating_sub(released);
         }
+        // Owner safety can change as optional dependents yield. Report only
+        // the demand still protected after the final target set is selected.
+        let protected = self.non_evictable_target_bytes()?;
+        self.set_non_evictable_overshoot(protected.saturating_sub(nominal));
         Ok(())
     }
 
@@ -369,8 +367,9 @@ impl ShResidencyController {
             })
             .collect();
         // Expired hysteresis departures are released first. Pressure-only
-        // evictions are the remaining prefetch LRU pass, so a capacity event
-        // cannot jump ahead of lighting that has already completed retention.
+        // evictions are the remaining optional work; victim selection already
+        // used the pressure comparator. Release IDs follow the canonical
+        // dependency-safe drain ordering, not that selection sequence.
         let departed: BTreeSet<_> = eligible
             .iter()
             .copied()
@@ -676,9 +675,9 @@ impl ShResidencyController {
         }
     }
 
-    /// Pressure recovery makes prefetch eligible again without changing the
-    /// raw visibility horizon. Task 12 owns when that recovery is safe.
-    pub(crate) fn clear_prefetch_suppression(&mut self) {
+    /// Pressure recovery makes optional work eligible again without changing
+    /// the raw visibility horizon, once its complete target set fits.
+    pub(crate) fn clear_optional_suppression(&mut self) {
         for state in &mut self.states {
             state.suppressed = false;
         }

@@ -3,6 +3,21 @@
 // See: context/lib/rendering_pipeline.md §1
 
 use super::*;
+use postretro_level_loader::{ShDrainBatch, ShDrainOutcome};
+
+/// One frame entry's renderer-owned SH admission outcome and its subsequent
+/// scene result. The outcome remains available when a later surface or scene
+/// failure occurs, so the application can release or retain loader permits
+/// exactly once before it propagates that failure.
+#[derive(Debug)]
+pub struct ShDrainFrameResult<T> {
+    pub outcome: ShDrainOutcome,
+    /// True only after all streamed compose encodes succeeded and their
+    /// command buffer was submitted. The application uses this renderer fact,
+    /// not surface acquisition or later readback success, to gate promotion.
+    pub compose_submitted: bool,
+    pub frame: std::result::Result<T, anyhow::Error>,
+}
 
 // Must match the near/far the caller bakes into `view_proj`
 // (`postretro::camera::{NEAR, FAR}`) — the fog pass reconstructs
@@ -43,103 +58,58 @@ impl Renderer {
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<Option<PresentHandle>> {
-        let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
-            return Ok(None);
-        };
-        let view = handle.surface_view();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame Encoder"),
-            });
+        sh_drain_batch: ShDrainBatch,
+    ) -> std::result::Result<ShDrainFrameResult<Option<PresentHandle>>, ShResidencyDrainError> {
+        // This is the sole loader→renderer admission point for a windowed
+        // frame. It precedes surface acquisition so even a skipped frame
+        // returns the ownership outcome to the session controller.
+        let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        let mut compose_submitted = false;
+        let frame = (|| -> Result<Option<PresentHandle>> {
+            let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
+                return Ok(None);
+            };
+            let view = handle.surface_view();
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frame Encoder"),
+                });
 
-        self.record_scene_passes(
-            &mut encoder,
-            Some(font_system),
-            Some(&view),
-            cam_vis,
-            light_reachable_cell_mask,
-            reachable_cell_aabbs,
-            fog_reachable,
-            camera_cell,
-            view_proj,
-            particle_collections,
-            &[],
-            now_seconds,
-            clear_color,
-            render_world,
-        )?;
-        self.submit_windowed_frame(encoder);
+            compose_submitted = self.record_scene_passes(
+                &mut encoder,
+                Some(font_system),
+                Some(&view),
+                cam_vis,
+                light_reachable_cell_mask,
+                reachable_cell_aabbs,
+                fog_reachable,
+                camera_cell,
+                view_proj,
+                particle_collections,
+                &[],
+                now_seconds,
+                clear_color,
+                render_world,
+            )?;
+            self.submit_windowed_frame(encoder);
 
-        // Caller (`App`) presents after optionally appending the egui overlay
-        // pass via `render_debug_ui`.
-        Ok(Some(handle))
-    }
-
-    /// Render the world scene into the renderer-owned pre-resolve target and
-    /// return tight RGBA8 pixels. The supplied camera updates both culling and
-    /// forward-pass uniforms at the fixed capture time. This path has no UI,
-    /// debug overlay, resolve, swapchain acquisition, or present step.
-    #[allow(clippy::too_many_arguments)]
-    pub fn capture_frame_indirect(
-        &mut self,
-        cam_vis: CameraCullVisibility<'_>,
-        light_reachable_cell_mask: &[bool],
-        reachable_cell_aabbs: &[(Vec3, Vec3)],
-        fog_reachable: &[u32],
-        camera_cell: Option<u32>,
-        view_proj: Mat4,
-        camera_position: Vec3,
-        particle_collections: &[(&str, &[u8])],
-        capture_animated_promotion_weights: &[(usize, f32)],
-        clear_color: ClearColor,
-        render_world: bool,
-    ) -> Result<Vec<u8>> {
-        self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame Capture Encoder"),
-            });
-        self.record_scene_passes(
-            &mut encoder,
-            None,
-            None,
-            cam_vis,
-            light_reachable_cell_mask,
-            reachable_cell_aabbs,
-            fog_reachable,
-            camera_cell,
-            view_proj,
-            particle_collections,
-            capture_animated_promotion_weights,
-            0.0,
-            clear_color,
-            render_world,
-        )?;
-
-        let width = self.surface_config.width;
-        let height = self.surface_config.height;
-        // The PNG path reads tightly packed RGBA8, so resolve HDR scene color to
-        // a capture-only LDR target first. Capture shares the window tonemap but
-        // uses an at-rest effect uniform instead of transient screen effects.
-        let capture_color = self.full().screen_effects.encode_capture_tonemap(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            width,
-            height,
-        );
-        self.read_texture_rgba8(&capture_color, width, height, encoder)
+            // Caller (`App`) presents after optionally appending the egui overlay
+            // pass via `render_debug_ui`.
+            Ok(Some(handle))
+        })();
+        Ok(ShDrainFrameResult {
+            outcome,
+            compose_submitted,
+            frame,
+        })
     }
 
     /// Record the world-scene passes shared by windowed gameplay and offscreen
     /// capture. Window-only UI/debug/resolve work runs only when both windowed
     /// inputs are supplied.
     #[allow(clippy::too_many_arguments)]
-    fn record_scene_passes(
+    pub(super) fn record_scene_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         font_system: Option<&mut postretro_ui::text::FontSystem>,
@@ -155,14 +125,14 @@ impl Renderer {
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // The drawable visible-cell set; candidate-cull eligibility derives
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let frame_light_term_mask = self.frame_light_term_mask();
-        self.record_pre_scene_compute(
+        let mut compose_succeeded = self.record_pre_scene_compute(
             encoder,
             cam_vis,
             view_proj,
@@ -248,83 +218,7 @@ impl Renderer {
             self.full_mut().light_effective_brightness = eff_brightness;
             self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
-            #[cfg(feature = "dev-tools")]
-            let direct_sh_debug_override = self.full().direct_sh_debug_override;
-            #[cfg(not(feature = "dev-tools"))]
-            let direct_sh_debug_override = DirectShDebugOverride::default();
-            #[cfg(feature = "dev-tools")]
-            let animated_direct_sh_debug_override = self.full().animated_direct_sh_debug_override;
-            #[cfg(not(feature = "dev-tools"))]
-            let animated_direct_sh_debug_override = AnimatedDirectShDebugOverride::default();
-            let full = self.full();
-            let direct_sh_active = full
-                .promoted_static_weights
-                .iter()
-                .any(|weight| *weight > 0.0)
-                || full
-                    .promoted_animated_states
-                    .iter()
-                    .any(|state| state.weight > 0.0)
-                || full
-                    .sh_volume_resources
-                    .direct
-                    .has_active_animated_descriptor(&full.sh_volume_resources.animation)
-                || direct_sh_debug_override.active()
-                || animated_direct_sh_debug_override.active();
-            // This intentionally keys on descriptor activity rather than the
-            // curve's current evaluated scale: an active zero-valued curve
-            // still needs composition for a later nonzero sample.
-            let billboard_direct_scatter_active = full
-                .sh_volume_resources
-                .billboard_direct_scatter
-                .has_active_animated_descriptor(&full.sh_volume_resources.animation);
-            let frame_light_term_mask = self.frame_light_term_mask();
-            {
-                let Self { queue, full, .. } = self;
-                let full = full
-                    .as_mut()
-                    .expect("renderer full-init must complete before full-ready paths run");
-                let direct_sh_ts = full
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_DIRECT_SH_COMPOSE));
-                let animated_direct_sh_ts = full
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE));
-                let billboard_direct_scatter_ts = full
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE));
-                full.direct_sh_compose.dispatch_if_needed(
-                    queue,
-                    encoder,
-                    DirectShComposeFrameInputs {
-                        uniform_bind_group: &full.uniform_bind_group,
-                        active: direct_sh_active,
-                        light_term_mask: frame_light_term_mask,
-                        debug_overrides: DirectShComposeDebugOverrides {
-                            promotion: direct_sh_debug_override,
-                            animated: animated_direct_sh_debug_override,
-                        },
-                        animated_promotion_states: &full.promoted_animated_states,
-                        timestamp_writes: DirectShComposeTimestampWrites {
-                            promotion: direct_sh_ts,
-                            animated: animated_direct_sh_ts,
-                        },
-                    },
-                );
-                // Shares the already-flushed descriptor/sample buffers with
-                // animated direct SH. This stays before every billboard draw,
-                // so its initial copy-through is visible on the first frame.
-                full.billboard_direct_scatter_compose.dispatch_if_needed(
-                    encoder,
-                    &full.uniform_bind_group,
-                    billboard_direct_scatter_active,
-                    frame_light_term_mask,
-                    billboard_direct_scatter_ts,
-                );
-            }
+            compose_succeeded &= self.record_direct_sh_pre_scene_compute(encoder);
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------
@@ -477,7 +371,7 @@ impl Renderer {
                 render_pass.set_pipeline(&self.full().pipeline);
                 render_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-                render_pass.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+                render_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
                 render_pass.set_bind_group(4, &self.full().lightmap_resources.bind_group, &[]);
                 render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
@@ -548,7 +442,7 @@ impl Renderer {
                 ..Default::default()
             });
             mover_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            mover_pass.set_bind_group(4, &self.full().sh_volume_resources.mesh_bind_group, &[]);
+            mover_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
             self.full()
                 .kinematic_brush
                 .record_draws(&mut mover_pass, &self.full().gpu_textures);
@@ -616,7 +510,7 @@ impl Renderer {
                 // group: shared SH entries the forward/billboard/fog passes hold PLUS
                 // the dynamic-direct knobs (group 3 = instance data; group 2
                 // unallocated).
-                mesh_enc.set_bind_group(4, &self.full().sh_volume_resources.mesh_bind_group, &[]);
+                mesh_enc.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
                 self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
             }
         }
@@ -655,7 +549,7 @@ impl Renderer {
             });
             smoke_pass_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             smoke_pass_enc.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-            smoke_pass_enc.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+            smoke_pass_enc.set_bind_group(3, self.full().sh_bind_group(), &[]);
             // One shared instance buffer, drawn per collection from its own
             // 256-byte-aligned dynamic offset.
             {
@@ -732,7 +626,7 @@ impl Renderer {
                 });
                 raymarch.set_pipeline(&self.full().fog.raymarch_pipeline);
                 raymarch.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-                raymarch.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+                raymarch.set_bind_group(3, self.full().sh_bind_group(), &[]);
                 raymarch.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
                 raymarch.set_bind_group(6, &self.full().fog.bind_group, &[]);
                 raymarch.dispatch_workgroups(groups_x, groups_y, 1);
@@ -777,7 +671,10 @@ impl Renderer {
         // Offscreen capture stops after fog and bloom. The windowed-only
         // wireframe/debug/viewmodel/UI/resolve tail must not enter capture bytes.
         let Some(view) = swapchain_view else {
-            return Ok(());
+            // Capture still records the streamed SH compose work above; its
+            // separate submission path uses this result to decide whether that
+            // compose may be promoted after the command buffer retires.
+            return Ok(compose_succeeded);
         };
         let font_system =
             font_system.expect("windowed gameplay rendering requires a UI font system");
@@ -853,11 +750,7 @@ impl Renderer {
                     self.full().mesh_pass.viewmodel_uniform_bind_group(),
                     &[],
                 );
-                viewmodel_pass.set_bind_group(
-                    4,
-                    &self.full().sh_volume_resources.mesh_bind_group,
-                    &[],
-                );
+                viewmodel_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
                 self.full_mut()
                     .mesh_pass
                     .record_draws(&mut viewmodel_pass, plan);
@@ -1021,7 +914,7 @@ impl Renderer {
             timing.encode_resolve(encoder);
         }
 
-        Ok(())
+        Ok(compose_succeeded)
     }
 
     /// Submit a windowed frame after its scene, UI, and resolve commands have
@@ -1075,6 +968,60 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_outcome_survives_a_later_frame_failure() {
+        let result: ShDrainFrameResult<()> = ShDrainFrameResult {
+            outcome: ShDrainOutcome {
+                accepted: vec![4],
+                dropped: vec![9],
+                deferred: Vec::new(),
+                evicted: Vec::new(),
+            },
+            compose_submitted: false,
+            frame: Err(anyhow::anyhow!("surface acquisition failed")),
+        };
+
+        assert_eq!(result.outcome.accepted, vec![4]);
+        assert_eq!(result.outcome.dropped, vec![9]);
+        assert!(!result.compose_submitted);
+        assert!(result.frame.is_err());
+    }
+
+    #[test]
+    fn windowed_entry_drains_once_before_surface_or_scene_work() {
+        let source = include_str!("renderer_render_frame.rs");
+        let entry = source
+            .find("pub fn render_frame_indirect(")
+            .expect("windowed renderer entry must remain present");
+        let end = source[entry..]
+            .find("    /// Record the world-scene")
+            .map(|offset| entry + offset)
+            .expect("windowed renderer entry must end before scene helper");
+        let body = &source[entry..end];
+        let drain = body
+            .find("self.drain_sh_residency(sh_drain_batch)")
+            .expect("windowed entry must accept its drain batch");
+        let acquire = body
+            .find("self.acquire_present_handle")
+            .expect("windowed entry must acquire its surface");
+        let scene = body
+            .find("self.record_scene_passes(")
+            .expect("windowed entry must record scene passes");
+
+        assert_eq!(
+            body.matches("self.drain_sh_residency(sh_drain_batch)")
+                .count(),
+            1,
+            "the loader batch has exactly one renderer admission point"
+        );
+        assert!(
+            drain < acquire && acquire < scene,
+            "draining must precede surface acquisition and scene composition"
+        );
+    }
+
     #[test]
     fn billboard_scatter_compose_is_after_shared_descriptor_flush_and_before_sprite_draw() {
         let frame_update = include_str!("renderer_frame.rs");
@@ -1086,19 +1033,31 @@ mod tests {
             "animated direct-SH and direct scatter must share one descriptor flush"
         );
 
-        let render = include_str!("renderer_render_frame.rs");
-        let direct = render
+        let pre_scene = include_str!("renderer_pre_scene.rs");
+        let direct = pre_scene
             .find("full.direct_sh_compose.dispatch_if_needed(")
             .expect("direct-SH compose dispatch must remain present");
-        let scatter = render
+        let scatter = pre_scene
             .find("full.billboard_direct_scatter_compose.dispatch_if_needed(")
             .expect("scatter compose dispatch must be recorded");
+        assert!(
+            direct < scatter,
+            "direct-SH composition must precede billboard scatter composition"
+        );
+
+        let render = include_str!("renderer_render_frame.rs");
+        let slot_assignment = render
+            .find("self.update_dynamic_light_slots_with_capture_overrides(")
+            .expect("dynamic-light slot assignment must remain present");
+        let direct_pre_scene = render
+            .find("self.record_direct_sh_pre_scene_compute(encoder)")
+            .expect("direct/scatter pre-scene helper must be recorded");
         let sprites = render
             .find("label: Some(\"Billboard Sprite Pass\")")
             .expect("billboard draw pass must remain present");
         assert!(
-            direct < scatter && scatter < sprites,
-            "shared descriptors must flush, then direct/scatter composition must finish before the first billboard draw"
+            slot_assignment < direct_pre_scene && direct_pre_scene < sprites,
+            "shared descriptors must flush, then direct/scatter composition must finish after slot assignment and before the first billboard draw"
         );
     }
 }

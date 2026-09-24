@@ -7,11 +7,21 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes,
+    ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE, build_delta_buffers,
 };
+use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
-use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
+use super::sh_allocation::{
+    ShAllocationKind, buffer_allocation, compose_origin_bytes, compose_storage_payloads,
+    probe_indirection_storage_payload,
+};
+#[cfg(test)]
+use super::sh_compose_dispatch::should_dispatch as indirect_compose_should_dispatch;
+use super::sh_compose_dispatch::{
+    DynamicComposeDispatch, build_dynamic_compose_grid_upload, should_dispatch,
+};
+use super::sh_indirection::WGSL_DECODE_HELPER;
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -23,7 +33,7 @@ use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 //     18     GridDims uniform             (atlas/grid/tile/affinity mapping)
 //     19     GridOrigin uniform           (grid_origin + cell_size)
 //     20     delta_subblocks  (storage)   f16 payload, raw `u16` halves; shader `unpack2x16float`s
-//     21     affinity_offsets (storage)   `u32` CSR offsets (affinity_cell_count + 1)
+//     21     affinity_offsets (storage)   `(start, end)` u32 pair per affinity row
 //     22     animation descriptors        (storage, shared with the SH bind group)
 //     23     animation samples            (storage, shared with the SH bind group)
 //     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
@@ -50,9 +60,9 @@ const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
 pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    /// Affinity-cell dimensions. One 8×8 workgroup reconstructs and writes the
-    /// 4×4×4 probe tiles belonging to one brick.
-    dispatch_dimensions: [u32; 3],
+    /// Adapter-bounded rows of the flattened affinity grid. Each selects a
+    /// matching dynamically-offset 80-byte grid record at binding 18.
+    dispatches: Vec<DynamicComposeDispatch>,
     /// Per-delta-light map to the shared animated-light descriptor slot.
     /// This is the same list bound at binding 25.
     animation_descriptor_indices: Vec<u32>,
@@ -69,12 +79,19 @@ impl ShComposeResources {
     /// Build the compose pipeline and bind group. When `delta` is `None` or
     /// empty, all CSR offset ranges are empty (`start == end`), so the result is
     /// a pure base→total copy.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is an explicit GPU-pipeline input; grouping would obscure ownership"
+    )]
     pub fn new(
         device: &wgpu::Device,
         sh: &ShVolumeResources,
         sh_section: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
         delta: Option<&DeltaShVolumesSection>,
+        sh_section_present: bool,
+        delta_section_present: bool,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         // Build the sparse CSR metadata. Probes stay in the format-owned f16
         // payload until this renderer stages its verbatim bytes for upload.
@@ -84,59 +101,137 @@ impl ShComposeResources {
 
         // wgpu rejects zero-sized storage buffers; pad each to a minimum size so
         // the bind group is always valid. The shader's per-cell loop runs zero
-        // times when `affinity_offsets[cell] == affinity_offsets[cell + 1]`, so
+        // times when a row's `start == end`, so
         // the padded `delta_subblocks`/`affinity_lights` contents are never read.
         //
-        // `affinity_offsets` is the exception: the shader reads both
-        // `affinity_offsets[cell]` and `affinity_offsets[cell + 1]` before
-        // entering the loop, so the empty case must pad to two `u32`s (8 bytes).
-        // Both are zero, so `start == end` and the loop skips — but `[0]` and
-        // `[1]` are genuinely in bounds rather than relying on OOB clamping.
-        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
-        let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
-        let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
-        let descriptor_index_bytes =
-            pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
-        let compaction_meta_bytes =
-            pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
+        // `affinity_offsets` is the exception: the shader reads a `(start, end)`
+        // pair before entering the loop, so the empty case must pad to two `u32`s
+        // (8 bytes). Both are zero and genuinely in bounds rather than relying
+        // on OOB clamping.
+        let storage = compose_storage_payloads(
+            ShAllocationKind::IndirectComposeDeltaSubblocks,
+            ShAllocationKind::IndirectComposeCompactionMetadata,
+            ShAllocationKind::IndirectComposeAffinityOffsets,
+            ShAllocationKind::IndirectComposeAffinityLights,
+            Some(ShAllocationKind::IndirectComposeDescriptorIndices),
+            delta_subblocks,
+            &buffers.compaction_meta_words(),
+            &buffers.affinity_offsets,
+            &buffers.affinity_lights,
+            Some(&buffers.animation_descriptor_indices),
+        );
         // ShVolumeResources derives this once from id-34 metadata. The direct
         // compose carriers and B/A moment payload use the exact same words.
-        let probe_indirection_bytes = probe_indirection_storage_bytes(&sh.probe_indirection_words);
+        let probe_indirection = probe_indirection_storage_payload(
+            ShAllocationKind::IndirectComposeProbeIndirection,
+            &sh.probe_indirection_words,
+        );
+        let delta_sources = source_ids([delta_section_present.then_some(27)]);
+        let compose_sources = source_ids([
+            sh_section_present.then_some(34),
+            delta_section_present.then_some(27),
+        ]);
+        let delta_state = match (delta_section_present, delta.is_some()) {
+            (true, true) => ShResidencyAllocationState::Data,
+            (true, false) => ShResidencyAllocationState::Fallback,
+            (false, _) => ShResidencyAllocationState::Dummy,
+        };
+        let sh_state = match (sh_section_present, sh.present) {
+            (true, true) => ShResidencyAllocationState::Data,
+            (true, false) => ShResidencyAllocationState::Fallback,
+            (false, _) => ShResidencyAllocationState::Dummy,
+        };
+        let compose_state = if sh.present {
+            ShResidencyAllocationState::Data
+        } else if sh_section_present || delta_section_present {
+            ShResidencyAllocationState::Fallback
+        } else {
+            ShResidencyAllocationState::Dummy
+        };
+        ledger.record_buffer(
+            storage.delta_subblocks.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage.compaction_metadata.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage.affinity_offsets.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage.affinity_lights.allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            storage
+                .descriptor_indices
+                .as_ref()
+                .expect("indirect compose always describes descriptor indices")
+                .allocation,
+            &delta_sources,
+            !delta_section_present,
+            delta_state,
+        );
+        ledger.record_buffer(
+            probe_indirection.allocation,
+            &source_ids([sh_section_present.then_some(34)]),
+            !sh_section_present,
+            sh_state,
+        );
 
         use wgpu::util::DeviceExt;
         let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Delta Subblocks (f16)"),
-            contents: &subblock_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &storage.delta_subblocks.contents,
+            usage: storage.delta_subblocks.allocation.usage,
         });
         let affinity_offsets_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Affinity Offsets"),
-                contents: &offsets_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &storage.affinity_offsets.contents,
+                usage: storage.affinity_offsets.allocation.usage,
             });
         let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Affinity Lights"),
-            contents: &lights_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &storage.affinity_lights.contents,
+            usage: storage.affinity_lights.allocation.usage,
         });
         let animation_descriptor_indices_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Animation Descriptor Indices"),
-                contents: &descriptor_index_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &storage
+                    .descriptor_indices
+                    .as_ref()
+                    .expect("indirect compose always describes descriptor indices")
+                    .contents,
+                usage: storage
+                    .descriptor_indices
+                    .as_ref()
+                    .expect("indirect compose always describes descriptor indices")
+                    .allocation
+                    .usage,
             });
         let probe_indirection_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Probe Indirection"),
-                contents: &probe_indirection_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &probe_indirection.contents,
+                usage: probe_indirection.allocation.usage,
             });
         let delta_compaction_meta_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Delta Compaction Meta"),
-                contents: &compaction_meta_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
+                contents: &storage.compaction_metadata.contents,
+                usage: storage.compaction_metadata.allocation.usage,
             });
 
         // Report per-binding byte sizes only in development builds. The CSR
@@ -144,35 +239,59 @@ impl ShComposeResources {
         // regardless of animated-light count.
         #[cfg(feature = "dev-tools")]
         let footprint = ComposeStorageFootprint {
-            delta_subblocks_bytes: subblock_bytes.len(),
-            delta_compaction_meta_bytes: compaction_meta_bytes.len(),
-            affinity_offsets_bytes: offsets_bytes.len(),
-            affinity_lights_bytes: lights_bytes.len(),
-            animation_descriptor_indices_bytes: descriptor_index_bytes.len(),
+            delta_subblocks_bytes: storage.delta_subblocks.allocation.byte_len,
+            delta_compaction_meta_bytes: storage.compaction_metadata.allocation.byte_len,
+            affinity_offsets_bytes: storage.affinity_offsets.allocation.byte_len,
+            affinity_lights_bytes: storage.affinity_lights.allocation.byte_len,
+            animation_descriptor_indices_bytes: storage
+                .descriptor_indices
+                .as_ref()
+                .expect("indirect compose always describes descriptor indices")
+                .allocation
+                .byte_len,
         };
         #[cfg(feature = "dev-tools")]
         footprint.log("SH compose @group(1)");
 
-        let grid_bytes = build_compose_grid_bytes(ComposeGridParams {
-            grid_dimensions: sh.grid_dimensions,
-            atlas_dimensions: sh.atlas_dimensions,
-            tile_dimension: sh.tile_dimension,
-            tile_border: sh.tile_border,
-            atlas_tiles_per_row: sh.atlas_tiles_per_row,
-            tiles_per_layer: sh.tiles_per_layer,
-            atlas_layer_count: sh.atlas_layer_count,
-            affinity_dims: buffers.affinity_dims,
-            compact_atlas_tiles_per_row: sh_section
-                .map(|section| section.atlas_tiles_per_row)
-                .unwrap_or(1),
-            compact_atlas_tiles_per_layer: sh_section
-                .map(|section| section.tiles_per_layer)
-                .unwrap_or(1),
-        });
+        let device_limits = device.limits();
+        let grid_upload = build_dynamic_compose_grid_upload(
+            ComposeGridParams {
+                grid_dimensions: sh.grid_dimensions,
+                atlas_dimensions: sh.atlas_dimensions,
+                tile_dimension: sh.tile_dimension,
+                tile_border: sh.tile_border,
+                atlas_tiles_per_row: sh.atlas_tiles_per_row,
+                tiles_per_layer: sh.tiles_per_layer,
+                atlas_layer_count: sh.atlas_layer_count,
+                affinity_dims: buffers.affinity_dims,
+                compact_atlas_tiles_per_row: sh_section
+                    .map(|section| section.atlas_tiles_per_row)
+                    .unwrap_or(1),
+                compact_atlas_tiles_per_layer: sh_section
+                    .map(|section| section.tiles_per_layer)
+                    .unwrap_or(1),
+            },
+            LEGACY_SH_PHYSICAL_TILE_STRIDE,
+            device_limits.max_compute_workgroups_per_dimension,
+            device_limits.min_uniform_buffer_offset_alignment,
+            device_limits.max_buffer_size,
+        )
+        .expect("validated SH affinity dimensions must fit adapter-bounded compose ranges");
+        let grid_allocation = buffer_allocation(
+            ShAllocationKind::IndirectComposeGrid,
+            &grid_upload.bytes,
+            wgpu::BufferUsages::UNIFORM,
+        );
+        ledger.record_buffer(
+            grid_allocation,
+            &compose_sources,
+            compose_sources.is_empty(),
+            compose_state,
+        );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
-            contents: &grid_bytes[..],
-            usage: wgpu::BufferUsages::UNIFORM,
+            contents: &grid_upload.bytes,
+            usage: grid_allocation.usage,
         });
 
         // Grid origin uniform: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
@@ -183,17 +302,22 @@ impl ShComposeResources {
             Some(s) => (s.grid_origin, s.cell_size),
             None => ([0.0; 3], [1.0; 3]),
         };
-        let mut origin_bytes = [0u8; 32];
-        origin_bytes[0..4].copy_from_slice(&grid_origin[0].to_ne_bytes());
-        origin_bytes[4..8].copy_from_slice(&grid_origin[1].to_ne_bytes());
-        origin_bytes[8..12].copy_from_slice(&grid_origin[2].to_ne_bytes());
-        origin_bytes[16..20].copy_from_slice(&cell_size[0].to_ne_bytes());
-        origin_bytes[20..24].copy_from_slice(&cell_size[1].to_ne_bytes());
-        origin_bytes[24..28].copy_from_slice(&cell_size[2].to_ne_bytes());
+        let origin_bytes = compose_origin_bytes(grid_origin, cell_size);
+        let origin_allocation = buffer_allocation(
+            ShAllocationKind::IndirectComposeOrigin,
+            &origin_bytes,
+            wgpu::BufferUsages::UNIFORM,
+        );
+        ledger.record_buffer(
+            origin_allocation,
+            &compose_sources,
+            compose_sources.is_empty(),
+            compose_state,
+        );
         let origin_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Origin"),
             contents: &origin_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: origin_allocation.usage,
         });
 
         // Build the bind group layout + pipeline.
@@ -260,7 +384,11 @@ impl ShComposeResources {
             },
             wgpu::BindGroupEntry {
                 binding: 18,
-                resource: grid_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &grid_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
+                }),
             },
             wgpu::BindGroupEntry {
                 binding: 19,
@@ -314,12 +442,11 @@ impl ShComposeResources {
             light_count,
         );
 
-        let dispatch_dimensions = buffers.affinity_dims;
         let animation_descriptor_indices = buffers.animation_descriptor_indices;
         Self {
             pipeline,
             bind_group,
-            dispatch_dimensions,
+            dispatches: grid_upload.dispatches,
             animation_descriptor_indices,
             pending_copy_through: true,
             was_active: false,
@@ -345,7 +472,7 @@ impl ShComposeResources {
         frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        if !indirect_compose_should_dispatch(
+        if !should_dispatch(
             active,
             self.pending_copy_through,
             self.was_active,
@@ -362,27 +489,16 @@ impl ShComposeResources {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, uniform_bind_group, &[]);
-            pass.set_bind_group(1, &self.bind_group, &[]);
-            let wg_x = self.dispatch_dimensions[0].max(1);
-            let wg_y = self.dispatch_dimensions[1].max(1);
-            let wg_z = self.dispatch_dimensions[2].max(1);
-            pass.dispatch_workgroups(wg_x, wg_y, wg_z);
+            for dispatch in &self.dispatches {
+                pass.set_bind_group(1, &self.bind_group, &[dispatch.dynamic_offset]);
+                pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
+            }
         }
 
         self.pending_copy_through = false;
         self.was_active = active;
         self.last_composed_mask = frame_light_term_mask;
     }
-}
-
-fn indirect_compose_should_dispatch(
-    active: bool,
-    pending_copy_through: bool,
-    was_active: bool,
-    frame_light_term_mask: LightTermMask,
-    last_composed_mask: LightTermMask,
-) -> bool {
-    active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
 }
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -420,8 +536,8 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
+                has_dynamic_offset: true,
+                min_binding_size: wgpu::BufferSize::new(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
             },
             count: None,
         },
@@ -542,6 +658,7 @@ mod tests {
     };
     use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
     use postretro_render_cpu::frame_uniforms::LightTermMask;
+    use postretro_render_cpu::sh_compose::DYNAMIC_COMPOSE_GRID_DIMS_SIZE;
 
     #[test]
     fn sh_compose_shader_parses_and_exports_compose_main() {
@@ -574,7 +691,7 @@ mod tests {
         let source = include_str!("../shaders/sh_compose.wgsl");
 
         assert!(
-            source.contains("@builtin(workgroup_id) brick"),
+            source.contains("@builtin(workgroup_id) workgroup"),
             "one workgroup must own one affinity brick rather than an atlas texel block"
         );
         assert!(
@@ -628,10 +745,10 @@ mod tests {
         );
         assert_eq!(
             source
-                .matches("if (output_is_stored && use_indirect_animated)")
+                .matches("if (output_is_stored && use_indirect_animated && local_probe_is_kept(cell_index, local_probe))")
                 .count(),
             1,
-            "dense L0 delta accumulation must be gated per valid output; coarsened L1/L2 uses the uniform gate asserted below so every workgroup invocation reaches its barriers",
+            "dense L0 delta accumulation must require the animated term and a kept sparse probe; coarsened L1/L2 uses the uniform gate asserted below so every workgroup invocation reaches its barriers",
         );
         let coarsened_delta_path = source
             .split("    } else {\n        // Coarsened L1/L2 cells")
@@ -721,6 +838,25 @@ mod tests {
             sampler.ty,
             wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
         ));
+
+        let grid = entries
+            .iter()
+            .find(|entry| entry.binding == 18)
+            .expect("compose layout should retain GridDims at binding 18");
+        let wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset,
+            min_binding_size,
+        } = &grid.ty
+        else {
+            panic!("GridDims must remain a uniform buffer");
+        };
+        assert_eq!(*ty, wgpu::BufferBindingType::Uniform);
+        assert!(*has_dynamic_offset);
+        assert_eq!(
+            min_binding_size.map(std::num::NonZeroU64::get),
+            Some(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
+        );
     }
 
     #[test]

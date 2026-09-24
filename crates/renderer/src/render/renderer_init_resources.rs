@@ -333,8 +333,7 @@ pub(crate) fn build_lighting_bind_group(
         .map(|g| g.entity_shadow_lights.len())
         .unwrap_or_default();
     let animated_baked_capacity = geometry
-        .and_then(|g| g.animated_direct_sh_delta_volumes)
-        .map(|section| section.animation_descriptor_indices.len())
+        .map(|g| g.animated_baked_roster().0.len())
         .unwrap_or_default();
     let dynamic_light_capacity = level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
     let light_record_capacity =

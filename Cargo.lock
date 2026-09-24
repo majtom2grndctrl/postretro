@@ -3814,11 +3814,13 @@ dependencies = [
 name = "postretro-level-loader"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "glam",
  "log",
  "postretro-level-format",
  "postretro-render-data",
  "postretro-test-log-capture",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

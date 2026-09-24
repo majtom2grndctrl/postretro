@@ -12,6 +12,43 @@ pub struct ClearColor {
     pub a: f64,
 }
 
+/// Adapter identity retained as plain data for capture measurement reports.
+///
+/// The renderer obtains this while it still owns the `wgpu::Adapter`; callers
+/// never receive a GPU handle or descriptor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureAdapterIdentity {
+    pub name: String,
+    pub backend: String,
+    pub device_type: String,
+}
+
+/// Why capture can or cannot collect timestamp-query windows.
+///
+/// `Active` only means the renderer has a readable timing seam. A report still
+/// waits for a full 120-frame window before calling timing `available`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureGpuTimingState {
+    NotRequested,
+    Unsupported,
+    PlainBuildUnavailable,
+    Active,
+}
+
+/// One renderer-owned pass value from a completed GPU timing window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureGpuTimingPass {
+    pub label: &'static str,
+    pub average_ms: f32,
+    pub skipped_frames: u32,
+}
+
+/// A completed 120-frame GPU timing window made safe for non-renderer code.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureGpuTimingWindow {
+    pub passes: Vec<CaptureGpuTimingPass>,
+}
+
 impl From<ClearColor> for wgpu::Color {
     fn from(color: ClearColor) -> Self {
         Self {
@@ -368,6 +405,14 @@ impl Default for SpatialDiagnostics {
 /// and the visual point of diminishing returns for grazing-angle sharpness.
 pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
 
+/// SH ownership reaching the renderer installation boundary. Streaming keeps
+/// only loader metadata and a retained positional manifest; renderer pool
+/// installation arrives later through bounded drain batches.
+pub enum LevelGeometryShStorage<'a> {
+    Legacy,
+    Streaming(&'a postretro_level_loader::ShStreamManifest),
+}
+
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
     pub indices: &'a [u32],
@@ -377,6 +422,7 @@ pub struct LevelGeometry<'a> {
     /// `None` means no `OctahedralShVolumeSection`; renderer binds dummy
     /// 1×1 atlas resources and shader skips octahedral SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+    pub sh_storage: LevelGeometryShStorage<'a>,
     /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
     /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
@@ -443,6 +489,42 @@ pub struct LevelGeometry<'a> {
     /// static world BVH/indirect buffers.
     pub kinematic_geometry: Option<&'a postretro_level_loader::KinematicGeometry>,
     pub texture_materials: &'a [postretro_render_data::material::Material],
+}
+
+impl LevelGeometry<'_> {
+    /// Section 45's roster is global metadata even when its tile payload is
+    /// streamed. The light bridge and renderer must reserve the same raw tail.
+    pub(crate) fn animated_baked_roster(&self) -> (&[u32], &[u32]) {
+        match &self.sh_storage {
+            LevelGeometryShStorage::Legacy => {
+                animated_baked_roster_from_sources(self.animated_direct_sh_delta_volumes, None)
+            }
+            LevelGeometryShStorage::Streaming(manifest) => animated_baked_roster_from_sources(
+                None,
+                manifest.sources().animated_direct_delta.as_ref(),
+            ),
+        }
+    }
+}
+
+fn animated_baked_roster_from_sources<'a>(
+    legacy: Option<
+        &'a postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
+    >,
+    streamed: Option<&'a postretro_level_loader::ShStreamSparseMetadata>,
+) -> (&'a [u32], &'a [u32]) {
+    if let Some(metadata) = streamed {
+        return (
+            &metadata.animation_descriptor_indices,
+            &metadata.affinity_lights,
+        );
+    }
+    legacy.map_or((&[], &[]), |section| {
+        (
+            &section.animation_descriptor_indices,
+            &section.affinity_lights,
+        )
+    })
 }
 
 /// First-guess promoted-slot budgets (cache VRAM ≈ 32 MiB spot + 12 MiB cube),
@@ -564,6 +646,13 @@ pub struct Renderer {
     /// can rebuild the full renderer (cube shadow pool + shared group-5 BGL) from
     /// boot state alone. `Some` cube pool iff this is true (see `FullRenderer`).
     pub(super) cube_array_supported: bool,
+
+    /// Plain capture-report identity retained at adapter selection time.
+    pub(super) capture_adapter_identity: CaptureAdapterIdentity,
+    /// Timestamp-query setup state for a capture report. This distinguishes an
+    /// inactive request from an adapter or plain-build limitation before any
+    /// window-progress analysis.
+    pub(super) capture_gpu_timing_state: CaptureGpuTimingState,
 
     /// Static bloom style cached in boot state so `finish_full_init` rebuilds
     /// the full renderer with the last committed profile after surface recovery.
@@ -705,6 +794,12 @@ pub(super) struct FullRenderer {
     /// Absent/disabled OctahedralShVolume → dummy 1×1 atlas resources;
     /// `has_sh_volume == 0` skips indirect sampling.
     pub(super) sh_volume_resources: ShVolumeResources,
+    /// Finished, plain-Rust accounting for the most recently installed level.
+    /// It is absent until `install_level_geometry` crosses the level boundary.
+    pub(super) sh_residency_report: Option<ShResidencyReport>,
+    /// Streaming-only residency ownership. The legacy whole-level path keeps
+    /// this absent and continues using its existing resources unchanged.
+    pub(super) sh_streaming: Option<sh_streaming::ShResidencyState>,
 
     /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
     /// bind-group layout is consumed only by the SDF shadow pass — NOT
@@ -1122,7 +1217,49 @@ pub(super) struct FullRenderer {
     pub(super) active_fog_aabbs: Vec<(Vec3, Vec3)>,
 }
 
+impl FullRenderer {
+    /// Stream mode swaps only the level-owned group-3 resources. Pipeline
+    /// layouts remain structurally identical, including billboard scatter's
+    /// whole-resident binding, so every consumer selects through this one seam.
+    pub(super) fn sh_bind_group(&self) -> &wgpu::BindGroup {
+        self.sh_streaming
+            .as_ref()
+            .and_then(sh_streaming::ShResidencyState::bind_group)
+            .unwrap_or(&self.sh_volume_resources.bind_group)
+    }
+
+    pub(super) fn sh_mesh_bind_group(&self) -> &wgpu::BindGroup {
+        self.sh_streaming
+            .as_ref()
+            .and_then(sh_streaming::ShResidencyState::mesh_bind_group)
+            .unwrap_or(&self.sh_volume_resources.mesh_bind_group)
+    }
+
+    pub(super) fn sh_depth_moment_view(&self) -> wgpu::TextureView {
+        self.sh_streaming
+            .as_ref()
+            .and_then(sh_streaming::ShResidencyState::depth_moment_view)
+            .unwrap_or_else(|| self.sh_volume_resources.make_depth_moment_view())
+    }
+}
+
 impl Renderer {
+    /// The renderer-accounted SH residency report for the installed level.
+    ///
+    /// Static allocation rows are copied from install time, while a streaming
+    /// level overlays its current pool snapshot so capture observes growth and
+    /// retirement after warmup rather than stale install-time capacity.
+    pub fn sh_residency_report(&self) -> Option<ShResidencyReport> {
+        let full = self.full.as_ref()?;
+        let report = full.sh_residency_report.as_ref()?.clone();
+        match full.sh_streaming.as_ref() {
+            Some(streaming) => {
+                Some(report.with_streaming_summary(streaming.streaming_allocation_summary()))
+            }
+            None => Some(report),
+        }
+    }
+
     /// Borrow the full-phase state. Panics if called before `finish_full_init`
     /// — every caller is on a full-ready-gated path (Frontend/Loading/Running/
     /// UI/scene), so reaching here boot-only is a logic error, not a runtime case.
@@ -1147,6 +1284,34 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: streaming omits the whole id-45 section, but its retained
+    // roster must still size the forward tail and match the script bridge.
+    #[test]
+    fn streamed_animated_baked_roster_survives_without_legacy_section() {
+        let metadata = postretro_level_loader::ShStreamSparseMetadata {
+            section_id: 45,
+            internal_version: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: Vec::new(),
+            affinity_lights: vec![0, 2],
+            animation_descriptor_indices: vec![7, 3, 7],
+        };
+        let (descriptors, affinity_lights) =
+            animated_baked_roster_from_sources(None, Some(&metadata));
+
+        assert_eq!(descriptors, &[7, 3, 7]);
+        assert_eq!(affinity_lights, &[0, 2]);
+        assert_eq!(
+            scripted_light_capacity(2, 2, descriptors),
+            5 + RUNTIME_DYNAMIC_LIGHT_RESERVE,
+            "the raw three-row animated tail must reserve forward descriptor and sample slots"
+        );
+    }
 
     #[test]
     fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {

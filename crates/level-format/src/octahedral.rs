@@ -7,6 +7,9 @@
 pub const DEFAULT_IRRADIANCE_TILE_DIMENSION: u32 = 6;
 pub const DEFAULT_IRRADIANCE_TILE_BORDER: u32 = 1;
 pub const MAX_SH_ATLAS_LAYERS: u32 = 256;
+/// Format-owned per-layer SH atlas cap. The compiler and runtime consume the
+/// same cap so isolated streaming cells and legacy stored atlases cannot drift.
+pub const MAX_SH_ATLAS_DIMENSION: u32 = 8192;
 
 /// Tile resolution the current runtime (sampler shaders + delta/compose passes)
 /// is pinned to. This is a *capability* limit, not a format constraint: the

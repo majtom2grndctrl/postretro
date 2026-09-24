@@ -7,6 +7,7 @@ description = "CPU-only runtime PRL loader and level data for Postretro"
 license.workspace = true
 
 [dependencies]
+blake3.workspace = true
 glam.workspace = true
 log.workspace = true
 postretro-level-format = { workspace = true, optional = true }
@@ -15,6 +16,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
+tempfile.workspace = true
 
 [features]
 default = ["load-prl"]

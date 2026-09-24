@@ -302,6 +302,43 @@ impl DirectShVolumeSection {
     }
 }
 
+/// Validate an id-35 header projection without retaining its atlas body.
+/// This is the metadata-only counterpart of `from_bytes` used by streaming
+/// startup.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the public entry point mirrors the independently parsed id-35 header fields used by streaming startup"
+)]
+pub fn validate_metadata_projection(
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+    tile_border: u32,
+    atlas_dimensions: [u32; 2],
+    layer_count: u32,
+    tiles_per_layer: u32,
+    atlas_tiles_per_row: u32,
+    irradiance_format: u32,
+    atlas_len: u32,
+) -> crate::Result<()> {
+    validate_irradiance_format(irradiance_format)?;
+    validate_tile_geometry(tile_dimension, tile_border)?;
+    validate_grid_and_stored_atlas(
+        grid_dimensions,
+        tile_dimension,
+        atlas_dimensions,
+        layer_count,
+        tiles_per_layer,
+        atlas_tiles_per_row,
+    )?;
+    let expected_len = expected_irradiance_len(irradiance_format, atlas_dimensions, layer_count)?;
+    if usize::try_from(atlas_len).expect("u32 always fits usize") != expected_len {
+        return Err(invalid_data(format!(
+            "direct sh volume irradiance_len {atlas_len}, expected {expected_len} for irradiance_format {irradiance_format}, atlas_dimensions {atlas_dimensions:?}, layer_count {layer_count}"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_tile_geometry(tile_dimension: u32, tile_border: u32) -> crate::Result<()> {
     // The header stores N so a re-bake can change tile resolution without a
     // format break; reject only what *this runtime* cannot sample yet. Mirrors

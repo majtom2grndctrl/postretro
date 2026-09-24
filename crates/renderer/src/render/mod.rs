@@ -11,6 +11,7 @@ mod debug_lines;
 #[cfg(feature = "dev-tools")]
 mod debug_ui;
 mod direct_sh_compose;
+mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
 mod fog_pass;
@@ -24,10 +25,15 @@ mod rigid_occluder_depth;
 mod screen_effects;
 mod sdf_atlas;
 mod sdf_shadow;
+mod sh_allocation;
+mod sh_atlas;
 mod sh_compose;
+mod sh_compose_dispatch;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
 mod sh_indirection;
+mod sh_residency;
+mod sh_streaming;
 mod sh_volume;
 mod shadowmask;
 mod smoke;
@@ -42,6 +48,7 @@ mod sdf_light_select_test;
 // --- Extracted submodules (module root is slim; impls split by concern) ---
 mod material_plan;
 mod pipeline_layout;
+mod renderer_capture;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
 mod renderer_dynamic_shadow_passes;
@@ -55,6 +62,7 @@ mod renderer_light_slots;
 mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_models;
+mod renderer_pre_scene;
 mod renderer_render_frame;
 mod renderer_resources;
 mod renderer_shadow_passes;
@@ -107,11 +115,18 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+pub use renderer_render_frame::ShDrainFrameResult;
 pub use renderer_splash::PresentationDrawInput;
 use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
+pub use sh_residency::{
+    ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
+    ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
+    ShStreamingLifecycleSummary,
+};
+pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
@@ -149,10 +164,12 @@ pub(crate) use renderer_lighting::*;
 pub use renderer_types::AgentOverlayState;
 pub use renderer_types::{
     BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
-    CameraCullDiagnostics, CameraCullPath, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
-    DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry, LocatorDiagnostics,
-    PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer,
-    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
+    CameraCullDiagnostics, CameraCullPath, CaptureAdapterIdentity, CaptureGpuTimingPass,
+    CaptureGpuTimingState, CaptureGpuTimingWindow, CellOverlayState, ClearColor,
+    DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry,
+    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentHandle,
+    RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SpatialCellSetDiagnostics, SpatialDiagnostics,
+    WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;

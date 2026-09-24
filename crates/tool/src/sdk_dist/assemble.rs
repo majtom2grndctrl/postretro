@@ -259,15 +259,20 @@ fn copy_bundle_tree_inner(
 
 /// Return whether a tree entry must not enter the SDK bundle.
 ///
-/// Always drops build caches, `maps/autosave/`, any `.git*` entry, and
-/// `.DS_Store`. When `skip_stale_outputs` is set, also drops committed generated
-/// `.prl`/`.js` (fresh ones are produced during the run).
+/// Always drops build caches, `maps/autosave/`, any `.git*` entry, `.DS_Store`,
+/// and compiler scratch a killed bake left behind. When `skip_stale_outputs` is
+/// set, also drops committed generated `.prl`/`.js` (fresh ones are produced
+/// during the run).
 fn should_skip_bundle_entry(
     name: &str,
     parent_name: Option<&str>,
     skip_stale_outputs: bool,
 ) -> bool {
-    if name == ".build-caches" || name == ".DS_Store" || name.starts_with(".git") {
+    if name == ".build-caches"
+        || name == ".DS_Store"
+        || name.starts_with(".git")
+        || crate::dist::payload::is_build_scratch(name)
+    {
         return true;
     }
     if name == "autosave" && parent_name == Some("maps") {
@@ -361,25 +366,34 @@ pub(super) fn sweep_sdk_bundle(
         }
     }
 
-    // The bundle is a superset, so its sweep forbids almost nothing — but a
-    // publication lock is build scaffolding rather than content, and refusing it
-    // here is what keeps a later change from quietly shipping them again.
-    refuse_pack_locks(bundle_root)
+    // The bundle is a superset, so its sweep forbids almost nothing — but
+    // publication locks and compiler scratch are build scaffolding rather than
+    // content, and refusing them here is what keeps a later change from quietly
+    // shipping them again.
+    refuse_build_scaffolding(bundle_root)
 }
 
-fn refuse_pack_locks(directory: &Path) -> Result<(), String> {
+fn refuse_build_scaffolding(directory: &Path) -> Result<(), String> {
     for entry in fs::read_dir(directory)
         .map_err(|error| format!("sdk-dist sweep: read {}: {error}", directory.display()))?
     {
         let entry = entry.map_err(|error| format!("sdk-dist sweep: read entry: {error}"))?;
         let path = entry.path();
         if path.is_dir() {
-            refuse_pack_locks(&path)?;
+            refuse_build_scaffolding(&path)?;
             continue;
         }
-        if crate::dist::payload::is_pack_lock(entry.file_name().to_str().unwrap_or_default()) {
+        let name = entry.file_name();
+        let name = name.to_str().unwrap_or_default();
+        if crate::dist::payload::is_pack_lock(name) {
             return Err(format!(
                 "sdk-dist sweep: publication lock left in the bundle: {}",
+                path.display()
+            ));
+        }
+        if crate::dist::payload::is_build_scratch(name) {
+            return Err(format!(
+                "sdk-dist sweep: compiler scratch file left in the bundle: {}",
                 path.display()
             ));
         }
@@ -577,6 +591,44 @@ mod tests {
         assert!(error.contains("campaign-test.prl.pack.lock"), "{error}");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sweep_refuses_a_bundle_that_still_carries_build_scratch() {
+        let root = unique_temp_dir();
+        let mod_root = Path::new(PAYLOAD_MOD_ROOT);
+        let levels = [resolved("maps/campaign-test.prl")];
+        assemble_swept_bundle(&root, mod_root, &levels);
+        fs::write(
+            root.join(mod_root)
+                .join("maps")
+                .join(".campaign-test.prl.pack-a1B2c3.tmp"),
+            "scratch",
+        )
+        .unwrap();
+        let error = sweep_sdk_bundle(&root, mod_root, EntryExt::Js, &levels)
+            .expect_err("scratch in the bundle is refused");
+        assert!(error.contains("compiler scratch"), "{error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The bundle copy keeps sources, but compiler scratch a killed bake left in
+    /// the author's tree is not a source, in either copy mode.
+    #[test]
+    fn skip_predicate_drops_build_scratch_in_both_modes() {
+        for skip_stale in [false, true] {
+            for name in [
+                ".campaign-test.prl.pack-a1B2c3.tmp",
+                ".campaign-test.prl.cluster-sh-XyZ09.spool",
+                "wall_n.prm.tmp.4812",
+            ] {
+                assert!(
+                    should_skip_bundle_entry(name, Some("maps"), skip_stale),
+                    "{name} (skip_stale={skip_stale})"
+                );
+            }
+        }
     }
 
     /// `core/ui` holds the pause menu, frontend menu and keyboard. A bundle

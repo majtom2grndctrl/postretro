@@ -240,6 +240,7 @@ pub(super) fn should_exclude(path: &Path, mod_root: &Path, emitted: EntryExt) ->
             file_name(path),
             Some(".gitignore" | ".gitkeep" | ".DS_Store")
         )
+        || is_build_scratch(file_name(path).unwrap_or_default())
         || matches!(
             extension(path),
             Some("map" | "ts" | "md" | "prl" | "js" | "bsp")
@@ -480,6 +481,7 @@ fn is_sweep_forbidden(path: &Path) -> bool {
     has_component_pair(path, "maps", "autosave")
         || matches!(file_name(path), Some(".DS_Store"))
         || is_pack_lock(file_name(path).unwrap_or_default())
+        || is_build_scratch(file_name(path).unwrap_or_default())
         || matches!(extension(path), Some("map" | "ts" | "md" | "bsp"))
 }
 
@@ -491,6 +493,24 @@ fn is_sweep_forbidden(path: &Path) -> bool {
 /// ones. See [`remove_pack_locks`] for why a distribution carries none.
 pub(crate) fn is_pack_lock(name: &str) -> bool {
     name.starts_with('.') && name.ends_with(".prl.pack.lock")
+}
+
+/// Whether `name` is scratch a compiler writes beside its output and then
+/// renames into place or deletes: `prl-build`'s `.<name>.prl.pack-*.tmp` and
+/// `.<name>.prl.cluster-sh-*.spool`, and the texture baker's
+/// `<name>.tmp.<pid>`. Only a killed bake leaves one behind, and the author's
+/// tree is where it lands — so a copy would otherwise ship it.
+///
+/// Matched by these exact shapes, like [`is_pack_lock`], rather than by a bare
+/// `tmp` extension that a mod could legitimately use.
+pub(crate) fn is_build_scratch(name: &str) -> bool {
+    let prl_scratch = name.starts_with('.')
+        && ((name.contains(".prl.pack-") && name.ends_with(".tmp"))
+            || (name.contains(".prl.cluster-sh-") && name.ends_with(".spool")));
+    let texture_scratch = name.rsplit_once(".tmp.").is_some_and(|(stem, pid)| {
+        !stem.is_empty() && !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    prl_scratch || texture_scratch
 }
 
 /// Delete every publication lock the level bakes left inside a distribution.
@@ -591,9 +611,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        EntryExt, MARKER_NAME, Resolved, copy_prm_tree, is_pack_lock, remove_pack_locks,
-        rename_aside_with, replace_existing_payload_with, should_exclude, sweep_payload,
-        write_marker,
+        EntryExt, MARKER_NAME, Resolved, copy_prm_tree, is_build_scratch, is_pack_lock,
+        remove_pack_locks, rename_aside_with, replace_existing_payload_with, should_exclude,
+        sweep_payload, write_marker,
     };
 
     /// The published mod root these sweep tests build under. A distribution now
@@ -682,6 +702,62 @@ mod tests {
         let error = sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved)
             .expect_err("a lock in the payload is a forbidden artifact");
         assert!(error.contains(".demo.prl.pack.lock"), "{error}");
+        remove_temp_dir(&root);
+    }
+
+    #[test]
+    fn build_scratch_is_recognized_by_its_exact_shapes() {
+        for name in [
+            ".demo.prl.pack-a1B2c3.tmp",
+            ".demo.prl.cluster-sh-XyZ09.spool",
+            "wall_n.prm.tmp.4812",
+        ] {
+            assert!(is_build_scratch(name), "{name}");
+        }
+        for name in [
+            "notes.tmp",
+            "demo.prl.pack-a1.tmp",
+            ".demo.prl",
+            "archive.spool",
+            "wall.prm.tmp.",
+            ".tmp.123",
+            "wall.prm.tmp.12a",
+        ] {
+            assert!(!is_build_scratch(name), "{name}");
+        }
+    }
+
+    /// A killed bake leaves its scratch in the author's tree, which the copy
+    /// would otherwise carry into the payload.
+    #[test]
+    fn should_exclude_rejects_scratch_a_killed_bake_left_behind() {
+        let root = mod_root();
+        for name in [
+            ".demo.prl.pack-a1B2c3.tmp",
+            ".demo.prl.cluster-sh-XyZ09.spool",
+        ] {
+            let path = root.join("maps").join(name);
+            assert!(should_exclude(&path, &root, EntryExt::Js), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn the_sweep_refuses_a_payload_that_still_carries_build_scratch() {
+        let root = unique_temp_dir();
+        let resolved = swept_payload(&root);
+        fs::write(
+            root.join(PAYLOAD_MOD_ROOT)
+                .join("maps")
+                .join(".demo.prl.cluster-sh-XyZ09.spool"),
+            "scratch",
+        )
+        .unwrap();
+        let error = sweep_payload(&root, Path::new(PAYLOAD_MOD_ROOT), EntryExt::Js, &resolved)
+            .expect_err("scratch in the payload is a forbidden artifact");
+        assert!(
+            error.contains(".demo.prl.cluster-sh-XyZ09.spool"),
+            "{error}"
+        );
         remove_temp_dir(&root);
     }
 

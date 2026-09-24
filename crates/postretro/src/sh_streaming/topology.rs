@@ -5,10 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain, DENSE_OWNER_SENTINEL,
+    CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
+    DENSE_OWNER_SENTINEL,
 };
 use postretro_level_format::cluster_sh_payloads::ClusterShPayloadsSection;
-use postretro_level_loader::{ShStreamBaseMetadata, ShStreamManifest};
+use postretro_level_loader::{ShStreamBaseMetadata, ShStreamManifest, ShStreamSeamPortal};
 
 use super::controller::ShResidencyControllerError;
 
@@ -16,12 +17,28 @@ use super::controller::ShResidencyControllerError;
 pub(super) struct PlannerTopology {
     pub(super) cell_to_cluster: Vec<u32>,
     pub(super) adjacency: Vec<Vec<u32>>,
+    /// Authored seam portal endpoints resolved by the validated loader. This
+    /// supplements normal adjacency for warm-up only; it is never fed back to
+    /// the visibility traversal.
+    pub(super) seam_portals: Vec<SeamPortalEndpoint>,
+    /// Canonical cluster IDs with a non-optional resident policy record.
+    pub(super) pinned_clusters: BTreeSet<u32>,
+    /// Canonical authored priority for each cluster. Zero is intentionally a
+    /// no-op so old maps retain the exact old ordering.
+    pub(super) authored_priorities: Vec<u32>,
     /// Every dependency which must be sampleable before this cluster's halo
     /// can become sampleable. Dense node/probe writers and sparse row owners
     /// are both represented here.
     pub(super) owners: Vec<Vec<u32>>,
     pub(super) requested_resident_bytes: Vec<u64>,
     pub(super) chunk_hashes: Vec<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SeamPortalEndpoint {
+    pub(super) portal_id: u32,
+    pub(super) front_cluster_id: u32,
+    pub(super) back_cluster_id: u32,
 }
 
 impl PlannerTopology {
@@ -37,6 +54,7 @@ impl PlannerTopology {
             payloads: manifest.payloads(),
             base: manifest.base(),
             adjacency: manifest.cluster_adjacency(),
+            seam_portals: manifest.seam_portals(),
         })
     }
 
@@ -56,6 +74,41 @@ impl PlannerTopology {
         if manifest.adjacency.len() != cluster_count {
             return Err(ShResidencyControllerError::InvalidTopology(
                 "validated cluster adjacency disagrees with cluster count".into(),
+            ));
+        }
+
+        let mut pinned_clusters = BTreeSet::new();
+        let mut authored_priorities = vec![0; cluster_count];
+        for hint in &directory.cluster_hints {
+            let cluster_id = usize::try_from(hint.cluster_id).map_err(|_| {
+                ShResidencyControllerError::InvalidTopology("cluster hint id exceeds usize".into())
+            })?;
+            if cluster_id >= cluster_count {
+                return Err(ShResidencyControllerError::InvalidTopology(
+                    "cluster hint names an out-of-range cluster".into(),
+                ));
+            }
+            if hint.flags & !CLUSTER_HINT_FLAG_PINNED != 0 || hint.priority > 3 {
+                return Err(ShResidencyControllerError::InvalidTopology(
+                    "cluster hint has invalid flags or priority".into(),
+                ));
+            }
+            if hint.flags & CLUSTER_HINT_FLAG_PINNED != 0 {
+                pinned_clusters.insert(hint.cluster_id);
+            }
+            authored_priorities[cluster_id] = hint.priority;
+        }
+
+        let mut seam_portals = Vec::with_capacity(manifest.seam_portals.len());
+        for seam in manifest.seam_portals {
+            seam_portals.push(seam_portal_endpoint(*seam, cluster_count)?);
+        }
+        if seam_portals
+            .windows(2)
+            .any(|pair| pair[0].portal_id >= pair[1].portal_id)
+        {
+            return Err(ShResidencyControllerError::InvalidTopology(
+                "seam portal IDs are not canonical".into(),
             ));
         }
 
@@ -272,6 +325,9 @@ impl PlannerTopology {
         Ok(Self {
             cell_to_cluster,
             adjacency,
+            seam_portals,
+            pinned_clusters,
+            authored_priorities,
             owners: owners
                 .into_iter()
                 .map(|owners| owners.into_iter().collect())
@@ -288,6 +344,29 @@ pub(super) struct ManifestTopologyView<'a> {
     pub(super) payloads: &'a ClusterShPayloadsSection,
     pub(super) base: &'a ShStreamBaseMetadata,
     pub(super) adjacency: &'a [Vec<u32>],
+    pub(super) seam_portals: &'a [ShStreamSeamPortal],
+}
+
+fn seam_portal_endpoint(
+    seam: ShStreamSeamPortal,
+    cluster_count: usize,
+) -> Result<SeamPortalEndpoint, ShResidencyControllerError> {
+    let front = usize::try_from(seam.front_cluster_id).map_err(|_| {
+        ShResidencyControllerError::InvalidTopology("seam front cluster exceeds usize".into())
+    })?;
+    let back = usize::try_from(seam.back_cluster_id).map_err(|_| {
+        ShResidencyControllerError::InvalidTopology("seam back cluster exceeds usize".into())
+    })?;
+    if front >= cluster_count || back >= cluster_count || front == back {
+        return Err(ShResidencyControllerError::InvalidTopology(
+            "seam portal names invalid cluster endpoints".into(),
+        ));
+    }
+    Ok(SeamPortalEndpoint {
+        portal_id: seam.portal_id,
+        front_cluster_id: seam.front_cluster_id,
+        back_cluster_id: seam.back_cluster_id,
+    })
 }
 
 fn validate_owner_graph(owners: &[BTreeSet<u32>]) -> Result<(), ShResidencyControllerError> {

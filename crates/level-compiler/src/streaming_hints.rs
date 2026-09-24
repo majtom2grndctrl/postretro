@@ -357,7 +357,7 @@ fn hint_location(region: &MapStreamingHintRegion) -> String {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -533,6 +533,7 @@ mod tests {
         let output_dir = tempfile::tempdir().expect("temporary PRL output directory");
         let first = output_dir.path().join("hinted-door-a.prl");
         let second = output_dir.path().join("hinted-door-b.prl");
+        let committed_fixture = committed_hinted_doorway_fixture();
 
         compile_hinted_doorway(&first);
         let first_directory = directory_from_prl(&first);
@@ -540,15 +541,38 @@ mod tests {
             !first_directory.seam_portal_ids.is_empty(),
             "the authored doorway seam must resolve to at least one portal ID",
         );
+        let pinned_hint = first_directory
+            .cluster_hints
+            .iter()
+            .find(|hint| hint.flags & CLUSTER_HINT_FLAG_PINNED != 0 && hint.priority == 0)
+            .expect("the near-side resident region must emit its own pinned cluster hint");
         assert!(
             first_directory
                 .cluster_hints
                 .iter()
-                .any(|hint| { hint.flags & CLUSTER_HINT_FLAG_PINNED != 0 && hint.priority == 3 }),
-            "the far-room resident and priority regions must merge into a cluster hint",
+                .any(|hint| hint.flags == 0 && hint.priority == 3),
+            "the far-side priority region must emit a separate unpinned cluster hint",
         );
-        postretro_level_loader::load_prl(first.to_str().expect("temporary path is UTF-8"))
-            .expect("loader must validate the compiler-produced v2 directory and id-50 payload");
+        let loaded =
+            postretro_level_loader::load_prl(first.to_str().expect("temporary path is UTF-8"))
+                .expect(
+                    "loader must validate the compiler-produced v2 directory and id-50 payload",
+                );
+        let manifest = loaded
+            .sh_stream_manifest()
+            .expect("compiler-produced v2 directory must produce a streaming manifest");
+        let doorway_seam = manifest
+            .seam_portals()
+            .iter()
+            .find(|seam| seam.front_cluster_id == pinned_hint.cluster_id)
+            .expect("the pinned near cluster must have an authored doorway seam");
+        assert!(
+            !first_directory.cluster_hints.iter().any(|hint| {
+                hint.cluster_id == doorway_seam.back_cluster_id
+                    && hint.flags & CLUSTER_HINT_FLAG_PINNED != 0
+            }),
+            "the doorway's exact far endpoint must remain unpinned",
+        );
 
         compile_hinted_doorway(&second);
         for section_id in [SectionId::ClusterDirectory, SectionId::ClusterShPayloads] {
@@ -557,15 +581,16 @@ mod tests {
                 section_from_prl(&second, section_id),
                 "two --no-cache bakes must preserve exact {section_id:?} bytes",
             );
+            assert_eq!(
+                section_from_prl(&first, section_id),
+                section_from_prl(&committed_fixture, section_id),
+                "the committed fixture must remain synchronized with exact {section_id:?} bytes",
+            );
         }
     }
 
     fn compile_hinted_doorway(output: &Path) {
-        let map = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("workspace root")
-            .join("content/dev/maps/sh-streaming-hinted-door.map");
+        let map = workspace_root().join("content/dev/maps/sh-streaming-hinted-door.map");
         let args = crate::parse_args_from(
             [
                 map.to_str().expect("fixture path is UTF-8").to_owned(),
@@ -590,6 +615,18 @@ mod tests {
             Arc::new(crate::governor::Governor::new(1, false)),
         )
         .expect("hinted doorway fixture must compile");
+    }
+
+    fn committed_hinted_doorway_fixture() -> PathBuf {
+        workspace_root().join("content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl")
+    }
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .to_path_buf()
     }
 
     fn directory_from_prl(path: &Path) -> ClusterDirectorySection {

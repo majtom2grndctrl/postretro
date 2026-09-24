@@ -352,3 +352,17 @@ fn floor_rejects_overflowing_fixed_physical_bytes() {
         Err(ShResidencyDrainError::SlotOverflow)
     );
 }
+
+#[test]
+fn impossible_streamed_pool_growth_is_a_named_gpu_capacity_error() {
+    let limits = wgpu::Limits {
+        max_texture_dimension_2d: 0,
+        ..wgpu::Limits::default()
+    };
+    assert_eq!(
+        atlas_capacity_slots(1, &limits),
+        Err(ShResidencyDrainError::GpuCapacity {
+            reason: "adapter cannot allocate an 8x8 streamed SH cell",
+        })
+    );
+}

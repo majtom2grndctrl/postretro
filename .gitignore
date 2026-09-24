@@ -23,6 +23,7 @@ target
 *.prl.pack.lock
 *.prl.pack-*.tmp
 !crates/level-compiler/tests/fixtures/golden/test_animated_weight_maps_mixed.pre-script-light-membership.prl
+!content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl
 # Autosave maps (local, not version controlled)
 **/maps/autosave/
 autosave/

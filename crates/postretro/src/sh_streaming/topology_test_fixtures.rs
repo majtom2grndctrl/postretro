@@ -13,7 +13,7 @@ use postretro_level_format::cluster_sh_payloads::{
 use postretro_level_format::sh_volume::{
     OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe, SH_VOLUME_VERSION,
 };
-use postretro_level_loader::ShStreamBaseMetadata;
+use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSeamPortal};
 
 use super::controller::ShResidencyControllerError;
 use super::topology::{ManifestTopologyView, PlannerTopology};
@@ -23,6 +23,7 @@ pub(super) struct ManifestFixture {
     payloads: ClusterShPayloadsSection,
     base: ShStreamBaseMetadata,
     adjacency: Vec<Vec<u32>>,
+    seam_portals: Vec<ShStreamSeamPortal>,
 }
 
 impl ManifestFixture {
@@ -82,6 +83,7 @@ impl ManifestFixture {
                 slot_for_map_light: Vec::new(),
             },
             adjacency: vec![vec![1], vec![0]],
+            seam_portals: Vec::new(),
         }
     }
 
@@ -151,6 +153,7 @@ impl ManifestFixture {
             payloads: &self.payloads,
             base: &self.base,
             adjacency: &self.adjacency,
+            seam_portals: &self.seam_portals,
         })
     }
 }

@@ -80,8 +80,45 @@ pub(crate) enum ShResidencyControllerError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TargetClass {
     Visible,
+    Pinned,
+    SeamWarm,
     Prefetch,
     Hysteresis,
+}
+
+impl TargetClass {
+    const fn is_pressure_eligible(self) -> bool {
+        matches!(self, Self::SeamWarm | Self::Prefetch)
+    }
+}
+
+/// The class/priority pair propagated through owner closure. Priority only
+/// belongs to cold optional work; protected classes intentionally carry zero
+/// so authored policy cannot reorder visible, pinned, or retained work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TargetDirective {
+    class: TargetClass,
+    effective_priority: u32,
+}
+
+impl TargetDirective {
+    const fn new(class: TargetClass, authored_priority: u32) -> Self {
+        Self {
+            class,
+            effective_priority: if class.is_pressure_eligible() {
+                authored_priority
+            } else {
+                0
+            },
+        }
+    }
+
+    fn supersedes(self, current: Self) -> bool {
+        self.class < current.class
+            || (self.class == current.class
+                && self.class.is_pressure_eligible()
+                && self.effective_priority > current.effective_priority)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,6 +178,7 @@ struct ClusterState {
     last_target_time: Option<f64>,
     hysteresis_started_at: Option<f64>,
     class: Option<TargetClass>,
+    effective_priority: u32,
     suppressed: bool,
     failure: Option<FailureState>,
 }
@@ -153,6 +191,7 @@ impl Default for ClusterState {
             last_target_time: None,
             hysteresis_started_at: None,
             class: None,
+            effective_priority: 0,
             suppressed: false,
             failure: None,
         }
@@ -176,6 +215,7 @@ pub(crate) struct ShResidencyController {
     states: Vec<ClusterState>,
     targets: BTreeSet<u32>,
     last_horizon: BTreeSet<u32>,
+    last_seam_warm: BTreeSet<u32>,
     horizon_revision: u64,
     last_time: Option<f64>,
     needs_target_reset: bool,
@@ -238,6 +278,7 @@ impl ShResidencyController {
             states: vec![ClusterState::default(); cluster_count],
             targets: BTreeSet::new(),
             last_horizon: BTreeSet::new(),
+            last_seam_warm: BTreeSet::new(),
             horizon_revision: 0,
             last_time: None,
             needs_target_reset: true,

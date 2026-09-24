@@ -5,6 +5,7 @@ use super::*;
 impl ShResidencyState {
     pub(super) fn install_patches(
         &mut self,
+        journal: &mut InstallJournal,
         cluster_id: u32,
         chunk: &DecodedClusterShPayload,
     ) -> Result<Vec<InstalledProbe>, ShResidencyDrainError> {
@@ -98,13 +99,7 @@ impl ShResidencyState {
                 .checked_add(local_slot)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
             let rewritten = rewrite_slot(word, slot)?;
-            let destination = self.compose_words.get_mut(dense as usize).ok_or(
-                ShResidencyDrainError::MissingDenseOwner {
-                    cluster_id,
-                    dense_index: dense,
-                },
-            )?;
-            *destination = rewritten;
+            self.journal_compose_word(journal, cluster_id, dense, rewritten)?;
             patched.push(InstalledProbe {
                 dense,
                 mean_distance,

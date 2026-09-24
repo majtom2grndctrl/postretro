@@ -42,40 +42,63 @@ impl ShResidencyState {
             }
         }
         outcome.evicted.sort_unstable();
-        for prepared in batch.ready {
-            let cluster_id = prepared.chunk.cluster_id;
-            if prepared.generation != self.generation
-                || prepared.content_tag != self.content_tag
-                || !self.targets.contains(&cluster_id)
-                || self.installed.contains_key(&cluster_id)
-            {
-                outcome.dropped.push(cluster_id);
-                continue;
-            }
-            if self.missing_owner(cluster_id) {
-                outcome.deferred.push(prepared);
-                continue;
-            }
-            match self.install(
-                device,
-                queue,
-                sh,
-                uniform_bind_group_layout,
-                selection_weights,
-                &prepared,
-            ) {
-                Ok(()) => outcome.accepted.push(cluster_id),
-                // A growth transaction may be blocked behind its one retiring
-                // generation. Keep the ready payload/permit in the outcome
-                // rather than treating capacity pressure as a malformed
-                // completion or silently losing visible lighting.
-                Err(error) if error.is_retryable_retirement_pressure() => {
-                    outcome.deferred.push(prepared);
-                }
-                Err(error) => return Err(error),
-            }
-        }
+        let mut gpu = InstallGpu {
+            device,
+            queue,
+            sh,
+            uniform_bind_group_layout,
+            selection_weights,
+        };
+        self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;
         Ok(outcome)
+    }
+
+    /// Install every admissible ready cluster, timing the whole per-drain
+    /// install pass (including queue writes) into the renderer counters. A
+    /// drain with no ready clusters records nothing, so the last-drain figure
+    /// always describes real install work.
+    pub(super) fn install_ready(
+        &mut self,
+        mut gpu: Option<&mut InstallGpu<'_>>,
+        ready: Vec<PreparedShCluster>,
+        outcome: &mut ShDrainOutcome,
+    ) -> Result<(), ShResidencyDrainError> {
+        if ready.is_empty() {
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        let result = (|| {
+            for prepared in ready {
+                let cluster_id = prepared.chunk.cluster_id;
+                if prepared.generation != self.generation
+                    || prepared.content_tag != self.content_tag
+                    || !self.targets.contains(&cluster_id)
+                    || self.installed.contains_key(&cluster_id)
+                {
+                    outcome.dropped.push(cluster_id);
+                    continue;
+                }
+                if self.missing_owner(cluster_id) {
+                    outcome.deferred.push(prepared);
+                    continue;
+                }
+                match self.install(gpu.as_deref_mut(), &prepared) {
+                    Ok(()) => outcome.accepted.push(cluster_id),
+                    // A growth transaction may be blocked behind its one
+                    // retiring generation. Keep the ready payload/permit in
+                    // the outcome rather than treating capacity pressure as a
+                    // malformed completion or silently losing visible
+                    // lighting.
+                    Err(error) if error.is_retryable_retirement_pressure() => {
+                        outcome.deferred.push(prepared);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        })();
+        self.install_cpu.record_drain(started.elapsed());
+        result
     }
 
     pub(super) fn validate_batch_contract(

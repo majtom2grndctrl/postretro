@@ -147,6 +147,14 @@ all-miss sample reaches the ambient floor. Baked owners remain installed for dep
 halo clusters, so a physical light accumulates once and an owner cannot be evicted out from
 under a resident boundary.
 
+An install journals every residency change and undoes it newest-first on failure, so its
+cost scales with the cluster being installed rather than the map. Streaming diagnostics
+are always-on counters covering reads, coalescing, discarded and cancelled work, read
+latency, decoded bytes, install CPU time, pool growth, misses, and evictions. They appear
+as a throttled `[SH streaming]` info log line (only when something changed), the
+dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. They guide
+tuning and gate nothing.
+
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
 Encoded, decoding, and ready host payloads are separate checked phase ledgers. Growth

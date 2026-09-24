@@ -1191,6 +1191,36 @@ fn owner_walk_revisiting_a_blocked_owner_is_not_a_cycle() {
         .expect("an acyclic owner graph never reports a cycle");
 }
 
+// Regression: an absent owner blocked behind a queued grand-owner let the walk
+// fall through and request the dependent ahead of its owner.
+#[test]
+fn owner_blocked_behind_in_flight_work_defers_its_dependents() {
+    let mut controller = controller(topology(
+        vec![0, 1, 2, 3],
+        vec![vec![], vec![], vec![], vec![]],
+        vec![vec![1, 2], vec![3], vec![1], vec![]],
+        vec![1; 4],
+    ));
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .unwrap();
+    assert_eq!(
+        controller
+            .take_next_request()
+            .unwrap()
+            .map(|r| r.cluster_id),
+        Some(3)
+    );
+    assert_eq!(
+        controller
+            .take_next_request()
+            .unwrap()
+            .map(|r| r.cluster_id),
+        None,
+        "clusters 0, 1, and 2 all wait on queued owner 3"
+    );
+}
+
 #[test]
 fn visible_dependency_owner_beats_a_hysteresis_ready_backlog() {
     let mut controller = controller(topology(

@@ -251,6 +251,26 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
   code that predates this work (`direct_sh_compose.rs` uses `ComposeStorageFootprint`/`footprint()`).
   The T1 debug-UI acceptance needs that file fixed first.
 
+## Resolutions from T3 (landed `2b46583e8`) and later fixes
+
+- `sh_async_workers` is a directory: pure `schedule.rs` planner, `issuer.rs`,
+  `decode_pool.rs`, `stats.rs`, `target_bitset.rs`. Diagnostics assembly and the log
+  throttle are in `session/sh_streaming_diagnostics.rs`.
+- Controller owner-walk fixes: a diamond in the owner graph no longer reads as a cycle
+  (`2b46583e8`). A dependent is no longer requested while its owner is blocked behind
+  in-flight work (`fe6176c97`).
+
+## Resolutions from T4 (landed `c36cbe9ba`)
+
+- Real-content install cost was dominated by per-call wgpu queue writes, each paying its
+  own staging allocation. Every install now uses one upload batch (`gpu/staged_uploads.rs`
+  over a best-fit recycled `gpu/staging_pool.rs`), and so does each drain's promotion plus
+  eviction. Row bookkeeping is per affinity row (`row_refs.rs`), and eviction releases rows incrementally.
+- `ShStreamingLiveDiagnostics` and `ShResidencySnapshot` gain `pool_growth_cpu_micros`
+  and `install_cpu_max_steady_drain_micros` (the slowest drain that grew no pool).
+- Measured on `stress-warren-mini`, 45 s idle, dev profile: first-window install CPU went
+  from 1208 ms to 223 ms. Headless capture: 2.22 s to 0.36 s for the same 22 installs.
+
 ## Open questions
 
 - **Count-only warm bound on fine-grained maps.** On `stress-warren-mini` (923 cells,

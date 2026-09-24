@@ -1,269 +1,224 @@
 # Shadowmask Atlas — BC5 Compress-at-Rest
 
 Brief · resumable · reads: `context/lib/rendering_pipeline.md` §4,
-`context/lib/build_pipeline.md` §PRL · §Build Cache, `context/lib/testing_guide.md`
-§Resource bounds
+`context/lib/build_pipeline.md` §PRL · §Build Cache, `context/lib/development_guide.md`
+§1.4, `context/lib/testing_guide.md` §Resource bounds · read at 8ce91e682
 
 This brief changes bytes, never masks. Per-texel mask capacity is
-`shadowmask-atlas-mask-capacity`, a separate brief gated on a measurement this one
-takes.
+`shadowmask-atlas-mask-capacity`, gated on the overlap measurement this brief ships.
 
 ## Problem
 
-PRL id 42 (`ShadowmaskAtlasSection`) is the only baked atlas still stored raw. ids
-22 and 35 ship BC-compressed; the pack seam has no compression step for id 42, so
-its payload sits uncompressed on disk, in CPU RAM for the level lifetime, and in
-VRAM. The masks are independent single-channel `[0,1]` visibility scalars, spatially
-smooth — BC4's home case, and BC5's, since BC5 *is* two BC4 blocks in one 16-byte
-block.
-
-**No id-42 byte figure exists anywhere in the repo.** `sh-base-atlas-at-rest-slimming`
-measured ids 34, 35, 27, 41 and 45 on `campaign-test` and omitted 42. We have a
-ratio and no magnitude. Task 1 is that measurement, and it gates nothing — it is one
-bake, and it is how the landing note states what this brief actually bought.
+A developer-raised anticipated need, not an observed defect. PRL id 42
+(`ShadowmaskAtlasSection`) is the only baked atlas still stored raw: no bake or emit
+stage compresses it, so its `Rgba8Unorm` payload sits uncompressed on disk, in CPU RAM
+for the whole level lifetime, and in VRAM. The masks are independent, spatially smooth
+`[0,1]` visibility scalars — BC4's home case, and BC5 is two BC4 blocks in one. When
+this lands, id 42 is stored and uploaded as BC5 at half the payload bytes, the CPU copy
+is released once uploaded, and every shadow reads as it did. No id-42 byte magnitude is
+recorded anywhere in the repo; the landing note records one, before and after.
 
 ## Decisions
 
-- **BC5 `.rg` pairs at a group count fixed at two — exactly four masks per texel.**
-  Two array-layer groups, two masks each: today's four, unchanged. This brief makes
-  **no capacity claim**. That is what keeps it small — no capacity floor, no raw
-  fallback codec, no second shader decode path, no widened slot index, and no
-  dependence on the unmeasured overlap frequency.
-- **The slot table is unchanged.** Four slots still fit `0..3` with
-  `SHADOWMASK_CHANNEL_DROPPED = 0xFF` as the sentinel, exactly as today. Only the
-  *meaning* changes: slot `s` addresses group `s / 2` and channel `s % 2` rather than
-  an RGBA channel. Widening the element is `shadowmask-atlas-mask-capacity`'s
-  problem, not this brief's.
-- **The sample stays hoisted, and control flow stays uniform.** With the group count
-  fixed at two, both array layers are known from `lightmap_layer` alone, so both
-  samples hoist out of the light loops exactly as the single sample does today; the
-  four masks arrive as `(g0.r, g0.g, g1.r, g1.g)` and the per-light select is the
-  same four-way shape as the current `shadowmask_channel_value`. This costs **two
-  hoisted samples per fragment instead of one** — a fixed doubling on fragments that
-  use the atlas, independent of light count — and it costs nothing else. It is only
-  once groups grow on demand that the sample must move inside the loops, land in
-  non-uniform control flow, and force the explicit-level sampler; that whole cluster
-  of consequences belongs to the capacity brief and is absent here.
-- **A self-describing format tag in the header.** Mirrors
-  `LightmapSection::direction_format`, the house pattern for exactly this. Raw
-  `Rgba8Unorm` stays representable under its own tag value so the encode is A/B-able
-  against the raw baseline. The capacity brief adds tag values additively.
-- **Above the array-layer budget, degrade — do not fall back to raw.** Two groups
-  need `2 × layer_count ≤ 256`, so a level past 128 lightmap layers cannot seat the
-  atlas. It degrades to the all-visible placeholder through
-  `filter_usable_shadowmask_section`, the path `rendering_pipeline.md` §4 already
-  commits to for rejected data. No raw-fallback codec, and therefore no permanent
-  second decode path in the shader. That band is what the capacity brief reopens.
-- **Byte-identical output, not merely length-stable.**
-  `static-light-shadowmask-cache-addendum` ships a live guarantee that cached warm
-  output for this section matches uncached output byte-for-byte, and `bc5.rs` is a
-  pure function — per-block min/max endpoints, a fixed integer palette matching the
-  hardware ladder, nearest-index selection, no cluster-fit refinement, no
-  parallelism. The BC6H lossy exemption in `build_pipeline.md` §Build Cache is
-  therefore available but **not taken**: taking it would surrender a satisfied
-  guarantee for nothing.
-- **Free the CPU payload after upload.** Drop the loaded level's shadowmask payload
-  once the upload has run, retaining the small slot table the renderer clones. No
-  consumer reads it post-upload; a level reload re-reads a fresh world, so reuse is
-  not a consumer. Removes the RAM half of the double residency at zero quality cost.
-- **No new device requirement, no new alignment.** `TEXTURE_COMPRESSION_BC` is
-  already a hard init requirement — the renderer bails at device acquisition without
-  it — so BC5 adds none, and an adapter-lacking-BC acceptance row would be
-  unreachable. `round_atlas_dim` guarantees the lightmap atlas is power-of-two and at
-  least 64 per axis and names BC block alignment as the reason; the shadowmask shares
-  those dimensions, so **no padding is introduced**, unlike the direct-SH path.
-- **Measure peak per-texel overlap under `--verbose`.** This brief does not act on
-  it. It is the input the capacity brief needs and currently lacks, and taking it
-  here costs a counter in a loop the bake already runs.
+- **BC5 `.rg` in exactly two array-layer groups — four masks per texel, today's
+  number.** No capacity claim, so no capacity floor, no widened slot index, and no
+  dependence on the unmeasured overlap frequency. Capacity is the sibling brief's.
+- **The slot table is unchanged.** One byte per selected light, `0..3` or
+  `SHADOWMASK_CHANNEL_DROPPED`. Slot `s` now addresses group `s / 2`, channel `s % 2`.
+- **BC5 is the only format.** The payload gains a format tag, mirroring
+  `LightmapSection::direction_format` / `irradiance_format`; it has one value today and
+  the capacity brief adds values additively. Raw `Rgba8Unorm` is retired from the
+  wire and the renderer, so there is exactly one decode path. The raw baseline for
+  bytes, fidelity and the visual A/B comes from a pre-change build, not a runtime tag.
+- **Pre-change payloads are rejected by name, not migrated.** They fail `from_bytes`
+  with an error naming the format mismatch and load fully lit through the loader's
+  existing malformed-section path. Fixtures re-bake (`development_guide.md` §1.6). The
+  container-entry version for id 42 advances, but the in-payload tag is the reject —
+  the loader does not check id 42's entry version.
+- **Encode in the bake, at the fill's finish, not at the pack seam.** The whole-section
+  memo then stores compressed blocks, and the pack seam keeps receiving a finished
+  section whose byte length is arithmetic (`build_pipeline.md` §Build Cache,
+  planned-section footprint rule). The shadowmask stage version advances.
+- **Byte-identical output; the BC6H lossy exemption is not taken.**
+  `static-light-shadowmask-cache-addendum` guarantees cached-warm equals uncached for
+  this section, and `bc5.rs` is a pure serial function, so the guarantee survives.
+- **One sampling helper absorbs the layout.** The atlas read returns the four masks in
+  today's shape — `(g0.r, g0.g, g1.r, g1.g)` — from two samples, so the per-light
+  select and both decode paths (promoted-union subtraction, world specular) keep their
+  shape. Both group layers derive from `lightmap_layer` alone, so the samples stay
+  hoisted outside every light loop in uniform control flow. Cost: one extra sample per
+  active decode path per fragment, independent of light count.
+- **Over budget or misaligned degrades to fully lit, never raw.** Two groups need
+  `2 × layer_count` within the pinned array-layer maximum; a BC5 atlas needs 4-aligned
+  dimensions. Either failure resolves to the all-visible placeholder, as
+  `rendering_pipeline.md` §4 commits for rejected data. The placeholder clamp covers
+  the second group's layer.
+- **Release the CPU payload at level install.** After geometry install uploads the
+  atlas and before the world is stashed, clear the payload bytes and keep the section
+  present with its slot table — spec-light channel mapping keys on presence. No reader
+  follows the upload, and every load or reload re-reads the level from disk.
+- **No new device requirement, binding, or padding.** `TEXTURE_COMPRESSION_BC` is
+  already required at device acquisition. Format and layer count change behind the same
+  group-4 binding, so the forward texture inventory is unchanged. Lightmap atlas
+  dimensions are powers of two ≥ 64, which the shadowmask shares.
+- **Compile-time peak is bounded at 1.5× the raw fill plus one layer.** The raw fill,
+  its BC5 output and one layer's encode scratch coexist only inside the finish step; the
+  raw buffer drops before the section leaves the stage. Runtime residency falls: VRAM
+  halves, CPU goes to zero after upload.
+- **Report peak per-texel overlap under `--verbose`.** Not acted on here. It is the
+  capacity brief's missing premise, and it costs a counter in a loop the bake already
+  runs.
 
 ### Non-goals
 
-- **Per-texel mask capacity above four.** `shadowmask-atlas-mask-capacity`. Greater-than-four
-  overlap is rare and unmeasured on today's content — a build-ahead lift, not a
-  reported defect — so it must not gate a win that is certain.
-- **A BC7 encoder.** `bc7-color-textures` owns BC7. BC7 models a per-block
-  cross-channel correlation four independent masks do not have.
-- **Streaming or visibility-driven residency.** `large-map-spatial-residency`.
-  Compression composes with it — bytes per resident texel is orthogonal to which
+- **Mask capacity above four.** `shadowmask-atlas-mask-capacity`. Unmeasured and
+  unreported, so it must not gate a certain win.
+- **A runtime raw decode path**, including as an A/B toggle.
+- **BC7.** `bc7-color-textures` owns it; BC7 models cross-channel correlation four
+  independent masks lack.
+- **Streaming the shadowmask.** `sh-probe-streaming` excludes lightmap residency and its
+  cluster directory admits no id 42. Bytes per resident texel are orthogonal to which
   texels are resident.
-- **The lightmap array-consolidation refactor.** Only the capacity brief needs a
-  binding slot.
-- **Selection eligibility and ranking.** Unchanged.
-- **Old-`.prl` migration.** Fixtures re-bake; the section version advances and stale
-  caches regenerate.
+- **Array consolidation, selection eligibility and ranking.** Unchanged.
 
 ## Acceptance
 
 ### Automated
 
-- [ ] `to_bytes` → `from_bytes` round-trips the header, format tag, slot table, and
-      payload under both tags, at the format edges: an empty selection, a single
-      selected light, and a fully-populated four-slot table.
-- [ ] `from_bytes` rejects a payload whose length disagrees with the tagged format's
-      arithmetic — raw at 4 bytes per texel over `layer_count` layers, BC5 at 16
-      bytes per 4×4 block over `2 × layer_count` layers — and rejects a slot index
-      that is neither `0..3` nor the sentinel.
-- [ ] A dropped-sentinel slot reads fully lit, and a baked slot in the second group
-      reads fully lit rather than sampling out of range when the bound texture is the
-      one-layer all-visible placeholder.
-- [ ] A section whose `2 × layer_count` exceeds the engine's pinned array-layer
-      maximum is rejected to the all-visible placeholder with a `[Renderer]` error
-      and no panic. The filter compares the product, not `layer_count` alone.
-- [ ] Boundary: `2 × layer_count` exactly equal to that maximum is retained; one
-      layer greater degrades to the placeholder.
-- [ ] Four overlapping selected lights carry every mask with no drop — the capacity
-      this brief must not regress.
-- [ ] Both decode paths resolve a light in either group to the correct mask, and the
-      shadowmask sample remains hoisted outside both light loops — a source-inspection
-      gate, since a sample that migrated into the loops is the regression this brief's
-      shape exists to avoid.
-- [ ] Static→static world shadowing stays exactly zero: moving a light from the first
-      group to the second does not change world-specular output for surfaces already
-      covered by first-group lights.
-- [ ] An all-visible (255) atlas round-trips to fully lit through encode and decode.
-- [ ] On a fixture carrying a populated atlas, the id-42 on-disk section byte count
-      drops ≈2:1 against the raw baseline, measured by the per-section byte accounting
-      at the pack seam.
-- [ ] The renderer uploads the section in its compressed format and the computed
-      resident byte count drops ≈2:1 against the raw baseline.
-- [ ] After upload, no `width × height × layer_count × 2` shadowmask buffer remains
-      resident on the CPU, and a subsequent level reload still installs a correct
-      atlas.
-- [ ] Re-baking a fixture twice yields a byte-identical section — assignment and
-      compressed payload alike — across differing worker-thread counts, so the
-      existing cached-warm-equals-uncached guarantee for this section survives.
-- [ ] Frame time on the world specular path does not regress measurably against a
-      pre-change baseline, on a scene whose fragments carry several selected static
-      specular lights. The expected cost is one extra hoisted sample per fragment,
-      fixed and independent of light count.
-- [ ] Fidelity, measured and reported rather than gated: max and mean per-channel
-      absolute error of the BC5 encode against the raw masks, recorded in the landing
-      note.
+**Wire**
+- [ ] Header, format tag, slot table and payload round-trip byte-exact for an empty
+      selection, a single selected light, and a full four-slot table.
+- [ ] `from_bytes` rejects: a payload length that disagrees with 16 bytes per 4×4
+      block over `2 × layer_count` layers; dimensions not multiples of 4; an unknown
+      tag; a slot neither `0..3` nor the sentinel.
+- [ ] A pre-change raw id-42 payload loads with a warning naming the format mismatch,
+      renders fully lit, and does not panic — including a payload whose bytes at the
+      tag's position read as a valid tag, which must not fall through to a length
+      mismatch. (pin: stale-payload, stale-payload-tag-collision)
+- [ ] A warm cache holding a pre-change shadowmask entry never serves it; the rebuilt
+      section equals the uncached section byte-for-byte. (pin: stale-memo)
+- [ ] A level whose selected lights are all dropped ships the section at half the raw
+      bytes, loads it, and renders fully lit. (pin: all-sentinel)
+
+**Degradation**
+- [ ] A sentinel slot reads fully lit. A second-group slot against the one-layer
+      placeholder reads fully lit without addressing outside the bound texture.
+- [ ] `2 × layer_count` equal to the pinned array-layer maximum is kept; one greater
+      degrades to the placeholder with a `[Renderer]` error and no panic.
+- [ ] A bake given atlas dimensions that are not multiples of 4 fails with an error
+      naming them, in release as in debug; it never emits a truncated payload.
+      (pin: bake-misaligned)
+
+**Masks**
+- [ ] Four overlapping selected lights, spread across both groups, each resolve to their
+      own mask in both decode paths — no drop, no cross-talk between groups. Proven by
+      offscreen render on an adapter; a skipped run does not count.
+- [ ] Moving a light from the first group to the second leaves world-specular output
+      unchanged for surfaces covered only by first-group lights; static→static world
+      shadowing stays exactly zero. Proven by offscreen render on an adapter; a skipped
+      run does not count.
+- [ ] An all-visible (255) atlas decodes fully lit after encode.
+- [ ] Grep gate over the forward shader: no shadowmask sample sits inside a light loop,
+      each decode path issues its samples once per fragment, and the second group's
+      layer derives only from the base lightmap layer and the bound texture's layer
+      count.
+- [ ] The forward pass binds no new texture or sampler; its per-group sampled-texture
+      inventory is unchanged.
+
+**Bytes and determinism**
+- [ ] On a populated fixture, the id-42 payload is exactly half the raw arithmetic
+      (`W × H × layer_count × 2` against `× 4`) in the per-section footprint report.
+- [ ] The texture description built for the atlas — BC5, `2 × layer_count` layers —
+      and its byte size, half the raw description's, are checked without a GPU.
+- [ ] On a cache miss the bake holds one raw fill, one compressed output and at most one
+      layer of encode scratch, and the raw fill is gone before the section is cached or
+      returned.
+- [ ] Re-baking twice yields a byte-identical section across differing worker-thread
+      counts, and a cached-warm section equals the uncached one byte-for-byte.
+- [ ] Measured and reported, not gated: max and mean per-channel absolute error of the
+      encode against the raw masks, recorded in the landing note.
+
+**Lifecycle**
+- [ ] After install, the shadowmask payload holds no allocation — capacity zero, not
+      merely zero length — and the slot table remains.
+- [ ] The payload is released only after the atlas upload; an install that uploads
+      nothing keeps it. (pin: no-upload-install)
 
 ### Manual
 
-- [ ] The id-42 section byte count on a representative map is recorded in the landing
-      note, both before and after — the magnitude no plan in this repo currently has.
-- [ ] In a scene with selected non-SDF static world specular lights, specular
-      highlights and their shadowmask-occluded regions read unchanged against a
-      raw-atlas capture through the offscreen capture path. Look at both images: a
-      distribution check passes on an image that has lost its contrast.
-- [ ] The bake reports peak observed per-texel overlap under `--verbose`, alongside
-      layer count and selected format. A non-verbose bake gains no new line.
+- [ ] The id-42 section byte count, layer count and atlas dimensions on
+      `campaign-test`, before (pre-change commit) and after, in the landing note, with
+      the bake's peak RSS alongside — the compile-time bound's evidence.
+- [ ] Offscreen capture of a scene with selected non-SDF static specular lights, against
+      the same capture from the pre-change commit: highlights and their occluded regions
+      read unchanged. Look at both images; a distribution check passes on an image that
+      lost its contrast.
+- [ ] Frame time, measured and reported: capture-harness CPU completion median and p95,
+      before and after, on a scene whose fragments carry several selected static
+      specular lights. Pin fixture, machine class, build profile, worker count and
+      cache mode per `testing_guide.md` §Resource bounds. May need an attended run on
+      this Mac.
+- [ ] `--verbose` reports peak per-texel overlap with layer count and format; a
+      non-verbose bake gains no line.
+- [ ] After a level reload and a dev level cycle, second-group shadows render on the
+      new level. (pin: release-then-reload)
 
 ## Wire format
 
-`ShadowmaskAtlasSection` keeps little-endian encoding, a 16-byte-aligned header, the
-per-selection table padded to 4, then the payload, and section id 42, under an
-advanced per-section version.
+`ShadowmaskAtlasSection`, id 42. Little-endian throughout. Section order unchanged.
 
-- The header gains one **format tag**, mirroring `LightmapSection::direction_format`.
-  Two values: raw `Rgba8Unorm` (today's layout, retained for the A/B baseline) and
-  BC5 `.rg`. No group-count field — the group count is two under the BC5 tag and one
-  under raw, both implied by the tag. The capacity brief adds a group count when it
-  needs one.
-- The per-selection table is **unchanged**: one byte per selected light, `0..3`, with
-  `0xFF` as the dropped sentinel. Under the raw tag slot `s` is the RGBA channel at
-  array layer `lightmap_layer`, as today. Under the BC5 tag slot `s` addresses group
-  `s / 2` and channel `s % 2`, at array layer `lightmap_layer + (s / 2) × layer_count`.
-- `data` is the tagged format's stream, layer-major over `layer_count` array layers
-  under raw and `2 × layer_count` under BC5. `from_bytes` computes expected length
-  from the tag — 4 bytes per texel, or 16 bytes per 4×4 block — and rejects a
-  disagreement.
+- **Header** gains a format tag. One value today: BC5 `.rg`, two groups. Group count is
+  implied by the tag; the capacity brief adds a group-count field if it needs one.
+- **Slot table** unchanged: `u8` per selected light, padded to 4. Slot `s` → group
+  `s / 2`, channel `s % 2`, array layer `lightmap_layer + (s / 2) × layer_count`.
+- **Payload**: BC5 blocks, 16 bytes per 4×4 block, layer-major over `2 × layer_count`
+  layers — group 0's layers first, then group 1's.
+- **Rejects**: unknown tag, length disagreeing with the tag's arithmetic, dimensions not
+  4-aligned, out-of-range slot.
 
-Field widths and exact header slots are implementation choices. The binding
-constraints are that the tag round-trips, that the payload cross-check matches the
-tagged format, and that the slot table's existing sentinel semantics are preserved.
-
-## Tasks
-
-**Task 1 — measure the baseline.** Bake a representative map and record the id-42
-on-disk section byte count, alongside its lightmap `layer_count` and atlas
-dimensions, through the per-section byte accounting that already exists at the pack
-seam. This is the magnitude no plan in this repo has. It gates nothing; it is what
-makes the landing note say something true about what was bought.
-
-**Task 2 — format tag and BC5 encode, thin vertical slice.** Add the header format
-tag and the tagged payload cross-check; reinterpret the slot table as
-`(group, channel)` under the BC5 tag; BC5-encode each group's two mask channels at
-the pack seam through `encode_bc5_rg`; branch the upload texture format on the tag
-and size the array dimension to `2 × layer_count`; in `forward.wgsl`, sample both
-groups' array layers hoisted outside the light loops and select the mask by
-`(group, channel)` in both the world-specular and promoted-union paths. Preserve the
-hoist and the uniform control flow it rests on — the whole reason this brief fixes
-the group count at two is that both layers are known from `lightmap_layer` alone, and
-a sample that migrates into the loops silently reintroduces the cost this shape
-avoids. Extend `filter_usable_shadowmask_section` to compare `2 × layer_count`
-against the array-layer maximum rather than `layer_count` alone. Proven when a
-fixture texel overlapped by four selected lights spread across both groups shows
-every shadow at runtime, which falsifies the wire, runtime, shader, and codec
-boundaries together.
-
-**Task 3 — free the CPU payload after upload.** Drop the loaded level's shadowmask
-payload once `upload_shadowmask_texture` has run, retaining the slot-table clone.
-Establish that no consumer reads it post-upload before freeing it.
-
-**Task 4 — overlap instrumentation.** Track peak observed per-texel overlap during
-the bake and report it under `--verbose` with the layer count and selected format.
-Do not act on it and do not warn without `--verbose`. This is the capacity brief's
-missing premise.
-
-**Task 5 — coverage and durable capture.** Lock the round-trip, rejection, boundary,
-degradation, determinism, double-count, reload, byte-delta and frame-time rows above,
-plus the shader test that a second-group light resolves correctly in both decode
-paths. Revise the `build_pipeline.md` id-42 line and the `rendering_pipeline.md` §4
-world-specular statement for the tagged format and group addressing at a fixed group
-count of two.
-
-## Sequencing
-
-**Phase 1 (sequential):** Task 1 — the baseline measurement, before the thing it
-measures changes.
-**Phase 2 (sequential):** Task 2 — thin slice; falsifies wire ↔ runtime ↔ shader ↔
-codec together.
-**Phase 3 (concurrent):** Task 3, Task 4 — independent; different files, no shared
-contract.
-**Phase 4 (sequential):** Task 5 — consumes every prior surface.
-
-## Invariants
-
-| Invariant | Established by | Threatened at | Verified by |
-|---|---|---|---|
-| Per-texel mask capacity stays exactly four — this brief trades bytes, never masks | Task 2 fixed group count | a group count that varies, or a slot table reinterpreted wider | AC 6 |
-| The shadowmask sample stays hoisted, control flow stays uniform | Task 2 | a sample moved inside either light loop, which also makes `textureSample` illegal there | AC 7, 14 |
-| Absent, rejected, or over-budget data resolves to fully lit, never a panic | existing filter, extended by Task 2 | a filter comparing `layer_count` alone; an unclamped layer against the placeholder | AC 3, 4, 5 |
-| Static→static world shadowing stays exactly zero (pool-shadow union dead-zone) | existing promoted-union path | a group or codec decode that alters the union term | AC 8 |
-| Section byte-identical across re-bakes — the shipped cached-warm-equals-uncached guarantee, not the BC6H lossy exemption | Task 2 encoder | any encoder change introducing parallelism or cluster-fit refinement | AC 13 |
-| CPU payload released after upload; reload reinstalls | Task 3 | a post-upload payload reader; a reload that fails to re-read | AC 12 |
+Header slot positions and tag width are implementation choices. Binding constraints:
+the tag round-trips, the length check follows the tag, the sentinel keeps its meaning,
+and no pre-change payload parses as valid.
 
 ## Path
 
-- **Encoder.** `crates/level-compiler/src/bc5.rs` emits, per 4×4 block, a BC4 R block
-  then a BC4 G block from an `Rgba8Unorm` input, ignoring B and A — dependency-free
-  and deterministic. A group's two mask channels map onto its R and G inputs
-  directly. The per-layer pad-and-concat emit shape to mirror is
-  `encode_direct_section_bc6h`, minus its padding step, which the power-of-two atlas
-  dimensions make unnecessary.
-- **Pack seam.** The shadowmask section is planned with no compression step today;
-  the encode phase lands there, after assignment.
-- **Upload and filter seam.** `crates/renderer/src/lighting/lightmap.rs` holds both
-  the usability filter and the upload. The D2Array view, layer-major upload, and
-  group-4 binding are reused unchanged.
-- **Runtime linchpin.** `crates/renderer/src/render/shadowmask.rs` builds the
-  per-spec-light slot values and packs the promoted-light metadata. The slot values
-  and their sentinel are unchanged by this brief.
-- **CPU release seam.** The atlas lives on the loaded level as an optional section,
-  stashed at startup; the renderer borrows it at install and clones only the slot
-  table.
-- **Fixtures.** A focused fixture with selected specular lights suffices — the ratio
-  is codec-intrinsic and the error texel-local. A capture fixture for the specular A/B
-  already exists. Do not bake a stress map for proof.
+Non-binding.
 
-## Re-anchor before building
+- **Encode seam.** `ShadowmaskFill::finish` (`shadowmask_bake/fill.rs`) moves raw RGBA
+  into the section; `empty_section_for_dimensions` builds sections too and must emit the
+  same tagged shape. Transpose each
+  lightmap layer's RGBA into two RG planes and run `bc5::encode_bc5_rg` per plane. Put
+  the encode in its own submodule — `shadowmask_bake.rs` is past 4,000 lines and gains
+  no new responsibility here.
+- **Cache writer.** `cache_shadowmask_section_then_complete` streams its own copy of the
+  header layout and bypasses `to_bytes`. It must learn the tag, and it is where
+  warm/cold drift would hide — prefer one header-writing helper both paths share. Bump
+  `SHADOWMASK_ATLAS_STAGE_VERSION`; its test pins the value.
+- **Pack seam.** `pack/section_plan.rs` `build_finalized_section_plan` plans id 42; its
+  container-entry version argument is the one to advance. `pack_output::report_section_footprint`
+  is the byte report (`prl-build -v`).
+- **Renderer.** `filter_usable_shadowmask_section` and `upload_shadowmask_texture`
+  (`lighting/lightmap.rs`): compare `2 × layer_count`, reject misalignment, upload
+  `Bc5RgUnorm`. `upload_placeholder_shadowmask` stays `Rgba8Unorm` 1×1×1 white.
+- **Shader.** `sample_shadowmask_atlas` in `forward.wgsl` is the only atlas read; its
+  two call sites are the promoted-union subtraction and the hoisted specular sample in
+  `fs_main`. Group 1's layer offset can come from `textureNumLayers / 2`, which also
+  clamps correctly against the placeholder. Sharing one sample pair across both paths
+  is permitted where their gating conditions allow.
+- **Guards that change.** `forward_shader_shadowmask_fallback_clamps_multilayer_indices`
+  pins today's sample count and clamp text; rewrite it to the new shape.
+  `forward_pipeline_sampled_texture_request_matches_bgl_definitions` must stay green
+  untouched.
+- **CPU release.** `install_level_payload` (`startup/lifecycle.rs`, past 4,000 lines —
+  a few-line insertion, not a new responsibility) installs geometry, then stashes the
+  world into `App.level`; the release goes between.
+- **Proof tooling.** Byte report and frame-time harness: `research.md` §Proof support.
+- **First slice.** Tag + encode + upload + shader on a fixture where four selected lights
+  overlap across both groups, checked by capture. It falsifies the wire, codec, upload
+  and shader boundaries together before the tests fan out.
+- **Rival shape.** Keep raw loadable behind the tag for a live A/B — rejected in
+  `research.md` §Why BC5 only.
 
-`lighting-scale--shadowmask-cold-working-set` (landed) restructured the assignment
-seam: it deletes the per-(light, texel) membership record and derives the overlap
-graph analytically. This brief does not change assignment — the exact-search
-4-colouring and its node budget stay exactly as they are, because at four slots the
-scarce-colour problem they solve is still real. Retiring them is the capacity brief's
-job, and only becomes correct once slots are abundant.
+## Open questions
+
+None.

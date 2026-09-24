@@ -663,8 +663,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let raw_map_text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read map file: {}", path.display()))?;
 
-    reject_invalid_streaming_hint_source_hulls(&raw_map_text, scale)?;
-
     // TrenchBroom wraps a brush face's material name in double quotes whenever
     // that name contains a space (e.g. a collection directory named
     // `Level Eleven Games Sci-Fi Texture Pack v1`). shalrath's brush-plane
@@ -676,6 +674,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // name is decoded back to its space-containing form at the texture-read
     // boundary below. See `context/lib/build_pipeline.md` §Texture name resolution.
     let map_text = encode_quoted_brush_textures(&raw_map_text);
+    reject_invalid_streaming_hint_source_hulls(&map_text, scale)?;
 
     let shalrath_map: shambler::shalrath::repr::Map = map_text
         .parse()

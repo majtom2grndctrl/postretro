@@ -174,8 +174,8 @@ fn streaming_hint_brushes_preserve_every_non_sh_prl_section() {
 
     // Assert byte-level equality for every current and future non-SH section,
     // including optional products when they are present in this fixture.
-    // The separate doorway fixture exercises valid seam cuts; this sealed SDF
-    // fixture has no generated portal through the authored seam brush.
+    // This sealed SDF fixture covers resident/priority peeling; the separate
+    // doorway fixture exercises valid seam cuts.
     let is_sh_section = |section_id: &u32| {
         matches!(
             SectionId::from_u32(*section_id),

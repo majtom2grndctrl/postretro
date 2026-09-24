@@ -260,3 +260,46 @@ fn rejects_zero_volume_and_nonfinite_hulls() {
         "hull error must name the classname and location: {message}"
     );
 }
+
+#[test]
+fn rejects_malformed_face_suffix_before_shalrath_can_drop_hint() {
+    let brush = box_brush([0, 0, 0], [32, 32, 32], "hint_tex").replacen(
+        "hint_tex 0 0 0 1 1",
+        "hint_tex 0 0 nope 1 1",
+        1,
+    );
+    let map = streaming_hint_map(&streaming_hint_entity(
+        "streaming_seam_volume",
+        "1 2 3",
+        "",
+        &brush,
+    ));
+    let error = parse_inline_map(&map).expect_err("malformed hint face must not disappear");
+    let message = error.to_string();
+    assert!(
+        message.contains("streaming_seam_volume")
+            && message.contains("at (")
+            && message.contains("syntax"),
+        "malformed face error must identify the hint and location: {message}"
+    );
+}
+
+#[test]
+fn rejects_unterminated_hint_after_valid_worldspawn() {
+    let hint = streaming_hint_entity(
+        "stream_resident_volume",
+        "1 2 3",
+        "",
+        &box_brush([0, 0, 0], [32, 32, 32], "hint_tex"),
+    );
+    let unterminated = hint.strip_suffix('}').expect("hint has closing brace");
+    let map = streaming_hint_map(unterminated);
+    let error = parse_inline_map(&map).expect_err("unterminated hint must not disappear");
+    let message = error.to_string();
+    assert!(
+        message.contains("stream_resident_volume")
+            && message.contains("at (")
+            && message.contains("unterminated"),
+        "unterminated hint error must identify the hint and location: {message}"
+    );
+}

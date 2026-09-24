@@ -8,12 +8,13 @@ use anyhow::Result;
 
 use super::{parse_origin, quake_to_engine};
 
-/// Check only streaming-hint brush point triples before shalrath builds its
-/// geometry map. This is intentionally a narrow lexical pass rather than a
-/// second `.map` parser: it recognizes top-level entity blocks and their
-/// standard quoted KVPs, then validates face triples inside brush blocks.
+/// Check streaming-hint entities before shalrath builds its geometry map.
+/// The source scan identifies only authored hints; shalrath's own entity
+/// parser then verifies their complete face syntax, so its permissive map
+/// parser cannot silently discard a malformed hint after a valid prefix.
 pub(super) fn reject_invalid_streaming_hint_source_hulls(map_text: &str, scale: f64) -> Result<()> {
-    for entity in source_entity_blocks(map_text) {
+    let (entities, unterminated) = source_entity_blocks(map_text);
+    for entity in entities {
         let Some(classname) = source_entity_property(entity, "classname") else {
             continue;
         };
@@ -26,14 +27,29 @@ pub(super) fn reject_invalid_streaming_hint_source_hulls(map_text: &str, scale: 
 
         let location = source_hint_location(entity, scale);
         validate_source_hint_brush_point_triples(entity, classname, &location)?;
+        match shambler::shalrath::parser::repr::parse_entity(entity) {
+            Ok((remaining, _)) if remaining.trim().is_empty() => {}
+            _ => anyhow::bail!(
+                "{classname} {location} has invalid brush/entity syntax; every hint face must parse completely"
+            ),
+        }
+    }
+    if let Some(entity) = unterminated
+        && let Some(
+            classname @ ("streaming_seam_volume"
+            | "stream_resident_volume"
+            | "stream_priority_region"),
+        ) = source_entity_property(entity, "classname")
+    {
+        let location = source_hint_location(entity, scale);
+        anyhow::bail!("{classname} {location} has an unterminated entity/brush block");
     }
     Ok(())
 }
 
-/// Return complete top-level entity blocks while ignoring line comments and
-/// braces inside quoted property values. A malformed unclosed block is left
-/// to shalrath's normal syntax-error path.
-fn source_entity_blocks(map_text: &str) -> Vec<&str> {
+/// Return complete top-level entity blocks and any unterminated tail while
+/// ignoring line comments and braces inside quoted property values.
+fn source_entity_blocks(map_text: &str) -> (Vec<&str>, Option<&str>) {
     let mut blocks = Vec::new();
     let mut start = None;
     let mut depth = 0usize;
@@ -76,7 +92,7 @@ fn source_entity_blocks(map_text: &str) -> Vec<&str> {
             _ => {}
         }
     }
-    blocks
+    (blocks, start.map(|index| &map_text[index..]))
 }
 
 /// Find a quoted KVP in one top-level source entity without confusing quoted
@@ -243,14 +259,16 @@ mod tests {
 }
 }
 "#;
-        let blocks = source_entity_blocks(source);
+        let (blocks, unterminated) = source_entity_blocks(source);
         assert_eq!(blocks.len(), 1, "comment braces must not open an entity");
+        assert!(unterminated.is_none());
         assert_eq!(
             source_entity_property(blocks[0], "classname"),
             Some("streaming_seam_volume"),
             "only a top-level KVP may identify a streaming hint"
         );
-        reject_invalid_streaming_hint_source_hulls(source, 0.0254)
+        let normalized = super::super::encode_quoted_brush_textures(source);
+        reject_invalid_streaming_hint_source_hulls(&normalized, 0.0254)
             .expect("comments, note text, and quoted brush textures are not point triples");
     }
 }

@@ -148,16 +148,21 @@ impl ShResidencyController {
         &mut self,
         prepared: PreparedShCluster,
     ) -> Result<ShDrainAdmission, ShResidencyControllerError> {
-        let decoded_bytes = u64::try_from(prepared.chunk.bytes.len()).map_err(|_| {
-            ShResidencyControllerError::AccountingOverflow("prepared chunk byte length")
-        })?;
+        // Counted in encoded bytes so the figure shares a unit with the
+        // workers' read counters; a foreign cluster id counts no bytes.
+        let read_bytes = self
+            .topology
+            .encoded_chunk_bytes
+            .get(prepared.chunk.cluster_id as usize)
+            .copied()
+            .unwrap_or(0);
         let admission = self.admit_prepared_payload(prepared)?;
         if admission != ShDrainAdmission::Ready {
             let mut counters = self.counters;
             Self::increment_counter(&mut counters.discarded_reads, "discarded reads")?;
             Self::add_to_counter(
                 &mut counters.discarded_read_bytes,
-                decoded_bytes,
+                read_bytes,
                 "discarded read bytes",
             )?;
             self.counters = counters;

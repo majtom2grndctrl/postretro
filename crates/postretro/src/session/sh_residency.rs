@@ -352,8 +352,7 @@ impl ShStreamingSession {
             return self.prepare_batch();
         };
         // Publish before admitting or submitting, so the issuer never reads a
-        // cluster this frame's target update dropped. A cluster the drain's
-        // budget policy suppresses below stays published until next frame.
+        // cluster this frame's target update dropped.
         workers.publish_targets(self.controller.targets());
         while let Some(completion) = workers.try_completion().map_err(anyhow::Error::msg)? {
             if !self
@@ -392,7 +391,13 @@ impl ShStreamingSession {
         while let Some(request) = self.controller.take_next_request()? {
             workers.submit(request).map_err(anyhow::Error::msg)?;
         }
-        self.prepare_batch()
+        let batch = self.prepare_batch()?;
+        // Budget policy runs inside the batch and may suppress targets; publish
+        // again so a suppressed request is cancelled rather than read.
+        if let Some(workers) = self.workers.as_ref() {
+            workers.publish_targets(self.controller.targets());
+        }
+        Ok(batch)
     }
 }
 

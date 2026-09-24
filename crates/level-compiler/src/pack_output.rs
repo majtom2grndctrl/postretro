@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use fs4::FileExt;
 
+use postretro_level_format::cluster_directory::ClusterDirectoryValidationInputs;
 use postretro_level_format::{SectionDescriptor, SectionId, write_prl_header_and_table};
 use same_file::Handle as FileIdentity;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
@@ -103,9 +104,20 @@ impl<'a> PlannedSection<'a> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn write_and_validate_sections(
     output: &Path,
     sections: Vec<PlannedSection<'_>>,
+) -> anyhow::Result<()> {
+    write_and_validate_sections_with_cluster_directory_validation(output, sections, None)
+}
+
+/// Write a staged PRL and validate its cluster directory against the finalized
+/// compiler metadata that produced it.
+pub(super) fn write_and_validate_sections_with_cluster_directory_validation(
+    output: &Path,
+    sections: Vec<PlannedSection<'_>>,
+    cluster_directory_validation: Option<ClusterDirectoryValidationInputs<'_>>,
 ) -> anyhow::Result<()> {
     // Validate output directory exists before writing
     if let Some(parent) = output.parent() {
@@ -154,7 +166,11 @@ pub(super) fn write_and_validate_sections(
         }
         temporary_output.file_mut().flush()?;
         let total_size = temporary_output.file().metadata()?.len();
-        validate_readback(temporary_output.file_mut(), &descriptors)?;
+        validate_readback(
+            temporary_output.file_mut(),
+            &descriptors,
+            cluster_directory_validation,
+        )?;
         Ok(total_size)
     })();
     let total_size = match write_result {
@@ -1123,7 +1139,7 @@ mod tests {
         .expect("replacement PRL should encode");
         std::fs::write(&staged_path, replacement).expect("replacement PRL should write");
 
-        validate_readback(staged.file_mut(), std::slice::from_ref(&descriptor))
+        validate_readback(staged.file_mut(), std::slice::from_ref(&descriptor), None)
             .expect("read-back should validate the original open file");
         let error = publish_validated_output(staged, &output, original_output)
             .expect_err("publication must reject the replacement staging identity");

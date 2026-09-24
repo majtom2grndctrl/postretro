@@ -2020,6 +2020,9 @@ fn run_after_parsing(
     let finalized_cluster_metadata =
         build_finalized_cluster_metadata(FinalizedClusterMetadataInputs {
             generated_portals: &generated_portals,
+            streaming_seam_regions: &map_data.streaming_seam_regions,
+            stream_resident_regions: &map_data.stream_resident_regions,
+            stream_priority_regions: &map_data.stream_priority_regions,
             leaves: &vis_result.leaves_section,
             tree: &result.tree,
             exterior_leaves: &exterior_leaves,

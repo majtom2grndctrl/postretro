@@ -5,7 +5,8 @@ use glam::Vec3;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, f32_to_f16_bits};
 use postretro_level_format::octahedral::{
-    IrradianceAtlasArrayLayout, irradiance_array_tile_location, irradiance_atlas_array_layout,
+    IrradianceAtlasArrayLayout, MAX_SH_ATLAS_DIMENSION, irradiance_array_tile_location,
+    irradiance_atlas_array_layout,
 };
 use postretro_level_format::sh_reconstruct::{
     Level, StoredTile, corner_locals, local_xyz, node_corner_coord, node_probe_edge,
@@ -18,7 +19,6 @@ use crate::sh_analyze::{
     classifier_darkness_floor, evaluate_hierarchy_node, level_errors,
     level_errors_with_l1_zero_fallback, tile_magnitude,
 };
-use crate::sh_bake::MAX_SH_ATLAS_DIMENSION;
 use crate::sh_coarsen::{
     BrickClass, CoarsenParams, DeltaSectionsRef, classify_levels, classify_levels_with_ceiling,
 };

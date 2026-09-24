@@ -89,8 +89,8 @@ fn probe_slot_location(slot: u32) -> ProbeAtlasLocation {
     return ProbeAtlasLocation(
         layer,
         vec2<u32>(
-            (tile_slot % tiles_per_row) * sh_grid.tile_dimension,
-            (tile_slot / tiles_per_row) * sh_grid.tile_dimension,
+            (tile_slot % tiles_per_row) * sh_grid.physical_tile_stride,
+            (tile_slot / tiles_per_row) * sh_grid.physical_tile_stride,
         ),
     );
 }

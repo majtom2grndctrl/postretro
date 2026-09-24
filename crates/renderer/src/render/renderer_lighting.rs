@@ -186,10 +186,21 @@ pub(crate) fn build_sdf_shadow_sh_grid(
     let Some(sec) = sh_volume else {
         return SdfShadowShGrid::default();
     };
+    build_sdf_shadow_sh_grid_from_metadata(sec.grid_origin, sec.cell_size, sec.grid_dimensions)
+}
+
+/// Streaming retains these id-34 metadata fields while omitting the compact
+/// atlas body. The SDF shadow pass consumes the streamed depth-moment view, so
+/// it needs the same open-space grid rather than the legacy-section gate.
+pub(crate) fn build_sdf_shadow_sh_grid_from_metadata(
+    origin: [f32; 3],
+    cell_size: [f32; 3],
+    dimensions: [u32; 3],
+) -> SdfShadowShGrid {
     SdfShadowShGrid {
-        origin: sec.grid_origin,
-        cell_size: sec.cell_size,
-        dimensions: sec.grid_dimensions,
+        origin,
+        cell_size,
+        dimensions,
         has_volume: true,
     }
 }

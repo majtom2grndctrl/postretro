@@ -4,20 +4,26 @@
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
-#[cfg(feature = "dev-tools")]
-use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
-use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, DirectDeltaComposeBuffers, build_compose_grid_bytes,
-    build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
-};
+use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
+use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
 use super::animated_direct_sh_compose::{
     AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, AnimatedDirectShPassViews,
     build_animated_direct_pass,
 };
+use super::direct_sh_compose_carrier::DirectPromotionStorage;
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
 use super::renderer_types::PromotedBakedLightState;
-use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
+use super::sh_allocation::{
+    ShAllocationKind, buffer_allocation, probe_indirection_storage_payload,
+};
+#[cfg(test)]
+use super::sh_compose_dispatch::should_dispatch as direct_compose_should_dispatch;
+use super::sh_compose_dispatch::{
+    DynamicComposeDispatch, build_dynamic_compose_grid_upload, should_dispatch,
+};
+use super::sh_indirection::WGSL_DECODE_HELPER;
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
@@ -40,8 +46,6 @@ const DEBUG_OVERRIDE_SIZE: usize = 32;
 /// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.
 const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
 const _: () = assert!(DIRECT_COMPOSE_PARAMS_SIZE == 16);
-#[cfg(feature = "dev-tools")]
-const DIRECT_PROMOTION_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-41 promotion @group(0)";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DirectShDebugOverride {
@@ -94,9 +98,8 @@ pub(super) struct DirectShComposeFrameInputs<'a> {
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    /// Affinity-cell dimensions. One 8×8 workgroup reconstructs and writes the
-    /// 4×4×4 probe tiles belonging to one brick in both direct compose passes.
-    dispatch_dimensions: [u32; 3],
+    /// Adapter-bounded rows of the flattened affinity grid for Pass A.
+    dispatches: Vec<DynamicComposeDispatch>,
     debug_override_buffer: wgpu::Buffer,
     /// Pass A has no shared group-0 binding, so this mirrors that group's
     /// frame snapshot in a private uniform.
@@ -111,49 +114,18 @@ struct DirectShComposePipeline {
     animated_add: Option<AnimatedDirectShComposePipeline>,
 }
 
-struct DirectPromotionStorage {
-    buffers: DirectDeltaComposeBuffers,
-    subblock_bytes: Vec<u8>,
-    compaction_meta_bytes: Vec<u8>,
-    offsets_bytes: Vec<u8>,
-    lights_bytes: Vec<u8>,
-}
-
-impl DirectPromotionStorage {
-    fn new(delta: Option<&DirectShDeltaVolumesSection>, grid_dimensions: [u32; 3]) -> Self {
-        let delta_subblocks: &[u16] = delta.map_or(&[], |delta| delta.delta_subblocks.as_slice());
-        let buffers = build_direct_delta_buffers(delta, grid_dimensions);
-        let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(delta_subblocks), 4);
-        let compaction_meta_bytes =
-            pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
-        let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
-        let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
-        Self {
-            buffers,
-            subblock_bytes,
-            compaction_meta_bytes,
-            offsets_bytes,
-            lights_bytes,
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    fn footprint(&self) -> ComposeStorageFootprint {
-        ComposeStorageFootprint {
-            delta_subblocks_bytes: self.subblock_bytes.len(),
-            delta_compaction_meta_bytes: self.compaction_meta_bytes.len(),
-            affinity_offsets_bytes: self.offsets_bytes.len(),
-            affinity_lights_bytes: self.lights_bytes.len(),
-            // The id-41 promotion pass has no descriptor-index binding. Case
-            // 2's id-45 animated-add storage belongs to its sibling pass.
-            animation_descriptor_indices_bytes: 0,
-        }
-    }
-
-    #[cfg(feature = "dev-tools")]
-    fn log_footprint(&self) {
-        self.footprint().log(DIRECT_PROMOTION_FOOTPRINT_LABEL);
-    }
+/// Inputs shared by the promotion compute-pass constructor. They are one
+/// level-load transaction: GPU resources, baked inputs, and residency
+/// bookkeeping must stay in lockstep when the pass is built.
+struct PromotionPassInputs<'a> {
+    device: &'a wgpu::Device,
+    direct: &'a DirectShResources,
+    probe_indirection_words: &'a [u32],
+    delta: Option<&'a DirectShDeltaVolumesSection>,
+    weights_buffer: &'a wgpu::Buffer,
+    direct_delta_present: bool,
+    sh_section_present: bool,
+    ledger: &'a mut ShAllocationLedger,
 }
 
 pub(crate) struct DirectShComposeResources {
@@ -175,7 +147,10 @@ impl DirectShComposeResources {
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        sh_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
+        let direct_delta_present = delta.is_some();
         match animated_delta {
             // Case 2 is selected only at level load from section presence.
             Some(animated_delta) => Self::new_case2(
@@ -187,49 +162,44 @@ impl DirectShComposeResources {
                 animated_delta,
                 weights_buffer,
                 uniform_bind_group_layout,
+                direct_delta_present,
+                sh_section_present,
+                ledger,
             ),
             // Section 45 absent: Pass A still performs base copy-through so
             // the static-direct mask works even without promotion deltas.
-            None => Self::new_case1(
+            None => Self::new_case1(PromotionPassInputs {
                 device,
                 direct,
                 probe_indirection_words,
                 delta,
                 weights_buffer,
-            ),
+                direct_delta_present,
+                sh_section_present,
+                ledger,
+            }),
         }
     }
 
-    fn new_case1(
-        device: &wgpu::Device,
-        direct: &DirectShResources,
-        probe_indirection_words: &[u32],
-        delta: Option<&DirectShDeltaVolumesSection>,
-        weights_buffer: &wgpu::Buffer,
-    ) -> Self {
-        if !direct.has_direct_base {
+    fn new_case1(mut inputs: PromotionPassInputs<'_>) -> Self {
+        if !inputs.direct.has_direct_base {
             return Self::disabled();
         }
-        let delta = delta.filter(|delta| !delta.affinity_lights.is_empty());
-        let Some(composed_storage_view) = direct.composed_storage_view.as_ref() else {
+        inputs.delta = inputs
+            .delta
+            .filter(|delta| !delta.affinity_lights.is_empty());
+        let Some(composed_storage_view) = inputs.direct.composed_storage_view.as_ref() else {
             return Self::disabled();
         };
-        let Some(layout) = direct.compose_layout else {
+        let Some(layout) = inputs.direct.compose_layout else {
             return Self::disabled();
         };
-        let pipeline = build_promotion_pass(
-            device,
-            direct,
-            layout,
-            probe_indirection_words,
-            delta,
-            weights_buffer,
-            composed_storage_view,
-        );
+        let selected_light_count = inputs.delta.map_or(0, |delta| delta.affinity_lights.len());
+        let pipeline = build_promotion_pass(layout, composed_storage_view, inputs);
 
         log::info!(
             "[Renderer] Direct SH compose: {} selected-light CSR entr(y/ies), atlas {}×{}",
-            delta.map_or(0, |delta| delta.affinity_lights.len()),
+            selected_light_count,
             layout.atlas_dimensions[0],
             layout.atlas_dimensions[1],
         );
@@ -249,6 +219,9 @@ impl DirectShComposeResources {
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        direct_delta_present: bool,
+        sh_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         let Some(intermediate_storage_view) = direct.intermediate_storage_view.as_ref() else {
             return Self::disabled();
@@ -267,13 +240,18 @@ impl DirectShComposeResources {
         // absent id35/id41 inputs through the existing dummy base and empty CSR
         // buffers, then writes the intermediate that Pass B always consumes.
         let mut pass_a = build_promotion_pass(
-            device,
-            direct,
             layout,
-            probe_indirection_words,
-            delta,
-            weights_buffer,
             intermediate_storage_view,
+            PromotionPassInputs {
+                device,
+                direct,
+                probe_indirection_words,
+                delta,
+                weights_buffer,
+                direct_delta_present,
+                sh_section_present,
+                ledger,
+            },
         );
         pass_a.animated_add = Some(build_animated_direct_pass(
             device,
@@ -286,6 +264,8 @@ impl DirectShComposeResources {
                 output_storage: composed_storage_view,
             },
             uniform_bind_group_layout,
+            sh_section_present,
+            ledger,
         ));
 
         log::info!(
@@ -336,7 +316,7 @@ impl DirectShComposeResources {
             }
         }
 
-        if !direct_compose_should_dispatch(
+        if !should_dispatch(
             active,
             pipeline.pending_copy_through,
             pipeline.was_active,
@@ -351,17 +331,16 @@ impl DirectShComposeResources {
         // construction-time default mask.
         let light_term_mask_bytes = direct_compose_params_bytes(frame_light_term_mask);
         queue.write_buffer(&pipeline.light_term_mask_buffer, 0, &light_term_mask_bytes);
-        let wg_x = pipeline.dispatch_dimensions[0].max(1);
-        let wg_y = pipeline.dispatch_dimensions[1].max(1);
-        let wg_z = pipeline.dispatch_dimensions[2].max(1);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Direct SH Compose"),
                 timestamp_writes: timestamp_writes.promotion,
             });
             pass.set_pipeline(&pipeline.pipeline);
-            pass.set_bind_group(0, &pipeline.bind_group, &[]);
-            pass.dispatch_workgroups(wg_x, wg_y, wg_z);
+            for dispatch in &pipeline.dispatches {
+                pass.set_bind_group(0, &pipeline.bind_group, &[dispatch.dynamic_offset]);
+                pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
+            }
         }
         if let Some(animated_add) = &pipeline.animated_add {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -370,8 +349,10 @@ impl DirectShComposeResources {
             });
             pass.set_pipeline(&animated_add.pipeline);
             pass.set_bind_group(0, uniform_bind_group, &[]);
-            pass.set_bind_group(1, &animated_add.bind_group, &[]);
-            pass.dispatch_workgroups(wg_x, wg_y, wg_z);
+            for dispatch in &animated_add.dispatches {
+                pass.set_bind_group(1, &animated_add.bind_group, &[dispatch.dynamic_offset]);
+                pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
+            }
         }
         pipeline.pending_copy_through = false;
         pipeline.was_active = active;
@@ -380,58 +361,119 @@ impl DirectShComposeResources {
 }
 
 fn build_promotion_pass(
-    device: &wgpu::Device,
-    direct: &DirectShResources,
     layout: DirectAtlasLayout,
-    probe_indirection_words: &[u32],
-    delta: Option<&DirectShDeltaVolumesSection>,
-    weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
+    inputs: PromotionPassInputs<'_>,
 ) -> DirectShComposePipeline {
+    let PromotionPassInputs {
+        device,
+        direct,
+        probe_indirection_words,
+        delta,
+        weights_buffer,
+        direct_delta_present,
+        sh_section_present,
+        ledger,
+    } = inputs;
     let storage = DirectPromotionStorage::new(delta, layout.grid_dimensions);
     // The instrumentation covers both cases. The promotion pass binds only
     // id-41 storage; runtime weights and Case 2's id-45 pass are excluded.
     #[cfg(feature = "dev-tools")]
     storage.log_footprint();
-    let DirectPromotionStorage {
-        buffers,
-        subblock_bytes,
-        compaction_meta_bytes,
-        offsets_bytes,
-        lights_bytes,
-    } = storage;
+    let DirectPromotionStorage { buffers, payloads } = storage;
 
     use wgpu::util::DeviceExt;
     let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Delta Subblocks (f16)"),
-        contents: &subblock_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &payloads.delta_subblocks.contents,
+        usage: payloads.delta_subblocks.allocation.usage,
     });
     let delta_compaction_meta_buffer =
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Direct SH Compose Delta Compaction Meta"),
-            contents: &compaction_meta_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
+            contents: &payloads.compaction_metadata.contents,
+            usage: payloads.compaction_metadata.allocation.usage,
         });
     let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Affinity Offsets"),
-        contents: &offsets_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &payloads.affinity_offsets.contents,
+        usage: payloads.affinity_offsets.allocation.usage,
     });
     let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Affinity Lights"),
-        contents: &lights_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &payloads.affinity_lights.contents,
+        usage: payloads.affinity_lights.allocation.usage,
     });
+    let probe_indirection = probe_indirection_storage_payload(
+        ShAllocationKind::DirectComposeProbeIndirection,
+        probe_indirection_words,
+    );
+    let delta_sources = source_ids([direct_delta_present.then_some(41)]);
+    let probe_sources = source_ids([sh_section_present.then_some(34)]);
+    let grid_sources = source_ids([
+        direct.has_direct_base.then_some(35),
+        (!direct.has_direct_base && sh_section_present).then_some(34),
+        direct_delta_present.then_some(41),
+    ]);
+    ledger.record_buffer(
+        payloads.delta_subblocks.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        payloads.compaction_metadata.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        payloads.affinity_offsets.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        payloads.affinity_lights.allocation,
+        &delta_sources,
+        !direct_delta_present,
+        if direct_delta_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
+    ledger.record_buffer(
+        probe_indirection.allocation,
+        &probe_sources,
+        true,
+        if sh_section_present {
+            ShResidencyAllocationState::Data
+        } else {
+            ShResidencyAllocationState::Dummy
+        },
+    );
     let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Probe Indirection"),
-        contents: &probe_indirection_storage_bytes(probe_indirection_words),
-        usage: wgpu::BufferUsages::STORAGE,
+        contents: &probe_indirection.contents,
+        usage: probe_indirection.allocation.usage,
     });
 
-    let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Direct SH Compose Grid Dims"),
-        contents: &build_compose_grid_bytes(ComposeGridParams {
+    let device_limits = device.limits();
+    let grid_upload = build_dynamic_compose_grid_upload(
+        ComposeGridParams {
             grid_dimensions: layout.grid_dimensions,
             atlas_dimensions: layout.atlas_dimensions,
             tile_dimension: layout.tile_dimension,
@@ -440,24 +482,66 @@ fn build_promotion_pass(
             tiles_per_layer: layout.tiles_per_layer,
             atlas_layer_count: layout.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
-            // Retain the fixed 64-byte uniform layout: both field pairs now
-            // name the same stored-tile atlas geometry.
+            // Both legacy compact-atlas tail words repeat the stored-tile
+            // atlas geometry. The fixed 64-byte prefix remains unchanged.
             compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
             compact_atlas_tiles_per_layer: layout.tiles_per_layer,
-        }),
-        usage: wgpu::BufferUsages::UNIFORM,
+        },
+        LEGACY_SH_PHYSICAL_TILE_STRIDE,
+        device_limits.max_compute_workgroups_per_dimension,
+        device_limits.min_uniform_buffer_offset_alignment,
+        device_limits.max_buffer_size,
+    )
+    .expect("validated SH affinity dimensions must fit adapter-bounded compose ranges");
+    let grid_allocation = buffer_allocation(
+        ShAllocationKind::DirectComposeGrid,
+        &grid_upload.bytes,
+        wgpu::BufferUsages::UNIFORM,
+    );
+    ledger.record_buffer(
+        grid_allocation,
+        &grid_sources,
+        grid_sources.is_empty(),
+        ShResidencyAllocationState::Data,
+    );
+    let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Direct SH Compose Grid Dims"),
+        contents: &grid_upload.bytes,
+        usage: grid_allocation.usage,
     });
     let debug_override_bytes = debug_override_bytes(DirectShDebugOverride::default());
+    let debug_override_allocation = buffer_allocation(
+        ShAllocationKind::DirectComposeDebugOverride,
+        &debug_override_bytes,
+        wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    );
+    ledger.record_buffer(
+        debug_override_allocation,
+        &[],
+        true,
+        ShResidencyAllocationState::Data,
+    );
     let debug_override_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Debug Override"),
         contents: &debug_override_bytes,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        usage: debug_override_allocation.usage,
     });
     let initial_light_term_mask_bytes = direct_compose_params_bytes(LightTermMask::ALL);
+    let light_term_mask_allocation = buffer_allocation(
+        ShAllocationKind::DirectComposeLightTermMask,
+        &initial_light_term_mask_bytes,
+        wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    );
+    ledger.record_buffer(
+        light_term_mask_allocation,
+        &[],
+        true,
+        ShResidencyAllocationState::Data,
+    );
     let light_term_mask_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Frame Light-Term Mask"),
         contents: &initial_light_term_mask_bytes,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        usage: light_term_mask_allocation.usage,
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -508,7 +592,11 @@ fn build_promotion_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 18,
-                resource: grid_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &grid_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
+                }),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_DELTA_SUBBLOCKS,
@@ -548,7 +636,7 @@ fn build_promotion_pass(
     DirectShComposePipeline {
         pipeline,
         bind_group,
-        dispatch_dimensions: buffers.affinity_dims,
+        dispatches: grid_upload.dispatches,
         debug_override_buffer,
         light_term_mask_buffer,
         pending_copy_through: true,
@@ -577,7 +665,7 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
         storage_texture_bgl_entry(1),
-        uniform_bgl_entry(18),
+        dynamic_compose_grid_bgl_entry(),
         storage_bgl_entry(BIND_DELTA_SUBBLOCKS),
         storage_bgl_entry(BIND_DELTA_COMPACTION_META),
         storage_bgl_entry(BIND_AFFINITY_OFFSETS),
@@ -650,6 +738,19 @@ pub(super) fn uniform_bgl_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+pub(super) fn dynamic_compose_grid_bgl_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 18,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: wgpu::BufferSize::new(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
+        },
+        count: None,
+    }
+}
+
 pub(super) fn storage_bgl_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -675,16 +776,6 @@ fn direct_compose_params_bytes(mask: LightTermMask) -> [u8; DIRECT_COMPOSE_PARAM
     let mut bytes = [0u8; DIRECT_COMPOSE_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&mask.bits().to_ne_bytes());
     bytes
-}
-
-fn direct_compose_should_dispatch(
-    active: bool,
-    pending_copy_through: bool,
-    was_active: bool,
-    frame_light_term_mask: LightTermMask,
-    last_composed_mask: LightTermMask,
-) -> bool {
-    active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
 }
 
 #[cfg(test)]
@@ -831,7 +922,7 @@ mod tests {
         for (label, source, borrowed_payload) in [
             (
                 "id 41",
-                include_str!("direct_sh_compose.rs"),
+                include_str!("direct_sh_compose_carrier.rs"),
                 "delta.map_or(&[], |delta| delta.delta_subblocks.as_slice())",
             ),
             (
@@ -850,9 +941,8 @@ mod tests {
                 .next()
                 .expect("renderer source has a production prefix");
             assert!(
-                production.contains(borrowed_payload)
-                    && production.contains("u16_slice_to_bytes(delta_subblocks)"),
-                "{label} renderer must stage bytes directly from the borrowed format payload",
+                production.contains(borrowed_payload),
+                "{label} renderer must pass the borrowed format payload to the shared allocation description",
             );
             for forbidden in [
                 "buffers.delta_subblocks",
@@ -866,6 +956,10 @@ mod tests {
                 );
             }
         }
+        assert!(
+            include_str!("sh_allocation.rs").contains("u16_slice_to_bytes(delta_subblocks)"),
+            "the shared allocation description must stage bytes from borrowed f16 payloads"
+        );
     }
 
     #[test]
@@ -995,7 +1089,7 @@ mod tests {
         // Regression: without id 41 or id 45, Pass A must remain available so
         // clearing bit 3 writes zero instead of exposing the immutable base.
         let storage = DirectPromotionStorage::new(None, [1, 1, 1]);
-        assert_eq!(storage.subblock_bytes, vec![0; 4]);
+        assert_eq!(storage.payloads.delta_subblocks.contents, vec![0; 4]);
         assert_eq!(storage.buffers.affinity_offsets, vec![0, 0]);
         assert!(storage.buffers.affinity_lights.is_empty());
 
@@ -1074,6 +1168,25 @@ mod tests {
             })
             .count();
         assert_eq!(storage_count, 6);
+
+        let grid = entries
+            .iter()
+            .find(|entry| entry.binding == 18)
+            .expect("Pass A must retain GridDims at binding 18");
+        let wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset,
+            min_binding_size,
+        } = &grid.ty
+        else {
+            panic!("Pass A GridDims must remain a uniform buffer");
+        };
+        assert_eq!(*ty, wgpu::BufferBindingType::Uniform);
+        assert!(*has_dynamic_offset);
+        assert_eq!(
+            min_binding_size.map(std::num::NonZeroU64::get),
+            Some(DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64),
+        );
     }
 
     #[test]
@@ -1185,9 +1298,9 @@ mod tests {
         let coarsened_path = &source[coarsened_start..output_start];
 
         assert!(
-            dense_path.contains("if (output_is_stored && use_promotion_subtraction)")
+            dense_path.contains("if (output_is_stored && use_promotion_subtraction && local_probe_is_kept(cell_index, local_probe))")
                 && dense_path.contains("read_delta_texel("),
-            "the combined bit-3/bit-5 guard must wrap dense L0 delta reads",
+            "the combined bit-3/bit-5 and sparse kept-probe guards must wrap dense L0 delta reads",
         );
         assert!(
             coarsened_path.starts_with("    } else if (use_promotion_subtraction) {")
@@ -1201,7 +1314,7 @@ mod tests {
     fn direct_coarsened_compose_uses_one_brick_workgroup_and_kept_shared_tiles() {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
 
-        assert!(source.contains("@builtin(workgroup_id) brick"));
+        assert!(source.contains("@builtin(workgroup_id) workgroup"));
         assert!(source.contains("var<workgroup> shared_kept_tiles"));
         assert!(source.contains(
             "return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u"

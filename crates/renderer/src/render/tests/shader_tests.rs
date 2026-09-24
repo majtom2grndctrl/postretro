@@ -1033,12 +1033,35 @@ fn sh_grid_info_consumer_shaders_match_cpu_layout() {
         include_str!("../../shaders/shadow_sample_static_cache.wgsl"),
         "\n",
     );
+    const KINEMATIC_BRUSH_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/kinematic_brush.wgsl"),
+        "\n",
+        include_str!("../../shaders/material_shading.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_sample.wgsl"),
+        "\n",
+        include_str!("../../shaders/curve_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/light_falloff.wgsl"),
+        "\n",
+        include_str!("../../shaders/light_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/shadow_sample.wgsl"),
+        "\n",
+        include_str!("../../shaders/shadow_sample_static_cache.wgsl"),
+        "\n",
+        include_str!("../../shaders/surface_depth.wgsl"),
+        "\n",
+    );
 
     for (label, source) in [
         ("forward", SHADER_SOURCE),
         ("billboard", BILLBOARD_SHADER_SOURCE),
         ("fog_volume", FOG_SHADER_SOURCE),
         ("skinned_mesh", SKINNED_MESH_SHADER_SOURCE),
+        ("kinematic_brush", KINEMATIC_BRUSH_SHADER_SOURCE),
     ] {
         let span = wgsl_struct_span(source, "ShGridInfo", label);
         assert_eq!(
@@ -1064,15 +1087,129 @@ fn sh_compose_grid_dims_shader_layouts_match_cpu_packer() {
         "\n",
         include_str!("../../shaders/sh_indirection.wgsl"),
     );
+    const ANIMATED_DIRECT_SH_COMPOSE_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/animated_direct_sh_compose.wgsl"),
+        "\n",
+        include_str!("../../shaders/curve_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
+    );
 
     for (label, source) in [
         ("sh_compose", SH_COMPOSE_SHADER_SOURCE),
         ("direct_sh_compose", DIRECT_SH_COMPOSE_SHADER_SOURCE),
+        (
+            "animated_direct_sh_compose",
+            ANIMATED_DIRECT_SH_COMPOSE_SHADER_SOURCE,
+        ),
     ] {
         let span = wgsl_struct_span(source, "GridDims", label);
         assert_eq!(
-            span, 64,
-            "{label}.wgsl GridDims stride ({span}) must match build_compose_grid_bytes",
+            span, 80,
+            "{label}.wgsl GridDims stride ({span}) must match the dynamic compose grid record",
+        );
+    }
+}
+
+#[test]
+fn sh_sampling_and_compose_use_the_physical_tile_stride_without_new_bindings() {
+    for (label, source) in [
+        ("forward", include_str!("../../shaders/forward.wgsl")),
+        ("billboard", include_str!("../../shaders/billboard.wgsl")),
+        ("fog_volume", include_str!("../../shaders/fog_volume.wgsl")),
+        (
+            "skinned_mesh",
+            include_str!("../../shaders/skinned_mesh.wgsl"),
+        ),
+        (
+            "kinematic_brush",
+            include_str!("../../shaders/kinematic_brush.wgsl"),
+        ),
+    ] {
+        assert!(
+            wgsl_struct_has_member(source, "ShGridInfo", "physical_tile_stride", label),
+            "{label}.wgsl must consume the shared ShGridInfo physical stride word"
+        );
+    }
+
+    let sample = include_str!("../../shaders/sh_sample.wgsl");
+    assert!(
+        sample.matches("* sh_grid.physical_tile_stride").count() == 2,
+        "probe slot placement must use the physical tile stride on both axes"
+    );
+
+    for (label, source) in [
+        ("sh_compose", include_str!("../../shaders/sh_compose.wgsl")),
+        (
+            "direct_sh_compose",
+            include_str!("../../shaders/direct_sh_compose.wgsl"),
+        ),
+        (
+            "animated_direct_sh_compose",
+            include_str!("../../shaders/animated_direct_sh_compose.wgsl"),
+        ),
+    ] {
+        let expected_stride_uses = if label == "sh_compose" { 3 } else { 2 };
+        assert!(
+            source.matches("* grid.physical_tile_stride").count() == expected_stride_uses,
+            "{label}.wgsl must use the dynamic-record stride on both tile axes"
+        );
+        assert!(source.contains("range_start: u32,"));
+        assert!(source.contains("range_count: u32,"));
+        assert!(source.contains("let offset_index = cell_index * 2u;"));
+        assert!(source.contains("affinity_offsets[offset_index + 1u]"));
+    }
+
+    let indirect_compose = include_str!("../../shaders/sh_compose.wgsl");
+    let compact_base_sampler = indirect_compose
+        .split("fn sample_compact_base_atlas")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("indirect compose must retain its compact-base sampler");
+    assert!(
+        compact_base_sampler.contains(") * grid.physical_tile_stride;"),
+        "streamed id-34 compact tiles must use the physical slot stride on input too"
+    );
+
+    let billboard_scatter = include_str!("../../shaders/billboard_direct_scatter_compose.wgsl");
+    assert!(
+        billboard_scatter.contains("let start = affinity_offsets[cell_index];")
+            && billboard_scatter.contains("let end = affinity_offsets[cell_index + 1u];")
+            && !billboard_scatter.contains("cell_index * 2u"),
+        "whole-resident id-48 billboard scatter must retain its prefix CSR"
+    );
+}
+
+#[test]
+fn sparse_l0_compose_reads_only_probes_kept_by_its_delta_family() {
+    // Regression: a valid id-50 CSR entry can have zero tiles while the base probe is stored.
+    for (label, source, gate) in [
+        (
+            "id27",
+            include_str!("../../shaders/sh_compose.wgsl"),
+            "output_is_stored && use_indirect_animated",
+        ),
+        (
+            "id41",
+            include_str!("../../shaders/direct_sh_compose.wgsl"),
+            "output_is_stored && use_promotion_subtraction",
+        ),
+        (
+            "id45",
+            include_str!("../../shaders/animated_direct_sh_compose.wgsl"),
+            "output_is_stored",
+        ),
+    ] {
+        let l0 = source
+            .split("if (level == 0u) {")
+            .nth(1)
+            .and_then(|rest| rest.split("} else").next())
+            .unwrap_or_else(|| panic!("{label} needs an L0 compose branch"));
+        assert!(
+            l0.contains(&format!(
+                "if ({gate} && local_probe_is_kept(cell_index, local_probe))"
+            )),
+            "{label} must skip sparse entries with no tile for this probe"
         );
     }
 }
@@ -1088,4 +1225,17 @@ fn wgsl_struct_span(source: &str, name: &str, label: &str) -> u32 {
         }
     }
     panic!("{label} should declare struct {name}");
+}
+
+fn wgsl_struct_has_member(source: &str, name: &str, member_name: &str, label: &str) -> bool {
+    let struct_marker = format!("struct {name} {{");
+    let (_, after_marker) = source
+        .split_once(&struct_marker)
+        .unwrap_or_else(|| panic!("{label} should declare struct {name}"));
+    let (body, _) = after_marker
+        .split_once("\n}")
+        .unwrap_or_else(|| panic!("{label} should terminate struct {name}"));
+    body.lines()
+        .map(str::trim_start)
+        .any(|line| line.starts_with(&format!("{member_name}:")))
 }

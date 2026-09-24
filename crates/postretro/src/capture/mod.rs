@@ -2,6 +2,9 @@
 // renderer-owned offscreen scene/capture frame. See: context/lib/rendering_pipeline.md §7.8
 
 mod driver;
+mod prepared;
+mod report;
 mod scene;
+mod setup;
 
 pub(crate) use driver::run_capture;

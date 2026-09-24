@@ -352,7 +352,8 @@ impl ShStreamingSession {
             return self.prepare_batch();
         };
         // Publish before admitting or submitting, so the issuer never reads a
-        // cluster this frame's targets have already dropped.
+        // cluster this frame's target update dropped. A cluster the drain's
+        // budget policy suppresses below stays published until next frame.
         workers.publish_targets(self.controller.targets());
         while let Some(completion) = workers.try_completion().map_err(anyhow::Error::msg)? {
             if !self

@@ -29,17 +29,28 @@ struct RecordingSource {
     read_threads: Mutex<Vec<String>>,
     decode_threads: Mutex<Vec<String>>,
     hold_first_read: bool,
+    /// Every physical read fails after it is recorded.
+    fail_reads: bool,
     gate: (Mutex<bool>, Condvar),
 }
 
 impl RecordingSource {
     fn new(ranges: Vec<Range<u64>>, hold_first_read: bool) -> Arc<Self> {
+        Self::with_reads_failing(ranges, hold_first_read, false)
+    }
+
+    fn with_reads_failing(
+        ranges: Vec<Range<u64>>,
+        hold_first_read: bool,
+        fail_reads: bool,
+    ) -> Arc<Self> {
         Arc::new(Self {
             ranges,
             reads: Mutex::new(Vec::new()),
             read_threads: Mutex::new(Vec::new()),
             decode_threads: Mutex::new(Vec::new()),
             hold_first_read,
+            fail_reads,
             gate: (Mutex::new(false), Condvar::new()),
         })
     }
@@ -98,6 +109,12 @@ impl ShWorkerSource for RecordingSource {
             while !*open {
                 open = self.gate.1.wait(open).unwrap();
             }
+        }
+        if self.fail_reads {
+            return Err(PrlLoadError::SectionValidation {
+                section: "test source",
+                message: "read failed".into(),
+            });
         }
         Ok(pattern(&range))
     }
@@ -325,6 +342,40 @@ fn a_request_cleared_from_the_target_bitset_is_never_read_and_completes_cancelle
         );
     }
     assert_eq!(prepared_bytes(&completions, 0), pattern(&ranges[0]));
+    workers.stop();
+}
+
+#[test]
+fn a_failed_coalesced_read_fails_every_member_and_releases_its_encoded_bytes() {
+    let first = 0..64;
+    let second = 64..128;
+    let blocker = 100 * MIB..100 * MIB + 10;
+    let ranges = vec![first.clone(), second.clone(), blocker.clone()];
+    let source = RecordingSource::with_reads_failing(ranges, true, true);
+    let mut workers = ShAsyncWorkers::with_source(source.clone(), 2).unwrap();
+    publish(&workers, 0..3);
+
+    workers.submit(request(2, true)).unwrap();
+    source.wait_for_reads(1);
+    for cluster_id in [1, 0] {
+        workers.submit(request(cluster_id, true)).unwrap();
+    }
+    source.open_gate();
+    let completions = wait_completions(&workers, 3);
+
+    // The two adjacent chunks still shared one physical read.
+    assert_eq!(source.reads(), vec![blocker, first.start..second.end]);
+    for completion in &completions {
+        assert!(
+            matches!(completion.result, ShWorkerResult::Failed(_)),
+            "cluster {}: {:?}",
+            completion.request.cluster_id,
+            completion.result
+        );
+    }
+    assert_eq!(workers.stats().unwrap().reads_issued, 0);
+    assert!(source.decode_threads.lock().unwrap().is_empty());
+    assert_phases_drained(&workers);
     workers.stop();
 }
 

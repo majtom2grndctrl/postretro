@@ -38,10 +38,10 @@ impl StreamingAnimatedPass {
 
     pub(in crate::render::sh_streaming::direct_compose) fn upload_sparse_rows(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.upload_rows(queue, rows)
+        self.sparse.upload_rows(uploads, rows)
     }
 
     pub(in crate::render::sh_streaming::direct_compose) fn validate_sparse_rows(
@@ -53,10 +53,10 @@ impl StreamingAnimatedPass {
 
     pub(in crate::render::sh_streaming::direct_compose) fn clear_row_pair(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.clear_row_pair(queue, row)
+        self.sparse.clear_row_pair(uploads, row)
     }
 
     pub(in crate::render::sh_streaming::direct_compose) fn clear_all_row_pairs(

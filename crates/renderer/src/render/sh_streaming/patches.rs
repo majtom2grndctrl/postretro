@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// One canonical node's tiles: `len` consecutive closure-local slots of an
+/// id-50 isolated atlas that land on `len` consecutive live pool slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SlotRun {
+    pub(super) local: u32,
+    pub(super) live: u32,
+    pub(super) len: u32,
+}
+
 impl ShResidencyState {
     pub(super) fn install_patches(
         &mut self,
@@ -20,7 +29,11 @@ impl ShResidencyState {
         if bytes.len() != block.element_count as usize * 16 {
             return Err(malformed(cluster_id, "probe-patch block length is invalid"));
         }
-        let mut patched = Vec::new();
+        let mut patched = Vec::with_capacity(block.element_count as usize);
+        // Consecutive patches mostly share a node (a node covers a brick of
+        // probes), so reuse the last node's checked owner and live range
+        // instead of searching the node maps once per probe.
+        let mut last_node: Option<(StoredNode, u32, Option<PoolRange>)> = None;
         for offset in (0..bytes.len()).step_by(16) {
             let dense =
                 u32_at(bytes, offset).ok_or(malformed(cluster_id, "truncated probe patch"))?;
@@ -56,19 +69,27 @@ impl ShResidencyState {
                     "probe patch flags disagree with retained id-34 node metadata",
                 ));
             }
-            let node_owner = self.node_owner.get(&node).copied().ok_or(
-                ShResidencyDrainError::MissingDenseOwner {
-                    cluster_id,
-                    dense_index: dense,
-                },
-            )?;
-            if node_owner != cluster_id && !self.installed.contains_key(&node_owner) {
-                return Err(malformed(cluster_id, "node owner was not installed first"));
-            }
+            let node_slot = match last_node {
+                Some((cached, _, slot)) if cached == node => slot,
+                _ => {
+                    let node_owner = self.node_owner.get(&node).copied().ok_or(
+                        ShResidencyDrainError::MissingDenseOwner {
+                            cluster_id,
+                            dense_index: dense,
+                        },
+                    )?;
+                    if node_owner != cluster_id && !self.installed.contains_key(&node_owner) {
+                        return Err(malformed(cluster_id, "node owner was not installed first"));
+                    }
+                    let slot = self.node_slots.get(&node).copied();
+                    last_node = Some((node, node_owner, slot));
+                    slot
+                }
+            };
             if owner != cluster_id {
                 continue;
             }
-            let slot = self.node_slots.get(&node).copied().ok_or(malformed(
+            let slot = node_slot.ok_or(malformed(
                 cluster_id,
                 "canonical node slot was not allocated",
             ))?;
@@ -118,7 +139,7 @@ impl ShResidencyState {
         &self,
         cluster_id: u32,
         chunk: &DecodedClusterShPayload,
-    ) -> Result<BTreeMap<u32, u32>, ShResidencyDrainError> {
+    ) -> Result<Vec<SlotRun>, ShResidencyDrainError> {
         let patch_block = chunk
             .blocks
             .iter()
@@ -137,6 +158,9 @@ impl ShResidencyState {
             .ok_or(malformed(cluster_id, "chunk has no id-34 isolated atlas"))?;
 
         let mut closure_bases = BTreeMap::<StoredNode, u32>::new();
+        // A repeat of the previous patch's node and base was already checked
+        // and recorded; skip the map work for it.
+        let mut last_node: Option<(StoredNode, u32)> = None;
         for offset in (0..bytes.len()).step_by(16) {
             let dense =
                 u32_at(bytes, offset).ok_or(malformed(cluster_id, "truncated probe patch"))?;
@@ -162,6 +186,10 @@ impl ShResidencyState {
                 cluster_id,
                 "probe patch rank precedes node-local rank",
             ))?;
+            if last_node == Some((node, base)) {
+                continue;
+            }
+            last_node = Some((node, base));
             let layout = self.node_layouts.get(&node).ok_or(malformed(
                 cluster_id,
                 "canonical node lacks id-34 prefix metadata",
@@ -189,16 +217,20 @@ impl ShResidencyState {
             }
         }
 
-        let mut ordered: Vec<_> = closure_bases.into_iter().collect();
-        ordered.sort_by_key(|(node, _)| {
-            self.node_layouts
-                .get(node)
-                .map(|layout| layout.global_base_slot)
-                .unwrap_or(u32::MAX)
-        });
+        let mut ordered: Vec<_> = closure_bases
+            .into_iter()
+            .map(|(node, base)| {
+                let global_base = self
+                    .node_layouts
+                    .get(&node)
+                    .map_or(u32::MAX, |layout| layout.global_base_slot);
+                (global_base, node, base)
+            })
+            .collect();
+        ordered.sort_by_key(|&(global_base, _, _)| global_base);
         let mut expected_base = 0u32;
-        let mut local_to_live = BTreeMap::new();
-        for (node, source_base) in ordered {
+        let mut local_to_live = Vec::new();
+        for (_, node, source_base) in ordered {
             let layout = self.node_layouts.get(&node).ok_or(malformed(
                 cluster_id,
                 "canonical node lacks id-34 prefix metadata",
@@ -228,15 +260,12 @@ impl ShResidencyState {
                     "canonical live node range has wrong length",
                 ));
             }
-            for local in 0..layout.tile_count {
-                local_to_live.insert(
-                    source_base
-                        .checked_add(local)
-                        .ok_or(ShResidencyDrainError::SlotOverflow)?,
-                    live.start
-                        .checked_add(local)
-                        .ok_or(ShResidencyDrainError::SlotOverflow)?,
-                );
+            if layout.tile_count != 0 {
+                local_to_live.push(SlotRun {
+                    local: source_base,
+                    live: live.start,
+                    len: layout.tile_count,
+                });
             }
         }
         if expected_base != isolated.element_count {

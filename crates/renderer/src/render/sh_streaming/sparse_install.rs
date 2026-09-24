@@ -87,18 +87,18 @@ impl ShResidencyState {
             match section_id {
                 INDIRECT_DELTA_ID => {
                     self.journal_insert_row(journal, RowSet::IndirectDirty, row);
-                    self.journal_add_row_ref(journal, RowRefTable::IndirectDelta, row)?;
+                    self.journal_add_row_refs(journal, RowRefTable::IndirectDelta, row, 1)?;
                 }
                 DIRECT_DELTA_ID => {
                     self.journal_insert_row(journal, RowSet::DirectPromotionDirty, row);
                     // Pass B samples Pass A's result, so an id-41 change must
                     // dirty both unions when id-45 is present.
                     self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
-                    self.journal_add_row_ref(journal, RowRefTable::DirectPromotion, row)?;
+                    self.journal_add_row_refs(journal, RowRefTable::DirectPromotion, row, 1)?;
                 }
                 ANIMATED_DIRECT_DELTA_ID => {
                     self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
-                    self.journal_add_row_ref(journal, RowRefTable::DirectAnimated, row)?;
+                    self.journal_add_row_refs(journal, RowRefTable::DirectAnimated, row, 1)?;
                 }
                 _ => unreachable!("collect_sparse_rows validates streamed families"),
             }

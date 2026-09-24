@@ -17,7 +17,7 @@ pub(super) struct InstallGpu<'a> {
 /// mirrors already hold the new addresses; only queue uploads and the
 /// installed record remain.
 struct StagedInstall {
-    local_slots: BTreeMap<u32, u32>,
+    local_slots: Vec<SlotRun>,
     patches: Vec<InstalledProbe>,
     sparse_plan: Vec<SparseInstallPlan>,
     required_indirect_epoch: u64,
@@ -78,7 +78,13 @@ impl ShResidencyState {
         // pool with the same live contents is still a valid pool.
         drop(journal);
         if let Some(gpu) = gpu {
-            self.upload_staged(gpu.queue, prepared, has_dense_payload, &staged)?;
+            // Nearly every decoded byte is uploaded; reserve for it once.
+            let mut uploads =
+                self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
+            let staged_result =
+                self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged);
+            self.submit_uploads(uploads, gpu.device, gpu.queue);
+            staged_result?;
         }
         let owned_nodes = self
             .nodes_by_owner
@@ -131,21 +137,24 @@ impl ShResidencyState {
         let local_slots = if has_dense_payload {
             self.local_to_live_slots(cluster_id, &prepared.chunk)?
         } else {
-            BTreeMap::new()
+            Vec::new()
         };
         let patches = if has_dense_payload {
             self.install_patches(journal, cluster_id, &prepared.chunk)?
         } else {
             Vec::new()
         };
-        for patch in &patches {
-            let row = self.affinity_row_for_dense(patch.dense)?;
+        let dense_rows = patches
+            .iter()
+            .map(|patch| self.affinity_row_for_dense(patch.dense))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (row, count) in row_counts(dense_rows) {
             self.journal_insert_row(journal, RowSet::IndirectDirty, row);
-            self.journal_add_row_ref(journal, RowRefTable::IndirectBase, row)?;
+            self.journal_add_row_refs(journal, RowRefTable::IndirectBase, row, count)?;
             if self.direct_required {
                 self.journal_insert_row(journal, RowSet::DirectPromotionDirty, row);
                 self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
-                self.journal_add_row_ref(journal, RowRefTable::DirectBase, row)?;
+                self.journal_add_row_refs(journal, RowRefTable::DirectBase, row, count)?;
             }
         }
         let sparse_plan = self.allocate_sparse_rows(journal, cluster_id, sparse_rows)?;
@@ -176,7 +185,7 @@ impl ShResidencyState {
         &self,
         prepared: &PreparedShCluster,
         has_dense_payload: bool,
-        local_slots: &BTreeMap<u32, u32>,
+        local_slots: &[SlotRun],
         sparse_plan: &[SparseInstallPlan],
     ) -> Result<(), ShResidencyDrainError> {
         let Some(gpu) = self.gpu.as_ref() else {
@@ -209,11 +218,12 @@ impl ShResidencyState {
         Ok(())
     }
 
-    /// Queue every validated upload. Backing data lands before each compose
-    /// CSR pair is published; the compose indirection follows last.
-    fn upload_staged(
+    /// Stage every validated upload into one batch. Backing data is copied
+    /// before each compose CSR pair is published; the compose indirection
+    /// follows last.
+    fn stage_uploads(
         &mut self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         prepared: &PreparedShCluster,
         has_dense_payload: bool,
         staged: &StagedInstall,
@@ -226,7 +236,7 @@ impl ShResidencyState {
             let indirect = isolated_atlas(&prepared.chunk, INDIRECT_BASE_ID)
                 .ok_or(malformed(cluster_id, "chunk has no id-34 isolated atlas"))?;
             gpu.upload_isolated_tiles(
-                queue,
+                uploads,
                 &gpu.base,
                 gpu.base_format,
                 prepared.chunk.block_bytes(indirect),
@@ -242,7 +252,7 @@ impl ShResidencyState {
                 .direct_format
                 .ok_or(malformed(cluster_id, "streamed direct pool lacks a format"))?;
             gpu.upload_isolated_tiles(
-                queue,
+                uploads,
                 destination,
                 format,
                 prepared.chunk.block_bytes(direct),
@@ -261,16 +271,20 @@ impl ShResidencyState {
             }
         }
         if !indirect_rows.is_empty() {
-            gpu.upload_indirect_sparse_rows(queue, &indirect_rows)?;
+            gpu.upload_indirect_sparse_rows(uploads, &indirect_rows)?;
         }
         if !direct_rows.is_empty() {
-            gpu.upload_direct_sparse_rows(queue, DIRECT_DELTA_ID, &direct_rows)?;
+            gpu.upload_direct_sparse_rows(uploads, DIRECT_DELTA_ID, &direct_rows)?;
         }
         if !animated_direct_rows.is_empty() {
-            gpu.upload_direct_sparse_rows(queue, ANIMATED_DIRECT_DELTA_ID, &animated_direct_rows)?;
+            gpu.upload_direct_sparse_rows(
+                uploads,
+                ANIMATED_DIRECT_DELTA_ID,
+                &animated_direct_rows,
+            )?;
         }
         gpu.upload_changed_compose_words(
-            queue,
+            uploads,
             &self.compose_words,
             staged.patches.iter().map(|patch| patch.dense),
         )
@@ -386,6 +400,26 @@ impl ShResidencyState {
             )?;
         }
         Ok(())
+    }
+
+    /// Start an upload batch with room for about `reserve` bytes.
+    pub(super) fn begin_uploads(&mut self, reserve: usize) -> StagedUploads {
+        self.gpu.as_mut().map_or_else(
+            || StagedUploads::from_scratch(Vec::new(), 0),
+            |pools| pools.begin_uploads(reserve),
+        )
+    }
+
+    /// Submit one upload batch. CPU-only states record nothing to submit.
+    pub(super) fn submit_uploads(
+        &mut self,
+        uploads: StagedUploads,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        if let Some(pools) = self.gpu.as_mut() {
+            pools.submit_uploads(uploads, device, queue);
+        }
     }
 
     fn probe_occlusion_enabled(&self) -> bool {

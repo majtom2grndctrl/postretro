@@ -442,25 +442,11 @@ fn incremental_resident_rows_match_a_full_rebuild_from_row_refs() {
     let mut state = map.state();
     state.install(None, &map.prepared(&state, 0)).unwrap();
     state.install(None, &map.prepared(&state, 1)).unwrap();
-    let incremental = (
-        state.indirect_resident_rows.clone(),
-        state.direct_promotion_resident_rows.clone(),
-        state.direct_animated_resident_rows.clone(),
-    );
 
-    // Eviction still rebuilds these unions from the ref tables; install must
-    // leave exactly what that rebuild would produce.
-    state.refresh_indirect_resident_rows();
-    state.refresh_direct_resident_rows();
-    assert_eq!(
-        incremental,
-        (
-            state.indirect_resident_rows.clone(),
-            state.direct_promotion_resident_rows.clone(),
-            state.direct_animated_resident_rows.clone(),
-        )
-    );
-    assert_eq!(incremental.0, BTreeSet::from([0, 1, 2, 3]));
+    // Install must leave exactly what a full rebuild from the ref tables
+    // would produce.
+    assert_eq!(state.resident_rows(), state.rebuilt_resident_rows());
+    assert_eq!(state.indirect_resident_rows, BTreeSet::from([0, 1, 2, 3]));
 }
 
 #[test]
@@ -526,4 +512,80 @@ fn rolled_back_install_strands_no_address_for_the_next_drain() {
     // A retry after rollback lands on exactly the addresses a never-failed
     // install would, so no slot or row range was leaked or double-owned.
     assert_eq!(mirror(&recovered), mirror(&clean));
+}
+
+#[test]
+fn eviction_releases_rows_incrementally_to_what_a_full_rebuild_produces() {
+    let map = two_cluster_map();
+    let mut state = map.state();
+    state.install(None, &map.prepared(&state, 0)).unwrap();
+    let first_only = mirror(&state);
+    state.install(None, &map.prepared(&state, 1)).unwrap();
+
+    // Regression: eviction rebuilt every resident union once per evicted
+    // sparse row. It now releases per touched row and must still land on the
+    // rebuilt unions.
+    state.evict(&mut StagedUploads::default(), 1).unwrap();
+    assert_eq!(state.resident_rows(), state.rebuilt_resident_rows());
+    let after = mirror(&state);
+    assert_eq!(
+        after.indirect_resident_rows,
+        first_only.indirect_resident_rows
+    );
+    assert_eq!(
+        after.direct_promotion_resident_rows,
+        first_only.direct_promotion_resident_rows
+    );
+    assert_eq!(
+        after.direct_animated_resident_rows,
+        first_only.direct_animated_resident_rows
+    );
+    assert_eq!(
+        after.indirect_base_row_refs,
+        first_only.indirect_base_row_refs
+    );
+    assert_eq!(
+        after.indirect_delta_row_refs,
+        first_only.indirect_delta_row_refs
+    );
+    assert_eq!(after.direct_base_row_refs, first_only.direct_base_row_refs);
+    assert_eq!(
+        after.direct_promotion_row_refs,
+        first_only.direct_promotion_row_refs
+    );
+    assert_eq!(
+        after.direct_animated_row_refs,
+        first_only.direct_animated_row_refs
+    );
+    // The evicted probes read as misses; the survivor keeps its words.
+    for dense in map.cluster_probes(1) {
+        assert_eq!(state.compose_words[dense as usize], 0);
+        assert_eq!(state.sampled_words[dense as usize], 0);
+    }
+    assert_eq!(
+        map.cluster_probes(0)
+            .iter()
+            .map(|&dense| state.compose_words[dense as usize])
+            .collect::<Vec<_>>(),
+        map.cluster_probes(0)
+            .iter()
+            .map(|&dense| first_only.compose_words[dense as usize])
+            .collect::<Vec<_>>()
+    );
+    for row in map.cluster_rows(1) {
+        assert!(state.indirect_dirty_rows.contains(&row));
+        assert!(state.direct_animated_dirty_rows.contains(&row));
+    }
+
+    state.evict(&mut StagedUploads::default(), 0).unwrap();
+    assert_eq!(
+        state.resident_rows(),
+        [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()]
+    );
+    assert!(state.indirect_base_row_refs.is_empty());
+    assert!(state.indirect_delta_row_refs.is_empty());
+    assert!(state.direct_base_row_refs.is_empty());
+    assert!(state.direct_promotion_row_refs.is_empty());
+    assert!(state.direct_animated_row_refs.is_empty());
+    assert!(state.installed.is_empty());
 }

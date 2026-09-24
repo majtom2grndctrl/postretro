@@ -315,8 +315,10 @@ impl ShStreamingSession {
             install_cpu_total_micros: live.install_cpu_total_micros,
             install_cpu_max_drain_micros: live.install_cpu_max_drain_micros,
             install_cpu_last_drain_micros: live.install_cpu_last_drain_micros,
+            install_cpu_max_steady_drain_micros: live.install_cpu_max_steady_drain_micros,
             pool_growth_events: live.pool_growth_events,
             pool_growth_bytes: live.pool_growth_bytes,
+            pool_growth_cpu_micros: live.pool_growth_cpu_micros,
         })
     }
 

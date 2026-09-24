@@ -15,6 +15,7 @@ use passes::{StreamingAnimatedPass, StreamingPromotionPass};
 pub(super) use sparse::DirectSparseRowUpload;
 use sparse::{RetiredDirectSparseResources, checked_ledger_sum};
 
+use super::gpu::StagedUploads;
 use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
@@ -355,12 +356,12 @@ impl StreamingDirectCompose {
     /// publishing its `(start,end)` CSR pair.
     pub(super) fn upload_sparse_rows(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         section_id: u32,
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         match section_id {
-            41 => self.promotion.upload_sparse_rows(queue, rows),
+            41 => self.promotion.upload_sparse_rows(uploads, rows),
             45 => self
                 .animated
                 .as_ref()
@@ -368,7 +369,7 @@ impl StreamingDirectCompose {
                     cluster_id: 0,
                     reason: "id-45 rows supplied without an animated direct compose pass",
                 })?
-                .upload_sparse_rows(queue, rows),
+                .upload_sparse_rows(uploads, rows),
             _ => Err(unsupported_sparse_section(section_id)),
         }
     }
@@ -378,12 +379,12 @@ impl StreamingDirectCompose {
     /// zeroed, so a stale CSR entry cannot address new data.
     pub(super) fn clear_sparse_row_pair(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         section_id: u32,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
         match section_id {
-            41 => self.promotion.clear_row_pair(queue, row),
+            41 => self.promotion.clear_row_pair(uploads, row),
             45 => self
                 .animated
                 .as_ref()
@@ -391,7 +392,7 @@ impl StreamingDirectCompose {
                     cluster_id: 0,
                     reason: "id-45 row clear requested without an animated direct compose pass",
                 })?
-                .clear_row_pair(queue, row),
+                .clear_row_pair(uploads, row),
             _ => Err(unsupported_sparse_section(section_id)),
         }
     }

@@ -795,6 +795,8 @@ mod tests {
     };
     #[cfg(feature = "dev-tools")]
     use postretro_test_log_capture::LogCapture;
+    #[cfg(feature = "dev-tools")]
+    use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 
     #[cfg(feature = "dev-tools")]
     fn direct_delta_fixture() -> DirectShDeltaVolumesSection {

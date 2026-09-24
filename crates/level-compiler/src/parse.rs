@@ -16,8 +16,8 @@ use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
     LightType, MapAssembly, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover,
-    MapKinematicWaypoint, MapLight, MapLightmapScaleRegion, MapTriggerVolume, NavParams,
-    TextureProjection,
+    MapKinematicWaypoint, MapLight, MapLightmapScaleRegion, MapStreamingHintRegion,
+    MapStreamingPriorityRegion, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{
@@ -27,11 +27,17 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 
 #[path = "parse/authoring_regions.rs"]
 mod authoring_regions;
+#[path = "parse/streaming_hint_source.rs"]
+mod streaming_hint_source;
+#[cfg(test)]
+#[path = "parse/streaming_hint_tests.rs"]
+mod streaming_hint_tests;
 
 use authoring_regions::{
     BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
-    resolve_sh_protect_aabb,
+    resolve_sh_protect_aabb, resolve_streaming_hint_region, resolve_streaming_priority_region,
 };
+use streaming_hint_source::reject_invalid_streaming_hint_source_hulls;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
 ///
@@ -79,7 +85,7 @@ fn parse_fog_tint(s: &str) -> Option<[f32; 3]> {
 /// Parse an origin string like "-192 25.6 167.736" into a DVec3.
 ///
 /// Parses directly to f64 — no precision cast from f32.
-fn parse_origin(s: &str) -> Option<DVec3> {
+pub(super) fn parse_origin(s: &str) -> Option<DVec3> {
     let parts: Vec<f64> = s
         .split_whitespace()
         .filter_map(|p| p.parse().ok())
@@ -657,6 +663,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let raw_map_text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read map file: {}", path.display()))?;
 
+    reject_invalid_streaming_hint_source_hulls(&raw_map_text, scale)?;
+
     // TrenchBroom wraps a brush face's material name in double quotes whenever
     // that name contains a space (e.g. a collection directory named
     // `Level Eleven Games Sci-Fi Texture Pack v1`). shalrath's brush-plane
@@ -806,6 +814,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // Brush-defined scale overrides are preserved in source entity order. Chart
     // planning uses that order to make overlapping regions last-defined-wins.
     let mut lightmap_scale_regions: Vec<MapLightmapScaleRegion> = Vec::new();
+    // Compiler-only authored SH streaming metadata. These brushes are peeled
+    // before static BSP inputs; later tasks resolve the retained canonical hulls
+    // against generated portals and runtime cells.
+    let mut streaming_seam_regions: Vec<MapStreamingHintRegion> = Vec::new();
+    let mut stream_resident_regions: Vec<MapStreamingHintRegion> = Vec::new();
+    let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
@@ -1063,6 +1077,26 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // paths. Editor groups are already flattened into static world brushes.
         let has_brushes = !brush_ids.is_empty();
 
+        // Streaming hints are compiler-only brush entities. Reject a point
+        // entity before the generic `has_brushes` branch so it cannot fall
+        // through to runtime classname dispatch as inert, invisible content.
+        if matches!(
+            classname.as_str(),
+            "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+        ) && !has_brushes
+        {
+            let location = match origin {
+                Some(origin) if origin.is_finite() => {
+                    format!("at ({:.3}, {:.3}, {:.3}) m", origin.x, origin.y, origin.z)
+                }
+                Some(_) => "at a non-finite authored origin".to_string(),
+                None => "at an entity without an authored origin".to_string(),
+            };
+            anyhow::bail!(
+                "{classname} {location} has no brushes — streaming hints require exactly one convex brush"
+            );
+        }
+
         // A brushless `switch` has nothing to desugar: no geometry to fold, no
         // hull to grow. Falling through to the point-entity tail below would emit
         // a `MapEntityRecord` that the runtime drops at `debug!` as an
@@ -1087,6 +1121,45 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         }
 
         if has_brushes {
+            if matches!(
+                classname.as_str(),
+                "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+            ) {
+                if brush_ids.len() != 1 {
+                    let location = match origin {
+                        Some(origin) if origin.is_finite() => {
+                            format!("at ({:.3}, {:.3}, {:.3}) m", origin.x, origin.y, origin.z)
+                        }
+                        Some(_) => "at a non-finite authored origin".to_string(),
+                        None => "at an entity without an authored origin".to_string(),
+                    };
+                    anyhow::bail!(
+                        "{classname} {location} owns {} brushes — streaming hints require exactly one convex brush",
+                        brush_ids.len()
+                    );
+                }
+
+                let props = collect_entity_properties(&geo_map, entity_id);
+                match classname.as_str() {
+                    "streaming_seam_volume" => {
+                        streaming_seam_regions.push(resolve_streaming_hint_region(
+                            &geo_map, &brush_ids, scale, &classname, origin,
+                        )?)
+                    }
+                    "stream_resident_volume" => {
+                        stream_resident_regions.push(resolve_streaming_hint_region(
+                            &geo_map, &brush_ids, scale, &classname, origin,
+                        )?)
+                    }
+                    "stream_priority_region" => {
+                        stream_priority_regions.push(resolve_streaming_priority_region(
+                            &geo_map, &brush_ids, &props, scale, &classname, origin,
+                        )?)
+                    }
+                    _ => unreachable!("streaming hint classname was pre-filtered"),
+                }
+                continue;
+            }
             if classname == "trigger_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
                 trigger_volumes.push(crate::trigger_volumes::resolve_trigger_volume(
@@ -1473,6 +1546,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         uniform_grid_optout,
         fog_volumes,
         lightmap_scale_regions,
+        streaming_seam_regions,
+        stream_resident_regions,
+        stream_priority_regions,
         fog_pixel_scale,
         initial_gravity,
         lightmap_density,
@@ -2341,8 +2417,9 @@ fn resolve_fog_volume(
     scale: f64,
     classname: &str,
 ) -> Result<Option<MapFogVolume>> {
-    let Some(BrushRegionBounds { min, max, planes }) =
-        resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)?
+    let Some(BrushRegionBounds {
+        min, max, planes, ..
+    }) = resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)?
     else {
         return Ok(None);
     };

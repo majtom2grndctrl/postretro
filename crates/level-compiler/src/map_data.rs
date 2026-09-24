@@ -630,6 +630,16 @@ pub struct MapData {
     /// planning can apply the documented last-containing-region precedence.
     /// Compiler-only: the regions shape chart dimensions but emit no PRL section.
     pub lightmap_scale_regions: Vec<MapLightmapScaleRegion>,
+    /// Compiler-only SH streaming seams. The parser retains the engine-space
+    /// convex hulls for the later portal-resolution stage; they are never part
+    /// of the static world brush set or a runtime map-entity section.
+    pub streaming_seam_regions: Vec<MapStreamingHintRegion>,
+    /// Compiler-only SH residency pins. The later cluster-resolution stage
+    /// matches their engine-space AABBs against runtime cells.
+    pub stream_resident_regions: Vec<MapStreamingHintRegion>,
+    /// Compiler-only SH optional-work priorities. A zero priority is retained
+    /// as authored metadata here; later resolution omits its no-op hint record.
+    pub stream_priority_regions: Vec<MapStreamingPriorityRegion>,
     /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
     /// Default 4 when the worldspawn entity does not author the key.
     pub fog_pixel_scale: u32,
@@ -773,6 +783,31 @@ pub struct MapLightmapScaleRegion {
     /// Positive multiplier applied to the global lightmap density. Values below
     /// one make charts coarser; values above one make them finer.
     pub scale: f32,
+}
+
+/// One convex compiler-only region used to resolve an SH streaming hint after
+/// the static BSP has yielded runtime portals and cells. Coordinates are engine
+/// meters (Y-up); `source_location` is the authored entity origin when present,
+/// otherwise the resolved hull center for diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapStreamingHintRegion {
+    /// Conservative engine-space AABB used for later broad-phase tests.
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Convex hull planes. A point `p` is inside when
+    /// `dot(p, normal) <= distance` for every plane.
+    pub planes: Vec<[f32; 4]>,
+    /// Stable mapper-facing diagnostic location in engine meters.
+    pub source_location: [f32; 3],
+}
+
+/// A compiler-only SH priority region. Priority is deliberately kept separate
+/// from the generic hull because seam and resident hints have no priority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapStreamingPriorityRegion {
+    pub region: MapStreamingHintRegion,
+    /// Optional-work priority from 0 (no hint) through 3 (highest).
+    pub priority: u8,
 }
 
 #[cfg(test)]

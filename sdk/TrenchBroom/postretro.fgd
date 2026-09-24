@@ -595,6 +595,22 @@
     dilation(float) : "AABB expansion in world/engine meters. Use about half a probe cell when the brush hugs a probe-brick edge." : "0"
 ]
 
+// Compiler-only SH streaming hints. Each entity owns exactly one convex brush;
+// the compiler peels it before BSP, collision, visibility, lightmap, SDF, and
+// navmesh construction. The hull only influences later SH cluster metadata.
+@SolidClass = streaming_seam_volume : "SH streaming seam and far-side warm-up (brush)"
+[
+]
+
+@SolidClass = stream_resident_volume : "Keep overlapping SH streaming clusters resident (brush)"
+[
+]
+
+@SolidClass = stream_priority_region : "Rank optional SH streaming work under pressure (brush)"
+[
+    _stream_priority(integer) : "Optional-work priority (0 = no hint, 3 = highest). Blank uses 0." : "0"
+]
+
 // Semantic fog point entities.
 //
 // Modder pattern for adding a new fog shape:

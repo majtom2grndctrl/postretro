@@ -209,6 +209,11 @@ impl PresentationTemplateLayout {
         }
     }
 
+    // The drive_* calls below read as collapsible into match guards, but a
+    // binding is immutable until the end of its guard and every one of them
+    // takes `last_resolved` and `tween` by `&mut`. Clippy's rewrite does not
+    // compile here, so the nesting stays.
+    #[allow(clippy::collapsible_match)]
     fn resolve_facts(
         &mut self,
         slot_values: &HashMap<String, SlotValue>,

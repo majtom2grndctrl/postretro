@@ -6,15 +6,19 @@ use std::path::Path;
 pub use cosmic_text::FontSystem;
 use cosmic_text::{Attrs, Buffer as TextBuffer, Family, Metrics, Shaping};
 
+// Both default faces are embedded, so the OFL text they require cannot ride
+// along in a content tree the way it did when these files lived under
+// `content/base/fonts/`. It lives in `core/licenses/`, which every payload
+// copies whether or not the game that payload ships supplies fonts of its own.
+
 /// Engine default UI typeface: Inter (SIL Open Font License 1.1).
-const UI_FONT_TTF: &[u8] = include_bytes!("../../../content/base/fonts/Inter-Regular.ttf");
+const UI_FONT_TTF: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 
 /// Font family name inside `UI_FONT_TTF`.
 pub const UI_FONT_FAMILY: &str = "Inter";
 
 /// Engine default UI monospace typeface: JetBrains Mono (SIL Open Font License 1.1).
-const UI_MONO_FONT_TTF: &[u8] =
-    include_bytes!("../../../content/base/fonts/JetBrainsMono-Regular.ttf");
+const UI_MONO_FONT_TTF: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
 /// Font family name inside `UI_MONO_FONT_TTF`.
 pub const UI_MONO_FONT_FAMILY: &str = "JetBrains Mono";
@@ -151,17 +155,18 @@ mod tests {
         );
     }
 
-    fn workspace_font(name: &str) -> std::path::PathBuf {
+    /// The crate's own `assets/fonts/` — the same files `include_bytes!` embeds.
+    /// Used here only as a convenient on-disk TTF for the runtime-load path; the
+    /// production runtime font path reads mod-supplied files, never these.
+    fn bundled_font(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("content/base/fonts")
+            .join("assets/fonts")
             .join(name)
     }
 
     #[test]
     fn read_font_file_reads_ttf_bytes_from_disk() {
-        let bytes =
-            read_font_file(&workspace_font("Inter-Regular.ttf")).expect("fixture font reads");
+        let bytes = read_font_file(&bundled_font("Inter-Regular.ttf")).expect("fixture font reads");
         assert_eq!(&bytes[0..4], &[0x00, 0x01, 0x00, 0x00]);
     }
 
@@ -177,7 +182,7 @@ mod tests {
         let mut fs = FontSystem::new();
         assert!(!font_family_is_registered(&fs, UI_MONO_FONT_FAMILY));
         let bytes =
-            read_font_file(&workspace_font("JetBrainsMono-Regular.ttf")).expect("mono font reads");
+            read_font_file(&bundled_font("JetBrainsMono-Regular.ttf")).expect("mono font reads");
         fs.db_mut().load_font_data(bytes);
         assert!(font_family_is_registered(&fs, UI_MONO_FONT_FAMILY));
     }
@@ -185,7 +190,7 @@ mod tests {
     #[test]
     fn family_lookup_rejects_mismatched_declared_name() {
         let mut fs = FontSystem::new();
-        let bytes = read_font_file(&workspace_font("Inter-Regular.ttf")).expect("Inter reads");
+        let bytes = read_font_file(&bundled_font("Inter-Regular.ttf")).expect("Inter reads");
         fs.db_mut().load_font_data(bytes);
         assert!(!font_family_is_registered(&fs, "NotTheRealFamilyName"));
         assert!(font_family_is_registered(&fs, UI_FONT_FAMILY));

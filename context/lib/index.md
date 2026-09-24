@@ -28,11 +28,14 @@
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
-- **Where `.prm` sidecars live / materials-root derivation / mod root shape** → `build_pipeline.md` §Baked texture mips
+- **`postretro-tool` / `postretro.toml` project marker / project discovery / helper-binary resolution / why `xtask` cannot ship** → `build_pipeline.md` §Distribution packaging (§The project marker, §Why the tool is not xtask)
+- **Authoring launch against a project / `postretro-tool run` / `--core-root` / `--install-root` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `ui.md` §5 · `docs/external-projects.md` (author-facing)
+- **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad** → `input.md`
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
+- **Engine-owned assets / `core/` tree / built-in UI descriptors / splash image / where engine assets live vs. mod content** → `ui.md` §5 · `build_pipeline.md` §Distribution packaging
 - **Resource management / textures / materials** → `resource_management.md`
 - **Surface Depth / height maps / `_h.png` / texel-space parallax / per-texel surface carve / two-channel surface map** → `resource_management.md` §4.6 · `rendering_pipeline.md` §7.3 · bake and `.prm` format: `build_pipeline.md` §Baked texture mips
 - **Texture memory accounting / per-slot or per-mip byte cost / what a level's textures cost** → `build_pipeline.md` §Baked texture mips (Byte accounting)
@@ -48,7 +51,8 @@
 - **Dynamic weapon accuracy / spread / bloom / recoil-as-accuracy-loss / movement inaccuracy / crosshair spread ring** → `entity_model.md` §Components (Weapon vocabulary — Dynamic accuracy) · `networking.md` §engine-randomness carve-out
 - **Splash / AoE / area damage / blast radius / distance falloff / rocket explosion** → `entity_model.md` §Components (Splash / area effects)
 - **Knockback / hit impulses / rocket jumping** → `entity_model.md` §Components (Knockback) · `movement.md` §6 · `networking.md` §Game-logic-owned apply invariant
-- **Game / mod author docs (human-facing, not agent context)** → `docs/`
+- **Game / mod author docs (human-facing, not agent context)** → `docs/` — every command there must be runnable from an SDK bundle alone; `cargo run -p xtask -- …` never appears in it
+- **Game content in an author's own repository, outside an engine install (human-facing walkthrough)** → `docs/external-projects.md`; the contract behind it is `build_pipeline.md` §Baked texture mips and §Distribution packaging
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake

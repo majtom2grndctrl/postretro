@@ -54,7 +54,7 @@ the manifest lacks any required field.
 **Imports and `require`.**
 
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` and `"postretro/ui"` symbols are stripped (the symbols arrive as runtime globals).
-- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
+- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -76,8 +76,8 @@ entry in `<mod-root>/identity.json`:
 ```
 
 After adding such a slot, run
-`cargo run -p xtask -- mint-identity <mod-root>` and ship the updated file with
-the mod. When renaming a store or slot, rename the dotted key in this file but
+`bin/postretro-tool mint-identity <mod>` — `<mod>` is the mod's name, `base`
+for `content/base` — and ship the updated file with the mod. When renaming a store or slot, rename the dotted key in this file but
 keep its opaque value; that retains saved data and replication identity. Missing
 or invalid durable identity rejects mod initialization. This is stricter than an
 ordinary missing, malformed, or incompatible saved value, which warns and leaves
@@ -1875,14 +1875,7 @@ authored baseline.
 
 That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
-The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
-
-```sh
-tsc --project context/plans/done/E16--impact-policy-substrate/tsconfig.json
-tsc --project context/plans/done/E16--impact-death-lifecycle/tsconfig.json
-```
-
-The repository does not install or download `tsc`; editor/CI tooling supplies it. The committed `@ts-expect-error` cases make unsafe narrowing and forged effects fail this gate.
+The type definitions for this area carry committed `@ts-expect-error` cases, so unsafe narrowing and forged effects fail a type check. Nothing here installs or downloads `tsc` — supply your own, and run `tsc --noEmit` against your scripts.
 
 ### `armTrigger` and `disarmTrigger`
 
@@ -2313,14 +2306,14 @@ opener:
 ```
 
 The keyboard layout itself is an engine-shipped JSON asset at
-`content/base/ui/keyboard.json`, loaded from disk at boot. Editing it (adding or
+`core/ui/keyboard.json`, loaded from disk at boot. Editing it (adding or
 removing keys, retiming the backspace repeat) and reloading changes the keyboard
 with no engine change — keys are data. Each key's `onPress` names a reaction the
 mod registers (the `appendText` / `backspaceText` reactions above), except the
 `done` key, whose reserved `onPress` (`ui.commitTextEntry`) the engine intercepts
 to reach the shared commit seam.
 
-> **Keyboard asset is layout-only.** `content/base/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop).
+> **Keyboard asset is layout-only.** `core/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop). It lives under `core/` rather than in a content tree because it belongs to the engine: mounting a game never replaces it.
 
 ### Pause menu
 
@@ -2771,9 +2764,9 @@ Announce({ priority: "assertive" }, "Connection lost"); // interrupts
 
 ### Proving the type-safety surface
 
-The repo has no `tsc` CI; per-kind narrowing is proven two ways, both committed:
+There is no `tsc` CI; per-kind narrowing is proven two ways, both committed:
 
-- **Typedef snapshot tests** (`crates/postretro/src/scripting/typedef/tests/`) assert
+- **Typedef snapshot tests**, in the engine's own test suite, assert
   the emitted `.d.ts` / `.d.luau` narrows per kind — `content` is a `Text`-only
   prop (so a `Button({ content })` is a type error), `Bar` requires no name, the
   interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows

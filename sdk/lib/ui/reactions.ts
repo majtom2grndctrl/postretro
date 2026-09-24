@@ -278,7 +278,7 @@ export function showDialog(
 
 /**
  * The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
- * this tree; the engine loads its descriptor from `content/base/ui/keyboard.json`
+ * this tree; the engine loads its descriptor from `core/ui/keyboard.json`
  * at boot. The keyboard edits the `ui.textEntry` writable String slot.
  */
 export const KEYBOARD_TREE = "keyboard";

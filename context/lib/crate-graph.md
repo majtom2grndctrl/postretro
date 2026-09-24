@@ -12,9 +12,9 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 
 ## Layers
 
-- **Layer 0 (leaves):** foundation, level-format, net, render-data, test-log-capture
+- **Layer 0 (leaves):** foundation, level-format, net, render-data, test-log-capture, xtask
 - **Layer 1:** entities, level-compiler, level-loader, model, script-compiler
-- **Layer 2:** combat-model, physics, scripting-core, visibility, xtask
+- **Layer 2:** combat-model, physics, scripting-core, tool, visibility
 - **Layer 3:** lighting, render-cpu, ui
 - **Layer 4:** renderer, sim
 - **Layer 5:** ai, netcode
@@ -26,12 +26,12 @@ Crates ranked by how many workspace crates depend on them directly —
 the compile chokepoints. Changing a public type in a high-ranked crate
 recompiles every dependent.
 
-- **level-format** — 12 dependents (postretro, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, xtask)
+- **level-format** — 12 dependents (postretro, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, tool)
 - **entities** — 11 dependents (postretro, ai, combat-model, lighting, netcode, physics, render-cpu, renderer, scripting-core, sim, ui)
 - **foundation** — 11 dependents (postretro, ai, combat-model, entities, lighting, model, netcode, physics, renderer, scripting-core, sim)
 - **level-loader** — 7 dependents (postretro, lighting, physics, render-cpu, renderer, sim, visibility)
 - **render-data** — 7 dependents (postretro, level-loader, lighting, model, render-cpu, renderer, sim)
-- **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, xtask)
+- **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, tool)
 - **scripting-core** — 6 dependents (postretro, lighting, netcode, renderer, sim, ui)
 - **net** — 4 dependents (postretro, combat-model, netcode, sim)
 - **physics** — 4 dependents (postretro, ai, netcode, sim)
@@ -42,7 +42,7 @@ recompiles every dependent.
 - **render-cpu** — 2 dependents (postretro, renderer)
 - **ui** — 2 dependents (postretro, renderer)
 - **ai** — 1 dependent (postretro)
-- **level-compiler** — 1 dependent (xtask)
+- **level-compiler** — 1 dependent (tool)
 - **netcode** — 1 dependent (postretro)
 - **renderer** — 1 dependent (postretro)
 - **test-log-capture** — 1 dependent (sim)

@@ -1,6 +1,6 @@
 # SH streaming authored-hints integration evidence
 
-**Status (2026-09-23): correctness and deterministic-artifact evidence are
+**Status (2026-09-23): Slice 4 correctness and deterministic-artifact evidence are
 complete. Manual GPU/visual evidence is `not-yet-evaluable` on this desktop
 sandbox.** That limits later tuning observations only; it does not weaken the
 format, compiler, loader, controller, or renderer correctness gates below.
@@ -9,7 +9,8 @@ format, compiler, loader, controller, or renderer correctness gates below.
 
 | Control | Value |
 | --- | --- |
-| Revision | `8c8604a30824ea86d62354119c1b8ca64f36265f` plus Task 6 evidence/docs worktree changes |
+| Initial fixture-bake revision | `8c8604a30824ea86d62354119c1b8ca64f36265f` |
+| Final integrated code revision | `485225b8fd90375f0a2ca7ce779abb04c014a475` |
 | Source fixture | `content/dev/maps/sh-streaming-hinted-door.map` |
 | Source SHA-256 | `6dde26e29bf70f01a047078b2cafa9ad86bfeef6fe501709c8bad0422091fe88` |
 | Probe spacing | `4` meters, explicitly supplied on every bake |
@@ -17,7 +18,7 @@ format, compiler, loader, controller, or renderer correctness gates below.
 | Committed loader fixture | `content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl` |
 | Fixture SHA-256 | `37a50c71755cc6533d9a381b025e609f7896ed10ec9829a9ba34893d75fda6b0` |
 | Fixture bytes | 25,561 |
-| Temporary directory | `/private/tmp/postretro-sh-hints-task6.3CC2BA` (owned by this check; removed after recording) |
+| Temporary directories | `/private/tmp/postretro-sh-hints-task6.3CC2BA` and final `/private/tmp/postretro-sh-hints-final.udDLtL` (both owned by these checks and removed after recording) |
 
 The production compiler binary was already built as
 `target/debug/prl-build`. The explicit cold commands were:
@@ -37,6 +38,14 @@ the white-lightmap placeholder. That warning is intentional fixture setup, not
 a streaming error. `cmp -s` confirmed `a.prl == b.prl` and that both equal the
 committed fixture byte-for-byte. Each file is 25,561 bytes with the fixture
 SHA-256 above.
+
+After the review fixes, the compiler was rebuilt at the final integrated code
+revision and two further direct bakes ran with `--sh-probe-spacing 4`,
+`--no-cache`, and `--no-tui` into the second owned temporary directory.
+`cmp -s` again confirmed
+both outputs were byte-identical to each other and the committed fixture;
+all three were 25,561 bytes with the same SHA-256. The final bakes took about
+0.04 seconds each and emitted only the same white-lightmap fixture warning.
 
 ## Exact id-49/id-50 evidence
 
@@ -84,7 +93,7 @@ overshoot. The separate renderer-floor regression reports the named
 small synthetic values are policy diagnostics, not a claim about live GPU
 allocation on this host.
 
-## Focused gates
+## Focused gates during integration
 
 | Gate | Command | Result |
 | --- | --- | --- |
@@ -97,6 +106,24 @@ allocation on this host.
 | Impossible pool growth | `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-renderer impossible_streamed_pool_growth_is_a_named_gpu_capacity_error -- --nocapture` | pass: 1 |
 | Renderer binding contract | `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-renderer forward_pipeline_sampled_texture_request_matches_bgl_definitions -- --nocapture` | pass: 1 |
 | Formatting | `cargo fmt --all --check` | pass |
+
+## Final integrated preflight
+
+These gates ran against code revision
+`485225b8fd90375f0a2ca7ce779abb04c014a475`, after the review fixes:
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --check` | pass |
+| `cargo clippy --target-dir target/preflight-clippy -- -D warnings` | pass |
+| `cargo test --quiet` | pass, full workspace; no test failures |
+| `cargo build -p postretro-level-compiler --bin prl-build` | pass, for the final two no-cache fixture bakes |
+
+The full test build emitted existing unused-field warnings for
+`MapData::assemblies` and `MapData::brush_assembly` in the compiler
+library-test target;
+strict production Clippy had no warnings. This warning is unrelated to the
+authored-hint path.
 
 ## Bounded manual smoke
 
@@ -133,6 +160,13 @@ The reviewed path is coherent with the intended one-way contracts:
    shader bindings, portal traversal, and the next-drain sampling promotion
    contract remain unchanged.
 
-No additional cross-boundary gap was found in this review. The durable compiler
-and renderer contracts now document these semantics; the FGD and level-design
-reference document their authoring surface.
+The panel found and closed a malformed-hint parser escape, a
+dependent-first eviction handoff mismatch, and a transient overshoot report;
+it also tied the no-hint id-50 golden to the real canonical directory. A
+separate pre-existing robustness limitation remains: id-50 does not commit to
+the full id-34 atlas texels, so a manually altered PRL can retain valid
+metadata while pairing stale isolated pixels. The normal compiler emits a
+coherent pair; the on-wire source-content check is outside Slice 4's fixed
+id-50 v1 contract. The durable compiler and renderer contracts now document
+the authored-hint semantics; the FGD and level-design reference document
+their authoring surface.

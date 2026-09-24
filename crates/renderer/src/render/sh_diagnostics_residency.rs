@@ -17,8 +17,8 @@ use postretro_level_loader::{LevelWorld, ShStreamBaseMetadata};
 
 use super::debug_lines::DebugLineRenderer;
 use super::sh_diagnostics::{
-    COLOR_BASE_AABB, COLOR_PROBE_INVALID, COLOR_PROBE_UNIFORM, COLOR_PROBE_VALID,
-    MarkerMode, ShDiagnosticsState, density_level_marker_color, emit_cells, probe_index,
+    COLOR_BASE_AABB, COLOR_PROBE_INVALID, COLOR_PROBE_UNIFORM, COLOR_PROBE_VALID, MarkerMode,
+    ShDiagnosticsState, density_level_marker_color, emit_cells, probe_index,
 };
 use super::sh_streaming::{ProbeResidencyClass, ShResidencyState};
 
@@ -123,7 +123,9 @@ pub(super) fn emit(
     }
 
     if state.show_markers && state.cell_radius > 0.0 {
-        emit_markers(state, residency, base, dims, origin, cell, camera_pos, lines);
+        emit_markers(
+            state, residency, base, dims, origin, cell, camera_pos, lines,
+        );
     }
 }
 
@@ -188,7 +190,10 @@ fn marker_color(
     match mode {
         MarkerMode::Uniform => Some(COLOR_PROBE_UNIFORM),
         MarkerMode::Validity => {
-            let valid = base.probes.get(idx).is_some_and(|probe| probe.validity != 0);
+            let valid = base
+                .probes
+                .get(idx)
+                .is_some_and(|probe| probe.validity != 0);
             Some(if valid {
                 COLOR_PROBE_VALID
             } else {

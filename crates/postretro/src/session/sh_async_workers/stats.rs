@@ -19,7 +19,7 @@ pub(crate) struct LatencyHistogram {
 }
 
 impl LatencyHistogram {
-    pub(super) fn record(&mut self, elapsed: Duration) {
+    pub(crate) fn record(&mut self, elapsed: Duration) {
         let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
         let bucket = LATENCY_BUCKET_UPPER_MICROS
             .iter()
@@ -74,7 +74,7 @@ pub(crate) struct ShWorkerStats {
 }
 
 impl ShWorkerStats {
-    pub(super) fn record_read(&mut self, span_bytes: u64, chunk_count: usize, gap_bytes: u64) {
+    pub(crate) fn record_read(&mut self, span_bytes: u64, chunk_count: usize, gap_bytes: u64) {
         self.reads_issued = self.reads_issued.saturating_add(1);
         if chunk_count > 1 {
             self.coalesced_reads = self.coalesced_reads.saturating_add(1);

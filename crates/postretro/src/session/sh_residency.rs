@@ -6,6 +6,7 @@
 //! `context/lib/rendering_pipeline.md` §4.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use postretro_level_loader::{
@@ -17,7 +18,7 @@ use postretro_renderer::ShStreamingLifecycleSummary;
 use postretro_renderer::{Renderer, ShResidencySnapshot, ShStreamingLiveDiagnostics};
 use postretro_visibility::VisibleCells;
 
-use super::sh_async_workers::{ShAsyncWorkers, ShWorkerResult, ShWorkerRetirement};
+use super::sh_async_workers::{ShAsyncWorkers, ShWorkerResult, ShWorkerRetirement, ShWorkerStats};
 use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
 #[cfg(feature = "capture")]
 use crate::sh_streaming::budget::BytePhase;
@@ -47,6 +48,9 @@ pub(crate) struct ShStreamingSession {
     monotonic_seconds: f64,
     live: ShStreamingLiveDiagnostics,
     log_window: ShStreamingLogWindow,
+    /// Read counters for the sync-proof path, which reads on the frame thread
+    /// without workers. Capture runs in that mode, so its report needs them.
+    sync_stats: ShWorkerStats,
 }
 
 impl ShStreamingSession {
@@ -108,6 +112,7 @@ impl ShStreamingSession {
             monotonic_seconds: 0.0,
             live: ShStreamingLiveDiagnostics::default(),
             log_window: ShStreamingLogWindow::default(),
+            sync_stats: ShWorkerStats::default(),
         })
     }
 
@@ -143,9 +148,30 @@ impl ShStreamingSession {
 
     /// Reads one target through the proof-only synchronous path.
     pub(crate) fn read_one_sync(&mut self) -> Result<SyncReadResult> {
-        self.controller
-            .read_one_sync_at_target_time()
-            .map_err(Into::into)
+        let started = Instant::now();
+        let result = self.controller.read_one_sync_at_target_time()?;
+        if let SyncReadResult::Prepared(cluster_id) = result {
+            // One uncoalesced read per chunk. Its latency spans read and
+            // decode, which the synchronous path performs as one call.
+            let encoded_bytes = self.manifest.payloads().index[cluster_id as usize].payload_len;
+            self.sync_stats.record_read(encoded_bytes, 1, 0);
+            self.sync_stats.read_latency.record(started.elapsed());
+        }
+        Ok(result)
+    }
+
+    /// Read counters for the active mode: the async workers', or the
+    /// session's own when sync-proof reads on the frame thread.
+    fn read_stats(&self) -> Result<Option<ShWorkerStats>> {
+        match self.mode {
+            ShStreamingMode::SyncProof => Ok(Some(self.sync_stats)),
+            _ => self
+                .workers
+                .as_ref()
+                .map(ShAsyncWorkers::stats)
+                .transpose()
+                .map_err(anyhow::Error::msg),
+        }
     }
 
     /// Prepares the bounded loader-to-renderer handoff after target/read work.
@@ -181,12 +207,7 @@ impl ShStreamingSession {
     /// Reassembles the live diagnostics after the renderer has reported this
     /// frame's installs, then offers them to the periodic log.
     fn refresh_diagnostics(&mut self, renderer: Option<&ShResidencySnapshot>) -> Result<()> {
-        let worker = self
-            .workers
-            .as_ref()
-            .map(ShAsyncWorkers::stats)
-            .transpose()
-            .map_err(anyhow::Error::msg)?;
+        let worker = self.read_stats()?;
         assemble_live_diagnostics(
             &mut self.live,
             &self.controller.report_snapshot(),
@@ -263,12 +284,7 @@ impl ShStreamingSession {
             phase(controller.cpu.ready, worker.ready, "ready")?;
         // Renderer fields come from the last applied outcome's snapshot.
         let mut live = self.live.clone();
-        let worker_stats = self
-            .workers
-            .as_ref()
-            .map(ShAsyncWorkers::stats)
-            .transpose()
-            .map_err(anyhow::Error::msg)?;
+        let worker_stats = self.read_stats()?;
         assemble_live_diagnostics(&mut live, &controller, worker_stats.as_ref(), None);
         let count = |value: usize, label: &'static str| {
             u64::try_from(value).map_err(|_| anyhow::anyhow!("[SH streaming] {label} exceeds u64"))
@@ -711,6 +727,44 @@ mod tests {
         }
         assert_eq!(lines(&capture), 1);
         capture.assert_logged_once(log::Level::Info, "[SH streaming] last 5.0 s: 1 reads");
+    }
+
+    // Regression: capture runs sync-proof, whose frame-thread reads bypassed
+    // the worker counters and left every capture's read fields at zero.
+    #[test]
+    fn sync_proof_reads_fill_the_read_counters() {
+        let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+        let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+        let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+        let encoded_bytes = manifest.payloads().index[0].payload_len;
+        let mut session = ShStreamingSession::from_snapshot(
+            manifest,
+            ShResidencySnapshot {
+                effective_floor_bytes: 1024 * 1024,
+                ..ShResidencySnapshot::default()
+            },
+            world.cell_visibility.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(session.mode, ShStreamingMode::SyncProof);
+
+        session
+            .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+            .unwrap();
+        assert_eq!(
+            session.read_one_sync().unwrap(),
+            SyncReadResult::Prepared(0)
+        );
+
+        let stats = session
+            .read_stats()
+            .unwrap()
+            .expect("sync-proof reports reads");
+        assert!(encoded_bytes > 0);
+        assert_eq!(stats.reads_issued, 1);
+        assert_eq!(stats.coalesced_reads, 0);
+        assert_eq!(stats.read_bytes, encoded_bytes);
+        assert_eq!(stats.gap_bytes, 0);
     }
 
     #[test]

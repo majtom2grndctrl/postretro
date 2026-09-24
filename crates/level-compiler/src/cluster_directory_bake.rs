@@ -54,8 +54,7 @@ pub(crate) fn bake_cluster_directory(
         cell_locator,
         sh,
         streaming_hints,
-        DEFAULT_PRIMITIVE_LIMIT,
-        DEFAULT_CELL_LIMIT,
+        (DEFAULT_PRIMITIVE_LIMIT, DEFAULT_CELL_LIMIT),
     )
 }
 
@@ -77,8 +76,7 @@ pub(crate) fn bake_cluster_directory_with_limits(
         cell_locator,
         sh,
         &empty_streaming_hints,
-        primitive_limit,
-        cell_limit,
+        (primitive_limit, cell_limit),
     )
 }
 
@@ -89,8 +87,7 @@ fn bake_cluster_directory_with_hints_and_limits(
     cell_locator: &CellLocatorSection,
     sh: FinalizedShEmissionView<'_>,
     streaming_hints: &ResolvedStreamingHints,
-    primitive_limit: u32,
-    cell_limit: u32,
+    (primitive_limit, cell_limit): (u32, u32),
 ) -> anyhow::Result<ClusterDirectoryBake> {
     anyhow::ensure!(
         primitive_limit > 0,

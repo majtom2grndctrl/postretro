@@ -211,6 +211,44 @@ to roughly half a probe cell or more.
 
 ---
 
+## SH Streaming Hints
+
+These invisible compiler-only brush entities influence how baked SH lighting is
+clustered and kept warm. They do **not** create geometry, collision, triggers,
+runtime entities, door behavior, or portal visibility changes. Each entity
+must own exactly one finite, positive-volume convex brush; invalid brushes or
+regions that match no portal/cell are compiler errors.
+
+### `streaming_seam_volume`
+
+Use this around a doorway or portal where early SH warm-up is useful. The brush
+must pass through positive portal area and have interior on both sides of the
+portal plane. It forces a cluster boundary across the matched portals. When
+the near-side cluster is visible, the runtime planner prefers warming the far
+side even if an opaque door currently blocks render visibility.
+
+This is best-effort lighting preparation, not a door gate: opening a door
+before the asynchronous install and SH compose finish still uses the normal
+ambient-floor miss fallback.
+
+### `stream_resident_volume`
+
+Use this around lighting that should remain warm, such as a focal room or
+transition. Every cluster containing a runtime cell whose AABB overlaps the
+brush by positive volume is pinned, along with its baked owner closure. Pins
+are never pressure-suppressed or selected as eviction victims.
+
+### `stream_priority_region`
+
+Set `_stream_priority` to an integer from `0` through `3`; blank and `0` mean
+no priority hint. Positive values take the maximum where regions overlap and
+rank only optional seam warm-up and two-hop prefetch work under pressure.
+They never outrank visible or pinned demand. Use priority to retain the more
+important of several otherwise-safe optional regions, not to increase the GPU
+pool budget or guarantee a pop-free cold doorway.
+
+---
+
 ## Textures
 
 Textures are PNG files under `content/<mod>/textures/<collection>/<name>.png`. TrenchBroom requires this one-level subdirectory structure.

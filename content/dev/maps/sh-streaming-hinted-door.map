@@ -1,7 +1,8 @@
 // Game: Generic
 // Format: Standard
 // Minimal two-room doorway. The divider leaves an 80 x 160 map-unit opening;
-// the seam spans its portal plane and the far room is pinned at priority 3.
+// the seam spans its portal plane, a near-side cell is pinned, and the far
+// side carries priority 3.
 {
 "classname" "worldspawn"
 "initialGravity" "-9.81"
@@ -93,14 +94,14 @@
 }
 {
 "classname" "stream_resident_volume"
-"origin" "384 128 120"
+"origin" "0 0 0"
 {
-( 300 0 0 ) ( 300 1 0 ) ( 300 0 1 ) debug_wall_grey 0 0 0 1 1
-( 470 0 0 ) ( 470 0 1 ) ( 470 1 0 ) debug_wall_grey 0 0 0 1 1
-( 0 24 0 ) ( 0 24 1 ) ( 1 24 0 ) debug_wall_grey 0 0 0 1 1
-( 0 232 0 ) ( 1 232 0 ) ( 0 232 1 ) debug_wall_grey 0 0 0 1 1
-( 0 0 8 ) ( 1 0 8 ) ( 0 1 8 ) debug_wall_grey 0 0 0 1 1
-( 0 0 232 ) ( 0 1 232 ) ( 1 0 232 ) debug_wall_grey 0 0 0 1 1
+( 32 0 0 ) ( 32 1 0 ) ( 32 0 1 ) debug_wall_grey 0 0 0 1 1
+( 64 0 0 ) ( 64 0 1 ) ( 64 1 0 ) debug_wall_grey 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) debug_wall_grey 0 0 0 1 1
+( 0 160 0 ) ( 1 160 0 ) ( 0 160 1 ) debug_wall_grey 0 0 0 1 1
+( 0 0 32 ) ( 1 0 32 ) ( 0 1 32 ) debug_wall_grey 0 0 0 1 1
+( 0 0 64 ) ( 0 1 64 ) ( 1 0 64 ) debug_wall_grey 0 0 0 1 1
 }
 }
 {

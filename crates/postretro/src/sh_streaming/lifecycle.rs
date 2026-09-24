@@ -224,6 +224,7 @@ impl ShResidencyController {
                 self.states[cluster_id as usize]
                     .class
                     .unwrap_or(TargetClass::Hysteresis),
+                std::cmp::Reverse(self.states[cluster_id as usize].effective_priority),
                 cluster_id,
             )
         });
@@ -252,7 +253,7 @@ impl ShResidencyController {
             return Ok(());
         }
 
-        // Only non-visible prefetch is pressure-eligible. A target owner is
+        // Only cold optional work is pressure-eligible. A target owner is
         // pinned while any other target still depends on it; owner closure is
         // then preserved before the renderer independently checks installed
         // dependencies at the release boundary.
@@ -265,8 +266,8 @@ impl ShResidencyController {
                 .targets
                 .iter()
                 .copied()
-                .filter(|&cluster_id| self.pressure_evictable_prefetch(cluster_id))
-                .min_by(|left, right| self.compare_eviction_keys(*left, *right))
+                .filter(|&cluster_id| self.pressure_evictable_optional(cluster_id))
+                .min_by(|left, right| self.compare_pressure_keys(*left, *right))
             else {
                 break;
             };
@@ -302,12 +303,12 @@ impl ShResidencyController {
 
     fn non_evictable_target_bytes(&self) -> Result<u64, ShResidencyControllerError> {
         self.targets.iter().try_fold(0u64, |total, &cluster_id| {
-            // A prefetch target normally yields to pressure, but it becomes
+            // Optional work normally yields to pressure, but it becomes
             // non-evictable when it was just installed or is an owner still
-            // needed by another target. Count that pinned work with visible
-            // and hysteresis targets so a real floor overage is never hidden
-            // behind its prefetch classification.
-            if self.pressure_evictable_prefetch(cluster_id) {
+            // needed by another target. Count that pinned work with visible,
+            // resident, and hysteresis targets so a real floor overage is
+            // never hidden behind its current class.
+            if self.pressure_evictable_optional(cluster_id) {
                 return Ok(total);
             }
             total
@@ -338,9 +339,9 @@ impl ShResidencyController {
         })
     }
 
-    fn pressure_evictable_prefetch(&self, cluster_id: u32) -> bool {
+    fn pressure_evictable_optional(&self, cluster_id: u32) -> bool {
         let state = &self.states[cluster_id as usize];
-        if state.class != Some(TargetClass::Prefetch)
+        if !state.class.is_some_and(TargetClass::is_pressure_eligible)
             || state.state == ClusterResidencyState::InstalledUncomposed
         {
             return false;
@@ -358,7 +359,12 @@ impl ShResidencyController {
             .enumerate()
             .filter_map(|(cluster_id, state)| {
                 (state.state == ClusterResidencyState::Sampleable
-                    && !self.targets.contains(&(cluster_id as u32)))
+                    && !self.targets.contains(&(cluster_id as u32))
+                    && !self.topology.pinned_clusters.contains(&(cluster_id as u32))
+                    && !matches!(
+                        state.class,
+                        Some(TargetClass::Visible | TargetClass::Pinned)
+                    ))
                 .then_some(cluster_id as u32)
             })
             .collect();
@@ -426,6 +432,30 @@ impl ShResidencyController {
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => left.cmp(&right),
+        }
+    }
+
+    /// Pressure preserves old all-zero prefetch ordering while introducing the
+    /// authored optional ordering. Expired departures deliberately keep
+    /// `compare_eviction_keys` above, because they are no longer policy work.
+    fn compare_pressure_keys(&self, left: u32, right: u32) -> Ordering {
+        self.pressure_class_rank(left)
+            .cmp(&self.pressure_class_rank(right))
+            .then_with(|| {
+                self.states[left as usize]
+                    .effective_priority
+                    .cmp(&self.states[right as usize].effective_priority)
+            })
+            .then_with(|| self.compare_eviction_keys(left, right))
+    }
+
+    fn pressure_class_rank(&self, cluster_id: u32) -> u8 {
+        match self.states[cluster_id as usize].class {
+            Some(TargetClass::Prefetch) => 0,
+            Some(TargetClass::SeamWarm) => 1,
+            // Callers only request a rank for pressure-eligible candidates;
+            // retain a total key for defensive test construction.
+            _ => 2,
         }
     }
 
@@ -565,6 +595,16 @@ impl ShResidencyController {
         let mut counters = self.counters;
 
         for &cluster_id in &outcome.evicted {
+            if self.topology.pinned_clusters.contains(&cluster_id)
+                || matches!(
+                    self.states[cluster_id as usize].class,
+                    Some(TargetClass::Visible | TargetClass::Pinned)
+                )
+            {
+                return Err(ShResidencyControllerError::InvalidDrainOutcome(
+                    "renderer attempted to evict a protected SH target".into(),
+                ));
+            }
             if self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable {
                 return Err(ShResidencyControllerError::InvalidDrainOutcome(
                     "renderer released a controller-nonresident cluster".into(),

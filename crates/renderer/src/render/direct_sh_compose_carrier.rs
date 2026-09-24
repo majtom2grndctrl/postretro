@@ -42,7 +42,7 @@ impl DirectPromotionStorage {
     }
 
     #[cfg(feature = "dev-tools")]
-    fn footprint(&self) -> ComposeStorageFootprint {
+    pub(super) fn footprint(&self) -> ComposeStorageFootprint {
         ComposeStorageFootprint {
             delta_subblocks_bytes: self.payloads.delta_subblocks.allocation.byte_len,
             delta_compaction_meta_bytes: self.payloads.compaction_metadata.allocation.byte_len,

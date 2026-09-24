@@ -7,6 +7,13 @@ Format, codec and lifecycle grounding lives in
 only what capacity turns on: the layer budget, the binding ceiling, the assignment
 rewrite, the shader cost, and the sequencing behind the residency epic.
 
+**Stale layout premise.** The compress-at-rest brief now places groups side by side
+within each layer, not stacked in array layers; see `index.md` §Re-anchor before
+building. §The ceiling, §Why layer count is not author-controlled, §The binding
+ceiling, §Consolidation sequencing and §The shader cost assume stacked groups and need
+rework. §Why BC5 pairs dominate BC4 planes, §Assignment simplifies, §The slot index
+and §Prior commitments carry over.
+
 ## The ceiling, and what sets it
 
 Today a texel's masks are the four RGBA channels of one `Rgba8Unorm` texel at array

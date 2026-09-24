@@ -9,7 +9,7 @@ Levels are made in **TrenchBroom** and compiled to `.prl` files that the engine 
 ### Setting Up TrenchBroom
 
 1. Open TrenchBroom and load the Postretro game definition: `sdk/TrenchBroom/postretro.fgd`.
-2. Set the texture path to the `textures/` directory inside your content root. Throughout this document `<content-root>` means the content root itself, not its `textures/` subdirectory — the mod root the bundle's `postretro.toml` names (its generated `README.md` shows the exact path), and whatever `mod_root` your `postretro.toml` names in your own project.
+2. Set the texture path to the `textures/` directory inside your content root. Throughout this document `<content-root>` means the content root itself, not its `textures/` subdirectory — `content/<mod>` for the `mod` the bundle's `postretro.toml` names (its generated `README.md` shows the exact path), and for whatever `mod` your `postretro.toml` names in your own project.
 3. Author your map in Quake 1/2 `.map` format. Both Standard and Valve 220 UV projections work and can coexist in the same file.
 
 ### Compiling Your Map

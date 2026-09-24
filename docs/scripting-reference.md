@@ -54,7 +54,7 @@ the manifest lacks any required field.
 **Imports and `require`.**
 
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` and `"postretro/ui"` symbols are stripped (the symbols arrive as runtime globals).
-- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
+- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -76,8 +76,8 @@ entry in `<mod-root>/identity.json`:
 ```
 
 After adding such a slot, run
-`bin/postretro-tool mint-identity <mod-root>` and ship the updated file with
-the mod. When renaming a store or slot, rename the dotted key in this file but
+`bin/postretro-tool mint-identity <mod>` — `<mod>` is the mod's name, `base`
+for `content/base` — and ship the updated file with the mod. When renaming a store or slot, rename the dotted key in this file but
 keep its opaque value; that retains saved data and replication identity. Missing
 or invalid durable identity rejects mod initialization. This is stricter than an
 ordinary missing, malformed, or incompatible saved value, which warns and leaves

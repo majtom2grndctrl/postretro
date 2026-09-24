@@ -85,17 +85,18 @@ player payload uses — see "If a build stops partway through" in
   docs/                      this documentation set
   tools/                     Python asset helpers (see tools/README.md)
   core/                      engine-owned assets: UI descriptors, splash, licences
-  content/<mod-root>/        the game's tree: SOURCE .map/.ts beside the freshly
+  content/<mod>/             the game's tree: SOURCE .map/.ts beside the freshly
                              baked maps/*.prl and the emitted start-script.js
   baked/materials/           .prm material sidecars (so the baked maps render)
   README.md                  generated quickstart for this bundle
 ```
 
-This bundle publishes its mod under the mod root named in its `postretro.toml`
-at the bundle root — the generated `README.md` shows the exact path. Throughout
-this document `<mod-root>` stands for that path; substitute it in the commands
-below. `content/base` is the recommended convention for a game you start
-yourself, but a bundle keeps whatever root its source project declared.
+This bundle publishes its mod at `content/<mod>`, where `<mod>` is the name the
+`postretro.toml` at the bundle root declares (`mod = "base"` is `content/base`)
+— the generated `README.md` shows the exact path. Throughout this document
+`<mod-root>` stands for that path; substitute it in the commands below. `base`
+is the recommended convention for a game you start yourself, but a bundle keeps
+whatever mod its source project declared.
 
 `<mod-root>/` ships both halves: the baked outputs the engine loads to play
 (`maps/*.prl`, the emitted `start-script.js`) and the sources you keep editing
@@ -104,7 +105,7 @@ other assets). Only genuinely regenerable junk is dropped — `.build-caches`,
 `maps/autosave/`, `.git*` entries, and any *stale* committed `.prl`/`.js`, since
 the run produces fresh ones.
 
-A distribution publishes a game under its declared mod root, keeping that name,
+A distribution publishes a game under its declared mod, keeping that name,
 and `core/` is what the engine owns and a game never replaces. Neither is
 arbitrary; see "Payload layout" in [docs/distribution.md](distribution.md).
 
@@ -167,8 +168,9 @@ content paths resolve.
    are available; see `docs/diagnostics.md` for the diagnostic keyboard chords.
 
 `bin/postretro-tool run` forwards anything it does not recognize straight to the
-engine, so `bin/postretro-tool run <mod-root>/maps/<name>.prl` loads that level
-directly instead of starting at the frontend.
+engine, so `bin/postretro-tool run maps/<name>.prl` loads that level directly
+instead of starting at the frontend. The level path is relative to your mod's
+folder, so you leave off the `<mod-root>/` prefix.
 
 ## Keeping your game in its own repository
 

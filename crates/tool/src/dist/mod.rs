@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::binaries::{Helper, Overrides, binary_name};
 use crate::engine_trees;
+use crate::flag::match_flag;
 use crate::project::{Project, ProjectLocation};
 
 pub(crate) mod launcher;
@@ -141,7 +142,7 @@ fn assemble_payload(
 
     fs::copy(engine, payload_root.join(binary_name("postretro")))
         .map_err(|error| format!("stage 5: copy release engine {}: {error}", engine.display()))?;
-    launcher::emit_launcher(payload_root, package_name, project.mod_root_rel())?;
+    launcher::emit_launcher(payload_root, package_name, project.mod_name())?;
 
     let source_mod_root = project.mod_root();
     copy_filtered_tree(
@@ -228,28 +229,38 @@ pub(crate) fn parse_args(args: Vec<OsString>, command: &str) -> Result<DistArgs,
             )
         })?;
         let value = args.get(index + 1);
-        if binaries.absorb(flag, value)? {
-            index += 2;
+        let consumed = binaries.absorb(flag, value)?;
+        if consumed > 0 {
+            index += consumed;
             continue;
         }
-        if location.absorb(flag, value)? {
-            index += 2;
+        let consumed = location.absorb(flag, value)?;
+        if consumed > 0 {
+            index += consumed;
             continue;
         }
 
-        let value = match flag {
-            engine_trees::INSTALL_ROOT_FLAG | "--out" => value
-                .ok_or_else(|| format!("{flag} requires a path\n\n{}", usage(command)))?
-                .clone(),
-            _ => return Err(format!("unknown argument `{flag}`\n\n{}", usage(command))),
-        };
-        let path = absolute_from(&invocation_dir, PathBuf::from(value));
-        match flag {
-            engine_trees::INSTALL_ROOT_FLAG => set_once(&mut named_install_root, path, flag)?,
-            "--out" => set_once(&mut output_root, path, flag)?,
-            _ => unreachable!("only recognized flags reach this branch"),
+        let mut matched_own_flag = false;
+        for (name, slot) in [
+            (engine_trees::INSTALL_ROOT_FLAG, &mut named_install_root),
+            ("--out", &mut output_root),
+        ] {
+            let Some(matched) = match_flag(flag, value, name) else {
+                continue;
+            };
+            let value = matched
+                .value
+                .ok_or_else(|| format!("{name} requires a path\n\n{}", usage(command)))?;
+            let path = absolute_from(&invocation_dir, PathBuf::from(value.into_owned()));
+            set_once(slot, path, name)?;
+            index += matched.tokens;
+            matched_own_flag = true;
+            break;
         }
-        index += 2;
+        if matched_own_flag {
+            continue;
+        }
+        return Err(format!("unknown argument `{flag}`\n\n{}", usage(command)));
     }
     location.rebase(&invocation_dir);
 
@@ -288,17 +299,100 @@ pub(crate) fn usage(command: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A distribution publishes under the project's *own* declared mod root, so
-    /// the runtime's `baked/` grandparent derivation depends on that name's
-    /// shape. The manifest parser is what guarantees the two components the
-    /// derivation needs; here we pin that a project hands its declared mod root
-    /// straight through to the payload with no fixed rename.
+    /// A distribution publishes under the project's *own* declared mod, so the
+    /// runtime's `baked/` grandparent derivation depends on the published path's
+    /// shape. The manifest names only the mod and the tool places it under
+    /// `content/`, which is what guarantees the two components the derivation
+    /// needs; here we pin that a project hands its declared mod straight through
+    /// to the payload with no fixed rename.
     #[test]
-    fn the_payload_mod_root_is_the_projects_own_declared_mod_root() {
-        let project = Project::for_test("/projects/game", "game", "content/dev");
+    fn the_payload_mod_root_is_the_projects_own_declared_mod() {
+        let project = Project::for_test("/projects/game", "game", "dev");
         assert_eq!(project.mod_root_rel(), "content/dev");
         let components: Vec<&str> = project.mod_root_rel().split('/').collect();
         assert_eq!(components.len(), 2, "{}", project.mod_root_rel());
         assert!(components.iter().all(|component| !component.is_empty()));
+    }
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    /// Regression: `--install-root` and `--out` were matched only in their
+    /// split form, so `dist`/`sdk-dist` refused the equals form outright as
+    /// an unknown argument — loud, unlike `run`'s silent forwarding, but still
+    /// inconsistent with every other flag these commands accept.
+    ///
+    /// Expected values go through `absolute_from` too, the same as production:
+    /// a bare `/install` is not an absolute path on every platform (Windows
+    /// needs a drive prefix), so the parser's own join against the invocation
+    /// directory is part of the contract being pinned, not a detail to hide.
+    #[test]
+    fn install_root_and_out_accept_the_equals_form() {
+        let invocation_dir = std::env::current_dir().expect("read the working directory");
+        let install_root_flag = format!("{}=/install", engine_trees::INSTALL_ROOT_FLAG);
+        let parsed = parse_args(
+            os_args(&[&install_root_flag, "--out=/somewhere/out"]),
+            "dist",
+        )
+        .expect("the equals form of both flags parses");
+
+        assert_eq!(
+            parsed.named_install_root,
+            Some(absolute_from(&invocation_dir, PathBuf::from("/install")))
+        );
+        assert_eq!(
+            parsed.output_root,
+            Some(absolute_from(
+                &invocation_dir,
+                PathBuf::from("/somewhere/out")
+            ))
+        );
+    }
+
+    /// A repeat is a repeat whichever form supplied the first value.
+    #[test]
+    fn out_given_twice_errors_across_split_and_equals_forms() {
+        let error = parse_args(os_args(&["--out", "/first", "--out=/second"]), "dist")
+            .err()
+            .expect("a second --out in the other form is still a repeat");
+        assert!(error.contains("--out"), "{error}");
+        assert!(error.contains("only once"), "{error}");
+    }
+
+    /// The project and helper-binary flags this command shares with `run`
+    /// must accept the equals form here too — the same parser recognizes
+    /// them via `Overrides::absorb`/`ProjectLocation::absorb`.
+    ///
+    /// The expected project directory is derived the same way `parse_args`
+    /// derives its own — `ProjectLocation::absorb` then `rebase` against the
+    /// invocation directory — rather than a literal, since a bare
+    /// `/projects/game` is not absolute on every platform and `rebase` joins
+    /// it against the working directory when it isn't.
+    #[test]
+    fn project_and_helper_flags_accept_the_equals_form() {
+        let invocation_dir = std::env::current_dir().expect("read the working directory");
+        let parsed = parse_args(
+            os_args(&["--project=/projects/game", "--prl-build=/build/prl-build"]),
+            "dist",
+        )
+        .expect("the equals form of the shared flags parses");
+
+        let mut expected_location = ProjectLocation::default();
+        expected_location
+            .absorb("--project", Some(&OsString::from("/projects/game")))
+            .expect("the split form records the same project");
+        expected_location.rebase(&invocation_dir);
+
+        assert_eq!(parsed.location.directory(), expected_location.directory());
+        // The override path does not exist on this machine, so `resolve` still
+        // errors — but the error names the path this parse recorded, which is
+        // what proves the equals form was absorbed rather than left unset (an
+        // unset override resolves by search instead, and would not mention it).
+        let error = parsed
+            .binaries
+            .resolve(Helper::PrlBuild)
+            .expect_err("the fixture path does not exist on this machine");
+        assert!(error.contains("/build/prl-build"), "{error}");
     }
 }

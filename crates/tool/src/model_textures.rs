@@ -56,11 +56,11 @@ fn parse_args(args: Vec<OsString>) -> Result<(PathBuf, ProjectLocation), String>
                 args[index].to_string_lossy()
             )
         })?;
-        if location
+        let consumed = location
             .absorb(argument, args.get(index + 1))
-            .map_err(|error| usage(&error))?
-        {
-            index += 2;
+            .map_err(|error| usage(&error))?;
+        if consumed > 0 {
+            index += consumed;
             continue;
         }
         if argument.starts_with('-') {
@@ -177,6 +177,16 @@ mod tests {
         assert!(parse_args(Vec::new()).is_err());
         assert!(parse_args(os_args(&["one.gltf", "two.gltf"])).is_err());
         assert!(parse_args(os_args(&["scene.gltf", "--manifest"])).is_err());
+    }
+
+    /// The equals form is accepted here too, and does not get mistaken for a
+    /// second glTF path.
+    #[test]
+    fn parse_args_accepts_the_equals_form_of_project_flags() {
+        let (gltf, location) = parse_args(os_args(&["scene.gltf", "--project=/projects/game"]))
+            .expect("the equals form of --project parses");
+        assert_eq!(gltf, PathBuf::from("scene.gltf"));
+        assert_eq!(location.directory(), Some(Path::new("/projects/game")));
     }
 
     #[test]

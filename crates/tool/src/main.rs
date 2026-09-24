@@ -11,6 +11,7 @@ use std::ffi::OsString;
 mod binaries;
 mod dist;
 mod engine_trees;
+mod flag;
 mod manifest;
 mod mint;
 mod model_textures;
@@ -79,17 +80,19 @@ USAGE:
   postretro-tool bake-model-textures <scene.gltf> [--project <dir> | --manifest <path>]
   postretro-tool solve-weapon-mount --read-muzzle-offset <viewmodel.gltf>
   postretro-tool solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [options]
-  postretro-tool mint-identity <mod-root>
+  postretro-tool mint-identity <mod> [--project <dir> | --manifest <path>]
 
 COMMANDS:
   dist                 Assemble a runnable player distribution payload
   sdk-dist             Assemble a content-complete modder SDK bundle
-  run                  Launch the engine against this project, with its mod root
-                       and baked materials root already correct
+  run                  Launch the engine against this project, with its mod
+                       and baked materials root already correct; a level
+                       path (maps/<name>.prl) is relative to the mod
   bake-model-textures  Bake a glTF's base-color sidecars into baked/materials
   solve-weapon-mount   Read a viewmodel muzzle offset, solve a rigid weapon mount
                        and print the Blender bake command, or --check a baked mount
-  mint-identity        Mint a mod's durable state-slot identity ledger
+  mint-identity        Mint a mod's durable state-slot identity ledger; <mod> is
+                       its name, the directory under the project's content/
 
 HELPER BINARIES:
   The tool compiles nothing. Each helper defaults to a conventional path beside

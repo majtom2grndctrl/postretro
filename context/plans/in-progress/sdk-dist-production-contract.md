@@ -104,7 +104,7 @@ Each carries the consequence that makes it load-bearing.
 *Consequence:* `content/base` becomes free for D6 to publish the developer's
 game into. `core/` is a sibling of `content/` and `baked/`, so it reads as
 engine-owned to anyone browsing an install, and it is outside the
-`<container>/<mod>` two-component shape that `build_pipeline.md`
+`content/<mod>` two-component shape that `build_pipeline.md`
 §Baked texture mips requires of mod roots — engine assets are not a mod.
 
 *Correction this encodes:* the four UI JSON descriptors are **not** dead
@@ -217,6 +217,22 @@ disturbs it. Proven end to end: a throwaway project declaring `mod_root =
 content/dev` produced a player payload and an SDK bundle both publishing at
 `content/dev` (no `content/base`), with the generated `postretro.toml`, README,
 and launcher all naming `content/dev`.
+
+*Amended (owner call): mods are named, never pathed.* Every mod lives directly
+under `content/`, so typing that prefix carried no information. The manifest key
+is now `mod = "dev"` (the retired `mod_root` key is refused by name), the
+engine's `--mod` takes the name and selects `content/<name>`, the launcher passes
+`--mod <name>`, and `postretro-tool mint-identity <name>` resolves the mod under
+the discovered project's `content/`. Each refuses a value holding a separator,
+so `--mod content/dev` is an error rather than `content/content/dev`. The
+undocumented `--content-root` synonym is removed. The publish path is still
+`project.mod_root_rel()`, now derived as `content/<mod>`; the two-component
+shape below holds by construction rather than by validation. With `--mod`, the
+engine's positional map argument resolves inside the mod folder, so
+`postretro-tool run maps/e1m1.prl` loads `content/<mod>/maps/e1m1.prl`; a map
+still prefixed `content/` is refused with the path to pass. A recipe `source`
+stays project-relative, since a player payload may bake from a `.map` outside
+the mod tree.
 
 ### D7. The tool never compiles Rust and never links the script VM
 
@@ -399,9 +415,9 @@ No track may break these.
 4. **`--baked-root` names the parent of `materials/`, not `materials/` itself.**
    `--baked-root /p/baked` reads and writes `/p/baked/materials/<hex>.prm`. Both
    binaries agree on this; the opposite reading is the silent-placeholder bug.
-5. **A mod root is exactly two `/`-separated components.** Unchanged from
-   `build_pipeline.md` §Baked texture mips. `content/base` satisfies it; `core/`
-   is deliberately outside it and is not a mod root.
+5. **A mod root is exactly `content/<mod>`.** The shape `build_pipeline.md`
+   §Baked texture mips requires, now guaranteed by selecting mods by name (D6
+   amendment). `core/` is deliberately outside it and is not a mod root.
 6. **Payload stages 1 through 4 write nothing into the payload root.** That is
    what makes stage 5's delete safe (`build_pipeline.md` §Distribution
    packaging). Preserved through the move to `postretro-tool`.

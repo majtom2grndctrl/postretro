@@ -20,6 +20,7 @@ use std::process::{Command, Stdio};
 
 use crate::binaries::{Helper, Overrides, status_code};
 use crate::engine_trees::{self, CORE_TREE, INSTALL_ROOT_FLAG};
+use crate::flag::match_flag;
 use crate::project::{Project, ProjectLocation};
 
 /// The engine flag naming the directory that holds its own `ui/` and `textures/`.
@@ -111,9 +112,9 @@ fn absolute(path: PathBuf) -> Result<PathBuf, String> {
 
 /// Prepend the flags the project already answers, unless the caller set them.
 ///
-/// An explicit `--mod`, `--content-root`, `--baked-root`, or `--core-root` wins
-/// outright rather than being shadowed: the engine reads the first occurrence of
-/// each, so supplying ours unconditionally would silently discard the caller's.
+/// An explicit `--mod`, `--baked-root`, or `--core-root` wins outright rather
+/// than being shadowed: the engine reads the first occurrence of each, so
+/// supplying ours unconditionally would silently discard the caller's.
 ///
 /// `--core-root` and the content flags are independent by design. The engine's
 /// own assets come from the install; the game comes from the project; neither
@@ -124,9 +125,9 @@ fn engine_arguments(
     engine_args: Vec<OsString>,
 ) -> Vec<OsString> {
     let mut launch_args = Vec::with_capacity(engine_args.len() + 6);
-    if !names_flag(&engine_args, &["--mod", "--content-root"]) {
+    if !names_flag(&engine_args, &["--mod"]) {
         launch_args.push(OsString::from("--mod"));
-        launch_args.push(OsString::from(&project.manifest().package.mod_root));
+        launch_args.push(OsString::from(project.mod_name()));
     }
     if !names_flag(&engine_args, &["--baked-root"]) {
         launch_args.push(OsString::from("--baked-root"));
@@ -164,26 +165,27 @@ fn parse_args(args: Vec<OsString>) -> Result<RunArgs, String> {
     while index < args.len() {
         let flag = args[index].to_str().unwrap_or_default();
         let value = args.get(index + 1);
-        if binaries.absorb_only(flag, value, RUN_HELPERS)? {
-            index += 2;
+        let consumed = binaries.absorb_only(flag, value, RUN_HELPERS)?;
+        if consumed > 0 {
+            index += consumed;
             continue;
         }
-        if location
+        let consumed = location
             .absorb(flag, value)
-            .map_err(|error| usage(&error))?
-        {
-            index += 2;
+            .map_err(|error| usage(&error))?;
+        if consumed > 0 {
+            index += consumed;
             continue;
         }
-        if flag == INSTALL_ROOT_FLAG {
-            let value = value
-                .ok_or_else(|| usage(&format!("{INSTALL_ROOT_FLAG} requires a path")))?
-                .clone();
+        if let Some(matched) = match_flag(flag, value, INSTALL_ROOT_FLAG) {
+            let value = matched
+                .value
+                .ok_or_else(|| usage(&format!("{INSTALL_ROOT_FLAG} requires a path")))?;
             if named_install_root.is_some() {
                 return Err(usage(&format!("{INSTALL_ROOT_FLAG} given twice")));
             }
-            named_install_root = Some(PathBuf::from(value));
-            index += 2;
+            named_install_root = Some(PathBuf::from(value.into_owned()));
+            index += matched.tokens;
             continue;
         }
         engine_args.push(args[index].clone());
@@ -219,7 +221,7 @@ mod tests {
     }
 
     fn project() -> Project {
-        Project::for_test("/projects/game", "game", "levels/core")
+        Project::for_test("/projects/game", "game", "core")
     }
 
     fn core_root() -> PathBuf {
@@ -231,12 +233,12 @@ mod tests {
     /// baked root is the silent-placeholder defect itself, and without the core
     /// root the pause menu, frontend menu, keyboard and splash are all absent.
     #[test]
-    fn launch_supplies_the_mod_root_the_baked_root_and_the_core_root() {
+    fn launch_supplies_the_mod_the_baked_root_and_the_core_root() {
         assert_eq!(
             engine_arguments(&project(), Some(core_root()), os_args(&["maps/e1m1.prl"])),
             os_args(&[
                 "--mod",
-                "levels/core",
+                "core",
                 "--baked-root",
                 &baked_root(),
                 "--core-root",
@@ -252,26 +254,21 @@ mod tests {
             engine_arguments(
                 &project(),
                 None,
-                os_args(&["--mod", "levels/expansion", "--baked-root=/elsewhere/baked"]),
+                os_args(&["--mod", "expansion", "--baked-root=/elsewhere/baked"]),
             ),
-            os_args(&["--mod", "levels/expansion", "--baked-root=/elsewhere/baked"])
+            os_args(&["--mod", "expansion", "--baked-root=/elsewhere/baked"])
         );
 
-        // `--content-root` selects the same thing `--mod` does, so it suppresses
-        // the tool's mod root too — but not its baked root or its core root.
+        // The equals form suppresses the tool's mod too — but not its baked
+        // root or its core root.
         assert_eq!(
-            engine_arguments(
-                &project(),
-                Some(core_root()),
-                os_args(&["--content-root", "levels/x"])
-            ),
+            engine_arguments(&project(), Some(core_root()), os_args(&["--mod=expansion"])),
             os_args(&[
                 "--baked-root",
                 &baked_root(),
                 "--core-root",
                 "/install/core",
-                "--content-root",
-                "levels/x",
+                "--mod=expansion",
             ])
         );
     }
@@ -293,7 +290,7 @@ mod tests {
             engine_arguments(&project(), None, cli.engine_args),
             os_args(&[
                 "--mod",
-                "levels/core",
+                "core",
                 "--baked-root",
                 &baked_root(),
                 "--core-root",
@@ -341,6 +338,56 @@ mod tests {
         assert_eq!(parsed.engine_args, os_args(&["maps/e1m1.prl"]));
     }
 
+    /// Regression: `ProjectLocation::absorb` and `Overrides::absorb_only`
+    /// recognized only the split form, and `run` forwards any token it does
+    /// not itself recognize straight to the engine (by design, for genuinely
+    /// unknown engine flags). So `--project=../other`, `--manifest=…`, and
+    /// `--engine=…` all fell through the tool's own parsing and reached the
+    /// engine verbatim — which ignores them — while the tool silently fell
+    /// back to discovering the project from the working directory. The equals
+    /// form must be consumed here, the same as the split form.
+    #[test]
+    fn equals_form_tool_flags_are_consumed_and_never_forwarded_to_the_engine() {
+        let parsed = parse_args(os_args(&[
+            "--project=/projects/game",
+            "--engine=/build/postretro",
+            "maps/e1m1.prl",
+        ]))
+        .expect("the equals form of every tool flag parses");
+
+        assert_eq!(
+            parsed.location.directory(),
+            Some(Path::new("/projects/game"))
+        );
+        assert_eq!(
+            parsed.engine_args,
+            os_args(&["maps/e1m1.prl"]),
+            "neither --project= nor --engine= reached the engine"
+        );
+    }
+
+    /// `--install-root` is a tool flag, not an engine one, in either spelling.
+    #[test]
+    fn the_install_roots_equals_form_is_also_consumed_and_never_forwarded() {
+        let equals_flag = format!("{INSTALL_ROOT_FLAG}=/bundle");
+        let parsed = parse_args(os_args(&[&equals_flag, "maps/e1m1.prl"]))
+            .expect("the equals form of --install-root parses");
+
+        assert_eq!(parsed.named_install_root, Some(PathBuf::from("/bundle")));
+        assert_eq!(parsed.engine_args, os_args(&["maps/e1m1.prl"]));
+    }
+
+    /// A repeat is a repeat whichever form supplied the first value.
+    #[test]
+    fn install_root_given_twice_errors_across_split_and_equals_forms() {
+        let equals_flag = format!("{INSTALL_ROOT_FLAG}=/other");
+        let error = parse_args(os_args(&[INSTALL_ROOT_FLAG, "/bundle", &equals_flag]))
+            .err()
+            .expect("a second --install-root in the other form is still a repeat");
+        assert!(error.contains(INSTALL_ROOT_FLAG), "{error}");
+        assert!(error.contains("given twice"), "{error}");
+    }
+
     /// Regression: `run` opened the project without rebasing, so a relative
     /// `--project` left the project root relative. This command pins the
     /// engine's working directory to that root and then hands the engine
@@ -358,7 +405,7 @@ mod tests {
         std::fs::create_dir_all(&project_dir).expect("temporary project created");
         std::fs::write(
             project_dir.join(crate::project::MARKER_FILE),
-            "[package]\nname = \"game\"\nmod_root = \"content/base\"\n",
+            "[package]\nname = \"game\"\nmod = \"base\"\n",
         )
         .expect("marker written");
 

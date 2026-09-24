@@ -401,10 +401,10 @@ fn print_help() {
          CONTENT TOOLING:\n\
            Authoring runs, asset bakes, and the weapon-mount solver live in\n\
            `postretro-tool`, which needs no cargo and ships inside the SDK bundle:\n\
-             cargo run -p postretro-tool -- run --install-root . content/dev/maps/campaign-test.prl\n\
+             cargo run -p postretro-tool -- run --install-root . maps/campaign-test.prl\n\
              cargo run -p postretro-tool -- bake-model-textures <scene.gltf>\n\
              cargo run -p postretro-tool -- solve-weapon-mount <skeleton.gltf> ...\n\
-             cargo run -p postretro-tool -- mint-identity content/dev\n\
+             cargo run -p postretro-tool -- mint-identity dev\n\
            Run `cargo run -p postretro-tool -- --help` for its own usage. Two notes:\n\
            it runs helper binaries rather than building them, so build what it needs\n\
            first (for example `cargo build -p postretro-sim --bin mint-identity`); and\n\

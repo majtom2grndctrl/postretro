@@ -6,7 +6,8 @@
 // See: context/lib/boot_sequence.md §1 (Boot Order, stages 1-4)
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -24,6 +25,12 @@ use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
 /// Dev-default boot map when no content root or map argument is supplied. Used by
 /// `content_root_from_map` to derive the default `content/dev` root.
 const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
+
+/// The one directory every mod lives directly under. `--mod <name>` selects
+/// `content/<name>`; the two-component shape is what the runtime's `baked/`
+/// grandparent derivation needs (`build_pipeline.md` §Baked texture mips), so
+/// fixing the container here is what keeps a mod name from being a path.
+const CONTENT_DIR: &str = "content";
 
 /// Built session: the winit event loop plus the constructed `App`, handed back to
 /// `main` so it can drive the loop and return the app's exit result.
@@ -194,8 +201,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
         }
     }
 
-    let map_path = resolve_map_path(&args);
-    let content_root = resolve_content_root(&args, map_path.as_deref());
+    let map_arg = resolve_map_path(&args);
+    let content_root = resolve_content_root(&args, map_arg.as_deref())?;
+    let map_path = boot_map_path(&args, map_arg.as_deref(), &content_root)?;
     // Logged because a mismatch between this and the directory `prl-build` wrote
     // into surfaces only as per-texture placeholder warnings; the two paths in
     // the log are what makes that diagnosable.
@@ -250,7 +258,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         window_state: None,
         level: None,
         nav_graph: None,
-        map_path: map_path.map(PathBuf::from),
+        map_path,
         content_root,
         baked_root,
         core_root,
@@ -324,24 +332,41 @@ pub(crate) fn build_session() -> Result<BootSession> {
     Ok(BootSession { event_loop, app })
 }
 
-/// Every flag naming a directory: one list, read by the scanners that extract a
-/// value and by the positional-map scan that must step over one.
+/// Every flag naming a directory — `--mod` names one by its name under
+/// `content/` — in one list, read by the scanners that extract a value and by
+/// the positional-map scan that must step over one.
 ///
 /// Keeping it in one place is what holds the invariant. A flag added to only
 /// half of them leaves its *value* exposed to `resolve_map_path`, which then
 /// loads a directory as the level — the defect `--baked-root` hit and
 /// `--core-root` would hit next.
-const PATH_FLAGS: [&str; 4] = ["--mod", "--content-root", "--baked-root", "--core-root"];
+const PATH_FLAGS: [&str; 3] = ["--mod", "--baked-root", "--core-root"];
 
 /// Recover the positional map-path argument (the raw-path dev bypass), skipping
-/// the values consumed by [`PATH_FLAGS`] and the other value-taking flags. A
-/// value-taking flag missing from that list has its value mistaken for the map
-/// path, so every such flag belongs here.
+/// the values consumed by [`PATH_FLAGS`], `--pool-seed`, `--observe-live`, and
+/// the netcode role flags `--host`/`--connect`. A value-taking flag missing
+/// from this scan has its value mistaken for the map path, so every such flag
+/// belongs here.
+///
+/// `--host`/`--connect` step over a following token under the same predicate
+/// `postretro_netcode::parse_net_config` uses (non-empty, not `--`-prefixed),
+/// so the two scans always agree on where a net value ends. That includes
+/// `--host`'s optional port: a map placed directly after a bare `--host` is
+/// taken as the port by both, and the net parser rejects it.
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if PATH_FLAGS.contains(&arg.as_str()) || arg == "--pool-seed" || arg == "--observe-live" {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
+                let _ = iter.next();
+            }
+            continue;
+        }
+        if arg == "--host" || arg == "--connect" {
+            if iter
+                .peek()
+                .is_some_and(|value| !value.is_empty() && !value.starts_with("--"))
+            {
                 let _ = iter.next();
             }
             continue;
@@ -425,7 +450,7 @@ fn observe_live_port_arg(args: &[String]) -> Option<u16> {
 }
 
 /// Detect the optional trigger-pool seed. This intentionally keeps manual
-/// argument scanning beside `--headless`/`--content-root`: no CLI parser owns
+/// argument scanning beside `--headless`/`--mod`: no CLI parser owns
 /// boot arguments yet, and a malformed seed degrades to the mode default.
 fn pool_seed_arg(args: &[String]) -> PoolSeedArg {
     let mut iter = args.iter().skip(1).peekable();
@@ -491,6 +516,8 @@ fn capture_arg(args: &[String]) -> Option<Option<&str>> {
     None
 }
 
+/// The raw `--mod <name>` / `--mod=<name>` value, before it is checked to be a
+/// name. [`resolve_content_root`] turns it into `content/<name>`.
 fn mod_arg(args: &[String]) -> Option<PathBuf> {
     path_flag_value(args, "--mod")
 }
@@ -504,8 +531,7 @@ fn mod_arg(args: &[String]) -> Option<PathBuf> {
 ///
 /// Absent (the normal case, including every dev run and test) leaves the `.prm`
 /// root exactly where `derive_prm_root_dev_layout` puts it. An empty value is
-/// treated as absent rather than as the current directory, matching `--mod` and
-/// `--content-root`.
+/// treated as absent rather than as the current directory.
 fn baked_root_arg(args: &[String]) -> Option<PathBuf> {
     path_flag_value(args, "--baked-root")
 }
@@ -529,14 +555,134 @@ fn core_root_arg(args: &[String]) -> Option<PathBuf> {
     path_flag_value(args, "--core-root")
 }
 
-fn content_root_arg(args: &[String]) -> Option<PathBuf> {
-    path_flag_value(args, "--content-root")
+/// Select the content root: `content/<name>` for `--mod <name>`, otherwise the
+/// root derived from the map path (or the dev default).
+///
+/// The retired `--content-root <path>` is refused by name rather than ignored:
+/// it is no longer in [`PATH_FLAGS`], so its value would otherwise be read as
+/// the boot map and the directory loaded as a level.
+///
+/// A `--mod` with no name — bare, `--mod=`, or followed by another flag — is
+/// refused too. Treating it as absent would boot the map-derived or default
+/// mod, and a caller such as `postretro-tool run --mod "$MOD"` with `MOD`
+/// unset would get the wrong mod with no error.
+fn resolve_content_root(args: &[String], map_path: Option<&str>) -> Result<PathBuf> {
+    if names_flag(args, "--content-root") {
+        anyhow::bail!(
+            "--content-root was removed; select a mod by name with --mod <name> \
+             (for `{CONTENT_DIR}/dev`, pass `--mod dev`)"
+        );
+    }
+    match mod_arg(args) {
+        Some(name) => mod_content_root(&name),
+        None if names_flag(args, "--mod") => anyhow::bail!(
+            "--mod needs a mod name — a directory directly under `{CONTENT_DIR}/` \
+             (for `{CONTENT_DIR}/dev`, pass `--mod dev`)"
+        ),
+        None => Ok(content_root_from_map(map_path)),
+    }
 }
 
-fn resolve_content_root(args: &[String], map_path: Option<&str>) -> PathBuf {
-    mod_arg(args)
-        .or_else(|| content_root_arg(args))
-        .unwrap_or_else(|| content_root_from_map(map_path))
+/// Whether `flag` appears at all, in `--flag`, `--flag <value>`, or
+/// `--flag=<value>` form.
+fn names_flag(args: &[String], flag: &str) -> bool {
+    let equals_form = format!("{flag}=");
+    args.iter()
+        .skip(1)
+        .any(|arg| arg == flag || arg.starts_with(&equals_form))
+}
+
+/// `content/<name>` for a mod name, refusing anything that is not one plain
+/// directory name. A path is refused rather than joined: `--mod content/dev`
+/// would otherwise resolve `content/content/dev`, and every mod path the
+/// engine derives from it (scripts, `baked/` materials) would miss without an
+/// error at the flag that caused it. A leading `-` is refused to match the
+/// tool's manifest check: in the split form such a name reads as a flag.
+fn mod_content_root(name: &Path) -> Result<PathBuf> {
+    let text = name.to_string_lossy();
+    let is_plain_name = !text.is_empty()
+        && text != "."
+        && text != ".."
+        && !text.starts_with('-')
+        && !text.contains(['/', '\\', ':']);
+    if !is_plain_name {
+        anyhow::bail!(
+            "--mod takes a mod name — a directory directly under `{CONTENT_DIR}/` — not a \
+             path; got `{text}` (for `{CONTENT_DIR}/dev`, pass `--mod dev`)"
+        );
+    }
+    Ok(Path::new(CONTENT_DIR).join(name))
+}
+
+/// The boot map to load, from the positional map argument.
+///
+/// With `--mod`, a relative map path names a file inside that mod —
+/// `--mod dev maps/e1m1.prl` loads `content/dev/maps/e1m1.prl` — for the same
+/// reason `--mod` takes a name: every mod lives under `content/`, so typing
+/// that prefix is noise. A path that starts with `content/` anyway is refused
+/// rather than joined, since `content/dev/content/dev/maps/...` fails only as a
+/// missing file on the load worker, far from the argument that caused it. An
+/// absolute path stays as given.
+///
+/// Without `--mod` the path is read from the working directory unchanged, and
+/// the content root is derived from it instead ([`content_root_from_map`]).
+fn boot_map_path(
+    args: &[String],
+    map_arg: Option<&str>,
+    content_root: &Path,
+) -> Result<Option<PathBuf>> {
+    let Some(map_arg) = map_arg else {
+        return Ok(None);
+    };
+    let map = Path::new(map_arg);
+    let Some(mod_name) = mod_arg(args) else {
+        return Ok(Some(map.to_path_buf()));
+    };
+    if map.is_absolute() {
+        return Ok(Some(map.to_path_buf()));
+    }
+    // A leading `./` is still the working directory, so `./content/...` is the
+    // same mistake as `content/...`.
+    let mut components = map
+        .components()
+        .skip_while(|component| matches!(component, Component::CurDir));
+    let names_content_dir = components
+        .next()
+        .is_some_and(|first| same_dir_name(first.as_os_str(), OsStr::new(CONTENT_DIR)));
+    if names_content_dir {
+        let name_a_map = "name a map inside it, such as `maps/<name>.prl`";
+        let hint = match components.next() {
+            Some(second) if same_dir_name(second.as_os_str(), mod_name.as_os_str()) => {
+                let within_mod: PathBuf = components.collect();
+                if within_mod.as_os_str().is_empty() {
+                    name_a_map.to_string()
+                } else {
+                    format!("pass `{}`", within_mod.to_string_lossy().replace('\\', "/"))
+                }
+            }
+            Some(_) => "to load another mod's map, name that mod with --mod".to_string(),
+            None => name_a_map.to_string(),
+        };
+        anyhow::bail!(
+            "with --mod, a map path is relative to the mod folder `{}`; got `{map_arg}` \
+             ({hint})",
+            content_root.display().to_string().replace('\\', "/")
+        );
+    }
+    Ok(Some(content_root.join(map)))
+}
+
+/// Windows and macOS file systems are case-insensitive by default, so
+/// `Content` is `content` there.
+const CASE_INSENSITIVE_PATHS: bool = cfg!(any(windows, target_os = "macos"));
+
+/// Whether two directory names name the same directory on this platform.
+fn same_dir_name(a: &OsStr, b: &OsStr) -> bool {
+    if CASE_INSENSITIVE_PATHS {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
 }
 
 /// Derive the content root from a map path: the map's grandparent directory
@@ -735,7 +881,7 @@ mod tests {
             "levels".to_string(),
             "--baked-root".to_string(),
             "baked".to_string(),
-            "levels/maps/e1m1.prl".to_string(),
+            "maps/e1m1.prl".to_string(),
         ];
         let core_root = postretro_ui::CoreRoot::from_flag(core_root_arg(&args));
 
@@ -792,7 +938,8 @@ mod tests {
         assert_eq!(resolve_map_path(&args), None);
         // And the content root is not derived from it either.
         assert_eq!(
-            resolve_content_root(&args, resolve_map_path(&args).as_deref()),
+            resolve_content_root(&args, resolve_map_path(&args).as_deref())
+                .expect("no --mod falls back to the dev default"),
             PathBuf::from("content/dev"),
         );
 
@@ -846,7 +993,7 @@ mod tests {
         }
     }
 
-    /// The four directory flags are mutually independent: none swallows
+    /// The three directory flags are mutually independent: none swallows
     /// another's value, in any order. `--core-root` in particular never becomes
     /// the content root — engine assets are not mod content.
     #[test]
@@ -856,15 +1003,15 @@ mod tests {
             "--core-root".to_string(),
             "/install/core".to_string(),
             "--mod".to_string(),
-            "/project/levels".to_string(),
+            "campaign".to_string(),
             "--baked-root".to_string(),
             "/project/baked".to_string(),
         ];
         assert_eq!(core_root_arg(&args), Some(PathBuf::from("/install/core")));
         assert_eq!(baked_root_arg(&args), Some(PathBuf::from("/project/baked")));
         assert_eq!(
-            resolve_content_root(&args, None),
-            PathBuf::from("/project/levels"),
+            resolve_content_root(&args, None).expect("a mod name resolves"),
+            PathBuf::from("content/campaign"),
         );
 
         // Reversed order resolves identically.
@@ -873,7 +1020,7 @@ mod tests {
             "--baked-root".to_string(),
             "/project/baked".to_string(),
             "--mod".to_string(),
-            "/project/levels".to_string(),
+            "campaign".to_string(),
             "--core-root".to_string(),
             "/install/core".to_string(),
         ];
@@ -886,25 +1033,25 @@ mod tests {
             Some(PathBuf::from("/project/baked"))
         );
         assert_eq!(
-            resolve_content_root(&reversed, None),
-            PathBuf::from("/project/levels"),
+            resolve_content_root(&reversed, None).expect("a mod name resolves"),
+            PathBuf::from("content/campaign"),
         );
     }
 
     /// A flag whose value is missing does not consume the next flag, so the one
     /// after it still parses — the shared scanner's half of `mod_arg`'s existing
-    /// guarantee, held for all four.
+    /// guarantee, held for all three.
     #[test]
     fn a_directory_flag_without_a_value_does_not_eat_the_next_flag() {
         let args = vec![
             "postretro".to_string(),
             "--core-root".to_string(),
             "--mod".to_string(),
-            "content/example".to_string(),
+            "example".to_string(),
             "maps/dev.prl".to_string(),
         ];
         assert_eq!(core_root_arg(&args), None);
-        assert_eq!(mod_arg(&args), Some(PathBuf::from("content/example")));
+        assert_eq!(mod_arg(&args), Some(PathBuf::from("example")));
         assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
     }
 
@@ -915,13 +1062,13 @@ mod tests {
         let args = vec![
             "postretro".to_string(),
             "--mod".to_string(),
-            "/project/levels".to_string(),
+            "campaign".to_string(),
             "--baked-root".to_string(),
             "/project/baked".to_string(),
         ];
         assert_eq!(
-            resolve_content_root(&args, None),
-            PathBuf::from("/project/levels")
+            resolve_content_root(&args, None).expect("a mod name resolves"),
+            PathBuf::from("content/campaign")
         );
         assert_eq!(baked_root_arg(&args), Some(PathBuf::from("/project/baked")));
 
@@ -931,11 +1078,11 @@ mod tests {
             "--baked-root".to_string(),
             "/project/baked".to_string(),
             "--mod".to_string(),
-            "/project/levels".to_string(),
+            "campaign".to_string(),
         ];
         assert_eq!(
-            resolve_content_root(&reversed, None),
-            PathBuf::from("/project/levels")
+            resolve_content_root(&reversed, None).expect("a mod name resolves"),
+            PathBuf::from("content/campaign")
         );
         assert_eq!(
             baked_root_arg(&reversed),
@@ -944,50 +1091,72 @@ mod tests {
     }
 
     #[test]
-    fn content_root_arg_overrides_default_root() {
-        let args = vec![
-            "postretro".to_string(),
-            "--content-root".to_string(),
-            "content/example".to_string(),
-        ];
-        assert_eq!(
-            content_root_arg(&args),
-            Some(PathBuf::from("content/example"))
-        );
-    }
-
-    #[test]
-    fn mod_arg_selects_content_root() {
+    fn mod_arg_names_a_mod_under_the_content_directory() {
         let args = vec![
             "postretro".to_string(),
             "--mod".to_string(),
-            "content/mods/my-campaign".to_string(),
+            "my-campaign".to_string(),
         ];
+        assert_eq!(mod_arg(&args), Some(PathBuf::from("my-campaign")));
         assert_eq!(
-            mod_arg(&args),
-            Some(PathBuf::from("content/mods/my-campaign")),
-        );
-        assert_eq!(
-            resolve_content_root(&args, None),
-            PathBuf::from("content/mods/my-campaign"),
+            resolve_content_root(&args, None).expect("a mod name resolves"),
+            PathBuf::from("content/my-campaign"),
         );
     }
 
     #[test]
     fn mod_arg_accepts_equals_form_without_creating_a_map_arg() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod=content/mods/my-campaign".to_string(),
-        ];
-        assert_eq!(
-            mod_arg(&args),
-            Some(PathBuf::from("content/mods/my-campaign")),
-        );
+        let args = vec!["postretro".to_string(), "--mod=my-campaign".to_string()];
+        assert_eq!(mod_arg(&args), Some(PathBuf::from("my-campaign")));
         assert_eq!(resolve_map_path(&args), None);
         assert_eq!(
-            resolve_content_root(&args, None),
-            PathBuf::from("content/mods/my-campaign"),
+            resolve_content_root(&args, None).expect("a mod name resolves"),
+            PathBuf::from("content/my-campaign"),
         );
+    }
+
+    /// `--mod` takes a name, not a path. A path is refused at the flag rather
+    /// than joined under `content/`, where `--mod content/dev` would resolve
+    /// `content/content/dev` and fail far from the cause.
+    #[test]
+    fn mod_arg_refuses_a_path_instead_of_a_name() {
+        for value in [
+            "content/dev",
+            "content\\dev",
+            "/project/levels",
+            "C:dev",
+            ".",
+            "..",
+            "-x",
+        ] {
+            let args = vec!["postretro".to_string(), format!("--mod={value}")];
+            let error = resolve_content_root(&args, None)
+                .expect_err("a path is not a mod name")
+                .to_string();
+            assert!(error.contains("--mod takes a mod name"), "{value}: {error}");
+            assert!(error.contains(value), "{value}: {error}");
+        }
+    }
+
+    /// The retired `--content-root` is refused by name. Silently ignoring it
+    /// would leave its value to the positional-map scan, which would then load
+    /// the directory as a level.
+    #[test]
+    fn the_retired_content_root_flag_is_refused_by_name() {
+        for args in [
+            &["--content-root", "content/example"][..],
+            &["--content-root=content/example"][..],
+        ] {
+            let args: Vec<String> = std::iter::once("postretro")
+                .chain(args.iter().copied())
+                .map(String::from)
+                .collect();
+            let error = resolve_content_root(&args, None)
+                .expect_err("the retired flag is refused")
+                .to_string();
+            assert!(error.contains("--content-root was removed"), "{error}");
+            assert!(error.contains("--mod <name>"), "{error}");
+        }
     }
 
     #[test]
@@ -995,21 +1164,18 @@ mod tests {
         let args = vec![
             "postretro".to_string(),
             "--mod".to_string(),
-            "--content-root".to_string(),
-            "content/example".to_string(),
+            "--baked-root".to_string(),
+            "/project/baked".to_string(),
             "maps/dev.prl".to_string(),
         ];
 
         assert_eq!(mod_arg(&args), None);
-        assert_eq!(
-            content_root_arg(&args),
-            Some(PathBuf::from("content/example"))
-        );
+        assert_eq!(baked_root_arg(&args), Some(PathBuf::from("/project/baked")));
         assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
     }
 
     #[test]
-    fn mod_arg_empty_equals_value_is_ignored() {
+    fn mod_arg_empty_equals_value_is_not_a_map_arg() {
         let args = vec![
             "postretro".to_string(),
             "--mod=".to_string(),
@@ -1020,12 +1186,36 @@ mod tests {
         assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
     }
 
+    /// A `--mod` with no name is refused rather than treated as absent, which
+    /// would boot the default mod — the outcome of an unset `--mod "$MOD"`.
+    #[test]
+    fn a_mod_flag_without_a_name_is_refused() {
+        for args in [
+            &["--mod"][..],
+            &["--mod="][..],
+            &["--mod", "--baked-root", "/project/baked"][..],
+            &["--mod", "", "maps/dev.prl"][..],
+        ] {
+            let args: Vec<String> = std::iter::once("postretro")
+                .chain(args.iter().copied())
+                .map(String::from)
+                .collect();
+            let error = resolve_content_root(&args, None)
+                .expect_err("a nameless --mod is refused")
+                .to_string();
+            assert!(
+                error.contains("--mod needs a mod name"),
+                "{args:?}: {error}"
+            );
+        }
+    }
+
     #[test]
     fn resolve_map_path_skips_mod_value() {
         let args = vec![
             "postretro".to_string(),
             "--mod".to_string(),
-            "content/mods/my-campaign".to_string(),
+            "my-campaign".to_string(),
         ];
         assert_eq!(resolve_map_path(&args), None);
     }
@@ -1035,15 +1225,107 @@ mod tests {
         let args = vec![
             "postretro".to_string(),
             "--mod".to_string(),
-            "content/mods/my-campaign".to_string(),
+            "my-campaign".to_string(),
             "maps/dev-bypass.prl".to_string(),
         ];
         let map_path = resolve_map_path(&args);
         assert_eq!(map_path, Some("maps/dev-bypass.prl".to_string()));
         assert_eq!(
-            resolve_content_root(&args, map_path.as_deref()),
-            PathBuf::from("content/mods/my-campaign"),
+            resolve_content_root(&args, map_path.as_deref()).expect("a mod name resolves"),
+            PathBuf::from("content/my-campaign"),
         );
+    }
+
+    fn boot_map(args: &[&str]) -> Result<Option<PathBuf>> {
+        let args: Vec<String> = std::iter::once("postretro")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        let map_arg = resolve_map_path(&args);
+        let content_root = resolve_content_root(&args, map_arg.as_deref())?;
+        boot_map_path(&args, map_arg.as_deref(), &content_root)
+    }
+
+    /// With `--mod`, the map argument names a file inside that mod, so the
+    /// `content/<mod>/` prefix is never typed — the same rule `--mod` itself
+    /// follows. `postretro-tool run` always passes `--mod`, so this is also
+    /// what makes `postretro-tool run maps/e1m1.prl` load the mod's level.
+    #[test]
+    fn with_a_mod_the_map_argument_is_relative_to_the_mod_folder() {
+        assert_eq!(
+            boot_map(&["--mod", "my-campaign", "maps/e1m1.prl"]).expect("a mod map resolves"),
+            Some(Path::new("content/my-campaign").join("maps/e1m1.prl")),
+        );
+        assert_eq!(
+            boot_map(&["maps/e1m1.prl", "--mod=my-campaign"]).expect("order does not matter"),
+            Some(Path::new("content/my-campaign").join("maps/e1m1.prl")),
+        );
+        assert_eq!(
+            boot_map(&["--mod", "my-campaign"]).expect("no map is not an error"),
+            None,
+        );
+    }
+
+    /// Without `--mod` nothing changes: the map is read from the working
+    /// directory and the content root is derived from it.
+    #[test]
+    fn without_a_mod_the_map_argument_is_read_from_the_working_directory() {
+        assert_eq!(
+            boot_map(&["content/dev/maps/campaign-test.prl"]).expect("a raw map resolves"),
+            Some(PathBuf::from("content/dev/maps/campaign-test.prl")),
+        );
+    }
+
+    #[test]
+    fn with_a_mod_an_absolute_map_path_stays_as_given() {
+        let absolute = std::env::temp_dir().join("elsewhere.prl");
+        let absolute_text = absolute.to_string_lossy().into_owned();
+        assert_eq!(
+            boot_map(&["--mod", "my-campaign", &absolute_text]).expect("an absolute map resolves"),
+            Some(absolute),
+        );
+    }
+
+    /// A map that still carries the `content/` prefix is refused at boot, with
+    /// the path to pass instead, rather than joined into
+    /// `content/<mod>/content/<mod>/...` and reported only as a missing file
+    /// by the load worker.
+    #[test]
+    fn with_a_mod_a_content_prefixed_map_is_refused_with_the_path_to_pass() {
+        for map in [
+            "content/my-campaign/maps/e1m1.prl",
+            "./content/my-campaign/maps/e1m1.prl",
+            "content\\my-campaign\\maps\\e1m1.prl",
+            "Content/My-Campaign/maps/e1m1.prl",
+        ] {
+            // Backslash separators are Windows path semantics, and
+            // case-insensitive names are Windows and macOS semantics; elsewhere
+            // those are ordinary file names.
+            if map.contains('\\') && !cfg!(windows) {
+                continue;
+            }
+            if map.starts_with('C') && !CASE_INSENSITIVE_PATHS {
+                continue;
+            }
+            let error = boot_map(&["--mod", "my-campaign", map])
+                .expect_err("the content prefix is refused")
+                .to_string();
+            assert!(error.contains("pass `maps/e1m1.prl`"), "{map}: {error}");
+            assert!(error.contains("content/my-campaign"), "{map}: {error}");
+        }
+
+        let other = boot_map(&["--mod", "my-campaign", "content/other/maps/e1m1.prl"])
+            .expect_err("another mod's path is refused")
+            .to_string();
+        assert!(other.contains("name that mod with --mod"), "{other}");
+
+        // Naming the mod folder, or `content/` itself, has no map to point at.
+        for map in ["content/my-campaign", "content"] {
+            let error = boot_map(&["--mod", "my-campaign", map])
+                .expect_err("a directory is not a map")
+                .to_string();
+            assert!(error.contains("name a map inside it"), "{map}: {error}");
+        }
     }
 
     #[test]
@@ -1072,7 +1354,7 @@ mod tests {
         let args = vec![
             "postretro".to_string(),
             "--headless".to_string(),
-            "--content-root".to_string(),
+            "--mod".to_string(),
         ];
         assert_eq!(headless_arg(&args), Some(None));
     }
@@ -1107,7 +1389,7 @@ mod tests {
         let args = vec![
             "postretro".to_string(),
             "--capture".to_string(),
-            "--content-root".to_string(),
+            "--mod".to_string(),
         ];
         assert_eq!(capture_arg(&args), Some(None));
     }
@@ -1116,19 +1398,6 @@ mod tests {
     fn capture_arg_accepts_equals_form() {
         let args = vec!["postretro".to_string(), "--capture=scene.json".to_string()];
         assert_eq!(capture_arg(&args), Some(Some("scene.json")));
-    }
-
-    #[test]
-    fn resolve_map_path_skips_content_root_value() {
-        let args = vec![
-            "postretro".to_string(),
-            "--content-root=content/example".to_string(),
-            "content/example/maps/e1m1.prl".to_string(),
-        ];
-        assert_eq!(
-            resolve_map_path(&args),
-            Some("content/example/maps/e1m1.prl".to_string()),
-        );
     }
 
     #[test]
@@ -1143,6 +1412,100 @@ mod tests {
             resolve_map_path(&args),
             Some("content/dev/maps/campaign-test.prl".to_string()),
         );
+    }
+
+    /// `--host`'s optional port is stepped over like every other value-taking
+    /// flag's value, with the net flag preceding the map — the shape the prior
+    /// gap missed (`main.rs`'s `net_flags_do_not_clobber_positional_map_path`
+    /// only covered the flag trailing the map).
+    #[test]
+    fn host_flag_value_is_not_mistaken_for_the_map_path() {
+        let args = vec![
+            "postretro".to_string(),
+            "--host".to_string(),
+            "30000".to_string(),
+        ];
+        assert_eq!(resolve_map_path(&args), None);
+
+        let with_map = vec![
+            "postretro".to_string(),
+            "--host".to_string(),
+            "30000".to_string(),
+            "content/dev/maps/campaign-test.prl".to_string(),
+        ];
+        assert_eq!(
+            resolve_map_path(&with_map).as_deref(),
+            Some("content/dev/maps/campaign-test.prl"),
+        );
+    }
+
+    /// Same coverage as above for `--connect`, whose address is required rather
+    /// than optional, but is stepped over under the identical predicate.
+    #[test]
+    fn connect_flag_value_is_not_mistaken_for_the_map_path() {
+        let args = vec![
+            "postretro".to_string(),
+            "--connect".to_string(),
+            "127.0.0.1:27015".to_string(),
+        ];
+        assert_eq!(resolve_map_path(&args), None);
+
+        let with_map = vec![
+            "postretro".to_string(),
+            "--connect".to_string(),
+            "127.0.0.1:27015".to_string(),
+            "maps/e1m1.prl".to_string(),
+        ];
+        assert_eq!(
+            resolve_map_path(&with_map).as_deref(),
+            Some("maps/e1m1.prl"),
+        );
+    }
+
+    /// Regression: `postretro --mod dev --host 30000` (no CLI map at all) used
+    /// to return "30000" as the positional map, and `boot_map_path` joined it
+    /// under the mod root as `content/dev/30000`, failing the boot level load.
+    /// This is also what `postretro-tool run --host ...` hits, since the tool
+    /// forwards args verbatim and always adds `--mod`.
+    #[test]
+    fn host_port_value_is_not_mistaken_for_the_map_path_with_mod() {
+        assert_eq!(
+            boot_map(&["--mod", "dev", "--host", "30000"]).expect("no map is not an error"),
+            None,
+        );
+    }
+
+    /// Same regression shape for `--connect`, the flag named in the bug report
+    /// (`postretro --connect 127.0.0.1:27015` with `--mod`, and
+    /// `postretro-tool run --connect ...`, which always adds `--mod`).
+    #[test]
+    fn connect_address_value_is_not_mistaken_for_the_map_path_with_mod() {
+        assert_eq!(
+            boot_map(&["--mod", "dev", "--connect", "127.0.0.1:27015"])
+                .expect("no map is not an error"),
+            None,
+        );
+    }
+
+    /// `--host` takes an OPTIONAL port, so a bare `--host` directly followed by
+    /// a positional map is ambiguous at the token level: nothing distinguishes
+    /// "no port, this token is the map" from "an invalid port". This scan does
+    /// not try to disambiguate what `parse_net_config`
+    /// (`crates/netcode/src/lib.rs`) itself does not: that parser's
+    /// `iter.next_if(|v| !v.is_empty() && !v.starts_with("--"))` consumes the
+    /// very same next token as the attempted port and then rejects it with a
+    /// `NetArgError` (non-numeric), so `resolve_map_path` mirrors that
+    /// consumption and also does not surface the token as the map. A caller
+    /// must pass `--host <port>` before the map, or put the map before
+    /// `--host`, to avoid tripping this.
+    #[test]
+    fn bare_host_directly_before_a_map_is_consumed_as_the_attempted_port() {
+        let args = vec![
+            "postretro".to_string(),
+            "--host".to_string(),
+            "content/dev/maps/campaign-test.prl".to_string(),
+        ];
+        assert_eq!(resolve_map_path(&args), None);
     }
 
     #[cfg(feature = "observe-live")]

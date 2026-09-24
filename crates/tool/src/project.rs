@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::flag::match_flag;
 use crate::manifest::Manifest;
 
 /// The project marker. Its directory is the project root.
@@ -46,23 +47,33 @@ impl ProjectLocation {
         self.directory.as_deref()
     }
 
-    /// Record a recognized project flag. Returns `false` when `flag` names
-    /// neither, leaving the caller's own flag handling to run.
+    /// Record a recognized project flag, in split (`--flag value`) or equals
+    /// (`--flag=value`) form. Returns `0` when `token` names neither flag,
+    /// leaving the caller's own flag handling to run; otherwise the number of
+    /// argument-list tokens consumed (1 or 2), for the caller to advance by.
     pub(crate) fn absorb(
         &mut self,
-        flag: &str,
-        value: Option<&std::ffi::OsString>,
-    ) -> Result<bool, String> {
-        let slot = match flag {
-            "--manifest" => &mut self.manifest,
-            "--project" => &mut self.directory,
-            _ => return Ok(false),
-        };
-        let value = value.ok_or_else(|| format!("{flag} requires a path"))?;
-        if slot.replace(PathBuf::from(value)).is_some() {
-            return Err(format!("{flag} may be given only once"));
+        token: &str,
+        next: Option<&std::ffi::OsString>,
+    ) -> Result<usize, String> {
+        for flag in ["--manifest", "--project"] {
+            let Some(matched) = match_flag(token, next, flag) else {
+                continue;
+            };
+            let value = matched
+                .value
+                .ok_or_else(|| format!("{flag} requires a path"))?;
+            let slot = match flag {
+                "--manifest" => &mut self.manifest,
+                "--project" => &mut self.directory,
+                _ => unreachable!("only the two flags above are matched"),
+            };
+            if slot.replace(PathBuf::from(value.into_owned())).is_some() {
+                return Err(format!("{flag} may be given only once"));
+            }
+            return Ok(matched.tokens);
         }
-        Ok(true)
+        Ok(0)
     }
 
     /// Resolve relative flag values against the directory the caller stood in.
@@ -160,15 +171,21 @@ impl Project {
         self.join(&self.manifest.package.mod_root)
     }
 
-    /// The mod root as declared in the manifest, relative to the project root —
-    /// the path a distribution publishes the mod tree under. A distribution
-    /// honors this name rather than renaming to a fixed `content/base`, so the
+    /// The mod root relative to the project root, `content/<mod>` — the path a
+    /// distribution publishes the mod tree under. A distribution honors the
+    /// declared mod name rather than renaming to a fixed `content/base`, so the
     /// engine's own bare-launch default (`content/dev`) matches what a payload
-    /// of this project ships. The manifest parser guarantees two components
-    /// (`manifest.rs`), so the runtime's `baked/` grandparent derivation
-    /// (`build_pipeline.md` §Baked texture mips) holds for whatever this names.
+    /// of this project ships. The manifest names only the mod and the tool
+    /// places it under `content/` (`manifest.rs`), so the runtime's `baked/`
+    /// grandparent derivation (`build_pipeline.md` §Baked texture mips) holds
+    /// for whatever it names.
     pub(crate) fn mod_root_rel(&self) -> &str {
         &self.manifest.package.mod_root
+    }
+
+    /// The mod's declared name — what the engine's `--mod` takes.
+    pub(crate) fn mod_name(&self) -> &str {
+        &self.manifest.package.mod_name
     }
 
     /// The directory that *contains* `materials/` — what both `prl-build` and
@@ -204,12 +221,12 @@ impl Project {
     /// Build a project without touching a filesystem, for tests elsewhere in the
     /// crate that need one of its derived paths.
     #[cfg(test)]
-    pub(crate) fn for_test(root: &str, name: &str, mod_root: &str) -> Self {
+    pub(crate) fn for_test(root: &str, name: &str, mod_name: &str) -> Self {
         let root = PathBuf::from(root);
         Self {
             manifest_path: root.join(MARKER_FILE),
             manifest: Manifest::parse(&format!(
-                "[package]\nname = \"{name}\"\nmod_root = \"{mod_root}\"\n"
+                "[package]\nname = \"{name}\"\nmod = \"{mod_name}\"\n"
             ))
             .expect("test project manifest parses"),
             root,
@@ -298,14 +315,14 @@ mod tests {
         fs::create_dir_all(&project_dir).unwrap();
         fs::write(
             project_dir.join(MARKER_FILE),
-            "[package]\nname = \"g\"\nmod_root = \"content/base\"\n",
+            "[package]\nname = \"g\"\nmod = \"base\"\n",
         )
         .unwrap();
 
         let mut location = ProjectLocation::default();
         assert_eq!(
             location.absorb("--project", Some(&OsString::from(&project_dir))),
-            Ok(true)
+            Ok(2)
         );
         // Opened from a directory that is not inside the project at all.
         let project = location
@@ -350,6 +367,71 @@ mod tests {
         assert!(error.contains("--project"), "{error}");
     }
 
+    /// Regression: `absorb` recognized only `--project <dir>`, so
+    /// `--project=../game` compared unequal to the split form and fell through
+    /// as an unrecognized token — which `run` forwards straight to the engine
+    /// (`run.rs`), silently launching whatever project the working directory
+    /// happened to hold instead of the one named.
+    #[test]
+    fn the_equals_form_is_absorbed_and_consumes_one_token() {
+        let mut location = ProjectLocation::default();
+        assert_eq!(
+            location.absorb("--project=../game", None),
+            Ok(1),
+            "the equals form is recognized and consumes only its own token"
+        );
+        assert_eq!(location.directory(), Some(Path::new("../game")));
+
+        let mut location = ProjectLocation::default();
+        assert_eq!(location.absorb("--manifest=/a/postretro.toml", None), Ok(1));
+        assert_eq!(location.manifest(), Some(Path::new("/a/postretro.toml")));
+    }
+
+    /// A repeat is a repeat whichever form it is spelled in — mixing split and
+    /// equals must not let a second value slip past the "given twice" guard.
+    #[test]
+    fn given_twice_errors_across_split_and_equals_forms() {
+        let mut location = ProjectLocation::default();
+        location
+            .absorb("--project", Some(&OsString::from("a")))
+            .unwrap();
+        let error = location
+            .absorb("--project=b", None)
+            .expect_err("a second --project in the other form is still a repeat");
+        assert!(error.contains("--project"), "{error}");
+        assert!(error.contains("only once"), "{error}");
+    }
+
+    /// `--project=` names the flag but supplies nothing after the `=`; that is
+    /// a caller mistake, not an intentionally blank project directory.
+    #[test]
+    fn an_empty_equals_value_is_an_error_not_a_silent_empty_path() {
+        let mut location = ProjectLocation::default();
+        let error = location
+            .absorb("--project=", None)
+            .expect_err("an empty value after `=` must not be accepted silently");
+        assert!(error.contains("--project"), "{error}");
+        assert!(location.directory().is_none());
+    }
+
+    /// Mutual exclusion holds no matter which form named each flag.
+    #[test]
+    fn mutual_exclusion_holds_across_split_and_equals_forms() {
+        let mut location = ProjectLocation::default();
+        location
+            .absorb("--manifest=/a/postretro.toml", None)
+            .unwrap();
+        location
+            .absorb("--project", Some(&OsString::from("/b")))
+            .unwrap();
+
+        let error = location
+            .open(Path::new("/cwd"))
+            .expect_err("two names for one project is ambiguous regardless of form");
+        assert!(error.contains("--manifest"), "{error}");
+        assert!(error.contains("--project"), "{error}");
+    }
+
     #[test]
     fn project_flags_rebase_onto_the_directory_the_caller_stood_in() {
         let mut location = ProjectLocation::default();
@@ -368,16 +450,18 @@ mod tests {
         assert_eq!(find_marker(Path::new("/projects/game"), |_| false), None);
     }
 
-    fn project(root: &str, mod_root: &str) -> Project {
-        Project::for_test(root, "game", mod_root)
+    fn project(root: &str, mod_name: &str) -> Project {
+        Project::for_test(root, "game", mod_name)
     }
 
     #[test]
     fn derived_paths_all_hang_off_the_marker_directory() {
-        let project = project("/projects/game", "levels/core");
+        let project = project("/projects/game", "core");
 
         assert_eq!(project.root(), Path::new("/projects/game"));
-        assert_eq!(project.mod_root(), Path::new("/projects/game/levels/core"));
+        assert_eq!(project.mod_name(), "core");
+        assert_eq!(project.mod_root_rel(), "content/core");
+        assert_eq!(project.mod_root(), Path::new("/projects/game/content/core"));
         assert_eq!(project.baked_root(), Path::new("/projects/game/baked"));
         assert_eq!(
             project.materials_root(),
@@ -400,7 +484,7 @@ mod tests {
     /// silent placeholder degradation the flag exists to close.
     #[test]
     fn baked_root_is_the_parent_of_materials_on_both_sides() {
-        let project = project("/projects/game", "content/base");
+        let project = project("/projects/game", "base");
         assert_eq!(
             project.baked_root().join("materials"),
             project.materials_root()

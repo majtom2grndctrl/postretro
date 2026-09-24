@@ -2,7 +2,7 @@
 //
 // `core/` holds the four built-in UI descriptors and the boot splash. It is
 // engine-owned: `--mod` never redirects it, and it is deliberately a single path
-// component, outside the `<container>/<mod>` shape a mod root must have. What it
+// component, outside the `content/<mod>` shape a mod root must have. What it
 // is *not* is fixed to the working directory — a launcher that pins the cwd to a
 // game project (where no `core/` exists, correctly) still has to tell the engine
 // where the engine's own assets are, which is what `--core-root` names.

@@ -64,7 +64,7 @@ No WAD files. Textures are authored as PNGs.
 
 | Stage | What happens |
 |-------|-------------|
-| Author | Create PNGs in `<mod root>/textures/<collection>/<name>.png` — `content/dev` in this workspace, and the mod root named by `postretro.toml` in a packaged distribution. TrenchBroom requires one subdirectory level. |
+| Author | Create PNGs in `<mod root>/textures/<collection>/<name>.png` — `content/dev` in this workspace, and `content/<mod>` for the mod named by `postretro.toml` in a packaged distribution. TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Browses the textures directory via the Postretro game config. |
 | prl-build | Reads PNGs, decodes them, runs Mitchell-Netravali downsampling in linear color space, and writes per-texture `.prm` mip sidecars to `<baked root>/materials/<blake3-hex>.prm`. Stores a content-addressed blake3 key per texture in the `TextureCacheKeys` PRL section. Authored PNGs are not shipped or read at runtime for world materials. |
 | PRL output | `TextureNames` section stores a deduplicated texture name list (verbatim from the `.map`, possibly collection-qualified). `TextureCacheKeys` section stores one 32-byte blake3 per name entry. No pixel data. |
@@ -406,12 +406,18 @@ authored them.
 different relative routes. prl-build walks up from the map source to the nearest
 `Cargo.toml` ancestor and appends `baked/materials`. The engine derives the root
 from the loaded content root's grandparent plus `baked/materials`. The two
-routes agree while the mod root is a two-component path under the tree root —
-`content/dev`, and every other `<container>/<mod>`. A mod nested deeper or
-shallower sends the runtime derivation to a directory the sidecars are not in,
-and every world material degrades to a placeholder with a warning rather than a
-failure. That shape is a constraint on every mod, and it is what lets a packaged
-tree (§Distribution packaging) carry its own `baked/materials` beside its own
+routes agree while the mod root is `content/<mod>` under the tree root. A mod
+nested deeper or shallower would send the runtime derivation to a directory the
+sidecars are not in, and every world material would degrade to a placeholder
+with a warning rather than a failure. That is why a mod is selected by **name,
+never by path**: the engine's `--mod <name>`, the manifest's `mod = "<name>"`,
+and `postretro-tool mint-identity <name>` all place the mod at
+`content/<name>` themselves and refuse a value holding a separator, so no
+name can produce another shape. (A bare engine launch with no `--mod` still
+derives its content root from the map path's grandparent — the checkout's dev
+bypass, which `xtask run` uses; every tool launch and launcher passes `--mod`.)
+It is also what lets a packaged tree
+(§Distribution packaging) carry its own `baked/materials` beside its own
 `content/`.
 
 The walks stay deliberately distinct — collapsing them into one implementation
@@ -537,7 +543,7 @@ only; the shader reconstructs Z).
 
 `postretro.toml` marks a directory as a Postretro project. The tool finds it by walking parents of the working directory, the way cargo finds `Cargo.toml`; `--manifest <path>` names one instead, and its parent becomes the project root. Every path the tool touches hangs off that one runtime anchor — mod root, `baked/`, `.build-caches/`, `dist/`.
 
-The marker is what lets a content repository be a project in its own right, which is the point of the whole arrangement: a game's content lives in its author's own version-controlled tree, and the engine install is a replaceable sibling (§Baked texture mips). It carries the package name, the mod root, and the optional bake recipes (§Shipped level set). Its mod root is two `/`-separated components — the shape §Baked texture mips requires — and its first component may not be `dist`, since that tree is where the payload delete works.
+The marker is what lets a content repository be a project in its own right, which is the point of the whole arrangement: a game's content lives in its author's own version-controlled tree, and the engine install is a replaceable sibling (§Baked texture mips). It carries the package name, the mod's name (`mod = "dev"`), and the optional bake recipes (§Shipped level set). The tool places the mod at `content/<mod>` — the shape §Baked texture mips requires — so the manifest names no path and a value that is not one plain directory name is refused. A recipe `source` stays a project-relative file path, since a player payload may bake from a `.map` kept outside the mod tree.
 
 ### Why the tool is not xtask
 
@@ -572,13 +578,13 @@ A payload reproduces the tree the engine expects, rooted at the payload director
 ```
 <payload>/
   postretro[.exe]              engine binary
-  <package name>.{bat,sh}      launcher: pins cwd to its own directory, passes --mod
+  <package name>.{bat,sh}      launcher: pins cwd to its own directory, passes --mod <mod>
   core/                        engine assets: UI descriptors, splash, font licences
   content/<mod>/               the developer's mod, published under its declared root
   baked/materials/             .prm sidecars
 ```
 
-**A distribution publishes the developer's mod under the mod root their `postretro.toml` declares**, keeping that name rather than renaming it — and the launcher mounts that same path. `content/base` is the recommended convention for a downstream game; the engine's own `content/dev` is what a distribution of this workspace keeps. The manifest parser guarantees a mod root is exactly two components (and never `dist/…`), which is what keeps the runtime grandparent derivation resolving `<payload>/baked/materials` (§Baked texture mips) for whatever the project named — so the name is honored without special-casing. Honoring it also aligns the published tree with the engine's own bare-launch default (`content/dev`): a payload started without its launcher finds its mod where the engine already looks. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes with the root's name. This is a destination-path parameter at assembly, not a redesign of the stages.
+**A distribution publishes the developer's mod at `content/<mod>` for the mod their `postretro.toml` declares**, keeping that name rather than renaming it — and the launcher mounts that same mod by name. `base` is the recommended convention for a downstream game; the engine's own `dev` is what a distribution of this workspace keeps. Because the manifest names only the mod and the tool places it under `content/`, the runtime grandparent derivation resolves `<payload>/baked/materials` (§Baked texture mips) for whatever the project named — so the name is honored without special-casing. Honoring it also aligns the published tree with the engine's own bare-launch default (`content/dev`): a payload started without its launcher finds its mod where the engine already looks. Level paths stay mod-root-relative throughout, so nothing expressed against the source mod root — the scanned `maps/<name>.prl` literals, the completion marker's lines, the runtime catalog — changes with the root's name. This is a destination-path parameter at assembly, not a redesign of the stages.
 
 `core/` holds what the engine owns and a mounted game never replaces, so it sits outside `content/` and `--mod` never redirects it. It is deliberately one path component, which keeps it outside the two-component shape a mod root must have (§Baked texture mips) — engine assets are not a mod. Stage 5 copies it from the **install root**, never from the project: a game repository carries no engine assets, and a project that happens to hold a directory of that name does not get to stand in for the engine's. The install root is named by `--install-root <dir>` or derived from the tool's own executable location; a checkout is the one layout that derivation cannot see, so `xtask` names the workspace explicitly.
 
@@ -586,7 +592,7 @@ Content paths resolve cwd-relative (`ui.md` §5), so the payload is correct only
 
 ### Authoring launch
 
-`postretro-tool run` discovers the project and launches the engine with `--mod`, `--baked-root`, and `--core-root` already correct, with the working directory pinned to the project root. Flags the caller supplies win outright rather than being shadowed, since the engine reads the first occurrence of each.
+`postretro-tool run` discovers the project and launches the engine with `--mod`, `--baked-root`, and `--core-root` already correct, with the working directory pinned to the project root. Flags the caller supplies win outright rather than being shadowed, since the engine reads the first occurrence of each. Because `--mod` is always present, a map argument forwarded to the engine is relative to the mod folder (`postretro-tool run maps/arena.prl`) — the engine's rule, not a rewrite in the tool, which never inspects the arguments it forwards.
 
 Content and engine assets are two independent lookups here, exactly as they are for the packaging commands: `--mod` and `--baked-root` come from the project, `--core-root` is the install's `core/`, and neither falls back to the other. `--core-root` is passed absolute, because the engine would otherwise resolve it against the working directory this command pins to the project — the one directory that does not hold `core/`. An install carrying no `core/` refuses the launch rather than starting an engine whose pause menu, frontend menu, on-screen keyboard and splash are all absent behind warnings; `--install-root` names the install when the tool's own location cannot imply it, which is the checkout case (`xtask run` is the checkout's launcher).
 
@@ -628,7 +634,7 @@ The levels a payload ships are the `maps/<name>.prl` string literals in the entr
 
 That scan is the whole of the visibility. A catalog path assembled at runtime rather than written as a literal ships nothing and reports nothing — no stage ever saw the level, so no check fires and the recipient gets a menu button that loads nothing. The exposure is accepted, not mitigated.
 
-Each resolved level bakes from `<mod_root>/maps/<stem>.map` at default flags. A manifest `[[recipes]]` entry exists for a level whose source or compiler flags that default cannot infer; it is keyed by output path, and a recipe matching no scanned literal is reported as an orphan rather than passing silently.
+Each resolved level bakes from `content/<mod>/maps/<stem>.map` at default flags. A manifest `[[recipes]]` entry exists for a level whose source or compiler flags that default cannot infer; it is keyed by output path, and a recipe matching no scanned literal is reported as an orphan rather than passing silently.
 
 A recipe may not supply the arguments the tool owns. `-o`, `--release`, and the TUI switches decide what kind of bake a distribution runs. `--baked-root` and `--cache-dir` are the pair that must stay consistent across the compiler and the engine: prl-build reads the last occurrence of each, so a recipe naming one would win and reintroduce exactly the degradation the flags exist to close.
 
@@ -636,7 +642,7 @@ A recipe may not supply the arguments the tool owns. `-o`, `--release`, and the 
 
 Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`postretro-tool sdk-dist`). Both bake the maps — the SDK bundle is **content-complete**: it runs the same level and material bakes as the player payload, so it is playable on arrival, and *additionally* ships what authoring needs. The invariant that separates them is subtraction, not baking: the player payload carries only released runtime artifacts, while the SDK bundle is a superset that also carries the compilers, the tool, the SDK, the docs, and the mod's `.map`/`.ts` sources beside the baked output. Its sweep is correspondingly lighter — it confirms the required entries exist rather than forbidding sources.
 
-**The bundle is a project in its own right.** It carries a generated `postretro.toml` naming the source project's own mod root (`content/dev` for this workspace), so its recipient can produce a player payload from it with no repository, no Rust toolchain, and no cargo. That is the whole reason for shipping the tool, and it is what makes the bundle's own `dist` run the real acceptance for this machinery: every workspace test has a `Cargo.toml` ancestor and a cargo binary, which are the two things the recipient does not have.
+**The bundle is a project in its own right.** It carries a generated `postretro.toml` naming the source project's own mod (`dev` for this workspace), so its recipient can produce a player payload from it with no repository, no Rust toolchain, and no cargo. That is the whole reason for shipping the tool, and it is what makes the bundle's own `dist` run the real acceptance for this machinery: every workspace test has a `Cargo.toml` ancestor and a cargo binary, which are the two things the recipient does not have.
 
 **The SDK engine is a debug build with `--features dev-tools`, never `--release`.** One engine both plays the baked maps and authors. TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
 

@@ -415,6 +415,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         generation_has_reset: false,
         indirect_compose_epoch: 0,
         direct_compose_epoch: 0,
+        install_cpu: InstallCpuCounters::default(),
         gpu: None,
     };
     state.refresh_indirect_resident_rows();

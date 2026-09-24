@@ -266,6 +266,7 @@ impl ShResidencyState {
             generation_has_reset: false,
             indirect_compose_epoch: 0,
             direct_compose_epoch: 0,
+            install_cpu: InstallCpuCounters::default(),
             gpu: None,
         })
     }

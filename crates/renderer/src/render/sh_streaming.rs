@@ -25,11 +25,15 @@ use super::{Renderer, sh_compose_dispatch::should_dispatch};
 
 mod allocator;
 mod dense;
+mod diagnostics;
 mod direct_compose;
 mod floor;
 mod frame;
 mod gpu;
 mod install;
+mod install_journal;
+#[cfg(test)]
+mod install_tests;
 mod lifecycle;
 mod ownership;
 mod patches;
@@ -41,10 +45,14 @@ mod sparse_install;
 mod tests;
 
 use allocator::{FirstFitRanges, PoolRange, SparsePool};
+pub use diagnostics::ShStreamingLiveDiagnostics;
+use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
 use gpu::StreamingGpuPools;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
+use install::InstallGpu;
+use install_journal::{InstallJournal, RowRefTable, RowSet};
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 
@@ -107,6 +115,18 @@ pub struct ShResidencySnapshot {
     /// Whole-resident billboard scatter ids 47/48; deliberately separate
     /// from streamable SH-pool savings.
     pub whole_resident_scatter_bytes: u64,
+    /// Cumulative CPU microseconds spent installing ready clusters, summed
+    /// over drains that carried ready work.
+    pub install_cpu_total_micros: u64,
+    /// Largest single-drain install time, in microseconds.
+    pub install_cpu_max_drain_micros: u64,
+    /// Install time of the most recent drain that carried ready work, in
+    /// microseconds.
+    pub install_cpu_last_drain_micros: u64,
+    /// Streamed pool families whose physical capacity grew, cumulative.
+    pub pool_growth_events: u64,
+    /// Active physical capacity those growths added, cumulative.
+    pub pool_growth_bytes: u64,
 }
 
 /// A malformed renderer handoff is never repaired by inventing an address.
@@ -299,6 +319,7 @@ pub(super) struct ShResidencyState {
     generation_has_reset: bool,
     indirect_compose_epoch: u64,
     direct_compose_epoch: u64,
+    install_cpu: InstallCpuCounters,
     gpu: Option<StreamingGpuPools>,
 }
 

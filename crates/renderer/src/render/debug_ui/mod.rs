@@ -14,10 +14,13 @@ use super::LocatorDiagnostics;
 use super::PortalOverlayState;
 use super::Renderer;
 use super::SdfShadowMode;
+use super::ShStreamingLiveDiagnostics;
 use super::SpatialCellSetDiagnostics;
 use super::WorldWireframeMode;
 use super::frame_timing::FrameTimingSnapshot;
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
+
+mod streaming_tab;
 
 /// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
 /// lazily on first panel open via `Renderer::ensure_debug_ui_gpu`. The CPU
@@ -52,10 +55,11 @@ pub enum DiagnosticsTab {
     Agents,
     Doors,
     Triggers,
+    Streaming,
 }
 
 impl DiagnosticsTab {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Lighting,
         Self::Volumes,
         Self::Performance,
@@ -63,6 +67,7 @@ impl DiagnosticsTab {
         Self::Agents,
         Self::Doors,
         Self::Triggers,
+        Self::Streaming,
     ];
 
     const fn label(self) -> &'static str {
@@ -74,6 +79,7 @@ impl DiagnosticsTab {
             Self::Agents => "Agents",
             Self::Doors => "Doors",
             Self::Triggers => "Triggers",
+            Self::Streaming => "Streaming",
         }
     }
 }
@@ -258,6 +264,13 @@ impl DebugUi {
 /// when GPU timing is disabled. When present-but-empty (zero passes), the
 /// "unavailable" line still renders — defensive against an empty
 /// `pass_labels` vec slipping past construction.
+///
+/// `sh_streaming` feeds the Streaming tab; `None` means the level does not
+/// stream SH clusters.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each tab receives its own prepared plain-data input at the renderer boundary."
+)]
 pub fn draw_diagnostics_panel(
     ctx: &egui::Context,
     state: &mut DiagnosticsState,
@@ -268,6 +281,7 @@ pub fn draw_diagnostics_panel(
     trigger_rows: &[TriggerDiagnosticsRow],
     door_occluder_rows: &[DoorOccluderDiagnosticsRow],
     blocked_portal_ids: &[u32],
+    sh_streaming: Option<&ShStreamingLiveDiagnostics>,
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -319,6 +333,7 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
             DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
             DiagnosticsTab::Triggers => draw_triggers_tab(ui, trigger_rows),
+            DiagnosticsTab::Streaming => streaming_tab::draw_streaming_tab(ui, sh_streaming),
         }
     });
 }
@@ -1246,12 +1261,14 @@ mod tests {
                 DiagnosticsTab::Agents,
                 DiagnosticsTab::Doors,
                 DiagnosticsTab::Triggers,
+                DiagnosticsTab::Streaming,
             ],
         );
         assert_eq!(DiagnosticsTab::Spatial.label(), "Spatial");
         assert_eq!(DiagnosticsTab::Agents.label(), "Agents");
         assert_eq!(DiagnosticsTab::Doors.label(), "Doors");
         assert_eq!(DiagnosticsTab::Triggers.label(), "Triggers");
+        assert_eq!(DiagnosticsTab::Streaming.label(), "Streaming");
     }
 
     #[test]

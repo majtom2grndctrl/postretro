@@ -554,6 +554,7 @@ fn draw_volumes_tab(
             ui.checkbox(&mut sh_state.show_cells, "Show base-grid cells");
             ui.checkbox(&mut sh_state.show_markers, "Show per-probe markers");
 
+            let streaming_active = renderer.sh_streaming_active();
             ui.horizontal(|ui| {
                 ui.label("Marker mode");
                 ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Validity, "Validity");
@@ -568,9 +569,31 @@ fn draw_volumes_tab(
                     MarkerMode::Irradiance,
                     "Irradiance",
                 );
+                // Residency has no meaning without a streaming session: it
+                // colors markers from the renderer's own residency mirrors,
+                // which only exist while one is active.
+                if streaming_active {
+                    ui.radio_value(
+                        &mut sh_state.marker_mode,
+                        MarkerMode::Residency,
+                        "Residency",
+                    );
+                }
             });
             if sh_state.marker_mode == MarkerMode::DensityLevel {
                 ui.label("L0 green · L1 yellow · L2 blue; paler = larger node");
+            }
+            if sh_state.marker_mode == MarkerMode::Residency {
+                ui.label(
+                    "Sampleable green · installed yellow · requested orange · miss red · invalid grey",
+                );
+            }
+            if sh_state.marker_mode == MarkerMode::Irradiance && streaming_active {
+                // The live "total"-atlas readback is fixed at renderer init to
+                // the whole-loaded atlas geometry and bind group; a streaming
+                // session owns a differently sized atlas behind its own bind
+                // group, so this mode has no data source while streaming.
+                ui.label("Irradiance unavailable while streaming (needs the whole-loaded atlas)");
             }
 
             ui.label("Marker scale");

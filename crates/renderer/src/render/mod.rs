@@ -31,6 +31,8 @@ mod sh_compose;
 mod sh_compose_dispatch;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
+#[cfg(feature = "dev-tools")]
+mod sh_diagnostics_residency;
 mod sh_indirection;
 mod sh_residency;
 mod sh_streaming;

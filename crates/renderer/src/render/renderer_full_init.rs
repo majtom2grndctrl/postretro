@@ -55,14 +55,8 @@ pub(crate) fn build_full_renderer(
     let dynamic_influences = filtered_level_lights.influences;
     let level_light_source_indices = filtered_level_lights.source_indices;
     let entity_shadow_indices = geometry.map(|g| g.entity_shadow_lights).unwrap_or(&[]);
-    let (animated_baked_descriptor_indices, animated_baked_affinity_lights) = geometry
-        .and_then(|g| g.animated_direct_sh_delta_volumes)
-        .map_or((&[][..], &[][..]), |section| {
-            (
-                section.animation_descriptor_indices.as_slice(),
-                section.affinity_lights.as_slice(),
-            )
-        });
+    let (animated_baked_descriptor_indices, animated_baked_affinity_lights) =
+        geometry.map_or((&[][..], &[][..]), LevelGeometry::animated_baked_roster);
     let animated_baked_candidates = animated_baked_shadow_candidates_with_direct_delta(
         full_lights,
         full_influences,
@@ -224,11 +218,21 @@ pub(crate) fn build_full_renderer(
         level_lights.len(),
         animated_baked_descriptor_indices,
     );
+    let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,
         ShVolumeSections {
             sh: geometry.and_then(|g| g.sh_volume),
+            stream_base_present: geometry
+                .is_some_and(|g| matches!(&g.sh_storage, LevelGeometryShStorage::Streaming(_))),
+            stream_animation_descriptors: geometry.and_then(|g| match &g.sh_storage {
+                LevelGeometryShStorage::Legacy => None,
+                LevelGeometryShStorage::Streaming(manifest) => {
+                    Some(manifest.base().animation_descriptors.as_slice())
+                }
+            }),
+            indirect_delta_present: geometry.and_then(|g| g.delta_sh_volumes).is_some(),
             direct: geometry.and_then(|g| g.direct_sh_volume),
             direct_delta: geometry.and_then(|g| g.direct_sh_delta_volumes),
             animated_direct_delta: geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
@@ -239,6 +243,7 @@ pub(crate) fn build_full_renderer(
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
         probe_occlusion_enabled,
+        &mut sh_allocation_ledger,
     );
 
     let sdf_atlas_resources =
@@ -258,7 +263,10 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources,
         compose_sh_volume,
         compose_delta_sh_volumes,
+        geometry.and_then(|g| g.sh_volume).is_some(),
+        geometry.and_then(|g| g.delta_sh_volumes).is_some(),
         &uniform_bind_group_layout,
+        &mut sh_allocation_ledger,
     );
 
     #[cfg(feature = "dev-tools")]
@@ -590,6 +598,8 @@ pub(crate) fn build_full_renderer(
         geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         &promoted_static_weight_buffer,
         &uniform_bind_group_layout,
+        geometry.and_then(|g| g.sh_volume).is_some(),
+        &mut sh_allocation_ledger,
     );
     let billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::new(
         device,
@@ -597,8 +607,16 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources.animation,
         geometry.and_then(|g| g.animated_billboard_direct_scatter_delta_volumes),
         &uniform_bind_group_layout,
-        sh_volume_resources.grid_dimensions,
+        geometry
+            .and_then(|geometry| geometry.billboard_direct_scatter_volume)
+            .map_or(sh_volume_resources.grid_dimensions, |section| {
+                section.grid_dimensions
+            }),
+        &mut sh_allocation_ledger,
     );
+    // Full initialization builds only no-level bindings. Keep its accounting
+    // local; `install_level_geometry` publishes the report for a real level.
+    let _bootstrap_sh_residency = sh_allocation_ledger.finish();
     Ok(FullRenderer {
         pipeline,
         depth_prepass_pipeline,
@@ -624,6 +642,8 @@ pub(crate) fn build_full_renderer(
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
         probe_occlusion_enabled,
         sh_volume_resources,
+        sh_residency_report: None,
+        sh_streaming: None,
         sdf_atlas_resources,
         sdf_shadow_pass,
         lightmap_mode,

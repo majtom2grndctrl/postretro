@@ -115,7 +115,7 @@ struct ShGridInfo {
     atlas_tiles_per_row: u32,
     atlas_tile_rows: u32,
     tile_interior: u32,
-    _pad2: u32,
+    physical_tile_stride: u32,
     probe_occlusion: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,

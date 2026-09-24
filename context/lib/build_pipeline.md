@@ -177,7 +177,21 @@ parse .map → scripts-build emits light-membership manifest → prl-build appli
    - **Soft-shadow bake cost.** Soft visibility multiplies each stage's per-(hit × light) shadow-ray cost by the area-sample count, so penumbra-heavy maps pay a multi-fold bake-time increase over the hard-gate path. Adaptive escalation (a 4-ray probe set, escalating to the full count only in penumbras) keeps fully-lit/fully-shadowed texels cheap and bounds that cost. Lightmap layers and ShadowmaskAtlas memos are cached, so unchanged inputs pay that cost once. The three SH delta bakes are cached per CSR entry, so unchanged lights are not re-baked (see §Build Cache). `--soft-shadow-samples` (default 32) sets the escalated full-sample count. Raising it invalidates cached lightmap layers and shadowmask memos keyed through selected layer hashes. The uncached animated weight-map stage recomputes from scratch every build. Adaptive-escalation thresholds stay fixed constants regardless, so the bake stays deterministic.
 12. **Pack.** Writes all sections to a sibling staging file and validates them through the same open handle. Publication holds a persistent sibling advisory lock. Cooperating prl-build processes serialize the final identity check and rename; a compiler whose original output changed refuses publication. The lock does not constrain external writers that ignore it. Such a writer can modify an existing inode without changing its identity, or replace the output or staging name after the last check. Failed staging files remain for manual cleanup because pathname unlink cannot prove the checked file was not replaced before deletion. Publication does not fsync the file or parent directory.
 
+**Planned section-footprint diagnostics.** Pack reports every emitted section from the
+descriptors it actually writes, using the known section name when available and retaining
+unknown ids numerically. Per-section bytes sum to the payload portion of the file; header
+and section-table bytes are separate container overhead. Reporting must not re-encode a
+section or defeat the one-payload-at-a-time write lifetime.
+
 **Atlas preparation and SH ordering.** Chart planning and packing are not ray work, and the lightmap bake, shadowmask fill, animated light chunks, and animated weight maps consume only the charts and placements they produce. The SH/delta, entity-shadow-selection, billboard direct-scatter, and `ChunkLightList` stages complete before atlas preparation. This ordering is load-bearing: direct-SH delta work can clear entity-shadow selection wholesale, and deterministic channel assignment must finish before the fused atlas walk begins. These pre-atlas stages consume position-only geometry, so density and scale edits do not invalidate their cache keys.
+
+**Cluster residency metadata and payload stage.** After all bakes and final
+section-presence decisions, an uncached metadata pass partitions cells and addresses only
+the emitted SH sections. It emits id 49, then emits id 50 from borrowed finalized SH
+sources when id 34 is present. It runs before serialization in warm and cold builds. It
+never feeds a bake: global SH rays, coarsening, existing cache keys, and legacy section
+bodies remain unchanged. Construction and validation borrow finalized metadata without
+cloning or re-encoding whole lighting payloads.
 
 ### Progress reporting, controls, and logging
 
@@ -252,8 +266,33 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | CellVisibility | 46 | Optional, versioned, strictly parsed baked Cell→Cell coupling relation: per-cell reachability component IDs plus canonically ordered coupled-pair distance/aperture graded records. Missing → conservative all-perceivable, no-graded-detail fallback. Id 14 (`LeafPvs`) is a retired hole; do not reuse |
 | BillboardDirectScatterVolume | 47 | Optional dense normal-free direct-scatter base for billboards: `Rgba16Float` RGB plus binary validity alpha in the x-fastest id-34 probe order. Static-only maps omit it when no `static_light_map` source contributes. A map with animated-only `static_light_map` scatter entries may emit an all-zero RGB base solely as the required grid/validity anchor for a valid id-48 companion. Invalid or missing data selects legacy billboard direct lighting |
 | AnimatedBillboardDirectScatterDeltaVolumes | 48 | Optional dense animated billboard direct-scatter deltas: reuses id-45 descriptor mapping and CSR affinity layout, but stores fixed dense 4×4×4 `Rgba16Float` RGB deltas per CSR entry (reserved zero alpha). Required with id 47 whenever id 45 is present; a missing, invalid, or oversized pair selects legacy billboard direct lighting |
+| ClusterDirectory | 49 | Always in current compiler output; deterministic cell clusters and grid-relative SH-family ownership/halo metadata; container-entry version 1 |
+| ClusterShPayloads | 50 | When id 49 and id 34 are present; independently readable per-cluster payloads for streamed ids 27/34/35/41/45; container-entry version 1, internal epoch 1 |
 
-**Reserved (planned, not yet emitted):** id 49 — SH residency **cluster directory**: a single-file per-cluster range table over the baked SH sections, addressed by grid-relative cell/probe index (independent of the id-34/35 byte layout), letting the runtime keep only near-camera SH clusters resident and stream/evict the rest on the existing visible-cell signal. Not built; do not reuse id 49.
+**Cluster directory (id 49).** Resource-agnostic clustering uses portal adjacency and
+fixed primitive/cell limits of 64/32. Every runtime cell belongs to exactly one stable
+cluster; multi-cell clusters are connected, and an indivisible over-budget cell remains an
+explicitly flagged singleton. Resource coverage does not alter that partition. The
+uncached `ClusterDirectory` metadata stage runs after every bake and final SH-family
+presence decision and before section serialization. The chosen limits and bounded dry-run
+evidence live in `measurements/sh-probe-streaming/cluster-directory-thresholds.md`.
+
+The directory addresses SH resources by grid-relative probe or affinity-cell ranges, never
+payload byte offsets. Cross-cluster affinity cells carry one compile-time-fixed accumulation
+owner; other references are reconstruction-only halo. One authored level remains one
+logical PRL. A missing id 49 remains a whole-load level.
+
+**Cluster SH payloads (id 50).** Id 50 is a validated, independently readable,
+cluster-major companion for ids 27/34/35/41/45. It is emitted after id 49 only when id 34
+is present. Ids 47/48 remain whole-resident and do not appear in id 50. Id 50 duplicates
+the streamable payload deliberately: global BC6H atlas blocks cannot be gathered into
+independent cluster cells from legacy compressed bytes. Its source inventory, source
+versions, index, and chunk hashes must match id 49 and the emitted legacy sections before
+any runtime-mode decision. Invalid id 50 rejects even when streaming is disabled. Valid
+id-49/id-50 levels default to bounded asynchronous residency; `off` selects the validated
+legacy whole-load path and `sync-proof` is the deterministic no-eviction test path.
+Existing section layouts, epochs, cache-stage epochs, sampler bindings, and sample taps
+remain intact, including id 34 v11 and id 35 v4.
 
 **Coarsened delta sections (ids 27, 41, 45):** The wire representation supports an independent L0/L1/L2 level for every affinity cell in each section. L0 stores every valid probe tile. L1 stores valid brick-corner tiles. L2 stores one synthesized mean tile over the brick's valid probes. Payload size and order follow kept probes and kept rank, not dense probe index. Production adaptively classifies id 41 only. Ids 27 and 45 intentionally emit uniform L0 until animation and script amplitudes have bounded runtime contracts. Protection AABBs force intersecting bricks to L0 in an adaptively classified section before one-level seam smoothing.
 

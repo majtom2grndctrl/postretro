@@ -1,31 +1,28 @@
 // PRL section decoding and cross-validation for runtime level data.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::alpha_lights::{
     AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowType,
 };
-use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
-    AnimatedBillboardDirectScatterDeltaVolumesSection,
-    MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
-};
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::billboard_direct_scatter_volume::{
-    BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT, BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16,
-    BillboardDirectScatterVolumeSection,
-};
+use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::cell_draw_index::{CELL_DRAW_INDEX_VERSION, CellDrawIndexSection};
 use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::cluster_directory::{
+    CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectoryError, ClusterDirectorySection,
+    ClusterDirectoryShInventory, ClusterDirectoryValidationInputs,
+};
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -44,9 +41,7 @@ use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
-use postretro_level_format::sh_volume::{
-    OctahedralShVolumeSection, validate_storage_levels_against_delta,
-};
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -63,116 +58,37 @@ use super::{
     PortalData, PrlLoadError, ShadowType,
 };
 use crate::prl::{KinematicGeometry, LoadedKinematicWaypoint};
+use crate::prl_container::PrlContainer;
+use crate::prl_lighting::LoadedLighting;
+#[cfg(test)]
+use crate::prl_lighting::read_bounded_delta_section_data;
+pub(crate) use crate::prl_lighting::{
+    BoundedDeltaSectionData, BoundedScatterSectionData, delta_grid_matches_base,
+    read_bounded_delta_section_data_with_limit, read_bounded_scatter_section_data_with_limit,
+    read_soft_optional_scatter_section_data,
+    validate_animated_billboard_direct_scatter_against_metadata,
+    validate_animated_billboard_direct_scatter_delta_volumes, validate_animated_direct_sh_delta,
+    validate_billboard_direct_scatter_against_metadata, validate_billboard_direct_scatter_volume,
+    validate_delta_sh, validate_direct_sh_delta, validate_direct_sh_layout,
+    validate_entity_shadow_light_selection, validate_storage_ceiling_for_delta,
+};
+#[cfg(test)]
+pub(crate) use crate::prl_lighting::{expected_affinity_dims, valid_probe_mask_for_affinity_cell};
+#[cfg(test)]
+use crate::prl_streaming::load_prl;
+#[cfg(test)]
+pub(crate) use crate::prl_streaming::{
+    load_prl_with_delta_binding_limit, load_prl_with_scatter_pack_limit,
+    load_prl_with_streaming_mode_for_test,
+};
+#[cfg(test)]
+use crate::sh_stream::ShStreamingMode;
+use crate::sh_stream::{ShStorage, ShStreamManifest};
 
 /// Conservative desktop floor for one sparse SH delta section bound as a
 /// storage buffer. This is intentionally a loader policy rather than a wire
 /// limit: the compiler's separate aggregate cap protects bake output.
-const MAX_DELTA_SECTION_BINDING_BYTES: u64 = 128 * 1024 * 1024;
-
-/// A delta section's raw bytes after applying the storage-binding floor.
-///
-/// `OverBindingFloor` deliberately remains distinct from `Absent`: callers
-/// use the former to log a precise degradation reason while preserving the
-/// existing absence semantics for optional PRL sections.
-enum BoundedDeltaSectionData<'a> {
-    Absent,
-    OverBindingFloor,
-    Data(&'a [u8]),
-}
-
-/// Borrow an optional delta section after validating its container bounds, then
-/// reject raw payloads that cannot fit a single runtime storage-buffer binding.
-/// The borrow remains allocation-free, so no decoder table is allocated before
-/// either structural validation or the binding-floor check.
-#[cfg(test)]
-fn read_bounded_delta_section_data<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
-    section_id: SectionId,
-    section_name: &str,
-) -> Result<BoundedDeltaSectionData<'a>, PrlLoadError> {
-    read_bounded_delta_section_data_with_limit(
-        file_data,
-        meta,
-        section_id,
-        section_name,
-        MAX_DELTA_SECTION_BINDING_BYTES,
-    )
-}
-
-fn read_bounded_delta_section_data_with_limit<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
-    section_id: SectionId,
-    section_name: &str,
-    max_binding_bytes: u64,
-) -> Result<BoundedDeltaSectionData<'a>, PrlLoadError> {
-    let Some(data) = prl_format::section_data_from_bytes(file_data, meta, section_id as u32)?
-    else {
-        return Ok(BoundedDeltaSectionData::Absent);
-    };
-    if data.len() as u64 > max_binding_bytes {
-        log::warn!(
-            "[PRL] {section_name} raw payload is {} B, above the {} B storage-binding floor; disabling before decode",
-            data.len(),
-            max_binding_bytes,
-        );
-        return Ok(BoundedDeltaSectionData::OverBindingFloor);
-    }
-    Ok(BoundedDeltaSectionData::Data(data))
-}
-
-/// Read an optional scatter section without allowing a bad optional entry to
-/// reject the map. Unlike core sections, billboard scatter selects an additive
-/// optimization; a malformed container range must choose the legacy path.
-fn read_soft_optional_scatter_section_data<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
-    section_id: SectionId,
-    section_name: &str,
-) -> Option<&'a [u8]> {
-    match prl_format::section_data_from_bytes(file_data, meta, section_id as u32) {
-        Ok(data) => data,
-        Err(error) => {
-            log::warn!(
-                "[PRL] {section_name} has an invalid optional container entry; disabling billboard direct scatter: {error}"
-            );
-            None
-        }
-    }
-}
-
-enum BoundedScatterSectionData<'a> {
-    Absent,
-    OverPackCap,
-    Data(&'a [u8]),
-}
-
-/// Apply section 48's encoded-size policy after validating container bounds
-/// but before its dense decoder allocates descriptor, CSR, or delta vectors.
-fn read_bounded_scatter_section_data_with_limit<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
-    max_encoded_bytes: u64,
-) -> BoundedScatterSectionData<'a> {
-    let Some(data) = read_soft_optional_scatter_section_data(
-        file_data,
-        meta,
-        SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
-        "AnimatedBillboardDirectScatterDeltaVolumes",
-    ) else {
-        return BoundedScatterSectionData::Absent;
-    };
-    if data.len() as u64 > max_encoded_bytes {
-        log::warn!(
-            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes is {} B, above the {} B encoded section cap; disabling billboard direct scatter before decode",
-            data.len(),
-            max_encoded_bytes,
-        );
-        return BoundedScatterSectionData::OverPackCap;
-    }
-    BoundedScatterSectionData::Data(data)
-}
+pub(crate) const MAX_DELTA_SECTION_BINDING_BYTES: u64 = 128 * 1024 * 1024;
 
 fn derive_material_with_warning(
     texture_name: &str,
@@ -607,701 +523,6 @@ pub(crate) fn convert_cell_locator_section(
     (root, nodes)
 }
 
-/// Expected DeltaShVolumes affinity grid dims for a given base SH grid:
-/// `ceil(base_dims / factor)` along each axis. The compiler bakes the affinity
-/// grid this way; the loader rejects any section whose stored dims disagree.
-/// Pure so the validation rule is unit-testable without a `.prl` file.
-pub(crate) fn expected_affinity_dims(base_dims: [u32; 3], factor: u8) -> [u32; 3] {
-    let f = factor as u32;
-    [
-        base_dims[0].div_ceil(f),
-        base_dims[1].div_ceil(f),
-        base_dims[2].div_ceil(f),
-    ]
-}
-
-/// Validate a loaded DeltaShVolumes section against the engine's invariants.
-/// `base` is the base OctahedralShVolume (id 34), or `None` if that section was
-/// absent. Pure so the reject paths are unit-testable.
-///
-/// Rejects (clear typed error, no panic):
-/// - `affinity_factor` != the engine's compiled-in `AFFINITY_FACTOR`,
-/// - base ShVolume absent while a delta section is present,
-/// - `affinity_dims` != `ceil(base_dims / affinity_factor)`,
-/// - delta tile geometry differs from the base atlas tile geometry.
-pub(crate) fn validate_delta_sh(
-    section: &DeltaShVolumesSection,
-    base: Option<&OctahedralShVolumeSection>,
-) -> Result<(), PrlLoadError> {
-    // affinity_factor is locked to the compose pass `@workgroup_size(4,4,4)`.
-    if section.affinity_factor != AFFINITY_FACTOR {
-        return Err(PrlLoadError::DeltaShAffinityFactorMismatch {
-            found: section.affinity_factor,
-            expected: AFFINITY_FACTOR,
-        });
-    }
-
-    // The base grid's dims derive the expected affinity dims; the compose pass
-    // cannot run without it.
-    let Some(base) = base else {
-        return Err(PrlLoadError::DeltaShMissingBaseVolume);
-    };
-    let base_dims = base.grid_dimensions;
-
-    let expected = expected_affinity_dims(base_dims, AFFINITY_FACTOR);
-    if section.affinity_dims != expected {
-        return Err(PrlLoadError::DeltaShAffinityDimsMismatch {
-            found: section.affinity_dims,
-            base_dims,
-            factor: AFFINITY_FACTOR as u32,
-            expected,
-        });
-    }
-
-    if section.tile_dimension != base.tile_dimension || section.tile_border != base.tile_border {
-        return Err(PrlLoadError::DeltaShTileGeometryMismatch {
-            found_dimension: section.tile_dimension,
-            found_border: section.tile_border,
-            base_dimension: base.tile_dimension,
-            base_border: base.tile_border,
-        });
-    }
-
-    let affinity_cell_count = section.affinity_cell_count();
-    if section.valid_probe_masks.len() != affinity_cell_count {
-        return Err(section_validation(
-            "DeltaShVolumes",
-            format!(
-                "valid_probe_masks has length {}, expected {affinity_cell_count}",
-                section.valid_probe_masks.len()
-            ),
-        ));
-    }
-    if base.probes.len() != base.total_probes() {
-        return Err(section_validation(
-            "DeltaShVolumes",
-            format!(
-                "OctahedralShVolume (id 34) has {} probe metadata records for {} grid probes",
-                base.probes.len(),
-                base.total_probes(),
-            ),
-        ));
-    }
-    for (cell, &stored_mask) in section.valid_probe_masks.iter().enumerate() {
-        let expected_mask = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
-        if stored_mask != expected_mask {
-            return Err(section_validation(
-                "DeltaShVolumes",
-                format!(
-                    "valid_probe_masks[{cell}] {stored_mask:#018x} disagrees with OctahedralShVolume (id 34) validity {expected_mask:#018x}; recompile the .prl with the current `prl-build`"
-                ),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// Validate the animated direct-SH delta section against the base SH layout and
-/// its own CSR contract. Unlike promotion deltas (ID 41), this section has no
-/// external selected-light namespace to cross-check: its light indices are
-/// bounded by its own descriptor-index table.
-pub(crate) fn validate_animated_direct_sh_delta(
-    section: &AnimatedDirectShDeltaVolumesSection,
-    base: Option<&OctahedralShVolumeSection>,
-) -> Result<(), PrlLoadError> {
-    const SECTION: &str = "AnimatedDirectShDeltaVolumes";
-
-    if section.affinity_factor != AFFINITY_FACTOR {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "affinity_factor {} does not match runtime factor {AFFINITY_FACTOR}",
-                section.affinity_factor
-            ),
-        ));
-    }
-
-    let Some(base) = base else {
-        return Err(section_validation(
-            SECTION,
-            "section requires an OctahedralShVolume base grid",
-        ));
-    };
-    let expected_dims = expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR);
-    if section.affinity_dims != expected_dims {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "affinity_dims {:?} do not match ceil(base grid {:?} / {AFFINITY_FACTOR}) = {expected_dims:?}",
-                section.affinity_dims, base.grid_dimensions
-            ),
-        ));
-    }
-    if section.tile_dimension != base.tile_dimension || section.tile_border != base.tile_border {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "tile geometry {} + border {} does not match OctahedralShVolume {} + border {}",
-                section.tile_dimension, section.tile_border, base.tile_dimension, base.tile_border,
-            ),
-        ));
-    }
-
-    let affinity_cell_count = section.affinity_cell_count();
-    let expected_offsets_len = affinity_cell_count
-        .checked_add(1)
-        .ok_or_else(|| section_validation(SECTION, "affinity offset count overflows usize"))?;
-    if section.affinity_offsets.len() != expected_offsets_len {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "affinity_offsets has length {}, expected {expected_offsets_len}",
-                section.affinity_offsets.len()
-            ),
-        ));
-    }
-    if section.valid_probe_masks.len() != affinity_cell_count {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "valid_probe_masks has length {}, expected {affinity_cell_count}",
-                section.valid_probe_masks.len()
-            ),
-        ));
-    }
-    if base.probes.len() != base.total_probes() {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "OctahedralShVolume (id 34) has {} probe metadata records for {} grid probes",
-                base.probes.len(),
-                base.total_probes(),
-            ),
-        ));
-    }
-    for (cell, &found) in section.valid_probe_masks.iter().enumerate() {
-        let expected = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
-        if found != expected {
-            return Err(PrlLoadError::AnimatedDirectShDeltaValidityMismatch {
-                cell,
-                found,
-                expected,
-            });
-        }
-    }
-    if section.affinity_offsets.first().copied() != Some(0) {
-        return Err(section_validation(
-            SECTION,
-            "affinity_offsets[0] must be 0 for CSR data",
-        ));
-    }
-    for (index, offsets) in section.affinity_offsets.windows(2).enumerate() {
-        if offsets[0] > offsets[1] {
-            return Err(section_validation(
-                SECTION,
-                format!(
-                    "affinity_offsets[{index}] ({}) > affinity_offsets[{}] ({}): offsets must be non-decreasing",
-                    offsets[0],
-                    index + 1,
-                    offsets[1],
-                ),
-            ));
-        }
-    }
-    let trailing_total = section
-        .affinity_offsets
-        .last()
-        .copied()
-        .expect("expected_offsets_len is always at least one");
-    let light_count = u32::try_from(section.affinity_lights.len()).map_err(|_| {
-        section_validation(SECTION, "affinity_lights length exceeds the u32 wire range")
-    })?;
-    if trailing_total != light_count {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "affinity_offsets trailing total {trailing_total} does not match affinity_lights length {light_count}"
-            ),
-        ));
-    }
-    for (entry, &light_index) in section.affinity_lights.iter().enumerate() {
-        if light_index as usize >= section.animation_descriptor_indices.len() {
-            return Err(section_validation(
-                SECTION,
-                format!(
-                    "affinity_lights[{entry}] AnimatedBakedLights index {light_index} is out of range for {} descriptor index entries",
-                    section.animation_descriptor_indices.len()
-                ),
-            ));
-        }
-    }
-    let expected_subblock_len = section
-        .expected_delta_subblock_f16_count()
-        .ok_or_else(|| section_validation(SECTION, "delta_subblocks length overflows usize"))?;
-    if section.delta_subblocks.len() != expected_subblock_len {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "delta_subblocks has length {}, expected {expected_subblock_len}",
-                section.delta_subblocks.len()
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Validate id 47 against the base octahedral SH grid. The scatter term is
-/// intentionally normal-free, but positions and binary validity are shared so
-/// the billboard sampler can use id-34's x-fastest probe addressing.
-pub(crate) fn validate_billboard_direct_scatter_volume(
-    section: &BillboardDirectScatterVolumeSection,
-    base: Option<&OctahedralShVolumeSection>,
-) -> Result<(), PrlLoadError> {
-    const SECTION: &str = "BillboardDirectScatterVolume";
-    let Some(base) = base else {
-        return Err(section_validation(
-            SECTION,
-            "section requires an OctahedralShVolume base grid",
-        ));
-    };
-    if section.grid_origin != base.grid_origin {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "grid_origin {:?} does not match OctahedralShVolume grid_origin {:?}",
-                section.grid_origin, base.grid_origin
-            ),
-        ));
-    }
-    if section.cell_size != base.cell_size {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "cell_size {:?} does not match OctahedralShVolume cell_size {:?}",
-                section.cell_size, base.cell_size
-            ),
-        ));
-    }
-    if section.grid_dimensions != base.grid_dimensions {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "grid_dimensions {:?} does not match OctahedralShVolume grid_dimensions {:?}",
-                section.grid_dimensions, base.grid_dimensions
-            ),
-        ));
-    }
-    let expected_probe_count = base.total_probes();
-    if base.probes.len() != expected_probe_count {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "OctahedralShVolume has {} probe metadata records for {expected_probe_count} grid probes",
-                base.probes.len()
-            ),
-        ));
-    }
-    let expected_scatter_f16_count = expected_probe_count
-        .checked_mul(BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT)
-        .ok_or_else(|| section_validation(SECTION, "scatter payload length overflows usize"))?;
-    if section.scatter_rgba.len() != expected_scatter_f16_count {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "scatter_rgba length {}, expected {expected_scatter_f16_count}",
-                section.scatter_rgba.len()
-            ),
-        ));
-    }
-    for (probe, expected_validity) in base.probes.iter().enumerate() {
-        let found = section.scatter_rgba[probe * BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT + 3];
-        let expected = if expected_validity.validity == 0 {
-            0
-        } else {
-            BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16
-        };
-        if found != expected {
-            return Err(section_validation(
-                SECTION,
-                format!(
-                    "scatter_rgba probe {probe} alpha {found:#06x} does not mirror OctahedralShVolume validity as {expected:#06x}"
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Validate id 48's duplicated animated descriptor map and CSR layout against
-/// its authoritative id-45 sibling. Id 45 remains the owner of validity and
-/// coarsening; id 48 has only dense 4×4×4 delta values.
-pub(crate) fn validate_animated_billboard_direct_scatter_delta_volumes(
-    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
-    animated_direct: &AnimatedDirectShDeltaVolumesSection,
-) -> Result<(), PrlLoadError> {
-    const SECTION: &str = "AnimatedBillboardDirectScatterDeltaVolumes";
-    if section.animation_descriptor_indices != animated_direct.animation_descriptor_indices {
-        return Err(section_validation(
-            SECTION,
-            "animation_descriptor_indices do not match AnimatedDirectShDeltaVolumes (id 45)",
-        ));
-    }
-    if section.affinity_factor != animated_direct.affinity_factor {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "affinity_factor {} does not match AnimatedDirectShDeltaVolumes factor {}",
-                section.affinity_factor, animated_direct.affinity_factor
-            ),
-        ));
-    }
-    if section.affinity_dims != animated_direct.affinity_dims {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "affinity_dims {:?} do not match AnimatedDirectShDeltaVolumes dimensions {:?}",
-                section.affinity_dims, animated_direct.affinity_dims
-            ),
-        ));
-    }
-    if section.affinity_offsets != animated_direct.affinity_offsets {
-        return Err(section_validation(
-            SECTION,
-            "affinity_offsets do not match AnimatedDirectShDeltaVolumes (id 45)",
-        ));
-    }
-    if section.affinity_lights != animated_direct.affinity_lights {
-        return Err(section_validation(
-            SECTION,
-            "affinity_lights do not match AnimatedDirectShDeltaVolumes (id 45)",
-        ));
-    }
-    let expected_delta_f16_count = section
-        .expected_delta_f16_count()
-        .ok_or_else(|| section_validation(SECTION, "dense delta payload length overflows usize"))?;
-    if section.delta_rgba.len() != expected_delta_f16_count {
-        return Err(section_validation(
-            SECTION,
-            format!(
-                "delta_rgba length {}, expected {expected_delta_f16_count} (= {} CSR entries × 64 RGBA16F values)",
-                section.delta_rgba.len(),
-                section.affinity_lights.len(),
-            ),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_direct_sh_layout(
-    section: &DirectShVolumeSection,
-    base: &OctahedralShVolumeSection,
-) -> Result<(), PrlLoadError> {
-    if section.grid_origin != base.grid_origin {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "grid_origin {:?} does not match OctahedralShVolume grid_origin {:?}",
-                section.grid_origin, base.grid_origin
-            ),
-        ));
-    }
-    if section.cell_size != base.cell_size {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "cell_size {:?} does not match OctahedralShVolume cell_size {:?}",
-                section.cell_size, base.cell_size
-            ),
-        ));
-    }
-    if section.grid_dimensions != base.grid_dimensions {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "grid_dimensions {:?} does not match OctahedralShVolume grid_dimensions {:?}",
-                section.grid_dimensions, base.grid_dimensions
-            ),
-        ));
-    }
-    if section.tile_dimension != base.tile_dimension {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "tile_dimension {} does not match OctahedralShVolume tile_dimension {}",
-                section.tile_dimension, base.tile_dimension
-            ),
-        ));
-    }
-    if section.tile_border != base.tile_border {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "tile_border {} does not match OctahedralShVolume tile_border {}",
-                section.tile_border, base.tile_border
-            ),
-        ));
-    }
-    if section.atlas_dimensions != base.atlas_dimensions {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "atlas_dimensions {:?} does not match OctahedralShVolume atlas_dimensions {:?}",
-                section.atlas_dimensions, base.atlas_dimensions
-            ),
-        ));
-    }
-    if section.atlas_tiles_per_row != base.atlas_tiles_per_row {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "atlas_tiles_per_row {} does not match OctahedralShVolume atlas_tiles_per_row {}",
-                section.atlas_tiles_per_row, base.atlas_tiles_per_row
-            ),
-        ));
-    }
-    if section.layer_count != base.layer_count {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "layer_count {} does not match OctahedralShVolume layer_count {}",
-                section.layer_count, base.layer_count
-            ),
-        ));
-    }
-    if section.tiles_per_layer != base.tiles_per_layer {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "tiles_per_layer {} does not match OctahedralShVolume tiles_per_layer {}",
-                section.tiles_per_layer, base.tiles_per_layer
-            ),
-        ));
-    }
-    if section.irradiance_format != base.irradiance_format {
-        return Err(section_validation(
-            "DirectShVolume",
-            format!(
-                "irradiance_format {} does not match OctahedralShVolume irradiance_format {}",
-                section.irradiance_format, base.irradiance_format
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Enforce I2 for every present, grid-matched delta section before renderer
-/// resources are created. The metadata-derived base storage may be finer than
-/// a delta entry, never coarser; accepting a violation would make a later
-/// stored-slot compose reconstruct from data that was never emitted.
-fn validate_storage_ceiling_for_delta(
-    section_name: &'static str,
-    base: &OctahedralShVolumeSection,
-    cell_levels: &[u8],
-    affinity_offsets: &[u32],
-) -> Result<(), PrlLoadError> {
-    validate_storage_levels_against_delta(
-        base.grid_dimensions,
-        &base.probes,
-        cell_levels,
-        affinity_offsets,
-    )
-    .map_err(|error| section_validation_from_error(section_name, error))
-}
-
-/// I2 applies to every parsed delta section whose affinity grid names this
-/// id-34 grid, even if another optional direct-light contract later chooses to
-/// disable that section. Keep the grid test separate so legacy soft-failure
-/// handling for unrelated optional-section defects remains unchanged.
-fn delta_grid_matches_base(
-    base: &OctahedralShVolumeSection,
-    affinity_factor: u8,
-    affinity_dims: [u32; 3],
-) -> bool {
-    affinity_factor == AFFINITY_FACTOR
-        && affinity_dims == expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR)
-}
-
-pub(crate) fn validate_direct_sh_delta(
-    section: &DirectShDeltaVolumesSection,
-    direct: &DirectShVolumeSection,
-    base: &OctahedralShVolumeSection,
-    selected_light_count: usize,
-) -> Result<(), PrlLoadError> {
-    if section.affinity_factor != AFFINITY_FACTOR {
-        return Err(PrlLoadError::DirectShDeltaAffinityFactorMismatch {
-            found: section.affinity_factor,
-            expected: AFFINITY_FACTOR,
-        });
-    }
-
-    let base_dims = direct.grid_dimensions;
-    let expected = expected_affinity_dims(base_dims, AFFINITY_FACTOR);
-    if section.affinity_dims != expected {
-        return Err(PrlLoadError::DirectShDeltaAffinityDimsMismatch {
-            found: section.affinity_dims,
-            base_dims,
-            factor: AFFINITY_FACTOR as u32,
-            expected,
-        });
-    }
-
-    if section.tile_dimension != direct.tile_dimension || section.tile_border != direct.tile_border
-    {
-        return Err(PrlLoadError::DirectShDeltaTileGeometryMismatch {
-            found_dimension: section.tile_dimension,
-            found_border: section.tile_border,
-            base_dimension: direct.tile_dimension,
-            base_border: direct.tile_border,
-        });
-    }
-
-    let affinity_cell_count = section.affinity_cell_count();
-    if section.valid_probe_masks.len() != affinity_cell_count {
-        return Err(section_validation(
-            "DirectShDeltaVolumes",
-            format!(
-                "valid_probe_masks has length {}, expected {affinity_cell_count}",
-                section.valid_probe_masks.len()
-            ),
-        ));
-    }
-    if base.probes.len() != base.total_probes() {
-        return Err(section_validation(
-            "DirectShDeltaVolumes",
-            format!(
-                "OctahedralShVolume has {} probe metadata records for {} grid probes",
-                base.probes.len(),
-                base.total_probes(),
-            ),
-        ));
-    }
-    for (cell, &stored_mask) in section.valid_probe_masks.iter().enumerate() {
-        let expected_mask = valid_probe_mask_for_affinity_cell(base, section.affinity_dims, cell);
-        if stored_mask != expected_mask {
-            return Err(section_validation(
-                "DirectShDeltaVolumes",
-                format!(
-                    "valid_probe_masks[{cell}] {stored_mask:#018x} disagrees with OctahedralShVolume (id 34) validity {expected_mask:#018x}; recompile the .prl with the current `prl-build`"
-                ),
-            ));
-        }
-    }
-
-    for (entry, &selection_index) in section.affinity_lights.iter().enumerate() {
-        if selection_index as usize >= selected_light_count {
-            return Err(section_validation(
-                "DirectShDeltaVolumes",
-                format!(
-                    "affinity_lights[{entry}] selection index {selection_index} out of range for {selected_light_count} selected light(s)"
-                ),
-            ));
-        }
-    }
-
-    let mut seen_selection_indices = vec![false; selected_light_count];
-    for &selection_index in &section.affinity_lights {
-        seen_selection_indices[selection_index as usize] = true;
-    }
-    if let Some(missing_index) = seen_selection_indices
-        .iter()
-        .position(|&has_delta| !has_delta)
-    {
-        return Err(section_validation(
-            "DirectShDeltaVolumes",
-            format!(
-                "missing usable delta entry for selected light index {missing_index} of {selected_light_count}"
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn valid_probe_mask_for_affinity_cell(
-    base: &OctahedralShVolumeSection,
-    affinity_dims: [u32; 3],
-    cell_index: usize,
-) -> u64 {
-    let cell_index = cell_index as u32;
-    let cell_x = cell_index % affinity_dims[0];
-    let cell_y = (cell_index / affinity_dims[0]) % affinity_dims[1];
-    let cell_z = cell_index / (affinity_dims[0] * affinity_dims[1]);
-    let factor = AFFINITY_FACTOR as u32;
-    let mut mask = 0u64;
-    for local_z in 0..factor {
-        for local_y in 0..factor {
-            for local_x in 0..factor {
-                let probe = [
-                    cell_x * factor + local_x,
-                    cell_y * factor + local_y,
-                    cell_z * factor + local_z,
-                ];
-                if probe[0] >= base.grid_dimensions[0]
-                    || probe[1] >= base.grid_dimensions[1]
-                    || probe[2] >= base.grid_dimensions[2]
-                {
-                    continue;
-                }
-                let probe_index = probe[0] as usize
-                    + probe[1] as usize * base.grid_dimensions[0] as usize
-                    + probe[2] as usize
-                        * base.grid_dimensions[0] as usize
-                        * base.grid_dimensions[1] as usize;
-                if base.probes[probe_index].validity != 0 {
-                    let local = local_x + local_y * factor + local_z * factor * factor;
-                    mask |= 1u64 << local;
-                }
-            }
-        }
-    }
-    mask
-}
-
-pub(crate) fn validate_entity_shadow_light_selection(
-    selected_light_indices: &[u32],
-    lights: &[MapLight],
-) -> Result<(), PrlLoadError> {
-    for &index in selected_light_indices {
-        let Some(light) = lights.get(index as usize) else {
-            return Err(section_validation(
-                "EntityShadowLights",
-                format!(
-                    "light index {index} exceeds level light count {}",
-                    lights.len()
-                ),
-            ));
-        };
-        if light.is_dynamic {
-            return Err(section_validation(
-                "EntityShadowLights",
-                format!("light index {index} references a dynamic-tier light"),
-            ));
-        }
-        if light.light_type == LightType::Directional {
-            return Err(section_validation(
-                "EntityShadowLights",
-                format!("light index {index} references a directional light"),
-            ));
-        }
-        if light.shadow_type != ShadowType::StaticLightMap {
-            return Err(section_validation(
-                "EntityShadowLights",
-                format!("light index {index} is not a static_light_map direct contributor"),
-            ));
-        }
-        if light.animated_slot.is_some() {
-            return Err(section_validation(
-                "EntityShadowLights",
-                format!("light index {index} references an animated static light"),
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn stale_section(section: &'static str, id: SectionId) -> PrlLoadError {
     PrlLoadError::StaleFormatMissingSection {
         section,
@@ -1313,14 +534,17 @@ fn ambiguous_runtime_bsp_sections(sections: String) -> PrlLoadError {
     PrlLoadError::AmbiguousRuntimeBspSections { sections }
 }
 
-fn section_validation(section: &'static str, message: impl Into<String>) -> PrlLoadError {
+pub(crate) fn section_validation(
+    section: &'static str,
+    message: impl Into<String>,
+) -> PrlLoadError {
     PrlLoadError::SectionValidation {
         section,
         message: message.into(),
     }
 }
 
-fn section_validation_from_error(
+pub(crate) fn section_validation_from_error(
     section: &'static str,
     err: impl std::fmt::Display,
 ) -> PrlLoadError {
@@ -2051,77 +1275,263 @@ pub(crate) fn validate_cell_draw_index(
     Ok(())
 }
 
-/// Read an optional section's raw bytes by id, or `None` if the section is
-/// absent from the container.
-///
-/// Generic over `section_id` so any optional PRL section routes through the
-/// same read point. Wraps `prl_format::read_section_data`; the `FormatError`
-/// converts into `PrlLoadError` via the `#[from]` impl on the error enum.
-pub(crate) fn read_optional_section_data<R: std::io::Read + std::io::Seek>(
-    cursor: &mut R,
-    meta: &prl_format::ContainerMeta,
-    section_id: u32,
-) -> Result<Option<Vec<u8>>, PrlLoadError> {
-    Ok(prl_format::read_section_data(cursor, meta, section_id)?)
-}
-
-pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
-    load_prl_with_section_limits(
-        path,
-        MAX_DELTA_SECTION_BINDING_BYTES,
-        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
-    )
-}
-
-/// Internal load entry point with an injectable per-section binding floor.
-/// Production always supplies the desktop floor above; tests use a tiny value
-/// to exercise the complete resolution path without a 128 MiB fixture.
-#[cfg(test)]
-fn load_prl_with_delta_binding_limit(
-    path: &str,
-    max_delta_section_binding_bytes: u64,
-) -> Result<LevelWorld, PrlLoadError> {
-    load_prl_with_section_limits(
-        path,
-        max_delta_section_binding_bytes,
-        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn load_prl_with_scatter_pack_limit(
-    path: &str,
-    max_scatter_section_bytes: u64,
-) -> Result<LevelWorld, PrlLoadError> {
-    load_prl_with_section_limits(
-        path,
-        MAX_DELTA_SECTION_BINDING_BYTES,
-        max_scatter_section_bytes,
-    )
-}
-
-fn load_prl_with_section_limits(
-    path: &str,
-    max_delta_section_binding_bytes: u64,
-    max_scatter_section_bytes: u64,
-) -> Result<LevelWorld, PrlLoadError> {
-    let path_ref = Path::new(path);
-    if !path_ref.exists() {
-        return Err(PrlLoadError::FileNotFound(path.to_string()));
+fn cluster_adjacency_from_portals(
+    directory: &ClusterDirectorySection,
+    portals: &PortalsSection,
+) -> Result<Vec<Vec<u32>>, PrlLoadError> {
+    let runtime_cell_count = usize::try_from(directory.runtime_cell_count).map_err(|_| {
+        section_validation(
+            "ClusterDirectory",
+            "runtime cell count exceeds this platform's address space",
+        )
+    })?;
+    let mut cell_to_cluster = vec![None; runtime_cell_count];
+    for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
+        let member_start = usize::try_from(cluster.member_start)
+            .map_err(|_| section_validation("ClusterDirectory", "member start exceeds usize"))?;
+        let member_end = member_start
+            .checked_add(usize::try_from(cluster.member_count).map_err(|_| {
+                section_validation("ClusterDirectory", "member count exceeds usize")
+            })?)
+            .ok_or_else(|| section_validation("ClusterDirectory", "member range overflows"))?;
+        let members = directory
+            .members
+            .get(member_start..member_end)
+            .ok_or_else(|| {
+                section_validation(
+                    "ClusterDirectory",
+                    "validated directory member range is unavailable",
+                )
+            })?;
+        for &cell_id in members {
+            let Some(slot) = cell_to_cluster.get_mut(cell_id as usize) else {
+                return Err(section_validation(
+                    "ClusterDirectory",
+                    "validated directory member exceeds runtime cell count",
+                ));
+            };
+            *slot =
+                Some(u32::try_from(cluster_id).map_err(|_| {
+                    section_validation("ClusterDirectory", "cluster id exceeds u32")
+                })?);
+        }
     }
+    let mut adjacency = vec![BTreeSet::new(); directory.clusters.len()];
+    for portal in &portals.portals {
+        let front = cell_to_cluster
+            .get(portal.front_leaf as usize)
+            .and_then(|cluster| *cluster)
+            .ok_or_else(|| {
+                section_validation(
+                    "ClusterDirectory",
+                    "validated portal front cell has no cluster membership",
+                )
+            })?;
+        let back = cell_to_cluster
+            .get(portal.back_leaf as usize)
+            .and_then(|cluster| *cluster)
+            .ok_or_else(|| {
+                section_validation(
+                    "ClusterDirectory",
+                    "validated portal back cell has no cluster membership",
+                )
+            })?;
+        if front != back {
+            adjacency[front as usize].insert(back);
+            adjacency[back as usize].insert(front);
+        }
+    }
+    Ok(adjacency
+        .into_iter()
+        .map(|neighbors| neighbors.into_iter().collect())
+        .collect())
+}
 
-    let file_data = std::fs::read(path_ref)?;
-    let mut cursor = std::io::Cursor::new(&file_data);
+fn validate_streamed_direct_delta_selection(
+    metadata: &crate::sh_stream::ShStreamSparseMetadata,
+    selected_light_count: usize,
+) -> Result<(), PrlLoadError> {
+    let mut seen = vec![false; selected_light_count];
+    for &selection in &metadata.affinity_lights {
+        let selection = usize::try_from(selection).map_err(|_| {
+            section_validation("DirectShDeltaVolumes", "selection index exceeds usize")
+        })?;
+        let Some(seen) = seen.get_mut(selection) else {
+            return Err(section_validation(
+                "DirectShDeltaVolumes",
+                format!(
+                    "affinity light selection {selection} out of range for {selected_light_count} selected light(s)"
+                ),
+            ));
+        };
+        *seen = true;
+    }
+    if let Some(missing) = seen.iter().position(|&has_delta| !has_delta) {
+        return Err(section_validation(
+            "DirectShDeltaVolumes",
+            format!("missing usable delta entry for selected light index {missing}"),
+        ));
+    }
+    Ok(())
+}
 
-    let meta = prl_format::read_container(&mut cursor)?;
+fn base_projection(base: &crate::sh_stream::ShStreamBaseMetadata) -> OctahedralShVolumeSection {
+    OctahedralShVolumeSection {
+        grid_origin: base.grid_origin,
+        cell_size: base.cell_size,
+        grid_dimensions: base.grid_dimensions,
+        probe_stride: base.probe_stride,
+        tile_dimension: base.tile_dimension,
+        tile_border: base.tile_border,
+        atlas_dimensions: base.atlas_dimensions,
+        layer_count: base.layer_count,
+        tiles_per_layer: base.tiles_per_layer,
+        atlas_tiles_per_row: base.atlas_tiles_per_row,
+        probes: base.probes.clone(),
+        irradiance_format: base.irradiance_format,
+        // Directory semantic validation consumes only metadata; never create
+        // a stand-in for the streamed compact atlas.
+        compact_atlas: Vec::new(),
+        animation_descriptors: base.animation_descriptors.clone(),
+        slot_for_map_light: base.slot_for_map_light.clone(),
+    }
+}
 
-    let geom_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?
+fn direct_projection(direct: &crate::sh_stream::ShStreamDirectMetadata) -> DirectShVolumeSection {
+    DirectShVolumeSection {
+        grid_origin: direct.grid_origin,
+        cell_size: direct.cell_size,
+        grid_dimensions: direct.grid_dimensions,
+        tile_dimension: direct.tile_dimension,
+        tile_border: direct.tile_border,
+        atlas_dimensions: direct.atlas_dimensions,
+        layer_count: direct.layer_count,
+        tiles_per_layer: direct.tiles_per_layer,
+        atlas_tiles_per_row: direct.atlas_tiles_per_row,
+        irradiance_format: direct.irradiance_format,
+        atlas: Vec::new(),
+    }
+}
+
+fn delta_projection(metadata: &crate::sh_stream::ShStreamSparseMetadata) -> DeltaShVolumesSection {
+    DeltaShVolumesSection {
+        affinity_factor: AFFINITY_FACTOR,
+        affinity_dims: metadata.affinity_dims,
+        tile_dimension: metadata.tile_dimension,
+        tile_border: metadata.tile_border,
+        animation_descriptor_indices: metadata.animation_descriptor_indices.clone(),
+        valid_probe_masks: metadata.valid_probe_masks.clone(),
+        cell_levels: metadata.cell_levels.clone(),
+        affinity_offsets: metadata.affinity_offsets.clone(),
+        affinity_lights: metadata.affinity_lights.clone(),
+        delta_subblocks: Vec::new(),
+    }
+}
+
+fn direct_delta_projection(
+    metadata: &crate::sh_stream::ShStreamSparseMetadata,
+) -> DirectShDeltaVolumesSection {
+    DirectShDeltaVolumesSection {
+        affinity_factor: AFFINITY_FACTOR,
+        affinity_dims: metadata.affinity_dims,
+        tile_dimension: metadata.tile_dimension,
+        tile_border: metadata.tile_border,
+        valid_probe_masks: metadata.valid_probe_masks.clone(),
+        cell_levels: metadata.cell_levels.clone(),
+        affinity_offsets: metadata.affinity_offsets.clone(),
+        affinity_lights: metadata.affinity_lights.clone(),
+        delta_subblocks: Vec::new(),
+    }
+}
+
+fn animated_direct_delta_projection(
+    metadata: &crate::sh_stream::ShStreamSparseMetadata,
+) -> AnimatedDirectShDeltaVolumesSection {
+    AnimatedDirectShDeltaVolumesSection {
+        affinity_factor: AFFINITY_FACTOR,
+        affinity_dims: metadata.affinity_dims,
+        tile_dimension: metadata.tile_dimension,
+        tile_border: metadata.tile_border,
+        animation_descriptor_indices: metadata.animation_descriptor_indices.clone(),
+        valid_probe_masks: metadata.valid_probe_masks.clone(),
+        cell_levels: metadata.cell_levels.clone(),
+        affinity_offsets: metadata.affinity_offsets.clone(),
+        affinity_lights: metadata.affinity_lights.clone(),
+        delta_subblocks: Vec::new(),
+    }
+}
+
+struct StreamingDirectoryProjections {
+    base: OctahedralShVolumeSection,
+    direct: Option<DirectShVolumeSection>,
+    delta: Option<DeltaShVolumesSection>,
+    direct_delta: Option<DirectShDeltaVolumesSection>,
+    animated_direct_delta: Option<AnimatedDirectShDeltaVolumesSection>,
+}
+
+fn directory_projections(manifest: &ShStreamManifest) -> StreamingDirectoryProjections {
+    let sources = manifest.sources();
+    StreamingDirectoryProjections {
+        base: base_projection(manifest.base()),
+        direct: sources.direct.as_ref().map(direct_projection),
+        delta: sources.indirect_delta.as_ref().map(delta_projection),
+        direct_delta: sources.direct_delta.as_ref().map(direct_delta_projection),
+        animated_direct_delta: sources
+            .animated_direct_delta
+            .as_ref()
+            .map(animated_direct_delta_projection),
+    }
+}
+
+pub(crate) fn load_prl_from_container(
+    container: PrlContainer,
+    max_delta_section_binding_bytes: u64,
+    max_scatter_section_bytes: u64,
+    stream_manifest: Option<std::sync::Arc<ShStreamManifest>>,
+) -> Result<LevelWorld, PrlLoadError> {
+    let meta = container.metadata();
+    let read_section = |section: SectionId| container.read_section(section as u32);
+    let streaming = stream_manifest.as_deref();
+
+    // Section 49 is optional, but when present its structural contract is
+    // checked before any optional lighting fallback can affect diagnostics.
+    let directory_entries: Vec<_> = meta
+        .sections
+        .iter()
+        .filter(|entry| entry.section_id == SectionId::ClusterDirectory as u32)
+        .collect();
+    if directory_entries.len() > 1 {
+        return Err(ClusterDirectoryError::InvalidData(format!(
+            "duplicate section 49 entries ({})",
+            directory_entries.len()
+        ))
+        .into());
+    }
+    let parsed_cluster_directory = match directory_entries.first() {
+        Some(entry) => {
+            if entry.version != CLUSTER_DIRECTORY_CONTAINER_VERSION {
+                return Err(ClusterDirectoryError::VersionMismatch {
+                    version: u32::from(entry.version),
+                    expected: u32::from(CLUSTER_DIRECTORY_CONTAINER_VERSION),
+                }
+                .into());
+            }
+            let data = read_section(SectionId::ClusterDirectory)?.ok_or_else(|| {
+                ClusterDirectoryError::InvalidData(
+                    "section 49 table entry could not be read".into(),
+                )
+            })?;
+            Some(ClusterDirectorySection::from_bytes(&data)?)
+        }
+        None => None,
+    };
+
+    let geom_data = read_section(SectionId::Geometry)?
         .ok_or_else(|| stale_section("Geometry", SectionId::Geometry))?;
     let geom = GeometrySection::from_bytes(&geom_data)
         .map_err(|err| section_validation_from_error("Geometry", err))?;
 
-    let texture_names_data =
-        read_optional_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
+    let texture_names_data = read_section(SectionId::TextureNames)?;
     let texture_names_section = match texture_names_data {
         Some(data) => Some(TextureNamesSection::from_bytes(&data)?),
         None => None,
@@ -2132,8 +1542,7 @@ fn load_prl_with_section_limits(
     // that omitted section 32; reject so the texture cache never silently
     // degrades every surface to a placeholder on a bad file.
     let texture_cache_keys_data =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureCacheKeys as u32)?
-            .ok_or(PrlLoadError::NoTextureCacheKeys)?;
+        read_section(SectionId::TextureCacheKeys)?.ok_or(PrlLoadError::NoTextureCacheKeys)?;
     let texture_cache_keys = TextureCacheKeysSection::from_bytes(&texture_cache_keys_data)?;
 
     let mut warned_prefixes = HashSet::new();
@@ -2185,11 +1594,11 @@ fn load_prl_with_section_limits(
     );
 
     // Required. Pre-BVH maps must be rebuilt with `prl-build`.
-    let bvh_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Bvh as u32)?
-        .ok_or_else(|| stale_section("Bvh", SectionId::Bvh))?;
+    let bvh_data =
+        read_section(SectionId::Bvh)?.ok_or_else(|| stale_section("Bvh", SectionId::Bvh))?;
     let bvh_section = BvhSection::from_bytes(&bvh_data)
         .map_err(|err| section_validation_from_error("Bvh", err))?;
-    let bvh = convert_bvh_section(bvh_section);
+    let bvh = convert_bvh_section(bvh_section.clone());
     validate_bvh_structure(&bvh, indices.len())?;
     log::info!(
         "[PRL] BVH: {} nodes, {} leaves, root={}",
@@ -2212,32 +1621,28 @@ fn load_prl_with_section_limits(
         "BVH nodes carry unexpected flag bits",
     );
 
-    let has_legacy_bsp_nodes = meta.find_section(SectionId::BspNodes as u32).is_some();
-    let has_legacy_bsp_leaves = meta.find_section(SectionId::BspLeaves as u32).is_some();
+    let has_legacy_bsp_nodes = container.has_section(SectionId::BspNodes as u32);
+    let has_legacy_bsp_leaves = container.has_section(SectionId::BspLeaves as u32);
 
-    let portals_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Portals as u32)? {
-            Some(data) => match PortalsSection::from_bytes(&data) {
-                Ok(section) => Some(section),
-                Err(err) => {
-                    log::warn!(
-                        "[PRL] Portals section malformed ({err}); using no-portals fallback"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
+    let portals_section = match read_section(SectionId::Portals)? {
+        Some(data) => match PortalsSection::from_bytes(&data) {
+            Ok(section) => Some(section),
+            Err(err) => {
+                log::warn!("[PRL] Portals section malformed ({err}); using no-portals fallback");
+                None
+            }
+        },
+        None => None,
+    };
 
-    let cells_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Cells as u32)? {
-            Some(data) => CellsSection::from_bytes(&data)
-                .map_err(|err| section_validation_from_error("Cells", err))?,
-            None => return Err(stale_section("Cells", SectionId::Cells)),
-        };
+    let cells_section = match read_section(SectionId::Cells)? {
+        Some(data) => CellsSection::from_bytes(&data)
+            .map_err(|err| section_validation_from_error("Cells", err))?,
+        None => return Err(stale_section("Cells", SectionId::Cells)),
+    };
     let cell_count = cells_section.cells.len();
     let portal_ref_count = cells_section.portal_refs.len();
-    let (cells, cell_portal_refs) = convert_cells_section(cells_section);
+    let (cells, cell_portal_refs) = convert_cells_section(cells_section.clone());
     validate_face_meta_cells(&face_meta, &cells)?;
     validate_cells_against_geometry(&cells, &face_meta)?;
     validate_bvh_leaf_cells(&bvh.leaves, &cells)?;
@@ -2269,11 +1674,7 @@ fn load_prl_with_section_limits(
             ));
         }
     }
-    let cell_visibility = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::CellVisibility as u32,
-    )? {
+    let cell_visibility = match read_section(SectionId::CellVisibility)? {
         Some(data) => {
             let section = CellVisibilitySection::from_bytes(&data, expected_cell_count)
                 .map_err(|err| section_validation_from_error("CellVisibility", err))?;
@@ -2292,25 +1693,21 @@ fn load_prl_with_section_limits(
         }
     };
 
-    let (cell_locator_root, cell_locator_nodes) =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::CellLocator as u32)? {
+    let (cell_locator_section, cell_locator_root, cell_locator_nodes) =
+        match read_section(SectionId::CellLocator)? {
             Some(data) => {
                 let section = CellLocatorSection::from_bytes(&data, cells.len() as u32)
                     .map_err(|err| section_validation_from_error("CellLocator", err))?;
                 let node_count = section.nodes.len();
-                let converted = convert_cell_locator_section(section);
+                let converted = convert_cell_locator_section(section.clone());
                 log::info!("[PRL] CellLocator: {node_count} node(s) loaded");
-                converted
+                (section, converted.0, converted.1)
             }
             None => return Err(stale_section("CellLocator", SectionId::CellLocator)),
         };
 
     // Optional — older maps fall back to empty with a warning.
-    let mut lights: Vec<MapLight> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::AlphaLights as u32,
-    )? {
+    let mut lights: Vec<MapLight> = match read_section(SectionId::AlphaLights)? {
         Some(data) => {
             let section = AlphaLightsSection::from_bytes(&data)?;
             let count = section.lights.len();
@@ -2327,9 +1724,7 @@ fn load_prl_with_section_limits(
     };
 
     // 1:1 with AlphaLights; count mismatch = format error. Absence = no tags.
-    if let Some(data) =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::LightTags as u32)?
-    {
+    if let Some(data) = read_section(SectionId::LightTags)? {
         let section = LightTagsSection::from_bytes(&data)?;
         if section.tags.len() != lights.len() {
             return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
@@ -2357,11 +1752,7 @@ fn load_prl_with_section_limits(
     // Optional — absent/short → missing lights are treated as infinite-bound by
     // downstream consumers. Extra records remain malformed: they cannot map to a
     // light and would hide writer bugs if silently ignored.
-    let light_influences: Vec<LightInfluence> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::LightInfluence as u32,
-    )? {
+    let light_influences: Vec<LightInfluence> = match read_section(SectionId::LightInfluence)? {
         Some(data) => {
             let section = LightInfluenceSection::from_bytes(&data)?;
             if section.records.len() > lights.len() {
@@ -2400,50 +1791,57 @@ fn load_prl_with_section_limits(
         }
     };
 
-    let sh_volume: Option<OctahedralShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::OctahedralShVolume as u32,
-    )? {
-        Some(data) => {
-            let section = OctahedralShVolumeSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, {} animated descriptor(s))",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.probes.len(),
-                section.atlas_dimensions[0],
-                section.atlas_dimensions[1],
-                section.layer_count,
-                section.tile_dimension,
-                section.tile_border,
-                section.atlas_tiles_per_row,
-                section.tiles_per_layer,
-                section.animation_descriptors.len(),
-            );
-            Some(section)
-        }
-        None => return Err(PrlLoadError::NoOctahedralShVolume),
+    let sh_volume: Option<OctahedralShVolumeSection> = match streaming {
+        // The manifest retains this metadata; legacy body fields are reserved
+        // for a whole-resident legacy load.
+        Some(_) => None,
+        None => match read_section(SectionId::OctahedralShVolume)? {
+            Some(data) => {
+                let section = OctahedralShVolumeSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, {} animated descriptor(s))",
+                    section.grid_dimensions[0],
+                    section.grid_dimensions[1],
+                    section.grid_dimensions[2],
+                    section.probes.len(),
+                    section.atlas_dimensions[0],
+                    section.atlas_dimensions[1],
+                    section.layer_count,
+                    section.tile_dimension,
+                    section.tile_border,
+                    section.atlas_tiles_per_row,
+                    section.tiles_per_layer,
+                    section.animation_descriptors.len(),
+                );
+                Some(section)
+            }
+            None => return Err(PrlLoadError::NoOctahedralShVolume),
+        },
     };
 
     // Populate `MapLight.animated_slot` from the SH-volume slot table.
     // Resolution happens once here (load time), not per
     // `setLightAnimation` call. Legacy PRLs lack the table — every slot stays
     // `None` and the bridge takes the legacy `is_dynamic`-gated path.
-    if let Some(sh) = sh_volume.as_ref()
-        && !sh.slot_for_map_light.is_empty()
-    {
+    let sh_slot_for_map_light = streaming.map_or_else(
+        || {
+            sh_volume
+                .as_ref()
+                .map_or(&[][..], |section| section.slot_for_map_light.as_slice())
+        },
+        |manifest| manifest.base().slot_for_map_light.as_slice(),
+    );
+    if !sh_slot_for_map_light.is_empty() {
         use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
-        if sh.slot_for_map_light.len() != lights.len() {
+        if sh_slot_for_map_light.len() != lights.len() {
             log::warn!(
                 "[PRL] OctahedralShVolume slot_for_map_light count ({}) != AlphaLights count ({}); skipping animated-slot resolution",
-                sh.slot_for_map_light.len(),
+                sh_slot_for_map_light.len(),
                 lights.len(),
             );
         } else {
             let mut resolved = 0usize;
-            for (light, &slot) in lights.iter_mut().zip(sh.slot_for_map_light.iter()) {
+            for (light, &slot) in lights.iter_mut().zip(sh_slot_for_map_light) {
                 if slot != ANIMATED_SLOT_NONE {
                     light.animated_slot = Some(slot);
                     resolved += 1;
@@ -2454,32 +1852,29 @@ fn load_prl_with_section_limits(
     }
 
     // Optional — absent → 1×1 white placeholder; bumped-Lambert degrades to flat white.
-    let lightmap: Option<LightmapSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)? {
-            Some(data) => {
-                let section = LightmapSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] Lightmap: {}x{} atlas, {} layer(s), {} B irradiance, {} B direction",
-                    section.irr_width,
-                    section.irr_height,
-                    section.layer_count,
-                    section.irradiance.len(),
-                    section.direction.len(),
-                );
-                Some(section)
-            }
-            None => {
-                log::warn!(
-                    "[PRL] Lightmap section missing — static direct lighting disabled for this map"
-                );
-                None
-            }
-        };
+    let lightmap: Option<LightmapSection> = match read_section(SectionId::Lightmap)? {
+        Some(data) => {
+            let section = LightmapSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] Lightmap: {}x{} atlas, {} layer(s), {} B irradiance, {} B direction",
+                section.irr_width,
+                section.irr_height,
+                section.layer_count,
+                section.irradiance.len(),
+                section.direction.len(),
+            );
+            Some(section)
+        }
+        None => {
+            log::warn!(
+                "[PRL] Lightmap section missing — static direct lighting disabled for this map"
+            );
+            None
+        }
+    };
 
-    let mut shadowmask_atlas: Option<ShadowmaskAtlasSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::ShadowmaskAtlas as u32,
+    let mut shadowmask_atlas: Option<ShadowmaskAtlasSection> = match read_section(
+        SectionId::ShadowmaskAtlas,
     )? {
         Some(data) => match ShadowmaskAtlasSection::from_bytes(&data) {
             Ok(section) => match lightmap.as_ref() {
@@ -2522,11 +1917,7 @@ fn load_prl_with_section_limits(
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
     // marker; the renderer collapses it to the same disabled state.
-    let sdf_atlas: Option<SdfAtlasSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::SdfAtlas as u32,
-    )? {
+    let sdf_atlas: Option<SdfAtlasSection> = match read_section(SectionId::SdfAtlas)? {
         Some(data) => {
             let section = SdfAtlasSection::from_bytes(&data)?;
             log::info!(
@@ -2549,37 +1940,30 @@ fn load_prl_with_section_limits(
     };
 
     // Optional — absent → full spec-buffer scan fallback.
-    let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::ChunkLightList as u32,
-    )? {
-        Some(data) => {
-            let section = ChunkLightListSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] ChunkLightList: {}×{}×{} grid, {} indices",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.light_indices.len(),
-            );
-            Some(section)
-        }
-        None => {
-            log::info!(
-                "[PRL] ChunkLightList section missing — specular path uses full-buffer fallback"
-            );
-            None
-        }
-    };
+    let chunk_light_list: Option<ChunkLightListSection> =
+        match read_section(SectionId::ChunkLightList)? {
+            Some(data) => {
+                let section = ChunkLightListSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] ChunkLightList: {}×{}×{} grid, {} indices",
+                    section.grid_dimensions[0],
+                    section.grid_dimensions[1],
+                    section.grid_dimensions[2],
+                    section.light_indices.len(),
+                );
+                Some(section)
+            }
+            None => {
+                log::info!(
+                    "[PRL] ChunkLightList section missing — specular path uses full-buffer fallback"
+                );
+                None
+            }
+        };
 
     // Optional — cross-checked against weight-map chunk count at runtime.
     let animated_light_chunks: Option<AnimatedLightChunksSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::AnimatedLightChunks as u32,
-        )? {
+        match read_section(SectionId::AnimatedLightChunks)? {
             Some(data) => {
                 let section = AnimatedLightChunksSection::from_bytes(&data)?;
                 log::info!(
@@ -2593,30 +1977,31 @@ fn load_prl_with_section_limits(
         };
 
     // Optional — absent → 1×1 zero atlas on animated-contribution slot.
-    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::AnimatedLightWeightMaps as u32,
-        )? {
-            Some(data) => {
-                let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
-                    section.chunk_rects.len(),
-                    section.offset_counts.len(),
-                    section.texel_lights.len(),
-                );
-                Some(section)
-            }
-            None => None,
-        };
+    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> = match read_section(
+        SectionId::AnimatedLightWeightMaps,
+    )? {
+        Some(data) => {
+            let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
+                section.chunk_rects.len(),
+                section.offset_counts.len(),
+                section.texel_lights.len(),
+            );
+            Some(section)
+        }
+        None => None,
+    };
 
     // Optional — absent → SH compose pass falls back to base→total copy.
-    let delta_sh_volumes: Option<DeltaShVolumesSection> =
+    let delta_sh_volumes: Option<DeltaShVolumesSection> = if streaming.is_some() {
+        // Id 27's body is cluster-streamed. Manifest construction has retained
+        // and cross-validated the CSR projection but intentionally no tiles.
+        None
+    } else {
         match read_bounded_delta_section_data_with_limit(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             SectionId::DeltaShVolumes,
             "DeltaShVolumes",
             max_delta_section_binding_bytes,
@@ -2648,161 +2033,232 @@ fn load_prl_with_section_limits(
                 Some(section)
             }
             BoundedDeltaSectionData::Absent | BoundedDeltaSectionData::OverBindingFloor => None,
-        };
+        }
+    };
 
     // Optional — malformed animated-direct deltas disable only this additive
     // term. An id-45/id-34 valid-probe descriptor disagreement is different:
     // it would make compact payload offsets address the wrong tiles, so reject
     // the complete load before any renderer buffers are built.
     let parsed_animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
-        match read_bounded_delta_section_data_with_limit(
-            &file_data,
-            &meta,
-            SectionId::AnimatedDirectShDeltaVolumes,
-            "AnimatedDirectShDeltaVolumes",
-            max_delta_section_binding_bytes,
-        )? {
-            BoundedDeltaSectionData::Data(data) => {
-                match AnimatedDirectShDeltaVolumesSection::from_bytes(data) {
-                    Ok(section) => {
-                        let base = sh_volume.as_ref().expect("id-34 is required before id-45");
-                        if delta_grid_matches_base(
-                            base,
-                            section.affinity_factor,
-                            section.affinity_dims,
-                        ) {
-                            validate_storage_ceiling_for_delta(
-                                "AnimatedDirectShDeltaVolumes",
+        if streaming.is_some() {
+            // Id 45 is cluster-streamed. Id 48 validates against the retained
+            // metadata projection below.
+            None
+        } else {
+            match read_bounded_delta_section_data_with_limit(
+                container.data(),
+                meta,
+                SectionId::AnimatedDirectShDeltaVolumes,
+                "AnimatedDirectShDeltaVolumes",
+                max_delta_section_binding_bytes,
+            )? {
+                BoundedDeltaSectionData::Data(data) => {
+                    match AnimatedDirectShDeltaVolumesSection::from_bytes(data) {
+                        Ok(section) => {
+                            let base = sh_volume.as_ref().expect("id-34 is required before id-45");
+                            if delta_grid_matches_base(
                                 base,
-                                &section.cell_levels,
-                                &section.affinity_offsets,
-                            )?;
+                                section.affinity_factor,
+                                section.affinity_dims,
+                            ) {
+                                validate_storage_ceiling_for_delta(
+                                    "AnimatedDirectShDeltaVolumes",
+                                    base,
+                                    &section.cell_levels,
+                                    &section.affinity_offsets,
+                                )?;
+                            }
+                            match validate_animated_direct_sh_delta(&section, sh_volume.as_ref()) {
+                                Ok(()) => {
+                                    log::info!(
+                                        "[PRL] AnimatedDirectShDeltaVolumes: {} animated light(s), affinity grid {}×{}×{} ({} CSR entr(y/ies), {} delta subblock halves)",
+                                        section.animation_descriptor_indices.len(),
+                                        section.affinity_dims[0],
+                                        section.affinity_dims[1],
+                                        section.affinity_dims[2],
+                                        section.affinity_lights.len(),
+                                        section.delta_subblocks.len(),
+                                    );
+                                    Some(section)
+                                }
+                                Err(
+                                    err @ PrlLoadError::AnimatedDirectShDeltaValidityMismatch {
+                                        ..
+                                    },
+                                ) => {
+                                    return Err(err);
+                                }
+                                Err(err) => {
+                                    log::warn!(
+                                        "[PRL] AnimatedDirectShDeltaVolumes unusable; disabling animated direct SH: {err}"
+                                    );
+                                    None
+                                }
+                            }
                         }
-                        match validate_animated_direct_sh_delta(&section, sh_volume.as_ref()) {
-                            Ok(()) => {
-                                log::info!(
-                                    "[PRL] AnimatedDirectShDeltaVolumes: {} animated light(s), affinity grid {}×{}×{} ({} CSR entr(y/ies), {} delta subblock halves)",
-                                    section.animation_descriptor_indices.len(),
-                                    section.affinity_dims[0],
-                                    section.affinity_dims[1],
-                                    section.affinity_dims[2],
-                                    section.affinity_lights.len(),
-                                    section.delta_subblocks.len(),
-                                );
-                                Some(section)
-                            }
-                            Err(
-                                err @ PrlLoadError::AnimatedDirectShDeltaValidityMismatch { .. },
-                            ) => {
-                                return Err(err);
-                            }
-                            Err(err) => {
-                                log::warn!(
-                                    "[PRL] AnimatedDirectShDeltaVolumes unusable; disabling animated direct SH: {err}"
-                                );
-                                None
-                            }
+                        Err(err) => {
+                            log::warn!(
+                                "[PRL] AnimatedDirectShDeltaVolumes malformed; disabling animated direct SH: {err}"
+                            );
+                            None
                         }
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            "[PRL] AnimatedDirectShDeltaVolumes malformed; disabling animated direct SH: {err}"
-                        );
-                        None
                     }
                 }
+                BoundedDeltaSectionData::Absent | BoundedDeltaSectionData::OverBindingFloor => None,
             }
-            BoundedDeltaSectionData::Absent | BoundedDeltaSectionData::OverBindingFloor => None,
         };
 
     // Optional normal-free direct scatter for billboard lighting. This is an
     // optimization with a legacy direct-light fallback, so all parse and
     // cross-validation failures deliberately clear it instead of rejecting a
     // map that otherwise loads.
-    let mut billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection> =
-        match read_soft_optional_scatter_section_data(
-            &file_data,
-            &meta,
-            SectionId::BillboardDirectScatterVolume,
-            "BillboardDirectScatterVolume",
-        ) {
-            Some(data) => match BillboardDirectScatterVolumeSection::from_bytes(data) {
-                Ok(section) => {
-                    match validate_billboard_direct_scatter_volume(&section, sh_volume.as_ref()) {
-                        Ok(()) => {
-                            log::info!(
-                                "[PRL] BillboardDirectScatterVolume: {}×{}×{} grid ({} RGBA16F scatter halves)",
-                                section.grid_dimensions[0],
-                                section.grid_dimensions[1],
-                                section.grid_dimensions[2],
-                                section.scatter_rgba.len(),
-                            );
-                            Some(section)
-                        }
+    let parsed_billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection> =
+        if let Some(manifest) = streaming {
+            match read_section(SectionId::BillboardDirectScatterVolume)? {
+                Some(data) => match BillboardDirectScatterVolumeSection::from_bytes(&data) {
+                    Ok(section) => match validate_billboard_direct_scatter_against_metadata(
+                        &section,
+                        manifest.base(),
+                    ) {
+                        Ok(()) => Some(section),
                         Err(error) => {
                             log::warn!(
                                 "[PRL] BillboardDirectScatterVolume unusable; disabling billboard direct scatter: {error}"
                             );
                             None
                         }
-                    }
-                }
-                Err(error) => {
-                    log::warn!(
-                        "[PRL] BillboardDirectScatterVolume malformed; disabling billboard direct scatter: {error}"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-
-    let id45_present = meta
-        .find_section(SectionId::AnimatedDirectShDeltaVolumes as u32)
-        .is_some();
-    let id48_present = meta
-        .find_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32)
-        .is_some();
-    let mut animated_billboard_direct_scatter_delta_volumes: Option<
-        AnimatedBillboardDirectScatterDeltaVolumesSection,
-    > = match parsed_animated_direct_sh_delta_volumes.as_ref() {
-        Some(animated_direct) => match read_bounded_scatter_section_data_with_limit(
-            &file_data,
-            &meta,
-            max_scatter_section_bytes,
-        ) {
-            BoundedScatterSectionData::Data(data) => {
-                match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(data) {
-                    Ok(section) => match validate_animated_billboard_direct_scatter_delta_volumes(
-                        &section,
-                        animated_direct,
-                    ) {
-                        Ok(()) => {
-                            log::info!(
-                                "[PRL] AnimatedBillboardDirectScatterDeltaVolumes: {} CSR entr(y/ies), {} dense delta halves",
-                                section.affinity_lights.len(),
-                                section.delta_rgba.len(),
-                            );
-                            Some(section)
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                "[PRL] AnimatedBillboardDirectScatterDeltaVolumes unusable; disabling billboard direct scatter: {error}"
-                            );
-                            None
-                        }
                     },
                     Err(error) => {
                         log::warn!(
-                            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes malformed; disabling billboard direct scatter: {error}"
+                            "[PRL] BillboardDirectScatterVolume malformed; disabling billboard direct scatter: {error}"
                         );
                         None
                     }
+                },
+                None => None,
+            }
+        } else {
+            match read_soft_optional_scatter_section_data(
+                container.data(),
+                meta,
+                SectionId::BillboardDirectScatterVolume,
+                "BillboardDirectScatterVolume",
+            ) {
+                Some(data) => match BillboardDirectScatterVolumeSection::from_bytes(data) {
+                    Ok(section) => {
+                        match validate_billboard_direct_scatter_volume(&section, sh_volume.as_ref())
+                        {
+                            Ok(()) => {
+                                log::info!(
+                                    "[PRL] BillboardDirectScatterVolume: {}×{}×{} grid ({} RGBA16F scatter halves)",
+                                    section.grid_dimensions[0],
+                                    section.grid_dimensions[1],
+                                    section.grid_dimensions[2],
+                                    section.scatter_rgba.len(),
+                                );
+                                Some(section)
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "[PRL] BillboardDirectScatterVolume unusable; disabling billboard direct scatter: {error}"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "[PRL] BillboardDirectScatterVolume malformed; disabling billboard direct scatter: {error}"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            }
+        };
+
+    let id45_present = container.has_section(SectionId::AnimatedDirectShDeltaVolumes as u32);
+    let id48_present =
+        container.has_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32);
+    let parsed_animated_billboard_direct_scatter_delta_volumes: Option<
+        AnimatedBillboardDirectScatterDeltaVolumesSection,
+    > = if let Some(manifest) = streaming {
+        match manifest.sources().animated_direct_delta.as_ref() {
+            None => None,
+            Some(animated_direct) => {
+                if let Some(entry) =
+                    meta.find_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32)
+                    && entry.size > max_scatter_section_bytes
+                {
+                    log::warn!(
+                        "[PRL] AnimatedBillboardDirectScatterDeltaVolumes raw payload is {} B, above the {} B pack cap; disabling billboard direct scatter",
+                        entry.size,
+                        max_scatter_section_bytes,
+                    );
+                    None
+                } else {
+                    match read_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes)? {
+                        Some(data) => match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&data) {
+                            Ok(section) => match validate_animated_billboard_direct_scatter_against_metadata(
+                                &section,
+                                animated_direct,
+                            ) {
+                                Ok(()) => Some(section),
+                                Err(error) => {
+                                    log::warn!(
+                                        "[PRL] AnimatedBillboardDirectScatterDeltaVolumes unusable; disabling billboard direct scatter: {error}"
+                                    );
+                                    None
+                                }
+                            },
+                            Err(error) => {
+                                log::warn!(
+                                    "[PRL] AnimatedBillboardDirectScatterDeltaVolumes malformed; disabling billboard direct scatter: {error}"
+                                );
+                                None
+                            }
+                        },
+                        None => None,
+                    }
                 }
             }
-            BoundedScatterSectionData::Absent | BoundedScatterSectionData::OverPackCap => None,
-        },
-        None => None,
+        }
+    } else {
+        match parsed_animated_direct_sh_delta_volumes.as_ref() {
+            Some(animated_direct) => match read_bounded_scatter_section_data_with_limit(
+                container.data(),
+                meta,
+                max_scatter_section_bytes,
+            ) {
+                BoundedScatterSectionData::Data(data) => {
+                    match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(data) {
+                        Ok(section) => {
+                            match validate_animated_billboard_direct_scatter_delta_volumes(
+                                &section,
+                                animated_direct,
+                            ) {
+                                Ok(()) => Some(section),
+                                Err(error) => {
+                                    log::warn!(
+                                        "[PRL] AnimatedBillboardDirectScatterDeltaVolumes unusable; disabling billboard direct scatter: {error}"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "[PRL] AnimatedBillboardDirectScatterDeltaVolumes malformed; disabling billboard direct scatter: {error}"
+                            );
+                            None
+                        }
+                    }
+                }
+                BoundedScatterSectionData::Absent | BoundedScatterSectionData::OverPackCap => None,
+            },
+            None => None,
+        }
     };
 
     // The id-45 layout is authoritative whenever present. A static-only map
@@ -2812,11 +2268,11 @@ fn load_prl_with_section_limits(
     // scatter with the legacy animated-direct path.
     let scatter_pair_is_usable = match (id45_present, id48_present) {
         (false, false) => true,
-        (true, true) => animated_billboard_direct_scatter_delta_volumes.is_some(),
+        (true, true) => parsed_animated_billboard_direct_scatter_delta_volumes.is_some(),
         (true, false) => false,
         (false, true) => false,
     };
-    if billboard_direct_scatter_volume.is_some() && !scatter_pair_is_usable {
+    if parsed_billboard_direct_scatter_volume.is_some() && !scatter_pair_is_usable {
         let reason = match (id45_present, id48_present) {
             (true, false) => {
                 "AnimatedDirectShDeltaVolumes (id 45) is present without AnimatedBillboardDirectScatterDeltaVolumes (id 48)"
@@ -2828,59 +2284,48 @@ fn load_prl_with_section_limits(
             (false, false) => "the static-only scatter pair is unexpectedly unusable",
         };
         log::warn!("[PRL] {reason}; disabling billboard direct scatter");
-        billboard_direct_scatter_volume = None;
-        animated_billboard_direct_scatter_delta_volumes = None;
     }
-    if billboard_direct_scatter_volume.is_none() {
-        animated_billboard_direct_scatter_delta_volumes = None;
-    }
-
-    // A structurally valid empty id-45 section still participates in the
-    // id-45/id-48 companion contract (P7), but the direct-SH runtime has no
-    // animation work to allocate for it.
-    let animated_direct_sh_delta_volumes = parsed_animated_direct_sh_delta_volumes
-        .filter(|section| !section.affinity_lights.is_empty());
 
     // Optional — absent when the map has no static direct SH/static lights.
     // Dynamic objects fall back to indirect-only.
-    let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::DirectShVolume as u32,
-    )? {
-        Some(data) => {
-            // id-35 is a stored-set sibling of required id-34. A present stale,
-            // malformed, geometry-mismatched, or length-mismatched payload has
-            // no safe downgrade: it would address a different stored slot map.
-            let section = DirectShVolumeSection::from_bytes(&data)
-                .map_err(|error| section_validation_from_error("DirectShVolume", error))?;
-            let base = sh_volume.as_ref().expect("id-34 is required before id-35");
-            validate_direct_sh_layout(&section, base)?;
-            log::info!(
-                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} stored atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, format {}, {} atlas byte(s))",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.total_probes(),
-                section.atlas_dimensions[0],
-                section.atlas_dimensions[1],
-                section.layer_count,
-                section.tile_dimension,
-                section.tile_border,
-                section.atlas_tiles_per_row,
-                section.tiles_per_layer,
-                section.irradiance_format,
-                section.atlas.len(),
-            );
-            Some(section)
-        }
-        None => None,
+    let direct_sh_volume: Option<DirectShVolumeSection> = match streaming {
+        Some(_) => None,
+        None => match read_section(SectionId::DirectShVolume)? {
+            Some(data) => {
+                // id-35 is a stored-set sibling of required id-34. A present stale,
+                // malformed, geometry-mismatched, or length-mismatched payload has
+                // no safe downgrade: it would address a different stored slot map.
+                let section = DirectShVolumeSection::from_bytes(&data)
+                    .map_err(|error| section_validation_from_error("DirectShVolume", error))?;
+                let base = sh_volume.as_ref().expect("id-34 is required before id-35");
+                validate_direct_sh_layout(&section, base)?;
+                log::info!(
+                    "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} stored atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, format {}, {} atlas byte(s))",
+                    section.grid_dimensions[0],
+                    section.grid_dimensions[1],
+                    section.grid_dimensions[2],
+                    section.total_probes(),
+                    section.atlas_dimensions[0],
+                    section.atlas_dimensions[1],
+                    section.layer_count,
+                    section.tile_dimension,
+                    section.tile_border,
+                    section.atlas_tiles_per_row,
+                    section.tiles_per_layer,
+                    section.irradiance_format,
+                    section.atlas.len(),
+                );
+                Some(section)
+            }
+            None => None,
+        },
     };
 
-    let mut entity_shadow_lights: Vec<u32> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::EntityShadowLights as u32,
+    let has_direct_sh = streaming.map_or(direct_sh_volume.is_some(), |manifest| {
+        manifest.sources().direct.is_some()
+    });
+    let parsed_entity_shadow_lights: Option<EntityShadowLightsSection> = match read_section(
+        SectionId::EntityShadowLights,
     )? {
         // A corrupt/tampered EntityShadowLights section degrades to empty (warn +
         // clear), mirroring the sibling DirectShDeltaVolumes path below — presence
@@ -2889,14 +2334,14 @@ fn load_prl_with_section_limits(
         // outer `?` still propagates a structurally broken section table.
         Some(data) => match EntityShadowLightsSection::from_bytes(&data) {
             Ok(section) => {
-                if direct_sh_volume.is_none() {
+                if !has_direct_sh {
                     if !section.light_indices.is_empty() {
                         log::warn!(
                             "[PRL] EntityShadowLights present without DirectShVolume; ignoring {} selected light(s)",
                             section.light_indices.len()
                         );
                     }
-                    Vec::new()
+                    None
                 } else if let Err(err) =
                     validate_entity_shadow_light_selection(&section.light_indices, &lights)
                 {
@@ -2904,29 +2349,60 @@ fn load_prl_with_section_limits(
                         "[PRL] EntityShadowLights invalid selection; clearing {} selected static light(s): {err}",
                         section.light_indices.len()
                     );
-                    Vec::new()
+                    None
                 } else {
                     log::info!(
                         "[PRL] EntityShadowLights: {} selected static light(s)",
                         section.light_indices.len()
                     );
-                    section.light_indices
+                    Some(section)
                 }
             }
             Err(err) => {
                 log::warn!(
                     "[PRL] EntityShadowLights malformed; treating as empty (no promotion): {err}"
                 );
-                Vec::new()
+                None
             }
         },
-        None => Vec::new(),
+        None => None,
     };
+    let mut entity_shadow_lights = parsed_entity_shadow_lights
+        .as_ref()
+        .map_or_else(Vec::new, |section| section.light_indices.clone());
 
-    let direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection> =
+    let direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection> = if let Some(manifest) =
+        streaming
+    {
+        match manifest.sources().direct_delta.as_ref() {
+            Some(metadata) if !entity_shadow_lights.is_empty() => {
+                if let Err(error) =
+                    validate_streamed_direct_delta_selection(metadata, entity_shadow_lights.len())
+                {
+                    log::warn!(
+                        "[PRL] streamed DirectShDeltaVolumes metadata unusable for EntityShadowLights; clearing {} selected static light(s): {error}",
+                        entity_shadow_lights.len(),
+                    );
+                    entity_shadow_lights.clear();
+                }
+                None
+            }
+            Some(_) => None,
+            None => {
+                if !entity_shadow_lights.is_empty() {
+                    log::warn!(
+                        "[PRL] EntityShadowLights present without streamed DirectShDeltaVolumes; clearing {} selected static light(s)",
+                        entity_shadow_lights.len(),
+                    );
+                    entity_shadow_lights.clear();
+                }
+                None
+            }
+        }
+    } else {
         match read_bounded_delta_section_data_with_limit(
-            &file_data,
-            &meta,
+            container.data(),
+            meta,
             SectionId::DirectShDeltaVolumes,
             "DirectShDeltaVolumes",
             max_delta_section_binding_bytes,
@@ -3022,7 +2498,8 @@ fn load_prl_with_section_limits(
                 }
                 None
             }
-        };
+        }
+    };
 
     if let Some(section) = shadowmask_atlas.as_ref() {
         if entity_shadow_lights.is_empty() {
@@ -3041,44 +2518,39 @@ fn load_prl_with_section_limits(
     }
 
     // Optional — absent when map has no `data_script` worldspawn KVP.
-    let data_script: Option<DataScriptSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
-            Some(data) => {
-                let section = DataScriptSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] DataScript: {} bytes from `{}`",
-                    section.compiled_bytes.len(),
-                    section.source_path,
-                );
-                Some(section)
-            }
-            None => None,
-        };
+    let data_script: Option<DataScriptSection> = match read_section(SectionId::DataScript)? {
+        Some(data) => {
+            let section = DataScriptSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] DataScript: {} bytes from `{}`",
+                section.compiled_bytes.len(),
+                section.source_path,
+            );
+            Some(section)
+        }
+        None => None,
+    };
 
     // Optional — absent when no non-light, non-worldspawn entities exist.
-    let map_entities: Vec<MapEntityRecord> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::MapEntity as u32)? {
-            Some(data) => {
-                let section = MapEntitySection::from_bytes(&data)?;
-                log::info!("[PRL] MapEntity: {} entities", section.entries.len());
-                section.entries
-            }
-            None => Vec::new(),
-        };
+    let map_entities: Vec<MapEntityRecord> = match read_section(SectionId::MapEntity)? {
+        Some(data) => {
+            let section = MapEntitySection::from_bytes(&data)?;
+            log::info!("[PRL] MapEntity: {} entities", section.entries.len());
+            section.entries
+        }
+        None => Vec::new(),
+    };
 
     // Optional — absent or empty means the level has no kinematic movers.
-    let mut kinematic_geometry: KinematicGeometry = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::KinematicGeometry as u32,
-    )? {
-        Some(data) => {
-            let section = KinematicGeometrySection::from_bytes(&data)
-                .map_err(|err| section_validation_from_error("KinematicGeometry", err))?;
-            convert_kinematic_geometry_section(section)?
-        }
-        None => KinematicGeometry::default(),
-    };
+    let mut kinematic_geometry: KinematicGeometry =
+        match read_section(SectionId::KinematicGeometry)? {
+            Some(data) => {
+                let section = KinematicGeometrySection::from_bytes(&data)
+                    .map_err(|err| section_validation_from_error("KinematicGeometry", err))?;
+                convert_kinematic_geometry_section(section)?
+            }
+            None => KinematicGeometry::default(),
+        };
     drop_invalid_carried_light_links(&mut kinematic_geometry, &lights);
     let kinematic_vertex_count: usize = kinematic_geometry
         .movers
@@ -3098,11 +2570,7 @@ fn load_prl_with_section_limits(
         kinematic_index_count,
     );
     // Optional — absent or empty means no trigger volumes.
-    let trigger_volumes = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::TriggerVolumes as u32,
-    )? {
+    let trigger_volumes = match read_section(SectionId::TriggerVolumes)? {
         Some(data) => {
             TriggerVolumesSection::from_bytes(&data)
                 .map_err(|err| section_validation_from_error("TriggerVolumes", err))?
@@ -3142,7 +2610,7 @@ fn load_prl_with_section_limits(
     // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
     // rejected so the engine never silently falls back to a hardcoded default.
     let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
+        match read_section(SectionId::FogVolumes)? {
             Some(data) => {
                 let section = FogVolumesSection::from_bytes(&data)
                     .map_err(|err| section_validation_from_error("FogVolumes", err))?;
@@ -3163,51 +2631,48 @@ fn load_prl_with_section_limits(
 
     // Required when FogVolumes contains canonical fog entities; optional only
     // for no-fog maps, where `compute_fog_cell_mask` can keep all zero slots.
-    let fog_cell_masks: Option<Vec<u32>> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)? {
-            Some(data) => {
-                let section = FogCellMasksSection::from_bytes(&data)
-                    .map_err(|err| section_validation_from_error("FogCellMasks", err))?;
-                log::info!("[PRL] FogCellMasks: {} cells", section.masks.len());
-                Some(section.masks)
-            }
-            None => None,
-        };
+    let fog_cell_masks: Option<Vec<u32>> = match read_section(SectionId::FogCellMasks)? {
+        Some(data) => {
+            let section = FogCellMasksSection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("FogCellMasks", err))?;
+            log::info!("[PRL] FogCellMasks: {} cells", section.masks.len());
+            Some(section.masks)
+        }
+        None => None,
+    };
 
     // Optional — absent → no runtime navigation (logged at info, mirroring the
     // SdfAtlas precedent for the absent-section case). A malformed body warns
     // and decodes to None (softer than SdfAtlas, which propagates with `?` and
     // fails the load): nothing depends on the navmesh yet, so warn-and-continue
     // is intentional rather than making a malformed navmesh unplayable.
-    let navmesh: Option<NavMeshSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)? {
-            Some(data) => match NavMeshSection::from_bytes(&data) {
-                Ok(section) => {
-                    log::info!(
-                        "[PRL] NavMesh: {}×{} grid, cell_size={:.4}m, {} region(s), {} portal(s)",
-                        section.dim_x,
-                        section.dim_z,
-                        section.cell_size,
-                        section.regions.len(),
-                        section.portals.len(),
-                    );
-                    Some(section)
-                }
-                Err(err) => {
-                    log::warn!("[PRL] NavMesh section malformed, ignoring: {err}");
-                    None
-                }
-            },
-            None => {
-                log::info!("[PRL] NavMesh section missing — no runtime navigation for this map");
+    let navmesh: Option<NavMeshSection> = match read_section(SectionId::NavMesh)? {
+        Some(data) => match NavMeshSection::from_bytes(&data) {
+            Ok(section) => {
+                log::info!(
+                    "[PRL] NavMesh: {}×{} grid, cell_size={:.4}m, {} region(s), {} portal(s)",
+                    section.dim_x,
+                    section.dim_z,
+                    section.cell_size,
+                    section.regions.len(),
+                    section.portals.len(),
+                );
+                Some(section)
+            }
+            Err(err) => {
+                log::warn!("[PRL] NavMesh section malformed, ignoring: {err}");
                 None
             }
-        };
+        },
+        None => {
+            log::info!("[PRL] NavMesh section missing — no runtime navigation for this map");
+            None
+        }
+    };
 
     // Required when the BVH has leaves; omitted only for empty-BVH maps. Hold
     // the raw bytes until Cells and BVH are both available for cross-validation.
-    let cell_draw_index_data =
-        read_optional_section_data(&mut cursor, &meta, SectionId::CellDrawIndex as u32)?;
+    let cell_draw_index_data = read_section(SectionId::CellDrawIndex)?;
 
     validate_light_cells(&lights, &cells)?;
 
@@ -3286,6 +2751,152 @@ fn load_prl_with_section_limits(
         }
     };
 
+    let on_wire = |section: SectionId| container.has_section(section as u32);
+    let streaming_directory_projections = streaming.map(directory_projections);
+    let mut unavailable_directory_companions = Vec::new();
+    for (section, available) in [
+        (
+            SectionId::DeltaShVolumes,
+            streaming_directory_projections
+                .as_ref()
+                .map_or(delta_sh_volumes.is_some(), |projection| {
+                    projection.delta.is_some()
+                }),
+        ),
+        (
+            SectionId::DirectShVolume,
+            streaming_directory_projections
+                .as_ref()
+                .map_or(direct_sh_volume.is_some(), |projection| {
+                    projection.direct.is_some()
+                }),
+        ),
+        (
+            SectionId::DirectShDeltaVolumes,
+            streaming_directory_projections
+                .as_ref()
+                .map_or(direct_sh_delta_volumes.is_some(), |projection| {
+                    projection.direct_delta.is_some()
+                }),
+        ),
+        (
+            SectionId::AnimatedDirectShDeltaVolumes,
+            streaming_directory_projections.as_ref().map_or(
+                parsed_animated_direct_sh_delta_volumes.is_some(),
+                |projection| projection.animated_direct_delta.is_some(),
+            ),
+        ),
+        (
+            SectionId::BillboardDirectScatterVolume,
+            parsed_billboard_direct_scatter_volume.is_some() && scatter_pair_is_usable,
+        ),
+        (
+            SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+            parsed_animated_billboard_direct_scatter_delta_volumes.is_some()
+                && scatter_pair_is_usable,
+        ),
+    ] {
+        if on_wire(section) && !available {
+            unavailable_directory_companions.push(section as u32);
+        }
+    }
+
+    let cluster_directory = if let Some(manifest) = streaming {
+        if !unavailable_directory_companions.is_empty() {
+            // A streaming session has to retain a complete, semantically
+            // validated id-49 topology for the residency planner. Legacy maps
+            // may soft-disable a malformed optional scatter companion, but
+            // silently returning a manifest without its adjacency graph would
+            // be unsafe; require the caller to use legacy/off mode instead.
+            return Err(section_validation(
+                "SH streaming",
+                format!(
+                    "cannot start streaming because ClusterDirectory companion section(s) {:?} are unavailable; retry with POSTRETRO_SH_STREAMING=off",
+                    unavailable_directory_companions,
+                ),
+            ));
+        }
+        let projections = streaming_directory_projections
+            .as_ref()
+            .expect("streaming manifest always has directory projections");
+        let empty_portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: Vec::new(),
+        };
+        let directory = manifest.cluster_directory();
+        directory.validate_semantics(ClusterDirectoryValidationInputs {
+            cells: &cells_section,
+            portals: portals_section.as_ref().unwrap_or(&empty_portals),
+            bvh: &bvh_section,
+            cell_locator: &cell_locator_section,
+            sh: ClusterDirectoryShInventory {
+                octahedral: Some(&projections.base),
+                direct: projections.direct.as_ref(),
+                delta: projections.delta.as_ref(),
+                shadow_selection: parsed_entity_shadow_lights.as_ref(),
+                direct_delta: projections.direct_delta.as_ref(),
+                animated_direct_delta: projections.animated_direct_delta.as_ref(),
+                billboard: parsed_billboard_direct_scatter_volume.as_ref(),
+                animated_billboard_delta: parsed_animated_billboard_direct_scatter_delta_volumes
+                    .as_ref(),
+            },
+        })?;
+        manifest.install_cluster_adjacency(cluster_adjacency_from_portals(
+            directory,
+            portals_section.as_ref().unwrap_or(&empty_portals),
+        )?)?;
+        Some(directory.clone())
+    } else {
+        match parsed_cluster_directory {
+            None => None,
+            Some(_directory) if !unavailable_directory_companions.is_empty() => {
+                log::warn!(
+                    "[PRL] ClusterDirectoryUnavailableCompanion: section(s) {:?}; validated structural metadata remains inert and unavailable",
+                    unavailable_directory_companions,
+                );
+                None
+            }
+            Some(directory) => {
+                let empty_portals = PortalsSection {
+                    vertices: Vec::new(),
+                    portals: Vec::new(),
+                };
+                directory.validate_semantics(ClusterDirectoryValidationInputs {
+                    cells: &cells_section,
+                    portals: portals_section.as_ref().unwrap_or(&empty_portals),
+                    bvh: &bvh_section,
+                    cell_locator: &cell_locator_section,
+                    sh: ClusterDirectoryShInventory {
+                        octahedral: sh_volume.as_ref(),
+                        direct: direct_sh_volume.as_ref(),
+                        delta: delta_sh_volumes.as_ref(),
+                        shadow_selection: parsed_entity_shadow_lights.as_ref(),
+                        direct_delta: direct_sh_delta_volumes.as_ref(),
+                        animated_direct_delta: parsed_animated_direct_sh_delta_volumes.as_ref(),
+                        billboard: parsed_billboard_direct_scatter_volume.as_ref(),
+                        animated_billboard_delta:
+                            parsed_animated_billboard_direct_scatter_delta_volumes.as_ref(),
+                    },
+                })?;
+                Some(directory)
+            }
+        }
+    };
+
+    // These legacy runtime fields are derived only after directory validation,
+    // so valid-empty id 45/id 48 evidence remains available to the validator.
+    let animated_direct_sh_delta_volumes = parsed_animated_direct_sh_delta_volumes
+        .filter(|section| !section.affinity_lights.is_empty());
+    let billboard_direct_scatter_volume = scatter_pair_is_usable
+        .then_some(parsed_billboard_direct_scatter_volume)
+        .flatten();
+    let animated_billboard_direct_scatter_delta_volumes =
+        if billboard_direct_scatter_volume.is_some() {
+            parsed_animated_billboard_direct_scatter_delta_volumes
+        } else {
+            None
+        };
+
     let portal_data = portals_section.as_ref().and_then(convert_usable_portals);
     if let Some(portal_data) = portal_data.as_ref() {
         let dropped_count =
@@ -3305,6 +2916,27 @@ fn load_prl_with_section_limits(
         (portal_data, true)
     } else {
         (Vec::new(), false)
+    };
+
+    let lighting = LoadedLighting {
+        lights,
+        light_influences,
+        sh_volume,
+        lightmap,
+        lightmap_mode: LightmapMode::default(),
+        sdf_atlas,
+        chunk_light_list,
+        animated_light_chunks,
+        animated_light_weight_maps,
+        delta_sh_volumes,
+        direct_sh_volume,
+        direct_sh_delta_volumes,
+        animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes,
+        entity_shadow_lights,
+        shadowmask_atlas,
+        cluster_directory,
     };
 
     log::info!(
@@ -3334,25 +2966,30 @@ fn load_prl_with_section_limits(
         texture_names,
         texture_cache_keys,
         bvh,
-        lights,
-        light_influences,
-        sh_volume,
-        lightmap,
+        lights: lighting.lights,
+        light_influences: lighting.light_influences,
+        sh_volume: lighting.sh_volume,
+        sh_storage: match stream_manifest {
+            Some(manifest) => ShStorage::Streaming(manifest),
+            None => ShStorage::Legacy,
+        },
+        lightmap: lighting.lightmap,
         // Current bakes load as Shadowed. Unshadowed remains for legacy PRL
         // wire compatibility; new lightmaps should carry baked visibility.
-        lightmap_mode: LightmapMode::default(),
-        sdf_atlas,
-        chunk_light_list,
-        animated_light_chunks,
-        animated_light_weight_maps,
-        delta_sh_volumes,
-        direct_sh_volume,
-        direct_sh_delta_volumes,
-        animated_direct_sh_delta_volumes,
-        billboard_direct_scatter_volume,
-        animated_billboard_direct_scatter_delta_volumes,
-        entity_shadow_lights,
-        shadowmask_atlas,
+        lightmap_mode: lighting.lightmap_mode,
+        sdf_atlas: lighting.sdf_atlas,
+        chunk_light_list: lighting.chunk_light_list,
+        animated_light_chunks: lighting.animated_light_chunks,
+        animated_light_weight_maps: lighting.animated_light_weight_maps,
+        delta_sh_volumes: lighting.delta_sh_volumes,
+        direct_sh_volume: lighting.direct_sh_volume,
+        direct_sh_delta_volumes: lighting.direct_sh_delta_volumes,
+        animated_direct_sh_delta_volumes: lighting.animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume: lighting.billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes: lighting
+            .animated_billboard_direct_scatter_delta_volumes,
+        entity_shadow_lights: lighting.entity_shadow_lights,
+        shadowmask_atlas: lighting.shadowmask_atlas,
         data_script,
         map_entities,
         kinematic_geometry,
@@ -3363,6 +3000,7 @@ fn load_prl_with_section_limits(
         fog_cell_masks,
         navmesh,
         cell_draw_index,
+        cluster_directory: lighting.cluster_directory,
     })
 }
 
@@ -3374,6 +3012,9 @@ mod tests {
     use postretro_level_format::cell_locator::CellLocatorChild as FormatCellLocatorChild;
     use postretro_level_format::cell_visibility::CoupledPairRecord;
     use postretro_level_format::cells::CellRecord;
+    use postretro_level_format::cluster_directory::{
+        ClusterRecord, ClusterResourceDomain, ClusterResourceRecord,
+    };
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
         KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
@@ -3513,11 +3154,253 @@ mod tests {
         path
     }
 
+    #[test]
+    fn id50_without_id49_is_rejected_before_off_mode_can_select_legacy_loading() {
+        let path = write_prl_load_fixture(
+            [prl_format::SectionBlob {
+                section_id: SectionId::ClusterShPayloads as u32,
+                version:
+                    postretro_level_format::cluster_sh_payloads::CLUSTER_SH_PAYLOADS_CONTAINER_VERSION,
+                // The id-50/id-49 pair is mandatory before the injected Off
+                // mode can select retained-handle legacy loading. The
+                // end-to-end streaming fixture separately covers malformed
+                // id-50 bytes with a valid id-49 directory.
+                data: vec![0],
+            }],
+            "postretro_test_invalid_id50_before_off.prl",
+        );
+        let error =
+            load_prl_with_streaming_mode_for_test(path.to_str().unwrap(), ShStreamingMode::Off)
+                .unwrap_err();
+        assert!(matches!(error, PrlLoadError::ClusterShPayloads(_)));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_off_mode_soft_disables_an_out_of_bounds_optional_scatter_entry() {
+        let path = write_prl_load_fixture(
+            [prl_format::SectionBlob {
+                section_id: SectionId::BillboardDirectScatterVolume as u32,
+                version: 1,
+                data: vec![0],
+            }],
+            "postretro_test_legacy_optional_scatter_out_of_bounds.prl",
+        );
+        let mut bytes = std::fs::read(&path).unwrap();
+        let section_count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
+        let table_entry = (0..section_count)
+            .map(|index| 8 + index * 22)
+            .find(|&offset| {
+                u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+                    == SectionId::BillboardDirectScatterVolume as u32
+            })
+            .expect("fixture contains id 47");
+        let out_of_bounds = u64::try_from(bytes.len()).unwrap() + 1;
+        bytes[table_entry + 4..table_entry + 12].copy_from_slice(&out_of_bounds.to_le_bytes());
+        std::fs::write(&path, bytes).unwrap();
+
+        let loaded =
+            load_prl_with_streaming_mode_for_test(path.to_str().unwrap(), ShStreamingMode::Off)
+                .expect("legacy/off loading soft-disables malformed optional scatter");
+        assert!(loaded.billboard_direct_scatter_volume().is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
     fn write_cell_visibility_load_fixture(
         section: Option<prl_format::SectionBlob>,
         name: &str,
     ) -> std::path::PathBuf {
         write_prl_load_fixture(section, name)
+    }
+
+    fn zero_grid_cluster_directory(resource_ids: &[SectionId]) -> ClusterDirectorySection {
+        ClusterDirectorySection {
+            runtime_cell_count: 2,
+            primitive_limit: 64,
+            cell_limit: 64,
+            clusters: vec![
+                ClusterRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [1.0, 1.0, 1.0],
+                    member_start: 0,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 0,
+                    flags: 0,
+                },
+                ClusterRecord {
+                    bounds_min: [2.0, 0.0, 0.0],
+                    bounds_max: [3.0, 1.0, 1.0],
+                    member_start: 1,
+                    member_count: 1,
+                    range_start: 0,
+                    range_count: 0,
+                    primitive_count: 0,
+                    flags: 0,
+                },
+            ],
+            resources: resource_ids
+                .iter()
+                .map(|&section| ClusterResourceRecord {
+                    section_id: section as u32,
+                    domain: match section {
+                        SectionId::OctahedralShVolume
+                        | SectionId::DirectShVolume
+                        | SectionId::BillboardDirectScatterVolume => {
+                            ClusterResourceDomain::DenseProbe
+                        }
+                        _ => ClusterResourceDomain::AffinityCell,
+                    },
+                    dimensions: [0, 0, 0],
+                })
+                .collect(),
+            members: vec![0, 1],
+            ranges: Vec::new(),
+        }
+    }
+
+    fn cluster_directory_blob(section: &ClusterDirectorySection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::ClusterDirectory as u32,
+            version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            data: section.try_to_bytes().unwrap(),
+        }
+    }
+
+    #[test]
+    fn cluster_directory_missing_is_silent_and_valid_zero_grid_directory_loads_inert() {
+        let missing_path =
+            write_prl_load_fixture([], "postretro_test_cluster_directory_missing.prl");
+        let missing = load_prl(missing_path.to_str().unwrap()).unwrap();
+        assert!(missing.cluster_directory.is_none());
+        std::fs::remove_file(missing_path).unwrap();
+
+        let directory = zero_grid_cluster_directory(&[SectionId::OctahedralShVolume]);
+        let path = write_prl_load_fixture(
+            [cluster_directory_blob(&directory)],
+            "postretro_test_cluster_directory_zero_grid.prl",
+        );
+        let loaded = load_prl(path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.cluster_directory.as_ref(), Some(&directory));
+        assert!(loaded.sh_volume.is_some());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cluster_directory_rejects_duplicate_versions_corruption_and_absent_targets() {
+        let directory = zero_grid_cluster_directory(&[SectionId::OctahedralShVolume]);
+        let duplicate_path = write_prl_load_fixture(
+            [
+                cluster_directory_blob(&directory),
+                cluster_directory_blob(&directory),
+            ],
+            "postretro_test_cluster_directory_duplicate.prl",
+        );
+        assert!(matches!(
+            load_prl(duplicate_path.to_str().unwrap()),
+            Err(PrlLoadError::ClusterDirectory(
+                ClusterDirectoryError::InvalidData(_)
+            ))
+        ));
+        std::fs::remove_file(duplicate_path).unwrap();
+
+        let mut wrong_container = cluster_directory_blob(&directory);
+        wrong_container.version += 1;
+        let version_path = write_prl_load_fixture(
+            [wrong_container],
+            "postretro_test_cluster_directory_container_version.prl",
+        );
+        assert!(matches!(
+            load_prl(version_path.to_str().unwrap()),
+            Err(PrlLoadError::ClusterDirectory(
+                ClusterDirectoryError::VersionMismatch { .. }
+            ))
+        ));
+        std::fs::remove_file(version_path).unwrap();
+
+        let corrupt_path = write_prl_load_fixture(
+            [prl_format::SectionBlob {
+                section_id: SectionId::ClusterDirectory as u32,
+                version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+                data: vec![0; 7],
+            }],
+            "postretro_test_cluster_directory_corrupt.prl",
+        );
+        assert!(matches!(
+            load_prl(corrupt_path.to_str().unwrap()),
+            Err(PrlLoadError::ClusterDirectory(
+                ClusterDirectoryError::InvalidData(_)
+            ))
+        ));
+        std::fs::remove_file(corrupt_path).unwrap();
+
+        let absent_target = zero_grid_cluster_directory(&[
+            SectionId::OctahedralShVolume,
+            SectionId::DirectShVolume,
+        ]);
+        let absent_path = write_prl_load_fixture(
+            [cluster_directory_blob(&absent_target)],
+            "postretro_test_cluster_directory_absent_target.prl",
+        );
+        assert!(matches!(
+            load_prl(absent_path.to_str().unwrap()),
+            Err(PrlLoadError::ClusterDirectory(
+                ClusterDirectoryError::MissingResource(_)
+            ))
+        ));
+        std::fs::remove_file(absent_path).unwrap();
+    }
+
+    #[test]
+    fn cluster_directory_becomes_unavailable_when_present_delta_exceeds_policy_floor() {
+        let delta_data = empty_delta_sh_section_bytes();
+        let binding_floor = u64::try_from(delta_data.len() - 1).unwrap();
+        let directory = zero_grid_cluster_directory(&[
+            SectionId::DeltaShVolumes,
+            SectionId::OctahedralShVolume,
+        ]);
+        let path = write_prl_load_fixture(
+            [
+                prl_format::SectionBlob {
+                    section_id: SectionId::DeltaShVolumes as u32,
+                    version: 1,
+                    data: delta_data,
+                },
+                cluster_directory_blob(&directory),
+            ],
+            "postretro_test_cluster_directory_policy_floor.prl",
+        );
+        let capture = LogCapture::start();
+        let loaded = load_prl_with_delta_binding_limit(path.to_str().unwrap(), binding_floor)
+            .expect("legacy over-floor degradation must remain a successful load");
+        assert!(loaded.delta_sh_volumes.is_none());
+        assert!(loaded.cluster_directory.is_none());
+        capture.assert_logged_once(Level::Warn, "ClusterDirectoryUnavailableCompanion");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cluster_directory_validates_present_empty_id27_with_production_codec() {
+        let directory = zero_grid_cluster_directory(&[
+            SectionId::DeltaShVolumes,
+            SectionId::OctahedralShVolume,
+        ]);
+        let path = write_prl_load_fixture(
+            [
+                prl_format::SectionBlob {
+                    section_id: SectionId::DeltaShVolumes as u32,
+                    version: 1,
+                    data: empty_delta_sh_section_bytes(),
+                },
+                cluster_directory_blob(&directory),
+            ],
+            "postretro_test_cluster_directory_empty_id27.prl",
+        );
+        let loaded = load_prl(path.to_str().unwrap()).unwrap();
+        assert!(loaded.delta_sh_volumes.is_some());
+        assert_eq!(loaded.cluster_directory, Some(directory));
+        std::fs::remove_file(path).unwrap();
     }
 
     fn mark_section_out_of_bounds_above_binding_floor(

@@ -62,6 +62,7 @@ pub(crate) use postretro_sim::{
 };
 
 mod render;
+mod render_preparation;
 mod runtime_movers;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
@@ -69,6 +70,9 @@ use postretro_sim::scripting;
 // held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
+// App-side session policy for streamed SH targets, bounded loader batches, and
+// renderer outcomes. It never owns GPU objects.
+mod sh_streaming;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;
@@ -165,9 +169,7 @@ use postretro_scripting_core::runtime::{
 use postretro_scripting_core::staged_manifest::{
     StagedManifestBuildResult, StagedManifestBuildStatus,
 };
-use postretro_visibility::{
-    CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
-};
+use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 /// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
 /// author supplies one duration (mirroring `flashScreen`); the drain splits it
@@ -3743,35 +3745,36 @@ impl ApplicationHandler for App {
                     );
                 }
 
-                // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
-                let (vis_result, _frustum) = match self.level.as_ref() {
-                    Some(world) => postretro_visibility::determine_visible_cells(
+                // Portal DFS → cell IDs → renderer inputs. This stays after
+                // game and audio work; the shared preparation seam also feeds
+                // VM-free capture without changing frame order.
+                let visible_render = match self.level.as_ref() {
+                    Some(world) => render_preparation::VisibleRenderPreparation::for_level(
+                        world,
                         render_eye_position,
                         view_proj,
-                        world,
                         &self.blocked_portals,
                         capture_portal_walk,
                         &mut self.scratch_cells,
                     ),
-                    None => (
-                        VisibilityResult {
-                            visible_cells: VisibleCells::DrawAll,
-                            fog_reachable: Vec::new(),
-                            stats: VisibilityStats {
-                                camera_cell: 0,
-                                total_faces: 0,
-                                drawn_faces: 0,
-                                path: VisibilityPath::EmptyWorldFallback,
-                            },
-                        },
-                        postretro_visibility::extract_frustum_planes(view_proj),
-                    ),
+                    None => render_preparation::VisibleRenderPreparation::empty_world(),
                 };
-                let VisibilityResult {
+                let render_preparation::VisibleRenderPreparation {
                     visible_cells,
                     fog_reachable,
+                    light_reachable_cell_mask,
+                    reachable_cell_aabbs,
                     stats,
-                } = vis_result;
+                } = visible_render;
+                // A streamed map retains only its validated manifest. Keep the
+                // application-side controller keyed to this exact load before
+                // the renderer records the frame; legacy storage is `None` and
+                // bypasses the developer mode gate entirely.
+                let sh_stream_manifest = self
+                    .level
+                    .as_ref()
+                    .and_then(|world| world.sh_stream_manifest())
+                    .cloned();
 
                 #[cfg(feature = "dev-tools")]
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -3798,48 +3801,6 @@ impl ApplicationHandler for App {
                         view_proj,
                     );
                 }
-
-                // Build the per-cell bool mask for `update_dynamic_light_slots`
-                // from the wider fog/light-reachable set so dynamic lights in
-                // empty (face_count == 0) portal-reachable cells stay
-                // eligible. Empty slice = DrawAll sentinel: keep every
-                // cell-assigned light eligible on fallback paths.
-                let light_reachable_cell_mask: Vec<bool> = match self.level.as_ref() {
-                    None => Vec::new(),
-                    Some(_) if fog_reachable.is_empty() => Vec::new(),
-                    Some(world) => {
-                        let mut mask = vec![false; world.cell_count()];
-                        for &id in &fog_reachable {
-                            let i = id as usize;
-                            if i < mask.len() {
-                                mask[i] = true;
-                            }
-                        }
-                        mask
-                    }
-                };
-
-                // AABBs of the fog/light-reachable cells — the WIDER
-                // portal-reachable set (same source as `light_reachable_cell_mask`,
-                // built from `fog_reachable`), which deliberately includes empty
-                // `face_count == 0` cells. Feeds the dynamic-light shadow-slot
-                // eligibility test: a light is shadow-eligible when its influence
-                // sphere reaches one of these reachable cells — NOT when its own
-                // cell is in the camera PVS (see
-                // `postretro_lighting::light_reaches_visible_cell`). Intentionally the wider
-                // set, not the narrower drawable `visible_cells`, so a light in an
-                // empty reachable cell still counts. Empty = DrawAll sentinel
-                // (fallback visibility paths): every light eligible.
-                let reachable_cell_aabbs: Vec<(glam::Vec3, glam::Vec3)> = match self.level.as_ref()
-                {
-                    None => Vec::new(),
-                    Some(_) if fog_reachable.is_empty() => Vec::new(),
-                    Some(world) => fog_reachable
-                        .iter()
-                        .filter_map(|&id| world.cells.get(id as usize))
-                        .map(|cell| (cell.bounds_min, cell.bounds_max))
-                        .collect(),
-                };
 
                 let presentation_viewport = self
                     .window_state
@@ -4023,6 +3984,22 @@ impl ApplicationHandler for App {
                             presentation_tick,
                         );
                     }
+                    // Prepare the controller while no borrowed draw collection
+                    // is live. The actual drain still occurs as the first step
+                    // inside `render_frame_indirect`, before scene recording.
+                    let sh_drain_batch = match session.prepare_sh_streaming_drain(
+                        sh_stream_manifest.as_ref(),
+                        renderer,
+                        &visible_cells,
+                        self.script_time,
+                    ) {
+                        Ok(batch) => batch,
+                        Err(err) => {
+                            self.exit_result = Err(err);
+                            event_loop.exit();
+                            return;
+                        }
+                    };
                     let particle_collections: Vec<(&str, &[u8])> =
                         session.particle_render.iter_collections().collect();
 
@@ -4429,7 +4406,7 @@ impl ApplicationHandler for App {
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
 
-                    let present_handle = match renderer.render_frame_indirect(
+                    let sh_frame_result = match renderer.render_frame_indirect(
                         &mut session.font_system,
                         CameraCullVisibility {
                             cells: &visible_cells,
@@ -4449,14 +4426,32 @@ impl ApplicationHandler for App {
                             a: 1.0,
                         },
                         true,
+                        sh_drain_batch,
                     ) {
-                        Ok(opt) => opt,
+                        Ok(result) => result,
+                        Err(err) => {
+                            self.exit_result = Err(err.into());
+                            event_loop.exit();
+                            return;
+                        }
+                    };
+                    let compose_submitted = sh_frame_result.compose_submitted;
+                    if let Err(err) =
+                        session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer)
+                    {
+                        self.exit_result = Err(err);
+                        event_loop.exit();
+                        return;
+                    }
+                    let present_handle = match sh_frame_result.frame {
+                        Ok(present_handle) => present_handle,
                         Err(err) => {
                             self.exit_result = Err(err);
                             event_loop.exit();
                             return;
                         }
                     };
+                    session.mark_sh_streaming_compose_submitted(compose_submitted);
                     // Read back the focus rect list the renderer just exported
                     // for the top stack layer (the gameplay render above laid it
                     // out). The focus engine consumes it next frame's game-logic
@@ -5661,31 +5656,44 @@ impl App {
         session
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
-        let present_handle = match renderer.render_frame_indirect(
+        let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
+        session.clear_sh_streaming();
+        let sh_frame_result = match renderer.render_frame_indirect(
             &mut session.font_system,
-            CameraCullVisibility {
-                cells: &VisibleCells::DrawAll,
-                // Frontend/splash path: no world cull. DrawAll + non-portal
-                // provenance keeps the candidate path inert regardless.
-                path: VisibilityPath::EmptyWorldFallback,
-            },
-            &[],
-            &[],
-            &[],
+            visible_render.camera_cull(),
+            &visible_render.light_reachable_cell_mask,
+            &visible_render.reachable_cell_aabbs,
+            &visible_render.fog_reachable,
             None,
             glam::Mat4::IDENTITY,
             &[],
             self.script_time,
             FRONTEND_CLEAR_COLOR,
             false,
+            postretro_level_loader::ShDrainBatch::default(),
         ) {
-            Ok(opt) => opt,
+            Ok(result) => result,
+            Err(err) => {
+                self.exit_result = Err(err.into());
+                event_loop.exit();
+                return;
+            }
+        };
+        let compose_submitted = sh_frame_result.compose_submitted;
+        if let Err(err) = session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer) {
+            self.exit_result = Err(err);
+            event_loop.exit();
+            return;
+        }
+        let present_handle = match sh_frame_result.frame {
+            Ok(present_handle) => present_handle,
             Err(err) => {
                 self.exit_result = Err(err);
                 event_loop.exit();
                 return;
             }
         };
+        session.mark_sh_streaming_compose_submitted(compose_submitted);
         let exported_rects = renderer.export_ui_focus_rects();
         if let Some(session) = self.session.as_mut() {
             session.ui_focus_rects = Some(exported_rects);
@@ -8664,6 +8672,28 @@ mod tests {
     };
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::runtime::ScriptRuntimeConfig;
+
+    // Regression: a streamed compose encode failure used to be hidden behind
+    // a successful surface acquisition and incorrectly published the install.
+    #[test]
+    fn windowed_app_uses_renderer_compose_submission_not_present_success() {
+        let source = include_str!("main.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("main test module marker remains present")
+            .0;
+        assert!(
+            !production.contains("mark_sh_streaming_compose_submitted(present_handle.is_some())"),
+            "surface acquisition/presentation is not proof that SH compose encoded"
+        );
+        assert_eq!(
+            production
+                .matches("mark_sh_streaming_compose_submitted(compose_submitted)")
+                .count(),
+            2,
+            "gameplay and frontend paths must consume the renderer-owned signal"
+        );
+    }
 
     // A connected client skips the global clean-exit save; its private
     // per-owner path remains enabled. Single-player and the host save both.

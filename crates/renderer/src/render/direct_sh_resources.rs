@@ -4,55 +4,21 @@
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+#[cfg(test)]
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_render_cpu::sh_volume::{
     BIND_DYNAMIC_DIRECT_PARAMS, BIND_SH_DIRECT_ATLAS, build_dynamic_direct_params_bytes,
 };
 use wgpu::util::DeviceExt;
 
+pub(super) use super::sh_allocation::{DirectAtlasLayout, atlas_fits};
+use super::sh_allocation::{
+    DirectAtlasUsage, ShAllocationKind, buffer_allocation, direct_atlas_usage,
+    direct_base_atlas_allocation, direct_base_atlas_dummy_allocation,
+    direct_composed_atlas_allocation,
+};
+use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
 use super::sh_volume::AnimatedLightBuffers;
-
-/// Direct-SH stored-tile atlas geometry shared by the promotion and
-/// animated-add compose passes. It is captured at level load so the compose
-/// passes do not need to reach back into the indirect SH resource owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct DirectAtlasLayout {
-    pub(super) grid_dimensions: [u32; 3],
-    pub(super) atlas_dimensions: [u32; 2],
-    pub(super) tile_dimension: u32,
-    pub(super) tile_border: u32,
-    pub(super) atlas_tiles_per_row: u32,
-    pub(super) tiles_per_layer: u32,
-    pub(super) atlas_layer_count: u32,
-}
-
-impl DirectAtlasLayout {
-    pub(super) fn from_direct_section(section: &DirectShVolumeSection) -> Self {
-        Self {
-            grid_dimensions: section.grid_dimensions,
-            atlas_dimensions: section.atlas_dimensions,
-            tile_dimension: section.tile_dimension,
-            tile_border: section.tile_border,
-            atlas_tiles_per_row: section.atlas_tiles_per_row,
-            tiles_per_layer: section.tiles_per_layer,
-            atlas_layer_count: section.layer_count,
-        }
-    }
-
-    pub(super) fn from_sh_section(
-        section: &postretro_level_format::sh_volume::OctahedralShVolumeSection,
-    ) -> Self {
-        Self {
-            grid_dimensions: section.grid_dimensions,
-            atlas_dimensions: section.atlas_dimensions,
-            tile_dimension: section.tile_dimension,
-            tile_border: section.tile_border,
-            atlas_tiles_per_row: section.atlas_tiles_per_row,
-            tiles_per_layer: section.tiles_per_layer,
-            atlas_layer_count: section.layer_count,
-        }
-    }
-}
 
 /// Renderer-owned direct-SH textures and mesh-only dynamic-direct parameters.
 ///
@@ -81,6 +47,8 @@ impl DirectShResources {
         direct_delta_section: Option<&DirectShDeltaVolumesSection>,
         animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
         fallback_layout: Option<DirectAtlasLayout>,
+        direct_section_present: bool,
+        ledger: &mut ShAllocationLedger,
     ) -> Self {
         let direct_usage = resolve_direct_atlas_usage(
             direct_section,
@@ -88,11 +56,21 @@ impl DirectShResources {
             animated_direct_delta_section,
             fallback_layout,
         );
-        let (base_atlas_texture, has_direct_base) =
-            upload_direct_atlas_texture(device, queue, direct_section);
+        let (base_atlas_texture, has_direct_base) = upload_direct_atlas_texture(
+            device,
+            queue,
+            direct_section,
+            direct_section_present,
+            ledger,
+        );
         let has_animated_direct =
             animated_direct_delta_section.is_some() && fallback_layout.is_some();
         let has_direct = direct_atlas_present(has_direct_base, has_animated_direct);
+        let direct_sources = source_ids([
+            direct_section_present.then_some(35),
+            direct_delta_section.map(|_| 41),
+            animated_direct_delta_section.map(|_| 45),
+        ]);
         let base_atlas_view = base_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("SH Direct Octahedral Base Atlas View"),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -106,9 +84,12 @@ impl DirectShResources {
         ) = if has_direct && direct_usage.needs_composed_atlas {
             let texture = create_direct_composed_atlas_texture(
                 device,
+                ShAllocationKind::DirectComposedAtlas,
                 direct_usage.atlas_dimensions,
                 direct_usage.layer_count,
                 "SH Direct Composed Octahedral Atlas",
+                &direct_sources,
+                ledger,
             );
             let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
@@ -123,9 +104,12 @@ impl DirectShResources {
             if direct_usage.needs_intermediate_atlas {
                 let intermediate = create_direct_composed_atlas_texture(
                     device,
+                    ShAllocationKind::DirectIntermediateAtlas,
                     direct_usage.atlas_dimensions,
                     direct_usage.layer_count,
                     "SH Direct Compose Intermediate Atlas",
+                    &direct_sources,
+                    ledger,
                 );
                 let intermediate_storage = intermediate.create_view(&wgpu::TextureViewDescriptor {
                     label: Some("SH Direct Compose Intermediate Atlas Storage View"),
@@ -150,11 +134,23 @@ impl DirectShResources {
             (base_atlas_view.clone(), None, None, None)
         };
 
+        let dynamic_direct_params_bytes = build_dynamic_direct_params_bytes(1.0, has_direct);
+        let dynamic_direct_params_allocation = buffer_allocation(
+            ShAllocationKind::DirectDynamicParams,
+            &dynamic_direct_params_bytes,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        ledger.record_buffer(
+            dynamic_direct_params_allocation,
+            &direct_sources,
+            direct_sources.is_empty(),
+            ShResidencyAllocationState::Data,
+        );
         let dynamic_direct_params_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Dynamic Direct Params Uniform"),
-                contents: &build_dynamic_direct_params_bytes(1.0, has_direct),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                contents: &dynamic_direct_params_bytes,
+                usage: dynamic_direct_params_allocation.usage,
             });
 
         Self {
@@ -179,6 +175,19 @@ impl DirectShResources {
 
     pub(super) fn write_dynamic_direct_params(&self, queue: &wgpu::Queue, scale: f32) {
         let bytes = build_dynamic_direct_params_bytes(scale, self.has_direct);
+        queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
+    }
+
+    /// Streamed id-35 has the same receiver contract as a whole-resident
+    /// direct atlas, but its backing texture belongs to the shared renderer
+    /// slot pool. Keep this small state transition here so all later dynamic
+    /// direct updates continue to write the existing binding-16 uniform.
+    pub(super) fn enable_streamed_atlas(&mut self, queue: &wgpu::Queue) {
+        if self.has_direct {
+            return;
+        }
+        self.has_direct = true;
+        let bytes = build_dynamic_direct_params_bytes(1.0, true);
         queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
     }
 
@@ -220,22 +229,14 @@ pub(super) fn mesh_dynamic_direct_params_layout_entry() -> wgpu::BindGroupLayout
     }
 }
 
-/// Check a stored-tile 2D-array geometry against the device limits.
-pub(super) fn atlas_fits(per_layer_dim: [u32; 2], layer_count: u32, limits: &wgpu::Limits) -> bool {
-    per_layer_dim[0] > 0
-        && per_layer_dim[1] > 0
-        && layer_count > 0
-        && per_layer_dim[0] <= limits.max_texture_dimension_2d
-        && per_layer_dim[1] <= limits.max_texture_dimension_2d
-        && layer_count <= limits.max_texture_array_layers
-}
-
 /// Build the DIRECT static-light atlas texture from the optional section.
 /// Absent or unusable data binds a valid 4×4 BC6H dummy and clears `has_direct`.
 fn upload_direct_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     section: Option<&DirectShVolumeSection>,
+    direct_section_present: bool,
+    ledger: &mut ShAllocationLedger,
 ) -> (wgpu::Texture, bool) {
     let limits = device.limits();
     let usable = section.filter(|section| {
@@ -254,63 +255,41 @@ fn upload_direct_atlas_texture(
     });
 
     let Some(section) = usable else {
-        return (upload_direct_atlas_dummy(device, queue), false);
+        let allocation = direct_base_atlas_dummy_allocation();
+        ledger.record_texture(
+            allocation,
+            &source_ids([direct_section_present.then_some(35)]),
+            false,
+            if direct_section_present {
+                ShResidencyAllocationState::Fallback
+            } else {
+                ShResidencyAllocationState::Dummy
+            },
+        );
+        return (upload_direct_atlas_dummy(device, queue, allocation), false);
     };
 
-    let (format, width, height) = if section.irradiance_format == IRRADIANCE_FORMAT_BC6H {
-        (
-            wgpu::TextureFormat::Bc6hRgbUfloat,
-            section.atlas_dimensions[0].div_ceil(4) * 4,
-            section.atlas_dimensions[1].div_ceil(4) * 4,
-        )
-    } else {
-        (
-            wgpu::TextureFormat::Rgba16Float,
-            section.atlas_dimensions[0],
-            section.atlas_dimensions[1],
-        )
-    };
+    let allocation = direct_base_atlas_allocation(section);
+    ledger.record_texture(allocation, &[35], false, ShResidencyAllocationState::Data);
 
     let texture = device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("SH Direct Octahedral Atlas"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: section.layer_count,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &allocation.descriptor(Some("SH Direct Octahedral Atlas")),
         wgpu::util::TextureDataOrder::LayerMajor,
         &section.atlas,
     );
     (texture, true)
 }
 
-fn upload_direct_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+fn upload_direct_atlas_dummy(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    allocation: super::sh_allocation::TextureAllocation,
+) -> wgpu::Texture {
     let zero_block = [0u8; 16];
     device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("SH Direct Octahedral Atlas Dummy"),
-            size: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bc6hRgbUfloat,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &allocation.descriptor(Some("SH Direct Octahedral Atlas Dummy")),
         wgpu::util::TextureDataOrder::LayerMajor,
         &zero_block,
     )
@@ -327,67 +306,31 @@ fn direct_atlas_present(has_direct_base: bool, has_animated_direct: bool) -> boo
     has_direct_base || has_animated_direct
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct DirectAtlasUsage {
-    needs_composed_atlas: bool,
-    needs_intermediate_atlas: bool,
-    atlas_dimensions: [u32; 2],
-    layer_count: u32,
-    layout: Option<DirectAtlasLayout>,
-}
-
-impl DirectAtlasUsage {
-    fn layout(self) -> Option<DirectAtlasLayout> {
-        self.layout
-    }
-}
-
 fn resolve_direct_atlas_usage(
     direct_section: Option<&DirectShVolumeSection>,
     _direct_delta_section: Option<&DirectShDeltaVolumesSection>,
     animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
     fallback_layout: Option<DirectAtlasLayout>,
 ) -> DirectAtlasUsage {
-    let has_direct_base = direct_section.is_some();
-    let has_animated_direct = animated_direct_delta_section.is_some();
-    if !has_direct_base && !has_animated_direct {
-        return DirectAtlasUsage::default();
-    }
-    let layout = direct_section
-        .map(DirectAtlasLayout::from_direct_section)
-        .or(fallback_layout);
-    let Some(layout) = layout else {
-        return DirectAtlasUsage::default();
-    };
-    DirectAtlasUsage {
-        needs_composed_atlas: true,
-        needs_intermediate_atlas: has_animated_direct,
-        atlas_dimensions: layout.atlas_dimensions,
-        layer_count: layout.atlas_layer_count,
-        layout: Some(layout),
-    }
+    direct_atlas_usage(
+        direct_section,
+        animated_direct_delta_section.is_some(),
+        fallback_layout,
+    )
 }
 
 fn create_direct_composed_atlas_texture(
     device: &wgpu::Device,
+    kind: ShAllocationKind,
     atlas_dimensions: [u32; 2],
     layer_count: u32,
     label: &str,
+    sources: &[u16],
+    ledger: &mut ShAllocationLedger,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: atlas_dimensions[0].max(1),
-            height: atlas_dimensions[1].max(1),
-            depth_or_array_layers: layer_count.max(1),
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    })
+    let allocation = direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count);
+    ledger.record_texture(allocation, sources, false, ShResidencyAllocationState::Data);
+    device.create_texture(&allocation.descriptor(Some(label)))
 }
 
 #[cfg(test)]

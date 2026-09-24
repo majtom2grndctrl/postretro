@@ -22,7 +22,9 @@ use crate::{
     resolve_sh_density_fidelity, resolve_texture_root,
 };
 
+mod finalized_publication;
 pub(crate) mod lightmap_stage;
+mod stage_registry;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
@@ -31,6 +33,14 @@ use crate::{
     navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
     sh_density, sh_group, texture_mips, texture_validation, trigger_volumes, visibility,
 };
+use finalized_publication::{
+    FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
+    write_finalized_prl,
+};
+pub(crate) use stage_registry::ORDERED_STAGES;
+#[cfg(test)]
+use stage_registry::planned_stages_for_sdf;
+pub use stage_registry::{StageDescriptor, StageId, planned_stages};
 
 /// Resolve an open-edge sample to its assembly provenance, when the source
 /// brush came from a recognized static editor group.
@@ -74,142 +84,6 @@ fn finish_stage(
     }
 }
 
-/// Stable identity for one ordered compiler stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StageId {
-    Parsing,
-    DataScript,
-    TextureValidation,
-    Partitioning,
-    Visibility,
-    Geometry,
-    BvhBuild,
-    CellVisibility,
-    NavMesh,
-    ShBake,
-    DeltaShBake,
-    DirectShBake,
-    AnimatedDirectShBake,
-    EntityShadowLights,
-    DirectShDeltaBake,
-    BillboardDirectScatterBake,
-    ChunkLightList,
-    AtlasPreparation,
-    LightmapBake,
-    ShadowmaskAtlas,
-    AnimatedLightChunks,
-    AnimatedWeightMaps,
-    SdfAtlasBake,
-    TextureMips,
-    Packing,
-}
-
-/// A stage's stable identity, Build Summary label, and predicted presence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StageDescriptor {
-    pub id: StageId,
-    pub label: &'static str,
-    pub predicted_present: bool,
-}
-
-impl StageId {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Parsing => "Parsing",
-            Self::DataScript => "DataScript",
-            Self::TextureValidation => "TexValidation",
-            Self::Partitioning => "Partitioning",
-            Self::Visibility => "Visibility",
-            Self::Geometry => "Geometry",
-            Self::BvhBuild => "BVH Build",
-            Self::CellVisibility => "Cell Visibility",
-            Self::NavMesh => "NavMesh",
-            Self::ShBake => "SH Bake",
-            Self::DeltaShBake => "Delta SH Bake",
-            Self::DirectShBake => "Direct SH Bake",
-            Self::AnimatedDirectShBake => "Animated Direct SH Bake",
-            Self::EntityShadowLights => "EntityShadowLights",
-            Self::DirectShDeltaBake => "Direct SH Delta Bake",
-            Self::BillboardDirectScatterBake => "Billboard Direct Scatter Bake",
-            Self::ChunkLightList => "ChunkLightList",
-            Self::AtlasPreparation => "Atlas Preparation",
-            Self::LightmapBake => "Lightmap Bake",
-            Self::ShadowmaskAtlas => "ShadowmaskAtlas",
-            Self::AnimatedLightChunks => "AnimLightChunks",
-            Self::AnimatedWeightMaps => "AnimWeightMaps",
-            Self::SdfAtlasBake => "SDF Atlas Bake",
-            Self::TextureMips => "TextureMips",
-            Self::Packing => "Packing",
-        }
-    }
-
-    pub const fn progress_label(self) -> &'static str {
-        match self {
-            Self::Parsing => "Parsing map...",
-            Self::DataScript => "Data script compilation...",
-            Self::TextureValidation => "Texture color-space validation...",
-            Self::Partitioning => "BSP partitioning...",
-            Self::Visibility => "Visibility computation...",
-            Self::Geometry => "Geometry extraction...",
-            Self::BvhBuild => "BVH build...",
-            Self::CellVisibility => "Cell visibility bake...",
-            Self::NavMesh => "NavMesh bake...",
-            Self::ShBake => "SH volume bake...",
-            Self::DeltaShBake => "Delta SH volume bake...",
-            Self::DirectShBake => "Direct SH volume bake...",
-            Self::AnimatedDirectShBake => "Animated direct SH delta bake...",
-            Self::EntityShadowLights => "Entity shadow light selection...",
-            Self::DirectShDeltaBake => "Direct SH delta volume bake...",
-            Self::BillboardDirectScatterBake => "Billboard direct scatter bake...",
-            Self::ChunkLightList => "Chunk light list bake...",
-            Self::AtlasPreparation => "Atlas preparation...",
-            Self::LightmapBake => "Lightmap bake...",
-            Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
-            Self::AnimatedLightChunks => "Animated light chunks...",
-            Self::AnimatedWeightMaps => "Animated light weight maps...",
-            Self::SdfAtlasBake => "SDF atlas bake...",
-            Self::TextureMips => "Texture mip bake...",
-            Self::Packing => "Packing and writing...",
-        }
-    }
-}
-
-pub(crate) const ORDERED_STAGES: [StageId; 25] = [
-    StageId::Parsing,
-    StageId::DataScript,
-    StageId::TextureValidation,
-    StageId::Partitioning,
-    StageId::Visibility,
-    StageId::Geometry,
-    StageId::BvhBuild,
-    StageId::CellVisibility,
-    StageId::NavMesh,
-    StageId::ShBake,
-    StageId::DeltaShBake,
-    StageId::DirectShBake,
-    StageId::AnimatedDirectShBake,
-    StageId::EntityShadowLights,
-    StageId::DirectShDeltaBake,
-    StageId::BillboardDirectScatterBake,
-    StageId::ChunkLightList,
-    StageId::AtlasPreparation,
-    StageId::LightmapBake,
-    StageId::ShadowmaskAtlas,
-    StageId::AnimatedLightChunks,
-    StageId::AnimatedWeightMaps,
-    StageId::SdfAtlasBake,
-    StageId::TextureMips,
-    StageId::Packing,
-];
-
-/// Return the ordered stage descriptors predicted for parsed map content.
-///
-/// Prediction is side-effect free and can run before the bake worker starts.
-/// SDF presence intentionally uses the same content predicate as execution.
-pub fn planned_stages(lights: &[map_data::MapLight]) -> Vec<StageDescriptor> {
-    planned_stages_for_sdf(map_needs_sdf_atlas(lights))
-}
-
 /// A map parsed once on the main thread so the TUI can derive its planned
 /// content-dependent stage list before starting the bake worker.
 pub(crate) struct PreparedMap {
@@ -224,18 +98,6 @@ pub(crate) fn prepare(args: &Args) -> anyhow::Result<PreparedMap> {
         map_data,
         parsing_elapsed: started.elapsed(),
     })
-}
-
-fn planned_stages_for_sdf(needs_sdf: bool) -> Vec<StageDescriptor> {
-    ORDERED_STAGES
-        .iter()
-        .copied()
-        .map(|id| StageDescriptor {
-            id,
-            label: id.label(),
-            predicted_present: id != StageId::SdfAtlasBake || needs_sdf,
-        })
-        .collect()
 }
 
 const DELTA_WORKING_SET_DENSE_AND_COMPACTION_FACTOR: u64 = 2;
@@ -1672,14 +1534,16 @@ fn run_after_parsing(
     .map_err(|error| anyhow::anyhow!("indirect SH stored-set packing failed: {error}"))?;
     sh_volume_section =
         sh_bake::encode_sh_volume_section_bc6h(&packed_sh_volume, args.uncompressed_irradiance);
-    if let Some(raw_direct) = sh_analyze_base_direct.take() {
-        let packed_direct = sh_density::pack_direct_section(raw_direct, &sh_volume_section)
-            .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))?;
-        direct_sh_volume_section = Some(direct_sh_bake::encode_direct_section_bc6h(
-            &packed_direct,
-            lightmap_config.uncompressed_irradiance,
-        ));
-    }
+    let packed_direct = sh_analyze_base_direct
+        .take()
+        .map(|raw_direct| {
+            sh_density::pack_direct_section(raw_direct, &sh_volume_section)
+                .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))
+        })
+        .transpose()?;
+    direct_sh_volume_section = packed_direct.as_ref().map(|section| {
+        direct_sh_bake::encode_direct_section_bc6h(section, lightmap_config.uncompressed_irradiance)
+    });
     let indirect_section_bytes = sh_volume_section
         .try_to_bytes()
         .map_err(|error| anyhow::anyhow!("OctahedralShVolume v11 serialization failed: {error}"))?
@@ -2152,46 +2016,74 @@ fn run_after_parsing(
         true,
     );
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ClusterDirectory);
+    let finalized_cluster_metadata =
+        build_finalized_cluster_metadata(FinalizedClusterMetadataInputs {
+            generated_portals: &generated_portals,
+            leaves: &vis_result.leaves_section,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
+            bvh: &bvh_section,
+            bvh_chunk_ranges: &bvh_chunk_ranges,
+            packed_sh_volume: &packed_sh_volume,
+            packed_direct: packed_direct.as_ref(),
+            sh_volume: &sh_volume_section,
+            direct_sh_volume: direct_sh_volume_section.as_ref(),
+            delta_sh_volumes: delta_sections.indirect.as_ref(),
+            entity_shadow_lights: delta_sections.entity_shadow_lights.as_ref(),
+            direct_sh_delta_volumes: delta_sections.direct.as_ref(),
+            animated_direct_sh_delta_volumes: delta_sections.animated_direct.as_ref(),
+            billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
+            animated_billboard_direct_scatter_delta_volumes:
+                animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        })?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ClusterDirectory,
+        stage_start,
+        true,
+    );
 
-    let portals_section = pack::encode_portals(&generated_portals);
-    pack::pack_and_write_portals_with_billboard_scatter(
-        &args.output,
-        &geo_result,
-        &name_to_key,
-        &vis_result.leaves_section,
-        &result.tree,
-        &portals_section,
-        &exterior_leaves,
-        &bvh_section,
-        &bvh_chunk_ranges,
-        &alpha_lights_section,
-        &light_influence_section,
-        &sh_volume_section,
-        direct_sh_volume_section.as_ref(),
-        delta_sections.entity_shadow_lights.as_ref(),
-        delta_sections.direct.as_ref(),
-        shadowmask_atlas_section.as_ref(),
-        &lightmap_section,
-        &chunk_light_list_section,
-        animated_light_chunks_section.as_ref(),
-        animated_light_weight_maps_section.as_ref(),
-        light_tags_section.as_ref(),
-        delta_sections.indirect.as_ref(),
-        data_script_section.as_ref(),
-        map_entities_section.as_ref(),
-        &fog_volumes_section,
-        fog_cell_masks_section.as_ref(),
-        sdf_atlas_section.as_ref(),
-        navmesh_section.as_ref(),
-        kinematic_geometry_section.as_ref(),
-        trigger_volumes_section.as_ref(),
-        cell_draw_index_section.as_ref(),
-        Some(&cell_visibility_section),
-        delta_sections.animated_direct.as_ref(),
-        billboard_direct_scatter_volume_section.as_ref(),
-        animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
-    )?;
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
+    write_finalized_prl(FinalizedPrlPackInputs {
+        output: &args.output,
+        geo_result: &geo_result,
+        texture_cache_keys: &name_to_key,
+        leaves: &vis_result.leaves_section,
+        tree: &result.tree,
+        exterior_leaves: &exterior_leaves,
+        bvh: &bvh_section,
+        bvh_chunk_ranges: &bvh_chunk_ranges,
+        alpha_lights: &alpha_lights_section,
+        light_influence: &light_influence_section,
+        sh_volume: &sh_volume_section,
+        direct_sh_volume: direct_sh_volume_section.as_ref(),
+        entity_shadow_lights: delta_sections.entity_shadow_lights.as_ref(),
+        direct_sh_delta_volumes: delta_sections.direct.as_ref(),
+        shadowmask_atlas: shadowmask_atlas_section.as_ref(),
+        lightmap: &lightmap_section,
+        chunk_light_list: &chunk_light_list_section,
+        animated_light_chunks: animated_light_chunks_section.as_ref(),
+        animated_light_weight_maps: animated_light_weight_maps_section.as_ref(),
+        light_tags: light_tags_section.as_ref(),
+        delta_sh_volumes: delta_sections.indirect.as_ref(),
+        data_script: data_script_section.as_ref(),
+        map_entities: map_entities_section.as_ref(),
+        fog_volumes: &fog_volumes_section,
+        fog_cell_masks: fog_cell_masks_section.as_ref(),
+        sdf_atlas: sdf_atlas_section.as_ref(),
+        navmesh: navmesh_section.as_ref(),
+        kinematic_geometry: kinematic_geometry_section.as_ref(),
+        trigger_volumes: trigger_volumes_section.as_ref(),
+        cell_draw_index: cell_draw_index_section.as_ref(),
+        cell_visibility: Some(&cell_visibility_section),
+        animated_direct_sh_delta_volumes: delta_sections.animated_direct.as_ref(),
+        billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
+        animated_billboard_direct_scatter_delta_volumes:
+            animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        metadata: finalized_cluster_metadata,
+    })?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -2891,8 +2783,8 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 25);
-        assert_eq!(with_sdf.len(), 25);
+        assert_eq!(without_sdf.len(), 26);
+        assert_eq!(with_sdf.len(), 26);
         assert_eq!(
             without_sdf
                 .iter()
@@ -2926,6 +2818,7 @@ mod tests {
                 (StageId::AnimatedWeightMaps, "AnimWeightMaps"),
                 (StageId::SdfAtlasBake, "SDF Atlas Bake"),
                 (StageId::TextureMips, "TextureMips"),
+                (StageId::ClusterDirectory, "ClusterDirectory"),
                 (StageId::Packing, "Packing"),
             ]
         );

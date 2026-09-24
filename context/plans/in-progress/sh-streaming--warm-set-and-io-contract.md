@@ -222,7 +222,8 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
 - A session-level test: the periodic log line appears once per interval when counters
   change and not at all when idle (use `crates/test-log-capture`).
 - `cargo check -p postretro --features dev-tools` and `cargo check -p postretro --features capture` compile.
-- Manual (owner, not machine-verified): `RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl`;
+- Manual (owner, not machine-verified): `RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- content/dev/maps/stress-warren-mini.prl`
+  (the owner's yardstick map, baked with `--lightmap-density 0.8`; `campaign-test.prl` is stale);
   turning in place produces no new reads in the log or Streaming tab; walking produces
   ordered reads with nonzero coalescing.
 
@@ -239,6 +240,16 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
   A deferred chunk is counted in `decoded_bytes_installed` again when it is handed over again.
 - The warm set is built in `sh_streaming/warm_set.rs`. Pressure and eviction ordering
   moved to `sh_streaming/pressure.rs`.
+
+## Resolutions from T1 (landed `3590fe5c9`)
+
+- Install rollback is an undo journal (`sh_streaming/install_journal.rs`); resident-row
+  sets update incrementally. A synthetic 1M-probe install went from 1.82 s to about 4 ms.
+  The dominant cost was rebuilding resident sets per sparse row, not the clones.
+- Eviction still rebuilds resident sets once per evicted sparse row. It is the next hotspot in the same drain.
+- `postretro-renderer` lib tests do not compile with `--features dev-tools`, because of
+  code that predates this work (`direct_sh_compose.rs` uses `ComposeStorageFootprint`/`footprint()`).
+  The T1 debug-UI acceptance needs that file fixed first.
 
 ## Open questions
 

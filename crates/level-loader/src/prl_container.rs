@@ -135,11 +135,10 @@ mod tests {
 
     #[test]
     fn positional_reader_refuses_large_streamed_atlas_before_file_io() {
-        let path = std::env::temp_dir().join(format!(
-            "postretro_streamed_atlas_guard_{}_{}.prl",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        // A test thread's name holds `::`, which Windows refuses in a file
+        // name, so the backing file lives in its own temporary directory.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("streamed_atlas_guard.prl");
         std::fs::write(&path, b"only a tiny backing file").unwrap();
         let file = Arc::new(File::open(&path).unwrap());
         let container = PrlContainer::from_positional(
@@ -166,6 +165,5 @@ mod tests {
                 .to_string()
                 .contains("forbidden whole-body read of section 34")
         );
-        let _ = std::fs::remove_file(path);
     }
 }

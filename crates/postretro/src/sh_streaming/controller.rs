@@ -379,7 +379,6 @@ impl ShResidencyController {
 
     /// The current target set, published to the I/O issuer for pre-read
     /// cancellation.
-    #[cfg_attr(not(test), allow(dead_code))] // Consumed by the ordered-I/O issuer.
     pub(crate) fn targets(&self) -> &BTreeSet<u32> {
         &self.targets
     }
@@ -411,7 +410,6 @@ impl ShResidencyController {
         self.non_evictable_overshoot_bytes
     }
 
-    #[cfg_attr(not(any(test, feature = "capture")), allow(dead_code))] // Diagnostics surfaces.
     pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {
         let mut snapshot = ShResidencyControllerSnapshot {
             cpu: self.accounting.cpu,

@@ -458,6 +458,9 @@ impl ShResidencyController {
         Ok(None)
     }
 
+    /// `visiting` holds only the current path, so every return pops this
+    /// cluster; an owner reached again through a sibling branch is a diamond,
+    /// not a cycle.
     fn first_missing_owner(
         &self,
         cluster_id: u32,
@@ -466,6 +469,16 @@ impl ShResidencyController {
         if !visiting.insert(cluster_id) {
             return Err(ShResidencyControllerError::OwnerCycle(cluster_id));
         }
+        let missing = self.first_missing_owner_on_path(cluster_id, visiting);
+        visiting.remove(&cluster_id);
+        missing
+    }
+
+    fn first_missing_owner_on_path(
+        &self,
+        cluster_id: u32,
+        visiting: &mut BTreeSet<u32>,
+    ) -> Result<Option<u32>, ShResidencyControllerError> {
         for &owner in &self.topology.owners[cluster_id as usize] {
             match self.states[owner as usize].state {
                 ClusterResidencyState::Absent => {
@@ -480,7 +493,6 @@ impl ShResidencyController {
                 | ClusterResidencyState::InstalledUncomposed => return Ok(None),
             }
         }
-        visiting.remove(&cluster_id);
         Ok(
             (self.states[cluster_id as usize].state == ClusterResidencyState::Absent)
                 .then_some(cluster_id),

@@ -131,8 +131,11 @@ pressure, among equal class and priority, the farthest warm cluster yields first
 and optional priority to a fixed point, taking the maximum of an owner's authored value
 and same-class dependents. This policy stops at the CPU planner: it adds no renderer
 binding, shader branch, portal traversal, or visibility behavior.
-Bounded workers read and decode id-50 chunks from the validated open
-file off the frame path. A completion installs only when generation, content tag, target,
+One issuer thread performs every id-50 read from the validated open file, off the frame
+path: visible and pinned work (owner closure included) before optional work, each tier in
+ascending file offset, with nearby chunks coalesced into one read. It takes new requests
+after every read, so fresh visible demand preempts queued prefetch, and it skips any request
+whose cluster has left the target set. A small pool decodes and verifies chunks. A completion installs only when generation, content tag, target,
 and chunk hash still match. At the one renderer drain before SH compose, evictions first
 invalidate sample words; admitted clusters install base and sparse data, then compose only
 their affected affinity rows. Each drain admits ready clusters in priority order up to a decoded-byte budget, always

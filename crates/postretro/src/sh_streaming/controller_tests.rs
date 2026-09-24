@@ -1165,6 +1165,29 @@ fn lifecycle_permits_bound_queued_work() {
     assert_eq!(controller.permits_in_use(), MAX_STREAM_PERMITS);
 }
 
+// Regression: an owner left on the walk's path by an early return read as a
+// cycle when a sibling branch reached it again (a diamond, not a cycle).
+#[test]
+fn owner_walk_revisiting_a_blocked_owner_is_not_a_cycle() {
+    let mut controller = controller(topology(
+        vec![0, 1, 2, 3],
+        vec![vec![], vec![], vec![], vec![]],
+        vec![vec![1, 2], vec![3], vec![1], vec![]],
+        vec![1; 4],
+    ));
+    controller
+        .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+        .unwrap();
+    assert_eq!(
+        controller.take_next_request().unwrap().map(|r| r.cluster_id),
+        Some(3)
+    );
+    // Cluster 1 is now blocked behind queued 3; cluster 2 reaches 1 again.
+    controller
+        .take_next_request()
+        .expect("an acyclic owner graph never reports a cycle");
+}
+
 #[test]
 fn visible_dependency_owner_beats_a_hysteresis_ready_backlog() {
     let mut controller = controller(topology(

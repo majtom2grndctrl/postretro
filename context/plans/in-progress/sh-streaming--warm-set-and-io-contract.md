@@ -288,10 +288,15 @@ Focused tests only. Every `cargo test` line must report a nonzero passed count.
 
 ## Open questions
 
-- **Count-only warm bound on fine-grained maps.** On `stress-warren-mini` (923 cells,
-  482 clusters) eight clusters reach only about eight cells from the camera. A distance
-  floor, or a byte bound, may suit such maps better than a fixed count. To revisit with
-  diagnostics; for the owner.
+- **Count-only warm bound on fine-grained maps.** Largely answered by measurement. The
+  earlier "eight clusters reach about eight cells" estimate divided all cells by all
+  clusters, but about 90% of clusters are one-cell solid clusters or exterior clusters
+  that the warm walk never reaches (id 46 omits solid cells; exterior components never
+  connect to playable space). Only playable clusters count: `stress-warren-mini` has 26
+  (about 12 cells and a 6 MiB median each), `campaign-test` has 22, so eight cover roughly
+  a third of either map. The open risk is the reverse: clusters are coarse, and several
+  on `stress-warren-mini` exceed the 8 MiB drain budget on their own. The owner's walk
+  decides whether cluster size needs a follow-up.
 
 - Default magnitudes (`WARM_SET_CLUSTERS`, coalescing caps, byte budget, permits) are
   first guesses to be tuned from the new diagnostics on real content; changing them is not

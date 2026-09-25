@@ -1,7 +1,7 @@
 # shadowmask-atlas-compress-at-rest — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 804351717
 
 Brief read at 8e4753ce1; 92 commits since. Every symbol cited by Decisions and Path was
@@ -119,46 +119,46 @@ are both 8192; atlas dims are powers of two ≥ `MIN_ATLAS_DIMENSION` (64).
 Test names are working names. Rows marked *adapter* must actually run on an adapter. A
 self-skip is not a pass.
 
-| AC | Proof | Status |
-|---|---|---|
-| W1 round-trip: empty, single, full four-slot | `level-format` `shadowmask_atlas::tests` round-trip cases | achievable as stated |
-| W2 `from_bytes` rejects length, misalignment, unknown tag, bad slot | `level-format` reject cases | achievable as stated |
-| W3 pre-change payload: named warning, fully lit, no panic, tag collision | `level-format` legacy and collision cases, plus a `level-loader` test capturing the `[PRL]` warning with a `None` section | achievable as stated |
-| W4 stale memo never served; rebuilt equals uncached | compiler test seeding a raw pre-change entry under the old and new keys | achievable as stated |
-| W5 second build logs a memo hit | compiler test with log capture | achievable as stated |
-| W6 all-sentinel: half raw bytes, loads, fully lit | compiler test for bytes, plus a loader test for the load; the sentinel read is D1 | achievable as stated |
-| D1 sentinel fully lit; second group vs 2×1 placeholder in range | renderer GPU helper readback (*adapter*) | achievable as stated |
-| D2 `2W` = pinned dimension kept; one block wider → placeholder + `[Renderer]` error | `filter_usable_shadowmask_section` unit test with log capture | achievable as stated |
-| D3 `W` = 8192 → placeholder; 4096 kept | same filter test | achievable as stated |
-| D4 8192-wide bake warns, no id 42; 4096 emits | stage-seam test with a synthetic wide `SharedAtlas` | achievable as stated |
-| D5 warm rebuild of 8192-wide warns again, no id 42, no memo entry | same test, run twice against one cache | achievable as stated |
-| D6 hand-built misaligned section → placeholder + `[Renderer]` error | filter unit test | achievable as stated |
-| D7 misaligned bake fails naming dims, release as debug | compiler test; run the focused test once under `--release` too | achievable as stated |
-| M1 four lights across both groups, both decode paths | world specular: capture on a four-colored-light fixture with per-slot id-42 rewrites (*adapter*); union path: GPU readback of the helper plus channel select (*adapter*) | restated (owner) |
-| M2 seam-bleed | capture on a fixture whose groups differ at the seam (*adapter*) | achievable as stated |
-| M3 `u` = 0 / `u` = 1 per group, groups differing at the seam | renderer GPU helper readback against a hand-built BC5 texture (*adapter*) | achievable as stated |
-| M4 group-0→1 move leaves first-group specular unchanged; static→static stays zero | capture A/B with id 42 rewritten in a compiled PRL (*adapter*); union attenuation zero via GPU readback (*adapter*) | restated (owner) |
-| M5 all-255 atlas decodes fully lit | compiler encode→CPU-decode unit test | achievable as stated |
-| M6 grep gate over `forward.wgsl` | rewritten `forward_shader_shadowmask_fallback_clamps_multilayer_indices` | achievable as stated |
-| M7 no new texture or sampler | `forward_pipeline_sampled_texture_request_matches_bgl_definitions`, untouched and green | achievable as stated |
-| B1 payload exactly half raw in the footprint report | compiler test reading `PrlFootprint` for a populated fixture | achievable as stated |
-| B2 texture description: BC5, `2W × H × L`, half raw bytes; the upload uses it | a pure `shadowmask_texture_descriptor` fn, unit-tested and called by the upload | achievable as stated |
-| B3 miss holds one raw fill + one output + ≤ 3 raw layers of scratch; raw gone before cache/return | test-only byte-residency tracker in the encode module | achievable as stated |
-| B4 byte-identical across worker counts; warm = uncached | adapt `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers` and the cached/uncached golden tests | achievable as stated |
-| B5 max and mean per-channel encode error, measured | measurement test printing both on a fixture; yardstick numbers in the landing note | manual (measured, not gated) |
-| L1 world keeps headers; payloads have no place after install | type-level split plus a loader/seam test (see *Corrections* clarification) | achievable as clarified |
-| L2 released only after upload; renderer-less install keeps them | unit test on the install take seam | achievable as stated |
-| L3 capture takes the payloads the same way | capture setup test: world holds headers only after install | achievable as stated |
-| L4 animated atlas dims equal static after take; animated lights render | renderer test: `usable_atlas_dimensions` reads the header after the take; animated capture fixture (*adapter*) | achievable as stated |
-| L5 lightmap-without-shadowmask and neither install without panic; first releases | take-seam unit test plus a capture of a no-shadowmask fixture (*adapter*) | achievable as stated |
-| O1 `--verbose` overlap line on cold and warm; none when not verbose | compiler test with log capture across miss, hit and non-verbose | achievable as stated |
-| MN1 id 42/22 bytes, layers, dims, peak RSS pre/post on the yardstick | owner or attended run, landing note | manual |
-| MN2 process memory after install pre/post, net of texture bytes, metric named | attended run | manual |
-| MN3 specular highlight capture A/B, both images inspected | attended capture | manual |
-| MN4 capture-harness CPU completion median and p95 | attended run per `testing_guide.md` §Resource bounds | manual |
-| MN5 peak overlap on the yardstick | attended `--verbose` bake | manual |
-| MN6 second-group shadows after reload and a dev level cycle | owner, in-engine | manual |
-| MN7 level cycle between differing lightmap widths and back | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| W1 round-trip: empty, single, full four-slot | `level-format` `shadowmask_atlas::tests` round-trip cases | achievable as stated | pass — `shadowmask_atlas_round_trips_empty_single_and_full_slot_tables` |
+| W2 `from_bytes` rejects length, misalignment, unknown tag, bad slot | `level-format` reject cases | achievable as stated | pass — `shadowmask_atlas_rejects_length_alignment_tag_and_slot_errors` |
+| W3 pre-change payload: named warning, fully lit, no panic, tag collision | `level-format` legacy and collision cases, plus a `level-loader` test capturing the `[PRL]` warning with a `None` section | achievable as stated | pass — format tests plus `load_prl_rejects_pre_bc5_shadowmask_by_format_and_keeps_entity_shadow_selection` (raw and tag-collision) |
+| W4 stale memo never served; rebuilt equals uncached | compiler test seeding a raw pre-change entry under the old and new keys | achievable as stated | pass — `pre_bc5_memo_entries_are_never_served_and_the_rebuild_matches_uncached` |
+| W5 second build logs a memo hit | compiler test with log capture | achievable as stated | pass — `second_fused_build_hits_the_memo_and_warm_equals_uncached_on_real_masks` |
+| W6 all-sentinel: half raw bytes, loads, fully lit | compiler test for bytes, plus a loader test for the load; the sentinel read is D1 | achievable as stated | pass — half-raw bytes in `all_filtered_selection_keeps_empty_bytes_and_indeterminate_progress`; loads in `load_prl_keeps_an_all_sentinel_shadowmask_section`; sentinel reads fully lit in the GPU harness |
+| D1 sentinel fully lit; second group vs 2×1 placeholder in range | renderer GPU helper readback (*adapter*) | achievable as stated | pass (adapter, AMD Radeon Pro 5300M, `POSTRETRO_REQUIRE_GPU=1`) — `shadowmask_sample_test` placeholder and sentinel probes; placeholder shape asserted 2×1 |
+| D2 `2W` = pinned dimension kept; one block wider → placeholder + `[Renderer]` error | `filter_usable_shadowmask_section` unit test with log capture | achievable as stated | pass — `shadowmask_texture_at_the_pinned_width_is_kept_and_one_block_wider_degrades` |
+| D3 `W` = 8192 → placeholder; 4096 kept | same filter test | achievable as stated | pass — `eight_k_lightmap_width_shadowmask_degrades_and_four_k_is_kept` |
+| D4 8192-wide bake warns, no id 42; 4096 emits | stage-seam test with a synthetic wide `SharedAtlas` | achievable as stated | pass — `eight_k_wide_layers_omit_the_shadowmask_on_every_build_and_four_k_emits` |
+| D5 warm rebuild of 8192-wide warns again, no id 42, no memo entry | same test, run twice against one cache | achievable as stated | pass — same test, warm build |
+| D6 hand-built misaligned section → placeholder + `[Renderer]` error | filter unit test | achievable as stated | pass — `hand_built_misaligned_shadowmask_degrades_with_a_renderer_error` |
+| D7 misaligned bake fails naming dims, release as debug | compiler test; run the focused test once under `--release` too | achievable as stated | pass — `fused_prepare_rejects_a_misaligned_atlas_naming_its_dimensions` (width and height cases), debug and `--release` |
+| M1 four lights across both groups, both decode paths | world specular: capture on a four-colored-light fixture with per-slot id-42 rewrites (*adapter*); union path: GPU readback of the helper plus channel select (*adapter*) | restated (owner) | pass (adapter) — world specular: `every_selected_light_reads_its_own_slot_in_either_group`, fails when groups swap; union: harness runs `forward.wgsl`'s `shadowmask_union_channel` and select |
+| M2 seam-bleed | capture on a fixture whose groups differ at the seam (*adapter*) | achievable as stated | pass (adapter) — driven u = 0 / 1 probes in `shadowmask_sample_test` (fail without the per-group clamp); `group_placement_never_changes_what_a_light_reads` for placement |
+| M3 `u` = 0 / `u` = 1 per group, groups differing at the seam | renderer GPU helper readback against a hand-built BC5 texture (*adapter*) | achievable as stated | pass (adapter) — `every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv` |
+| M4 group-0→1 move leaves first-group specular unchanged; static→static stays zero | capture A/B with id 42 rewritten in a compiled PRL (*adapter*); union attenuation zero via GPU readback (*adapter*) | restated (owner) | pass (adapter) — `group_placement_never_changes_what_a_light_reads` (byte-identical after moving masks between groups); union attenuation zero at entity visibility 1 and equal to the slot mask at 0 for every slot |
+| M5 all-255 atlas decodes fully lit | compiler encode→CPU-decode unit test | achievable as stated | pass — `all_visible_payload_equals_encoding_an_all_visible_fill_and_decodes_fully_lit` |
+| M6 grep gate over `forward.wgsl` | rewritten `forward_shader_shadowmask_fallback_clamps_multilayer_indices` | achievable as stated | pass — `forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer` (includes the fs_main union call site) |
+| M7 no new texture or sampler | `forward_pipeline_sampled_texture_request_matches_bgl_definitions`, untouched and green | achievable as stated | pass — `forward_pipeline_sampled_texture_request_matches_bgl_definitions`, untouched |
+| B1 payload exactly half raw in the footprint report | compiler test reading `PrlFootprint` for a populated fixture | achievable as stated | pass — `shadowmask_footprint_payload_is_half_the_raw_rgba_arithmetic` |
+| B2 texture description: BC5, `2W × H × L`, half raw bytes; the upload uses it | a pure `shadowmask_texture_descriptor` fn, unit-tested and called by the upload | achievable as stated | pass — `shadowmask_texture_description_is_bc5_double_width_at_half_the_raw_bytes` |
+| B3 miss holds one raw fill + one output + ≤ 3 raw layers of scratch; raw gone before cache/return | test-only byte-residency tracker in the encode module | achievable as stated | pass — `cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch` |
+| B4 byte-identical across worker counts; warm = uncached | adapt `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers` and the cached/uncached golden tests | achievable as stated | pass — `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers`; warm = uncached per W5 |
+| B5 max and mean per-channel encode error, measured | measurement test printing both on a fixture; yardstick numbers in the landing note | manual (measured, not gated) | measured — see Measurements; yardstick figure outstanding with MN1 |
+| L1 world keeps headers; payloads have no place after install | type-level split plus a loader/seam test (see *Corrections* clarification) | achievable as clarified | pass — `taking_gpu_lighting_payloads_leaves_headers_and_nothing_to_take_twice` (owner-confirmed reading) |
+| L2 released only after upload; renderer-less install keeps them | unit test on the install take seam | achievable as stated | pass for the keep half — `install_without_renderer_keeps_gpu_lighting_payloads_in_the_world`; game renderer-branch release is manual (MN6/MN7) |
+| L3 capture takes the payloads the same way | capture setup test: world holds headers only after install | achievable as stated | pass (adapter) — capture takes before install; L4 and L5 captures show no `[Renderer]` payload errors |
+| L4 animated atlas dims equal static after take; animated lights render | renderer test: `usable_atlas_dimensions` reads the header after the take; animated capture fixture (*adapter*) | achievable as stated | pass (adapter) — `animated_lights_render_after_lightmap_payloads_move_into_the_upload` plus header-sized animated atlas unit test |
+| L5 lightmap-without-shadowmask and neither install without panic; first releases | take-seam unit test plus a capture of a no-shadowmask fixture (*adapter*) | achievable as stated | pass (adapter) — `level_with_a_lightmap_but_no_shadowmask_captures_cleanly` (byte-identical to all-open masks); split and pairing unit tests |
+| O1 `--verbose` overlap line on cold and warm; none when not verbose | compiler test with log capture across miss, hit and non-verbose | achievable as stated | pass — ignored CLI `verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_not` plus unit tests |
+| MN1 id 42/22 bytes, layers, dims, peak RSS pre/post on the yardstick | owner or attended run, landing note | manual | outstanding — owner |
+| MN2 process memory after install pre/post, net of texture bytes, metric named | attended run | manual | outstanding — owner |
+| MN3 specular highlight capture A/B, both images inspected | attended capture | manual | outstanding — owner |
+| MN4 capture-harness CPU completion median and p95 | attended run per `testing_guide.md` §Resource bounds | manual | outstanding — owner (Windows box; this Mac lacks GPU timestamps) |
+| MN5 peak overlap on the yardstick | attended `--verbose` bake | manual | outstanding — owner |
+| MN6 second-group shadows after reload and a dev level cycle | owner, in-engine | manual | outstanding — owner |
+| MN7 level cycle between differing lightmap widths and back | owner, in-engine | manual | outstanding — owner |
 
 ## Measurements
 
@@ -189,4 +189,4 @@ self-skip is not a pass.
 | 4 | **Wire and renderer fan-out.** W1–W3 including the loader warning, D2, D3, D6, B2. GPU helper readback for D1 and M3. | integrating executor | 1 | done — W1–W3 `level-format` `shadowmask_atlas::tests`; W3/W6 loader `load_prl_rejects_pre_bc5_shadowmask_by_format_and_keeps_entity_shadow_selection`, `load_prl_keeps_an_all_sentinel_shadowmask_section`; D2/D3/D6/B2 renderer `lighting::lightmap` tests; D1/M3 and the M1/M4 union halves in `render::shadowmask_sample_test`, run on AMD Radeon Pro 5300M (failing when the per-group clamp is removed) |
 | 5 | **Payload ownership.** Header/payload split for ids 22 and 42. `LevelWorld` keeps headers plus one movable payload value. `install_level_payload` and the capture install take it; `install_level_geometry` receives it by value; `LightmapResources::new` consumes and drops it. `LevelWorld` and `LevelGeometry` literals follow. Lifecycle tests L1–L5. | integrating executor (may delegate: loader, startup and capture files; no overlap with 2–4 once task 1 lands) | 1 | done — L1 `taking_gpu_lighting_payloads_leaves_headers_and_nothing_to_take_twice`; L2 `install_without_renderer_keeps_gpu_lighting_payloads_in_the_world`; L3 capture takes before install (the `capture_shadowmask_groups` masks render from the moved payloads; `install_level_geometry` requires owned payloads, so no path can borrow them); L4 `animated_lights_render_after_lightmap_payloads_move_into_the_upload` (adapter) plus the header-sized animated atlas test; L5 `splitting_partial_lighting_moves_only_the_present_payloads` plus `upload_pairs_usable_headers_with_their_moved_payloads_only` |
 | 6 | **GPU mask proofs.** Capture tests for M1 (final), M2, M4 (id-42 rewrite A/B), L4 and L5 captures. All run on an adapter. | integrating executor | 4, 5 | done on AMD Radeon Pro 5300M — M1 `every_selected_light_reads_its_own_slot_in_either_group`; M2 and M4 `group_placement_never_changes_what_a_light_reads` (open group left or right renders identically; baked masks moved group 0↔1 render byte-identically); L4 `animated_lights_render_after_lightmap_payloads_move_into_the_upload`; driven-edge M3 and union halves in `render::shadowmask_sample_test` |
-| 7 | **Land.** `/preflight`, then a `/review-panel` → `/fix-review-findings` loop. Update `build_pipeline.md` (id-42 row, §PRL ShadowmaskAtlas, §Build Cache) and `rendering_pipeline.md` §4 from decided to built. Result column. Hand manual rows MN1–MN7 to the owner with the exact commands. | integrating executor | 1–6 | |
+| 7 | **Land.** `/preflight`, then a `/review-panel` → `/fix-review-findings` loop. Update `build_pipeline.md` (id-42 row, §PRL ShadowmaskAtlas, §Build Cache) and `rendering_pipeline.md` §4 from decided to built. Result column. Hand manual rows MN1–MN7 to the owner with the exact commands. | integrating executor | 1–6 | done — preflight green (fmt, clippy -D warnings, full `cargo test`, `--release` check, crate graph); review panel round 1 (10 lenses, no 🔴 code defects, all 🟡/🟢 fixed) and round 2 on the fixes (3 lenses, nits only, fixed); context docs updated; manual rows handed to owner |

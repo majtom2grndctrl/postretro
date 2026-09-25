@@ -420,8 +420,9 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
 /// Dimensions the static irradiance/direction atlases are created at, using the
 /// same usability filter as `new()`. Returns `None` when the section is absent,
 /// zero-area, or oversize. `new()` also falls back to the 1×1 placeholder when
-/// a usable header arrives without its payload, so callers pass the header
-/// only when its payload is present; the two then fall back together.
+/// a usable header arrives without its payload, so level installs pass the
+/// header only when its payload is present (renderer boot passes no level);
+/// the two then fall back together.
 /// Routing both the static and animated atlas creation through this function
 /// keeps their sizes in lock-step (compose writes at absolute atlas
 /// coordinates; forward samples all three atlases with one normalized
@@ -1162,7 +1163,8 @@ mod tests {
     fn hand_built_shadowmask_payload_of_the_wrong_length_degrades_with_a_renderer_error() {
         let (width, height, layer_count) = (8, 8, 2);
         let section = fake_shadowmask_section(width, height, layer_count);
-        let expected = ShadowmaskAtlasSection::payload_len(width, height, layer_count).unwrap();
+        let expected = ShadowmaskAtlasSection::payload_len(width, height, layer_count)
+            .expect("fixture dimensions have a payload length");
 
         let captured = capture_logs(|| {
             assert!(shadowmask_payload_matches_header(

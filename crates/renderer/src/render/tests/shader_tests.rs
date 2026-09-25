@@ -803,7 +803,8 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         // every fs_main loop too.
         ("fn fs_main(", "shadowmask_union_subtraction("),
     ] {
-        let body = &src[src.find(function).expect("call-site function must exist")..];
+        // Comment-stripped, so a comment naming the call cannot stand in for it.
+        let body = &code[code.find(function).expect("call-site function must exist")..];
         let call_at = body
             .find(call)
             .expect("call site must sample through the helper");

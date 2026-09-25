@@ -1,7 +1,9 @@
 // GPU readback of forward.wgsl's shadowmask sampling helper and both decode
 // paths' slot selects, against a hand-built side-by-side BC5 atlas and the
 // 2×1 placeholder, uploaded through the renderer's own upload functions.
-// Every WGSL function it runs is extracted verbatim from forward.wgsl.
+// The WGSL helpers it calls are extracted verbatim from forward.wgsl; its own
+// entry point repeats the union path's skip-then-select order, which the
+// shader_tests grep gate pins in `shadowmask_union_subtraction` itself.
 // See: context/lib/rendering_pipeline.md §4 (World specular shadowmask)
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
@@ -746,7 +748,8 @@ fn placeholder_reads_fully_lit_for_every_slot_and_layer() {
 // M1 (union half): the union's real channel guard, run on an adapter. Every
 // metadata float the CPU never emits for a live slot — negative, fractional,
 // at or past the dropped sentinel — resolves to the skip sentinel, and the
-// real path then skips the light instead of selecting a mask. NaN is left out:
+// union path (order pinned by shader_tests) skips the light instead of
+// selecting a mask. NaN is left out:
 // WGSL lets implementations assume it never occurs.
 #[test]
 fn union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata() {

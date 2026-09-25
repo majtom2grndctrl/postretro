@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn bc4_masks_encode_reproduces_hard_edges_with_penumbra_exactly() {
+    fn bc4_masks_encode_reproduces_hard_edges_with_one_penumbra_value_exactly() {
         let texels: [u8; 16] = std::array::from_fn(|i| [0, 128, 255][i % 3]);
 
         // The 8-value ladder over [0, 255] has no entry near 128.
@@ -526,19 +526,5 @@ mod tests {
         assert_eq!(masks[..8], normal[..8]);
         assert_eq!(masks[8..16], [128, 128, 198, 141, 27, 55, 110, 220]);
         assert_eq!(masks[16..], normal[16..]);
-    }
-
-    #[test]
-    fn bc5_masks_encode_is_deterministic() {
-        let (w, h) = (16u32, 16u32);
-        let blocks = mask_like_blocks((w * h / 16) as usize * 2);
-        let values: Vec<u8> = blocks.iter().flatten().copied().collect();
-        let rgba: Vec<u8> = values
-            .chunks_exact(2)
-            .flat_map(|rg| [rg[0], rg[1], 0, 255])
-            .collect();
-        let first = encode_bc5_rg_masks(&rgba, w, h);
-        assert_eq!(first.len(), ((w / 4) * (h / 4) * 16) as usize);
-        assert_eq!(encode_bc5_rg_masks(&rgba, w, h), first);
     }
 }

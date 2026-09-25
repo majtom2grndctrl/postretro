@@ -37,10 +37,9 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
 /// Bump when the cached `ShadowmaskAtlas` bytes can change without a layer input
 /// hash change: channel assignment/drop policy, raw-visibility quantization,
-/// payload encoding (BC5 side by side since version 3, per-block BC4 6-value
-/// mode since version 4), memo entry layout (peak-overlap prefix since version
-/// 4), empty-section behavior, or `ShadowmaskAtlasSection::to_bytes` payload
-/// semantics.
+/// payload encoding (BC5 side by side, per-block BC4 mode choice), memo entry
+/// layout (the peak-overlap prefix), empty-section behavior, or
+/// `ShadowmaskAtlasSection::to_bytes` payload semantics.
 pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 4;
 
 /// The shadowmask texture is `SHADOWMASK_GROUP_COUNT` lightmap widths wide and

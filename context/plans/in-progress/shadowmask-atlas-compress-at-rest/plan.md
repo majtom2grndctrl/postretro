@@ -45,6 +45,10 @@ are both 8192; atlas dims are powers of two ≥ `MIN_ATLAS_DIMENSION` (64).
   `specular_shadowmask_capture_scene_compiles_loads_and_writes_png` fails when run
   without it. The new capture test sets it on its child process.
 
+- Wide-layer warning names the level by its input path: `prepare_fused_shadowmask`
+  now takes a level label and returns `Result`, so the misaligned-atlas error fails the
+  build through `bake_fused_prepared`'s `?`.
+
 ## Owner decisions during build
 
 - **M1 and M4, union path (2026-09-24).** The capture harness never promotes static
@@ -126,12 +130,23 @@ self-skip is not a pass.
 | MN6 second-group shadows after reload and a dev level cycle | owner, in-engine | manual |
 | MN7 level cycle between differing lightmap widths and back | owner, in-engine | manual |
 
+## Measurements
+
+- B5 encode error (ignored `shadowmask_bc5_encode_error_on_fixture_bakes`, default
+  density, soft-shadow samples 32). Max and mean absolute error per used slot, over
+  every texel:
+  - `shadowmask-groups-capture`: 1024²×2, max 0/255, mean 0.
+  - `soft_shadow_test`: 1024²×1, max 17/255, mean 0.0031/255.
+  - `gate-heavily-lit`: 1024²×2, max 17/255, mean < 0.0001/255.
+  Hard shadows are exact because their blocks hold endpoints only. Error sits in
+  penumbra blocks. The yardstick number is part of MN1.
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | **First slice.** Tagged BC5 wire format and `from_bytes`. Encode submodule under `shadowmask_bake/` used by `ShadowmaskFill::finish` and `empty_section_for_dimensions`. One header writer shared by `to_bytes` and the streamed cache writer. Bump `SHADOWMASK_ATLAS_STAGE_VERSION`. Renderer `2W` filter, alignment guard, BC5 upload through the descriptor fn, 2×1 placeholder. Two-sample shader helper with per-group clamp; rewrite the shader guard. Move the 5×5 fixtures to 4-aligned dims; raw-byte tests decode the payload. Four-light fixture map with a mask edge at the seam, checked by capture on an adapter (M1 first pass). | integrating executor | — | done — `capture_shadowmask_groups` passes on this Mac's adapter and fails when the shader's group order is swapped; compiler, renderer, level-format and loader suites green |
-| 2 | **Bake contract.** Wide-layer omit before the memo probe and fill (D4, D5). Misaligned-bake error in every profile (D7). Stale memo, logged hit and all-sentinel tests (W4–W6). Scratch-bound tracker (B3). Determinism and warm=cold (B4). All-255 decode (M5). Encode-error measurement (B5). Footprint half-raw (B1). | integrating executor | 1 | |
+| 2 | **Bake contract.** Wide-layer omit before the memo probe and fill (D4, D5). Misaligned-bake error in every profile (D7). Stale memo, logged hit and all-sentinel tests (W4–W6). Scratch-bound tracker (B3). Determinism and warm=cold (B4). All-255 decode (M5). Encode-error measurement (B5). Footprint half-raw (B1). | integrating executor | 1 | done — D4/D5 `eight_k_wide_layers_omit_the_shadowmask_on_every_build_and_four_k_emits`; D7 `fused_prepare_rejects_a_misaligned_atlas_naming_its_dimensions` (debug and `--release`); W4 `pre_bc5_memo_entries_are_never_served_and_the_rebuild_matches_uncached`; W5/B4 `second_fused_build_hits_the_memo_and_warm_equals_uncached_on_real_masks`; W6 bytes in `all_filtered_selection_keeps_empty_bytes_and_indeterminate_progress`; B1 `shadowmask_footprint_payload_is_half_the_raw_rgba_arithmetic`; B3 `cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch`; B4 workers `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers`; M5 `all_visible_payload_equals_encoding_an_all_visible_fill_and_decodes_fully_lit`; B5 measured by the ignored `shadowmask_bc5_encode_error_on_fixture_bakes` |
 | 3 | **Overlap report.** Peak per-texel count from `build_analytic_overlap_graph_in_order`, carried as the memo-entry prefix. `--verbose` line on miss and hit; an omission line for wide layers (O1). | integrating executor | 2 | |
 | 4 | **Wire and renderer fan-out.** W1–W3 including the loader warning, D2, D3, D6, B2. GPU helper readback for D1 and M3. | integrating executor | 1 | |
 | 5 | **Payload ownership.** Header/payload split for ids 22 and 42. `LevelWorld` keeps headers plus one movable payload value. `install_level_payload` and the capture install take it; `install_level_geometry` receives it by value; `LightmapResources::new` consumes and drops it. `LevelWorld` and `LevelGeometry` literals follow. Lifecycle tests L1–L5. | integrating executor (may delegate: loader, startup and capture files; no overlap with 2–4 once task 1 lands) | 1 | |

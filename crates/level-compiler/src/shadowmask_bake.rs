@@ -10,7 +10,8 @@ use rayon::prelude::*;
 
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, SHADOWMASK_GROUP_COUNT,
+    ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
@@ -39,6 +40,19 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// payload encoding (BC5 side by side since version 3), empty-section
 /// behavior, or `ShadowmaskAtlasSection::to_bytes` payload semantics.
 pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 3;
+
+/// The shadowmask texture is `SHADOWMASK_GROUP_COUNT` lightmap widths wide and
+/// must fit the same pinned device texture dimension the lightmap does.
+const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum ShadowmaskBakeError {
+    #[error(
+        "shadowmask atlas dimensions {width}x{height} are not multiples of 4; \
+         BC5 encodes 4x4 blocks and would truncate the payload"
+    )]
+    MisalignedAtlas { width: u32, height: u32 },
+}
 
 /// Maximum selected-light count in one governed chart batch. Each light's raw
 /// chart buffers collectively carry one full layer payload, so the batch must
@@ -105,8 +119,12 @@ impl FusedShadowmaskPlan<'_> {
 /// Probe the whole shadowmask memo and, on a miss, complete analytic overlap
 /// graph construction plus deterministic channel assignment before the fused
 /// lightmap walk begins. No visibility ray is traced here.
+///
+/// An atlas too wide to double omits the section before the memo probe, so
+/// neither a memo entry nor a raw fill exists for it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_fused_shadowmask<'a>(
+    level_label: &str,
     selection: Option<&EntityShadowLightsSection>,
     alpha_lights: &'a AlphaLightsNs<'a>,
     shared: &SharedAtlas<'_>,
@@ -116,18 +134,34 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     area_sample_count: u32,
     cache: Option<&'a StageCache>,
     control: &'a BakeControl,
-) -> FusedShadowmaskPlan<'a> {
+) -> Result<FusedShadowmaskPlan<'a>, ShadowmaskBakeError> {
     let started = Instant::now();
-    let Some(selection) = selection.filter(|selection| !selection.light_indices.is_empty()) else {
-        return FusedShadowmaskPlan {
-            section: None,
-            fill: None,
-            compact_index_by_source: HashMap::new(),
-            cache_write: None,
-            control,
-            work_elapsed: started.elapsed(),
-        };
+    let no_section = |started: Instant| FusedShadowmaskPlan {
+        section: None,
+        fill: None,
+        compact_index_by_source: HashMap::new(),
+        cache_write: None,
+        control,
+        work_elapsed: started.elapsed(),
     };
+    let Some(selection) = selection.filter(|selection| !selection.light_indices.is_empty()) else {
+        return Ok(no_section(started));
+    };
+    if shared.atlas_width % 4 != 0 || shared.atlas_height % 4 != 0 {
+        return Err(ShadowmaskBakeError::MisalignedAtlas {
+            width: shared.atlas_width,
+            height: shared.atlas_height,
+        });
+    }
+    if !shadowmask_texture_fits(shared.atlas_width) {
+        log::warn!(
+            "[ShadowmaskAtlas] {level_label}: lightmap layers are {} texels wide, so the \
+             side-by-side shadowmask texture would exceed {MAX_SHADOWMASK_TEXTURE_WIDTH}; \
+             omitting ShadowmaskAtlas (id 42), static world specular renders fully lit",
+            shared.atlas_width,
+        );
+        return Ok(no_section(started));
+    }
 
     let layer_count = layer_count_from_shared(shared);
     let mut selected = Vec::with_capacity(selection.light_indices.len());
@@ -212,14 +246,14 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             log::info!("[cache] shadowmask_atlas hit");
             control.governor().checkpoint();
             control.advance(fused_total);
-            return FusedShadowmaskPlan {
+            return Ok(FusedShadowmaskPlan {
                 section: Some(section),
                 fill: None,
                 compact_index_by_source,
                 cache_write: None,
                 control,
                 work_elapsed: started.elapsed(),
-            };
+            });
         }
         log::info!("[cache] shadowmask_atlas miss");
     }
@@ -229,14 +263,14 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
             cache_shadowmask_section_then_complete(cache, key, &section, control, false, || {});
         }
-        return FusedShadowmaskPlan {
+        return Ok(FusedShadowmaskPlan {
             section: Some(section),
             fill: None,
             compact_index_by_source,
             cache_write: None,
             control,
             work_elapsed: started.elapsed(),
-        };
+        });
     }
 
     let graph = build_analytic_overlap_graph(&selected, shared, geometry, control);
@@ -250,14 +284,20 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         Some(control),
         None,
     );
-    FusedShadowmaskPlan {
+    Ok(FusedShadowmaskPlan {
         section: None,
         fill: Some(fill),
         compact_index_by_source,
         cache_write: cache.zip(section_key),
         control,
         work_elapsed: started.elapsed(),
-    }
+    })
+}
+
+fn shadowmask_texture_fits(atlas_width: u32) -> bool {
+    atlas_width
+        .checked_mul(SHADOWMASK_GROUP_COUNT)
+        .is_some_and(|width| width <= MAX_SHADOWMASK_TEXTURE_WIDTH)
 }
 
 /// Test-only instrumentation counts every full-layer-equivalent payload:
@@ -818,12 +858,21 @@ thread_local! {
     static LAST_RAW_FILL: std::cell::RefCell<Option<Vec<u8>>> = const {
         std::cell::RefCell::new(None)
     };
+    static RAW_FILL_LIVE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE: std::cell::Cell<Option<usize>> = const {
+        std::cell::Cell::new(None)
+    };
     static SHADOWMASK_OUTPUT_ALLOCATION_COUNT: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
     static SHADOWMASK_STREAMED_CACHE_WRITE_COUNT: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
+}
+
+#[cfg(test)]
+fn take_raw_fill_live_bytes_at_cache_write() -> Option<usize> {
+    RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE.with(std::cell::Cell::take)
 }
 
 /// Tests assert exact fill values on the raw masks the encoder consumed; BC4
@@ -840,10 +889,25 @@ fn take_last_raw_fill() -> Vec<u8> {
         .expect("a shadowmask fill must have finished on this thread")
 }
 
-fn allocate_shadowmask_output(data_len: usize) -> Vec<u8> {
+fn allocate_shadowmask_output(data_len: usize) -> RawFillBuffer {
     #[cfg(test)]
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
-    vec![255; data_len]
+    RawFillBuffer::new(vec![255; data_len])
+}
+
+#[cfg(test)]
+fn raw_fill_live_bytes_add(bytes: usize) {
+    RAW_FILL_LIVE_BYTES.with(|live| live.set(live.get() + bytes));
+}
+
+#[cfg(test)]
+fn raw_fill_live_bytes_sub(bytes: usize) {
+    RAW_FILL_LIVE_BYTES.with(|live| live.set(live.get() - bytes));
+}
+
+#[cfg(test)]
+fn raw_fill_live_bytes() -> usize {
+    RAW_FILL_LIVE_BYTES.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -1059,7 +1123,11 @@ fn cache_shadowmask_section_then_complete(
     let section_header = section.header_bytes();
 
     #[cfg(test)]
-    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(count.get() + 1));
+    {
+        SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(count.get() + 1));
+        RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE
+            .with(|at_write| at_write.set(Some(raw_fill_live_bytes())));
+    }
     cache.put_streamed(section_key, section.byte_len() as u64, |writer| {
         writer.write_all(&section_header)?;
         writer.write_all(&section.data)
@@ -1376,6 +1444,7 @@ mod tests {
     use glam::{DVec3, Vec3};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use postretro_test_log_capture::LogCapture;
     use rayon::ThreadPoolBuilder;
 
     fn light(intensity: f32) -> MapLight {
@@ -3225,6 +3294,7 @@ mod tests {
         let progress = StageProgress::indeterminate();
         let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
         let mut plan = prepare_fused_shadowmask(
+            "fixture",
             Some(&selection),
             &alpha_lights,
             &shared,
@@ -3234,7 +3304,8 @@ mod tests {
             AREA_SAMPLES,
             None,
             &control,
-        );
+        )
+        .expect("aligned fixture atlas");
 
         for target_layer in 0..layer_count_from_shared(&shared) {
             for (source_index, light) in lights.iter().enumerate() {
@@ -3257,6 +3328,466 @@ mod tests {
             top_level_multilayer_five_way_golden(),
         );
         assert_eq!(progress.completed(), progress.total().unwrap());
+    }
+
+    /// Run the production fused path: prepare (memo probe, graph, coloring),
+    /// feed every selected light's baked partitions, finish.
+    #[allow(clippy::too_many_arguments)]
+    fn fused_section(
+        selection: &EntityShadowLightsSection,
+        lights: &[MapLight],
+        shared: &SharedAtlas<'_>,
+        bvh: &bvh::bvh::Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+        cache: Option<&StageCache>,
+    ) -> Option<ShadowmaskAtlasSection> {
+        let alpha_lights = AlphaLightsNs::from_lights(lights);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
+        let mut plan = prepare_fused_shadowmask(
+            "fixture",
+            Some(selection),
+            &alpha_lights,
+            shared,
+            primitives,
+            geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            cache,
+            &control,
+        )
+        .expect("aligned fixture atlas");
+        for target_layer in 0..layer_count_from_shared(shared) {
+            for (source_index, light) in lights.iter().enumerate() {
+                if !plan.needs_source(source_index) {
+                    continue;
+                }
+                let partition = lightmap_layer::bake_light_layer_controlled(
+                    light,
+                    shared,
+                    bvh,
+                    primitives,
+                    geometry,
+                    target_layer,
+                    AREA_SAMPLES,
+                    &BakeControl::unrestricted(),
+                );
+                plan.consume_partition(source_index, &partition);
+            }
+        }
+        plan.finish().0
+    }
+
+    fn pre_bc5_raw_section_bytes(section: &ShadowmaskAtlasSection) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [
+            section.width,
+            section.height,
+            section.layer_count,
+            section.channels.len() as u32,
+        ] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(&section.channels);
+        bytes.resize(bytes.len().next_multiple_of(4), 0);
+        bytes.resize(
+            bytes.len() + (section.width * section.height * section.layer_count * 4) as usize,
+            255,
+        );
+        bytes
+    }
+
+    #[test]
+    fn fused_prepare_rejects_a_misaligned_atlas_naming_its_dimensions() {
+        let (geometry, _, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 8,
+        };
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        reset_shadowmask_output_allocation_count();
+        let error = prepare_fused_shadowmask(
+            "fixture",
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            None,
+            &test_control(),
+        )
+        .err()
+        .expect("a 5-wide atlas must fail the bake");
+        assert_eq!(
+            error,
+            ShadowmaskBakeError::MisalignedAtlas {
+                width: 5,
+                height: 8
+            }
+        );
+        assert!(error.to_string().contains("5x8"));
+        assert_eq!(
+            shadowmask_output_allocation_count(),
+            0,
+            "no raw fill may exist for a section that cannot encode"
+        );
+    }
+
+    // Pin: wide-layer, wide-layer-warm. The omission precedes the memo probe
+    // and the fill, so a warm rebuild warns again and never finds an entry.
+    #[test]
+    fn eight_k_wide_layers_omit_the_shadowmask_on_every_build_and_four_k_emits() {
+        let (geometry, _, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let cache_dir = fresh_cache_dir("wide_layer_omit");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        let wide = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 8192,
+            atlas_height: 4,
+        };
+
+        for build in ["cold", "warm"] {
+            let capture = LogCapture::start();
+            let control = test_control();
+            reset_shadowmask_output_allocation_count();
+            let plan = prepare_fused_shadowmask(
+                "wide-level.map",
+                Some(&selection),
+                &alpha_lights,
+                &wide,
+                &primitives,
+                &geometry,
+                DENSITY,
+                AREA_SAMPLES,
+                Some(&cache),
+                &control,
+            )
+            .expect("an aligned wide atlas is omitted, not an error");
+            assert!(
+                !plan.needs_source(0),
+                "{build}: an omitted section consumes no partition"
+            );
+            assert_eq!(
+                plan.finish().0,
+                None,
+                "{build}: 8192-wide layers ship no id 42"
+            );
+            capture.assert_logged_once(
+                log::Level::Warn,
+                "[ShadowmaskAtlas] wide-level.map: lightmap layers are 8192 texels wide",
+            );
+            capture.assert_not_logged(log::Level::Info, "[cache] shadowmask_atlas");
+            assert_eq!(
+                shadowmask_output_allocation_count(),
+                0,
+                "{build}: no raw fill"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&cache_dir).map_or(0, |entries| entries.count()),
+            0,
+            "an omitted section leaves no memo entry"
+        );
+
+        let four_k = SharedAtlas {
+            atlas_width: 4096,
+            ..wide
+        };
+        let capture = LogCapture::start();
+        let section = prepare_fused_shadowmask(
+            "wide-level.map",
+            Some(&selection),
+            &alpha_lights,
+            &four_k,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            None,
+            &test_control(),
+        )
+        .expect("4096-wide atlas")
+        .finish()
+        .0
+        .expect("4096-wide layers still emit id 42");
+        assert_eq!(section.texture_width(), Some(8192));
+        capture.assert_not_logged(log::Level::Warn, "texels wide");
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    // Pin: stale-memo. The version bump misses the old key; a raw entry under
+    // the new key fails `from_bytes` and re-bakes.
+    #[test]
+    fn pre_bc5_memo_entries_are_never_served_and_the_rebuild_matches_uncached() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 8,
+            atlas_height: 8,
+        };
+        let uncached = fused_section(
+            &selection,
+            &lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            None,
+        )
+        .expect("uncached section");
+
+        let input_hashes: Vec<_> = lights
+            .iter()
+            .flat_map(|light| {
+                (0..layer_count_from_shared(&shared)).map(|target_layer| {
+                    lightmap_layer::layer_input_hash(
+                        light,
+                        &shared,
+                        &primitives,
+                        &geometry,
+                        DENSITY,
+                        AREA_SAMPLES,
+                        target_layer,
+                    )
+                })
+            })
+            .collect();
+        let input_hash = shadowmask_atlas_input_hash(
+            &selection,
+            &input_hashes,
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+        );
+        let stale = pre_bc5_raw_section_bytes(&uncached);
+        let cache_dir = fresh_cache_dir("stale_pre_bc5_memo");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        for version in [2, SHADOWMASK_ATLAS_STAGE_VERSION] {
+            cache.put(
+                &CacheKey::new(SHADOWMASK_ATLAS_STAGE_ID, version, &input_hash),
+                &stale,
+            );
+        }
+
+        let capture = LogCapture::start();
+        let rebuilt = fused_section(
+            &selection,
+            &lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            Some(&cache),
+        )
+        .expect("rebuilt section");
+        capture.assert_logged_once(log::Level::Warn, "corrupt shadowmask atlas, re-baking");
+        capture.assert_logged_once(log::Level::Info, "[cache] shadowmask_atlas miss");
+        assert_eq!(rebuilt.to_bytes(), uncached.to_bytes());
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    // Pin: warm-equals-cold. A drifted streamed header would fail `from_bytes`
+    // and silently re-bake, so the second build must log a hit.
+    #[test]
+    fn second_fused_build_hits_the_memo_and_warm_equals_uncached_on_real_masks() {
+        let mut fixture = load_fixture("soft_shadow_test");
+        let lights = fixture.lights.clone();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let selection = select_entity_shadow_lights(&EntityShadowSelectionInputs {
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
+            static_lights: &static_lights,
+            alpha_lights: &alpha_lights,
+            params: crate::map_data::EntityShadowParams::default(),
+        });
+        let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, DENSITY, &[])
+            .expect("soft_shadow_test atlas planning");
+        let (bvh, primitives, _) = build_bvh(&fixture.geometry).unwrap();
+        let shared = shared_from_prepared(&prepared);
+
+        let uncached = fused_section(
+            &selection,
+            &lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &fixture.geometry,
+            None,
+        )
+        .expect("uncached section");
+        let raw = take_last_raw_fill();
+        assert!(
+            raw.iter().any(|&mask| mask != 0 && mask != 255),
+            "fixture must exercise interior mask values, not only endpoints"
+        );
+
+        let cache_dir = fresh_cache_dir("warm_hit_real_masks");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        for (build, expected_log) in [
+            ("cold", "[cache] shadowmask_atlas miss"),
+            ("warm", "[cache] shadowmask_atlas hit"),
+        ] {
+            let capture = LogCapture::start();
+            let section = fused_section(
+                &selection,
+                &lights,
+                &shared,
+                &bvh,
+                &primitives,
+                &fixture.geometry,
+                Some(&cache),
+            )
+            .expect("cached section");
+            capture.assert_logged_once(log::Level::Info, expected_log);
+            capture.assert_not_logged(log::Level::Warn, "shadowmask");
+            assert_eq!(section.to_bytes(), uncached.to_bytes(), "{build} bytes");
+        }
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 8,
+            atlas_height: 8,
+        };
+        let cache_dir = fresh_cache_dir("encode_residency");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        reset_shadowmask_output_allocation_count();
+        let _ = encode::take_peak_encode_residency();
+        let _ = take_raw_fill_live_bytes_at_cache_write();
+
+        let section = fused_section(
+            &selection,
+            &lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            Some(&cache),
+        )
+        .expect("cache-miss section");
+
+        let raw_layer = (shared.atlas_width * shared.atlas_height * 4) as usize;
+        let raw_fill = raw_layer * section.layer_count as usize;
+        assert_eq!(shadowmask_output_allocation_count(), 1, "one raw fill");
+        let peak = encode::take_peak_encode_residency().expect("the miss encodes");
+        assert_eq!(peak.raw_fill, raw_fill);
+        assert_eq!(peak.output_capacity, raw_fill / 2, "one compressed output");
+        assert!(
+            peak.scratch <= 3 * raw_layer,
+            "encode scratch {} exceeds three raw layers ({})",
+            peak.scratch,
+            3 * raw_layer
+        );
+        assert_eq!(
+            take_raw_fill_live_bytes_at_cache_write(),
+            Some(0),
+            "the raw fill must be gone before the section is cached"
+        );
+        assert_eq!(raw_fill_live_bytes(), 0, "and before it is returned");
+        assert_eq!(section.data.len(), raw_fill / 2);
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    // Measured, not gated: BC5 error against the raw masks on real bakes.
+    // `cargo test -p postretro-level-compiler --bin prl-build shadowmask_bc5_encode_error -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement: bakes content/dev/maps fixtures at default density"]
+    fn shadowmask_bc5_encode_error_on_fixture_bakes() {
+        for name in [
+            "shadowmask-groups-capture",
+            "soft_shadow_test",
+            "gate-heavily-lit",
+        ] {
+            let mut fixture = load_fixture(name);
+            let lights = fixture.lights.clone();
+            let static_lights = StaticBakedLights::from_lights(&lights);
+            let alpha_lights = AlphaLightsNs::from_lights(&lights);
+            let selection = select_entity_shadow_lights(&EntityShadowSelectionInputs {
+                bvh: &fixture.bvh,
+                primitives: &fixture.primitives,
+                geometry: &fixture.geometry,
+                static_lights: &static_lights,
+                alpha_lights: &alpha_lights,
+                params: crate::map_data::EntityShadowParams::default(),
+            });
+            let prepared = prepare_atlas(
+                &mut fixture.geometry,
+                &static_lights,
+                lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
+                &[],
+            )
+            .expect("fixture atlas planning");
+            let (bvh, primitives, _) = build_bvh(&fixture.geometry).unwrap();
+            let shared = shared_from_prepared(&prepared);
+            let Some(section) = bake_shadowmask_atlas(
+                Some(&selection),
+                &alpha_lights,
+                &shared,
+                &bvh,
+                &primitives,
+                &fixture.geometry,
+                lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+                &test_control(),
+            ) else {
+                eprintln!("{name}: no selected lights, no shadowmask");
+                continue;
+            };
+            let raw = take_last_raw_fill();
+            let decoded = decode_side_by_side(
+                &section.data,
+                section.width,
+                section.height,
+                section.layer_count,
+            );
+            let mut used_channels: Vec<usize> = section
+                .channels
+                .iter()
+                .filter(|&&slot| slot != SHADOWMASK_CHANNEL_DROPPED)
+                .map(|&slot| slot as usize)
+                .collect();
+            used_channels.sort_unstable();
+            used_channels.dedup();
+            let errors: Vec<u8> = raw
+                .chunks_exact(4)
+                .zip(decoded.chunks_exact(4))
+                .flat_map(|(raw, decoded)| {
+                    used_channels
+                        .iter()
+                        .map(|&c| raw[c].abs_diff(decoded[c]))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let max = errors.iter().copied().max().unwrap_or(0);
+            let mean =
+                errors.iter().map(|&e| f64::from(e)).sum::<f64>() / errors.len().max(1) as f64;
+            eprintln!(
+                "{name}: {}x{}x{} atlas, {} used slot(s), {} samples: max abs error {max}/255, mean {mean:.4}/255",
+                section.width,
+                section.height,
+                section.layer_count,
+                used_channels.len(),
+                errors.len(),
+            );
+        }
     }
 
     #[test]
@@ -3757,6 +4288,12 @@ mod tests {
         .expect("all-filtered selection still emits an empty section");
 
         assert_eq!(section.channels, vec![SHADOWMASK_CHANNEL_DROPPED]);
+        // Pin: all-sentinel. The section still ships, tagged, at half the raw bytes.
+        assert_eq!(section.format, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE);
+        assert_eq!(
+            section.data.len(),
+            (section.width * section.height * section.layer_count * 4) as usize / 2
+        );
         assert!(
             encode::decode_side_by_side(
                 &section.data,

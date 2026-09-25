@@ -207,7 +207,11 @@ impl PreparedCapture {
                     SyncReadResult::NoTargetReady => break,
                 }
             }
-            let _ = self.capture_measurement_frame()?;
+            // Preload only warms SH residency. Pinning here would feed each
+            // forced `w` back into the promotion ramp, which cannot advance at
+            // capture's frozen instant, so a pinned zero would drop the row's
+            // record before the captured frame could pin it.
+            let _ = self.submit_measurement_frame(false)?;
         }
         bail!("SH capture preload did not make its visible cluster closure sampleable")
     }
@@ -254,7 +258,19 @@ impl PreparedCapture {
 
     /// Submit and complete one prepared static sample without PNG readback.
     pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
+        self.submit_measurement_frame(true)
+    }
+
+    fn submit_measurement_frame(
+        &mut self,
+        pin_promotion: bool,
+    ) -> Result<Option<CaptureGpuTimingWindow>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
+        let forced_promotion_weights: &[(usize, f32)] = if pin_promotion {
+            &self.forced_promotion_weights
+        } else {
+            &[]
+        };
         let result = self.renderer.capture_measurement_frame_indirect(
             self.visible_render.camera_cull(),
             &self.visible_render.light_reachable_cell_mask,
@@ -264,7 +280,7 @@ impl PreparedCapture {
             self.view_proj,
             self.eye,
             &[],
-            &self.forced_promotion_weights,
+            forced_promotion_weights,
             ClearColor {
                 r: 0.05,
                 g: 0.05,

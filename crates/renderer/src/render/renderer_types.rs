@@ -424,7 +424,8 @@ pub struct LevelGeometry<'a> {
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     pub sh_storage: LevelGeometryShStorage<'a>,
     /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
-    pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
+    /// The header only; install hands the blobs to `install_level_geometry`.
+    pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapHeader>,
     /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
     pub chunk_light_list:
         Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,
@@ -467,8 +468,9 @@ pub struct LevelGeometry<'a> {
     pub entity_shadow_lights: &'a [u32],
     /// Optional per-selected-light baked visibility masks for promoted
     /// static-light entity shadows onto world surfaces.
+    /// The header only; install hands the payload to `install_level_geometry`.
     pub shadowmask_atlas:
-        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection>,
+        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskAtlasHeader>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,

@@ -193,7 +193,68 @@ impl LightmapMode {
     }
 }
 
+/// A `LightmapSection` without its payload blobs: the dimensions and formats
+/// install-time atlas sizing and the renderer's usability filter read. The
+/// blobs live in [`LightmapPayloads`] so the GPU upload can own and drop them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightmapHeader {
+    pub layer_count: u32,
+    pub irr_width: u32,
+    pub irr_height: u32,
+    pub irr_texel_density: f32,
+    pub irradiance_format: u32,
+    pub dir_width: u32,
+    pub dir_height: u32,
+    pub dir_texel_density: f32,
+    pub direction_format: u32,
+    pub mode: LightmapMode,
+}
+
+/// The layer-major blobs a `LightmapSection` carries beside its header.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LightmapPayloads {
+    pub irradiance: Vec<u8>,
+    pub direction: Vec<u8>,
+}
+
 impl LightmapSection {
+    /// Split into the header a loaded level keeps and the blobs only the GPU
+    /// upload reads. Moves the blobs; copies nothing.
+    pub fn into_parts(self) -> (LightmapHeader, LightmapPayloads) {
+        let Self {
+            layer_count,
+            irr_width,
+            irr_height,
+            irr_texel_density,
+            irradiance,
+            irradiance_format,
+            dir_width,
+            dir_height,
+            dir_texel_density,
+            direction,
+            direction_format,
+            mode,
+        } = self;
+        (
+            LightmapHeader {
+                layer_count,
+                irr_width,
+                irr_height,
+                irr_texel_density,
+                irradiance_format,
+                dir_width,
+                dir_height,
+                dir_texel_density,
+                direction_format,
+                mode,
+            },
+            LightmapPayloads {
+                irradiance,
+                direction,
+            },
+        )
+    }
+
     /// Build an empty placeholder section: 1×1 white irradiance + neutral
     /// direction. Used by the compiler when a map has no static lights so
     /// downstream consumers always see a valid section.

@@ -43,7 +43,7 @@ use postretro_level_format::kinematic_geometry::{
     KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
 };
 #[cfg(feature = "load-prl")]
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::LightmapHeader;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
@@ -53,7 +53,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasHeader;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
@@ -62,7 +62,7 @@ use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
-use crate::prl_lighting::LoadedLighting;
+use crate::prl_lighting::{GpuLightingPayloads, LoadedLighting};
 #[cfg(feature = "load-prl")]
 use crate::sh_stream::ShStorage;
 #[cfg(feature = "load-prl")]
@@ -594,8 +594,9 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub sh_storage: ShStorage,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
+    /// The header only: the blobs live in `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
-    pub lightmap: Option<LightmapSection>,
+    pub lightmap: Option<LightmapHeader>,
     /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
     /// or carries unshadowed irradiance that requires runtime SDF visibility
     /// multiplication (`Unshadowed`). Legacy PRLs without the on-disk marker
@@ -655,9 +656,14 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub entity_shadow_lights: Vec<u32>,
     /// Per-selected-light world visibility masks for entity→world static-light
-    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`.
+    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`. The header
+    /// only: the BC5 blocks live in `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
-    pub shadowmask_atlas: Option<ShadowmaskAtlasSection>,
+    pub shadowmask_atlas: Option<ShadowmaskAtlasHeader>,
+    /// Id-22 and id-42 payloads, held only until install moves them into the
+    /// GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
+    #[cfg(feature = "load-prl")]
+    pub gpu_lighting_payloads: GpuLightingPayloads,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     #[cfg(feature = "load-prl")]
@@ -768,7 +774,7 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             sh_storage: ShStorage::Legacy,
             #[cfg(feature = "load-prl")]
-            lightmap: lighting.lightmap,
+            lightmap: None,
             #[cfg(feature = "load-prl")]
             lightmap_mode: lighting.lightmap_mode,
             #[cfg(feature = "load-prl")]
@@ -795,7 +801,9 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             entity_shadow_lights: lighting.entity_shadow_lights,
             #[cfg(feature = "load-prl")]
-            shadowmask_atlas: lighting.shadowmask_atlas,
+            shadowmask_atlas: None,
+            #[cfg(feature = "load-prl")]
+            gpu_lighting_payloads: GpuLightingPayloads::default(),
             #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
@@ -1864,6 +1872,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -1962,6 +1971,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -2014,6 +2024,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -6334,11 +6345,16 @@ mod tests {
         let world = load_prl(tmp.to_str().unwrap()).expect("PRL with ShadowmaskAtlas must load");
         let loaded = world
             .shadowmask_atlas
+            .as_ref()
             .expect("ShadowmaskAtlas section must be exposed");
 
         assert_eq!(loaded.layer_count, 2);
         assert_eq!(loaded.channels, shadowmask.channels);
-        assert_eq!(loaded.data, shadowmask.data);
+        assert_eq!(
+            world.gpu_lighting_payloads.shadowmask.as_ref(),
+            Some(&shadowmask.data),
+            "the payload waits beside the header for the GPU upload"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }
@@ -6446,6 +6462,71 @@ mod tests {
         }
     }
 
+    // Lifecycle: the loaded world keeps the id-42 slot table and dimensions and
+    // the id-22 header; the payloads leave in one take and cannot be taken twice.
+    #[test]
+    fn taking_gpu_lighting_payloads_leaves_headers_and_nothing_to_take_twice() {
+        use postretro_level_format::shadowmask_atlas::{
+            SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
+        };
+        let section = ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
+            layer_count: 2,
+            channels: vec![2],
+            data: (0..64).collect(),
+        };
+        let tmp = write_prl_fixture(
+            selected_light_sections_with(shadowmask_blob(section.clone())),
+            "postretro_test_take_gpu_lighting_payloads.prl",
+        );
+        let mut world = load_prl(tmp.to_str().unwrap()).expect("fixture loads");
+        std::fs::remove_file(&tmp).ok();
+
+        let lightmap_header = world.lightmap.clone().expect("fixture has id 22");
+        let taken = world.take_gpu_lighting_payloads();
+        let lightmap = taken.lightmap.expect("id-22 payloads move out");
+        assert_eq!(
+            lightmap.irradiance.len(),
+            4 * 4 * 2 * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES
+        );
+        assert_eq!(taken.shadowmask, Some(section.data.clone()));
+
+        assert_eq!(world.lightmap, Some(lightmap_header), "id-22 header stays");
+        let kept = world.shadowmask_atlas.as_ref().expect("id-42 header stays");
+        assert_eq!((kept.width, kept.height, kept.layer_count), (4, 4, 2));
+        assert_eq!(
+            kept.channels,
+            vec![2],
+            "the slot table stays for spec-light mapping"
+        );
+        assert_eq!(world.lighting().shadowmask_atlas, Some(kept));
+        assert_eq!(
+            world.take_gpu_lighting_payloads(),
+            GpuLightingPayloads::default(),
+            "nothing remains to upload twice"
+        );
+    }
+
+    // Pin: partial-lighting-install. Whatever is present moves; absence stays absent.
+    #[test]
+    fn splitting_partial_lighting_moves_only_the_present_payloads() {
+        let lightmap = postretro_level_format::lightmap::LightmapSection::from_bytes(
+            &lightmap_blob(4, 4, 1).data,
+        )
+        .expect("fixture lightmap parses");
+        let (lightmap_header, shadowmask_header, payloads) =
+            crate::prl_lighting::split_gpu_lighting(Some(lightmap), None);
+        assert!(lightmap_header.is_some() && shadowmask_header.is_none());
+        assert!(payloads.lightmap.is_some() && payloads.shadowmask.is_none());
+
+        let (lightmap_header, shadowmask_header, payloads) =
+            crate::prl_lighting::split_gpu_lighting(None, None);
+        assert!(lightmap_header.is_none() && shadowmask_header.is_none());
+        assert_eq!(payloads, GpuLightingPayloads::default());
+    }
+
     // Pins: stale-payload, stale-payload-tag-collision. A pre-change id 42
     // loads fully lit (no section) with a warning naming the format mismatch;
     // bytes that read as a valid tag must not fall through to a length error.
@@ -6501,7 +6582,9 @@ mod tests {
             "postretro_test_all_sentinel_shadowmask.prl",
         );
         let world = load_prl(tmp.to_str().unwrap()).expect("all-sentinel id 42 must load");
-        assert_eq!(world.shadowmask_atlas, Some(section));
+        let (header, payload) = section.into_parts();
+        assert_eq!(world.shadowmask_atlas, Some(header));
+        assert_eq!(world.gpu_lighting_payloads.shadowmask, Some(payload));
         std::fs::remove_file(&tmp).ok();
     }
 

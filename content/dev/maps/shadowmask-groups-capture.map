@@ -1,0 +1,133 @@
+// Game: Postretro
+// Format: Standard
+// Headless shadowmask mask-group capture fixture.
+// Four selected static point lights with overlapping coverage fill all four
+// mask slots, two per BC5 group. Each has its own color and position, so each
+// leaves a distinct specular highlight on the north wall. The center blocker
+// gives the baked masks real shadow edges.
+// The matching GPU-gated scene lives in crates/postretro/tests/capture_shadowmask_groups.rs.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"ambient_color" "0 0 0"
+"wad" ""
+"_tb_mod" "dev"
+// brush 0
+{
+( -32 544 -32 ) ( -32 -32 0 ) ( -32 -32 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 -32 ) ( 1056 -32 0 ) ( 1056 -32 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 -32 ) ( 1056 544 -32 ) ( -32 544 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 0 ) ( 1056 -32 0 ) ( -32 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 544 -32 ) ( -32 544 0 ) ( -32 544 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 -32 -32 ) ( 1056 544 0 ) ( 1056 544 -32 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 1
+{
+( -32 544 384 ) ( -32 -32 416 ) ( -32 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 384 ) ( 1056 -32 416 ) ( 1056 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 384 ) ( 1056 544 384 ) ( -32 544 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 416 ) ( 1056 -32 416 ) ( -32 -32 416 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 544 384 ) ( -32 544 416 ) ( -32 544 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 -32 384 ) ( 1056 544 416 ) ( 1056 544 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 2
+{
+( -32 544 0 ) ( -32 -32 384 ) ( -32 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 0 ) ( 0 -32 384 ) ( 0 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 0 ) ( 0 544 0 ) ( -32 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 384 ) ( 0 -32 384 ) ( -32 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 544 0 ) ( -32 544 384 ) ( -32 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -32 0 ) ( 0 544 384 ) ( 0 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 3
+{
+( 1024 544 0 ) ( 1024 -32 384 ) ( 1024 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 -32 0 ) ( 1056 -32 384 ) ( 1056 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 -32 0 ) ( 1056 544 0 ) ( 1024 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 544 384 ) ( 1056 -32 384 ) ( 1024 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 544 0 ) ( 1024 544 384 ) ( 1024 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1056 -32 0 ) ( 1056 544 384 ) ( 1056 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 4
+{
+( 0 0 0 ) ( 0 -32 384 ) ( 0 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -32 0 ) ( 1024 -32 384 ) ( 1024 -32 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 -32 0 ) ( 1024 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 0 384 ) ( 1024 -32 384 ) ( 0 -32 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 0 0 ) ( 0 0 384 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 -32 0 ) ( 1024 0 384 ) ( 1024 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 5
+{
+( 0 544 0 ) ( 0 512 384 ) ( 0 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 512 0 ) ( 1024 512 384 ) ( 1024 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 512 0 ) ( 1024 544 0 ) ( 0 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 544 384 ) ( 1024 512 384 ) ( 0 512 384 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 544 0 ) ( 0 544 384 ) ( 0 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 1024 512 0 ) ( 1024 544 384 ) ( 1024 544 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush 6
+{
+( 368 400 112 ) ( 368 336 272 ) ( 368 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 336 272 ) ( 464 336 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 336 112 ) ( 464 400 112 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 368 400 272 ) ( 464 336 272 ) ( 368 336 272 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 400 112 ) ( 368 400 272 ) ( 368 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 464 336 112 ) ( 464 400 272 ) ( 464 400 112 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "64 160 160"
+"angle" "45"
+}
+// entity 2 -- selected baked red point light.
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "256 240 192"
+"light" "300"
+"_color" "255 0 0"
+"_falloff_range" "1000"
+"_light_size" "0"
+"delay" "0"
+"style" "0"
+}
+// entity 3 -- selected baked green point light.
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "400 200 224"
+"light" "300"
+"_color" "0 255 0"
+"_falloff_range" "1000"
+"_light_size" "0"
+"delay" "0"
+"style" "0"
+}
+// entity 4 -- selected baked blue point light.
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "576 240 160"
+"light" "300"
+"_color" "0 0 255"
+"_falloff_range" "1000"
+"_light_size" "0"
+"delay" "0"
+"style" "0"
+}
+// entity 5 -- selected baked white point light.
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "736 200 208"
+"light" "300"
+"_color" "255 255 255"
+"_falloff_range" "1000"
+"_light_size" "0"
+"delay" "0"
+"style" "0"
+}

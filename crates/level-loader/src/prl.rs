@@ -6301,11 +6301,12 @@ mod tests {
     #[test]
     fn load_prl_exposes_shadowmask_atlas_multi_layer_payload() {
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            width: 2,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 2,
             channels: vec![0],
-            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            data: (0..64).collect(),
         };
         let direct_sh = minimal_direct_sh_volume_section();
         let direct_sh_delta = direct_delta_section_for(
@@ -6323,7 +6324,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(2, 1, 2),
+            lightmap_blob(4, 4, 2),
             shadowmask_blob(shadowmask.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6353,11 +6354,13 @@ mod tests {
         );
         let mut malformed_shadowmask = shadowmask_blob(
             postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-                width: 2,
-                height: 1,
+                format:
+                    postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+                width: 4,
+                height: 4,
                 layer_count: 2,
                 channels: vec![0],
-                data: vec![255; 16],
+                data: vec![255; 64],
             },
         );
         malformed_shadowmask
@@ -6375,7 +6378,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(2, 1, 2),
+            lightmap_blob(4, 4, 2),
             malformed_shadowmask,
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6398,11 +6401,12 @@ mod tests {
     #[test]
     fn load_prl_clears_direct_selection_set_when_id41_validity_disagrees_with_id34() {
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            width: 2,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 2,
             channels: vec![0],
-            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            data: (0..64).collect(),
         };
         let direct_sh = minimal_direct_sh_volume_section();
         let mut direct_sh_delta = direct_delta_section_for(
@@ -6425,7 +6429,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(2, 1, 2),
+            lightmap_blob(4, 4, 2),
             shadowmask_blob(shadowmask),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6455,11 +6459,12 @@ mod tests {
             vec![0],
         );
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            width: 2,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 2,
             channels: vec![0],
-            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            data: (0..64).collect(),
         };
         let sections = vec![
             geometry_blob(sample_geometry()),

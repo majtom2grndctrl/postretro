@@ -692,18 +692,32 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
     }
 }
 
-// Rejected or absent shadowmask resources bind a one-layer all-white texture.
-// Clamp baked multi-layer vertex indices so that fallback always samples that
-// fully-visible layer instead of addressing outside the bound texture.
+// The atlas holds two BC5 mask groups side by side in each layer: slots 0/1
+// in the left half, 2/3 in the right. Returns the four slots in one vector.
+// Rejected or absent shadowmask resources bind a one-layer, two-texel white
+// texture. Clamp baked multi-layer vertex indices so that fallback always
+// samples that fully-visible layer instead of addressing outside the bound
+// texture.
 fn sample_shadowmask_atlas(lightmap_uv: vec2<f32>, lightmap_layer: u32) -> vec4<f32> {
     let last_layer = textureNumLayers(shadowmask_atlas) - 1u;
     let safe_layer = min(lightmap_layer, last_layer);
-    return textureSample(
+    // Clamping half a group texel inside the group gives each group its own
+    // clamp-to-edge, so bilinear taps never blend across the seam.
+    let group_half_texel = 1.0 / f32(textureDimensions(shadowmask_atlas).x);
+    let group_u = clamp(lightmap_uv.x, group_half_texel, 1.0 - group_half_texel);
+    let group0 = textureSample(
         shadowmask_atlas,
         lightmap_filtering_sampler,
-        lightmap_uv,
+        vec2<f32>(group_u * 0.5, lightmap_uv.y),
         i32(safe_layer),
     );
+    let group1 = textureSample(
+        shadowmask_atlas,
+        lightmap_filtering_sampler,
+        vec2<f32>((1.0 + group_u) * 0.5, lightmap_uv.y),
+        i32(safe_layer),
+    );
+    return vec4<f32>(group0.rg, group1.rg);
 }
 
 // Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.

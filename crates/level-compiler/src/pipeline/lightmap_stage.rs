@@ -713,8 +713,14 @@ mod tests {
             shadowmask.channels[0], shadowmask.channels[1],
             "overlapping selected lights must occupy distinct channels"
         );
+        let masks = shadowmask_bake::decode_side_by_side(
+            &shadowmask.data,
+            shadowmask.width,
+            shadowmask.height,
+            shadowmask.layer_count,
+        );
         let layer_plane_bytes = shadowmask.width as usize * shadowmask.height as usize * 4;
-        let layer_one = &shadowmask.data[layer_plane_bytes..];
+        let layer_one = &masks[layer_plane_bytes..];
         assert!(
             layer_one.chunks_exact(4).any(|texel| {
                 texel[shadowmask.channels[0] as usize] != 0

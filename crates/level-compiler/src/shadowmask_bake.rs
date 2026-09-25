@@ -69,7 +69,10 @@ const SHADOWMASK_FILL_CHECKPOINT_TEXELS: usize = 1024;
 /// while the lightmap fold still has it resident.
 pub(crate) struct FusedShadowmaskPlan<'a> {
     section: Option<ShadowmaskAtlasSection>,
+    overlap: ShadowmaskOverlapReport,
     fill: Option<ShadowmaskFill<'a>>,
+    /// The miss's graph peak, stored beside the section in the memo entry.
+    peak_texel_overlap: u32,
     compact_index_by_source: HashMap<usize, usize>,
     cache_write: Option<(&'a StageCache, CacheKey)>,
     control: &'a BakeControl,
@@ -93,7 +96,7 @@ impl FusedShadowmaskPlan<'_> {
         self.work_elapsed += started.elapsed();
     }
 
-    pub(crate) fn finish(mut self) -> (Option<ShadowmaskAtlasSection>, Duration) {
+    pub(crate) fn finish(mut self) -> FusedShadowmaskOutput {
         let started = Instant::now();
         if let Some(fill) = self.fill.take() {
             let section = fill.finish();
@@ -102,6 +105,7 @@ impl FusedShadowmaskPlan<'_> {
                     cache,
                     &key,
                     &section,
+                    self.peak_texel_overlap,
                     self.control,
                     true,
                     || {},
@@ -112,7 +116,50 @@ impl FusedShadowmaskPlan<'_> {
             self.section = Some(section);
         }
         self.work_elapsed += started.elapsed();
-        (self.section, self.work_elapsed)
+        FusedShadowmaskOutput {
+            section: self.section,
+            elapsed: self.work_elapsed,
+            overlap: self.overlap,
+        }
+    }
+}
+
+pub(crate) struct FusedShadowmaskOutput {
+    pub(crate) section: Option<ShadowmaskAtlasSection>,
+    pub(crate) elapsed: Duration,
+    pub(crate) overlap: ShadowmaskOverlapReport,
+}
+
+/// What `--verbose` reports about per-texel mask overlap for one bake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShadowmaskOverlapReport {
+    /// No selected static light: no section and nothing measured.
+    NoSelection,
+    /// Most selected lights covering one texel, from this bake's graph or the
+    /// memo entry that graph produced.
+    Peak(u32),
+    /// Lightmap layers too wide to double: id 42 omitted, overlap not measured.
+    OmittedForWidth { atlas_width: u32 },
+}
+
+/// The `--verbose` overlap line. The mask-capacity decision reads this number;
+/// nothing in the bake acts on it.
+pub(crate) fn log_overlap_report(
+    report: ShadowmaskOverlapReport,
+    section: Option<&ShadowmaskAtlasSection>,
+) {
+    match (report, section) {
+        (ShadowmaskOverlapReport::Peak(peak), Some(section)) => log::info!(
+            "[ShadowmaskAtlas] peak per-texel overlap: {peak} selected light(s) at one texel; \
+             {} layer(s), BC5 .rg side by side ({} slots)",
+            section.layer_count,
+            SHADOWMASK_GROUP_COUNT * 2,
+        ),
+        (ShadowmaskOverlapReport::OmittedForWidth { atlas_width }, _) => log::info!(
+            "[ShadowmaskAtlas] peak per-texel overlap: not measured; id 42 omitted for \
+             {atlas_width}-texel-wide lightmap layers"
+        ),
+        _ => {}
     }
 }
 
@@ -136,16 +183,18 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     control: &'a BakeControl,
 ) -> Result<FusedShadowmaskPlan<'a>, ShadowmaskBakeError> {
     let started = Instant::now();
-    let no_section = |started: Instant| FusedShadowmaskPlan {
+    let no_section = |started: Instant, overlap| FusedShadowmaskPlan {
         section: None,
+        overlap,
         fill: None,
+        peak_texel_overlap: 0,
         compact_index_by_source: HashMap::new(),
         cache_write: None,
         control,
         work_elapsed: started.elapsed(),
     };
     let Some(selection) = selection.filter(|selection| !selection.light_indices.is_empty()) else {
-        return Ok(no_section(started));
+        return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
     };
     if shared.atlas_width % 4 != 0 || shared.atlas_height % 4 != 0 {
         return Err(ShadowmaskBakeError::MisalignedAtlas {
@@ -160,7 +209,12 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
              omitting ShadowmaskAtlas (id 42), static world specular renders fully lit",
             shared.atlas_width,
         );
-        return Ok(no_section(started));
+        return Ok(no_section(
+            started,
+            ShadowmaskOverlapReport::OmittedForWidth {
+                atlas_width: shared.atlas_width,
+            },
+        ));
     }
 
     let layer_count = layer_count_from_shared(shared);
@@ -218,37 +272,15 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     }
 
     if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
-        let cached = cache.get(key).and_then(|bytes| {
-            match ShadowmaskAtlasSection::from_bytes(&bytes) {
-                Ok(section) => {
-                    match validate_cached_shadowmask_section(
-                        &section,
-                        selection,
-                        shared,
-                        layer_count,
-                    ) {
-                        Ok(()) => Some(section),
-                        Err(reason) => {
-                            log::warn!(
-                                "[Compiler] shadowmask_atlas cache entry does not match current atlas ({reason}), re-baking"
-                            );
-                            None
-                        }
-                    }
-                }
-                Err(err) => {
-                    log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: {err}");
-                    None
-                }
-            }
-        });
-        if let Some(section) = cached {
+        if let Some(memo) = read_shadowmask_memo(cache, key, selection, shared, layer_count) {
             log::info!("[cache] shadowmask_atlas hit");
             control.governor().checkpoint();
             control.advance(fused_total);
             return Ok(FusedShadowmaskPlan {
-                section: Some(section),
+                section: Some(memo.section),
+                overlap: ShadowmaskOverlapReport::Peak(memo.peak_texel_overlap),
                 fill: None,
+                peak_texel_overlap: 0,
                 compact_index_by_source,
                 cache_write: None,
                 control,
@@ -259,13 +291,16 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     }
 
     if selected.is_empty() {
+        // No valid selected light covers anything: the peak is zero.
         let section = empty_section_for_selection(shared, selection.light_indices.len());
         if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
-            cache_shadowmask_section_then_complete(cache, key, &section, control, false, || {});
+            cache_shadowmask_section_then_complete(cache, key, &section, 0, control, false, || {});
         }
         return Ok(FusedShadowmaskPlan {
             section: Some(section),
+            overlap: ShadowmaskOverlapReport::Peak(0),
             fill: None,
+            peak_texel_overlap: 0,
             compact_index_by_source,
             cache_write: None,
             control,
@@ -284,9 +319,12 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         Some(control),
         None,
     );
+    let peak_texel_overlap = graph.peak_texel_overlap();
     Ok(FusedShadowmaskPlan {
         section: None,
+        overlap: ShadowmaskOverlapReport::Peak(peak_texel_overlap),
         fill: Some(fill),
+        peak_texel_overlap,
         compact_index_by_source,
         cache_write: cache.zip(section_key),
         control,
@@ -577,29 +615,10 @@ fn bake_shadowmask_atlas_cached_with_window(
     );
 
     publish_shadowmask_total(control, selected.len(), shared);
-    let cached_section = cache.get(&section_key).and_then(|bytes| {
-        match ShadowmaskAtlasSection::from_bytes(&bytes) {
-            Ok(section) => match validate_cached_shadowmask_section(
-                &section, selection, shared, layer_count,
-            ) {
-                Ok(()) => Some(section),
-                Err(reason) => {
-                    log::warn!(
-                        "[Compiler] shadowmask_atlas cache entry does not match current atlas ({reason}), rebuilding"
-                    );
-                    None
-                }
-            },
-            Err(err) => {
-                log::warn!("[Compiler] corrupt shadowmask_atlas section, rebuilding: {err}");
-                None
-            }
-        }
-    });
-    if let Some(section) = cached_section {
+    if let Some(memo) = read_shadowmask_memo(cache, &section_key, selection, shared, layer_count) {
         log::info!("[cache] shadowmask_atlas hit");
         advance_shadowmask_total(control, selected.len(), shared);
-        return Some(section);
+        return Some(memo.section);
     }
 
     log::info!("[cache] shadowmask_atlas miss");
@@ -609,6 +628,7 @@ fn bake_shadowmask_atlas_cached_with_window(
             cache,
             &section_key,
             &section,
+            0,
             control,
             false,
             || {},
@@ -643,6 +663,7 @@ fn bake_shadowmask_atlas_cached_with_window(
         cache,
         &section_key,
         &section,
+        graph.peak_texel_overlap(),
         control,
         !selected.is_empty(),
         || {},
@@ -1033,6 +1054,7 @@ fn build_analytic_overlap_graph_in_order(
                     covered_lights.push(compact_index);
                 }
             }
+            graph.record_texel_overlap(covered_lights.len());
             for (position, &a) in covered_lights.iter().enumerate() {
                 for &b in &covered_lights[position + 1..] {
                     graph.mark_overlap(a, b);
@@ -1112,10 +1134,59 @@ fn advance_shadowmask_total(
     }
 }
 
+/// Whole-section memo entry: the miss's peak per-texel overlap (`u32` LE),
+/// then the section's wire bytes. The count shares the entry so it can never
+/// be evicted apart from the section it describes.
+const MEMO_OVERLAP_PREFIX_BYTES: usize = 4;
+
+struct ShadowmaskMemo {
+    section: ShadowmaskAtlasSection,
+    peak_texel_overlap: u32,
+}
+
+/// A memo entry usable for this selection and atlas, or `None` (logged) when
+/// it is absent, truncated, undecodable or describes another atlas.
+fn read_shadowmask_memo(
+    cache: &StageCache,
+    key: &CacheKey,
+    selection: &EntityShadowLightsSection,
+    shared: &SharedAtlas<'_>,
+    layer_count: u32,
+) -> Option<ShadowmaskMemo> {
+    let bytes = cache.get(key)?;
+    let Some((prefix, section_bytes)) = bytes.split_first_chunk::<MEMO_OVERLAP_PREFIX_BYTES>()
+    else {
+        log::warn!(
+            "[Compiler] corrupt shadowmask atlas, re-baking: memo entry has no overlap count"
+        );
+        return None;
+    };
+    let section = match ShadowmaskAtlasSection::from_bytes(section_bytes) {
+        Ok(section) => section,
+        Err(err) => {
+            log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: {err}");
+            return None;
+        }
+    };
+    if let Err(reason) =
+        validate_cached_shadowmask_section(&section, selection, shared, layer_count)
+    {
+        log::warn!(
+            "[Compiler] shadowmask_atlas cache entry does not match current atlas ({reason}), re-baking"
+        );
+        return None;
+    }
+    Some(ShadowmaskMemo {
+        section,
+        peak_texel_overlap: u32::from_le_bytes(*prefix),
+    })
+}
+
 fn cache_shadowmask_section_then_complete(
     cache: &StageCache,
     section_key: &CacheKey,
     section: &ShadowmaskAtlasSection,
+    peak_texel_overlap: u32,
     control: &BakeControl,
     has_valid_selection: bool,
     after_cache_write: impl FnOnce(),
@@ -1128,7 +1199,9 @@ fn cache_shadowmask_section_then_complete(
         RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE
             .with(|at_write| at_write.set(Some(raw_fill_live_bytes())));
     }
-    cache.put_streamed(section_key, section.byte_len() as u64, |writer| {
+    let entry_len = MEMO_OVERLAP_PREFIX_BYTES + section.byte_len();
+    cache.put_streamed(section_key, entry_len as u64, |writer| {
+        writer.write_all(&peak_texel_overlap.to_le_bytes())?;
         writer.write_all(&section_header)?;
         writer.write_all(&section.data)
     });
@@ -1811,7 +1884,10 @@ mod tests {
 
         let dir = fresh_cache_dir(label);
         let cache = StageCache::new(&dir).expect("cache dir");
-        cache.put(&section_key, &bad_cached_section(&shared, kind).to_bytes());
+        cache.put(
+            &section_key,
+            &memo_entry(&bad_cached_section(&shared, kind), 0),
+        );
         cache.put(&layer_key, &seeded_layer.to_bytes());
 
         let result = bake_shadowmask_atlas_cached(
@@ -1832,10 +1908,7 @@ mod tests {
         let overwritten = cache
             .get(&section_key)
             .expect("mismatched section entry overwritten");
-        assert_eq!(
-            ShadowmaskAtlasSection::from_bytes(&overwritten).unwrap(),
-            expected
-        );
+        assert_eq!(memo_section(&overwritten), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1932,10 +2005,7 @@ mod tests {
             .expect("rebaked partition matches current atlas");
 
         let stored_section = cache.get(&section_key).expect("shadowmask section stored");
-        assert_eq!(
-            ShadowmaskAtlasSection::from_bytes(&stored_section).unwrap(),
-            result
-        );
+        assert_eq!(memo_section(&stored_section), result);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3217,7 +3287,7 @@ mod tests {
             .get(&cold_section_key)
             .expect("cache miss stores the streamed whole section");
         assert_eq!(
-            stored_section.as_slice(),
+            &stored_section[MEMO_OVERLAP_PREFIX_BYTES..],
             top_level_multilayer_five_way_golden().as_slice(),
             "streamed whole-section cache bytes must match the section wire format"
         );
@@ -3322,12 +3392,23 @@ mod tests {
                 plan.consume_partition(source_index, &partition);
             }
         }
-        let (section, _) = plan.finish();
+        let section = plan.finish().section;
         assert_eq!(
             section.expect("fused shadowmask").to_bytes(),
             top_level_multilayer_five_way_golden(),
         );
         assert_eq!(progress.completed(), progress.total().unwrap());
+    }
+
+    fn memo_entry(section: &ShadowmaskAtlasSection, peak_texel_overlap: u32) -> Vec<u8> {
+        let mut entry = peak_texel_overlap.to_le_bytes().to_vec();
+        entry.extend_from_slice(&section.to_bytes());
+        entry
+    }
+
+    fn memo_section(entry: &[u8]) -> ShadowmaskAtlasSection {
+        ShadowmaskAtlasSection::from_bytes(&entry[MEMO_OVERLAP_PREFIX_BYTES..])
+            .expect("memo entry holds a section after its overlap count")
     }
 
     /// Run the production fused path: prepare (memo probe, graph, coloring),
@@ -3376,7 +3457,7 @@ mod tests {
                 plan.consume_partition(source_index, &partition);
             }
         }
-        plan.finish().0
+        plan.finish().section
     }
 
     fn pre_bc5_raw_section_bytes(section: &ShadowmaskAtlasSection) -> Vec<u8> {
@@ -3396,6 +3477,151 @@ mod tests {
             255,
         );
         bytes
+    }
+
+    #[test]
+    fn fused_overlap_report_is_the_graph_peak_on_miss_and_the_memo_value_on_hit() {
+        let (geometry, _, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 8,
+            atlas_height: 8,
+        };
+        let cache_dir = fresh_cache_dir("overlap_report");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        let report = |cache: Option<&StageCache>, shared: &SharedAtlas<'_>| {
+            let control = test_control();
+            prepare_fused_shadowmask(
+                "fixture",
+                Some(&selection),
+                &alpha_lights,
+                shared,
+                &primitives,
+                &geometry,
+                DENSITY,
+                AREA_SAMPLES,
+                cache,
+                &control,
+            )
+            .expect("aligned fixture atlas")
+            .finish()
+            .overlap
+        };
+
+        // All five fixture lights cover the one shared texel.
+        assert_eq!(report(None, &shared), ShadowmaskOverlapReport::Peak(5));
+        assert_eq!(
+            report(Some(&cache), &shared),
+            ShadowmaskOverlapReport::Peak(5)
+        );
+        let capture = LogCapture::start();
+        assert_eq!(
+            report(Some(&cache), &shared),
+            ShadowmaskOverlapReport::Peak(5)
+        );
+        capture.assert_logged_once(log::Level::Info, "[cache] shadowmask_atlas hit");
+
+        let wide = SharedAtlas {
+            atlas_width: 8192,
+            ..shared
+        };
+        assert_eq!(
+            report(Some(&cache), &wide),
+            ShadowmaskOverlapReport::OmittedForWidth { atlas_width: 8192 }
+        );
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn memo_entry_without_an_overlap_count_is_a_miss() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 8,
+            atlas_height: 8,
+        };
+        let cache_dir = fresh_cache_dir("overlap_count_missing");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        let expected = fused_section(
+            &selection,
+            &lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            Some(&cache),
+        )
+        .expect("seeding section");
+
+        // Re-store the same key with the section alone: its first four bytes
+        // are then read as a count and the rest no longer parses.
+        let input_hashes: Vec<_> = lights
+            .iter()
+            .flat_map(|light| {
+                (0..layer_count_from_shared(&shared)).map(|target_layer| {
+                    lightmap_layer::layer_input_hash(
+                        light,
+                        &shared,
+                        &primitives,
+                        &geometry,
+                        DENSITY,
+                        AREA_SAMPLES,
+                        target_layer,
+                    )
+                })
+            })
+            .collect();
+        let section_key = shadowmask_key(&selection, &shared, &input_hashes);
+        cache.put(&section_key, &expected.to_bytes());
+        let capture = LogCapture::start();
+        let rebuilt = fused_section(
+            &selection,
+            &lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            Some(&cache),
+        )
+        .expect("rebuilt section");
+        capture.assert_logged_once(log::Level::Info, "[cache] shadowmask_atlas miss");
+        assert_eq!(rebuilt, expected);
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn overlap_report_logs_peak_with_layers_and_format_or_names_the_omission() {
+        let section = shadowmask_section(8, 8, 3, vec![0, 1], 255);
+        let capture = LogCapture::start();
+        log_overlap_report(ShadowmaskOverlapReport::Peak(3), Some(&section));
+        log_overlap_report(
+            ShadowmaskOverlapReport::OmittedForWidth { atlas_width: 8192 },
+            None,
+        );
+        log_overlap_report(ShadowmaskOverlapReport::NoSelection, None);
+        capture.assert_logged_once(
+            log::Level::Info,
+            "[ShadowmaskAtlas] peak per-texel overlap: 3 selected light(s) at one texel; \
+             3 layer(s), BC5 .rg side by side (4 slots)",
+        );
+        capture.assert_logged_once(
+            log::Level::Info,
+            "peak per-texel overlap: not measured; id 42 omitted for 8192-texel-wide lightmap layers",
+        );
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.message.contains("peak per-texel overlap"))
+                .count(),
+            2,
+            "no selection reports nothing"
+        );
     }
 
     #[test]
@@ -3477,7 +3703,7 @@ mod tests {
                 "{build}: an omitted section consumes no partition"
             );
             assert_eq!(
-                plan.finish().0,
+                plan.finish().section,
                 None,
                 "{build}: 8192-wide layers ship no id 42"
             );
@@ -3517,7 +3743,7 @@ mod tests {
         )
         .expect("4096-wide atlas")
         .finish()
-        .0
+        .section
         .expect("4096-wide layers still emit id 42");
         assert_eq!(section.texture_width(), Some(8192));
         capture.assert_not_logged(log::Level::Warn, "texels wide");
@@ -4334,7 +4560,7 @@ mod tests {
             cache
                 .get(&section_key)
                 .expect("all-filtered route stores the streamed whole section"),
-            section.to_bytes(),
+            memo_entry(&section, 0),
             "all-filtered cache bytes must match the section wire format"
         );
         assert_eq!(cached_progress.total(), None);
@@ -4534,7 +4760,7 @@ mod tests {
 
         let dir = fresh_cache_dir("whole_section_hit");
         let cache = StageCache::new(&dir).expect("cache dir");
-        cache.put(&section_key, &cached.to_bytes());
+        cache.put(&section_key, &memo_entry(&cached, 0));
 
         let result = bake_shadowmask_atlas_cached(
             Some(&selection),
@@ -4631,10 +4857,7 @@ mod tests {
             "section miss must build from the existing lightmap_layer payload"
         );
         let stored = cache.get(&section_key).expect("shadowmask section stored");
-        assert_eq!(
-            ShadowmaskAtlasSection::from_bytes(&stored).unwrap(),
-            expected
-        );
+        assert_eq!(memo_section(&stored), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4658,7 +4881,7 @@ mod tests {
         let progress = StageProgress::with_total(1);
         let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
 
-        cache_shadowmask_section_then_complete(&cache, &key, &section, &control, true, || {
+        cache_shadowmask_section_then_complete(&cache, &key, &section, 0, &control, true, || {
             assert!(cache.get(&key).is_some());
             assert_eq!(progress.completed(), 0);
         });
@@ -5002,7 +5225,7 @@ mod tests {
             "missing selected lightmap_layer must be baked and stored"
         );
         let stored = cache.get(&section_key).expect("shadowmask section stored");
-        assert_eq!(ShadowmaskAtlasSection::from_bytes(&stored).unwrap(), result);
+        assert_eq!(memo_section(&stored), result);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5056,10 +5279,7 @@ mod tests {
         let overwritten = cache
             .get(&section_key)
             .expect("corrupt section entry overwritten");
-        assert_eq!(
-            ShadowmaskAtlasSection::from_bytes(&overwritten).unwrap(),
-            expected
-        );
+        assert_eq!(memo_section(&overwritten), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5086,7 +5306,7 @@ mod tests {
 
         let dir = fresh_cache_dir("no_cache");
         let cache = StageCache::new(&dir).expect("cache dir");
-        cache.put(&section_key, &cached.to_bytes());
+        cache.put(&section_key, &memo_entry(&cached, 0));
 
         let result = bake_shadowmask_atlas_cached(
             Some(&selection),
@@ -5123,7 +5343,7 @@ mod tests {
         );
         let still_cached = cache.get(&section_key).expect("seeded cache entry remains");
         assert_eq!(
-            ShadowmaskAtlasSection::from_bytes(&still_cached).unwrap(),
+            memo_section(&still_cached),
             cached,
             "stage_cache == None must not overwrite shadowmask_atlas entries"
         );

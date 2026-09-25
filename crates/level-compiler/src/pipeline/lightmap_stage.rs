@@ -22,6 +22,7 @@ pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
+    pub shadowmask_overlap: shadowmask_bake::ShadowmaskOverlapReport,
 }
 
 pub(super) fn prepare(
@@ -78,7 +79,11 @@ pub(crate) fn bake_fused_prepared(
     )?;
 
     if static_lights.is_empty() || prepared.placements.is_empty() {
-        let (shadowmask, shadowmask_elapsed) = shadowmask.finish();
+        let shadowmask_bake::FusedShadowmaskOutput {
+            section: shadowmask,
+            elapsed: shadowmask_elapsed,
+            overlap: shadowmask_overlap,
+        } = shadowmask.finish();
         return Ok(FusedLightingOutput {
             lightmap: LightmapBakeOutput {
                 section: postretro_level_format::lightmap::LightmapSection::placeholder(),
@@ -90,6 +95,7 @@ pub(crate) fn bake_fused_prepared(
             },
             shadowmask,
             shadowmask_elapsed,
+            shadowmask_overlap,
         });
     }
 
@@ -284,7 +290,11 @@ pub(crate) fn bake_fused_prepared(
             cache.put(key, &section.to_bytes());
         }
     }
-    let (shadowmask, shadowmask_elapsed) = shadowmask.finish();
+    let shadowmask_bake::FusedShadowmaskOutput {
+        section: shadowmask,
+        elapsed: shadowmask_elapsed,
+        overlap: shadowmask_overlap,
+    } = shadowmask.finish();
     Ok(FusedLightingOutput {
         lightmap: LightmapBakeOutput {
             section,
@@ -296,6 +306,7 @@ pub(crate) fn bake_fused_prepared(
         },
         shadowmask,
         shadowmask_elapsed,
+        shadowmask_overlap,
     })
 }
 

@@ -9,8 +9,7 @@
 // gates which light. Captures are compared on one adapter; no golden images.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use image::RgbaImage;
 use postretro_level_format as prl_format;
@@ -19,58 +18,13 @@ use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection,
 };
 
+mod capture_support;
+
+use capture_support::{capture_command, compile_dev_map, load_capture_rgba, workspace_root};
+
 const CAPTURE_WIDTH: u32 = 160;
 const CAPTURE_HEIGHT: u32 = 120;
 const SLOT_COUNT: u8 = 4;
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("postretro crate must be two levels below the workspace root")
-        .to_path_buf()
-}
-
-/// Compile the fixture beside its source so capture derives the dev material
-/// tree from the standard `content/dev/maps` layout.
-fn compile_fixture(workspace: &Path, map_name: &str) -> tempfile::TempPath {
-    let source_map = workspace.join(format!("content/dev/maps/{map_name}.map"));
-    assert!(
-        source_map.is_file(),
-        "fixture missing: {}",
-        source_map.display()
-    );
-    let map = tempfile::Builder::new()
-        .prefix(&format!(".{map_name}-"))
-        .suffix(".prl")
-        .tempfile_in(workspace.join("content/dev/maps"))
-        .expect("reserve fixture PRL path in content/dev/maps")
-        .into_temp_path();
-    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
-        .arg(&source_map)
-        .arg("-o")
-        .arg(&map)
-        .arg("--no-tui")
-        .current_dir(workspace)
-        .output()
-        .expect("launch prl-build");
-    assert!(
-        compile.status.success(),
-        "fixture compile failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compile.stdout),
-        String::from_utf8_lossy(&compile.stderr),
-    );
-    map
-}
 
 fn read_sections(path: &Path) -> Vec<prl_format::SectionBlob> {
     let mut file = fs::File::open(path).expect("open compiled fixture");
@@ -146,17 +100,20 @@ fn write_variant(
     prl_format::write_prl(&mut file, &blobs).expect("write variant PRL");
 }
 
-/// Capture `map` looking at the north wall. Fails rather than skips without
-/// an adapter: this proof does not count unless it ran.
-fn capture(workspace: &Path, scratch: &Path, map: &Path, label: &str) -> RgbaImage {
-    let camera = serde_json::json!({
+fn north_wall_camera() -> serde_json::Value {
+    serde_json::json!({
         // Quake (500, 40, 192), facing the north wall.
         "position": [-1.016, 4.877, -12.7],
         "yaw_deg": 90.0,
         "pitch_deg": 0.0,
         "fov_deg": 90.0
-    });
-    capture_scene(workspace, scratch, map, label, camera, None).0
+    })
+}
+
+/// Capture `map` looking at the north wall. Fails rather than skips without
+/// an adapter: this proof does not count unless it ran.
+fn capture(workspace: &Path, scratch: &Path, map: &Path, label: &str) -> RgbaImage {
+    capture_scene(workspace, scratch, map, label, north_wall_camera(), None).0
 }
 
 /// Run one capture and return its image and stderr. `force_active` is the
@@ -181,12 +138,9 @@ fn capture_scene(
         scene["force_active"] = force_active;
     }
     fs::write(&scene_path, serde_json::to_vec_pretty(&scene).unwrap()).unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .arg("--capture")
-        .arg(&scene_path)
-        .env("POSTRETRO_SH_STREAMING", "sync-proof")
+    // `warn` keeps every `[Renderer]` error on stderr for callers to check.
+    let result = capture_command(workspace, &scene_path)
         .env("RUST_LOG", "warn")
-        .current_dir(workspace)
         .output()
         .expect("launch postretro capture");
     let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
@@ -195,14 +149,7 @@ fn capture_scene(
         "capture `{label}` failed\nstdout:\n{}\nstderr:\n{stderr}",
         String::from_utf8_lossy(&result.stdout),
     );
-    let image = image::ImageReader::open(&output_path)
-        .expect("open capture PNG")
-        .with_guessed_format()
-        .expect("detect capture format")
-        .decode()
-        .expect("decode capture PNG")
-        .to_rgba8();
-    (image, stderr)
+    (load_capture_rgba(&output_path), stderr)
 }
 
 /// Per-channel light added over `base`; negative where `image` is darker.
@@ -242,7 +189,7 @@ fn open_only(slot: u8) -> [u8; 4] {
 fn every_selected_light_reads_its_own_slot_in_either_group() {
     let workspace = workspace_root();
     let scratch = tempfile::tempdir().expect("scratch dir");
-    let compiled = compile_fixture(&workspace, "shadowmask-groups-capture");
+    let compiled = compile_dev_map(&workspace, "shadowmask-groups-capture");
     let sections = read_sections(&compiled);
     let baked = shadowmask_of(&sections);
 
@@ -382,7 +329,7 @@ fn swap_slot_blocks(section: &ShadowmaskAtlasSection, a: u8, b: u8) -> Vec<u8> {
 fn group_placement_never_changes_what_a_light_reads() {
     let workspace = workspace_root();
     let scratch = tempfile::tempdir().expect("scratch dir");
-    let compiled = compile_fixture(&workspace, "shadowmask-groups-capture");
+    let compiled = compile_dev_map(&workspace, "shadowmask-groups-capture");
     let sections = read_sections(&compiled);
     let baked = shadowmask_of(&sections);
     let maps_dir = compiled
@@ -443,6 +390,10 @@ fn group_placement_never_changes_what_a_light_reads() {
         ..baked.clone()
     };
     let moved_masks = swap_slot_blocks(&moved_masks, 1, 3);
+    assert!(
+        moved_masks != baked.data,
+        "the group move must change the payload, or the frame comparison proves nothing"
+    );
     let moved = capture_variant("groups-moved", moved_table, moved_masks);
     assert_eq!(
         moved.as_raw(),
@@ -451,15 +402,18 @@ fn group_placement_never_changes_what_a_light_reads() {
     );
 }
 
-// Pin: animated-after-take. The animated contribution atlas is sized from the
-// lightmap header install keeps; the payloads have already moved into the
-// upload. A mismatch would fall back to the dummy atlas with a renderer error.
+// Pins: animated-after-take and capture-install. The animated contribution
+// atlas is sized from the lightmap header install keeps; the payloads have
+// already moved into the upload. A mismatch would fall back to the dummy atlas
+// with a renderer error. A capture install that left a header without its
+// payload would log `[Renderer] ... header arrived without its payload`; the
+// no-`[Renderer]` check below covers both.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
 fn animated_lights_render_after_lightmap_payloads_move_into_the_upload() {
     let workspace = workspace_root();
     let scratch = tempfile::tempdir().expect("scratch dir");
-    let compiled = compile_fixture(&workspace, "spawner-test");
+    let compiled = compile_dev_map(&workspace, "spawner-test");
     // Frames the static wall in alarm_light's authored cone.
     let camera = serde_json::json!({
         "position": [6.1, 2.2, -2.5],
@@ -484,10 +438,7 @@ fn animated_lights_render_after_lightmap_payloads_move_into_the_upload() {
         Some(serde_json::json!([{ "tag": "alarm_light", "radiance": [4.0, 0.0, 0.0] }])),
     );
     for stderr in [&rest_stderr, &alarm_stderr] {
-        assert!(
-            !stderr.contains("[Renderer]"),
-            "the install must not degrade any lighting resource:\n{stderr}"
-        );
+        assert_no_renderer_errors(stderr);
     }
     let reddened = alarm
         .pixels()
@@ -497,5 +448,90 @@ fn animated_lights_render_after_lightmap_payloads_move_into_the_upload() {
     assert!(
         reddened >= 64,
         "the forced animated alarm must redden the world through the animated atlas; {reddened} pixels"
+    );
+}
+
+/// No lighting resource degraded at install. This includes the capture-install
+/// failure, `[Renderer] ... header arrived without its payload`, which a
+/// capture that borrowed or lost the moved payloads would log.
+fn assert_no_renderer_errors(stderr: &str) {
+    assert!(
+        !stderr.contains("[Renderer]"),
+        "the install must not degrade any lighting resource:\n{stderr}"
+    );
+}
+
+/// A copy of the compiled fixture without id 42. Every other section keeps its
+/// bytes, so the level still ships its lightmap and its selected lights.
+fn write_without_shadowmask(sections: &[prl_format::SectionBlob], path: &Path) {
+    let blobs: Vec<_> = sections
+        .iter()
+        .filter(|blob| blob.section_id != SectionId::ShadowmaskAtlas as u32)
+        .map(|blob| prl_format::SectionBlob {
+            section_id: blob.section_id,
+            version: blob.version,
+            data: blob.data.clone(),
+        })
+        .collect();
+    let mut file = fs::File::create(path).expect("create no-shadowmask PRL");
+    prl_format::write_prl(&mut file, &blobs).expect("write no-shadowmask PRL");
+}
+
+// Pins: partial-lighting-install and capture-install. A level with a lightmap
+// but no shadowmask installs through capture: its lightmap payloads move into
+// the upload with no mask to pair, and the specular path takes its neutral
+// placeholder. A panic fails the capture; a header left without its payload
+// logs a `[Renderer]` error. The level with neither is covered by the loader's
+// take-seam unit tests.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
+fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let compiled = compile_dev_map(&workspace, "shadowmask-groups-capture");
+    let sections = read_sections(&compiled);
+    let has = |sections: &[prl_format::SectionBlob], id: SectionId| {
+        sections.iter().any(|blob| blob.section_id == id as u32)
+    };
+    assert!(
+        has(&sections, SectionId::ShadowmaskAtlas),
+        "fixture must bake a ShadowmaskAtlas for the variant to drop"
+    );
+
+    // Beside the compiled fixture for the material-tree layout.
+    let stripped = tempfile::Builder::new()
+        .prefix(".shadowmask-groups-no-mask-")
+        .suffix(".prl")
+        .tempfile_in(compiled.parent().expect("fixture has a parent"))
+        .expect("reserve no-shadowmask PRL path")
+        .into_temp_path();
+    write_without_shadowmask(&sections, &stripped);
+    let stripped_sections = read_sections(&stripped);
+    assert!(
+        has(&stripped_sections, SectionId::Lightmap),
+        "variant must keep the lightmap"
+    );
+    assert!(
+        !has(&stripped_sections, SectionId::ShadowmaskAtlas),
+        "variant must ship no ShadowmaskAtlas"
+    );
+
+    let (image, stderr) = capture_scene(
+        &workspace,
+        scratch.path(),
+        &stripped,
+        "no-shadowmask",
+        north_wall_camera(),
+        None,
+    );
+    assert_no_renderer_errors(&stderr);
+    let lit = image
+        .pixels()
+        .filter(|pixel| pixel.0[..3].iter().any(|&channel| channel >= 16))
+        .count();
+    let pixels = (CAPTURE_WIDTH * CAPTURE_HEIGHT) as usize;
+    assert!(
+        lit * 100 >= pixels,
+        "the lightmap must light the frame without a shadowmask; {lit} of {pixels} pixels lit"
     );
 }

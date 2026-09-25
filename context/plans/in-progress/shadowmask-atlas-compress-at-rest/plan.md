@@ -64,6 +64,21 @@ are both 8192; atlas dims are powers of two ≥ `MIN_ATLAS_DIMENSION` (64).
   `spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest` fails
   identically on `main` (checked in a `main` worktree).
 
+- Review round 1 (10 lenses; no 🔴 code defects):
+  - Encoder: the shadowmask encode picks BC4's six-value mode per block when it lowers
+    error. The normal-map entry point is byte-unchanged and pinned. Stage version is
+    4; the id-42 container-entry version is 2.
+  - Union path: its channel guard is now `shadowmask_union_channel` in `forward.wgsl`,
+    which the GPU harness calls directly. The harness renders two pixels per probe to
+    stay within the 32-byte colour-attachment limit.
+  - GPU tests: `POSTRETRO_REQUIRE_GPU=1` turns a skipped run into a failure.
+  - Renderer: it rejects an unknown shadowmask format tag or payload length to the
+    placeholder, and animated atlas sizing follows payload presence.
+  - Capture tests share `tests/capture_support`, are gated on the `capture` feature,
+    and set `POSTRETRO_SH_STREAMING=sync-proof` on their own child process. L5 has an
+    adapter capture.
+  - Game-install renderer-branch take: manual rows MN6/MN7 only, since it needs a GPU.
+
 ## Owner decisions during build
 
 - **M1 and M4, union path (2026-09-24).** The capture harness never promotes static
@@ -155,6 +170,14 @@ self-skip is not a pass.
   - `gate-heavily-lit`: 1024²×2, max 17/255, mean < 0.0001/255.
   Hard shadows are exact because their blocks hold endpoints only. Error sits in
   penumbra blocks. The yardstick number is part of MN1.
+- After review round 1 (BC4 six-value mode, chosen per block only when it lowers total
+  squared error):
+  - `shadowmask-groups-capture`: max 0/255.
+  - `soft_shadow_test`: max 19/255, mean 0.0019/255.
+  - `gate-heavily-lit`: max 2/255, mean < 0.0001/255.
+  The mean falls about 40% on the soft fixture and the chart-edge worst case collapses.
+  One soft-penumbra texel's max rises by 2 levels because the choice minimizes block
+  error, not per-texel max.
 
 ## Tasks
 

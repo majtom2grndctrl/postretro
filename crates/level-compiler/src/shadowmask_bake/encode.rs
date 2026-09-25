@@ -3,18 +3,20 @@
 
 use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection};
 
-use crate::bc5::encode_bc5_rg;
+use crate::bc5::encode_bc5_rg_masks;
 
 /// Encode a layer-major raw `Rgba8Unorm` mask fill as side-by-side BC5.
 ///
 /// Per layer, R/G become group 0 in the left half of a `2W × H` image and
-/// B/A become group 1 in the right half; that image is encoded once. Scratch
-/// is one `2W × H` RGBA image (two raw layers) plus the encoder's returned
-/// blocks for that layer (half a raw layer), reused layer to layer.
+/// B/A become group 1 in the right half; that image is encoded once with the
+/// mask encoder, which may pick BC4's 6-value mode per block. Scratch is one
+/// `2W × H` RGBA image (two raw layers) plus the encoder's returned blocks for
+/// that layer (half a raw layer), reused layer to layer.
 ///
 /// Panics in every profile on dimensions that are not multiples of 4: the
 /// encoder would otherwise drop the remainder blocks and emit a truncated
-/// payload. Bake entry points reject such atlases with an error first.
+/// payload. `prepare_fused_shadowmask` rejects such atlases with an error
+/// first; the test-reference bake entry points reach this panic instead.
 pub(super) fn encode_side_by_side_bc5(
     raw: &[u8],
     width: u32,
@@ -53,7 +55,7 @@ pub(super) fn encode_side_by_side_bc5(
                 right[1] = texel[3];
             }
         }
-        let blocks = encode_bc5_rg(&image, texture_width, height);
+        let blocks = encode_bc5_rg_masks(&image, texture_width, height);
         #[cfg(test)]
         record_encode_residency(EncodeResidency {
             raw_fill: raw.len(),
@@ -68,6 +70,8 @@ pub(super) fn encode_side_by_side_bc5(
 
 /// Bytes the encoder holds at its per-layer peak: the caller's raw fill, the
 /// output buffer, and the `2W × H` image plus that layer's returned blocks.
+/// `raw_fill` is the length of the slice passed in, not a live measurement;
+/// the raw fill's allocation and release are counted in the parent module.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct EncodeResidency {

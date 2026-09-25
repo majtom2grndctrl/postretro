@@ -619,9 +619,15 @@ impl Renderer {
         let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
         // Match the animated atlas to the static lightmap atlas the same way the
         // constructor does — one resolver, one device limit, guaranteed-equal
-        // dimensions (see `usable_atlas_dimensions`).
+        // dimensions (see `usable_atlas_dimensions`). The constructor also
+        // falls back when the header's payload is missing, so sizing sees the
+        // header only when its payload is present. The constructor still gets
+        // the header itself, so that fallback logs its error.
+        let sized_lightmap = geometry
+            .lightmap
+            .filter(|_| gpu_lighting_payloads.lightmap.is_some());
         let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
-            geometry.lightmap,
+            sized_lightmap,
             device.limits().max_texture_dimension_2d,
             device.limits().max_texture_array_layers,
         );

@@ -1,21 +1,35 @@
-// In-tree BC5 (two-channel block compression) encoder for normal-map slots.
-// See: context/lib/build_pipeline.md §Baked texture mips
+// In-tree BC5 encoder shared by normal-map mips and the shadowmask atlas.
+// See: context/lib/build_pipeline.md §Baked texture mips, §PRL section IDs
 
 //! BC5 encodes two independent channels as two back-to-back BC4 blocks per
 //! 4×4 texel block (16 bytes total): block 0 = R channel, block 1 = G channel.
 //! Each BC4 block is `[ep0: u8, ep1: u8, 48 bits of 3-bit-per-texel selectors]`.
+//! Only R and G of each RGBA texel are read; B and A are ignored.
 //!
-//! We use the 8-interpolated-value BC4 mode (`ep0 > ep1`), which spends all
-//! eight palette entries on the `[min, max]` interval — the most precise mode,
-//! and the right choice for smooth normal-map data. Endpoints come from a
-//! trivial per-block min/max search (no cluster-fit refinement). Normal maps
-//! are low-frequency relative to pixel-art diffuse, and the round-trip
-//! tolerance (unit length within 1/127, within 2° of the input direction) is
-//! met by simple min/max endpoints without refinement.
+//! Endpoints come from a trivial per-block min/max search (no cluster-fit
+//! refinement). `encode_bc5_rg` always uses the 8-interpolated-value BC4 mode
+//! (`ep0 > ep1`), which spends all eight palette entries on `[min, max]` — the
+//! most precise mode for smooth data. Normal maps are low-frequency relative to
+//! pixel-art diffuse, and the round-trip tolerance (unit length within 1/127,
+//! within 2° of the input direction) is met without refinement. Tangent-space
+//! normals store `(n.x, n.y)` in R and G; the shader reconstructs
+//! `n.z = sqrt(max(0, 1 - x*x - y*y))`.
 //!
-//! Tangent-space encoding stores `(n.x, n.y)` in the R and G channels; the
-//! shader reconstructs `n.z = sqrt(max(0, 1 - x*x - y*y))`. Only R and G of
-//! each RGBA texel are read here; B and A are ignored.
+//! `encode_bc5_rg_masks` serves visibility masks, whose blocks often mix hard
+//! 0 / 255 texels with penumbra values. The 8-value ladder then spans the whole
+//! `[0, 255]` range and rounds the penumbra coarsely, so each BC4 block also
+//! tries the 6-value mode (`ep0 <= ep1`: four interpolants between the
+//! non-extreme texels, plus explicit 0 and 255) and keeps it only when it
+//! lowers the block's error.
+
+/// BC4 palette modes an encode may choose between, per block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bc4Modes {
+    /// 8-value mode only. The normal-map payload's bytes depend on this.
+    EightValueOnly,
+    /// 8-value mode, or 6-value mode when it has strictly lower squared error.
+    EightOrSixValue,
+}
 
 /// Encode an Rgba8Unorm normal-map level into a BC5 RG byte payload.
 ///
@@ -24,6 +38,17 @@
 /// padding/skipping of sub-4 mips per the per-mip rule. Blocks are emitted in
 /// row-major 4×4 order, 16 bytes each (BC4 R block then BC4 G block).
 pub fn encode_bc5_rg(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    encode_bc5_rg_with(rgba, width, height, Bc4Modes::EightValueOnly)
+}
+
+/// Encode an Rgba8Unorm image of visibility masks (R and G) into a BC5 RG
+/// byte payload, choosing the 6-value BC4 mode per block where it is more
+/// accurate. Layout and preconditions match [`encode_bc5_rg`].
+pub fn encode_bc5_rg_masks(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    encode_bc5_rg_with(rgba, width, height, Bc4Modes::EightOrSixValue)
+}
+
+fn encode_bc5_rg_with(rgba: &[u8], width: u32, height: u32, modes: Bc4Modes) -> Vec<u8> {
     debug_assert!(
         width >= 4 && height >= 4 && width % 4 == 0 && height % 4 == 0,
         "BC5 input must be ≥4 and a multiple of 4 in both dimensions (got {width}×{height})"
@@ -53,8 +78,8 @@ pub fn encode_bc5_rg(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
                     g[i] = rgba[base + 1];
                 }
             }
-            out.extend_from_slice(&encode_bc4_block(&r));
-            out.extend_from_slice(&encode_bc4_block(&g));
+            out.extend_from_slice(&encode_bc4_block(&r, modes));
+            out.extend_from_slice(&encode_bc4_block(&g, modes));
         }
     }
 
@@ -63,8 +88,8 @@ pub fn encode_bc5_rg(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 
 /// Build the eight-entry palette for the 8-interpolated-value BC4 mode, where
 /// `ep0 > ep1`. Index 0 = ep0 (max), index 1 = ep1 (min), indices 2..=7 are
-/// the 6 interpolated entries between them using the D3D/wgpu hardware integer
-/// formulas so selector assignment matches what the GPU reconstructs.
+/// the 6 interpolated entries between them using the D3D/wgpu integer
+/// formulas.
 // The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladder (6:1 … 1:6).
 #[allow(clippy::identity_op)]
 fn bc4_palette(ep0: u8, ep1: u8) -> [u8; 8] {
@@ -74,7 +99,9 @@ fn bc4_palette(ep0: u8, ep1: u8) -> [u8; 8] {
     palette[0] = ep0;
     palette[1] = ep1;
     // Indices 2..=7 are the 6 interpolated entries between ep0 (index 0) and ep1 (index 1).
-    // Integer division matches the hardware palette exactly, preventing encoder-vs-GPU drift.
+    // Hardware interpolates in float; integer division truncates, so an
+    // interpolant sits at most 1 LSB below what the GPU reconstructs. Endpoints
+    // and constant blocks are exact.
     palette[2] = ((6 * e0 + 1 * e1) / 7) as u8;
     palette[3] = ((5 * e0 + 2 * e1) / 7) as u8;
     palette[4] = ((4 * e0 + 3 * e1) / 7) as u8;
@@ -84,9 +111,29 @@ fn bc4_palette(ep0: u8, ep1: u8) -> [u8; 8] {
     palette
 }
 
+/// Build the eight-entry palette for the 6-interpolated-value BC4 mode, where
+/// `ep0 <= ep1`: the endpoints, four interpolants between them (same integer
+/// truncation as [`bc4_palette`]), then explicit 0 and 255.
+// The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladder (4:1 … 1:4).
+#[allow(clippy::identity_op)]
+fn bc4_palette_six(ep0: u8, ep1: u8) -> [u8; 8] {
+    let e0 = ep0 as u32;
+    let e1 = ep1 as u32;
+    [
+        ep0,
+        ep1,
+        ((4 * e0 + 1 * e1) / 5) as u8,
+        ((3 * e0 + 2 * e1) / 5) as u8,
+        ((2 * e0 + 3 * e1) / 5) as u8,
+        ((1 * e0 + 4 * e1) / 5) as u8,
+        0,
+        255,
+    ]
+}
+
 /// Encode one 4×4 single-channel block into 8 BC4 bytes:
 /// `[ep0, ep1, 6 bytes of packed 3-bit selectors]`.
-fn encode_bc4_block(texels: &[u8; 16]) -> [u8; 8] {
+fn encode_bc4_block(texels: &[u8; 16], modes: Bc4Modes) -> [u8; 8] {
     let min = *texels.iter().min().expect("16 texels");
     let max = *texels.iter().max().expect("16 texels");
 
@@ -99,12 +146,40 @@ fn encode_bc4_block(texels: &[u8; 16]) -> [u8; 8] {
 
     // 8-value mode requires ep0 > ep1. Use max as ep0, min as ep1 so all eight
     // palette entries cover the [min, max] interval.
-    let ep0 = max;
-    let ep1 = min;
-    let palette = bc4_palette(ep0, ep1);
+    let eight = fit_bc4_block(texels, max, min, &bc4_palette(max, min));
+    if modes == Bc4Modes::EightValueOnly {
+        return eight.block;
+    }
 
-    // Pick, per texel, the palette index whose value is closest.
+    // 6-value mode spends its interpolants on the texels that are not already
+    // exact through the explicit 0 / 255 entries. A block of only 0 and 255
+    // is exact in 8-value mode (ep0 = 255, ep1 = 0), so it has nothing to gain.
+    let mut interior = texels.iter().copied().filter(|&v| v != 0 && v != 255);
+    let Some(first) = interior.next() else {
+        return eight.block;
+    };
+    let (lo, hi) = interior.fold((first, first), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    let six = fit_bc4_block(texels, lo, hi, &bc4_palette_six(lo, hi));
+    // Ties keep the 8-value block, so the choice is deterministic and only a
+    // strictly better fit changes mode.
+    if six.squared_error < eight.squared_error {
+        six.block
+    } else {
+        eight.block
+    }
+}
+
+/// One BC4 block and its squared error against the source texels.
+struct Bc4Fit {
+    block: [u8; 8],
+    squared_error: u32,
+}
+
+/// Select, per texel, the nearest palette entry (lowest index on ties) and
+/// pack the block for the given endpoint order.
+fn fit_bc4_block(texels: &[u8; 16], ep0: u8, ep1: u8, palette: &[u8; 8]) -> Bc4Fit {
     let mut selectors = [0u8; 16];
+    let mut squared_error = 0u32;
     for (i, &v) in texels.iter().enumerate() {
         let mut best_idx = 0u8;
         let mut best_err = u16::MAX;
@@ -116,6 +191,7 @@ fn encode_bc4_block(texels: &[u8; 16]) -> [u8; 8] {
             }
         }
         selectors[i] = best_idx;
+        squared_error += u32::from(best_err) * u32::from(best_err);
     }
 
     // Pack 16 × 3-bit selectors (48 bits) little-endian into 6 bytes.
@@ -130,12 +206,16 @@ fn encode_bc4_block(texels: &[u8; 16]) -> [u8; 8] {
     for (i, byte) in block[2..8].iter_mut().enumerate() {
         *byte = ((bits >> (8 * i)) & 0xFF) as u8;
     }
-    block
+    Bc4Fit {
+        block,
+        squared_error,
+    }
 }
 
-/// Decode one BC4 block (8 bytes) back to 16 channel values using the D3D/wgpu
-/// hardware integer interpolation formulas, so tests catch encoder-vs-hardware
-/// drift.
+/// Decode one BC4 block (8 bytes) back to 16 channel values with both D3D/wgpu
+/// palette modes. Interpolants use integer division, so they match the GPU's
+/// float interpolation within 1 LSB (truncated low); endpoints, the 6-value
+/// mode's explicit 0 / 255, and constant blocks match exactly.
 #[cfg(test)]
 // The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladders (6:1 … 1:6 and 4:1 … 1:4).
 #[allow(clippy::identity_op)]
@@ -148,7 +228,7 @@ fn decode_bc4_block(block: &[u8; 8]) -> [u8; 16] {
     palette[1] = ep1 as u8;
     if ep0 > ep1 {
         // 8-value mode: indices 2..=7 are the 6 interpolated entries between
-        // ep0 (index 0) and ep1 (index 1), using hardware integer division.
+        // ep0 (index 0) and ep1 (index 1).
         palette[2] = ((6 * ep0 + 1 * ep1) / 7) as u8;
         palette[3] = ((5 * ep0 + 2 * ep1) / 7) as u8;
         palette[4] = ((4 * ep0 + 3 * ep1) / 7) as u8;
@@ -318,5 +398,147 @@ mod tests {
                 "texel {i}: G channel not reproduced exactly"
             );
         }
+    }
+
+    fn squared_error(texels: &[u8; 16], decoded: &[u8; 16]) -> u32 {
+        texels
+            .iter()
+            .zip(decoded)
+            .map(|(&a, &b)| u32::from(a.abs_diff(b)).pow(2))
+            .sum()
+    }
+
+    /// Deterministic 4×4 blocks biased toward the shadowmask shape: hard 0 and
+    /// 255 texels mixed with arbitrary penumbra values.
+    fn mask_like_blocks(count: usize) -> Vec<[u8; 16]> {
+        let mut state = 0x2545_f491_u32;
+        (0..count)
+            .map(|_| {
+                std::array::from_fn(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    match state >> 30 {
+                        0 => 0,
+                        1 => 255,
+                        _ => (state >> 16) as u8,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// 8×4 image: block 0 R is a 0..=255 ramp and G cycles 0 / 128 / 255;
+    /// block 1 R is constant 77 and G a 100..=115 gradient.
+    fn two_block_fixture() -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(8 * 4 * 4);
+        for y in 0..4u8 {
+            for x in 0..8u8 {
+                let i = y * 4 + x % 4;
+                let (r, g) = if x < 4 {
+                    (i * 17, [0, 128, 255][usize::from(i % 3)])
+                } else {
+                    (77, 100 + i)
+                };
+                rgba.extend_from_slice(&[r, g, 0, 255]);
+            }
+        }
+        rgba
+    }
+
+    #[test]
+    fn bc4_masks_encode_reproduces_hard_edges_with_penumbra_exactly() {
+        let texels: [u8; 16] = std::array::from_fn(|i| [0, 128, 255][i % 3]);
+
+        // The 8-value ladder over [0, 255] has no entry near 128.
+        let eight = decode_bc4_block(&encode_bc4_block(&texels, Bc4Modes::EightValueOnly));
+        assert_eq!(
+            texels
+                .iter()
+                .zip(&eight)
+                .map(|(&a, &b)| a.abs_diff(b))
+                .max(),
+            Some(17)
+        );
+
+        let block = encode_bc4_block(&texels, Bc4Modes::EightOrSixValue);
+        assert!(
+            block[0] <= block[1],
+            "6-value mode is ep0 <= ep1: {block:?}"
+        );
+        assert_eq!(decode_bc4_block(&block), texels);
+    }
+
+    #[test]
+    fn bc4_masks_encode_switches_to_six_value_mode_only_when_it_lowers_error() {
+        let only_hard: [u8; 16] = std::array::from_fn(|i| if i % 2 == 0 { 0 } else { 255 });
+        let gradient: [u8; 16] = std::array::from_fn(|i| 100 + i as u8);
+        let ramp: [u8; 16] = std::array::from_fn(|i| i as u8 * 17);
+        // Only 0 / 255: both modes are exact, and the tie keeps 8-value mode.
+        // No hard texel: 8-value mode's finer ladder wins. Full ramp: the hard
+        // ends are present, but 8-value mode still fits the interior better.
+        for texels in [only_hard, gradient, ramp] {
+            let block = encode_bc4_block(&texels, Bc4Modes::EightOrSixValue);
+            assert_eq!(block, encode_bc4_block(&texels, Bc4Modes::EightValueOnly));
+            assert!(block[0] > block[1], "8-value mode is ep0 > ep1: {block:?}");
+        }
+        assert_eq!(
+            decode_bc4_block(&encode_bc4_block(&only_hard, Bc4Modes::EightOrSixValue)),
+            only_hard
+        );
+
+        let mut switched = 0;
+        for texels in mask_like_blocks(256) {
+            let eight = encode_bc4_block(&texels, Bc4Modes::EightValueOnly);
+            let chosen = encode_bc4_block(&texels, Bc4Modes::EightOrSixValue);
+            let eight_error = squared_error(&texels, &decode_bc4_block(&eight));
+            let chosen_error = squared_error(&texels, &decode_bc4_block(&chosen));
+            if chosen == eight {
+                continue;
+            }
+            switched += 1;
+            assert!(chosen[0] <= chosen[1], "a switched block is 6-value mode");
+            assert!(
+                chosen_error < eight_error,
+                "6-value mode must lower error ({chosen_error} vs {eight_error}): {texels:?}"
+            );
+        }
+        assert!(switched > 0, "fixture must exercise the 6-value mode");
+    }
+
+    /// Pins the normal-map payload: the mask encoder's 6-value mode must not
+    /// reach `encode_bc5_rg`. Bytes are the 8-value-only encoding of the
+    /// fixture, as shipped before the mask entry point existed.
+    #[test]
+    fn bc5_normal_map_encode_bytes_are_unchanged_by_the_mask_entry_point() {
+        let rgba = two_block_fixture();
+        let normal = encode_bc5_rg(&rgba, 8, 4);
+        assert_eq!(
+            normal,
+            [
+                255, 0, 201, 111, 183, 228, 38, 1, // block 0 R: ramp
+                255, 0, 33, 66, 132, 8, 17, 34, // block 0 G: 0 / 128 / 255
+                77, 77, 0, 0, 0, 0, 0, 0, // block 1 R: constant
+                115, 100, 201, 237, 150, 220, 36, 1, // block 1 G: gradient
+            ]
+        );
+
+        // The mask encoder differs only in the 0 / 128 / 255 block.
+        let masks = encode_bc5_rg_masks(&rgba, 8, 4);
+        assert_eq!(masks[..8], normal[..8]);
+        assert_eq!(masks[8..16], [128, 128, 198, 141, 27, 55, 110, 220]);
+        assert_eq!(masks[16..], normal[16..]);
+    }
+
+    #[test]
+    fn bc5_masks_encode_is_deterministic() {
+        let (w, h) = (16u32, 16u32);
+        let blocks = mask_like_blocks((w * h / 16) as usize * 2);
+        let values: Vec<u8> = blocks.iter().flatten().copied().collect();
+        let rgba: Vec<u8> = values
+            .chunks_exact(2)
+            .flat_map(|rg| [rg[0], rg[1], 0, 255])
+            .collect();
+        let first = encode_bc5_rg_masks(&rgba, w, h);
+        assert_eq!(first.len(), ((w / 4) * (h / 4) * 16) as usize);
+        assert_eq!(encode_bc5_rg_masks(&rgba, w, h), first);
     }
 }

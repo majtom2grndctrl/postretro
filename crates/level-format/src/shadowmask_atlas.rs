@@ -29,8 +29,9 @@ pub struct ShadowmaskAtlasSection {
     /// 0xFF when that selected light was globally dropped from the mask.
     /// Slot `s` addresses group `s / 2`, channel `s % 2`.
     pub channels: Vec<u8>,
-    /// Layer-major BC5 blocks: per layer, one `2·width × height` plane in
-    /// row-major 4×4 blocks. 255 means fully visible.
+    /// Layer-major BC5 blocks (BC4 endpoint/selector data per channel):
+    /// per layer, one `2·width × height` plane in row-major 4×4 blocks.
+    /// Decoded channel value 255 means fully visible.
     pub data: Vec<u8>,
 }
 

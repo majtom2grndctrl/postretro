@@ -11,7 +11,9 @@ use crate::map_data::MapLight;
 
 use super::assignment::*;
 use super::encode::encode_side_by_side_bc5;
-use super::{ResidentLayerTracker, SHADOWMASK_FILL_CHECKPOINT_TEXELS, allocate_shadowmask_output};
+use super::{
+    ResidentLayerTracker, SHADOWMASK_FILL_CHECKPOINT_TEXELS, allocate_shadowmask_raw_fill,
+};
 
 pub(super) fn raw_visibility_is_covered(raw_visibility: f32) -> bool {
     raw_visibility.partial_cmp(&0.0) != Some(std::cmp::Ordering::Less)
@@ -105,7 +107,7 @@ impl<'a> ShadowmaskFill<'a> {
             plane,
             compact_channels,
             channels,
-            data: allocate_shadowmask_output(data_len),
+            data: allocate_shadowmask_raw_fill(data_len),
             control,
             resident_layers,
         }
@@ -162,6 +164,8 @@ impl<'a> ShadowmaskFill<'a> {
             data: raw,
             ..
         } = self;
+        // Test-only full copy of the raw fill for exact-value assertions. It
+        // is not a `RawFillBuffer`, so the residency counters never see it.
         #[cfg(test)]
         super::record_raw_fill(&raw);
         let data = encode_side_by_side_bc5(&raw, width, height, layer_count);
@@ -201,8 +205,11 @@ impl RawFillBuffer {
         Self { bytes }
     }
 
+    /// Hands the bytes out of the tracked buffer, so they stop counting as
+    /// live raw fill here; `Drop` then sees an empty buffer.
     #[cfg(test)]
     fn into_vec(mut self) -> Vec<u8> {
+        super::raw_fill_live_bytes_sub(self.bytes.len());
         std::mem::take(&mut self.bytes)
     }
 }

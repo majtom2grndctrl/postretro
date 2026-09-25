@@ -1772,7 +1772,8 @@ fn run_after_parsing(
                 section.channels.len(),
                 section.data.len(),
             );
-        } else {
+        } else if shadowmask_overlap == crate::shadowmask_bake::ShadowmaskOverlapReport::NoSelection
+        {
             log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
         }
         crate::shadowmask_bake::log_overlap_report(

@@ -184,7 +184,7 @@ fn metadata_index_value(index: u32) -> f32 {
     }
 }
 
-fn metadata_channel_value(channel: u8) -> f32 {
+pub(crate) fn metadata_channel_value(channel: u8) -> f32 {
     if channel == SHADOWMASK_CHANNEL_DROPPED {
         FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
     } else {

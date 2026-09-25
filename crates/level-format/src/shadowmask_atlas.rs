@@ -34,10 +34,51 @@ pub struct ShadowmaskAtlasSection {
     pub data: Vec<u8>,
 }
 
+/// A `ShadowmaskAtlasSection` without its payload: the dimensions and slot
+/// table a loaded level keeps after the GPU upload takes the BC5 blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowmaskAtlasHeader {
+    pub format: u32,
+    pub width: u32,
+    pub height: u32,
+    pub layer_count: u32,
+    pub channels: Vec<u8>,
+}
+
+impl ShadowmaskAtlasHeader {
+    /// Width of the GPU texture that holds both groups side by side.
+    pub fn texture_width(&self) -> Option<u32> {
+        self.width.checked_mul(SHADOWMASK_GROUP_COUNT)
+    }
+}
+
 impl ShadowmaskAtlasSection {
     /// Width of the GPU texture that holds both groups side by side.
     pub fn texture_width(&self) -> Option<u32> {
         self.width.checked_mul(SHADOWMASK_GROUP_COUNT)
+    }
+
+    /// Split into the header a loaded level keeps and the payload only the
+    /// GPU upload reads. Moves the payload; copies nothing.
+    pub fn into_parts(self) -> (ShadowmaskAtlasHeader, Vec<u8>) {
+        let Self {
+            format,
+            width,
+            height,
+            layer_count,
+            channels,
+            data,
+        } = self;
+        (
+            ShadowmaskAtlasHeader {
+                format,
+                width,
+                height,
+                layer_count,
+                channels,
+            },
+            data,
+        )
     }
 
     /// Payload bytes for one layer at these lightmap dimensions.

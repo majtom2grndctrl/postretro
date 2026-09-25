@@ -252,6 +252,7 @@ mod tests {
             leaves: Vec::new(),
             root_node_index: 0,
         };
+        let (atlas_header, _payload) = atlas.clone().into_parts();
         let mut geometry = LevelGeometry {
             vertices: &[],
             indices: &[],
@@ -271,7 +272,7 @@ mod tests {
             billboard_direct_scatter_volume: None,
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: &entity_shadow_lights,
-            shadowmask_atlas: Some(&atlas),
+            shadowmask_atlas: Some(&atlas_header),
             sdf_atlas: None,
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,

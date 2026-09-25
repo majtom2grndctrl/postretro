@@ -3,9 +3,9 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::lightmap::{
-    DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapSection,
+    DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection};
+use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasHeader};
 use wgpu::util::DeviceExt;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
@@ -126,11 +126,15 @@ impl LightmapResources {
     /// static, animated, and layout inputs are intentionally kept explicit at
     /// this renderer boundary rather than wrapped in a one-use parameter type.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// The upload owns the GPU-only payloads and drops them once the textures
+    /// exist; the level keeps only the headers.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        section: Option<&LightmapSection>,
-        shadowmask_section: Option<&ShadowmaskAtlasSection>,
+        section: Option<&LightmapHeader>,
+        shadowmask_section: Option<&ShadowmaskAtlasHeader>,
+        payloads: postretro_level_loader::GpuLightingPayloads,
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
         animated_direction_view: &wgpu::TextureView,
@@ -171,12 +175,17 @@ impl LightmapResources {
             limits.max_texture_dimension_2d,
             limits.max_texture_array_layers,
         );
+        let postretro_level_loader::GpuLightingPayloads {
+            lightmap: lightmap_payloads,
+            shadowmask: shadowmask_payload,
+        } = payloads;
+        let usable = paired_with_payload(usable, lightmap_payloads, "Lightmap");
         let present = usable.is_some();
 
         let (irradiance_tex, direction_tex) = match usable {
-            Some(sec) => (
-                upload_irradiance_texture(device, queue, sec),
-                upload_direction_texture(device, queue, sec),
+            Some((sec, payloads)) => (
+                upload_irradiance_texture(device, queue, sec, &payloads.irradiance),
+                upload_direction_texture(device, queue, sec, &payloads.direction),
             ),
             None => (
                 upload_placeholder_irradiance(device, queue),
@@ -188,9 +197,11 @@ impl LightmapResources {
             limits.max_texture_dimension_2d,
             limits.max_texture_array_layers,
         );
+        let usable_shadowmask =
+            paired_with_payload(usable_shadowmask, shadowmask_payload, "ShadowmaskAtlas");
         let shadowmask_present = usable_shadowmask.is_some();
         let shadowmask_tex = match usable_shadowmask {
-            Some(sec) => upload_shadowmask_texture(device, queue, sec),
+            Some((sec, data)) => upload_shadowmask_texture(device, queue, sec, &data),
             None => upload_placeholder_shadowmask(device, queue),
         };
 
@@ -263,6 +274,28 @@ impl LightmapResources {
             shadowmask_present,
             direction_texture: direction_tex,
         }
+    }
+}
+
+/// A usable header with the payload install moved in. A header without its
+/// payload means an earlier install of the same level already uploaded it;
+/// that falls back to the placeholder rather than panicking. A payload whose
+/// header was filtered out is dropped here, at the upload that owns it.
+fn paired_with_payload<'a, H, P>(
+    header: Option<&'a H>,
+    payload: Option<P>,
+    section_name: &str,
+) -> Option<(&'a H, P)> {
+    match (header, payload) {
+        (Some(header), Some(payload)) => Some((header, payload)),
+        (Some(_), None) => {
+            log::error!(
+                "[Renderer] {section_name} header arrived without its payload (already \
+                 uploaded by an earlier install); using the neutral placeholder"
+            );
+            None
+        }
+        (None, _) => None,
     }
 }
 
@@ -385,7 +418,7 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
 /// function keeps their sizes in lock-step (compose writes at absolute atlas
 /// coordinates; forward samples all three atlases with one normalized `lightmap_uv`).
 pub(crate) fn usable_atlas_dimensions(
-    section: Option<&LightmapSection>,
+    section: Option<&LightmapHeader>,
     max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
 ) -> Option<(u32, u32)> {
@@ -398,10 +431,10 @@ pub(crate) fn usable_atlas_dimensions(
 /// neutral placeholder. Pure dimension-vs-limit comparison — unit-testable
 /// without a real wgpu device.
 fn filter_usable_section(
-    section: Option<&LightmapSection>,
+    section: Option<&LightmapHeader>,
     max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
-) -> Option<&LightmapSection> {
+) -> Option<&LightmapHeader> {
     section
         .filter(|s| s.irr_width > 0 && s.irr_height > 0)
         .filter(|s| s.dir_width > 0 && s.dir_height > 0)
@@ -449,10 +482,10 @@ fn filter_usable_section(
 }
 
 fn filter_usable_shadowmask_section(
-    section: Option<&ShadowmaskAtlasSection>,
+    section: Option<&ShadowmaskAtlasHeader>,
     max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
-) -> Option<&ShadowmaskAtlasSection> {
+) -> Option<&ShadowmaskAtlasHeader> {
     section
         .filter(|s| s.width > 0 && s.height > 0 && s.layer_count > 0)
         .filter(|s| {
@@ -518,7 +551,8 @@ pub fn atlas_format_filterable(adapter: &wgpu::Adapter) -> bool {
 fn upload_irradiance_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    sec: &LightmapSection,
+    sec: &LightmapHeader,
+    irradiance: &[u8],
 ) -> wgpu::Texture {
     // Branch the texture format on the section's stored tag. Both formats bind
     // through the same group-4 BGL slot (`Float { filterable: true }`) and
@@ -555,7 +589,7 @@ fn upload_irradiance_texture(
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
-        &sec.irradiance,
+        irradiance,
     )
 }
 
@@ -577,7 +611,8 @@ pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
 fn upload_direction_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    sec: &LightmapSection,
+    sec: &LightmapHeader,
+    direction: &[u8],
 ) -> wgpu::Texture {
     // `texture_2d_array`, sharing `layer_count` with the irradiance atlas. The
     // `direction` blob is layer-major, so one `LayerMajor` upload covers all layers.
@@ -598,7 +633,7 @@ fn upload_direction_texture(
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
-        &sec.direction,
+        direction,
     )
 }
 
@@ -617,7 +652,7 @@ fn direction_texture_format(direction_format: u32) -> wgpu::TextureFormat {
 /// groups side by side, one layer per lightmap layer. Callers pass a section
 /// that `filter_usable_shadowmask_section` kept.
 pub(crate) fn shadowmask_texture_descriptor(
-    sec: &ShadowmaskAtlasSection,
+    sec: &ShadowmaskAtlasHeader,
 ) -> wgpu::TextureDescriptor<'static> {
     wgpu::TextureDescriptor {
         label: Some("Shadowmask Atlas"),
@@ -640,7 +675,8 @@ pub(crate) fn shadowmask_texture_descriptor(
 pub(crate) fn upload_shadowmask_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    sec: &ShadowmaskAtlasSection,
+    sec: &ShadowmaskAtlasHeader,
+    data: &[u8],
 ) -> wgpu::Texture {
     // The payload is layer-major BC5 blocks, exactly the `LayerMajor` order
     // `create_texture_with_data` expects for a block-compressed array.
@@ -648,7 +684,7 @@ pub(crate) fn upload_shadowmask_texture(
         queue,
         &shadowmask_texture_descriptor(sec),
         wgpu::util::TextureDataOrder::LayerMajor,
-        &sec.data,
+        data,
     )
 }
 
@@ -750,39 +786,32 @@ mod tests {
             .collect()
     }
 
-    fn fake_section(width: u32, height: u32) -> LightmapSection {
+    fn fake_section(width: u32, height: u32) -> LightmapHeader {
         fake_section_layers(width, height, 1)
     }
 
-    fn fake_section_layers(width: u32, height: u32, layer_count: u32) -> LightmapSection {
-        LightmapSection {
+    fn fake_section_layers(width: u32, height: u32, layer_count: u32) -> LightmapHeader {
+        LightmapHeader {
             layer_count,
             irr_width: width,
             irr_height: height,
             irr_texel_density: 0.04,
-            irradiance: Vec::new(),
             irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
             dir_width: width,
             dir_height: height,
             dir_texel_density: 0.04,
-            direction: Vec::new(),
             direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
             mode: LightmapMode::Shadowed,
         }
     }
 
-    fn fake_shadowmask_section(
-        width: u32,
-        height: u32,
-        layer_count: u32,
-    ) -> ShadowmaskAtlasSection {
-        ShadowmaskAtlasSection {
+    fn fake_shadowmask_section(width: u32, height: u32, layer_count: u32) -> ShadowmaskAtlasHeader {
+        ShadowmaskAtlasHeader {
             format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
             width,
             height,
             layer_count,
             channels: vec![0],
-            data: Vec::new(),
         }
     }
 
@@ -924,7 +953,7 @@ mod tests {
     /// The device limit the renderer pins at acquisition.
     const PINNED_TEXTURE_DIMENSION: u32 = 8192;
 
-    fn shadowmask_filter_errors(section: &ShadowmaskAtlasSection) -> (bool, Vec<String>) {
+    fn shadowmask_filter_errors(section: &ShadowmaskAtlasHeader) -> (bool, Vec<String>) {
         let mut kept = false;
         let captured = capture_logs(|| {
             kept = filter_usable_shadowmask_section(Some(section), PINNED_TEXTURE_DIMENSION, 256)
@@ -1021,8 +1050,53 @@ mod tests {
         assert_eq!(bc5_bytes * 2, raw_bytes);
         assert_eq!(
             bc5_bytes,
-            ShadowmaskAtlasSection::payload_len(width, height, layer_count).unwrap() as u64,
+            postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection::payload_len(
+                width,
+                height,
+                layer_count
+            )
+            .unwrap() as u64,
             "the upload's texture must hold exactly the section payload"
+        );
+    }
+
+    // Pins: partial-lighting-install, release-then-reload. The upload pairs a
+    // usable header with the payload install moved in; nothing else uploads.
+    #[test]
+    fn upload_pairs_usable_headers_with_their_moved_payloads_only() {
+        let header = fake_shadowmask_section(64, 64, 1);
+        assert_eq!(
+            paired_with_payload(Some(&header), Some(vec![7u8]), "ShadowmaskAtlas"),
+            Some((&header, vec![7u8]))
+        );
+        assert_eq!(
+            paired_with_payload::<ShadowmaskAtlasHeader, Vec<u8>>(
+                None,
+                Some(vec![7u8]),
+                "ShadowmaskAtlas"
+            ),
+            None,
+            "a filtered-out header's payload is dropped at the upload"
+        );
+        assert_eq!(
+            paired_with_payload::<ShadowmaskAtlasHeader, Vec<u8>>(None, None, "ShadowmaskAtlas"),
+            None,
+            "a level with neither section installs placeholders"
+        );
+        let captured = capture_logs(|| {
+            assert_eq!(
+                paired_with_payload::<_, Vec<u8>>(Some(&header), None, "ShadowmaskAtlas"),
+                None
+            );
+        });
+        assert!(
+            captured
+                .iter()
+                .any(|(level, message)| *level == Level::Error
+                    && message.starts_with(
+                        "[Renderer] ShadowmaskAtlas header arrived without its payload"
+                    )),
+            "a header whose payload is gone degrades loudly: {captured:?}"
         );
     }
 

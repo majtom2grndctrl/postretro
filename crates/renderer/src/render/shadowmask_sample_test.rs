@@ -520,7 +520,8 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
         eprintln!("[shadowmask_sample_test] skipping: no BC-capable GPU adapter available");
         return;
     };
-    let texture = upload_shadowmask_texture(&ctx.device, &ctx.queue, &fixture_section());
+    let (header, data) = fixture_section().into_parts();
+    let texture = upload_shadowmask_texture(&ctx.device, &ctx.queue, &header, &data);
 
     let mut probes = Vec::new();
     let mut expectations = Vec::new();

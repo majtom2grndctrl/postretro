@@ -103,7 +103,7 @@ impl Renderer {
             kinematic_geometry: None,
             texture_materials: &empty_materials,
         };
-        self.install_level_geometry(&empty_geometry);
+        self.install_level_geometry(&empty_geometry, Default::default());
 
         self.full_mut().smoke_pass.clear_collections();
         self.full_mut().mesh_pass.release_level_resources();
@@ -123,8 +123,14 @@ impl Renderer {
     }
 
     /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
+    /// Takes the level's GPU-only lightmap and shadowmask payloads by value and
+    /// drops them once their textures exist.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
-    pub fn install_level_geometry(&mut self, geometry: &LevelGeometry<'_>) {
+    pub fn install_level_geometry(
+        &mut self,
+        geometry: &LevelGeometry<'_>,
+        gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
+    ) {
         let Self {
             device,
             queue,
@@ -653,6 +659,7 @@ impl Renderer {
             queue,
             geometry.lightmap,
             geometry.shadowmask_atlas,
+            gpu_lighting_payloads,
             &lightmap_bgl,
             &animated_lightmap.forward_view,
             &animated_lightmap.direction_forward_view,

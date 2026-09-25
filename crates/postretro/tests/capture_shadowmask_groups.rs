@@ -33,15 +33,15 @@ fn workspace_root() -> PathBuf {
 
 /// Compile the fixture beside its source so capture derives the dev material
 /// tree from the standard `content/dev/maps` layout.
-fn compile_fixture(workspace: &Path) -> tempfile::TempPath {
-    let source_map = workspace.join("content/dev/maps/shadowmask-groups-capture.map");
+fn compile_fixture(workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    let source_map = workspace.join(format!("content/dev/maps/{map_name}.map"));
     assert!(
         source_map.is_file(),
         "fixture missing: {}",
         source_map.display()
     );
     let map = tempfile::Builder::new()
-        .prefix(".shadowmask-groups-capture-")
+        .prefix(&format!(".{map_name}-"))
         .suffix(".prl")
         .tempfile_in(workspace.join("content/dev/maps"))
         .expect("reserve fixture PRL path in content/dev/maps")
@@ -149,41 +149,60 @@ fn write_variant(
 /// Capture `map` looking at the north wall. Fails rather than skips without
 /// an adapter: this proof does not count unless it ran.
 fn capture(workspace: &Path, scratch: &Path, map: &Path, label: &str) -> RgbaImage {
+    let camera = serde_json::json!({
+        // Quake (500, 40, 192), facing the north wall.
+        "position": [-1.016, 4.877, -12.7],
+        "yaw_deg": 90.0,
+        "pitch_deg": 0.0,
+        "fov_deg": 90.0
+    });
+    capture_scene(workspace, scratch, map, label, camera, None).0
+}
+
+/// Run one capture and return its image and stderr. `force_active` is the
+/// scene's optional forced-animation list.
+fn capture_scene(
+    workspace: &Path,
+    scratch: &Path,
+    map: &Path,
+    label: &str,
+    camera: serde_json::Value,
+    force_active: Option<serde_json::Value>,
+) -> (RgbaImage, String) {
     let scene_path = scratch.join(format!("{label}.scene.json"));
     let output_path = scratch.join(format!("{label}.png"));
-    let scene = serde_json::json!({
+    let mut scene = serde_json::json!({
         "map": map.display().to_string(),
-        "camera": {
-            // Quake (500, 40, 192), facing the north wall.
-            "position": [-1.016, 4.877, -12.7],
-            "yaw_deg": 90.0,
-            "pitch_deg": 0.0,
-            "fov_deg": 90.0
-        },
+        "camera": camera,
         "resolution": [CAPTURE_WIDTH, CAPTURE_HEIGHT],
         "output": output_path.display().to_string()
     });
+    if let Some(force_active) = force_active {
+        scene["force_active"] = force_active;
+    }
     fs::write(&scene_path, serde_json::to_vec_pretty(&scene).unwrap()).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_postretro"))
         .arg("--capture")
         .arg(&scene_path)
         .env("POSTRETRO_SH_STREAMING", "sync-proof")
+        .env("RUST_LOG", "warn")
         .current_dir(workspace)
         .output()
         .expect("launch postretro capture");
+    let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
     assert!(
         result.status.success(),
-        "capture `{label}` failed\nstdout:\n{}\nstderr:\n{}",
+        "capture `{label}` failed\nstdout:\n{}\nstderr:\n{stderr}",
         String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr),
     );
-    image::ImageReader::open(&output_path)
+    let image = image::ImageReader::open(&output_path)
         .expect("open capture PNG")
         .with_guessed_format()
         .expect("detect capture format")
         .decode()
         .expect("decode capture PNG")
-        .to_rgba8()
+        .to_rgba8();
+    (image, stderr)
 }
 
 /// Per-channel light added over `base`; negative where `image` is darker.
@@ -223,7 +242,7 @@ fn open_only(slot: u8) -> [u8; 4] {
 fn every_selected_light_reads_its_own_slot_in_either_group() {
     let workspace = workspace_root();
     let scratch = tempfile::tempdir().expect("scratch dir");
-    let compiled = compile_fixture(&workspace);
+    let compiled = compile_fixture(&workspace, "shadowmask-groups-capture");
     let sections = read_sections(&compiled);
     let baked = shadowmask_of(&sections);
 
@@ -329,4 +348,53 @@ fn every_selected_light_reads_its_own_slot_in_either_group() {
             );
         }
     }
+}
+
+// Pin: animated-after-take. The animated contribution atlas is sized from the
+// lightmap header install keeps; the payloads have already moved into the
+// upload. A mismatch would fall back to the dummy atlas with a renderer error.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
+fn animated_lights_render_after_lightmap_payloads_move_into_the_upload() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let compiled = compile_fixture(&workspace, "spawner-test");
+    // Frames the static wall in alarm_light's authored cone.
+    let camera = serde_json::json!({
+        "position": [6.1, 2.2, -2.5],
+        "yaw_deg": 77.0,
+        "pitch_deg": -12.0,
+        "fov_deg": 90.0
+    });
+    let (rest, rest_stderr) = capture_scene(
+        &workspace,
+        scratch.path(),
+        &compiled,
+        "alarm-rest",
+        camera.clone(),
+        None,
+    );
+    let (alarm, alarm_stderr) = capture_scene(
+        &workspace,
+        scratch.path(),
+        &compiled,
+        "alarm-forced",
+        camera,
+        Some(serde_json::json!([{ "tag": "alarm_light", "radiance": [4.0, 0.0, 0.0] }])),
+    );
+    for stderr in [&rest_stderr, &alarm_stderr] {
+        assert!(
+            !stderr.contains("[Renderer]"),
+            "the install must not degrade any lighting resource:\n{stderr}"
+        );
+    }
+    let reddened = alarm
+        .pixels()
+        .zip(rest.pixels())
+        .filter(|(alarm, rest)| i32::from(alarm[0]) - i32::from(rest[0]) > 12)
+        .count();
+    assert!(
+        reddened >= 64,
+        "the forced animated alarm must redden the world through the animated atlas; {reddened} pixels"
+    );
 }

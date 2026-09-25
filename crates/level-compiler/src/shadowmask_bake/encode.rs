@@ -53,10 +53,52 @@ pub(super) fn encode_side_by_side_bc5(
                 right[1] = texel[3];
             }
         }
-        out.extend_from_slice(&encode_bc5_rg(&image, texture_width, height));
+        let blocks = encode_bc5_rg(&image, texture_width, height);
+        #[cfg(test)]
+        record_encode_residency(EncodeResidency {
+            raw_fill: raw.len(),
+            output_capacity: out.capacity(),
+            scratch: image.len() + blocks.len(),
+        });
+        out.extend_from_slice(&blocks);
     }
     debug_assert_eq!(out.len(), payload_len);
     out
+}
+
+/// Bytes the encoder holds at its per-layer peak: the caller's raw fill, the
+/// output buffer, and the `2W × H` image plus that layer's returned blocks.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct EncodeResidency {
+    pub(super) raw_fill: usize,
+    pub(super) output_capacity: usize,
+    pub(super) scratch: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PEAK_ENCODE_RESIDENCY: std::cell::Cell<Option<EncodeResidency>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn record_encode_residency(residency: EncodeResidency) {
+    PEAK_ENCODE_RESIDENCY.with(|peak| {
+        let total = |r: EncodeResidency| r.raw_fill + r.output_capacity + r.scratch;
+        if peak
+            .get()
+            .is_none_or(|current| total(residency) > total(current))
+        {
+            peak.set(Some(residency));
+        }
+    });
+}
+
+#[cfg(test)]
+pub(super) fn take_peak_encode_residency() -> Option<EncodeResidency> {
+    PEAK_ENCODE_RESIDENCY.with(std::cell::Cell::take)
 }
 
 /// The payload a fully visible raw fill encodes to, built without the raw

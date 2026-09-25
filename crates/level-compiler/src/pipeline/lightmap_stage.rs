@@ -63,7 +63,9 @@ pub(crate) fn bake_fused_prepared(
     };
     // P1: the shadowmask whole-section memo and channel assignment are both
     // resolved before the lightmap memo can choose to skip the walk.
+    let level_label = args.input.display().to_string();
     let mut shadowmask = shadowmask_bake::prepare_fused_shadowmask(
+        &level_label,
         shadow_selection,
         alpha_lights,
         &shared,
@@ -73,7 +75,7 @@ pub(crate) fn bake_fused_prepared(
         args.soft_shadow_samples,
         stage_cache,
         shadowmask_control,
-    );
+    )?;
 
     if static_lights.is_empty() || prepared.placements.is_empty() {
         let (shadowmask, shadowmask_elapsed) = shadowmask.finish();

@@ -24,7 +24,7 @@ pub(super) struct ShadowmaskFill<'a> {
     plane: usize,
     compact_channels: Vec<u8>,
     channels: Vec<u8>,
-    data: Vec<u8>,
+    data: RawFillBuffer,
     control: Option<&'a BakeControl>,
     resident_layers: Option<&'a ResidentLayerTracker>,
 }
@@ -154,13 +154,14 @@ impl<'a> ShadowmaskFill<'a> {
     /// Encodes the raw fill and drops it before the section exists, so no
     /// cached or returned section coexists with the raw buffer.
     pub(super) fn finish(self) -> ShadowmaskAtlasSection {
-        let RawShadowmaskFill {
+        let Self {
             width,
             height,
             layer_count,
             channels,
             data: raw,
-        } = self.finish_raw();
+            ..
+        } = self;
         #[cfg(test)]
         super::record_raw_fill(&raw);
         let data = encode_side_by_side_bc5(&raw, width, height, layer_count);
@@ -175,19 +176,61 @@ impl<'a> ShadowmaskFill<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn finish_raw(self) -> RawShadowmaskFill {
         RawShadowmaskFill {
             width: self.width,
             height: self.height,
             layer_count: self.layer_count,
             channels: self.channels,
-            data: self.data,
+            data: self.data.into_vec(),
         }
+    }
+}
+
+/// The raw fill buffer. Test builds count its live bytes when it is dropped,
+/// so the compile-time bound observes the release itself.
+pub(super) struct RawFillBuffer {
+    bytes: Vec<u8>,
+}
+
+impl RawFillBuffer {
+    pub(super) fn new(bytes: Vec<u8>) -> Self {
+        #[cfg(test)]
+        super::raw_fill_live_bytes_add(bytes.len());
+        Self { bytes }
+    }
+
+    #[cfg(test)]
+    fn into_vec(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+}
+
+impl std::ops::Deref for RawFillBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::ops::DerefMut for RawFillBuffer {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes
+    }
+}
+
+#[cfg(test)]
+impl Drop for RawFillBuffer {
+    fn drop(&mut self) {
+        super::raw_fill_live_bytes_sub(self.bytes.len());
     }
 }
 
 /// The completed fill before encoding: layer-major `Rgba8Unorm`, one mask
 /// slot per channel, 255 fully visible.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RawShadowmaskFill {
     pub(super) width: u32,

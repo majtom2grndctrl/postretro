@@ -61,6 +61,21 @@ impl SparseInstallPlan {
     }
 }
 
+/// Little-endian f16 halves. Tile payloads are most of a cluster's bytes, so
+/// the little-endian host path is one bulk copy rather than a per-half loop.
+fn f16_halves(bytes: &[u8]) -> Vec<u16> {
+    if cfg!(target_endian = "little") {
+        let count = bytes.len() / 2;
+        let mut halves = vec![0u16; count];
+        bytemuck::cast_slice_mut(&mut halves).copy_from_slice(&bytes[..count * 2]);
+        return halves;
+    }
+    bytes
+        .chunks_exact(2)
+        .map(|half| u16::from_le_bytes([half[0], half[1]]))
+        .collect()
+}
+
 pub(super) fn parse_sparse_rows(
     cluster_id: u32,
     bytes: &[u8],
@@ -188,12 +203,11 @@ pub(super) fn parse_sparse_rows(
             .ok()
             .and_then(|value| value.checked_mul(2))
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        row.tile_f16 = tile_payload
-            .get(start..end)
-            .ok_or(malformed(cluster_id, "sparse tile payload is truncated"))?
-            .chunks_exact(2)
-            .map(|half| u16::from_le_bytes([half[0], half[1]]))
-            .collect();
+        row.tile_f16 = f16_halves(
+            tile_payload
+                .get(start..end)
+                .ok_or(malformed(cluster_id, "sparse tile payload is truncated"))?,
+        );
         row_tile_start = row_tile_end;
     }
 

@@ -31,6 +31,8 @@ pub(super) struct PlannerTopology {
     /// are both represented here.
     pub(super) owners: Vec<Vec<u32>>,
     pub(super) requested_resident_bytes: Vec<u64>,
+    /// Encoded id-50 chunk length per cluster: the bytes a read of it moves.
+    pub(super) encoded_chunk_bytes: Vec<u64>,
     pub(super) chunk_hashes: Vec<[u8; 32]>,
 }
 
@@ -316,6 +318,12 @@ impl PlannerTopology {
             .iter()
             .map(|entry| entry.requested_resident_bytes)
             .collect();
+        let encoded_chunk_bytes = manifest
+            .payloads
+            .index
+            .iter()
+            .map(|entry| entry.payload_len)
+            .collect();
         let chunk_hashes = manifest
             .payloads
             .index
@@ -333,6 +341,7 @@ impl PlannerTopology {
                 .map(|owners| owners.into_iter().collect())
                 .collect(),
             requested_resident_bytes,
+            encoded_chunk_bytes,
             chunk_hashes,
         })
     }

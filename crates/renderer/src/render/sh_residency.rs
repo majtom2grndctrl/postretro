@@ -52,7 +52,7 @@ pub struct ShResidencyAllocation {
 /// This is allocation accounting rather than a portable driver-memory query:
 /// opaque driver padding and resources outside the SH install boundary are not
 /// included.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShResidencyReport {
     pub allocations: Vec<ShResidencyAllocation>,
     pub total_bytes: u64,
@@ -89,7 +89,10 @@ pub struct ShStreamingAllocationSummary {
 /// are exact frame snapshots. Their high-water upper bounds sum independently
 /// checked worker and controller maxima, so the report cannot understate a
 /// transfer but does not claim that sum was one simultaneous peak.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// The fields after `retries` mirror [`super::ShStreamingLiveDiagnostics`]:
+/// controller, I/O worker, and renderer install counters for the same frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShStreamingLifecycleSummary {
     pub non_evictable_overshoot_bytes: u64,
     pub encoded_current_bytes: u64,
@@ -110,6 +113,29 @@ pub struct ShStreamingLifecycleSummary {
     pub installs: u64,
     pub evictions: u64,
     pub retries: u64,
+    pub warm_clusters: u64,
+    pub cancelled_requests: u64,
+    pub discarded_reads: u64,
+    pub discarded_read_bytes: u64,
+    pub decoded_bytes_installed: u64,
+    pub last_drain_decoded_bytes: u64,
+    pub max_drain_decoded_bytes: u64,
+    pub budget_limited_drains: u64,
+    pub reads_issued: u64,
+    pub coalesced_reads: u64,
+    pub read_bytes: u64,
+    pub gap_bytes: u64,
+    pub read_latency_p50_ms: f32,
+    pub read_latency_p95_ms: f32,
+    pub read_latency_max_ms: f32,
+    pub decode_latency_max_ms: f32,
+    pub install_cpu_total_micros: u64,
+    pub install_cpu_max_drain_micros: u64,
+    pub install_cpu_last_drain_micros: u64,
+    pub install_cpu_max_steady_drain_micros: u64,
+    pub pool_growth_events: u64,
+    pub pool_growth_bytes: u64,
+    pub pool_growth_cpu_micros: u64,
 }
 
 impl ShResidencyReport {

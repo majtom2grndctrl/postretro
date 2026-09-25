@@ -46,6 +46,30 @@ fn drain_accepts_dependent_first_evictions_but_rejects_duplicate_ids() {
     assert!(duplicate.validate_contract(2, [7; 32]).is_err());
 }
 
+#[test]
+fn drain_accepts_more_ready_clusters_than_the_retired_two_install_cap() {
+    let ready = (0..5)
+        .map(|cluster_id| PreparedShCluster {
+            generation: 1,
+            content_tag: [7; 32],
+            chunk: postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload {
+                cluster_id,
+                bytes: Vec::new(),
+                blocks: Vec::new(),
+            },
+        })
+        .collect();
+    let batch = ShDrainBatch {
+        generation: 1,
+        content_tag: [7; 32],
+        ready,
+        ..ShDrainBatch::default()
+    };
+    batch
+        .validate_contract(8, [7; 32])
+        .expect("the install byte budget, not the boundary, bounds ready count");
+}
+
 fn entry(section_id: SectionId, size: u64) -> SectionEntry {
     entry_at(section_id, 0, size)
 }

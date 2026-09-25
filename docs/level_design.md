@@ -250,7 +250,8 @@ are never pressure-suppressed or selected as eviction victims.
 
 Set `_stream_priority` to an integer from `0` through `3`; blank and `0` mean
 no priority hint. Positive values take the maximum where regions overlap and
-rank only optional seam warm-up and two-hop prefetch work under pressure.
+rank only optional seam warm-up and nearby prefetch work, ahead of distance
+from the camera, including which of it yields under pressure.
 They never outrank visible or pinned demand. Use priority to retain the more
 important of several otherwise-safe optional regions, not to increase the GPU
 pool budget or guarantee a pop-free cold doorway.

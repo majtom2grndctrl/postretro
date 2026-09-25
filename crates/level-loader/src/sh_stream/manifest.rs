@@ -2,6 +2,7 @@
 //! See: context/lib/build_pipeline.md §PRL Compilation.
 
 use std::fs::File;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -132,22 +133,56 @@ impl ShStreamManifest {
         self.decode_encoded_cluster(cluster_id, bytes)
     }
 
-    /// Production positional read for a single encoded chunk.
-    pub fn read_encoded_cluster(&self, cluster_id: u32) -> Result<Vec<u8>, PrlLoadError> {
-        self.read_encoded_cluster_with(cluster_id, |file, offset, len| {
-            read_vec_at(file, offset, len, "id-50 chunk")
-        })
+    /// Absolute PRL file range of one cluster's encoded chunk, from the id-50
+    /// index. A canonical empty cluster yields an empty range and needs no read.
+    pub fn chunk_file_range(&self, cluster_id: u32) -> Result<Range<u64>, PrlLoadError> {
+        let local = self.payloads.section().payload_range(cluster_id)?;
+        let region = self.payload_file_region()?;
+        let offset = |local: u64| {
+            region
+                .start
+                .checked_add(local)
+                .ok_or(ClusterShPayloadsError::SizeOverflow(
+                    "id-50 chunk file offset",
+                ))
+        };
+        Ok(offset(local.start)?..offset(local.end)?)
     }
 
-    /// Read one encoded chunk through an injectable positional reader. Worker
-    /// tests can delay this seam without introducing a cursor or reopening the
-    /// file; production uses `read_vec_at` and platform `FileExt`.
+    /// One positional read of an absolute file span that may cover several
+    /// chunks and the gaps between them. Any span reaching outside the id-50
+    /// payload region is rejected before allocation.
+    pub fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
+        let region = self.payload_file_region()?;
+        if range.start > range.end || range.start < region.start || range.end > region.end {
+            return Err(stream_error(format!(
+                "file span {}..{} is outside the id-50 payload region {}..{}",
+                range.start, range.end, region.start, region.end
+            )));
+        }
+        read_vec_at(
+            &self.file,
+            range.start,
+            range.end - range.start,
+            "id-50 span",
+        )
+    }
+
+    /// Read one encoded chunk through an injectable positional reader. Tests
+    /// can delay this seam without introducing a cursor or reopening the file;
+    /// production uses `read_vec_at` and platform `FileExt`.
     pub fn read_encoded_cluster_with(
         &self,
         cluster_id: u32,
         reader: impl FnOnce(&File, u64, u64) -> Result<Vec<u8>, PrlLoadError>,
     ) -> Result<Vec<u8>, PrlLoadError> {
-        let range = self.payloads.section().payload_range(cluster_id)?;
+        let range = self.chunk_file_range(cluster_id)?;
+        reader(&self.file, range.start, range.end - range.start)
+    }
+
+    /// Absolute file range of the id-50 chunk bodies: the section minus its
+    /// metadata prefix.
+    fn payload_file_region(&self) -> Result<Range<u64>, PrlLoadError> {
         let payload_entry = self
             .container
             .find_section(SectionId::ClusterShPayloads as u32)
@@ -157,11 +192,12 @@ impl ShStreamManifest {
         let start = payload_entry
             .offset
             .checked_add(metadata_len)
-            .and_then(|offset| offset.checked_add(range.start))
-            .ok_or(ClusterShPayloadsError::SizeOverflow(
-                "id-50 chunk file offset",
-            ))?;
-        reader(&self.file, start, range.end - range.start)
+            .ok_or(ClusterShPayloadsError::SizeOverflow("id-50 payload offset"))?;
+        let end = payload_entry
+            .offset
+            .checked_add(payload_entry.size)
+            .ok_or(ClusterShPayloadsError::SizeOverflow("id-50 section end"))?;
+        Ok(start..end)
     }
 
     /// Decode and verify the chunk against the validated manifest, including

@@ -1,7 +1,6 @@
 //! Loader-to-renderer drain lifecycle and synchronous proof gate.
 //! See: context/lib/rendering_pipeline.md §4
 
-use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use super::*;
@@ -57,9 +56,9 @@ impl ShResidencyController {
         }
     }
 
-    /// Reserves one of four lifecycle permits for the next worker or
-    /// synchronous source read. Task 11 can feed the returned identity to a
-    /// worker without introducing an app-owned type at the renderer boundary.
+    /// Reserves one lifecycle permit for the next worker or synchronous source
+    /// read. Workers receive the returned identity without introducing an
+    /// app-owned type at the renderer boundary.
     pub(crate) fn take_next_request(
         &mut self,
     ) -> Result<Option<ShClusterRequest>, ShResidencyControllerError> {
@@ -69,16 +68,43 @@ impl ShResidencyController {
         let Some(cluster_id) = self.next_request_cluster()? else {
             return Ok(None);
         };
-        self.states[cluster_id as usize].state = ClusterResidencyState::Queued;
         self.permits_in_use = self.permits_in_use.checked_add(1).ok_or(
             ShResidencyControllerError::AccountingOverflow("stream permits"),
         )?;
+        let state = &mut self.states[cluster_id as usize];
+        state.state = ClusterResidencyState::Queued;
+        let mandatory = matches!(
+            state.class,
+            Some(TargetClass::Visible | TargetClass::Pinned)
+        );
         Ok(Some(ShClusterRequest {
             generation: self.generation,
             content_tag: self.content_tag,
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
+            mandatory,
         }))
+    }
+
+    /// A request the I/O issuer skipped because its cluster left the target
+    /// set before the read. It returns to `Absent` with its permit released
+    /// even if the cluster is targeted again by now: no bytes were read, so
+    /// the next request simply re-issues it. Never a failure, never a warning.
+    pub(crate) fn admit_cancelled_request(
+        &mut self,
+        request: ShClusterRequest,
+    ) -> Result<(), ShResidencyControllerError> {
+        if !self.matches_completion_identity(request)
+            || self.states[request.cluster_id as usize].state != ClusterResidencyState::Queued
+        {
+            return Ok(());
+        }
+        let mut cancelled_requests = self.counters.cancelled_requests;
+        Self::increment_counter(&mut cancelled_requests, "cancelled requests")?;
+        self.release_permit()?;
+        self.states[request.cluster_id as usize].state = ClusterResidencyState::Absent;
+        self.counters.cancelled_requests = cancelled_requests;
+        Ok(())
     }
 
     /// A failed worker completion releases exactly the request's permit and
@@ -101,6 +127,7 @@ impl ShResidencyController {
         self.mark_failed(request.cluster_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn matches_queued_request(&self, request: ShClusterRequest) -> bool {
         self.matches_completion_identity(request)
             && self.targets.contains(&request.cluster_id)
@@ -118,6 +145,32 @@ impl ShResidencyController {
     /// the app side before renderer admission, releasing its permit exactly
     /// once. A checked loader decode has already verified the chunk hash.
     pub(crate) fn admit_prepared(
+        &mut self,
+        prepared: PreparedShCluster,
+    ) -> Result<ShDrainAdmission, ShResidencyControllerError> {
+        // Counted in encoded bytes so the figure shares a unit with the
+        // workers' read counters; a foreign cluster id counts no bytes.
+        let read_bytes = self
+            .topology
+            .encoded_chunk_bytes
+            .get(prepared.chunk.cluster_id as usize)
+            .copied()
+            .unwrap_or(0);
+        let admission = self.admit_prepared_payload(prepared)?;
+        if admission != ShDrainAdmission::Ready {
+            let mut counters = self.counters;
+            Self::increment_counter(&mut counters.discarded_reads, "discarded reads")?;
+            Self::add_to_counter(
+                &mut counters.discarded_read_bytes,
+                read_bytes,
+                "discarded read bytes",
+            )?;
+            self.counters = counters;
+        }
+        Ok(admission)
+    }
+
+    fn admit_prepared_payload(
         &mut self,
         prepared: PreparedShCluster,
     ) -> Result<ShDrainAdmission, ShResidencyControllerError> {
@@ -156,8 +209,8 @@ impl ShResidencyController {
         Ok(ShDrainAdmission::Ready)
     }
 
-    /// Emits no more than two renderer-ready chunks plus an initial reset or
-    /// sorted target deltas for the deterministic sync-proof path. This path
+    /// Emits a decoded-byte-bounded set of renderer-ready chunks plus an
+    /// initial reset or sorted target deltas for the sync-proof path. This path
     /// deliberately never emits evictions or changes targets for budget
     /// pressure: Task 10's proof gate remains a stable no-eviction baseline.
     pub(crate) fn take_drain_batch(&mut self) -> Result<ShDrainBatch, ShResidencyControllerError> {
@@ -171,6 +224,21 @@ impl ShResidencyController {
         &mut self,
     ) -> Result<ShDrainBatch, ShResidencyControllerError> {
         self.take_drain_batch_with_eviction(true)
+    }
+
+    /// One async frame's controller work after completions are admitted: the
+    /// drain batch first, then new read requests. The drain's budget policy
+    /// may suppress optional targets, so requests taken before it could name
+    /// a cluster this same frame has already dropped.
+    pub(crate) fn take_async_drain_batch_and_requests(
+        &mut self,
+    ) -> Result<(ShDrainBatch, Vec<ShClusterRequest>), ShResidencyControllerError> {
+        let batch = self.take_async_drain_batch()?;
+        let mut requests = Vec::new();
+        while let Some(request) = self.take_next_request()? {
+            requests.push(request);
+        }
+        Ok((batch, requests))
     }
 
     fn take_drain_batch_with_eviction(
@@ -228,7 +296,22 @@ impl ShResidencyController {
                 cluster_id,
             )
         });
-        for cluster_id in ready_ids.into_iter().take(MAX_INSTALLS_PER_DRAIN) {
+        let (admitted, drain_bytes) = self.select_install_budget(&ready_ids)?;
+        let mut counters = self.counters;
+        Self::add_to_counter(
+            &mut counters.decoded_bytes_installed,
+            drain_bytes,
+            "decoded bytes installed",
+        )?;
+        if admitted > 0 {
+            counters.last_drain_decoded_bytes = drain_bytes;
+            counters.max_drain_decoded_bytes = counters.max_drain_decoded_bytes.max(drain_bytes);
+        }
+        if admitted < ready_ids.len() {
+            Self::increment_counter(&mut counters.budget_limited_drains, "budget-limited drains")?;
+        }
+        self.counters = counters;
+        for cluster_id in ready_ids.into_iter().take(admitted) {
             let ready = self
                 .ready
                 .remove(&cluster_id)
@@ -239,223 +322,28 @@ impl ShResidencyController {
         Ok(batch)
     }
 
-    /// Enforce the CPU-side policy budget without pretending it is a second
-    /// GPU allocation. Active pool capacity is renderer-owned; this budget
-    /// only ranks logical working-set demand to decide which cold optional work may
-    /// be suppressed before the renderer has to grow a pool.
-    fn apply_budget_policy(&mut self) -> Result<(), ShResidencyControllerError> {
-        let nominal = self.accounting.nominal_cluster_bytes()?;
-        let mut projected = self.projected_logical_demand()?;
-
-        // Only cold optional work is pressure-eligible. A target owner is
-        // pinned while any other target still depends on it; owner closure is
-        // then preserved before the renderer independently checks installed
-        // dependencies at the release boundary.
-        // Recompute eligibility after every suppression. A prefetch owner may
-        // initially be pinned only by a colder prefetch dependent; once that
-        // dependent leaves, the owner is eligible in this same bounded drain
-        // rather than forcing an avoidable growth/extra-frame residency.
-        while projected > nominal {
-            let Some(cluster_id) = self
-                .targets
-                .iter()
-                .copied()
-                .filter(|&cluster_id| self.pressure_evictable_optional(cluster_id))
-                .min_by(|left, right| self.compare_pressure_keys(*left, *right))
-            else {
-                break;
-            };
-            let state = self.states[cluster_id as usize].state;
-            let released = match state {
-                ClusterResidencyState::Sampleable => {
-                    self.topology.requested_resident_bytes[cluster_id as usize]
-                }
-                ClusterResidencyState::Ready => self.ready.get(&cluster_id).map_or(0, |_ready| {
-                    self.topology.requested_resident_bytes[cluster_id as usize]
-                }),
-                // A just-installed cluster is deliberately protected. A
-                // queued/absent request has no logical occupancy yet.
-                ClusterResidencyState::InstalledUncomposed
-                | ClusterResidencyState::Queued
-                | ClusterResidencyState::Absent
-                | ClusterResidencyState::Failed => 0,
-            };
-            {
-                let state = &mut self.states[cluster_id as usize];
-                state.suppressed = true;
-                state.class = None;
-                if let Some(failure) = &mut state.failure {
-                    failure.left_target = true;
-                    failure.left_target_horizon_revision = Some(self.horizon_revision);
-                }
-            }
-            self.targets.remove(&cluster_id);
-            projected = projected.saturating_sub(released);
-        }
-        // Owner safety can change as optional dependents yield. Report only
-        // the demand still protected after the final target set is selected.
-        let protected = self.non_evictable_target_bytes()?;
-        self.set_non_evictable_overshoot(protected.saturating_sub(nominal));
-        Ok(())
-    }
-
-    fn non_evictable_target_bytes(&self) -> Result<u64, ShResidencyControllerError> {
-        self.targets.iter().try_fold(0u64, |total, &cluster_id| {
-            // Optional work normally yields to pressure, but it becomes
-            // non-evictable when it was just installed or is an owner still
-            // needed by another target. Count that pinned work with visible,
-            // resident, and hysteresis targets so a real floor overage is
-            // never hidden behind its current class.
-            if self.pressure_evictable_optional(cluster_id) {
-                return Ok(total);
-            }
-            total
-                .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
+    /// Returns how many leading clusters of `ordered` fit the decoded-byte
+    /// budget, and their byte sum. The first always fits whatever its size, so
+    /// an oversized chunk cannot stall residency. Selection stops at the first
+    /// cluster over budget rather than skipping ahead to smaller, lower-priority
+    /// work.
+    fn select_install_budget(
+        &self,
+        ordered: &[u32],
+    ) -> Result<(usize, u64), ShResidencyControllerError> {
+        let mut total = 0u64;
+        for (admitted, cluster_id) in ordered.iter().enumerate() {
+            let next = total
+                .checked_add(self.ready[cluster_id].byte_charge)
                 .ok_or(ShResidencyControllerError::AccountingOverflow(
-                    "non-evictable logical demand",
-                ))
-        })
-    }
-
-    fn projected_logical_demand(&self) -> Result<u64, ShResidencyControllerError> {
-        self.targets.iter().try_fold(0u64, |total, &cluster_id| {
-            match self.states[cluster_id as usize].state {
-                ClusterResidencyState::Sampleable | ClusterResidencyState::InstalledUncomposed => {
-                    total
-                        .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
-                        .ok_or(ShResidencyControllerError::AccountingOverflow(
-                            "projected logical demand",
-                        ))
-                }
-                ClusterResidencyState::Ready => total
-                    .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
-                    .ok_or(ShResidencyControllerError::AccountingOverflow(
-                        "projected logical demand",
-                    )),
-                _ => Ok(total),
+                    "drain decoded bytes",
+                ))?;
+            if admitted > 0 && next > MAX_INSTALL_DECODED_BYTES_PER_DRAIN {
+                return Ok((admitted, total));
             }
-        })
-    }
-
-    fn pressure_evictable_optional(&self, cluster_id: u32) -> bool {
-        let state = &self.states[cluster_id as usize];
-        if !state.class.is_some_and(TargetClass::is_pressure_eligible)
-            || state.state == ClusterResidencyState::InstalledUncomposed
-        {
-            return false;
+            total = next;
         }
-        !self.targets.iter().any(|&dependent| {
-            dependent != cluster_id
-                && self.topology.owners[dependent as usize].contains(&cluster_id)
-        })
-    }
-
-    fn departed_eviction_order(&self) -> Vec<u32> {
-        let eligible: BTreeSet<_> = self
-            .states
-            .iter()
-            .enumerate()
-            .filter_map(|(cluster_id, state)| {
-                (state.state == ClusterResidencyState::Sampleable
-                    && !self.targets.contains(&(cluster_id as u32))
-                    && !self.topology.pinned_clusters.contains(&(cluster_id as u32))
-                    && !matches!(
-                        state.class,
-                        Some(TargetClass::Visible | TargetClass::Pinned)
-                    ))
-                .then_some(cluster_id as u32)
-            })
-            .collect();
-        // Expired hysteresis departures are released first. Pressure-only
-        // evictions are the remaining optional work; victim selection already
-        // used the pressure comparator. Release IDs follow the canonical
-        // dependency-safe drain ordering, not that selection sequence.
-        let departed: BTreeSet<_> = eligible
-            .iter()
-            .copied()
-            .filter(|&cluster_id| !self.states[cluster_id as usize].suppressed)
-            .collect();
-        let pressured: BTreeSet<_> = eligible.difference(&departed).copied().collect();
-        let mut ordered = self.dependent_first_eviction_order(departed);
-        ordered.extend(self.dependent_first_eviction_order(pressured));
-        ordered
-    }
-
-    fn dependent_first_eviction_order(&self, mut remaining: BTreeSet<u32>) -> Vec<u32> {
-        let mut ordered = Vec::with_capacity(remaining.len());
-        while !remaining.is_empty() {
-            let mut leaves: Vec<_> = remaining
-                .iter()
-                .copied()
-                .filter(|&candidate| {
-                    !remaining.iter().any(|&dependent| {
-                        dependent != candidate
-                            && self.topology.owners[dependent as usize].contains(&candidate)
-                    })
-                })
-                .collect();
-            // Planner topology rejects owner cycles. The deterministic fallback
-            // still avoids an infinite loop if a malformed test fixture slips
-            // through a future construction path.
-            if leaves.is_empty() {
-                leaves.extend(remaining.iter().copied());
-            }
-            leaves.sort_by(|left, right| self.compare_eviction_keys(*left, *right));
-            for cluster_id in leaves {
-                remaining.remove(&cluster_id);
-                ordered.push(cluster_id);
-            }
-        }
-        ordered
-    }
-
-    fn set_non_evictable_overshoot(&mut self, bytes: u64) {
-        self.non_evictable_overshoot_bytes = bytes;
-        if bytes == 0 {
-            self.overshoot_reported = false;
-        } else if !self.overshoot_reported {
-            self.overshoot_reported = true;
-            log::warn!(
-                "[SH streaming] non-evictable logical demand exceeds the effective floor by {bytes} bytes"
-            );
-        }
-    }
-
-    fn compare_eviction_keys(&self, left: u32, right: u32) -> Ordering {
-        match (self.eviction_key(left), self.eviction_key(right)) {
-            (Some(left), Some(right)) => left
-                .last_visible_time
-                .total_cmp(&right.last_visible_time)
-                .then_with(|| left.last_target_time.total_cmp(&right.last_target_time))
-                .then_with(|| left.cluster_id.cmp(&right.cluster_id)),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => left.cmp(&right),
-        }
-    }
-
-    /// Pressure preserves old all-zero prefetch ordering while introducing the
-    /// authored optional ordering. Expired departures deliberately keep
-    /// `compare_eviction_keys` above, because they are no longer policy work.
-    fn compare_pressure_keys(&self, left: u32, right: u32) -> Ordering {
-        self.pressure_class_rank(left)
-            .cmp(&self.pressure_class_rank(right))
-            .then_with(|| {
-                self.states[left as usize]
-                    .effective_priority
-                    .cmp(&self.states[right as usize].effective_priority)
-            })
-            .then_with(|| self.compare_eviction_keys(left, right))
-    }
-
-    fn pressure_class_rank(&self, cluster_id: u32) -> u8 {
-        match self.states[cluster_id as usize].class {
-            Some(TargetClass::Prefetch) => 0,
-            Some(TargetClass::SeamWarm) => 1,
-            // Callers only request a rank for pressure-eligible candidates;
-            // retain a total key for defensive test construction.
-            _ => 2,
-        }
+        Ok((ordered.len(), total))
     }
 
     /// Applies renderer ownership transfer after one drain. Deferred chunks
@@ -681,14 +569,5 @@ impl ShResidencyController {
         for state in &mut self.states {
             state.suppressed = false;
         }
-    }
-
-    pub(crate) fn eviction_key(&self, cluster_id: u32) -> Option<ShEvictionKey> {
-        let state = self.states.get(cluster_id as usize)?;
-        Some(ShEvictionKey {
-            last_visible_time: state.last_visible_time.unwrap_or(f64::NEG_INFINITY),
-            last_target_time: state.last_target_time.unwrap_or(f64::NEG_INFINITY),
-            cluster_id,
-        })
     }
 }

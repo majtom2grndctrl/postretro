@@ -3,76 +3,6 @@
 use super::*;
 
 impl ShResidencyState {
-    pub(super) fn mark_indirect_dirty_for_dense(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        self.indirect_dirty_rows.insert(row);
-        Ok(())
-    }
-
-    pub(super) fn add_indirect_base_row_ref(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        increment_row_ref(&mut self.indirect_base_row_refs, row)
-    }
-
-    pub(super) fn remove_indirect_base_row_ref(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        decrement_row_ref(&mut self.indirect_base_row_refs, row)
-    }
-
-    pub(super) fn refresh_indirect_resident_rows(&mut self) {
-        self.indirect_resident_rows.clear();
-        self.indirect_resident_rows
-            .extend(self.indirect_base_row_refs.keys().copied());
-        self.indirect_resident_rows
-            .extend(self.indirect_delta_row_refs.keys().copied());
-    }
-
-    pub(super) fn mark_direct_dirty_for_dense(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        self.direct_promotion_dirty_rows.insert(row);
-        self.direct_animated_dirty_rows.insert(row);
-        Ok(())
-    }
-
-    pub(super) fn add_direct_base_row_ref(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        increment_row_ref(&mut self.direct_base_row_refs, row)
-    }
-
-    pub(super) fn remove_direct_base_row_ref(
-        &mut self,
-        dense: u32,
-    ) -> Result<(), ShResidencyDrainError> {
-        let row = self.affinity_row_for_dense(dense)?;
-        decrement_row_ref(&mut self.direct_base_row_refs, row)
-    }
-
-    pub(super) fn refresh_direct_resident_rows(&mut self) {
-        self.direct_promotion_resident_rows.clear();
-        self.direct_promotion_resident_rows
-            .extend(self.direct_base_row_refs.keys().copied());
-        self.direct_promotion_resident_rows
-            .extend(self.direct_promotion_row_refs.keys().copied());
-        self.direct_animated_resident_rows = self.direct_promotion_resident_rows.clone();
-        self.direct_animated_resident_rows
-            .extend(self.direct_animated_row_refs.keys().copied());
-    }
-
     pub(super) fn affinity_row_for_dense(&self, dense: u32) -> Result<u32, ShResidencyDrainError> {
         let [width, height, depth] = self.grid_dimensions();
         let xy = width
@@ -108,7 +38,7 @@ impl ShResidencyState {
 
     pub(super) fn promote_completed(
         &mut self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
     ) -> Result<(), ShResidencyDrainError> {
         let ready = promotion_sweep_candidates(&self.pending_promotion);
         for cluster_id in ready {
@@ -132,7 +62,7 @@ impl ShResidencyState {
                     .collect();
                 if let Some(gpu) = self.gpu.as_ref() {
                     gpu.upload_sample_words_and_moments(
-                        queue,
+                        uploads,
                         &self.sampled_words,
                         &updates,
                         self.grid_dimensions(),
@@ -147,7 +77,7 @@ impl ShResidencyState {
 
     pub(super) fn evict(
         &mut self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         cluster_id: u32,
     ) -> Result<(), ShResidencyDrainError> {
         self.validate_cluster_id(cluster_id)?;
@@ -163,59 +93,62 @@ impl ShResidencyState {
             return Ok(());
         };
         let mut sample_updates = Vec::with_capacity(installed.patches.len());
+        let mut dense_rows = Vec::with_capacity(installed.patches.len());
         for patch in installed.patches {
             invalidate_dense_words(
                 &mut self.compose_words,
                 &mut self.sampled_words,
                 patch.dense,
             )?;
-            self.mark_indirect_dirty_for_dense(patch.dense)?;
-            self.remove_indirect_base_row_ref(patch.dense)?;
-            if self.direct_required {
-                self.mark_direct_dirty_for_dense(patch.dense)?;
-                self.remove_direct_base_row_ref(patch.dense)?;
-            }
+            dense_rows.push(self.affinity_row_for_dense(patch.dense)?);
             sample_updates.push((patch.dense, patch.mean_distance, patch.mean_sq_distance));
         }
-        self.refresh_indirect_resident_rows();
+        // Release per affinity row, not per probe; each release keeps the
+        // resident unions in step without rebuilding them.
+        for (row, count) in row_counts(dense_rows) {
+            self.indirect_dirty_rows.insert(row);
+            self.release_row_refs(RowRefTable::IndirectBase, row, count)?;
+            if self.direct_required {
+                self.direct_promotion_dirty_rows.insert(row);
+                self.direct_animated_dirty_rows.insert(row);
+                self.release_row_refs(RowRefTable::DirectBase, row, count)?;
+            }
+        }
         for node in installed.owned_nodes {
             if let Some(range) = self.node_slots.remove(&node) {
                 self.dense_slots.release(range)?;
             }
         }
         for (section_id, row) in installed.sparse_rows {
-            let gpu = self
-                .gpu
-                .as_ref()
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed sparse eviction requested before GPU initialization",
-                })?;
-            if section_id == INDIRECT_DELTA_ID {
-                gpu.clear_indirect_sparse_row(queue, row)?;
-            } else {
-                gpu.clear_direct_sparse_row(queue, section_id, row)?;
+            // A CPU-only state installed its rows without GPU pools, so it
+            // has no CSR pair to clear.
+            if let Some(gpu) = self.gpu.as_ref() {
+                if section_id == INDIRECT_DELTA_ID {
+                    gpu.clear_indirect_sparse_row(uploads, row)?;
+                } else {
+                    gpu.clear_direct_sparse_row(uploads, section_id, row)?;
+                }
             }
             if let Some(pool) = self.sparse_pools.get_mut(&section_id) {
                 pool.evict(row)?;
             }
             self.dirty_rows.insert((section_id, row));
-            if section_id == INDIRECT_DELTA_ID {
-                self.indirect_dirty_rows.insert(row);
-                decrement_row_ref(&mut self.indirect_delta_row_refs, row)?;
-                self.refresh_indirect_resident_rows();
-            } else if section_id == DIRECT_DELTA_ID {
-                self.direct_promotion_dirty_rows.insert(row);
-                self.direct_animated_dirty_rows.insert(row);
-                decrement_row_ref(&mut self.direct_promotion_row_refs, row)?;
-                self.refresh_direct_resident_rows();
-            } else if section_id == ANIMATED_DIRECT_DELTA_ID {
-                self.direct_animated_dirty_rows.insert(row);
-                decrement_row_ref(&mut self.direct_animated_row_refs, row)?;
-                self.refresh_direct_resident_rows();
+            match section_id {
+                INDIRECT_DELTA_ID => {
+                    self.indirect_dirty_rows.insert(row);
+                    self.release_row_refs(RowRefTable::IndirectDelta, row, 1)?;
+                }
+                DIRECT_DELTA_ID => {
+                    self.direct_promotion_dirty_rows.insert(row);
+                    self.direct_animated_dirty_rows.insert(row);
+                    self.release_row_refs(RowRefTable::DirectPromotion, row, 1)?;
+                }
+                ANIMATED_DIRECT_DELTA_ID => {
+                    self.direct_animated_dirty_rows.insert(row);
+                    self.release_row_refs(RowRefTable::DirectAnimated, row, 1)?;
+                }
+                _ => {}
             }
-        }
-        if self.direct_required {
-            self.refresh_direct_resident_rows();
         }
         self.pending_promotion.remove(&cluster_id);
         self.sampleable.remove(&cluster_id);
@@ -225,12 +158,12 @@ impl ShResidencyState {
             // values, but their indirection word is invalid so sampling uses
             // the miss policy.
             gpu.upload_changed_compose_words(
-                queue,
+                uploads,
                 &self.compose_words,
                 sample_updates.iter().map(|&(dense, _, _)| dense),
             )?;
             gpu.upload_sample_words_and_moments(
-                queue,
+                uploads,
                 &self.sampled_words,
                 &sample_updates,
                 self.grid_dimensions(),

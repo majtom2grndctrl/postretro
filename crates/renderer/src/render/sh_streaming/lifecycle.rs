@@ -16,16 +16,39 @@ impl ShResidencyState {
         // Validate the complete public handoff before target transitions,
         // retirement, promotion, eviction, or installation can mutate state.
         self.validate_batch_contract(&batch)?;
-        self.apply_targets(queue, &batch)?;
+        self.apply_targets(device, queue, &batch)?;
         self.release_retired_generations();
-        self.promote_completed(queue)?;
+        // Promotion and eviction share one upload batch, submitted before any
+        // install can reuse a released range.
+        let mut uploads = self.begin_uploads(0);
         let mut outcome = ShDrainOutcome::default();
+        let released = self.promote_and_evict(&mut uploads, batch.evictions, &mut outcome);
+        self.submit_uploads(uploads, device, queue);
+        released?;
+        let mut gpu = InstallGpu {
+            device,
+            queue,
+            sh,
+            uniform_bind_group_layout,
+            selection_weights,
+        };
+        self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;
+        Ok(outcome)
+    }
+
+    fn promote_and_evict(
+        &mut self,
+        uploads: &mut StagedUploads,
+        evictions: Vec<u32>,
+        outcome: &mut ShDrainOutcome,
+    ) -> Result<(), ShResidencyDrainError> {
+        self.promote_completed(uploads)?;
         // A dependent and its canonical owner may depart in the same batch.
         // Compute the release sequence against the installed graph first, so
         // numeric cluster order cannot evict an owner before its halo. A
         // target-dependent owner is absent from this sequence and remains
         // pinned without making the app-side logical ledger guess.
-        let requested_evictions: BTreeSet<u32> = batch.evictions.into_iter().collect();
+        let requested_evictions: BTreeSet<u32> = evictions.into_iter().collect();
         let installed: BTreeSet<u32> = self.installed.keys().copied().collect();
         for cluster_id in dependent_first_release_order(
             &requested_evictions,
@@ -33,7 +56,7 @@ impl ShResidencyState {
             &installed,
             &self.owner_dependencies,
         ) {
-            self.evict(queue, cluster_id)?;
+            self.evict(uploads, cluster_id)?;
             // `evict` rechecks live ownership while mutating rows. Report a
             // confirmed release only after its installed record is actually
             // gone; the app uses this outcome to retire its logical ledger.
@@ -42,40 +65,61 @@ impl ShResidencyState {
             }
         }
         outcome.evicted.sort_unstable();
-        for prepared in batch.ready {
-            let cluster_id = prepared.chunk.cluster_id;
-            if prepared.generation != self.generation
-                || prepared.content_tag != self.content_tag
-                || !self.targets.contains(&cluster_id)
-                || self.installed.contains_key(&cluster_id)
-            {
-                outcome.dropped.push(cluster_id);
-                continue;
-            }
-            if self.missing_owner(cluster_id) {
-                outcome.deferred.push(prepared);
-                continue;
-            }
-            match self.install(
-                device,
-                queue,
-                sh,
-                uniform_bind_group_layout,
-                selection_weights,
-                &prepared,
-            ) {
-                Ok(()) => outcome.accepted.push(cluster_id),
-                // A growth transaction may be blocked behind its one retiring
-                // generation. Keep the ready payload/permit in the outcome
-                // rather than treating capacity pressure as a malformed
-                // completion or silently losing visible lighting.
-                Err(error) if error.is_retryable_retirement_pressure() => {
-                    outcome.deferred.push(prepared);
-                }
-                Err(error) => return Err(error),
-            }
+        Ok(())
+    }
+
+    /// Install every admissible ready cluster, timing the whole per-drain
+    /// install pass (including queue writes) into the renderer counters. A
+    /// drain with no ready clusters records nothing, so the last-drain figure
+    /// always describes real install work.
+    pub(super) fn install_ready(
+        &mut self,
+        mut gpu: Option<&mut InstallGpu<'_>>,
+        ready: Vec<PreparedShCluster>,
+        outcome: &mut ShDrainOutcome,
+    ) -> Result<(), ShResidencyDrainError> {
+        if ready.is_empty() {
+            return Ok(());
         }
-        Ok(outcome)
+        let started = std::time::Instant::now();
+        let growth_events_before = self.pool_growth_events();
+        let result = (|| {
+            for prepared in ready {
+                let cluster_id = prepared.chunk.cluster_id;
+                if prepared.generation != self.generation
+                    || prepared.content_tag != self.content_tag
+                    || !self.targets.contains(&cluster_id)
+                    || self.installed.contains_key(&cluster_id)
+                {
+                    outcome.dropped.push(cluster_id);
+                    continue;
+                }
+                if self.missing_owner(cluster_id) {
+                    outcome.deferred.push(prepared);
+                    continue;
+                }
+                match self.install(gpu.as_deref_mut(), &prepared) {
+                    Ok(()) => outcome.accepted.push(cluster_id),
+                    // A growth transaction may be blocked behind its one
+                    // retiring generation. Keep the ready payload/permit in
+                    // the outcome rather than treating capacity pressure as a
+                    // malformed completion or silently losing visible
+                    // lighting.
+                    Err(error) if error.is_retryable_retirement_pressure() => {
+                        outcome.deferred.push(prepared);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        })();
+        let grew_pool = self.pool_growth_events() != growth_events_before;
+        self.install_cpu.record_drain(started.elapsed(), grew_pool);
+        result
+    }
+
+    fn pool_growth_events(&self) -> u64 {
+        self.gpu.as_ref().map_or(0, |gpu| gpu.growth.events)
     }
 
     pub(super) fn validate_batch_contract(
@@ -89,12 +133,13 @@ impl ShResidencyState {
 
     fn apply_targets(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         batch: &ShDrainBatch,
     ) -> Result<(), ShResidencyDrainError> {
         let (new_generation, next_targets) = self.plan_target_transition(batch)?;
         if new_generation {
-            self.clear_session(queue)?;
+            self.clear_session(device, queue)?;
             self.generation = batch.generation;
             self.generation_has_reset = false;
         }
@@ -168,7 +213,11 @@ impl ShResidencyState {
         Ok(())
     }
 
-    fn clear_session(&mut self, queue: &wgpu::Queue) -> Result<(), ShResidencyDrainError> {
+    fn clear_session(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), ShResidencyDrainError> {
         self.targets.clear();
         self.node_slots.clear();
         self.dense_slots = FirstFitRanges::default();
@@ -198,7 +247,8 @@ impl ShResidencyState {
         for pool in self.sparse_pools.values_mut() {
             *pool = SparsePool::new(pool.row_pairs.len());
         }
-        if let Some(gpu) = self.gpu.as_ref() {
+        let grid = self.grid_dimensions();
+        if let Some(gpu) = self.gpu.as_mut() {
             gpu.clear_all_indirect_sparse_rows(queue);
             gpu.clear_all_direct_sparse_rows(queue)?;
             let updates = (0..self.sampled_words.len())
@@ -209,12 +259,15 @@ impl ShResidencyState {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             gpu.upload_compose_words(queue, &self.compose_words);
-            gpu.upload_sample_words_and_moments(
-                queue,
+            let mut uploads = gpu.begin_uploads(0);
+            let staged = gpu.upload_sample_words_and_moments(
+                &mut uploads,
                 &self.sampled_words,
                 &updates,
-                self.grid_dimensions(),
-            )?;
+                grid,
+            );
+            gpu.submit_uploads(uploads, device, queue);
+            staged?;
         }
         Ok(())
     }

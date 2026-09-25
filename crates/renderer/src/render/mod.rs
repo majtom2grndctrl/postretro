@@ -31,6 +31,8 @@ mod sh_compose;
 mod sh_compose_dispatch;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
+#[cfg(feature = "dev-tools")]
+mod sh_diagnostics_residency;
 mod sh_indirection;
 mod sh_residency;
 mod sh_streaming;
@@ -126,7 +128,7 @@ pub use sh_residency::{
     ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
     ShStreamingLifecycleSummary,
 };
-pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot};
+pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot, ShStreamingLiveDiagnostics};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};

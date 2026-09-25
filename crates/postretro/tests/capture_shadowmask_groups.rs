@@ -350,6 +350,107 @@ fn every_selected_light_reads_its_own_slot_in_either_group() {
     }
 }
 
+/// Swap the BC4 sub-blocks of slots `a` and `b` everywhere in a side-by-side
+/// BC5 payload: slot `s` is group `s / 2`'s R (`s % 2 == 0`) or G block.
+fn swap_slot_blocks(section: &ShadowmaskAtlasSection, a: u8, b: u8) -> Vec<u8> {
+    let columns_per_group = (section.width / 4) as usize;
+    let block_rows = (section.height * section.layer_count / 4) as usize;
+    let sub_block = |row: usize, column: usize, slot: u8| {
+        let block = row * columns_per_group * 2 + (slot as usize / 2) * columns_per_group + column;
+        block * 16 + (slot as usize % 2) * 8
+    };
+    let mut data = section.data.clone();
+    for row in 0..block_rows {
+        for column in 0..columns_per_group {
+            let (x, y) = (sub_block(row, column, a), sub_block(row, column, b));
+            for byte in 0..8 {
+                data.swap(x + byte, y + byte);
+            }
+        }
+    }
+    data
+}
+
+// Pins: seam-bleed and M4. Group placement must not change what any light
+// reads: swapping which half holds the open and closed groups, or moving a
+// light's baked mask from group 0 to group 1, renders byte-identically.
+// Baked chart gutters keep UVs off each half's outer columns, so this proves
+// routing and placement in a real frame. Driven edge UVs are proven by the
+// renderer's `shadowmask_sample_test` readback.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
+fn group_placement_never_changes_what_a_light_reads() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let compiled = compile_fixture(&workspace, "shadowmask-groups-capture");
+    let sections = read_sections(&compiled);
+    let baked = shadowmask_of(&sections);
+    let maps_dir = compiled
+        .parent()
+        .expect("fixture has a parent")
+        .to_path_buf();
+    let mut written = Vec::new();
+    let mut capture_variant = |label: &str, channels: Vec<u8>, data: Vec<u8>| {
+        let path = tempfile::Builder::new()
+            .prefix(&format!(".shadowmask-groups-{label}-"))
+            .suffix(".prl")
+            .tempfile_in(&maps_dir)
+            .expect("reserve variant PRL path")
+            .into_temp_path();
+        write_variant(&sections, &baked, channels, data, &path);
+        let image = capture(&workspace, scratch.path(), &path, label);
+        written.push(path);
+        image
+    };
+
+    // Seam: the two halves differ everywhere (255 against 0). Lights 0 and 1
+    // stay open whether their group sits left or right of the seam.
+    let open_left = capture_variant(
+        "open-left",
+        vec![0, 1, 2, 3],
+        constant_payload(&baked, [255, 255, 0, 0]),
+    );
+    let open_right = capture_variant(
+        "open-right",
+        vec![2, 3, 0, 1],
+        constant_payload(&baked, [0, 0, 255, 255]),
+    );
+    let closed = capture_variant(
+        "all-closed",
+        vec![0, 1, 2, 3],
+        constant_payload(&baked, [0; 4]),
+    );
+    assert!(
+        total(&added_light(&open_left, &closed)) > 0,
+        "open lights must add specular"
+    );
+    assert_eq!(
+        open_left.as_raw(),
+        open_right.as_raw(),
+        "which half holds the open group must not change the frame"
+    );
+
+    // Group move: every group-0 light's baked mask moves into group 1 and the
+    // group-1 masks move into group 0, with the slot table following.
+    let baked_frame = capture(&workspace, scratch.path(), &compiled, "baked-placement");
+    let moved_table: Vec<u8> = baked
+        .channels
+        .iter()
+        .map(|&slot| (slot + 2) % SLOT_COUNT)
+        .collect();
+    let moved_masks = ShadowmaskAtlasSection {
+        data: swap_slot_blocks(&baked, 0, 2),
+        ..baked.clone()
+    };
+    let moved_masks = swap_slot_blocks(&moved_masks, 1, 3);
+    let moved = capture_variant("groups-moved", moved_table, moved_masks);
+    assert_eq!(
+        moved.as_raw(),
+        baked_frame.as_raw(),
+        "moving lights between groups must leave world specular unchanged"
+    );
+}
+
 // Pin: animated-after-take. The animated contribution atlas is sized from the
 // lightmap header install keeps; the payloads have already moved into the
 // upload. A mismatch would fall back to the dummy atlas with a renderer error.

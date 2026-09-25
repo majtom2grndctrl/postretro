@@ -37,9 +37,11 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
 /// Bump when the cached `ShadowmaskAtlas` bytes can change without a layer input
 /// hash change: channel assignment/drop policy, raw-visibility quantization,
-/// payload encoding (BC5 side by side since version 3), empty-section
-/// behavior, or `ShadowmaskAtlasSection::to_bytes` payload semantics.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 3;
+/// payload encoding (BC5 side by side since version 3, per-block BC4 6-value
+/// mode since version 4), memo entry layout (peak-overlap prefix since version
+/// 4), empty-section behavior, or `ShadowmaskAtlasSection::to_bytes` payload
+/// semantics.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 4;
 
 /// The shadowmask texture is `SHADOWMASK_GROUP_COUNT` lightmap widths wide and
 /// must fit the same pinned device texture dimension the lightmap does.
@@ -196,6 +198,11 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     let Some(selection) = selection.filter(|selection| !selection.light_indices.is_empty()) else {
         return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
     };
+    // No placed chart means no lightmap texel for a mask to cover. The empty-
+    // geometry atlas is 1×1 and would otherwise fail the alignment check.
+    if shared.placements.is_empty() {
+        return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
+    }
     if shared.atlas_width % 4 != 0 || shared.atlas_height % 4 != 0 {
         return Err(ShadowmaskBakeError::MisalignedAtlas {
             width: shared.atlas_width,
@@ -897,7 +904,8 @@ fn take_raw_fill_live_bytes_at_cache_write() -> Option<usize> {
 }
 
 /// Tests assert exact fill values on the raw masks the encoder consumed; BC4
-/// reproduces only block endpoints exactly.
+/// reproduces only block endpoints exactly. The copy lives outside
+/// `RawFillBuffer`, so the raw-fill residency counters exclude it.
 #[cfg(test)]
 fn record_raw_fill(raw: &[u8]) {
     LAST_RAW_FILL.with(|last| *last.borrow_mut() = Some(raw.to_vec()));
@@ -910,7 +918,8 @@ fn take_last_raw_fill() -> Vec<u8> {
         .expect("a shadowmask fill must have finished on this thread")
 }
 
-fn allocate_shadowmask_output(data_len: usize) -> RawFillBuffer {
+/// Allocates the pre-encode raw fill, initialized fully visible.
+fn allocate_shadowmask_raw_fill(data_len: usize) -> RawFillBuffer {
     #[cfg(test)]
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
     RawFillBuffer::new(vec![255; data_len])
@@ -936,6 +945,8 @@ fn reset_shadowmask_output_allocation_count() {
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(0));
 }
 
+/// Section payload allocations on this thread: a raw fill, or the encoded
+/// payload of an empty section, which has no raw fill.
 #[cfg(test)]
 fn shadowmask_output_allocation_count() -> usize {
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(std::cell::Cell::get)
@@ -2662,6 +2673,10 @@ mod tests {
 
         assert!(pruned_graph.overlaps(0, 1));
         assert_eq!(pruned_graph.snapshot(), unpruned_graph.snapshot());
+        assert_eq!(
+            pruned_graph.peak_texel_overlap(),
+            unpruned_graph.peak_texel_overlap()
+        );
 
         let layers = [
             layer(8, 8, 1, &[(covered_idx, covered_layer, 0.25)]),
@@ -2728,6 +2743,10 @@ mod tests {
 
         assert_eq!(pruned_graph.light_count(), 3);
         assert_eq!(pruned_graph.snapshot(), unpruned_graph.snapshot());
+        assert_eq!(
+            pruned_graph.peak_texel_overlap(),
+            unpruned_graph.peak_texel_overlap()
+        );
         assert!(charts.iter().all(|chart| !chart_may_receive_light(
             lights.get(1).expect("remote selected light"),
             chart_world_aabb(chart),
@@ -3628,16 +3647,61 @@ mod tests {
     fn fused_prepare_rejects_a_misaligned_atlas_naming_its_dimensions() {
         let (geometry, _, primitives, charts, placements, lights, selection) =
             top_level_multilayer_five_way_inputs();
-        let shared = SharedAtlas {
-            charts: &charts,
-            placements: &placements,
-            atlas_width: 5,
-            atlas_height: 8,
-        };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        // Width-only and height-only misalignment.
+        for (width, height) in [(5, 8), (8, 6)] {
+            let shared = SharedAtlas {
+                charts: &charts,
+                placements: &placements,
+                atlas_width: width,
+                atlas_height: height,
+            };
+            reset_shadowmask_output_allocation_count();
+            let error = prepare_fused_shadowmask(
+                "fixture",
+                Some(&selection),
+                &alpha_lights,
+                &shared,
+                &primitives,
+                &geometry,
+                DENSITY,
+                AREA_SAMPLES,
+                None,
+                &test_control(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("a {width}x{height} atlas must fail the bake"));
+            assert_eq!(
+                error,
+                ShadowmaskBakeError::MisalignedAtlas { width, height }
+            );
+            assert!(error.to_string().contains(&format!("{width}x{height}")));
+            assert_eq!(
+                shadowmask_output_allocation_count(),
+                0,
+                "no raw fill may exist for a section that cannot encode"
+            );
+        }
+    }
+
+    // Regression: the empty-geometry atlas is a 1×1 placeholder with no
+    // placements; a non-empty selection failed the alignment check on it.
+    #[test]
+    fn fused_prepare_treats_an_atlas_without_placements_as_no_section() {
+        let (geometry, _, primitives, _, _, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let shared = SharedAtlas {
+            charts: &[],
+            placements: &[],
+            atlas_width: 1,
+            atlas_height: 1,
+        };
+        let cache_dir = fresh_cache_dir("no_placements");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
         reset_shadowmask_output_allocation_count();
-        let error = prepare_fused_shadowmask(
-            "fixture",
+        let output = prepare_fused_shadowmask(
+            "empty-level.map",
             Some(&selection),
             &alpha_lights,
             &shared,
@@ -3645,24 +3709,20 @@ mod tests {
             &geometry,
             DENSITY,
             AREA_SAMPLES,
-            None,
+            Some(&cache),
             &test_control(),
         )
-        .err()
-        .expect("a 5-wide atlas must fail the bake");
+        .expect("an atlas without placements is not an error")
+        .finish();
+        assert_eq!(output.section, None);
+        assert_eq!(output.overlap, ShadowmaskOverlapReport::NoSelection);
+        assert_eq!(shadowmask_output_allocation_count(), 0, "no raw fill");
         assert_eq!(
-            error,
-            ShadowmaskBakeError::MisalignedAtlas {
-                width: 5,
-                height: 8
-            }
-        );
-        assert!(error.to_string().contains("5x8"));
-        assert_eq!(
-            shadowmask_output_allocation_count(),
+            std::fs::read_dir(&cache_dir).map_or(0, |entries| entries.count()),
             0,
-            "no raw fill may exist for a section that cannot encode"
+            "no memo entry"
         );
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 
     // Pin: wide-layer, wide-layer-warm. The omission precedes the memo probe
@@ -3911,6 +3971,10 @@ mod tests {
         )
         .expect("cache-miss section");
 
+        // Proves the `RawFillBuffer` release and the encoder's scratch. The
+        // raw-fill count comes from the allocation counter; the encoder's
+        // `raw_fill` field only echoes the slice it was handed, and the
+        // test-only `record_raw_fill` copy sits outside both.
         let raw_layer = (shared.atlas_width * shared.atlas_height * 4) as usize;
         let raw_fill = raw_layer * section.layer_count as usize;
         assert_eq!(shadowmask_output_allocation_count(), 1, "one raw fill");
@@ -4863,7 +4927,7 @@ mod tests {
 
     #[test]
     fn shadowmask_cache_epochs_pin_sparse_layer_values() {
-        assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 3);
+        assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 4);
         assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 6);
         assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 3);
     }

@@ -1,16 +1,20 @@
 // GPU readback of forward.wgsl's shadowmask sampling helper and both decode
 // paths' slot selects, against a hand-built side-by-side BC5 atlas and the
 // 2×1 placeholder, uploaded through the renderer's own upload functions.
+// Every WGSL function it runs is extracted verbatim from forward.wgsl.
 // See: context/lib/rendering_pipeline.md §4 (World specular shadowmask)
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
 // helper is WGSL, so verifying it means running it. `textureSample` needs a
 // fragment stage, so this is a small offscreen render: each pixel of a one-row
 // target evaluates one probe. The harness self-skips without a BC-capable
-// adapter and says so; a skipped run proves nothing.
+// adapter and says so; a skipped run proves nothing. Set
+// `POSTRETRO_REQUIRE_GPU` to any non-empty value other than `0` to make a
+// missing adapter fail the test instead of skipping it.
 
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, SHADOWMASK_GROUP_COUNT,
+    ShadowmaskAtlasSection,
 };
 use postretro_lighting::spec_buffer::SPEC_LIGHT_SHADOWMASK_NONE;
 
@@ -24,6 +28,13 @@ const ATLAS_HEIGHT: u32 = 8;
 const ATLAS_LAYERS: u32 = 2;
 const PROBE_BYTES: usize = 32;
 const OUTPUT_TEXEL_BYTES: u32 = 16;
+/// Render targets: the sampled mask, then the two paths' selects (even pixel)
+/// or the union attenuation at entity visibility 1 and 0 (odd pixel). Two
+/// `Rgba32Float` targets fit the default 32-byte per-sample colour limit, so
+/// each probe renders two pixels to carry every value.
+const TARGET_COUNT: usize = 2;
+const PIXELS_PER_PROBE: u32 = 2;
+const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 
 struct GpuCtx {
     device: wgpu::Device,
@@ -61,6 +72,24 @@ fn try_init_gpu() -> Option<GpuCtx> {
     Some(GpuCtx { device, queue })
 }
 
+/// A BC-capable GPU, or `None` after saying the test skipped. Under
+/// `POSTRETRO_REQUIRE_GPU` a missing adapter panics, so a run that must
+/// prove something on an adapter cannot pass by skipping.
+fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
+    if let Some(ctx) = try_init_gpu() {
+        return Some(ctx);
+    }
+    let required =
+        std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0");
+    assert!(
+        !required,
+        "[shadowmask_sample_test] {test}: POSTRETRO_REQUIRE_GPU is set but no BC-capable GPU \
+         adapter is available"
+    );
+    eprintln!("[shadowmask_sample_test] skipping {test}: no BC-capable GPU adapter available");
+    None
+}
+
 /// The text of `fn name(` through its matching closing brace in `source`.
 fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
     let start = source
@@ -83,12 +112,30 @@ fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("`{name}` body never closes");
 }
 
-fn shader_source() -> String {
-    let forward = include_str!("../shaders/forward.wgsl");
-    let dropped = forward
+/// forward.wgsl's module-scope `const NAME…;` line.
+fn wgsl_const_line(name: &str) -> &'static str {
+    FORWARD_WGSL
         .lines()
-        .find(|line| line.starts_with("const SHADOWMASK_CHANNEL_DROPPED"))
-        .expect("forward.wgsl must declare the dropped-channel sentinel");
+        .find(|line| line.starts_with(&format!("const {name}:")))
+        .unwrap_or_else(|| panic!("forward.wgsl must declare `{name}`"))
+}
+
+/// The union's skip sentinel, read from forward.wgsl so the harness asserts
+/// against the shader's own value.
+fn union_channel_none() -> u32 {
+    let line = wgsl_const_line("SHADOWMASK_UNION_CHANNEL_NONE");
+    line.split_once('=')
+        .and_then(|(_, value)| value.trim().strip_suffix("u;"))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("unparsed skip sentinel: {line}"))
+}
+
+fn shader_source() -> String {
+    let consts = [
+        wgsl_const_line("SHADOWMASK_CHANNEL_DROPPED"),
+        wgsl_const_line("SHADOWMASK_UNION_CHANNEL_NONE"),
+    ]
+    .join("\n");
     let prelude = r#"
 struct SpecLight {
     position_and_range: vec4<f32>,
@@ -119,7 +166,8 @@ struct Probe {
     let entry = r#"
 struct HarnessOut {
     @location(0) mask: vec4<f32>,
-    @location(1) selects: vec4<f32>,
+    // Even pixel: selects. Odd pixel: attenuations.
+    @location(1) values: vec4<f32>,
 };
 
 @vertex
@@ -131,21 +179,34 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
-    let probe = probes[u32(position.x)];
+    let pixel = u32(position.x);
+    let probe = probes[pixel / 2u];
     let mask = sample_shadowmask_atlas(probe.uv, probe.layer);
     var spec: SpecLight;
     spec.cone_cos = vec4<f32>(0.0, 0.0, probe.spec_channel, 0.0);
-    // The promoted-union path reads its slot as a metadata float and selects
-    // with the same `shadowmask_channel_value` after its range guards.
-    let union_vis = shadowmask_channel_value(mask, u32(probe.union_channel));
-    var out: HarnessOut;
-    out.mask = mask;
-    out.selects = vec4<f32>(
+    // `shadowmask_union_subtraction`'s own sequence: resolve the metadata
+    // float through its guard, skip NONE, then select from the hoisted mask.
+    let union_channel = shadowmask_union_channel(probe.union_channel);
+    var selects = vec4<f32>(
         shadowmask_visibility_for_spec_light(spec, mask),
-        union_vis,
-        shadowmask_attenuation(union_vis, 1.0),
+        f32(union_channel),
+        0.0,
         0.0,
     );
+    var attenuations = vec4<f32>(0.0);
+    if union_channel != SHADOWMASK_UNION_CHANNEL_NONE {
+        let baked_vis = shadowmask_channel_value(mask, union_channel);
+        selects.z = baked_vis;
+        attenuations = vec4<f32>(
+            shadowmask_attenuation(baked_vis, 1.0),
+            shadowmask_attenuation(baked_vis, 0.0),
+            0.0,
+            0.0,
+        );
+    }
+    var out: HarnessOut;
+    out.mask = mask;
+    out.values = select(selects, attenuations, (pixel & 1u) == 1u);
     return out;
 }
 "#;
@@ -154,22 +215,35 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
         "sample_shadowmask_atlas",
         "shadowmask_visibility_for_spec_light",
         "shadowmask_attenuation",
+        "shadowmask_union_channel",
     ]
     .into_iter()
-    .map(|name| wgsl_function(forward, name))
+    .map(|name| wgsl_function(FORWARD_WGSL, name))
     .collect();
-    format!("{prelude}\n{dropped}\n{}\n{entry}", helpers.join("\n\n"))
+    format!("{prelude}\n{consts}\n{}\n{entry}", helpers.join("\n\n"))
 }
 
 #[derive(Clone, Copy)]
 struct Probe {
     uv: [f32; 2],
     layer: u32,
-    /// Mask slot `0..3`, or `SHADOWMASK_CHANNEL_DROPPED`.
+    /// Mask slot `0..3`, or `SHADOWMASK_CHANNEL_DROPPED`. Drives the
+    /// world-specular channel.
     slot: u8,
+    /// The promoted-union metadata channel float, as the CPU uploads it.
+    union_channel: f32,
 }
 
 impl Probe {
+    fn new(uv: [f32; 2], layer: u32, slot: u8) -> Self {
+        Self {
+            uv,
+            layer,
+            slot,
+            union_channel: metadata_channel_value(slot),
+        }
+    }
+
     fn bytes(self) -> [u8; PROBE_BYTES] {
         let spec_channel = if self.slot == SHADOWMASK_CHANNEL_DROPPED {
             SPEC_LIGHT_SHADOWMASK_NONE
@@ -180,7 +254,7 @@ impl Probe {
             self.uv[0].to_bits(),
             self.uv[1].to_bits(),
             self.layer,
-            metadata_channel_value(self.slot).to_bits(),
+            self.union_channel.to_bits(),
             spec_channel.to_bits(),
             0,
             0,
@@ -197,8 +271,13 @@ impl Probe {
 struct ProbeResult {
     mask: [f32; 4],
     spec_visibility: f32,
+    /// `shadowmask_union_channel`'s result; the union skips the light when it
+    /// is `union_channel_none()`.
+    union_channel: u32,
+    /// The union's selected mask value; meaningful only for a real channel.
     union_visibility: f32,
     union_attenuation_at_entity_visibility_one: f32,
+    union_attenuation_at_entity_visibility_zero: f32,
 }
 
 fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<ProbeResult> {
@@ -322,8 +401,8 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
         cache: None,
     });
 
-    let width = probes.len() as u32;
-    let targets: Vec<wgpu::Texture> = (0..2)
+    let width = probes.len() as u32 * PIXELS_PER_PROBE;
+    let targets: Vec<wgpu::Texture> = (0..TARGET_COUNT)
         .map(|_| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("shadowmask_sample_test target"),
@@ -347,7 +426,7 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
         .collect();
     let row_bytes =
         (width * OUTPUT_TEXEL_BYTES).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let readbacks: Vec<wgpu::Buffer> = (0..2)
+    let readbacks: Vec<wgpu::Buffer> = (0..TARGET_COUNT)
         .map(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("shadowmask_sample_test readback"),
@@ -428,15 +507,21 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
         texels
     };
     let masks = read(&readbacks[0]);
-    let selects = read(&readbacks[1]);
+    let values = read(&readbacks[1]);
     masks
-        .into_iter()
-        .zip(selects)
-        .map(|(mask, selects)| ProbeResult {
-            mask,
-            spec_visibility: selects[0],
-            union_visibility: selects[1],
-            union_attenuation_at_entity_visibility_one: selects[2],
+        .chunks_exact(PIXELS_PER_PROBE as usize)
+        .zip(values.chunks_exact(PIXELS_PER_PROBE as usize))
+        .map(|(mask, values)| {
+            let (selects, attenuations) = (values[0], values[1]);
+            ProbeResult {
+                mask: mask[0],
+                spec_visibility: selects[0],
+                // Channels and the sentinel are small integers, exact in f32.
+                union_channel: selects[1] as u32,
+                union_visibility: selects[2],
+                union_attenuation_at_entity_visibility_one: attenuations[0],
+                union_attenuation_at_entity_visibility_zero: attenuations[1],
+            }
         })
         .collect()
 }
@@ -490,34 +575,62 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
     );
 }
 
+/// Both decode paths select slot `slot`'s own mask, or read fully lit / skip
+/// for the dropped sentinel. For a real slot, the union's attenuation is wired
+/// to that slot's mask: all of it at entity visibility 0, none at 1.
 fn assert_selects(result: &ProbeResult, slot: u8, what: &str) {
-    let expected = if slot == SHADOWMASK_CHANNEL_DROPPED {
-        1.0
-    } else {
-        result.mask[slot as usize]
-    };
+    if slot == SHADOWMASK_CHANNEL_DROPPED {
+        assert_near(
+            result.spec_visibility,
+            1.0,
+            &format!("{what}: world specular reads a dropped slot fully lit"),
+        );
+        assert_eq!(
+            result.union_channel,
+            union_channel_none(),
+            "{what}: the promoted union must skip a dropped slot"
+        );
+        return;
+    }
+    let baked_vis = result.mask[slot as usize];
     assert_near(
         result.spec_visibility,
-        expected,
+        baked_vis,
         &format!("{what}: world specular"),
+    );
+    assert_eq!(
+        result.union_channel,
+        u32::from(slot),
+        "{what}: promoted union channel"
     );
     assert_near(
         result.union_visibility,
-        expected,
+        baked_vis,
         &format!("{what}: promoted union"),
+    );
+    assert!(
+        baked_vis > 0.0,
+        "{what}: the fixture mask must be nonzero so attenuation can show it"
     );
     assert_eq!(
         result.union_attenuation_at_entity_visibility_one, 0.0,
         "{what}: static→static union attenuation must be exactly zero"
     );
+    assert_near(
+        result.union_attenuation_at_entity_visibility_zero,
+        baked_vis,
+        &format!("{what}: a fully occluded entity attenuates by the slot's own mask"),
+    );
 }
 
-// Pins: second-group-light, seam-outer-halftexel. M1 (union half), M3, M4
-// (union half).
+// Pins: second-group-light, seam-bleed, seam-outer-halftexel. M1 (union
+// half), M3, M4 (union half). Seam-bleed rides on the driven u = 0 / u = 1
+// probes against groups that differ at the seam.
 #[test]
 fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
-    let Some(ctx) = try_init_gpu() else {
-        eprintln!("[shadowmask_sample_test] skipping: no BC-capable GPU adapter available");
+    let Some(ctx) =
+        gpu_or_skip("every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv")
+    else {
         return;
     };
     let (header, data) = fixture_section().into_parts();
@@ -574,11 +687,9 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
     let expanded: Vec<Probe> = probes
         .iter()
         .flat_map(|&[u, v, layer]| {
-            slots.iter().map(move |&slot| Probe {
-                uv: [u, v],
-                layer: layer as u32,
-                slot,
-            })
+            slots
+                .iter()
+                .map(move |&slot| Probe::new([u, v], layer as u32, slot))
         })
         .collect();
     let results = run_probes(&ctx, &texture, &expanded);
@@ -597,18 +708,22 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
 // placeholder reads a real, fully visible texel at any UV or baked layer.
 #[test]
 fn placeholder_reads_fully_lit_for_every_slot_and_layer() {
-    let Some(ctx) = try_init_gpu() else {
-        eprintln!("[shadowmask_sample_test] skipping: no BC-capable GPU adapter available");
+    let Some(ctx) = gpu_or_skip("placeholder_reads_fully_lit_for_every_slot_and_layer") else {
         return;
     };
     let texture = upload_placeholder_shadowmask(&ctx.device, &ctx.queue);
+    // One real texel per group: a 1×1 placeholder would pass the reads below
+    // with both groups sharing one texel.
+    assert_eq!(texture.width(), SHADOWMASK_GROUP_COUNT);
+    assert_eq!(texture.height(), 1);
+    assert_eq!(texture.depth_or_array_layers(), 1);
     let probes: Vec<Probe> = [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0], [0.97, 0.03]]
         .into_iter()
         .flat_map(|uv| {
             [0u32, 3].into_iter().flat_map(move |layer| {
                 [0u8, 1, 2, 3, SHADOWMASK_CHANNEL_DROPPED]
                     .into_iter()
-                    .map(move |slot| Probe { uv, layer, slot })
+                    .map(move |slot| Probe::new(uv, layer, slot))
             })
         })
         .collect();
@@ -625,5 +740,49 @@ fn placeholder_reads_fully_lit_for_every_slot_and_layer() {
         );
         assert_selects(result, probe.slot, &what);
         assert_eq!(result.spec_visibility, 1.0, "{what}");
+    }
+}
+
+// M1 (union half): the union's real channel guard, run on an adapter. Every
+// metadata float the CPU never emits for a live slot — negative, fractional,
+// at or past the dropped sentinel — resolves to the skip sentinel, and the
+// real path then skips the light instead of selecting a mask. NaN is left out:
+// WGSL lets implementations assume it never occurs.
+#[test]
+fn union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata() {
+    let Some(ctx) =
+        gpu_or_skip("union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata")
+    else {
+        return;
+    };
+    let (header, data) = fixture_section().into_parts();
+    let texture = upload_shadowmask_texture(&ctx.device, &ctx.queue, &header, &data);
+    let uv = [texel_center(1, ATLAS_WIDTH), texel_center(1, ATLAS_HEIGHT)];
+    let invalid = [
+        metadata_channel_value(SHADOWMASK_CHANNEL_DROPPED),
+        -1.0,
+        -0.5,
+        0.5,
+        2.25,
+        3.999,
+        4.0,
+        5.0,
+        255.0,
+    ];
+    let probes: Vec<Probe> = invalid
+        .iter()
+        .map(|&union_channel| Probe {
+            union_channel,
+            ..Probe::new(uv, 0, SHADOWMASK_CHANNEL_DROPPED)
+        })
+        .collect();
+    let results = run_probes(&ctx, &texture, &probes);
+    for (probe, result) in probes.iter().zip(&results) {
+        assert_eq!(
+            result.union_channel,
+            union_channel_none(),
+            "union channel metadata {} must skip the light",
+            probe.union_channel
+        );
     }
 }

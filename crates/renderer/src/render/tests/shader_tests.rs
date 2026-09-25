@@ -499,9 +499,50 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
             && src.contains("const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;"),
         "shadowmask metadata sentinels must be normal numeric floats"
     );
+    // The channel guard and cast live in one named function the GPU harness
+    // (`shadowmask_sample_test.rs`) runs, so the union's real select is proven.
+    let channel_fn = wgsl_function(src, "shadowmask_union_channel");
     assert!(
-        helper.contains("channel_value >= SHADOWMASK_CHANNEL_DROPPED"),
+        channel_fn.contains("channel_value >= SHADOWMASK_CHANNEL_DROPPED"),
         "dropped channels must use the float-safe 4.0 sentinel and skip the union term before u32 casts"
+    );
+    let channel_cast = channel_fn
+        .find("return u32(channel_value);")
+        .expect("the channel helper must cast the checked numeric channel");
+    for guard in [
+        "channel_value < 0.0",
+        "channel_value >= SHADOWMASK_CHANNEL_DROPPED",
+        "floor(channel_value) != channel_value",
+        "return SHADOWMASK_UNION_CHANNEL_NONE;",
+    ] {
+        let guard_at = channel_fn
+            .find(guard)
+            .unwrap_or_else(|| panic!("the channel helper must check `{guard}`"));
+        assert!(
+            guard_at < channel_cast,
+            "channel metadata must be sentinel/range/integer-guarded (`{guard}`) before casting to u32"
+        );
+    }
+    assert!(
+        src.contains("const SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;"),
+        "the skip sentinel must lie outside the four mask slots"
+    );
+    let channel_resolve = helper
+        .find("let channel = shadowmask_union_channel(meta1.z);")
+        .expect("the union must resolve its channel through the named helper");
+    let channel_skip = helper
+        .find("channel == SHADOWMASK_UNION_CHANNEL_NONE {\n            continue;")
+        .expect("the union must skip a light whose channel is NONE");
+    let channel_select = helper
+        .find("let baked_vis = shadowmask_channel_value(mask, channel);")
+        .expect("the union must select the resolved channel from the hoisted mask");
+    assert!(
+        channel_resolve < channel_skip && channel_skip < channel_select,
+        "the union must skip a NONE channel before selecting its mask"
+    );
+    assert!(
+        !helper.contains("u32(channel_value)") && !helper.contains("u32(meta1.z)"),
+        "the union must not cast its channel outside the guarded helper"
     );
     let spec_guard = helper
         .find("spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE")
@@ -513,20 +554,10 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         spec_guard < spec_cast,
         "spec index metadata must be bounds-guarded before casting to u32"
     );
-    let channel_guard = helper
-        .find("channel_value >= SHADOWMASK_CHANNEL_DROPPED")
-        .expect("dropped channel sentinel must be checked");
-    let channel_cast = helper
-        .find("let channel = u32(channel_value);")
-        .expect("shader must cast the checked numeric channel");
-    assert!(
-        channel_guard < channel_cast,
-        "channel metadata must be sentinel/range-guarded before casting to u32"
-    );
     assert!(
         helper.contains("floor(spec_idx_value) != spec_idx_value")
             && helper.contains("floor(slot_value) != slot_value")
-            && helper.contains("floor(channel_value) != channel_value"),
+            && channel_fn.contains("floor(channel_value) != channel_value"),
         "metadata values must be integer-valued floats before u32 casts"
     );
     assert!(
@@ -697,16 +728,51 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
             && helper.matches("i32(safe_layer)").count() == 2,
         "both group samples must read the fragment's one clamped layer",
     );
-    let shadowmask_samples = "textureSample(\n        shadowmask_atlas,";
+    // Every read of the atlas binding — samples, dimension and layer queries —
+    // sits inside the helper's brace-matched body; only the binding
+    // declaration names it elsewhere. Whitespace-insensitive by construction.
+    let code = strip_line_comments(src);
+    let declaration = "@group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;";
+    let declaration_at = code
+        .find(declaration)
+        .expect("shadowmask atlas binding declaration");
+    let declaration_range = declaration_at..declaration_at + declaration.len();
+    let body = wgsl_function(&code, "sample_shadowmask_atlas");
+    let body_at = code.find(body).expect("helper body lies in the source");
+    let body_range = body_at..body_at + body.len();
+    let atlas_uses = identifier_offsets(&code, "shadowmask_atlas");
+    assert!(
+        atlas_uses.iter().any(|at| declaration_range.contains(at)),
+        "the binding declaration must name the atlas",
+    );
+    let stray: Vec<usize> = atlas_uses
+        .iter()
+        .copied()
+        .filter(|at| !declaration_range.contains(at) && !body_range.contains(at))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "all shadowmask reads must route through the layer-safe helper; stray uses at {stray:?}",
+    );
+    let atlas_samples = |text: &str| {
+        text.match_indices("textureSample(")
+            .filter(|(at, call)| {
+                let args = text[at + call.len()..].trim_start();
+                args.starts_with("shadowmask_atlas")
+                    && !args["shadowmask_atlas".len()..]
+                        .starts_with(|c: char| c.is_alphanumeric() || c == '_')
+            })
+            .count()
+    };
     assert_eq!(
-        helper.matches(shadowmask_samples).count(),
+        atlas_samples(body),
         2,
         "the helper issues exactly one sample per mask group",
     );
     assert_eq!(
-        src.matches(shadowmask_samples).count(),
+        atlas_samples(&code),
         2,
-        "all shadowmask reads must route through the layer-safe helper",
+        "all shadowmask samples must route through the layer-safe helper",
     );
     // Each group's coordinate derives only from the lightmap UV and the bound
     // texture's width: clamp half a group texel inside, then map into a half.
@@ -733,6 +799,9 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
             "fn fs_main(",
             "sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer)",
         ),
+        // The union samples once per call, so its one call must sit outside
+        // every fs_main loop too.
+        ("fn fs_main(", "shadowmask_union_subtraction("),
     ] {
         let body = &src[src.find(function).expect("call-site function must exist")..];
         let call_at = body
@@ -740,9 +809,14 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
             .expect("call site must sample through the helper");
         assert!(
             enclosing_loops(&body[..call_at]).is_empty(),
-            "{function} must hoist its shadowmask sample outside every light loop",
+            "{function} must hoist `{call}` outside every light loop",
         );
     }
+    assert_eq!(
+        code.matches("shadowmask_union_subtraction(").count(),
+        2,
+        "the union helper has its definition and exactly one fs_main call",
+    );
     assert!(
         src.contains("spec_channel >= SHADOWMASK_CHANNEL_DROPPED") && src.contains("return 1.0;"),
         "absent/dropped atlas channels must retain the fully-lit sentinel path",
@@ -759,20 +833,74 @@ fn enclosing_loops_sees_for_headers_and_closed_loops() {
         enclosing_loops("fn f() { for (var i = 0u; i < n; i = i + 1u) { } let a = 1; ").is_empty()
     );
     assert!(enclosing_loops("fn f() { if uniforms.x != 0u { ").is_empty());
+    // Braces and loop keywords inside `//` comments are not code.
+    assert!(enclosing_loops("fn f() {\n    // for each light {\n    let a = 1; ").is_empty());
+    assert_eq!(
+        enclosing_loops(
+            "fn f() { for (var i = 0u; i < n; i = i + 1u) {\n    // } done\n    let a = 1; "
+        ),
+        vec!["for"],
+    );
+}
+
+/// `source` with each `//` line comment removed. WGSL has no string
+/// literals, so every `//` starts a comment.
+fn strip_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The text of `fn name(` through its matching closing brace in `source`.
+fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
+    let start = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("WGSL source must declare `{name}`"));
+    let open = start + source[start..].find('{').expect("function body");
+    let mut depth = 0usize;
+    for (offset, ch) in source[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[start..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{name}` body never closes");
+}
+
+/// Byte offsets of `ident` where it appears as a whole WGSL identifier, not
+/// as part of a longer one such as `sample_shadowmask_atlas`.
+fn identifier_offsets(source: &str, ident: &str) -> Vec<usize> {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    source
+        .match_indices(ident)
+        .map(|(at, _)| at)
+        .filter(|&at| {
+            !source[..at].ends_with(is_ident) && !source[at + ident.len()..].starts_with(is_ident)
+        })
+        .collect()
 }
 
 /// Loop keywords whose `{` is still open at the end of `prefix`, which starts
-/// at a WGSL function declaration.
-fn enclosing_loops(prefix: &str) -> Vec<&str> {
-    let mut open: Vec<Option<&str>> = Vec::new();
+/// at a WGSL function declaration. `//` line comments are ignored.
+fn enclosing_loops(prefix: &str) -> Vec<&'static str> {
+    let code = strip_line_comments(prefix);
+    let mut open: Vec<Option<&'static str>> = Vec::new();
     let mut statement_start = 0;
     let mut paren_depth = 0usize;
-    for (index, ch) in prefix.char_indices() {
+    for (index, ch) in code.char_indices() {
         match ch {
             '(' => paren_depth += 1,
             ')' => paren_depth = paren_depth.saturating_sub(1),
             '{' => {
-                let header = &prefix[statement_start..index];
+                let header = &code[statement_start..index];
                 let keyword = ["for", "loop", "while"].into_iter().find(|keyword| {
                     header
                         .split(|c: char| !c.is_alphanumeric() && c != '_')

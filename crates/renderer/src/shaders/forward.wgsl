@@ -659,6 +659,8 @@ const SHADOWMASK_VISUALIZE_MODE: u32 = 5u;
 const SHADOWMASK_RAW_POOL_VISIBILITY_MODE: u32 = 6u;
 const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
 const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
+// `shadowmask_union_channel`'s skip sentinel; never a mask slot.
+const SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;
 const SHADOWMASK_POOL_SPOT: u32 = 0u;
 const SHADOWMASK_POOL_CUBE: u32 = 1u;
 const SHADOWMASK_POOL_SPOT_VALUE: f32 = 0.0;
@@ -808,6 +810,19 @@ fn shadowmask_attenuation(baked_vis: f32, entity_vis: f32) -> f32 {
     return baked_vis * (1.0 - entity_vis);
 }
 
+// A promoted light's mask slot from its metadata channel float, or
+// SHADOWMASK_UNION_CHANNEL_NONE for a dropped, negative, fractional or
+// out-of-range value. The union skips a light whose slot is NONE, so the u32
+// cast here follows every guard.
+fn shadowmask_union_channel(channel_value: f32) -> u32 {
+    if channel_value < 0.0 ||
+       channel_value >= SHADOWMASK_CHANNEL_DROPPED ||
+       floor(channel_value) != channel_value {
+        return SHADOWMASK_UNION_CHANNEL_NONE;
+    }
+    return u32(channel_value);
+}
+
 fn shadowmask_union_subtraction(
     world_pos: vec3<f32>,
     lightmap_uv: vec2<f32>,
@@ -858,28 +873,25 @@ fn shadowmask_union_subtraction(
         let weight = clamp(meta0.w, 0.0, 1.0);
         let pool_kind_value = meta1.x;
         let slot_value = meta1.y;
-        let channel_value = meta1.z;
+        let channel = shadowmask_union_channel(meta1.z);
 
         if weight <= 0.0 ||
            spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE ||
            spec_idx_value >= f32(spec_len) ||
-           channel_value < 0.0 ||
-           channel_value >= SHADOWMASK_CHANNEL_DROPPED {
+           channel == SHADOWMASK_UNION_CHANNEL_NONE {
             continue;
         }
         if pool_kind_value != SHADOWMASK_POOL_SPOT_VALUE && pool_kind_value != SHADOWMASK_POOL_CUBE_VALUE {
             continue;
         }
         if floor(spec_idx_value) != spec_idx_value ||
-           floor(slot_value) != slot_value ||
-           floor(channel_value) != channel_value {
+           floor(slot_value) != slot_value {
             continue;
         }
 
         let spec_idx = u32(spec_idx_value);
         let pool_kind = u32(pool_kind_value);
         let slot = u32(slot_value);
-        let channel = u32(channel_value);
         let sl = spec_lights[spec_idx];
         let direct = shadowmask_direct(sl, world_pos, mesh_n, bump_n);
         if direct.valid == 0u {

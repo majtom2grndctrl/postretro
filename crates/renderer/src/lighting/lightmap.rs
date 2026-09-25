@@ -5,7 +5,10 @@
 use postretro_level_format::lightmap::{
     DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasHeader};
+use postretro_level_format::shadowmask_atlas::{
+    SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasHeader,
+    ShadowmaskAtlasSection,
+};
 use wgpu::util::DeviceExt;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
@@ -35,8 +38,8 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 /// Static-light shadowmask atlas (BC5 `.rg`, two mask groups side by side at
-/// twice the lightmap width), layer-matched to the lightmap irradiance atlas. Sampled by forward union-subtraction and static
-/// world-specular visibility.
+/// twice the lightmap width), layer-matched to the lightmap irradiance atlas.
+/// Sampled by forward union-subtraction and static world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 /// Packed static-atlas-layer → animated-atlas-slot lookup for the forward
 /// shader. One `vec4<u32>` holds four static layers in WGSL uniform space.
@@ -125,10 +128,10 @@ impl LightmapResources {
     /// Builds one coherent group-4 resource set. Its independently constructed
     /// static, animated, and layout inputs are intentionally kept explicit at
     /// this renderer boundary rather than wrapped in a one-use parameter type.
-    #[allow(clippy::too_many_arguments)]
     ///
     /// The upload owns the GPU-only payloads and drops them once the textures
     /// exist; the level keeps only the headers.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -155,10 +158,11 @@ impl LightmapResources {
         });
 
         // Linear sampler for the irradiance + animated atlases (both
-        // Rgba16Float) and the BC5 shadowmask. Turns baked penumbra ramps into continuous gradients
-        // under magnification. Always used — Rgba16Float linear-filterability
-        // is a hard runtime requirement; non-filterable adapters are rejected
-        // at init (see `atlas_format_filterable`). See rendering_pipeline.md §4.
+        // Rgba16Float) and the BC5 shadowmask. Turns baked penumbra ramps into
+        // continuous gradients under magnification. Always used — Rgba16Float
+        // linear-filterability is a hard runtime requirement; non-filterable
+        // adapters are rejected at init (see `atlas_format_filterable`). See
+        // rendering_pipeline.md §4.
         let filtering_sampler = device.create_sampler(&filtering_sampler_descriptor());
 
         // Defensive runtime guard: the init adapter pre-check guarantees the
@@ -198,7 +202,8 @@ impl LightmapResources {
             limits.max_texture_array_layers,
         );
         let usable_shadowmask =
-            paired_with_payload(usable_shadowmask, shadowmask_payload, "ShadowmaskAtlas");
+            paired_with_payload(usable_shadowmask, shadowmask_payload, "ShadowmaskAtlas")
+                .filter(|(sec, data)| shadowmask_payload_matches_header(sec, data));
         let shadowmask_present = usable_shadowmask.is_some();
         let shadowmask_tex = match usable_shadowmask {
             Some((sec, data)) => upload_shadowmask_texture(device, queue, sec, &data),
@@ -277,10 +282,11 @@ impl LightmapResources {
     }
 }
 
-/// A usable header with the payload install moved in. A header without its
-/// payload means an earlier install of the same level already uploaded it;
-/// that falls back to the placeholder rather than panicking. A payload whose
-/// header was filtered out is dropped here, at the upload that owns it.
+/// A usable header with the payload install moved in. A header that arrives
+/// without its payload — hand-built geometry with default payloads, or a
+/// payload already taken — falls back to the placeholder rather than
+/// panicking. A payload whose header was filtered out is dropped here, at the
+/// upload that owns it.
 fn paired_with_payload<'a, H, P>(
     header: Option<&'a H>,
     payload: Option<P>,
@@ -290,8 +296,8 @@ fn paired_with_payload<'a, H, P>(
         (Some(header), Some(payload)) => Some((header, payload)),
         (Some(_), None) => {
             log::error!(
-                "[Renderer] {section_name} header arrived without its payload (already \
-                 uploaded by an earlier install); using the neutral placeholder"
+                "[Renderer] {section_name} header arrived without its payload; using the \
+                 neutral placeholder"
             );
             None
         }
@@ -413,10 +419,13 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
 
 /// Dimensions the static irradiance/direction atlases are created at, using the
 /// same usability filter as `new()`. Returns `None` when the section is absent,
-/// zero-area, or oversize — exactly when the static path falls back to the 1×1
-/// placeholder. Routing both the static and animated atlas creation through this
-/// function keeps their sizes in lock-step (compose writes at absolute atlas
-/// coordinates; forward samples all three atlases with one normalized `lightmap_uv`).
+/// zero-area, or oversize. `new()` also falls back to the 1×1 placeholder when
+/// a usable header arrives without its payload, so callers pass the header
+/// only when its payload is present; the two then fall back together.
+/// Routing both the static and animated atlas creation through this function
+/// keeps their sizes in lock-step (compose writes at absolute atlas
+/// coordinates; forward samples all three atlases with one normalized
+/// `lightmap_uv`).
 pub(crate) fn usable_atlas_dimensions(
     section: Option<&LightmapHeader>,
     max_texture_dimension_2d: u32,
@@ -489,6 +498,20 @@ fn filter_usable_shadowmask_section(
     section
         .filter(|s| s.width > 0 && s.height > 0 && s.layer_count > 0)
         .filter(|s| {
+            // `from_bytes` rejects unknown tags; this guards hand-built
+            // sections, since the upload decodes only the one BC5 layout.
+            let known = s.format == SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE;
+            if !known {
+                log::error!(
+                    "[Renderer] ShadowmaskAtlas format tag {:#010x} is not BC5 side-by-side; \
+                         disabling entity-to-world static-light shadowmask; static world \
+                         specular falls back to fully lit for this level",
+                    s.format,
+                );
+            }
+            known
+        })
+        .filter(|s| {
             // The compiler never emits misaligned data and `from_bytes` rejects
             // it; this guards hand-built sections before BC5 texture creation.
             let aligned = s.width % 4 == 0 && s.height % 4 == 0;
@@ -533,6 +556,28 @@ fn filter_usable_shadowmask_section(
             }
             fits
         })
+}
+
+/// Whether a paired shadowmask payload holds exactly the BC5 bytes its header
+/// describes. `from_bytes` enforces this on the wire; hand-built geometry can
+/// still pair a header with a payload of another shape, which would fail
+/// texture creation, so it degrades to the placeholder instead.
+fn shadowmask_payload_matches_header(sec: &ShadowmaskAtlasHeader, data: &[u8]) -> bool {
+    let expected = ShadowmaskAtlasSection::payload_len(sec.width, sec.height, sec.layer_count);
+    let matches = expected == Some(data.len());
+    if !matches {
+        log::error!(
+            "[Renderer] ShadowmaskAtlas payload is {} bytes, expected {:?} for {}x{}x{}; \
+                 disabling entity-to-world static-light shadowmask; static world specular \
+                 falls back to fully lit for this level",
+            data.len(),
+            expected,
+            sec.width,
+            sec.height,
+            sec.layer_count,
+        );
+    }
+    matches
 }
 
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
@@ -1060,8 +1105,9 @@ mod tests {
         );
     }
 
-    // Pins: partial-lighting-install, release-then-reload. The upload pairs a
-    // usable header with the payload install moved in; nothing else uploads.
+    // Pin: partial-lighting-install, plus the header-without-payload fallback.
+    // The upload pairs a usable header with the payload install moved in;
+    // nothing else uploads, and a header with no payload degrades loudly.
     #[test]
     fn upload_pairs_usable_headers_with_their_moved_payloads_only() {
         let header = fake_shadowmask_section(64, 64, 1);
@@ -1098,6 +1144,53 @@ mod tests {
                     )),
             "a header whose payload is gone degrades loudly: {captured:?}"
         );
+    }
+
+    #[test]
+    fn hand_built_unknown_shadowmask_format_degrades_with_a_renderer_error() {
+        let mut section = fake_shadowmask_section(64, 64, 1);
+        section.format = 0;
+        let (kept, errors) = shadowmask_filter_errors(&section);
+        assert!(!kept, "an unknown tag must reach the placeholder");
+        assert!(
+            errors.len() == 1 && errors[0].contains("is not BC5 side-by-side"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn hand_built_shadowmask_payload_of_the_wrong_length_degrades_with_a_renderer_error() {
+        let (width, height, layer_count) = (8, 8, 2);
+        let section = fake_shadowmask_section(width, height, layer_count);
+        let expected = ShadowmaskAtlasSection::payload_len(width, height, layer_count).unwrap();
+
+        let captured = capture_logs(|| {
+            assert!(shadowmask_payload_matches_header(
+                &section,
+                &vec![0u8; expected]
+            ));
+        });
+        assert!(
+            !captured.iter().any(|(level, _)| *level == Level::Error),
+            "{captured:?}"
+        );
+
+        for len in [0, expected - 16, expected + 16, expected / 2] {
+            let captured = capture_logs(|| {
+                assert!(
+                    !shadowmask_payload_matches_header(&section, &vec![0u8; len]),
+                    "a {len}-byte payload must reach the placeholder"
+                );
+            });
+            assert!(
+                captured
+                    .iter()
+                    .any(|(level, message)| *level == Level::Error
+                        && message.starts_with("[Renderer] ShadowmaskAtlas payload is")
+                        && message.contains(&format!("expected Some({expected})"))),
+                "{len} bytes: {captured:?}"
+            );
+        }
     }
 
     #[test]

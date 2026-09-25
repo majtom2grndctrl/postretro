@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.8
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use image::{GenericImageView as _, RgbaImage};
@@ -26,16 +26,73 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Compile `content/dev/maps/<source_name>` beside its source. Capture derives
+/// content/dev, then `<workspace>/baked/materials`, from that standard layout.
+fn compile_capture_map(workspace: &Path, source_name: &str, prefix: &str) -> tempfile::TempPath {
+    let maps = workspace.join("content/dev/maps");
+    let source_map = maps.join(source_name);
+    assert!(
+        source_map.is_file(),
+        "capture source map missing: {}",
+        source_map.display()
+    );
+    let map = tempfile::Builder::new()
+        .prefix(prefix)
+        .suffix(".prl")
+        .tempfile_in(&maps)
+        .expect("reserve capture PRL path in content/dev/maps")
+        .into_temp_path();
+    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&source_map)
+        .arg("-o")
+        .arg(&map)
+        .arg("--no-tui")
+        .current_dir(workspace)
+        .output()
+        .expect("launch prl-build");
+    assert!(
+        compile.status.success(),
+        "{source_name} capture map compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+    map
+}
+
+/// Freshly compiled PRLs carry streamed SH, which static capture accepts only
+/// in the synchronous proof mode. Pin it so the result ignores the caller's env.
+fn capture_command(workspace: &Path, scene_path: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_postretro"));
+    command
+        .arg("--capture")
+        .arg(scene_path)
+        .current_dir(workspace)
+        .env("POSTRETRO_SH_STREAMING", "sync-proof");
+    command
+}
+
 // Regression: HDR scene color must be tonemapped to RGBA8 before E20 readback.
 #[test]
 #[ignore = "requires a GPU adapter; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
 fn hdr_capture_writes_png_at_requested_dimensions() {
     let workspace = workspace_root();
-    let map = workspace.join(
-        "crates/level-compiler/tests/fixtures/golden/\
-         test_animated_weight_maps_mixed.pre-script-light-membership.prl",
+    // Compile fresh: the level-compiler golden PRL of this map is pinned to
+    // historical bytes and goes stale whenever a runtime section version moves.
+    let map_guard = compile_capture_map(
+        &workspace,
+        "test_animated_weight_maps_mixed.map",
+        ".hdr-capture-",
     );
-    assert!(map.is_file(), "capture fixture missing: {}", map.display());
+    let map = map_guard.to_path_buf();
 
     let temp = tempfile::tempdir().expect("create isolated capture directory");
     let scene_path = temp.path().join("scene.json");
@@ -57,10 +114,7 @@ fn hdr_capture_writes_png_at_requested_dimensions() {
     )
     .expect("write capture scene");
 
-    let result = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .arg("--capture")
-        .arg(&scene_path)
-        .current_dir(&workspace)
+    let result = capture_command(&workspace, &scene_path)
         .output()
         .expect("launch postretro capture");
     assert!(
@@ -139,48 +193,14 @@ fn hdr_capture_writes_png_at_requested_dimensions() {
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
 fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {
     let workspace = workspace_root();
-    let source_map = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
-    assert!(
-        source_map.is_file(),
-        "capture source map missing: {}",
-        source_map.display()
+    // A generic temp path would silently replace the receiver material's
+    // specular slot with the black placeholder.
+    let map_guard = compile_capture_map(
+        &workspace,
+        "specular-shadowmask-capture.map",
+        ".specular-shadowmask-capture-",
     );
-
-    // Keep the compiled PRL directly under content/dev/maps. Capture derives
-    // content/dev, then <workspace>/baked/materials, from this standard layout.
-    // Compiling into the generic temp directory makes that derivation point at
-    // the wrong tree and silently replaces the material's specular slot with
-    // the black placeholder.
-    let map_guard = tempfile::Builder::new()
-        .prefix(".specular-shadowmask-capture-")
-        .suffix(".prl")
-        .tempfile_in(workspace.join("content/dev/maps"))
-        .expect("reserve capture PRL path in content/dev/maps")
-        .into_temp_path();
     let map = map_guard.to_path_buf();
-    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
-        .arg(&source_map)
-        .arg("-o")
-        .arg(&map)
-        .arg("--no-tui")
-        .current_dir(&workspace)
-        .output()
-        .expect("launch prl-build");
-    assert!(
-        compile.status.success(),
-        "specular-shadowmask capture map compile failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compile.stdout),
-        String::from_utf8_lossy(&compile.stderr),
-    );
 
     let loaded = postretro_level_loader::load_prl(&map.to_string_lossy())
         .expect("load compiled specular-shadowmask capture PRL");
@@ -262,10 +282,7 @@ fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {
     )
     .expect("write capture scene");
 
-    let result = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .arg("--capture")
-        .arg(&scene_path)
-        .current_dir(&workspace)
+    let result = capture_command(&workspace, &scene_path)
         .output()
         .expect("launch postretro capture");
     assert!(
@@ -293,46 +310,9 @@ fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
 fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
     let workspace = workspace_root();
-    let source_map = workspace.join("content/dev/maps/spawner-test.map");
-    assert!(
-        source_map.is_file(),
-        "capture source map missing: {}",
-        source_map.display()
-    );
-
-    // The map must live below content/dev/maps so capture derives the normal
-    // content root and its baked material cache. A generic temp path would
-    // silently resolve placeholder resources instead.
-    let map_guard = tempfile::Builder::new()
-        .prefix(".capture-animated-direct-")
-        .suffix(".prl")
-        .tempfile_in(workspace.join("content/dev/maps"))
-        .expect("reserve spawner capture PRL path in content/dev/maps")
-        .into_temp_path();
+    let map_guard =
+        compile_capture_map(&workspace, "spawner-test.map", ".capture-animated-direct-");
     let map = map_guard.to_path_buf();
-    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
-        .arg(&source_map)
-        .arg("-o")
-        .arg(&map)
-        .arg("--no-tui")
-        .current_dir(&workspace)
-        .output()
-        .expect("launch prl-build");
-    assert!(
-        compile.status.success(),
-        "spawner capture map compile failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compile.stdout),
-        String::from_utf8_lossy(&compile.stderr),
-    );
 
     let loaded = postretro_level_loader::load_prl(&map.to_string_lossy())
         .expect("load spawner capture fixture");
@@ -645,10 +625,7 @@ fn run_capture_or_skip_without_adapter(
     workspace: &std::path::Path,
     scene_path: &std::path::Path,
 ) -> bool {
-    let result = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .arg("--capture")
-        .arg(scene_path)
-        .current_dir(workspace)
+    let result = capture_command(workspace, scene_path)
         .output()
         .expect("launch postretro capture");
     if result.status.success() {

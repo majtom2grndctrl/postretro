@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
@@ -23,7 +23,11 @@ use crate::map_data::{LightType, MapLight};
 use crate::{affinity_grid, lightmap_bake};
 
 mod assignment;
+mod encode;
 mod fill;
+
+#[cfg(test)]
+pub(crate) use encode::decode_side_by_side;
 
 use assignment::*;
 use fill::*;
@@ -31,10 +35,10 @@ use fill::*;
 pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
 /// Bump when the cached `ShadowmaskAtlas` bytes can change without a layer input
-/// hash change: channel assignment/drop policy, raw-visibility quantization to
-/// `Rgba8Unorm`, empty-section behavior, or `ShadowmaskAtlasSection::to_bytes`
-/// payload semantics.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 2;
+/// hash change: channel assignment/drop policy, raw-visibility quantization,
+/// payload encoding (BC5 side by side since version 3), empty-section
+/// behavior, or `ShadowmaskAtlasSection::to_bytes` payload semantics.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 3;
 
 /// Maximum selected-light count in one governed chart batch. Each light's raw
 /// chart buffers collectively carry one full layer payload, so the batch must
@@ -796,29 +800,44 @@ fn empty_section_for_dimensions(
     layer_count: u32,
     selected_light_count: usize,
 ) -> ShadowmaskAtlasSection {
-    let texel_count = texel_plane_len(width, height)
-        .checked_mul(layer_count as usize)
-        .expect("shadowmask atlas texel count exceeds addressable memory");
-    let data_len = texel_count
-        .checked_mul(4)
-        .expect("shadowmask atlas byte count exceeds addressable memory");
+    let data = encode::all_visible_bc5_payload(width, height, layer_count);
+    #[cfg(test)]
+    SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
     ShadowmaskAtlasSection {
+        format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
         width,
         height,
         layer_count,
         channels: vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count],
-        data: allocate_shadowmask_output(data_len),
+        data,
     }
 }
 
 #[cfg(test)]
 thread_local! {
+    static LAST_RAW_FILL: std::cell::RefCell<Option<Vec<u8>>> = const {
+        std::cell::RefCell::new(None)
+    };
     static SHADOWMASK_OUTPUT_ALLOCATION_COUNT: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
     static SHADOWMASK_STREAMED_CACHE_WRITE_COUNT: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
+}
+
+/// Tests assert exact fill values on the raw masks the encoder consumed; BC4
+/// reproduces only block endpoints exactly.
+#[cfg(test)]
+fn record_raw_fill(raw: &[u8]) {
+    LAST_RAW_FILL.with(|last| *last.borrow_mut() = Some(raw.to_vec()));
+}
+
+#[cfg(test)]
+fn take_last_raw_fill() -> Vec<u8> {
+    LAST_RAW_FILL
+        .with(|last| last.borrow_mut().take())
+        .expect("a shadowmask fill must have finished on this thread")
 }
 
 fn allocate_shadowmask_output(data_len: usize) -> Vec<u8> {
@@ -1037,21 +1056,12 @@ fn cache_shadowmask_section_then_complete(
     has_valid_selection: bool,
     after_cache_write: impl FnOnce(),
 ) {
-    let selected_light_count = section.channels.len() as u32;
-    let mut section_header = [0u8; 16];
-    section_header[0..4].copy_from_slice(&section.width.to_le_bytes());
-    section_header[4..8].copy_from_slice(&section.height.to_le_bytes());
-    section_header[8..12].copy_from_slice(&section.layer_count.to_le_bytes());
-    section_header[12..16].copy_from_slice(&selected_light_count.to_le_bytes());
-    let channel_padding = [0u8; 3];
-    let channel_padding_len = (4 - section.channels.len() % 4) % 4;
+    let section_header = section.header_bytes();
 
     #[cfg(test)]
     SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(count.get() + 1));
     cache.put_streamed(section_key, section.byte_len() as u64, |writer| {
         writer.write_all(&section_header)?;
-        writer.write_all(&section.channels)?;
-        writer.write_all(&channel_padding[..channel_padding_len])?;
         writer.write_all(&section.data)
     });
     after_cache_write();
@@ -1268,6 +1278,45 @@ fn build_shadowmask_from_layers(
     selected: &[(usize, u32, &MapLight)],
     layers: &[LightmapLayer],
 ) -> ShadowmaskAtlasSection {
+    fill_shadowmask_from_layers(
+        width,
+        height,
+        layer_count,
+        selected_light_count,
+        selected,
+        layers,
+    )
+    .finish()
+}
+
+#[cfg(test)]
+fn build_raw_shadowmask_from_layers(
+    width: u32,
+    height: u32,
+    layer_count: usize,
+    selected_light_count: usize,
+    selected: &[(usize, u32, &MapLight)],
+    layers: &[LightmapLayer],
+) -> RawShadowmaskFill {
+    fill_shadowmask_from_layers(
+        width,
+        height,
+        layer_count,
+        selected_light_count,
+        selected,
+        layers,
+    )
+    .finish_raw()
+}
+
+fn fill_shadowmask_from_layers(
+    width: u32,
+    height: u32,
+    layer_count: usize,
+    selected_light_count: usize,
+    selected: &[(usize, u32, &MapLight)],
+    layers: &[LightmapLayer],
+) -> ShadowmaskFill<'static> {
     debug_assert_eq!(selected.len(), layers.len());
     let graph = overlap_graph_from_layers(layers);
     let mut fill = ShadowmaskFill::new(
@@ -1283,7 +1332,7 @@ fn build_shadowmask_from_layers(
     for (compact_light_index, layer) in layers.iter().enumerate() {
         fill.write_partition(compact_light_index, layer);
     }
-    fill.finish()
+    fill
 }
 
 fn overlap_graph_from_layers(layers: &[LightmapLayer]) -> OverlapGraph {
@@ -1437,34 +1486,20 @@ mod tests {
     const DENSITY: f32 = 0.25;
     const AREA_SAMPLES: u32 = 4;
 
-    const TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN: [u8; 224] = {
-        let mut bytes = [255; 224];
-        bytes[0] = 5;
-        bytes[1] = 0;
-        bytes[2] = 0;
-        bytes[3] = 0;
-        bytes[4] = 5;
-        bytes[5] = 0;
-        bytes[6] = 0;
-        bytes[7] = 0;
-        bytes[8] = 2;
-        bytes[9] = 0;
-        bytes[10] = 0;
-        bytes[11] = 0;
-        bytes[12] = 5;
-        bytes[13] = 0;
-        bytes[14] = 0;
-        bytes[15] = 0;
-        bytes[16] = 0;
-        bytes[17] = 1;
-        bytes[18] = SHADOWMASK_CHANNEL_DROPPED;
-        bytes[19] = 2;
-        bytes[20] = 3;
-        bytes[21] = 0;
-        bytes[22] = 0;
-        bytes[23] = 0;
-        bytes
-    };
+    /// The pre-streaming five-way golden: its slot table is the historical
+    /// capture, and every texel stays fully visible. Restated for the tagged
+    /// BC5 wire format at the 4-aligned 8×8 fixture atlas.
+    fn top_level_multilayer_five_way_golden() -> Vec<u8> {
+        ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 8,
+            height: 8,
+            layer_count: 2,
+            channels: vec![0, 1, SHADOWMASK_CHANNEL_DROPPED, 2, 3],
+            data: encode::all_visible_bc5_payload(8, 8, 2),
+        }
+        .to_bytes()
+    }
 
     fn test_control() -> BakeControl {
         let progress = StageProgress::indeterminate();
@@ -1633,12 +1668,14 @@ mod tests {
         channels: Vec<u8>,
         value: u8,
     ) -> ShadowmaskAtlasSection {
+        let raw = vec![value; (width * height * layer_count * 4) as usize];
         ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
             width,
             height,
             layer_count,
             channels,
-            data: vec![value; (width * height * layer_count * 4) as usize],
+            data: encode::encode_side_by_side_bc5(&raw, width, height, layer_count),
         }
     }
 
@@ -1654,7 +1691,7 @@ mod tests {
     ) -> ShadowmaskAtlasSection {
         match kind {
             BadCachedSection::Dimensions => shadowmask_section(
-                shared.atlas_width + 1,
+                shared.atlas_width + 4,
                 shared.atlas_height,
                 layer_count_from_shared(shared),
                 vec![0],
@@ -1860,18 +1897,15 @@ mod tests {
             .collect();
         let layers = vec![layer(2, 1, 1, &[(0, 0, 0.25), (1, 0, 1.0)])];
 
-        let section = build_shadowmask_from_layers(2, 1, 1, 1, &selected, &layers);
+        let section = build_raw_shadowmask_from_layers(2, 1, 1, 1, &selected, &layers);
 
         assert_eq!(section.channels, vec![0]);
         assert_eq!(section.data[0], 64);
         assert_eq!(section.data[4], 255);
         assert_eq!(
-            section.to_bytes(),
-            vec![
-                2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 64, 255, 255, 255, 255,
-                255, 255, 255,
-            ],
-            "single-layer literal captured before the analytic restructure"
+            section.data,
+            vec![64, 255, 255, 255, 255, 255, 255, 255],
+            "single-layer fill literal captured before the analytic restructure"
         );
     }
 
@@ -1888,7 +1922,7 @@ mod tests {
             layer(1, 1, 1, &[(0, 0, 1.0)]),
         ];
 
-        let section = build_shadowmask_from_layers(1, 1, 1, 2, &selected, &layers);
+        let section = build_raw_shadowmask_from_layers(1, 1, 1, 2, &selected, &layers);
 
         let mut analytic_light = light(5.0);
         analytic_light.origin = DVec3::new(0.5, 1.0, 0.5);
@@ -1918,7 +1952,7 @@ mod tests {
         let occluded = layer(1, 1, 1, &[(0, 0, 0.0)]);
         assert!(!layers_overlap(&absent, &occluded));
 
-        let section = build_shadowmask_from_layers(1, 1, 1, 2, &selected, &[absent, occluded]);
+        let section = build_raw_shadowmask_from_layers(1, 1, 1, 2, &selected, &[absent, occluded]);
         assert_eq!(
             section.channels[0], section.channels[1],
             "an absent record must not create an overlap edge"
@@ -1984,7 +2018,7 @@ mod tests {
                     });
                 },
             );
-            let section = fill.finish();
+            let section = fill.finish_raw();
             control.advance(1);
             finished_tx
                 .send(section)
@@ -2023,7 +2057,7 @@ mod tests {
             layer(1, 1, 1, &[(0, 0, 0.5)]),
         ];
 
-        let section = build_shadowmask_from_layers(1, 1, 1, 2, &selected, &layers);
+        let section = build_raw_shadowmask_from_layers(1, 1, 1, 2, &selected, &layers);
 
         assert_ne!(section.channels[0], section.channels[1]);
         assert_eq!(section.data[section.channels[0] as usize], 64);
@@ -2046,7 +2080,7 @@ mod tests {
             .collect();
         let layers: Vec<LightmapLayer> = (0..5).map(|_| layer(1, 1, 1, &[(0, 0, 1.0)])).collect();
 
-        let section = build_shadowmask_from_layers(1, 1, 1, 5, &selected, &layers);
+        let section = build_raw_shadowmask_from_layers(1, 1, 1, 5, &selected, &layers);
 
         assert_eq!(section.channels[2], SHADOWMASK_CHANNEL_DROPPED);
         assert_eq!(
@@ -2302,8 +2336,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
 
         for test_light in &lights {
@@ -2387,8 +2421,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let geometry = quad_geometry();
         let world_aabb = lightmap_layer::geometry_world_aabb(&geometry);
@@ -2434,8 +2468,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let mut rounded_origin = light(5.0);
         rounded_origin.origin = DVec3::new(16_777_217.0, 0.05, 0.5);
@@ -2491,17 +2525,17 @@ mod tests {
         assert_eq!(pruned_graph.snapshot(), unpruned_graph.snapshot());
 
         let layers = [
-            layer(5, 5, 1, &[(covered_idx, covered_layer, 0.25)]),
-            layer(5, 5, 1, &[(covered_idx, covered_layer, 0.5)]),
+            layer(8, 8, 1, &[(covered_idx, covered_layer, 0.25)]),
+            layer(8, 8, 1, &[(covered_idx, covered_layer, 0.5)]),
         ];
-        let mut fill = ShadowmaskFill::new(5, 5, 1, 2, &selected, &pruned_graph, None, None);
+        let mut fill = ShadowmaskFill::new(8, 8, 1, 2, &selected, &pruned_graph, None, None);
         for (compact_index, layer) in layers.iter().enumerate() {
             fill.write_partition(compact_index, layer);
         }
-        let section = fill.finish();
+        let section = fill.finish_raw();
         let first_channel = section.channels[0];
         let second_channel = section.channels[1];
-        let global_texel_index = covered_idx as usize + covered_layer as usize * 25;
+        let global_texel_index = covered_idx as usize + covered_layer as usize * 64;
 
         assert_ne!(first_channel, SHADOWMASK_CHANNEL_DROPPED);
         assert_ne!(second_channel, SHADOWMASK_CHANNEL_DROPPED);
@@ -2532,8 +2566,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let chart_order: Vec<_> = (0..charts.len()).collect();
         let (pruned_graph, _) = build_analytic_overlap_graph_in_order(
@@ -2648,8 +2682,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let selected: Vec<_> = lights
             .iter()
@@ -2677,8 +2711,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let selected: Vec<_> = lights
             .iter()
@@ -2734,8 +2768,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts[..2],
             placements: &placements[..2],
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let selected: Vec<_> = lights[..2]
             .iter()
@@ -2802,8 +2836,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let selected: Vec<_> = lights
             .iter()
@@ -2824,8 +2858,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let selected: Vec<_> = lights
             .iter()
@@ -3032,16 +3066,18 @@ mod tests {
             fill.write_partition(compact_index, partition);
         }
         fill.write_partition(0, &layer(2, 1, 2, &[(1, 1, 0.6)]));
-        let section = fill.finish();
+        let raw = fill.finish_raw();
 
         // Captured from the pre-streaming layer composite: two atlas layers,
         // five selected masks sharing a texel (the lowest intensity drops), and
         // an additional layer-1 texel proving layer-major addressing.
-        let golden = [
-            2, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 5, 0, 0, 0, 0, 1, 0xFF, 2, 3, 0, 0, 0, 64, 128,
-            255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 153, 255, 255, 255,
-        ];
-        assert_eq!(section.to_bytes(), golden);
+        assert_eq!(raw.channels, [0, 1, 0xFF, 2, 3]);
+        assert_eq!(
+            raw.data,
+            [
+                64, 128, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 153, 255, 255, 255
+            ]
+        );
     }
 
     #[test]
@@ -3051,8 +3087,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
@@ -3069,7 +3105,7 @@ mod tests {
         .expect("no-cache shadowmask section");
         assert_eq!(
             no_cache.to_bytes().as_slice(),
-            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            top_level_multilayer_five_way_golden().as_slice(),
             "no-cache streaming bake must match the pre-streaming golden"
         );
 
@@ -3104,7 +3140,7 @@ mod tests {
         .expect("cached shadowmask section after cold per-light misses");
         assert_eq!(
             cached_miss.to_bytes().as_slice(),
-            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            top_level_multilayer_five_way_golden().as_slice(),
             "cache-backed streaming bake must match the pre-streaming golden"
         );
         let cold_section_key = shadowmask_key(&selection, &shared, &input_hashes);
@@ -3113,7 +3149,7 @@ mod tests {
             .expect("cache miss stores the streamed whole section");
         assert_eq!(
             stored_section.as_slice(),
-            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            top_level_multilayer_five_way_golden().as_slice(),
             "streamed whole-section cache bytes must match the section wire format"
         );
 
@@ -3148,7 +3184,7 @@ mod tests {
         .expect("cached shadowmask section from warm layers");
         assert_eq!(
             cached_warm_layers.to_bytes().as_slice(),
-            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            top_level_multilayer_five_way_golden().as_slice(),
             "per-light warm cache section miss must match the pre-streaming golden"
         );
 
@@ -3167,7 +3203,7 @@ mod tests {
         .expect("whole shadowmask cache hit");
         assert_eq!(
             cached_section_hit.to_bytes().as_slice(),
-            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            top_level_multilayer_five_way_golden().as_slice(),
             "whole-section cache hit must return the pre-streaming golden"
         );
 
@@ -3182,8 +3218,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let progress = StageProgress::indeterminate();
@@ -3218,7 +3254,7 @@ mod tests {
         let (section, _) = plan.finish();
         assert_eq!(
             section.expect("fused shadowmask").to_bytes(),
-            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN,
+            top_level_multilayer_five_way_golden(),
         );
         assert_eq!(progress.completed(), progress.total().unwrap());
     }
@@ -3230,8 +3266,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
@@ -3306,8 +3342,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let cold_dir = fresh_cache_dir("dropped_partition_cold");
@@ -3400,8 +3436,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
@@ -3427,7 +3463,7 @@ mod tests {
             );
             assert_eq!(
                 section.to_bytes().as_slice(),
-                TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+                top_level_multilayer_five_way_golden().as_slice(),
                 "W={window} must not change shipped shadowmask bytes"
             );
         }
@@ -3454,8 +3490,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let progress = StageProgress::indeterminate();
@@ -3558,8 +3594,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let progress = StageProgress::indeterminate();
@@ -3603,16 +3639,16 @@ mod tests {
             layer(1, 1, 1, &[(0, 0, 0.5)]),
             layer(1, 1, 1, &[(0, 0, 0.75)]),
         ];
-        let submission_order = build_shadowmask_from_layers(1, 1, 1, 3, &selected, &layers);
+        let submission_order = build_raw_shadowmask_from_layers(1, 1, 1, 3, &selected, &layers);
 
         let graph = overlap_graph_from_layers(&layers);
         let mut reversed_fill = ShadowmaskFill::new(1, 1, 1, 3, &selected, &graph, None, None);
         for compact_light_index in [2, 1, 0] {
             reversed_fill.write_partition(compact_light_index, &layers[compact_light_index]);
         }
-        let reversed = reversed_fill.finish();
+        let reversed = reversed_fill.finish_raw();
 
-        assert_eq!(reversed.to_bytes(), submission_order.to_bytes());
+        assert_eq!(reversed, submission_order);
     }
 
     #[test]
@@ -3622,8 +3658,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let total = shadowmask_progress_total(selection.light_indices.len(), &shared);
@@ -3660,8 +3696,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let (section, _) = bake_shadowmask_atlas_with_test_window(
@@ -3721,7 +3757,16 @@ mod tests {
         .expect("all-filtered selection still emits an empty section");
 
         assert_eq!(section.channels, vec![SHADOWMASK_CHANNEL_DROPPED]);
-        assert!(section.data.iter().all(|&value| value == 255));
+        assert!(
+            encode::decode_side_by_side(
+                &section.data,
+                section.width,
+                section.height,
+                section.layer_count
+            )
+            .iter()
+            .all(|&mask| mask == 255)
+        );
         assert_eq!(progress.total(), None);
         assert_eq!(progress.completed(), 0);
 
@@ -3770,7 +3815,7 @@ mod tests {
             .collect();
         let layers = vec![layer(1, 1, 2, &[(0, 1, 0.5)])];
 
-        let section = build_shadowmask_from_layers(1, 1, 2, 1, &selected, &layers);
+        let section = build_raw_shadowmask_from_layers(1, 1, 2, 1, &selected, &layers);
 
         assert_eq!(section.data.len(), 8);
         assert_eq!(section.data[0], 255);
@@ -3786,14 +3831,14 @@ mod tests {
         let selection = EntityShadowLightsSection {
             light_indices: vec![99, 0],
         };
-        let layers = vec![layer(1, 1, 1, &[(0, 0, 0.25)])];
+        let layers = vec![layer(4, 4, 1, &[(0, 0, 0.25)])];
 
         let section =
-            bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers).unwrap();
+            bake_shadowmask_atlas_from_layers(&selection, 4, 4, 1, &selected, &layers).unwrap();
 
         assert_eq!(section.channels[0], SHADOWMASK_CHANNEL_DROPPED);
         assert_ne!(section.channels[1], SHADOWMASK_CHANNEL_DROPPED);
-        assert_eq!(section.data[section.channels[1] as usize], 64);
+        assert_eq!(take_last_raw_fill()[section.channels[1] as usize], 64);
     }
 
     // Regression: the compatibility route only checked this alignment in debug
@@ -3942,17 +3987,13 @@ mod tests {
         };
         let (_, input_hash) = layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
-        let cached = ShadowmaskAtlasSection {
-            width: shared.atlas_width,
-            height: shared.atlas_height,
-            layer_count: layer_count_from_shared(&shared),
-            channels: vec![3],
-            data: vec![
-                0;
-                (shared.atlas_width * shared.atlas_height * layer_count_from_shared(&shared) * 4)
-                    as usize
-            ],
-        };
+        let cached = shadowmask_section(
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+            vec![3],
+            0,
+        );
 
         let dir = fresh_cache_dir("whole_section_hit");
         let cache = StageCache::new(&dir).expect("cache dir");
@@ -4062,7 +4103,7 @@ mod tests {
 
     #[test]
     fn shadowmask_cache_epochs_pin_sparse_layer_values() {
-        assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 2);
+        assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 3);
         assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 6);
         assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 3);
     }
@@ -4076,7 +4117,7 @@ mod tests {
             SHADOWMASK_ATLAS_STAGE_VERSION,
             &[7; 32],
         );
-        let section = shadowmask_section(1, 1, 1, vec![0], 255);
+        let section = shadowmask_section(4, 4, 1, vec![0], 255);
         let progress = StageProgress::with_total(1);
         let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
 
@@ -4095,11 +4136,14 @@ mod tests {
         let uncached_control =
             BakeControl::new(Arc::new(Governor::new(1, false)), &uncached_progress);
         let fill =
-            ShadowmaskFill::new(1, 1, 1, 1, &selected, &graph, Some(&uncached_control), None);
+            ShadowmaskFill::new(4, 4, 1, 1, &selected, &graph, Some(&uncached_control), None);
         assert_eq!(uncached_progress.completed(), 1);
         let uncached_section = fill.finish();
         assert_eq!(uncached_progress.completed(), 1);
-        assert_eq!(uncached_section.data.len(), 4);
+        assert_eq!(
+            uncached_section.data.len(),
+            ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()
+        );
         uncached_control.advance(1);
         assert_eq!(uncached_progress.completed(), 2);
     }
@@ -4111,8 +4155,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
         let progress = StageProgress::indeterminate();
@@ -4144,8 +4188,8 @@ mod tests {
         let shared = SharedAtlas {
             charts: &charts,
             placements: &placements,
-            atlas_width: 5,
-            atlas_height: 5,
+            atlas_width: 8,
+            atlas_height: 8,
         };
         let cache_dir = fresh_cache_dir("one_light_change");
         let cache = StageCache::new(&cache_dir).unwrap();
@@ -4495,17 +4539,13 @@ mod tests {
         };
         let (_, input_hash) = layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
-        let cached = ShadowmaskAtlasSection {
-            width: shared.atlas_width,
-            height: shared.atlas_height,
-            layer_count: layer_count_from_shared(&shared),
-            channels: vec![3],
-            data: vec![
-                0;
-                (shared.atlas_width * shared.atlas_height * layer_count_from_shared(&shared) * 4)
-                    as usize
-            ],
-        };
+        let cached = shadowmask_section(
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+            vec![3],
+            0,
+        );
 
         let dir = fresh_cache_dir("no_cache");
         let cache = StageCache::new(&dir).expect("cache dir");

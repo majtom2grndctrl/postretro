@@ -2,7 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
@@ -10,6 +10,7 @@ use crate::lightmap_layer::{LayerTexel, LightmapLayer};
 use crate::map_data::MapLight;
 
 use super::assignment::*;
+use super::encode::encode_side_by_side_bc5;
 use super::{ResidentLayerTracker, SHADOWMASK_FILL_CHECKPOINT_TEXELS, allocate_shadowmask_output};
 
 pub(super) fn raw_visibility_is_covered(raw_visibility: f32) -> bool {
@@ -150,8 +151,32 @@ impl<'a> ShadowmaskFill<'a> {
         }
     }
 
+    /// Encodes the raw fill and drops it before the section exists, so no
+    /// cached or returned section coexists with the raw buffer.
     pub(super) fn finish(self) -> ShadowmaskAtlasSection {
+        let RawShadowmaskFill {
+            width,
+            height,
+            layer_count,
+            channels,
+            data: raw,
+        } = self.finish_raw();
+        #[cfg(test)]
+        super::record_raw_fill(&raw);
+        let data = encode_side_by_side_bc5(&raw, width, height, layer_count);
+        drop(raw);
         ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width,
+            height,
+            layer_count,
+            channels,
+            data,
+        }
+    }
+
+    pub(super) fn finish_raw(self) -> RawShadowmaskFill {
+        RawShadowmaskFill {
             width: self.width,
             height: self.height,
             layer_count: self.layer_count,
@@ -159,6 +184,17 @@ impl<'a> ShadowmaskFill<'a> {
             data: self.data,
         }
     }
+}
+
+/// The completed fill before encoding: layer-major `Rgba8Unorm`, one mask
+/// slot per channel, 255 fully visible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RawShadowmaskFill {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) layer_count: u32,
+    pub(super) channels: Vec<u8>,
+    pub(super) data: Vec<u8>,
 }
 
 pub(super) fn texel_plane_len(width: u32, height: u32) -> usize {

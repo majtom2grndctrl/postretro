@@ -5,7 +5,7 @@
 use postretro_level_format::lightmap::{
     DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapSection,
 };
-use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection};
 use wgpu::util::DeviceExt;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
@@ -34,8 +34,8 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// pass) and binding 8 in the compose shader are independent numbering spaces for
 /// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
-/// Static-light shadowmask atlas (Rgba8Unorm), layer-matched to the lightmap
-/// irradiance atlas. Sampled by forward union-subtraction and static
+/// Static-light shadowmask atlas (BC5 `.rg`, two mask groups side by side at
+/// twice the lightmap width), layer-matched to the lightmap irradiance atlas. Sampled by forward union-subtraction and static
 /// world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 /// Packed static-atlas-layer → animated-atlas-slot lookup for the forward
@@ -101,7 +101,7 @@ pub struct LightmapResources {
     /// elimination in release builds.
     #[allow(dead_code)]
     pub present: bool,
-    /// Whether a real ShadowmaskAtlas was uploaded (false = 1x1x1 fully-visible
+    /// Whether a real ShadowmaskAtlas was uploaded (false = 2x1x1 fully-visible
     /// placeholder). Rejected or absent shadowmask data uses this all-visible
     /// fallback so static specular remains fully lit.
     pub shadowmask_present: bool,
@@ -450,14 +450,32 @@ fn filter_usable_shadowmask_section(
     section
         .filter(|s| s.width > 0 && s.height > 0 && s.layer_count > 0)
         .filter(|s| {
-            let fits = s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
-            if !fits {
+            // The compiler never emits misaligned data and `from_bytes` rejects
+            // it; this guards hand-built sections before BC5 texture creation.
+            let aligned = s.width % 4 == 0 && s.height % 4 == 0;
+            if !aligned {
                 log::error!(
-                    "[Renderer] ShadowmaskAtlas {}x{} exceeds device maxTextureDimension2D {}; \
-                         disabling entity-to-world static-light shadowmask; static world specular \
-                         falls back to fully lit for this level",
+                    "[Renderer] ShadowmaskAtlas {}x{} is not BC5 block-aligned; disabling \
+                         entity-to-world static-light shadowmask; static world specular falls \
+                         back to fully lit for this level",
                     s.width,
                     s.height,
+                );
+            }
+            aligned
+        })
+        .filter(|s| {
+            let texture_width = s.texture_width();
+            let fits = texture_width.is_some_and(|w| w <= max_texture_dimension_2d)
+                && s.height <= max_texture_dimension_2d;
+            if !fits {
+                log::error!(
+                    "[Renderer] ShadowmaskAtlas texture {}x{} (two {}-wide mask groups) exceeds \
+                         device maxTextureDimension2D {}; disabling entity-to-world static-light \
+                         shadowmask; static world specular falls back to fully lit for this level",
+                    u64::from(s.width) * u64::from(SHADOWMASK_GROUP_COUNT),
+                    s.height,
+                    s.width,
                     max_texture_dimension_2d,
                 );
             }
@@ -589,27 +607,38 @@ fn direction_texture_format(direction_format: u32) -> wgpu::TextureFormat {
     }
 }
 
+/// The texture a usable shadowmask section uploads as: BC5 `.rg`, both mask
+/// groups side by side, one layer per lightmap layer. Callers pass a section
+/// that `filter_usable_shadowmask_section` kept.
+fn shadowmask_texture_descriptor(sec: &ShadowmaskAtlasSection) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some("Shadowmask Atlas"),
+        size: wgpu::Extent3d {
+            width: sec
+                .texture_width()
+                .expect("usable shadowmask width fits the device texture limit"),
+            height: sec.height,
+            depth_or_array_layers: sec.layer_count,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bc5RgUnorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }
+}
+
 fn upload_shadowmask_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     sec: &ShadowmaskAtlasSection,
 ) -> wgpu::Texture {
+    // The payload is layer-major BC5 blocks, exactly the `LayerMajor` order
+    // `create_texture_with_data` expects for a block-compressed array.
     device.create_texture_with_data(
         queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Shadowmask Atlas"),
-            size: wgpu::Extent3d {
-                width: sec.width,
-                height: sec.height,
-                depth_or_array_layers: sec.layer_count,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
+        &shadowmask_texture_descriptor(sec),
         wgpu::util::TextureDataOrder::LayerMajor,
         &sec.data,
     )
@@ -669,13 +698,15 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
 }
 
 fn upload_placeholder_shadowmask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    let bytes = [255u8, 255, 255, 255];
+    // Two white texels: the shader splits the width into two mask groups, so
+    // each group reads one real, fully visible texel.
+    let bytes = [255u8; 8];
     device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Shadowmask Atlas Placeholder"),
             size: wgpu::Extent3d {
-                width: 1,
+                width: SHADOWMASK_GROUP_COUNT,
                 height: 1,
                 depth_or_array_layers: 1,
             },
@@ -735,6 +766,7 @@ mod tests {
         layer_count: u32,
     ) -> ShadowmaskAtlasSection {
         ShadowmaskAtlasSection {
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
             width,
             height,
             layer_count,

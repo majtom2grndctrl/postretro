@@ -680,7 +680,7 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
 }
 
 #[test]
-fn forward_shader_shadowmask_fallback_clamps_multilayer_indices() {
+fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
     let src = include_str!("../../shaders/forward.wgsl");
     let helper_start = src
         .find("fn sample_shadowmask_atlas(")
@@ -694,32 +694,103 @@ fn forward_shader_shadowmask_fallback_clamps_multilayer_indices() {
     assert!(
         helper.contains("textureNumLayers(shadowmask_atlas) - 1u")
             && helper.contains("min(lightmap_layer, last_layer)")
-            && helper.contains("i32(safe_layer)"),
-        "shadowmask sampling must clamp baked layer indices to the bound texture's last layer",
+            && helper.matches("i32(safe_layer)").count() == 2,
+        "both group samples must read the fragment's one clamped layer",
     );
+    let shadowmask_samples = "textureSample(\n        shadowmask_atlas,";
+    assert_eq!(
+        helper.matches(shadowmask_samples).count(),
+        2,
+        "the helper issues exactly one sample per mask group",
+    );
+    assert_eq!(
+        src.matches(shadowmask_samples).count(),
+        2,
+        "all shadowmask reads must route through the layer-safe helper",
+    );
+    // Each group's coordinate derives only from the lightmap UV and the bound
+    // texture's width: clamp half a group texel inside, then map into a half.
+    assert!(
+        helper.contains("1.0 / f32(textureDimensions(shadowmask_atlas).x)")
+            && helper.contains("clamp(lightmap_uv.x, group_half_texel, 1.0 - group_half_texel)")
+            && helper.contains("vec2<f32>(group_u * 0.5, lightmap_uv.y)")
+            && helper.contains("vec2<f32>((1.0 + group_u) * 0.5, lightmap_uv.y)")
+            && helper.contains("return vec4<f32>(group0.rg, group1.rg);"),
+        "group coordinates must come from lightmap UV and texture width alone",
+    );
+
     assert_eq!(
         src.matches("sample_shadowmask_atlas(").count(),
         3,
         "the helper definition plus union and specular call sites must be the only shadowmask samples",
     );
-    assert_eq!(
-        src.matches("textureSample(\n        shadowmask_atlas,")
-            .count(),
-        1,
-        "all shadowmask reads must route through the layer-safe helper",
-    );
-
-    let fs = &src[src
-        .find("fn fs_main(")
-        .expect("forward shader must declare fs_main")..];
-    assert!(
-        fs.contains("sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer)"),
-        "world specular must use the layer-safe all-visible fallback sample",
-    );
+    for (function, call) in [
+        (
+            "fn shadowmask_union_subtraction(",
+            "sample_shadowmask_atlas(lightmap_uv, lightmap_layer)",
+        ),
+        (
+            "fn fs_main(",
+            "sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer)",
+        ),
+    ] {
+        let body = &src[src.find(function).expect("call-site function must exist")..];
+        let call_at = body
+            .find(call)
+            .expect("call site must sample through the helper");
+        assert!(
+            enclosing_loops(&body[..call_at]).is_empty(),
+            "{function} must hoist its shadowmask sample outside every light loop",
+        );
+    }
     assert!(
         src.contains("spec_channel >= SHADOWMASK_CHANNEL_DROPPED") && src.contains("return 1.0;"),
         "absent/dropped atlas channels must retain the fully-lit sentinel path",
     );
+}
+
+#[test]
+fn enclosing_loops_sees_for_headers_and_closed_loops() {
+    assert_eq!(
+        enclosing_loops("fn f() { for (var i = 0u; i < n; i = i + 1u) { if x { let a = 1; "),
+        vec!["for"],
+    );
+    assert!(
+        enclosing_loops("fn f() { for (var i = 0u; i < n; i = i + 1u) { } let a = 1; ").is_empty()
+    );
+    assert!(enclosing_loops("fn f() { if uniforms.x != 0u { ").is_empty());
+}
+
+/// Loop keywords whose `{` is still open at the end of `prefix`, which starts
+/// at a WGSL function declaration.
+fn enclosing_loops(prefix: &str) -> Vec<&str> {
+    let mut open: Vec<Option<&str>> = Vec::new();
+    let mut statement_start = 0;
+    let mut paren_depth = 0usize;
+    for (index, ch) in prefix.char_indices() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '{' => {
+                let header = &prefix[statement_start..index];
+                let keyword = ["for", "loop", "while"].into_iter().find(|keyword| {
+                    header
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .any(|word| word == *keyword)
+                });
+                open.push(keyword);
+                statement_start = index + 1;
+            }
+            '}' => {
+                open.pop();
+                statement_start = index + 1;
+            }
+            // A `for` header's own semicolons sit inside its parentheses.
+            ';' if paren_depth == 0 => statement_start = index + 1,
+            _ => {}
+        }
+    }
+    open.into_iter().flatten().collect()
 }
 
 #[test]

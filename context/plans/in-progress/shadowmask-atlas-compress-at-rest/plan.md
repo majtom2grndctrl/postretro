@@ -31,6 +31,36 @@ are both 8192; atlas dims are powers of two ≥ `MIN_ATLAS_DIMENSION` (64).
   separate movable value, which install takes and leaves `None`. A header whose payload
   was taken is unrepresentable, as the Decision requires. Owner confirmed with plan approval.
 
+- Wire: `from_bytes` also rejects zero width, height or layer count. Without it, a
+  pre-tag payload with zero dims and the tag's value in its width word parses as a
+  valid tagged section, which the tag-collision pin forbids. The compiler never emits
+  zero dims, and the renderer already sent them to the placeholder. Same outcome (fully
+  lit), now named at load.
+- Test surface: fill-semantics tests read the raw fill (`finish_raw`, plus a
+  test-only record of the last raw fill for the public bake paths). BC4 reproduces
+  only block endpoints exactly. Fixtures that pass through the encoder moved to
+  4-aligned dims; historical goldens keep their slot tables and raw values.
+- Observed, not this brief's: capture of any SH-streaming PRL needs
+  `POSTRETRO_SH_STREAMING=sync-proof`, so the existing
+  `specular_shadowmask_capture_scene_compiles_loads_and_writes_png` fails when run
+  without it. The new capture test sets it on its child process.
+
+## Owner decisions during build
+
+- **M1 and M4, union path (2026-09-24).** The capture harness never promotes static
+  lights, so its promoted-union term is zero and does not read the mask. Restated with
+  the owner:
+  - M1: "Four overlapping selected lights, spread across both groups, each resolve to
+    their own mask — no drop, no cross-talk between groups. World specular is proven by
+    offscreen capture on an adapter. The promoted-union path is proven on an adapter by
+    a GPU readback of `forward.wgsl`'s sampling helper and that path's channel select.
+    A skipped run does not count."
+  - M4: "Moving a light from the first group to the second leaves world-specular output
+    unchanged for surfaces covered only by first-group lights (offscreen capture on an
+    adapter). Static→static world shadowing stays exactly zero: the GPU readback shows
+    the union attenuation is zero at entity visibility 1 for every slot in both groups.
+    A skipped run does not count."
+
 ## Delegated answers
 
 - Tag position and width: a `u32` format tag is the first header word. Its value is
@@ -70,10 +100,10 @@ self-skip is not a pass.
 | D5 warm rebuild of 8192-wide warns again, no id 42, no memo entry | same test, run twice against one cache | achievable as stated |
 | D6 hand-built misaligned section → placeholder + `[Renderer]` error | filter unit test | achievable as stated |
 | D7 misaligned bake fails naming dims, release as debug | compiler test; run the focused test once under `--release` too | achievable as stated |
-| M1 four lights across both groups, both decode paths | capture test on a four-light fixture (*adapter*) | achievable as stated |
+| M1 four lights across both groups, both decode paths | world specular: capture on a four-colored-light fixture with per-slot id-42 rewrites (*adapter*); union path: GPU readback of the helper plus channel select (*adapter*) | restated (owner) |
 | M2 seam-bleed | capture on a fixture whose groups differ at the seam (*adapter*) | achievable as stated |
 | M3 `u` = 0 / `u` = 1 per group, groups differing at the seam | renderer GPU helper readback against a hand-built BC5 texture (*adapter*) | achievable as stated |
-| M4 group-0→1 move leaves first-group specular unchanged; static→static stays zero | capture A/B with id 42 rewritten in a compiled PRL (*adapter*) | achievable as stated |
+| M4 group-0→1 move leaves first-group specular unchanged; static→static stays zero | capture A/B with id 42 rewritten in a compiled PRL (*adapter*); union attenuation zero via GPU readback (*adapter*) | restated (owner) |
 | M5 all-255 atlas decodes fully lit | compiler encode→CPU-decode unit test | achievable as stated |
 | M6 grep gate over `forward.wgsl` | rewritten `forward_shader_shadowmask_fallback_clamps_multilayer_indices` | achievable as stated |
 | M7 no new texture or sampler | `forward_pipeline_sampled_texture_request_matches_bgl_definitions`, untouched and green | achievable as stated |
@@ -100,7 +130,7 @@ self-skip is not a pass.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **First slice.** Tagged BC5 wire format and `from_bytes`. Encode submodule under `shadowmask_bake/` used by `ShadowmaskFill::finish` and `empty_section_for_dimensions`. One header writer shared by `to_bytes` and the streamed cache writer. Bump `SHADOWMASK_ATLAS_STAGE_VERSION`. Renderer `2W` filter, alignment guard, BC5 upload through the descriptor fn, 2×1 placeholder. Two-sample shader helper with per-group clamp; rewrite the shader guard. Move the 5×5 fixtures to 4-aligned dims; raw-byte tests decode the payload. Four-light fixture map with a mask edge at the seam, checked by capture on an adapter (M1 first pass). | integrating executor | — | |
+| 1 | **First slice.** Tagged BC5 wire format and `from_bytes`. Encode submodule under `shadowmask_bake/` used by `ShadowmaskFill::finish` and `empty_section_for_dimensions`. One header writer shared by `to_bytes` and the streamed cache writer. Bump `SHADOWMASK_ATLAS_STAGE_VERSION`. Renderer `2W` filter, alignment guard, BC5 upload through the descriptor fn, 2×1 placeholder. Two-sample shader helper with per-group clamp; rewrite the shader guard. Move the 5×5 fixtures to 4-aligned dims; raw-byte tests decode the payload. Four-light fixture map with a mask edge at the seam, checked by capture on an adapter (M1 first pass). | integrating executor | — | done — `capture_shadowmask_groups` passes on this Mac's adapter and fails when the shader's group order is swapped; compiler, renderer, level-format and loader suites green |
 | 2 | **Bake contract.** Wide-layer omit before the memo probe and fill (D4, D5). Misaligned-bake error in every profile (D7). Stale memo, logged hit and all-sentinel tests (W4–W6). Scratch-bound tracker (B3). Determinism and warm=cold (B4). All-255 decode (M5). Encode-error measurement (B5). Footprint half-raw (B1). | integrating executor | 1 | |
 | 3 | **Overlap report.** Peak per-texel count from `build_analytic_overlap_graph_in_order`, carried as the memo-entry prefix. `--verbose` line on miss and hit; an omission line for wide layers (O1). | integrating executor | 2 | |
 | 4 | **Wire and renderer fan-out.** W1–W3 including the loader warning, D2, D3, D6, B2. GPU helper readback for D1 and M3. | integrating executor | 1 | |

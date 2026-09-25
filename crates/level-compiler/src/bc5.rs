@@ -133,82 +133,84 @@ fn encode_bc4_block(texels: &[u8; 16]) -> [u8; 8] {
     block
 }
 
+/// Decode one BC4 block (8 bytes) back to 16 channel values using the D3D/wgpu
+/// hardware integer interpolation formulas, so tests catch encoder-vs-hardware
+/// drift.
 #[cfg(test)]
-mod tests {
-    use super::*;
+// The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladders (6:1 … 1:6 and 4:1 … 1:4).
+#[allow(clippy::identity_op)]
+fn decode_bc4_block(block: &[u8; 8]) -> [u8; 16] {
+    let ep0 = block[0] as u32;
+    let ep1 = block[1] as u32;
 
-    /// Decode one BC4 block (8 bytes) back to 16 channel values using the D3D/wgpu
-    /// hardware integer interpolation formulas. Used by the round-trip test to
-    /// guard against encoder-vs-hardware drift.
-    // The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladders (6:1 … 1:6 and 4:1 … 1:4).
-    #[allow(clippy::identity_op)]
-    fn decode_bc4_block(block: &[u8; 8]) -> [u8; 16] {
-        let ep0 = block[0] as u32;
-        let ep1 = block[1] as u32;
-
-        let mut palette = [0u8; 8];
-        palette[0] = ep0 as u8;
-        palette[1] = ep1 as u8;
-        if ep0 > ep1 {
-            // 8-value mode: indices 2..=7 are the 6 interpolated entries between
-            // ep0 (index 0) and ep1 (index 1), using hardware integer division.
-            palette[2] = ((6 * ep0 + 1 * ep1) / 7) as u8;
-            palette[3] = ((5 * ep0 + 2 * ep1) / 7) as u8;
-            palette[4] = ((4 * ep0 + 3 * ep1) / 7) as u8;
-            palette[5] = ((3 * ep0 + 4 * ep1) / 7) as u8;
-            palette[6] = ((2 * ep0 + 5 * ep1) / 7) as u8;
-            palette[7] = ((1 * ep0 + 6 * ep1) / 7) as u8;
-        } else {
-            // 6 interpolated values plus explicit 0 / 255 endpoints.
-            palette[2] = ((4 * ep0 + 1 * ep1) / 5) as u8;
-            palette[3] = ((3 * ep0 + 2 * ep1) / 5) as u8;
-            palette[4] = ((2 * ep0 + 3 * ep1) / 5) as u8;
-            palette[5] = ((1 * ep0 + 4 * ep1) / 5) as u8;
-            palette[6] = 0;
-            palette[7] = 255;
-        }
-
-        let mut bits: u64 = 0;
-        for (i, &b) in block[2..8].iter().enumerate() {
-            bits |= (b as u64) << (8 * i);
-        }
-
-        let mut out = [0u8; 16];
-        for (i, slot) in out.iter_mut().enumerate() {
-            let sel = ((bits >> (3 * i)) & 0x7) as usize;
-            *slot = palette[sel];
-        }
-        out
+    let mut palette = [0u8; 8];
+    palette[0] = ep0 as u8;
+    palette[1] = ep1 as u8;
+    if ep0 > ep1 {
+        // 8-value mode: indices 2..=7 are the 6 interpolated entries between
+        // ep0 (index 0) and ep1 (index 1), using hardware integer division.
+        palette[2] = ((6 * ep0 + 1 * ep1) / 7) as u8;
+        palette[3] = ((5 * ep0 + 2 * ep1) / 7) as u8;
+        palette[4] = ((4 * ep0 + 3 * ep1) / 7) as u8;
+        palette[5] = ((3 * ep0 + 4 * ep1) / 7) as u8;
+        palette[6] = ((2 * ep0 + 5 * ep1) / 7) as u8;
+        palette[7] = ((1 * ep0 + 6 * ep1) / 7) as u8;
+    } else {
+        // 6 interpolated values plus explicit 0 / 255 endpoints.
+        palette[2] = ((4 * ep0 + 1 * ep1) / 5) as u8;
+        palette[3] = ((3 * ep0 + 2 * ep1) / 5) as u8;
+        palette[4] = ((2 * ep0 + 3 * ep1) / 5) as u8;
+        palette[5] = ((1 * ep0 + 4 * ep1) / 5) as u8;
+        palette[6] = 0;
+        palette[7] = 255;
     }
 
-    /// Decode a full BC5 RG payload back into an RG byte buffer (2 bytes/texel,
-    /// row-major). Mirrors the GPU sampler's view of BC5.
-    fn decode_bc5_rg(blocks: &[u8], width: u32, height: u32) -> Vec<u8> {
-        let blocks_x = width / 4;
-        let blocks_y = height / 4;
-        let mut rg = vec![0u8; (width * height * 2) as usize];
-        let mut cursor = 0usize;
-        for by in 0..blocks_y {
-            for bx in 0..blocks_x {
-                let r_block: [u8; 8] = blocks[cursor..cursor + 8].try_into().unwrap();
-                let g_block: [u8; 8] = blocks[cursor + 8..cursor + 16].try_into().unwrap();
-                cursor += 16;
-                let r = decode_bc4_block(&r_block);
-                let g = decode_bc4_block(&g_block);
-                for ty in 0..4 {
-                    for tx in 0..4 {
-                        let px = bx * 4 + tx;
-                        let py = by * 4 + ty;
-                        let i = (ty * 4 + tx) as usize;
-                        let base = ((py * width + px) * 2) as usize;
-                        rg[base] = r[i];
-                        rg[base + 1] = g[i];
-                    }
+    let mut bits: u64 = 0;
+    for (i, &b) in block[2..8].iter().enumerate() {
+        bits |= (b as u64) << (8 * i);
+    }
+
+    let mut out = [0u8; 16];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let sel = ((bits >> (3 * i)) & 0x7) as usize;
+        *slot = palette[sel];
+    }
+    out
+}
+
+/// Decode a full BC5 RG payload back into an RG byte buffer (2 bytes/texel,
+/// row-major). Mirrors the GPU sampler's view of BC5.
+#[cfg(test)]
+pub(crate) fn decode_bc5_rg(blocks: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let blocks_x = width / 4;
+    let blocks_y = height / 4;
+    let mut rg = vec![0u8; (width * height * 2) as usize];
+    let mut cursor = 0usize;
+    for by in 0..blocks_y {
+        for bx in 0..blocks_x {
+            let r_block: [u8; 8] = blocks[cursor..cursor + 8].try_into().unwrap();
+            let g_block: [u8; 8] = blocks[cursor + 8..cursor + 16].try_into().unwrap();
+            cursor += 16;
+            let r = decode_bc4_block(&r_block);
+            let g = decode_bc4_block(&g_block);
+            for ty in 0..4 {
+                for tx in 0..4 {
+                    let px = bx * 4 + tx;
+                    let py = by * 4 + ty;
+                    let i = (ty * 4 + tx) as usize;
+                    let base = ((py * width + px) * 2) as usize;
+                    rg[base] = r[i];
+                    rg[base + 1] = g[i];
                 }
             }
         }
-        rg
     }
+    rg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     /// Encode unorm `[0, 1]` to a u8 channel value (matches the authoring
     /// convention `byte = (n*0.5 + 0.5) * 255`).

@@ -1115,11 +1115,12 @@ mod tests {
 
     fn minimal_shadowmask_atlas() -> ShadowmaskAtlasSection {
         ShadowmaskAtlasSection {
-            width: 1,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 1,
             channels: vec![0],
-            data: vec![255; 4],
+            data: vec![255; ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()],
         }
     }
 

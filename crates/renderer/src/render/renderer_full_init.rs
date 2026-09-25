@@ -662,6 +662,7 @@ pub(crate) fn build_full_renderer(
         animated_lightmap,
         lights_buffer,
         last_lights_upload: Vec::new(),
+        authored_animated_tail: Vec::new(),
         last_influence_upload: Vec::new(),
         lights_pack_scratch: Vec::new(),
         influence_pack_scratch: Vec::new(),

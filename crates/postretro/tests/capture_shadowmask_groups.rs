@@ -525,13 +525,42 @@ fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
         None,
     );
     assert_no_renderer_errors(&stderr);
-    let lit = image
-        .pixels()
-        .filter(|pixel| pixel.0[..3].iter().any(|&channel| channel >= 16))
-        .count();
-    let pixels = (CAPTURE_WIDTH * CAPTURE_HEIGHT) as usize;
+
+    // Without id 42 every mask reads the all-visible placeholder, so the frame
+    // must equal the same level with every baked mask fully open: the lightmap
+    // and everything else installed intact, and nothing reads the absent atlas.
+    let baked = shadowmask_of(&sections);
+    let open_masks = tempfile::Builder::new()
+        .prefix(".shadowmask-groups-open-masks-")
+        .suffix(".prl")
+        .tempfile_in(compiled.parent().expect("fixture has a parent"))
+        .expect("reserve open-mask PRL path")
+        .into_temp_path();
+    write_variant(
+        &sections,
+        &baked,
+        baked.channels.clone(),
+        constant_payload(&baked, [255; 4]),
+        &open_masks,
+    );
+    let (open_image, open_stderr) = capture_scene(
+        &workspace,
+        scratch.path(),
+        &open_masks,
+        "open-masks",
+        north_wall_camera(),
+        None,
+    );
+    assert_no_renderer_errors(&open_stderr);
     assert!(
-        lit * 100 >= pixels,
-        "the lightmap must light the frame without a shadowmask; {lit} of {pixels} pixels lit"
+        image
+            .pixels()
+            .any(|pixel| pixel.0[..3].iter().any(|&channel| channel > 0)),
+        "the lightmap must light the frame"
+    );
+    assert_eq!(
+        image.as_raw(),
+        open_image.as_raw(),
+        "a level without a shadowmask must render as if every mask were fully visible"
     );
 }

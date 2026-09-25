@@ -1774,7 +1774,9 @@ fn run_after_parsing(
             );
         } else if shadowmask_overlap == crate::shadowmask_bake::ShadowmaskOverlapReport::NoSelection
         {
-            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
+            log::info!(
+                "ShadowmaskAtlas: skipped (no selected static lights or no lightmap charts)"
+            );
         }
         crate::shadowmask_bake::log_overlap_report(
             shadowmask_overlap,

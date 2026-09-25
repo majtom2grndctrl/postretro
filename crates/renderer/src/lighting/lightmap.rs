@@ -151,20 +151,11 @@ impl LightmapResources {
         });
 
         // Linear sampler for the irradiance + animated atlases (both
-        // Rgba16Float). Turns baked penumbra ramps into continuous gradients
+        // Rgba16Float) and the BC5 shadowmask. Turns baked penumbra ramps into continuous gradients
         // under magnification. Always used — Rgba16Float linear-filterability
         // is a hard runtime requirement; non-filterable adapters are rejected
         // at init (see `atlas_format_filterable`). See rendering_pipeline.md §4.
-        let filtering_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Lightmap Sampler (Linear)"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        let filtering_sampler = device.create_sampler(&filtering_sampler_descriptor());
 
         // Defensive runtime guard: the init adapter pre-check guarantees the
         // device grants at least 8192² and at least 256 array layers (see
@@ -272,6 +263,21 @@ impl LightmapResources {
             shadowmask_present,
             direction_texture: direction_tex,
         }
+    }
+}
+
+/// The linear lightmap sampler. Clamp-to-edge is what the shadowmask
+/// helper's per-group clamp reproduces inside each half of the atlas.
+pub(crate) fn filtering_sampler_descriptor() -> wgpu::SamplerDescriptor<'static> {
+    wgpu::SamplerDescriptor {
+        label: Some("Lightmap Sampler (Linear)"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
     }
 }
 
@@ -610,7 +616,9 @@ fn direction_texture_format(direction_format: u32) -> wgpu::TextureFormat {
 /// The texture a usable shadowmask section uploads as: BC5 `.rg`, both mask
 /// groups side by side, one layer per lightmap layer. Callers pass a section
 /// that `filter_usable_shadowmask_section` kept.
-fn shadowmask_texture_descriptor(sec: &ShadowmaskAtlasSection) -> wgpu::TextureDescriptor<'static> {
+pub(crate) fn shadowmask_texture_descriptor(
+    sec: &ShadowmaskAtlasSection,
+) -> wgpu::TextureDescriptor<'static> {
     wgpu::TextureDescriptor {
         label: Some("Shadowmask Atlas"),
         size: wgpu::Extent3d {
@@ -629,7 +637,7 @@ fn shadowmask_texture_descriptor(sec: &ShadowmaskAtlasSection) -> wgpu::TextureD
     }
 }
 
-fn upload_shadowmask_texture(
+pub(crate) fn upload_shadowmask_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     sec: &ShadowmaskAtlasSection,
@@ -697,7 +705,10 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
     )
 }
 
-fn upload_placeholder_shadowmask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+pub(crate) fn upload_placeholder_shadowmask(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> wgpu::Texture {
     // Two white texels: the shader splits the width into two mask groups, so
     // each group reads one real, fully visible texel.
     let bytes = [255u8; 8];
@@ -907,6 +918,111 @@ mod tests {
         assert!(
             filter_usable_shadowmask_section(Some(&too_many_layers), 8192, 4).is_none(),
             "over-layer-limit shadowmask must use the all-visible placeholder path",
+        );
+    }
+
+    /// The device limit the renderer pins at acquisition.
+    const PINNED_TEXTURE_DIMENSION: u32 = 8192;
+
+    fn shadowmask_filter_errors(section: &ShadowmaskAtlasSection) -> (bool, Vec<String>) {
+        let mut kept = false;
+        let captured = capture_logs(|| {
+            kept = filter_usable_shadowmask_section(Some(section), PINNED_TEXTURE_DIMENSION, 256)
+                .is_some();
+        });
+        let errors = captured
+            .into_iter()
+            .filter(|(level, message)| *level == Level::Error && message.starts_with("[Renderer]"))
+            .map(|(_, message)| message)
+            .collect();
+        (kept, errors)
+    }
+
+    // Pin: width-boundary. `W` is 4-aligned, so the smallest texture over the
+    // limit is one block wider than it.
+    #[test]
+    fn shadowmask_texture_at_the_pinned_width_is_kept_and_one_block_wider_degrades() {
+        let (kept, errors) = shadowmask_filter_errors(&fake_shadowmask_section(4096, 64, 2));
+        assert!(
+            kept && errors.is_empty(),
+            "2W == 8192 must be kept: {errors:?}"
+        );
+
+        let (kept, errors) = shadowmask_filter_errors(&fake_shadowmask_section(4100, 64, 2));
+        assert!(!kept, "2W == 8200 must degrade to the placeholder");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("texture 8200x64")
+                && errors[0].contains("maxTextureDimension2D 8192"),
+            "{errors:?}"
+        );
+    }
+
+    // Pin: width-boundary. A `W`-only compare would keep this one.
+    #[test]
+    fn eight_k_lightmap_width_shadowmask_degrades_and_four_k_is_kept() {
+        let (kept, errors) = shadowmask_filter_errors(&fake_shadowmask_section(8192, 8192, 1));
+        assert!(!kept, "W == 8192 means a 16384-wide texture");
+        assert!(
+            errors.len() == 1 && errors[0].contains("texture 16384x8192"),
+            "{errors:?}"
+        );
+        let (kept, _) = shadowmask_filter_errors(&fake_shadowmask_section(4096, 4096, 1));
+        assert!(kept);
+    }
+
+    #[test]
+    fn hand_built_misaligned_shadowmask_degrades_with_a_renderer_error() {
+        for (width, height) in [(6, 8), (8, 6)] {
+            let (kept, errors) =
+                shadowmask_filter_errors(&fake_shadowmask_section(width, height, 1));
+            assert!(!kept, "{width}x{height} must reach the placeholder");
+            assert!(
+                errors.len() == 1 && errors[0].contains("is not BC5 block-aligned"),
+                "{width}x{height}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shadowmask_texture_description_is_bc5_double_width_at_half_the_raw_bytes() {
+        let (width, height, layer_count) = (64, 32, 3);
+        let section = fake_shadowmask_section(width, height, layer_count);
+        let descriptor = shadowmask_texture_descriptor(&section);
+        assert_eq!(descriptor.format, wgpu::TextureFormat::Bc5RgUnorm);
+        assert_eq!(
+            descriptor.size,
+            wgpu::Extent3d {
+                width: 2 * width,
+                height,
+                depth_or_array_layers: layer_count,
+            }
+        );
+        assert_eq!(descriptor.mip_level_count, 1);
+        assert_eq!(descriptor.dimension, wgpu::TextureDimension::D2);
+
+        let texture_bytes = |format: wgpu::TextureFormat, size: wgpu::Extent3d| {
+            let (block_width, block_height) = format.block_dimensions();
+            let block_bytes = format.block_copy_size(None).expect("color format");
+            u64::from(size.width.div_ceil(block_width))
+                * u64::from(size.height.div_ceil(block_height))
+                * u64::from(block_bytes)
+                * u64::from(size.depth_or_array_layers)
+        };
+        let raw_bytes = texture_bytes(
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: layer_count,
+            },
+        );
+        let bc5_bytes = texture_bytes(descriptor.format, descriptor.size);
+        assert_eq!(bc5_bytes * 2, raw_bytes);
+        assert_eq!(
+            bc5_bytes,
+            ShadowmaskAtlasSection::payload_len(width, height, layer_count).unwrap() as u64,
+            "the upload's texture must hold exactly the section payload"
         );
     }
 

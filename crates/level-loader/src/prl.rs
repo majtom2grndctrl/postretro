@@ -6398,6 +6398,113 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    fn selected_light_sections_with(
+        shadowmask: prl_format::SectionBlob,
+    ) -> Vec<prl_format::SectionBlob> {
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            lightmap_blob(4, 4, 2),
+            shadowmask,
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ]
+    }
+
+    /// A ShadowmaskAtlas payload in the retired untagged raw `Rgba8Unorm` layout.
+    fn pre_bc5_shadowmask_blob(
+        width: u32,
+        height: u32,
+        layer_count: u32,
+    ) -> prl_format::SectionBlob {
+        let mut data = Vec::new();
+        for word in [width, height, layer_count, 1] {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        data.extend_from_slice(&[0, 0, 0, 0]);
+        data.resize(
+            data.len() + width as usize * height as usize * layer_count as usize * 4,
+            255,
+        );
+        prl_format::SectionBlob {
+            section_id: SectionId::ShadowmaskAtlas as u32,
+            version: 1,
+            data,
+        }
+    }
+
+    // Pins: stale-payload, stale-payload-tag-collision. A pre-change id 42
+    // loads fully lit (no section) with a warning naming the format mismatch;
+    // bytes that read as a valid tag must not fall through to a length error.
+    #[test]
+    fn load_prl_rejects_pre_bc5_shadowmask_by_format_and_keeps_entity_shadow_selection() {
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE;
+        for (label, blob) in [
+            ("raw", pre_bc5_shadowmask_blob(4, 4, 2)),
+            (
+                "tag-collision",
+                pre_bc5_shadowmask_blob(SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, 0, 2),
+            ),
+        ] {
+            let tmp = write_prl_fixture(
+                selected_light_sections_with(blob),
+                &format!("postretro_test_pre_bc5_shadowmask_{label}.prl"),
+            );
+            let capture = LogCapture::start();
+            let world = load_prl(tmp.to_str().unwrap())
+                .unwrap_or_else(|err| panic!("{label}: a stale id 42 must not fail load: {err}"));
+            capture.assert_logged_once(
+                log::Level::Warn,
+                "ShadowmaskAtlas malformed; ignoring section",
+            );
+            capture.assert_logged_once(log::Level::Warn, "shadowmask atlas format mismatch");
+            assert!(
+                world.shadowmask_atlas.is_none(),
+                "{label}: must degrade to absence"
+            );
+            assert_eq!(world.entity_shadow_lights, vec![0], "{label}");
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
+    // Pin: all-sentinel. Every selected light dropped still ships a tagged
+    // section, which loads; every slot is the sentinel, so it reads fully lit.
+    #[test]
+    fn load_prl_keeps_an_all_sentinel_shadowmask_section() {
+        use postretro_level_format::shadowmask_atlas::{
+            SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            ShadowmaskAtlasSection,
+        };
+        let section = ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
+            layer_count: 2,
+            channels: vec![SHADOWMASK_CHANNEL_DROPPED],
+            data: [255u8, 255, 0, 0, 0, 0, 0, 0].repeat(8),
+        };
+        let tmp = write_prl_fixture(
+            selected_light_sections_with(shadowmask_blob(section.clone())),
+            "postretro_test_all_sentinel_shadowmask.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("all-sentinel id 42 must load");
+        assert_eq!(world.shadowmask_atlas, Some(section));
+        std::fs::remove_file(&tmp).ok();
+    }
+
     #[test]
     fn load_prl_clears_direct_selection_set_when_id41_validity_disagrees_with_id34() {
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {

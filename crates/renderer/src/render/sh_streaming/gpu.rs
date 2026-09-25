@@ -26,7 +26,7 @@ use super::direct_compose::{
     DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose,
     StreamingDirectComposeFrameInputs, StreamingDirectDirtyRanges, StreamingDirectViews,
 };
-use super::{ShResidencyDrainError, SparseCapacityFloors};
+use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacityFloors};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
@@ -38,7 +38,10 @@ mod bindings;
 mod capacity;
 mod growth;
 mod indirect;
+mod isolated_tiles;
 mod setup;
+mod staged_uploads;
+mod staging_pool;
 mod upload;
 
 use bindings::{create_grid_info, create_sample_bind_groups};
@@ -48,6 +51,11 @@ pub(in crate::render::sh_streaming) use capacity::{
 };
 
 use indirect::{RetiredIndirectSparseResources, StreamingIndirectCompose};
+use isolated_tiles::{pack_isolated_upload_span, plan_isolated_uploads};
+pub(in crate::render::sh_streaming) use staged_uploads::StagedUploads;
+#[cfg(test)]
+pub(in crate::render::sh_streaming) use staged_uploads::append_f16_words;
+use staging_pool::StagingPool;
 
 const PHYSICAL_TILE_DIMENSION: u32 = 8;
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
@@ -218,6 +226,11 @@ pub(super) struct StreamingGpuPools {
     pub(super) sparse_group_minimum_bytes: std::collections::BTreeMap<u32, u64>,
     probe_occlusion_enabled: bool,
     sparse_capacity_floors: SparseCapacityFloors,
+    pub(super) growth: PoolGrowthCounters,
+    /// Recycled mapped staging for every residency upload batch.
+    staging: StagingPool,
+    /// Reused CPU vector each batch packs its writes into.
+    upload_scratch: Vec<u8>,
 }
 
 pub(super) fn checked_cell_count(dimensions: [u32; 3]) -> Result<u32, ShResidencyDrainError> {
@@ -240,17 +253,21 @@ pub(super) fn compose_origin_bytes(origin: [f32; 3], cell_size: [f32; 3]) -> [u8
     bytes
 }
 
+/// A zero-filled storage buffer. wgpu zero-initializes an unmapped buffer on
+/// the GPU before its first use, so pool creation and growth never build,
+/// zero, or copy a CPU payload the size of the pool.
 pub(super) fn buffer_with_zeroes(
     device: &wgpu::Device,
     label: &'static str,
     byte_len: usize,
 ) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        contents: &vec![0; byte_len.max(4)],
+        size: byte_len.max(4).next_multiple_of(4) as u64,
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
     })
 }
 
@@ -441,19 +458,13 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, ShResidencyDrainError> {
         })
 }
 
+/// Little-endian upload bytes of `words`. Uploads carry whole cluster
+/// payloads, so the little-endian host path is one copy, not a per-word loop.
 pub(super) fn u32_bytes(words: &[u32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(words));
-    for word in words {
-        bytes.extend_from_slice(&word.to_le_bytes());
+    if cfg!(target_endian = "little") {
+        return bytemuck::cast_slice(words).to_vec();
     }
-    bytes
-}
-
-fn u16_words(halves: &[u16]) -> Result<Vec<u32>, ShResidencyDrainError> {
-    Ok(halves
-        .chunks(2)
-        .map(|pair| u32::from(pair[0]) | (u32::from(pair.get(1).copied().unwrap_or(0)) << 16))
-        .collect())
+    words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
 
 const MAX_COALESCED_WRITE_BYTES: usize = 1024 * 1024;
@@ -490,14 +501,15 @@ pub(in crate::render::sh_streaming) fn coalesce_buffer_writes(
     Ok(merged)
 }
 
-pub(in crate::render::sh_streaming) fn queue_buffer_writes(
-    queue: &wgpu::Queue,
+pub(in crate::render::sh_streaming) fn stage_buffer_writes(
+    uploads: &mut StagedUploads,
     buffer: &wgpu::Buffer,
     writes: &[BufferWrite],
-) {
+) -> Result<(), ShResidencyDrainError> {
     for write in writes {
-        queue.write_buffer(buffer, write.offset, &write.bytes);
+        uploads.write_buffer(buffer, write.offset, &write.bytes)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

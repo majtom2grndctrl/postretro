@@ -112,11 +112,10 @@ impl StreamingIndirectCompose {
 
     pub(in crate::render::sh_streaming::gpu) fn upload_sparse_rows(
         &mut self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         rows: &[&SparseInstallPlan],
     ) -> Result<(), ShResidencyDrainError> {
         let mut lights = Vec::new();
-        let mut tiles = Vec::new();
         let mut offsets = Vec::new();
         let mut pairs = Vec::new();
         let cell_count = checked_cell_count(self.grid.affinity_dims)?;
@@ -131,13 +130,13 @@ impl StreamingIndirectCompose {
                     bytes: u32_bytes(&row.lights),
                 });
             }
-            let packed = u16_words(&row.tile_f16)?;
-            if !packed.is_empty() {
-                tiles.push(BufferWrite {
-                    offset: u64::from(tile_f16_start / 2) * 4,
-                    bytes: u32_bytes(&packed),
-                });
-            }
+            // Tile payloads stage straight into the batch, ahead of every
+            // entry table and CSR pair below.
+            uploads.write_buffer_f16(
+                &self.delta_subblocks,
+                u64::from(tile_f16_start / 2) * 4,
+                &row.tile_f16,
+            )?;
             let entry_offset_base = cell_count
                 .checked_mul(3)
                 .and_then(|base| base.checked_add(entry_start))
@@ -165,16 +164,13 @@ impl StreamingIndirectCompose {
                 bytes: u32_bytes(&[entry_start, entry_end]),
             });
         }
-        let tiles = coalesce_buffer_writes(tiles)?;
         let lights = coalesce_buffer_writes(lights)?;
         let offsets = coalesce_buffer_writes(offsets)?;
         let pairs = coalesce_buffer_writes(pairs)?;
-        queue_buffer_writes(queue, &self.delta_subblocks, &tiles);
-        queue_buffer_writes(queue, &self.affinity_lights, &lights);
-        queue_buffer_writes(queue, &self.compaction_metadata, &offsets);
-        // Queue order publishes each row pair only after its sparse data.
-        queue_buffer_writes(queue, &self.affinity_offsets, &pairs);
-        Ok(())
+        stage_buffer_writes(uploads, &self.affinity_lights, &lights)?;
+        stage_buffer_writes(uploads, &self.compaction_metadata, &offsets)?;
+        // Copy order publishes each row pair only after its sparse data.
+        stage_buffer_writes(uploads, &self.affinity_offsets, &pairs)
     }
 
     pub(in crate::render::sh_streaming::gpu) fn dispatch<'a>(
@@ -219,7 +215,7 @@ impl StreamingIndirectCompose {
 
     pub(in crate::render::sh_streaming::gpu) fn clear_row_pair(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
         let offset = u64::from(row)
@@ -231,8 +227,7 @@ impl StreamingIndirectCompose {
         {
             return Err(ShResidencyDrainError::SlotOverflow);
         }
-        queue.write_buffer(&self.affinity_offsets, offset, &u32_bytes(&[0, 0]));
-        Ok(())
+        uploads.write_buffer(&self.affinity_offsets, offset, &u32_bytes(&[0, 0]))
     }
 
     pub(in crate::render::sh_streaming::gpu) fn clear_all_row_pairs(&self, queue: &wgpu::Queue) {

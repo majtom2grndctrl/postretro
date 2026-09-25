@@ -6,18 +6,20 @@
 //! `context/lib/rendering_pipeline.md` §4.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use postretro_level_loader::{
-    PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode,
-    requested_streaming_mode,
+    CellVisibility, PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest,
+    ShStreamingMode, requested_streaming_mode,
 };
 #[cfg(feature = "capture")]
 use postretro_renderer::ShStreamingLifecycleSummary;
-use postretro_renderer::{Renderer, ShResidencySnapshot};
+use postretro_renderer::{Renderer, ShResidencySnapshot, ShStreamingLiveDiagnostics};
 use postretro_visibility::VisibleCells;
 
-use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement};
+use super::sh_async_workers::{ShAsyncWorkers, ShWorkerResult, ShWorkerRetirement, ShWorkerStats};
+use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
 #[cfg(feature = "capture")]
 use crate::sh_streaming::budget::BytePhase;
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
@@ -42,27 +44,42 @@ pub(crate) struct ShStreamingSession {
     /// Set only after a frame actually submitted all compose work. Its next
     /// pre-compose batch may promote the corresponding accepted clusters.
     prior_compose_submitted: bool,
+    /// Monotonic render time of the latest target update; paces the log.
+    monotonic_seconds: f64,
+    live: ShStreamingLiveDiagnostics,
+    log_window: ShStreamingLogWindow,
+    /// Read counters for the sync-proof path, which reads on the frame thread
+    /// without workers. Capture runs in that mode, so its report needs them.
+    sync_stats: ShWorkerStats,
 }
 
 impl ShStreamingSession {
     /// Builds a controller from the renderer's actual allocation snapshot.
+    /// `cell_visibility` is the same level's id-46 section, if loaded.
     #[cfg(feature = "capture")]
     pub(crate) fn from_renderer(
         manifest: Arc<ShStreamManifest>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
     ) -> Result<Self> {
-        Self::from_renderer_with_mode(manifest, renderer, ShStreamingMode::SyncProof)
+        Self::from_renderer_with_mode(
+            manifest,
+            cell_visibility,
+            renderer,
+            ShStreamingMode::SyncProof,
+        )
     }
 
     fn from_renderer_with_mode(
         manifest: Arc<ShStreamManifest>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         mode: ShStreamingMode,
     ) -> Result<Self> {
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        let mut session = Self::from_snapshot(manifest.clone(), snapshot)?;
+        let mut session = Self::from_snapshot(manifest.clone(), snapshot, cell_visibility)?;
         session.mode = mode;
         Ok(session)
     }
@@ -73,22 +90,29 @@ impl ShStreamingSession {
     #[cfg(feature = "capture")]
     pub(crate) fn for_capture(
         manifest: Arc<ShStreamManifest>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
     ) -> Result<Self> {
-        Self::from_renderer(manifest, renderer)
+        Self::from_renderer(manifest, cell_visibility, renderer)
     }
 
     fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
+        cell_visibility: Option<&CellVisibility>,
     ) -> Result<Self> {
-        let controller = ShResidencyController::new(manifest.clone(), budget_inputs(snapshot))?;
+        let controller =
+            ShResidencyController::new(manifest.clone(), budget_inputs(snapshot), cell_visibility)?;
         Ok(Self {
             manifest,
             mode: ShStreamingMode::SyncProof,
             controller,
             workers: None,
             prior_compose_submitted: false,
+            monotonic_seconds: 0.0,
+            live: ShStreamingLiveDiagnostics::default(),
+            log_window: ShStreamingLogWindow::default(),
+            sync_stats: ShWorkerStats::default(),
         })
     }
 
@@ -107,23 +131,47 @@ impl ShStreamingSession {
         self.workers.as_mut().map(ShAsyncWorkers::begin_retirement)
     }
 
-    /// Updates the controller from one real visibility result. Capture uses
-    /// the same method with its deterministic fixed cell set.
+    /// Updates the controller from one real visibility result and the
+    /// locator's camera cell (`None` without a level). Capture uses the same
+    /// method with its deterministic fixed cell set.
     pub(crate) fn update_targets(
         &mut self,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<()> {
         self.controller
-            .update_targets(visible_cells, monotonic_seconds)
-            .map_err(Into::into)
+            .update_targets(visible_cells, camera_cell, monotonic_seconds)?;
+        self.monotonic_seconds = monotonic_seconds;
+        Ok(())
     }
 
     /// Reads one target through the proof-only synchronous path.
     pub(crate) fn read_one_sync(&mut self) -> Result<SyncReadResult> {
-        self.controller
-            .read_one_sync_at_target_time()
-            .map_err(Into::into)
+        let started = Instant::now();
+        let result = self.controller.read_one_sync_at_target_time()?;
+        if let SyncReadResult::Prepared(cluster_id) = result {
+            // One uncoalesced read per chunk. Its latency spans read and
+            // decode, which the synchronous path performs as one call.
+            let encoded_bytes = self.manifest.payloads().index[cluster_id as usize].payload_len;
+            self.sync_stats.record_read(encoded_bytes, 1, 0);
+            self.sync_stats.read_latency.record(started.elapsed());
+        }
+        Ok(result)
+    }
+
+    /// Read counters for the active mode: the async workers', or the
+    /// session's own when sync-proof reads on the frame thread.
+    fn read_stats(&self) -> Result<Option<ShWorkerStats>> {
+        match self.mode {
+            ShStreamingMode::SyncProof => Ok(Some(self.sync_stats)),
+            _ => self
+                .workers
+                .as_ref()
+                .map(ShAsyncWorkers::stats)
+                .transpose()
+                .map_err(anyhow::Error::msg),
+        }
     }
 
     /// Prepares the bounded loader-to-renderer handoff after target/read work.
@@ -153,7 +201,27 @@ impl ShStreamingSession {
         )?;
         self.controller
             .update_gpu_charges(fixed_gpu_charges(snapshot))?;
+        self.refresh_diagnostics(Some(&snapshot))
+    }
+
+    /// Reassembles the live diagnostics after the renderer has reported this
+    /// frame's installs, then offers them to the periodic log.
+    fn refresh_diagnostics(&mut self, renderer: Option<&ShResidencySnapshot>) -> Result<()> {
+        let worker = self.read_stats()?;
+        assemble_live_diagnostics(
+            &mut self.live,
+            &self.controller.report_snapshot(),
+            worker.as_ref(),
+            renderer,
+        );
+        self.log_window.observe(self.monotonic_seconds, &self.live);
         Ok(())
+    }
+
+    /// The latest assembled view, for the dev-tools Streaming tab.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn live_diagnostics(&self) -> &ShStreamingLiveDiagnostics {
+        &self.live
     }
 
     /// Records that the preceding renderer call submitted its compose work.
@@ -214,6 +282,10 @@ impl ShStreamingSession {
             phase(controller.cpu.decoding, worker.decoding, "decoding")?;
         let (ready_current_bytes, ready_high_water_upper_bound_bytes) =
             phase(controller.cpu.ready, worker.ready, "ready")?;
+        // Renderer fields come from the last applied outcome's snapshot.
+        let mut live = self.live.clone();
+        let worker_stats = self.read_stats()?;
+        assemble_live_diagnostics(&mut live, &controller, worker_stats.as_ref(), None);
         let count = |value: usize, label: &'static str| {
             u64::try_from(value).map_err(|_| anyhow::anyhow!("[SH streaming] {label} exceeds u64"))
         };
@@ -240,18 +312,42 @@ impl ShStreamingSession {
             installs: controller.counters.installs,
             evictions: controller.counters.evictions,
             retries: controller.counters.retries,
+            warm_clusters: live.warm_clusters,
+            cancelled_requests: live.cancelled_requests,
+            discarded_reads: live.discarded_reads,
+            discarded_read_bytes: live.discarded_read_bytes,
+            decoded_bytes_installed: live.decoded_bytes_installed,
+            last_drain_decoded_bytes: live.last_drain_decoded_bytes,
+            max_drain_decoded_bytes: live.max_drain_decoded_bytes,
+            budget_limited_drains: live.budget_limited_drains,
+            reads_issued: live.reads_issued,
+            coalesced_reads: live.coalesced_reads,
+            read_bytes: live.read_bytes,
+            gap_bytes: live.gap_bytes,
+            read_latency_p50_ms: live.read_latency_p50_ms,
+            read_latency_p95_ms: live.read_latency_p95_ms,
+            read_latency_max_ms: live.read_latency_max_ms,
+            decode_latency_max_ms: live.decode_latency_max_ms,
+            install_cpu_total_micros: live.install_cpu_total_micros,
+            install_cpu_max_drain_micros: live.install_cpu_max_drain_micros,
+            install_cpu_last_drain_micros: live.install_cpu_last_drain_micros,
+            install_cpu_max_steady_drain_micros: live.install_cpu_max_steady_drain_micros,
+            pool_growth_events: live.pool_growth_events,
+            pool_growth_bytes: live.pool_growth_bytes,
+            pool_growth_cpu_micros: live.pool_growth_cpu_micros,
         })
     }
 
-    /// Synchronous proof policy: fill the four controller permits from the
+    /// Synchronous proof policy: fill the controller permits from the
     /// current target set, then submit at most the controller's bounded drain
     /// batch. The remaining ready items retain their permits for a later frame.
     fn prepare_sync_proof_batch(
         &mut self,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
-        self.update_targets(visible_cells, monotonic_seconds)?;
+        self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
         while matches!(self.read_one_sync()?, SyncReadResult::Prepared(_)) {}
         self.prepare_batch()
     }
@@ -261,15 +357,19 @@ impl ShStreamingSession {
     fn prepare_async_batch(
         &mut self,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
-        self.update_targets(visible_cells, monotonic_seconds)?;
+        self.update_targets(visible_cells, camera_cell, monotonic_seconds)?;
         let Some(workers) = self.workers.as_ref() else {
             // A prior generation may still be finishing an uncancellable OS
             // read. Publish target deltas and miss fallback without waiting;
-            // the session starts this generation's four workers after join.
+            // the session starts this generation's workers after join.
             return self.prepare_batch();
         };
+        // Publish before admitting or submitting, so the issuer never reads a
+        // cluster this frame's target update dropped.
+        workers.publish_targets(self.controller.targets());
         while let Some(completion) = workers.try_completion().map_err(anyhow::Error::msg)? {
             if !self
                 .controller
@@ -277,42 +377,48 @@ impl ShStreamingSession {
             {
                 continue;
             }
-            if !self.controller.matches_queued_request(completion.request) {
-                // The controller handles a departed queued item by releasing
-                // its permit; foreign generations never touch this session.
-                if completion.result.is_err() {
-                    self.controller.admit_failed_request(completion.request)?;
-                } else if let Ok(chunk) = completion.result {
-                    self.controller.admit_prepared(PreparedShCluster {
-                        generation: completion.request.generation,
-                        content_tag: completion.request.content_tag,
-                        chunk,
-                    })?;
+            let chunk = match completion.result {
+                ShWorkerResult::Cancelled => {
+                    self.controller
+                        .admit_cancelled_request(completion.request)?;
+                    continue;
                 }
-                continue;
-            }
-            match completion.result {
-                Ok(chunk) => {
-                    self.controller.admit_prepared(PreparedShCluster {
-                        generation: completion.request.generation,
-                        content_tag: completion.request.content_tag,
-                        chunk,
-                    })?;
-                }
-                Err(error) => {
+                ShWorkerResult::Failed(error) => {
+                    // A departed queued item only releases its permit; only
+                    // targeted work can earn the one warning.
                     if self.controller.admit_failed_request(completion.request)? {
                         log::warn!(
                             "[SH streaming] cluster {} read/decode failed: {error}",
                             completion.request.cluster_id
                         );
                     }
+                    continue;
                 }
-            }
+                ShWorkerResult::Prepared(chunk) => chunk,
+            };
+            // Admission drops stale or departed work and releases its permit;
+            // foreign generations never reach it.
+            self.controller.admit_prepared(PreparedShCluster {
+                generation: completion.request.generation,
+                content_tag: completion.request.content_tag,
+                chunk,
+            })?;
         }
-        while let Some(request) = self.controller.take_next_request()? {
+        // Budget policy runs inside the drain and may suppress targets. Take
+        // requests only after it, and publish its final target set before
+        // submitting them: an idle issuer wakes on a submission and would
+        // otherwise read a suppressed cluster against the earlier publish.
+        self.promote_composed_clusters();
+        let (batch, requests) = self.controller.take_async_drain_batch_and_requests()?;
+        let workers = self
+            .workers
+            .as_ref()
+            .expect("async workers were present above");
+        workers.publish_targets(self.controller.targets());
+        for request in requests {
             workers.submit(request).map_err(anyhow::Error::msg)?;
         }
-        self.prepare_batch()
+        Ok(batch)
     }
 }
 
@@ -355,13 +461,17 @@ impl super::Session {
     }
 
     /// Creates/replaces the session controller for a streamed map, updates it
-    /// from the exact visible cells for this frame, and returns its one bounded
-    /// pre-compose batch. Legacy maps bypass the environment gate completely.
+    /// from the exact visible cells and camera cell for this frame, and returns
+    /// its one bounded pre-compose batch. `cell_visibility` is read only when
+    /// a controller is created for `manifest`, and must come from the same
+    /// level. Legacy maps bypass the environment gate completely.
     pub(crate) fn prepare_sh_streaming_drain(
         &mut self,
         manifest: Option<&Arc<ShStreamManifest>>,
+        cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         visible_cells: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<ShDrainBatch> {
         self.poll_sh_worker_retirement();
@@ -383,6 +493,7 @@ impl super::Session {
             self.clear_sh_streaming();
             self.sh_streaming = Some(ShStreamingSession::from_renderer_with_mode(
                 manifest.clone(),
+                cell_visibility,
                 renderer,
                 mode,
             )?);
@@ -397,10 +508,10 @@ impl super::Session {
         }
         match mode {
             ShStreamingMode::SyncProof => {
-                streaming.prepare_sync_proof_batch(visible_cells, monotonic_seconds)
+                streaming.prepare_sync_proof_batch(visible_cells, camera_cell, monotonic_seconds)
             }
             ShStreamingMode::Async => {
-                streaming.prepare_async_batch(visible_cells, monotonic_seconds)
+                streaming.prepare_async_batch(visible_cells, camera_cell, monotonic_seconds)
             }
             ShStreamingMode::Off => unreachable!("mode was checked above"),
         }
@@ -511,6 +622,7 @@ mod tests {
                 effective_floor_bytes: 1024 * 1024,
                 ..ShResidencySnapshot::default()
             },
+            world.cell_visibility.as_ref(),
         )
         .unwrap();
         session.mode = ShStreamingMode::Async;
@@ -527,7 +639,7 @@ mod tests {
         let capture = LogCapture::start();
         let visible = VisibleCells::Culled(vec![0]);
         let empty = VisibleCells::Culled(Vec::new());
-        session.prepare_async_batch(&visible, 0.0).unwrap();
+        session.prepare_async_batch(&visible, Some(0), 0.0).unwrap();
 
         let wait_for_failure = |session: &mut ShStreamingSession, time| {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -536,19 +648,123 @@ mod tests {
             {
                 assert!(Instant::now() < deadline, "worker failure did not arrive");
                 std::thread::yield_now();
-                session.prepare_async_batch(&visible, time).unwrap();
+                session
+                    .prepare_async_batch(&visible, Some(0), time)
+                    .unwrap();
             }
         };
         wait_for_failure(&mut session, 0.0);
         capture.assert_logged_once(log::Level::Warn, "cluster 0 read/decode failed:");
 
-        session.prepare_async_batch(&empty, 0.1).unwrap();
-        session.prepare_async_batch(&empty, 2.1).unwrap();
-        session.prepare_async_batch(&visible, 2.2).unwrap();
+        // No camera cell stands for the camera leaving; its warm set departs.
+        session.prepare_async_batch(&empty, None, 0.1).unwrap();
+        session.prepare_async_batch(&empty, None, 2.1).unwrap();
+        session.prepare_async_batch(&visible, Some(0), 2.2).unwrap();
         assert_eq!(session.controller.counters().retries, 1);
         wait_for_failure(&mut session, 2.2);
         assert_eq!(session.controller.permits_in_use(), 0);
         capture.assert_logged_once(log::Level::Warn, "cluster 0 read/decode failed:");
+    }
+
+    #[test]
+    fn periodic_log_line_appears_once_per_active_interval_and_never_when_idle() {
+        let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+        let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+        let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+        let renderer = ShResidencySnapshot {
+            effective_floor_bytes: 1024 * 1024,
+            ..ShResidencySnapshot::default()
+        };
+        let mut session =
+            ShStreamingSession::from_snapshot(manifest, renderer, world.cell_visibility.as_ref())
+                .unwrap();
+        session.mode = ShStreamingMode::Async;
+        session.start_async_workers().unwrap();
+        let capture = LogCapture::start();
+        let visible = VisibleCells::Culled(vec![0]);
+        // One frame as the windowed loop runs it, with the renderer accepting
+        // every ready cluster.
+        let frame = |session: &mut ShStreamingSession, seconds: f64| {
+            let batch = session
+                .prepare_async_batch(&visible, Some(0), seconds)
+                .unwrap();
+            let accepted = batch
+                .ready
+                .iter()
+                .map(|prepared| prepared.chunk.cluster_id)
+                .collect();
+            session
+                .controller
+                .apply_drain_outcome(ShDrainOutcome {
+                    accepted,
+                    ..ShDrainOutcome::default()
+                })
+                .unwrap();
+            session.refresh_diagnostics(Some(&renderer)).unwrap();
+        };
+        let lines = |capture: &LogCapture| {
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.message.starts_with("[SH streaming] last"))
+                .count()
+        };
+
+        // The one cluster is read and installed while render time stands at 0.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while session.live.installs == 0 {
+            assert!(Instant::now() < deadline, "worker read did not arrive");
+            std::thread::yield_now();
+            frame(&mut session, 0.0);
+        }
+        assert_eq!(session.live.reads_issued, 1);
+        assert_eq!(lines(&capture), 0, "the first interval has not elapsed");
+
+        // 60 Hz for 20 s: the activity is reported once, at the first
+        // interval boundary; the idle intervals after it stay silent.
+        for step in 1..=1200u32 {
+            frame(&mut session, f64::from(step) / 60.0);
+        }
+        assert_eq!(lines(&capture), 1);
+        capture.assert_logged_once(log::Level::Info, "[SH streaming] last 5.0 s: 1 reads");
+    }
+
+    // Regression: capture runs sync-proof, whose frame-thread reads bypassed
+    // the worker counters and left every capture's read fields at zero.
+    #[test]
+    fn sync_proof_reads_fill_the_read_counters() {
+        let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+        let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+        let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+        let encoded_bytes = manifest.payloads().index[0].payload_len;
+        let mut session = ShStreamingSession::from_snapshot(
+            manifest,
+            ShResidencySnapshot {
+                effective_floor_bytes: 1024 * 1024,
+                ..ShResidencySnapshot::default()
+            },
+            world.cell_visibility.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(session.mode, ShStreamingMode::SyncProof);
+
+        session
+            .update_targets(&VisibleCells::Culled(vec![0]), Some(0), 0.0)
+            .unwrap();
+        assert_eq!(
+            session.read_one_sync().unwrap(),
+            SyncReadResult::Prepared(0)
+        );
+
+        let stats = session
+            .read_stats()
+            .unwrap()
+            .expect("sync-proof reports reads");
+        assert!(encoded_bytes > 0);
+        assert_eq!(stats.reads_issued, 1);
+        assert_eq!(stats.coalesced_reads, 0);
+        assert_eq!(stats.read_bytes, encoded_bytes);
+        assert_eq!(stats.gap_bytes, 0);
     }
 
     #[test]

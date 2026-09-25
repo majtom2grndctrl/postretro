@@ -3987,10 +3987,16 @@ impl ApplicationHandler for App {
                     // Prepare the controller while no borrowed draw collection
                     // is live. The actual drain still occurs as the first step
                     // inside `render_frame_indirect`, before scene recording.
+                    // The warm set follows the same locator cell that seeded
+                    // portal visibility this frame.
                     let sh_drain_batch = match session.prepare_sh_streaming_drain(
                         sh_stream_manifest.as_ref(),
+                        self.level
+                            .as_ref()
+                            .and_then(|world| world.cell_visibility.as_ref()),
                         renderer,
                         &visible_cells,
+                        self.level.as_ref().map(|_| stats.camera_cell as usize),
                         self.script_time,
                     ) {
                         Ok(batch) => batch,
@@ -4253,6 +4259,10 @@ impl ApplicationHandler for App {
                                 let timing_snapshot = renderer.frame_timing_snapshot().cloned();
                                 let panel_state = &mut debug_ui.panel_state;
                                 let sh_state = &mut debug_ui.sh_diagnostics_state;
+                                let sh_streaming_live = session
+                                    .sh_streaming
+                                    .as_ref()
+                                    .map(|streaming| streaming.live_diagnostics());
                                 let ctx_clone = debug_ui.ctx.clone();
                                 let full_output = ctx_clone.run_ui(raw_input, |ui| {
                                     let ctx = ui.ctx();
@@ -4277,6 +4287,7 @@ impl ApplicationHandler for App {
                                             &trigger_rows,
                                             &door_occluder_diagnostics.mover_rows,
                                             &door_occluder_diagnostics.blocked_portal_ids,
+                                            sh_streaming_live,
                                         );
                                     }
                                 });

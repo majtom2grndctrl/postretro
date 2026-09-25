@@ -415,15 +415,18 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         generation_has_reset: false,
         indirect_compose_epoch: 0,
         direct_compose_epoch: 0,
+        install_cpu: InstallCpuCounters::default(),
         gpu: None,
     };
-    state.refresh_indirect_resident_rows();
+    state.indirect_resident_rows = state.rebuilt_resident_rows()[0].clone();
     assert_eq!(state.indirect_resident_rows, BTreeSet::from([2]));
-    decrement_row_ref(&mut state.indirect_base_row_refs, 2).unwrap();
-    state.refresh_indirect_resident_rows();
+    state
+        .release_row_refs(RowRefTable::IndirectBase, 2, 1)
+        .unwrap();
     assert_eq!(state.indirect_resident_rows, BTreeSet::from([2]));
-    decrement_row_ref(&mut state.indirect_delta_row_refs, 2).unwrap();
-    state.refresh_indirect_resident_rows();
+    state
+        .release_row_refs(RowRefTable::IndirectDelta, 2, 1)
+        .unwrap();
     assert!(state.indirect_resident_rows.is_empty());
     state.indirect_dirty_rows.insert(2);
     state.direct_promotion_dirty_rows.insert(4);
@@ -509,11 +512,10 @@ fn malformed_target_transition_leaves_the_live_session_unchanged() {
 }
 
 #[test]
-fn over_cap_ready_batch_is_rejected_before_renderer_state_changes() {
-    let mut state = state_with_clusters(3);
-    state.generation = 5;
-    state.generation_has_reset = true;
-    state.targets = BTreeSet::from([0]);
+fn ready_batch_over_the_retired_two_install_cap_passes_the_contract() {
+    // The controller's decoded-byte budget decides how many clusters a drain
+    // carries; small-cluster maps routinely hand over more than two.
+    let state = state_with_clusters(3);
     let batch = ShDrainBatch {
         generation: 5,
         content_tag: state.content_tag,
@@ -526,12 +528,9 @@ fn over_cap_ready_batch_is_rejected_before_renderer_state_changes() {
         ..ShDrainBatch::default()
     };
 
-    let error = state.validate_batch_contract(&batch).unwrap_err();
-    assert!(matches!(error, ShResidencyDrainError::InvalidBatch(_)));
-    assert_eq!(state.generation, 5);
-    assert_eq!(state.targets, BTreeSet::from([0]));
-    assert!(state.installed.is_empty());
-    assert!(state.pending_promotion.is_empty());
+    state
+        .validate_batch_contract(&batch)
+        .expect("ready count is install-budget policy, not a boundary rule");
 }
 
 #[test]

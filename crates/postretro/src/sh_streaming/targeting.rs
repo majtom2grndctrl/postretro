@@ -9,16 +9,24 @@ use super::*;
 
 impl ShResidencyController {
     /// Uses monotonic render seconds, not a frame count, so the two-second
-    /// retention window is identical at 30, 60, and 144 Hz.
+    /// retention window is identical at 30, 60, and 144 Hz. The horizon is
+    /// `visible ∪ warm`; the warm set follows `camera_cell` alone, so view
+    /// rotation moves only visible-class targets.
     pub(crate) fn update_targets(
         &mut self,
         visible: &VisibleCells,
+        camera_cell: Option<usize>,
         monotonic_seconds: f64,
     ) -> Result<(), ShResidencyControllerError> {
         self.validate_time(monotonic_seconds)?;
         let visible = self.visible_clusters(visible)?;
+        self.refresh_warm_set(camera_cell)?;
         self.record_visible_misses(&visible)?;
-        let horizon = self.two_hop_horizon(&visible)?;
+        let horizon: BTreeSet<u32> = visible
+            .iter()
+            .copied()
+            .chain(self.warm.clusters())
+            .collect();
         let raw_departures: Vec<_> = self.last_horizon.difference(&horizon).copied().collect();
         let horizon_changed = horizon != self.last_horizon;
         if horizon_changed {
@@ -237,35 +245,14 @@ impl ShResidencyController {
         }
     }
 
-    fn two_hop_horizon(
-        &self,
-        visible: &BTreeSet<u32>,
-    ) -> Result<BTreeSet<u32>, ShResidencyControllerError> {
-        let mut result = visible.clone();
-        let mut queue: VecDeque<_> = visible
-            .iter()
-            .map(|&cluster_id| (cluster_id, 0u8))
-            .collect();
-        while let Some((cluster_id, depth)) = queue.pop_front() {
-            if depth == PREFETCH_HOPS {
-                continue;
-            }
-            let neighbors = self
-                .topology
-                .adjacency
-                .get(cluster_id as usize)
-                .ok_or_else(|| {
-                    ShResidencyControllerError::InvalidTopology(
-                        "visible cluster exceeds adjacency".into(),
-                    )
-                })?;
-            for &neighbor in neighbors {
-                if result.insert(neighbor) {
-                    queue.push_back((neighbor, depth + 1));
-                }
-            }
+    fn refresh_warm_set(
+        &mut self,
+        camera_cell: Option<usize>,
+    ) -> Result<(), ShResidencyControllerError> {
+        if self.warm.camera_cell() != camera_cell {
+            self.warm = self.warm_source.warm_set(&self.topology, camera_cell)?;
         }
-        Ok(result)
+        Ok(())
     }
 
     fn close_owner_targets(
@@ -452,12 +439,14 @@ impl ShResidencyController {
                 self.states[cluster_id as usize].state == ClusterResidencyState::Absent
             })
             .collect();
+        // Authored priority outranks warm distance.
         candidates.sort_by_key(|&cluster_id| {
             (
                 self.states[cluster_id as usize]
                     .class
                     .unwrap_or(TargetClass::Hysteresis),
                 std::cmp::Reverse(self.states[cluster_id as usize].effective_priority),
+                self.warm_rank(cluster_id),
                 cluster_id,
             )
         });
@@ -469,6 +458,9 @@ impl ShResidencyController {
         Ok(None)
     }
 
+    /// `visiting` holds only the current path, so every return pops this
+    /// cluster; an owner reached again through a sibling branch is a diamond,
+    /// not a cycle.
     fn first_missing_owner(
         &self,
         cluster_id: u32,
@@ -477,13 +469,22 @@ impl ShResidencyController {
         if !visiting.insert(cluster_id) {
             return Err(ShResidencyControllerError::OwnerCycle(cluster_id));
         }
+        let missing = self.first_missing_owner_on_path(cluster_id, visiting);
+        visiting.remove(&cluster_id);
+        missing
+    }
+
+    fn first_missing_owner_on_path(
+        &self,
+        cluster_id: u32,
+        visiting: &mut BTreeSet<u32>,
+    ) -> Result<Option<u32>, ShResidencyControllerError> {
         for &owner in &self.topology.owners[cluster_id as usize] {
             match self.states[owner as usize].state {
-                ClusterResidencyState::Absent => {
-                    if let Some(missing) = self.first_missing_owner(owner, visiting)? {
-                        return Ok(Some(missing));
-                    }
-                }
+                // An absent owner either yields the next cluster to request or
+                // is itself blocked behind in-flight work; either way its
+                // dependents wait rather than being requested ahead of it.
+                ClusterResidencyState::Absent => return self.first_missing_owner(owner, visiting),
                 ClusterResidencyState::Sampleable => {}
                 ClusterResidencyState::Failed
                 | ClusterResidencyState::Queued
@@ -491,7 +492,6 @@ impl ShResidencyController {
                 | ClusterResidencyState::InstalledUncomposed => return Ok(None),
             }
         }
-        visiting.remove(&cluster_id);
         Ok(
             (self.states[cluster_id as usize].state == ClusterResidencyState::Absent)
                 .then_some(cluster_id),

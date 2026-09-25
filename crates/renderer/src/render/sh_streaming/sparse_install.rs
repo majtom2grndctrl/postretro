@@ -56,44 +56,49 @@ impl ShResidencyState {
         Ok(collected)
     }
 
-    /// Allocate a complete already-validated batch. The caller's rollback
-    /// snapshot restores all CPU mirrors if any later row cannot reserve its
+    /// Allocate a complete already-validated batch. The install journal
+    /// restores every CPU mirror if any later row cannot reserve its
     /// entry/tile ranges; queue writes have not started yet.
     pub(super) fn allocate_sparse_rows(
         &mut self,
+        journal: &mut InstallJournal,
         cluster_id: u32,
         rows: Vec<(u32, ParsedSparseRow)>,
     ) -> Result<Vec<SparseInstallPlan>, ShResidencyDrainError> {
         let mut plans = Vec::with_capacity(rows.len());
         for (section_id, payload) in rows {
-            let (entries, tiles) = self
-                .sparse_pools
-                .get_mut(&section_id)
-                .ok_or(malformed(
+            if !self.sparse_pools.contains_key(&section_id) {
+                return Err(malformed(
                     cluster_id,
                     "sparse source disappeared during install",
-                ))?
-                .install(payload.row, payload.entry_count, payload.tile_f16_count)
+                ));
+            }
+            let (entries, tiles) = self
+                .journal_install_sparse_row(
+                    journal,
+                    section_id,
+                    payload.row,
+                    payload.entry_count,
+                    payload.tile_f16_count,
+                )
                 .map_err(|_| malformed(cluster_id, "sparse row cannot allocate pool range"))?;
-            self.dirty_rows.insert((section_id, payload.row));
+            let row = payload.row;
+            self.journal_dirty_row(journal, section_id, row);
             match section_id {
                 INDIRECT_DELTA_ID => {
-                    self.indirect_dirty_rows.insert(payload.row);
-                    increment_row_ref(&mut self.indirect_delta_row_refs, payload.row)?;
-                    self.refresh_indirect_resident_rows();
+                    self.journal_insert_row(journal, RowSet::IndirectDirty, row);
+                    self.journal_add_row_refs(journal, RowRefTable::IndirectDelta, row, 1)?;
                 }
                 DIRECT_DELTA_ID => {
-                    self.direct_promotion_dirty_rows.insert(payload.row);
+                    self.journal_insert_row(journal, RowSet::DirectPromotionDirty, row);
                     // Pass B samples Pass A's result, so an id-41 change must
                     // dirty both unions when id-45 is present.
-                    self.direct_animated_dirty_rows.insert(payload.row);
-                    increment_row_ref(&mut self.direct_promotion_row_refs, payload.row)?;
-                    self.refresh_direct_resident_rows();
+                    self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
+                    self.journal_add_row_refs(journal, RowRefTable::DirectPromotion, row, 1)?;
                 }
                 ANIMATED_DIRECT_DELTA_ID => {
-                    self.direct_animated_dirty_rows.insert(payload.row);
-                    increment_row_ref(&mut self.direct_animated_row_refs, payload.row)?;
-                    self.refresh_direct_resident_rows();
+                    self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
+                    self.journal_add_row_refs(journal, RowRefTable::DirectAnimated, row, 1)?;
                 }
                 _ => unreachable!("collect_sparse_rows validates streamed families"),
             }
@@ -111,32 +116,30 @@ impl ShResidencyState {
     /// state in one replacement.  This runs before any GPU upload is queued;
     /// if the sole retirement slot is still occupied, the caller rolls the
     /// CPU mirrors back and retains the prepared payload for the next drain.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn ensure_sparse_capacity(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        sh: &mut crate::render::sh_volume::ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
-        selection_weights: &wgpu::Buffer,
+        gpu: Option<&mut InstallGpu<'_>>,
     ) -> Result<(), ShResidencyDrainError> {
+        let Some(pools) = self.gpu.as_mut() else {
+            return Ok(());
+        };
+        let gpu = gpu.ok_or(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed sparse growth requires device handles",
+        })?;
         let required = self
             .sparse_pools
             .iter()
             .map(|(&section_id, pool)| (section_id, (pool.entries.capacity, pool.tiles.capacity)))
             .collect::<SparseCapacityFloors>();
-        if let Some(gpu) = self.gpu.as_mut() {
-            gpu.grow_sparse(
-                device,
-                queue,
-                &self.base_metadata,
-                &self.source_metadata,
-                &required,
-                sh,
-                uniform_bind_group_layout,
-                selection_weights,
-            )?;
-        }
-        Ok(())
+        pools.grow_sparse(
+            gpu.device,
+            gpu.queue,
+            &self.base_metadata,
+            &self.source_metadata,
+            &required,
+            gpu.sh,
+            gpu.uniform_bind_group_layout,
+            gpu.selection_weights,
+        )
     }
 }

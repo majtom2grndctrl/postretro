@@ -120,7 +120,9 @@ impl PreparedCapture {
         let sh_streaming = world
             .sh_stream_manifest()
             .cloned()
-            .map(|manifest| ShStreamingSession::for_capture(manifest, &renderer))
+            .map(|manifest| {
+                ShStreamingSession::for_capture(manifest, world.cell_visibility.as_ref(), &renderer)
+            })
             .transpose()?;
         let max_preload_frames = world
             .sh_stream_manifest()
@@ -183,7 +185,8 @@ impl PreparedCapture {
         let Some(streaming) = self.sh_streaming.as_mut() else {
             return Ok(());
         };
-        streaming.update_targets(&self.visible_render.visible_cells, 0.0)?;
+        let camera_cell = Some(self.visible_render.stats.camera_cell as usize);
+        streaming.update_targets(&self.visible_render.visible_cells, camera_cell, 0.0)?;
         for _ in 0..max_frames {
             if self
                 .sh_streaming

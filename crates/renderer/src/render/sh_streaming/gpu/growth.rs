@@ -25,6 +25,7 @@ impl StreamingGpuPools {
         if required_slots <= self.shape.slots {
             return Ok(());
         }
+        let started = std::time::Instant::now();
         let shape = self
             .shape
             .grown_for_slots(required_slots, &device.limits())?;
@@ -166,6 +167,7 @@ impl StreamingGpuPools {
         self.mesh_bind_group = replacement_mesh_bind_group;
         self.shape = shape;
         self.probe_occlusion_enabled = probe_occlusion_enabled;
+        let previous_active_capacity = self.active_capacity_bytes;
         self.active_capacity_bytes = replacement_active_capacity;
 
         queue.submit(std::iter::once(encoder.finish()));
@@ -180,6 +182,12 @@ impl StreamingGpuPools {
             grid_info: old_grid_info,
             complete,
         });
+        self.growth.record(
+            1,
+            previous_active_capacity,
+            replacement_active_capacity,
+            started.elapsed(),
+        );
         Ok(())
     }
 
@@ -232,6 +240,7 @@ impl StreamingGpuPools {
         if sections_to_grow.is_empty() {
             return Ok(());
         }
+        let started = std::time::Instant::now();
         // Construct every replacement before encoding a copy or swapping an
         // active family. A later constructor failure must leave all active
         // buffers and their CPU allocation mirrors untouched.
@@ -444,6 +453,12 @@ impl StreamingGpuPools {
             });
         }
         self.sparse_capacity_floors = floors;
+        self.growth.record(
+            sections_to_grow.len(),
+            self.active_capacity_bytes,
+            replacement_active_capacity,
+            started.elapsed(),
+        );
         self.active_capacity_bytes = replacement_active_capacity;
         Ok(())
     }

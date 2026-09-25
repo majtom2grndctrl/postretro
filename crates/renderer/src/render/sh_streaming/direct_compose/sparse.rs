@@ -5,7 +5,8 @@ use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_D
 use wgpu::util::DeviceExt;
 
 use super::super::gpu::{
-    BufferWrite, coalesce_buffer_writes, queue_buffer_writes, validate_storage_buffer_size,
+    BufferWrite, StagedUploads, coalesce_buffer_writes, stage_buffer_writes,
+    validate_storage_buffer_size,
 };
 use super::super::payload::sparse_offsets_fit_allocation;
 use super::super::{
@@ -83,11 +84,10 @@ impl StreamingSparseBuffers {
     /// row must not leave an earlier CSR pair reachable.
     pub(super) fn upload_rows(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
         self.validate_rows(rows)?;
-        let mut tiles = Vec::new();
         let mut lights = Vec::new();
         let mut offsets = Vec::new();
         let mut pairs = Vec::new();
@@ -95,12 +95,13 @@ impl StreamingSparseBuffers {
             if row.role == 2 || row.lights.is_empty() {
                 continue;
             }
-            if !row.tile_f16.is_empty() {
-                tiles.push(BufferWrite {
-                    offset: u64::from(row.tile_f16_start / 2) * 4,
-                    bytes: u16_words(row.tile_f16),
-                });
-            }
+            // Tile payloads stage straight into the batch, ahead of every
+            // entry table and CSR pair below.
+            uploads.write_buffer_f16(
+                &self.tile_words,
+                u64::from(row.tile_f16_start / 2) * 4,
+                row.tile_f16,
+            )?;
             lights.push(BufferWrite {
                 offset: u64::from(row.entry_start) * 4,
                 bytes: u32_bytes(row.lights),
@@ -119,16 +120,13 @@ impl StreamingSparseBuffers {
                 bytes: u32_bytes(&[row.entry_start, row.entry_end]),
             });
         }
-        let tiles = coalesce_buffer_writes(tiles)?;
         let lights = coalesce_buffer_writes(lights)?;
         let offsets = coalesce_buffer_writes(offsets)?;
         let pairs = coalesce_buffer_writes(pairs)?;
-        queue_buffer_writes(queue, &self.tile_words, &tiles);
-        queue_buffer_writes(queue, &self.lights, &lights);
-        queue_buffer_writes(queue, &self.compaction_metadata, &offsets);
-        // Queue order publishes pairs only after their entry/tile data.
-        queue_buffer_writes(queue, &self.row_pairs, &pairs);
-        Ok(())
+        stage_buffer_writes(uploads, &self.lights, &lights)?;
+        stage_buffer_writes(uploads, &self.compaction_metadata, &offsets)?;
+        // Copy order publishes pairs only after their entry/tile data.
+        stage_buffer_writes(uploads, &self.row_pairs, &pairs)
     }
 
     pub(super) fn validate_rows(
@@ -143,7 +141,7 @@ impl StreamingSparseBuffers {
 
     pub(super) fn clear_row_pair(
         &self,
-        queue: &wgpu::Queue,
+        uploads: &mut StagedUploads,
         row: u32,
     ) -> Result<(), ShResidencyDrainError> {
         if row >= self.row_count {
@@ -152,8 +150,7 @@ impl StreamingSparseBuffers {
                 reason: "streamed direct sparse row clear exceeds metadata",
             });
         }
-        queue.write_buffer(&self.row_pairs, u64::from(row) * 8, &[0; 8]);
-        Ok(())
+        uploads.write_buffer(&self.row_pairs, u64::from(row) * 8, &[0; 8])
     }
 
     pub(super) fn clear_all_row_pairs(
@@ -512,17 +509,6 @@ fn checked_sparse_backing_bytes(buffers: [u64; 4]) -> Result<u64, ShResidencyDra
     checked_ledger_sum(&buffers)
 }
 
-fn u16_words(values: &[u16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(values.len().div_ceil(2) * size_of::<u32>());
-    for pair in values.chunks(2) {
-        bytes.extend_from_slice(
-            &(u32::from(pair[0]) | (u32::from(pair.get(1).copied().unwrap_or(0)) << 16))
-                .to_le_bytes(),
-        );
-    }
-    bytes
-}
-
 fn copy_buffer(
     encoder: &mut wgpu::CommandEncoder,
     source: &wgpu::Buffer,
@@ -554,7 +540,9 @@ mod tests {
         };
         assert_eq!(row.entry_tile_f16_offsets[0] & 1, 1);
         assert!(is_word_aligned_tile_row(&row));
-        assert_eq!(u16_words(&row.tile_f16), vec![1, 0, 2, 0, 3, 0, 4, 0]);
+        let mut packed = Vec::new();
+        super::super::super::gpu::append_f16_words(&mut packed, row.tile_f16);
+        assert_eq!(packed, vec![1, 0, 2, 0, 3, 0, 4, 0]);
     }
 
     #[test]

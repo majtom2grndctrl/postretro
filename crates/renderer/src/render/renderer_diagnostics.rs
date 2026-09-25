@@ -233,11 +233,21 @@ impl Renderer {
         self.full().bvh_cull_diagnostics
     }
 
-    /// `true` when the loaded map carries a baked SH volume. The diagnostic
-    /// panel queries this to render either live controls or a disabled-state label.
+    /// `true` when the loaded map carries SH data the diagnostic overlay can
+    /// draw — either a whole-loaded baked SH volume or an active streaming
+    /// session. The diagnostic panel queries this to render either live
+    /// controls or a disabled-state label.
     #[cfg(feature = "dev-tools")]
     pub fn has_sh_volume(&self) -> bool {
-        self.full().sh_volume_resources.present
+        self.full().sh_volume_resources.present || self.full().sh_streaming.is_some()
+    }
+
+    /// `true` while a streamed SH residency session is active. Gates
+    /// `sh_diagnostics::MarkerMode::Residency`, which colors markers from the
+    /// renderer's own residency mirrors and has no meaning without one.
+    #[cfg(feature = "dev-tools")]
+    pub fn sh_streaming_active(&self) -> bool {
+        self.full().sh_streaming.is_some()
     }
 
     /// `true` when the loaded map carries a baked SDF static-occluder atlas.
@@ -298,6 +308,7 @@ impl Renderer {
         sh_diagnostics::emit(
             state,
             &full.sh_volume_resources,
+            full.sh_streaming.as_ref(),
             &full.sh_delta_volumes_meta,
             camera_pos,
             world,

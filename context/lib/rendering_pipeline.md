@@ -107,33 +107,65 @@ pairs default to bounded asynchronous residency. Ids 47/48 billboard direct scat
 whole-resident. The fragment sampler keeps its existing depth-moment indirection, fixed
 eight-corner stencil, bindings, and taps; it performs no residency lookup.
 
-The application derives visible, two-hop-prefetch, hysteresis, and baked-owner targets
-after visibility. Authored id-49 v2 hints add persistent pinned clusters and their owner
-closure, plus preferred `SeamWarm` targets across marked portals when the near side is
-visible—even if an opaque door blocks traversal. Seam warm-up is best effort: it does
-not change door motion, gameplay, or the visible-cell set, and a cold opening still
-uses the ambient-floor miss fallback. Priority 0–3 ranks only pressure-eligible seam
-warm-up and prefetch work; visible and pinned demand wins regardless of priority.
-Only owner-safe prefetch and seam-warm targets may yield under budget pressure; pins
-and their owners are never evicted for pressure. Hysteresis retains its timer contract.
-Pressure priority selects which optional targets yield. The planner's drain
-request may list a dependent before its lower-ID owner; the renderer computes
-a dependency-safe release sequence and returns confirmed IDs in ascending order.
-Target ordering is Visible, Pinned, SeamWarm, Prefetch, then Hysteresis; optional work
-orders by descending effective priority and cluster ID. Owner closure propagates class
-and optional priority to a fixed point, taking the maximum of an owner's authored value
-and same-class dependents. This policy stops at the CPU planner: it adds no renderer
-binding, shader branch, portal traversal, or visibility behavior.
-Bounded workers read and decode id-50 chunks from the validated open
-file off the frame path. A completion installs only when generation, content tag, target,
-and chunk hash still match. At the one renderer drain before SH compose, evictions first
-invalidate sample words; admitted clusters install base and sparse data, then compose only
-their affected affinity rows. A newly installed cluster remains unavailable to sampling
-until the next drain, after all applicable indirect and direct compose work has completed.
-The all-zero word remains the miss representation: valid neighbors are renormalized and an
-all-miss sample reaches the ambient floor. Baked owners remain installed for dependent
-halo clusters, so a physical light accumulates once and an owner cannot be evicted out from
-under a resident boundary.
+The application derives visible, warm-set prefetch, hysteresis, and baked-owner targets
+after visibility. The warm set depends only on the camera cell, never the view direction,
+so turning in place causes no prefetch churn. It is a bounded shortest-path walk over the
+id-46 graded cell pairs from the camera cell, stopping at a fixed count of distinct
+clusters (the camera's own included). It is cached per camera cell and ranked by
+whole-metre path distance, then wider path aperture, then cluster ID. Without a usable
+id 46 it falls back to a two-hop cluster-adjacency expansion from the camera's cluster.
+The reachability component alone is never a target set; it usually spans the whole map.
+Authored id-49 v2 hints add persistent pinned clusters and their owner closure, plus
+preferred `SeamWarm` targets across marked portals when the near side is visible—even if
+an opaque door blocks traversal. Seam warm-up is best effort: it does not change door
+motion, gameplay, or the visible-cell set, and a cold opening still uses the ambient-floor
+miss fallback. Priority 0–3 ranks only pressure-eligible seam warm-up and prefetch work;
+visible and pinned demand wins regardless of priority. Only owner-safe prefetch and
+seam-warm targets may yield under budget pressure; pins and their owners are never evicted
+for pressure. Hysteresis retains its timer contract. Pressure priority selects which
+optional targets yield. The planner's drain request may list a dependent before its
+lower-ID owner; the renderer computes a dependency-safe release sequence and returns
+confirmed IDs in ascending order. Target ordering is Visible, Pinned, SeamWarm, Prefetch,
+then Hysteresis; within a class, requests order by descending effective priority, then
+warm rank, then cluster ID. Under pressure, among equal class and priority, the farthest
+warm cluster yields first. Owner closure propagates class and optional priority to a fixed
+point, taking the maximum of an owner's authored value and same-class dependents. This
+policy stops at the CPU planner: it adds no renderer binding, shader branch, portal
+traversal, or visibility behavior. One issuer thread performs every id-50 read from the
+validated open file, off the frame path: visible and pinned work (owner closure included)
+before optional work, each tier in ascending file offset, with nearby chunks coalesced
+into one read. It takes new requests after every read, so fresh visible demand preempts
+queued prefetch, and it skips any request whose cluster has left the target set. A small
+pool decodes and verifies chunks. A completion installs only when generation, content tag,
+target, and chunk hash still match. At the one renderer drain before SH compose, evictions
+first invalidate sample words; admitted clusters install base and sparse data, then
+compose only their affected affinity rows. Each drain admits ready clusters in priority
+order up to a decoded-byte budget, always at least one, and stops rather than skipping
+ahead to smaller lower-priority work, so frame cost tracks bytes rather than cluster
+count. A newly installed cluster remains unavailable to sampling until the next drain,
+after all applicable indirect and direct compose work has completed. The all-zero word
+remains the miss representation: valid neighbors are renormalized and an all-miss sample
+reaches the ambient floor. Baked owners remain installed for dependent halo clusters, so a
+physical light accumulates once and an owner cannot be evicted out from under a resident
+boundary.
+
+An install journals every residency change and undoes it newest-first on failure, so its
+cost scales with the cluster being installed rather than the map. Install and eviction
+update affinity-row refcounts and resident-row unions once per touched row, never per
+probe and never by rebuilding a union. Each install, and each drain's promotion and
+eviction work, reaches the GPU as one upload batch: every write packs into one recycled
+mapped staging buffer and one command buffer of copies, because each queue write call
+allocates its own driver staging.
+
+Streaming diagnostics are always-on counters covering reads, coalescing, discarded and
+cancelled work, read latency, decoded bytes, install CPU time (with pool-growth time and
+the slowest drain that grew no pool reported apart), pool growth, misses, and evictions.
+They appear as a throttled `[SH streaming]` info log line (only when something changed),
+the dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. They guide
+tuning and gate nothing. The dev-tools SH Volumes probe markers draw on streamed maps from
+the streaming base metadata. A Residency marker mode colors each probe from the renderer's
+sampled and composed word mirrors: sampleable, installed awaiting compose, requested,
+miss, or invalid.
 
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.

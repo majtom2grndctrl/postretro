@@ -1,7 +1,7 @@
 # shadowmask-atlas-compress-at-rest — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 804351717
 
 Brief read at 8e4753ce1; 92 commits since. Every symbol cited by Decisions and Path was
@@ -29,7 +29,7 @@ are both 8192; atlas dims are powers of two ≥ `MIN_ATLAS_DIMENSION` (64).
   world must be able to hold them before install. Planned meaning: the world's retained
   id-42 and id-22 types are header types with no payload field. The payloads live in one
   separate movable value, which install takes and leaves `None`. A header whose payload
-  was taken is unrepresentable, as the Decision requires. **Owner: confirm this reading.**
+  was taken is unrepresentable, as the Decision requires. Owner confirmed with plan approval.
 
 ## Delegated answers
 

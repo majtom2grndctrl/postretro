@@ -19,7 +19,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// faction-sentiment sparse snapshot record advances it to 21.
 /// Protected knockback velocity in player movement advances it to 22.
 /// The tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 22;
+pub const WIRE_VERSION: u32 = 23;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -95,6 +95,18 @@ mod tests {
         assert_eq!(validate_handshake(version, version), Ok(()));
     }
 
+    // A hit declaration's contacts carry their normals; a peer that sends the
+    // prior record layout is refused before any bitcode decode.
+    #[test]
+    fn hit_record_normals_refuse_the_previous_wire_version() {
+        const PRE_CONTACT_NORMAL_WIRE_VERSION: u32 = 22;
+        assert_eq!(WIRE_VERSION, 23, "hit records gained `normal`");
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_CONTACT_NORMAL_WIRE_VERSION),
+        );
+    }
+
     #[test]
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
@@ -102,8 +114,8 @@ mod tests {
             PROTOCOL_ID, 0x_5052_4C37,
             "presentation vocabulary requires application protocol PRL7"
         );
-        assert_eq!(
-            WIRE_VERSION, 22,
+        assert!(
+            WIRE_VERSION > PRE_KNOCKBACK_WIRE_VERSION,
             "protected knockback velocity changes the snapshot layout"
         );
         assert_ne!(

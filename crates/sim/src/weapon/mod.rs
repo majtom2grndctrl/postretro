@@ -107,12 +107,26 @@ pub struct LocalHitRecord {
     pub target: EntityId,
     pub point: Vec3,
     pub zone: Option<String>,
+    /// Surface normal at `point`, declared so the host holds the same contact.
+    pub normal: Vec3,
+}
+
+/// A predicted pellet that struck world geometry. It has no damage target; it
+/// is declared as a presentation-only contact and plays its impact locally.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldContact {
+    pub point: Vec3,
+    pub normal: Vec3,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientFireResolution {
     pub client_tick: u32,
+    /// Predicted entity hits; these alone drive the hitmarker and damage claims.
     pub hits: Vec<LocalHitRecord>,
+    /// Predicted world contacts, declared alongside `hits` so the host sees
+    /// every contact of the shot.
+    pub world_contacts: Vec<WorldContact>,
     /// A projectile launch is deferred to the connected client's post-loop
     /// presentation path. It must not produce a same-frame hit declaration.
     pub projectile_launch: Option<ProjectileLaunch>,
@@ -391,6 +405,22 @@ pub struct WeaponFireEvents {
     /// Filled only by the mutable caller after it materializes a launch intent.
     pub(crate) spawned: Vec<ActivationOutcome>,
     pub(crate) dry_fire: bool,
+}
+
+impl ClientFireResolution {
+    /// Every predicted contact of the shot, entity and world, in pellet order
+    /// by kind. The client's own impact sound resolves against these.
+    pub fn impact_contacts(&self) -> Vec<ImpactContact> {
+        self.hits
+            .iter()
+            .map(|hit| ImpactContact::new(hit.point, hit.normal, Some(hit.target)))
+            .chain(
+                self.world_contacts
+                    .iter()
+                    .map(|contact| ImpactContact::new(contact.point, contact.normal, None)),
+            )
+            .collect()
+    }
 }
 
 impl WeaponFireEvents {
@@ -796,7 +826,7 @@ pub fn resolve_client_fire(
         (weapon.spread_degrees.to_radians(), aim_direction)
     };
     weapon.cooldown_remaining_ms = cooldown_ms;
-    let (hits, projectile_launch) = match resolution {
+    let ((hits, world_contacts), projectile_launch) = match resolution {
         ResolutionMode::Hitscan => (
             resolve_client_hitscan(
                 owner_pawn,
@@ -832,7 +862,7 @@ pub fn resolve_client_fire(
                 range,
             );
             (
-                Vec::new(),
+                (Vec::new(), Vec::new()),
                 Some(ProjectileLaunch {
                     knockback_impulse: knockback.map_or(Vec3::ZERO, |push| {
                         postretro_foundation::knockback_impulse(
@@ -898,6 +928,7 @@ pub fn resolve_client_fire(
     Some(ClientFireResolution {
         client_tick,
         hits,
+        world_contacts,
         projectile_launch,
     })
 }
@@ -967,10 +998,11 @@ fn resolve_client_hitscan(
     shell_counter: u32,
     pellet_salt_name: &str,
     active_slot: usize,
-) -> Vec<LocalHitRecord> {
+) -> (Vec<LocalHitRecord>, Vec<WorldContact>) {
     match resolution {
         ResolutionMode::Hitscan => {
             let mut hits = Vec::with_capacity(pellet_count as usize);
+            let mut world_contacts = Vec::new();
             let mut pellet_rng = spread::PelletRng::new(spread::pellet_rng_seed(
                 shell_counter,
                 pellet_salt_name,
@@ -983,10 +1015,9 @@ fn resolve_client_hitscan(
                     pellet_rng.next_f32(),
                     pellet_rng.next_f32(),
                 );
-                // Only an entity hit produces a local hit record; a nearer world
-                // hit (or no hit) yields none — the client owns no world-impact
-                // record.
-                if let Some(NearestHit::Entity(entity)) = resolve_nearest_hit(NearestHitQuery {
+                // An entity hit is a damage claim; a nearer world hit is a
+                // presentation-only contact the client still plays and declares.
+                match resolve_nearest_hit(NearestHitQuery {
                     owner_pawn,
                     origin,
                     direction: pellet_direction,
@@ -996,15 +1027,20 @@ fn resolve_client_hitscan(
                     anim_time,
                     range,
                 }) {
-                    hits.push(local_hit_record(entity));
+                    Some(NearestHit::Entity(entity)) => hits.push(local_hit_record(entity)),
+                    Some(NearestHit::World(world)) => world_contacts.push(WorldContact {
+                        point: world.point,
+                        normal: world.normal,
+                    }),
+                    None => {}
                 }
             }
-            hits
+            (hits, world_contacts)
         }
         // Projectile flight is materialized by the connected client's mutable
         // post-loop path. This ray-resolution helper emits no same-frame hit;
         // the projectile declares its later collision or expiry instead.
-        ResolutionMode::Projectile => Vec::new(),
+        ResolutionMode::Projectile => (Vec::new(), Vec::new()),
     }
 }
 
@@ -1161,6 +1197,7 @@ fn local_hit_record(entity: EntityRayHit) -> LocalHitRecord {
         target: entity.target,
         point: entity.point,
         zone: entity.zone,
+        normal: entity.normal,
     }
 }
 
@@ -3083,8 +3120,10 @@ pub(crate) mod tests {
     fn predicted_shot_records_local_presentation_markers() {
         let target = EntityId::from_raw(2);
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
                 target,
                 point: Vec3::new(1.0, 2.0, 3.0),
                 zone: Some("head".to_string()),
@@ -3105,6 +3144,7 @@ pub(crate) mod tests {
     #[test]
     fn predicted_projectile_impact_marks_hitmarker_after_later_resolution() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: Vec::new(),
             projectile_launch: None,
@@ -3130,8 +3170,10 @@ pub(crate) mod tests {
     #[test]
     fn shot_verdict_accept_confirms_predicted_markers() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
                 target: EntityId::from_raw(2),
                 point: Vec3::ZERO,
                 zone: None,
@@ -3160,8 +3202,10 @@ pub(crate) mod tests {
     #[test]
     fn shot_verdict_authorized_miss_keeps_fire_state_and_retracts_hitmarker() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
                 target: EntityId::from_raw(2),
                 point: Vec3::ZERO,
                 zone: None,
@@ -3190,8 +3234,10 @@ pub(crate) mod tests {
     #[test]
     fn shot_verdict_reject_rolls_back_local_presentation_and_cooldown() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
                 target: EntityId::from_raw(2),
                 point: Vec3::ZERO,
                 zone: None,
@@ -3222,6 +3268,7 @@ pub(crate) mod tests {
     #[test]
     fn shot_verdict_reject_removes_only_matching_predicted_projectile() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: Vec::new(),
             projectile_launch: None,
@@ -3299,8 +3346,10 @@ pub(crate) mod tests {
     #[test]
     fn duplicate_or_late_reject_does_not_undo_accepted_predicted_shot() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
                 target: EntityId::from_raw(2),
                 point: Vec3::ZERO,
                 zone: None,
@@ -3333,8 +3382,10 @@ pub(crate) mod tests {
     #[test]
     fn stale_reject_does_not_overwrite_fresh_authoritative_cooldown() {
         let resolution = ClientFireResolution {
+            world_contacts: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
+                normal: Vec3::Y,
                 target: EntityId::from_raw(2),
                 point: Vec3::ZERO,
                 zone: None,

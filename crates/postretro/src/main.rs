@@ -3006,6 +3006,9 @@ impl ApplicationHandler for App {
                         // AI; declarations waiting on this tick's FIRE stay in
                         // the pending queue for the existing post-sim drain.
                         let mut ready_hit_declarations = self.host_take_ready_hit_declarations();
+                        // Remote clients' validated shots, each one `impact`.
+                        let mut remote_impacts: Vec<postretro_sim::emission::WeaponEmission> =
+                            Vec::new();
 
                         // Host: resolve remote (owned) pawn inputs up front, then the
                         // shared `simulate_tick` runs loaded movers and every player
@@ -3135,6 +3138,7 @@ impl ApplicationHandler for App {
                                     |shot_id, point| {
                                         projectile_presentations.note_contact(shot_id, point)
                                     },
+                                    |impact| remote_impacts.push(impact),
                                 );
                             },
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
@@ -3189,7 +3193,10 @@ impl ApplicationHandler for App {
                         self.host_note_local_projectile_contacts(
                             &tick_events.local_projectile_contacts,
                         );
-                        if self.host_flush_pending_hit_declarations(frame_anim_time) {
+                        if self.host_flush_pending_hit_declarations(
+                            frame_anim_time,
+                            &mut remote_impacts,
+                        ) {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
                         }
                         self.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
@@ -3205,6 +3212,11 @@ impl ApplicationHandler for App {
                             &mut pending_weapon_script_events,
                             tick_events.weapon,
                             tick_events.reload_deliveries,
+                        );
+                        pending_weapon_script_events.extend(
+                            remote_impacts
+                                .drain(..)
+                                .map(PendingWeaponScriptEvent::Weapon),
                         );
                         pending_mover_events.extend(tick_events.mover);
                         repointed_pawns.extend(tick_events.repointed_pawns);
@@ -7339,6 +7351,7 @@ impl App {
                         .and_then(|session| session.net_endpoint.as_mut()),
                     shot_id,
                     &resolution.hits,
+                    &resolution.world_contacts,
                 );
             }
             // Only the first tick casts a ray (once per frame, at the rendered pose);
@@ -7352,6 +7365,7 @@ impl App {
                         .as_mut()
                         .and_then(|session| session.net_endpoint.as_mut()),
                     shot_id,
+                    &[],
                     &[],
                 );
             }
@@ -7996,7 +8010,11 @@ impl App {
         }
     }
 
-    fn host_flush_pending_hit_declarations(&mut self, anim_time: f64) -> bool {
+    fn host_flush_pending_hit_declarations(
+        &mut self,
+        anim_time: f64,
+        remote_impacts: &mut Vec<postretro_sim::emission::WeaponEmission>,
+    ) -> bool {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -8039,6 +8057,7 @@ impl App {
             anim_time,
             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
+            |impact| remote_impacts.push(impact),
         )
     }
 
@@ -10451,6 +10470,7 @@ mod tests {
             7,
             weapon_a,
             &weapon::ClientFireResolution {
+                world_contacts: Vec::new(),
                 client_tick: 3,
                 hits: Vec::new(),
                 projectile_launch: None,

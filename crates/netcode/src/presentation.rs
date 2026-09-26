@@ -1454,7 +1454,8 @@ mod tests {
             postretro_net::wire::HitDeclaration {
                 shot_id: shot_id.raw(),
                 records: vec![postretro_net::wire::HitRecord {
-                    target: crate::netcode::PROJECTILE_PRESENTATION_CONTACT_TARGET,
+                    normal: [0.0, 1.0, 0.0],
+                    target: crate::netcode::PRESENTATION_CONTACT_TARGET,
                     point: Vec3::new(4.0, 0.0, 0.0).to_array(),
                     zone: None,
                 }],

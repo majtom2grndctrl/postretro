@@ -448,6 +448,7 @@ fn connected_obstructed_muzzle_declaration_replays_host_splash_from_eye() {
     let declaration = delivered(HitDeclaration {
         shot_id: shot_id.raw(),
         records: vec![HitRecord {
+            normal: [0.0, 1.0, 0.0],
             target: u32::MAX,
             point: Vec3::new(0.0, 0.5, -0.5).to_array(),
             zone: None,
@@ -530,6 +531,7 @@ fn connected_lateral_muzzle_convergence_matches_host_splash_replay() {
     let declaration = delivered(HitDeclaration {
         shot_id: shot_id.raw(),
         records: vec![HitRecord {
+            normal: [0.0, 1.0, 0.0],
             target: direct_network_id.0,
             point: Vec3::new(0.0, 0.5, -3.8).to_array(),
             zone: None,
@@ -601,6 +603,7 @@ fn remote_projectile_contact_within_muzzle_range_validates() {
             &HitDeclaration {
                 shot_id: shot_id.raw(),
                 records: vec![HitRecord {
+                    normal: [0.0, 1.0, 0.0],
                     target: victim_network_id.0,
                     point: contact.to_array(),
                     zone: None,
@@ -647,6 +650,7 @@ fn rejected_remote_projectile_fire_cannot_later_declare_plausible_damage() {
             &HitDeclaration {
                 shot_id: shot_id.raw(),
                 records: vec![HitRecord {
+                    normal: [0.0, 1.0, 0.0],
                     target: victim_network_id.0,
                     point: Vec3::new(0.0, 0.5, -5.0).to_array(),
                     zone: None,
@@ -692,6 +696,7 @@ fn connected_client_projectile_declares_later_and_host_applies_authorized_credit
     let declaration = delivered(HitDeclaration {
         shot_id: shot_id.raw(),
         records: vec![HitRecord {
+            normal: [0.0, 1.0, 0.0],
             target: victim_network_id.0,
             point: Vec3::new(0.0, 0.5, -2.0).to_array(),
             zone: None,
@@ -822,6 +827,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
         HitDeclaration {
             shot_id: shot_id.raw(),
             records: vec![HitRecord {
+                normal: [0.0, 1.0, 0.0],
                 target: victim_network_id.0,
                 point: Vec3::new(0.0, 0.5, 0.0).to_array(),
                 zone: None,

@@ -128,6 +128,7 @@ impl App {
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
+        self.client_reload_edges = Default::default();
     }
 
     /// Unload the active level without dropping renderer/window ownership.

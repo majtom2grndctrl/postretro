@@ -892,6 +892,8 @@ pub(crate) struct App {
 
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
+    /// Connected-client reload edges derived from replicated slots.
+    client_reload_edges: sound_events::ClientReloadEdges,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
     /// Subsumes the previous `level_load_fired` one-shot flag.
@@ -1493,6 +1495,22 @@ fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
         .iter_with_kind(ComponentKind::PlayerMovement)
         .next()
         .is_some()
+}
+
+/// A replicated numeric slot as this client last received it.
+fn client_slot_number(script_ctx: &postretro_entities::ScriptCtx, name: &str) -> Option<f32> {
+    match script_ctx.slot_table.borrow().get(name)?.value {
+        Some(postretro_entities::SlotValue::Number(value)) => Some(value),
+        _ => None,
+    }
+}
+
+/// A replicated boolean slot as this client last received it.
+fn client_slot_bool(script_ctx: &postretro_entities::ScriptCtx, name: &str) -> Option<bool> {
+    match script_ctx.slot_table.borrow().get(name)?.value {
+        Some(postretro_entities::SlotValue::Boolean(value)) => Some(value),
+        _ => None,
+    }
 }
 
 /// Resolve the pawn followed by local camera and input consumers. Identity follows
@@ -2703,6 +2721,8 @@ impl ApplicationHandler for App {
                 let mut pending_movement_edges: Vec<view_feel::TimedMovementEdge> = Vec::new();
                 let mut pending_ai_events: Vec<postretro_sim::emission::AiEmission> = Vec::new();
                 let mut pending_weapon_script_events = Vec::new();
+                // Connected-client sounds derived outside the event drains (reload edges).
+                let mut client_sounds: Vec<postretro_audio::SoundRequest> = Vec::new();
                 // These edges are populated only by the authoritative simulation
                 // branch below. Connected clients run the shared mover driver but
                 // never enqueue host-local mover audio.
@@ -3269,6 +3289,7 @@ impl ApplicationHandler for App {
                     frame_dt,
                     frame_anim_time,
                     &mut pending_weapon_script_events,
+                    &mut client_sounds,
                 );
 
                 // Status overlays are host/single-player presentation facts.
@@ -3371,6 +3392,7 @@ impl ApplicationHandler for App {
                                 .filter_map(|event| event.descriptor_sound(table, &mut scene)),
                         );
                     }
+                    requests.append(&mut client_sounds);
                     (edges, requests)
                 };
                 if let Some(audio) = self
@@ -7101,6 +7123,7 @@ impl App {
         frame_dt: f32,
         frame_anim_time: f64,
         pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
+        client_sounds: &mut Vec<postretro_audio::SoundRequest>,
     ) {
         self.client_fire_resolutions.clear();
         if !self.is_connected_client() {
@@ -7117,7 +7140,12 @@ impl App {
         // Connected clients never enter the host simulation seam. Advance their
         // locally predicted projectiles once here, after interpolation wrote the
         // rendered poses, so they cannot double-advance in a catch-up tick.
-        self.advance_client_predicted_projectiles(frame_dt, frame_anim_time);
+        self.advance_client_predicted_projectiles(
+            frame_dt,
+            frame_anim_time,
+            pending_weapon_script_events,
+        );
+        self.observe_client_reload_edges(client_sounds);
     }
 
     fn run_client_fire_path_post_loop_inner(
@@ -7250,6 +7278,45 @@ impl App {
             }
             return;
         };
+        // An empty magazine predicts a dry fire, as the host authorizes it: the
+        // trigger pull sets the cooldown and raises `dry_fire`, and no shot is
+        // authorized, so nothing is predicted or declared and no muzzle flash plays.
+        if weapon::client_magazine_is_empty(
+            &component,
+            client_slot_number(&script_ctx, "player.ammo"),
+        ) {
+            let dry_fired = weapon::resolve_client_dry_fire(&mut component, button, frame_dt);
+            {
+                let mut registry = script_ctx.registry.borrow_mut();
+                let _ = registry.set_component(weapon_id, component);
+            }
+            if dry_fired {
+                if let Some(command) = zero_tick_fire_command.as_ref() {
+                    let aim_pitch = self.camera.pitch;
+                    let _ = netcode::client_send_input_command(
+                        self.session
+                            .as_mut()
+                            .and_then(|session| session.net_endpoint.as_mut()),
+                        command,
+                        aim_pitch,
+                    );
+                }
+                let registry = script_ctx.registry.borrow();
+                pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon(
+                    postretro_sim::emission::WeaponEmission {
+                        address: "dry_fire",
+                        emitter: postretro_sim::emission::entity_emitter(&registry, local_pawn),
+                        weapon: postretro_sim::emission::descriptor_name(&registry, weapon_id),
+                    },
+                ));
+            }
+            if zero_tick_fire_command.is_some()
+                && let Some(session) = self.session.as_mut()
+            {
+                session.gameplay_input_latch.clear_pressed(Action::Shoot);
+            }
+            return;
+        }
         let selected_shot_elapsed_ms = selected_fire_commands
             .iter()
             .map(|command| command.elapsed_ms)
@@ -7327,6 +7394,18 @@ impl App {
                     weapon: weapon_name.clone(),
                 },
             ));
+            // A predicted hitscan shot's contacts, wall hits included, are its
+            // one `impact`, heard now at the contact nearest the listener.
+            let contacts = resolution.impact_contacts();
+            if !contacts.is_empty() {
+                pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon(
+                    postretro_sim::emission::WeaponEmission {
+                        address: "impact",
+                        emitter: postretro_sim::emission::Emitter::Contacts(contacts),
+                        weapon: weapon_name.clone(),
+                    },
+                ));
+            }
             let projectile_spawned = projectile_launch.is_some_and(|launch| {
                 sim::spawn_projectile(
                     &mut script_ctx.registry.borrow_mut(),
@@ -7377,7 +7456,52 @@ impl App {
         }
     }
 
-    fn advance_client_predicted_projectiles(&mut self, frame_dt: f32, frame_anim_time: f64) {
+    /// Derive the local pawn's reload edges from its replicated owner-private
+    /// reload flag and magazine, and queue the sounds its weapon names. A
+    /// connected client runs no host weapon machine, so this is how it hears
+    /// its own reloads, one round trip late (`audio.md` §4).
+    fn observe_client_reload_edges(
+        &mut self,
+        client_sounds: &mut Vec<postretro_audio::SoundRequest>,
+    ) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let script_ctx = &session.scripting.script_ctx;
+        let active = client_slot_bool(script_ctx, "player.reloadActive").unwrap_or(false);
+        let ammo = client_slot_number(script_ctx, "player.ammo");
+        let registry = script_ctx.registry.borrow();
+        let weapon = local_active_wieldable(&registry).map(|(_, weapon)| weapon);
+        let Some(address) = self.client_reload_edges.observe(weapon, active, ammo) else {
+            return;
+        };
+        let (Some(weapon), Some(pawn)) = (weapon, registry.local_player_movement_pawn()) else {
+            return;
+        };
+        let emitter = postretro_sim::emission::entity_emitter(&registry, pawn);
+        let weapon_name = postretro_sim::emission::descriptor_name(&registry, weapon);
+        let mut scene = sound_events::AnchorScene {
+            registry: &registry,
+            world: self.level.as_ref(),
+            movers: &mut self.kinematic_mover_render,
+        };
+        if let Some(request) = sound_events::weapon_sound(
+            &session.scripting.descriptor_sounds,
+            address,
+            weapon_name.as_deref(),
+            &emitter,
+            &mut scene,
+        ) {
+            client_sounds.push(request);
+        }
+    }
+
+    fn advance_client_predicted_projectiles(
+        &mut self,
+        frame_dt: f32,
+        frame_anim_time: f64,
+        pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
+    ) {
         let mut declarations = Vec::new();
         {
             let Some(session) = self.session.as_ref() else {
@@ -7390,7 +7514,25 @@ impl App {
                 frame_anim_time,
                 frame_dt,
                 &mut |resolution| match resolution {
-                    sim::PredictedProjectileResolution::Impact { shot_id, impact } => {
+                    sim::PredictedProjectileResolution::Impact {
+                        shot_id,
+                        impact,
+                        source_weapon,
+                    } => {
+                        // The client hears its own predicted projectile land.
+                        pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon(
+                            postretro_sim::emission::WeaponEmission {
+                                address: "impact",
+                                emitter: postretro_sim::emission::Emitter::Contacts(vec![
+                                    postretro_sim::emission::ImpactContact::new(
+                                        impact.point,
+                                        impact.normal,
+                                        impact.target,
+                                    ),
+                                ]),
+                                weapon: source_weapon,
+                            },
+                        ));
                         declarations.push((shot_id, Some(impact)));
                     }
                     sim::PredictedProjectileResolution::Expired { shot_id } => {

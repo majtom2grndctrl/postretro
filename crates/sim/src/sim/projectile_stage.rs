@@ -48,8 +48,15 @@ enum ProjectileResolution<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PredictedProjectileResolution {
-    Impact { shot_id: u64, impact: WeaponImpact },
-    Expired { shot_id: u64 },
+    Impact {
+        shot_id: u64,
+        impact: WeaponImpact,
+        /// Weapon descriptor the projectile was fired from; its impact sound.
+        source_weapon: Option<String>,
+    },
+    Expired {
+        shot_id: u64,
+    },
 }
 
 /// One locally simulated projectile's contact, carried out of the tick in
@@ -297,6 +304,7 @@ pub fn advance_predicted(
                         .predicted_shot_id
                         .expect("predicted advance filters to declaration-authorized projectiles"),
                     impact: impact.clone(),
+                    source_weapon: component.source_weapon.clone(),
                 });
             }
             ProjectileResolution::Expire { component, .. } => {
@@ -1871,7 +1879,9 @@ mod tests {
 
         assert_eq!(resolutions.len(), 1);
         match &resolutions[0] {
-            PredictedProjectileResolution::Impact { shot_id, impact } => {
+            PredictedProjectileResolution::Impact {
+                shot_id, impact, ..
+            } => {
                 assert_eq!(*shot_id, 0);
                 assert_eq!(impact.target, Some(target));
             }

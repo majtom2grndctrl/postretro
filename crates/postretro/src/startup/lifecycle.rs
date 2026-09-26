@@ -1783,6 +1783,7 @@ mod tests {
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
+            client_reload_edges: Default::default(),
             boot_state: BootState::Running,
             splash_frame: 0,
             pending_level_log: false,

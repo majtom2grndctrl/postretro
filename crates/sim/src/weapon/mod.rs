@@ -982,6 +982,37 @@ fn advance_client_fire_gate(
     true
 }
 
+/// Whether the replicated magazine count leaves an ammo-fed weapon unable to
+/// pay for a shot. A weapon without ammo never runs dry, and a client with no
+/// replicated count yet predicts an ordinary fire.
+pub fn client_magazine_is_empty(
+    weapon: &WeaponComponent,
+    replicated_magazine: Option<f32>,
+) -> bool {
+    let cost = weapon
+        .effective()
+        .ammo
+        .as_ref()
+        .map(|ammo| ammo.cost_per_shot);
+    matches!((cost, replicated_magazine), (Some(cost), Some(magazine)) if magazine < cost as f32)
+}
+
+/// Predict an empty-magazine trigger pull the way the host authorizes it
+/// (`WeaponFireAuthorization::Empty`): the fire gate advances, and a pull that
+/// passes it sets the cooldown and dry fires. No shot is authorized, so the
+/// caller predicts no hit and declares nothing. Returns whether it dry fired.
+pub fn resolve_client_dry_fire(
+    weapon: &mut WeaponComponent,
+    button: FireButtonState,
+    frame_dt: f32,
+) -> bool {
+    if !advance_client_fire_gate(weapon, button, frame_dt.max(0.0) * 1000.0) {
+        return false;
+    }
+    weapon.cooldown_remaining_ms = weapon.effective().cooldown_ms;
+    true
+}
+
 #[allow(clippy::too_many_arguments)] // mirrors the local fire query inputs without a throwaway struct.
 fn resolve_client_hitscan(
     owner_pawn: Option<EntityId>,
@@ -2194,6 +2225,79 @@ pub(crate) mod tests {
             .map(|emission| emission.address)
             .collect();
         assert_eq!(addresses, ["activate"]);
+    }
+
+    // A connected client's predicted hitscan shot into a wall keeps the wall
+    // contact and its normal, so it hears (and declares) its own impact.
+    #[test]
+    fn client_hitscan_into_a_wall_keeps_the_world_contact_and_its_normal() {
+        let mut weapon = weapon_component(FireMode::Semi, 100.0);
+        let resolution = resolve_client_fire(
+            None,
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
+            1,
+            &[0.0],
+            &[],
+            &wall_world(),
+            &EntityRegistry::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("hitscan fire resolves");
+        assert!(resolution.hits.is_empty(), "a wall is no damage claim");
+        let [contact] = resolution.world_contacts.as_slice() else {
+            panic!("one wall contact, got {:?}", resolution.world_contacts);
+        };
+        assert_vec3_approx(contact.point, Vec3::new(0.0, 0.0, -5.0));
+        assert!(
+            contact.normal.abs_diff_eq(Vec3::Z, 1.0e-4)
+                || contact.normal.abs_diff_eq(Vec3::NEG_Z, 1.0e-4)
+        );
+        let contacts = resolution.impact_contacts();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].hit, postretro_entities::ContactHit::World);
+    }
+
+    // A connected client predicts a dry fire from the replicated magazine.
+    #[test]
+    fn client_dry_fire_follows_the_replicated_magazine() {
+        let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
+        let pressed = FireButtonState {
+            pressed: true,
+            active: true,
+        };
+        assert!(client_magazine_is_empty(&weapon, Some(0.0)));
+        assert!(
+            !client_magazine_is_empty(&weapon, Some(1.0)),
+            "with ammo it fires"
+        );
+        assert!(
+            !client_magazine_is_empty(&weapon, None),
+            "no count yet: predict a fire"
+        );
+        let unlimited = weapon_component(FireMode::Semi, 100.0);
+        assert!(
+            !client_magazine_is_empty(&unlimited, Some(0.0)),
+            "no ammo, never dry"
+        );
+
+        assert!(resolve_client_dry_fire(&mut weapon, pressed, 1.0 / 60.0));
+        assert!((weapon.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
+        assert!(
+            !resolve_client_dry_fire(&mut weapon, pressed, 1.0 / 60.0),
+            "a held semi trigger dry fires once, as the host does",
+        );
     }
 
     #[test]

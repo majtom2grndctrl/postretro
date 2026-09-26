@@ -246,8 +246,8 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | LightInfluence | 21 | When compiled with lighting |
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
 | ChunkLightList | 23 | Always; per-chunk static-light index lists for specular culling and runtime sdf-light selection |
-| AnimatedLightChunks | 24 | When compiled with animated lights |
-| AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
+| AnimatedLightChunks | 24 | When at least one animated-light chunk bakes a lit texel. Candidates are faces overlapping an animated light's influence sphere (no occlusion, facing, or cone test); after the weight-map bake, chunks with no lit texel are dropped from ids 24 and 25 and from the BVH leaf chunk ranges |
+| AnimatedLightWeightMaps | 25 | Paired 1:1 with id 24; per-texel weight maps for the compose pass. The animated-atlas VRAM budget (`width × height × slots × 12 B` ≤ 1 GiB) is checked on the slot count left after the unlit-chunk cull |
 | LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
 | DeltaShVolumes | 27 | When the map has at least one animated light; per-light sparse octahedral irradiance delta tiles, with a per-affinity-cell coarsening level |
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |

@@ -93,8 +93,8 @@ pub enum AnimatedWeightMapBakeError {
 }
 
 /// Reject an animated atlas whose combined irradiance and direction targets do
-/// not fit the production VRAM budget. The cache-hit path uses this too, so a
-/// cached section cannot bypass the same bake contract.
+/// not fit the production VRAM budget. Checked after [`cull_unlit_chunks`] on
+/// both cache paths, so the slot count is the one the renderer will allocate.
 pub(crate) fn validate_animated_atlas_budget(
     atlas_width: u32,
     atlas_height: u32,
@@ -137,32 +137,157 @@ struct ChunkBakeResult {
     texel_lights: Vec<TexelLight>,
 }
 
+/// Chunk, weight-map, and BVH-leaf chunk-range tables after
+/// [`cull_unlit_chunks`]. The three stay mutually consistent: rect `i` pairs
+/// with chunk `i`, and every leaf range indexes the surviving chunk array.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CulledAnimatedChunks {
+    pub chunk_section: AnimatedLightChunksSection,
+    pub weight_maps: AnimatedLightWeightMapsSection,
+    pub leaf_chunk_ranges: Vec<(u32, u32)>,
+}
+
+/// Drop every chunk whose baked weight map has no lit texel.
+///
+/// The chunk builder selects receivers by influence-sphere overlap alone — no
+/// occlusion, facing, or cone test — so on maps with long-range animated lights
+/// most chunks sit behind walls or face away and bake all-zero weights. Kept,
+/// they still cost an atlas rect, compose dispatch tiles every frame, and an
+/// animated array slot for their static layer; dropped, their texels are never
+/// written and stay at the atlas's zero initialization, which is exactly what
+/// compose would have written.
+///
+/// Runs outside the weight-map cache so hit and miss paths cull identically.
+/// Unlit chunks own no `texel_lights` entries, so that pool and every surviving
+/// `offset_counts.offset` carry over unchanged; only rect texel offsets, the
+/// chunk light-index pool, the slot table, and leaf ranges are rebased.
+pub fn cull_unlit_chunks(
+    chunk_section: &AnimatedLightChunksSection,
+    weight_maps: AnimatedLightWeightMapsSection,
+    leaf_chunk_ranges: &[(u32, u32)],
+) -> CulledAnimatedChunks {
+    assert_eq!(
+        chunk_section.chunks.len(),
+        weight_maps.chunk_rects.len(),
+        "weight-map rects must pair 1:1 with animated chunks",
+    );
+
+    let rect_texels = |rect: &ChunkAtlasRect| {
+        let start = rect.texel_offset as usize;
+        start..start + (rect.width * rect.height) as usize
+    };
+    let lit: Vec<bool> = weight_maps
+        .chunk_rects
+        .iter()
+        .map(|rect| {
+            weight_maps.offset_counts[rect_texels(rect)]
+                .iter()
+                .any(|entry| entry.count > 0)
+        })
+        .collect();
+
+    let mut chunks = Vec::new();
+    let mut light_indices = Vec::new();
+    let mut chunk_rects = Vec::new();
+    let mut offset_counts = Vec::new();
+    let mut running_texel_offset: u32 = 0;
+    let mut dropped_texels: u64 = 0;
+    for ((chunk, rect), &is_lit) in chunk_section
+        .chunks
+        .iter()
+        .zip(&weight_maps.chunk_rects)
+        .zip(&lit)
+    {
+        if !is_lit {
+            dropped_texels += u64::from(rect.width * rect.height);
+            continue;
+        }
+        let pool_start = chunk.index_offset as usize;
+        let pool_end = pool_start + chunk.index_count as usize;
+        chunks.push(
+            postretro_level_format::animated_light_chunks::AnimatedLightChunk {
+                index_offset: light_indices.len() as u32,
+                ..*chunk
+            },
+        );
+        light_indices.extend_from_slice(&chunk_section.light_indices[pool_start..pool_end]);
+
+        offset_counts.extend_from_slice(&weight_maps.offset_counts[rect_texels(rect)]);
+        chunk_rects.push(ChunkAtlasRect {
+            texel_offset: running_texel_offset,
+            ..*rect
+        });
+        running_texel_offset += rect.width * rect.height;
+    }
+
+    let mut slot_to_static_layer: Vec<u32> = chunk_rects.iter().map(|rect| rect.layer).collect();
+    slot_to_static_layer.sort_unstable();
+    slot_to_static_layer.dedup();
+
+    // `kept_before[i]` = surviving chunks among the first `i` originals. Leaves
+    // own contiguous chunk ranges, so each range maps to a contiguous prefix
+    // difference. Empty ranges keep their position, as the builder emits them.
+    let mut kept_before = Vec::with_capacity(lit.len() + 1);
+    kept_before.push(0u32);
+    for &is_lit in &lit {
+        kept_before.push(kept_before[kept_before.len() - 1] + u32::from(is_lit));
+    }
+    let leaf_chunk_ranges = leaf_chunk_ranges
+        .iter()
+        .map(|&(start, count)| {
+            let start = start as usize;
+            let end = start + count as usize;
+            (kept_before[start], kept_before[end] - kept_before[start])
+        })
+        .collect();
+
+    let dropped = lit.len() - chunks.len();
+    if dropped > 0 {
+        log::info!(
+            "[AnimatedLightWeightMaps] culled {dropped} of {} chunks with no lit texel \
+             ({dropped_texels} texels); animated slots {} -> {}",
+            lit.len(),
+            weight_maps.slot_to_static_layer.len(),
+            slot_to_static_layer.len(),
+        );
+    }
+
+    CulledAnimatedChunks {
+        chunk_section: AnimatedLightChunksSection {
+            chunks,
+            light_indices,
+        },
+        weight_maps: AnimatedLightWeightMapsSection {
+            chunk_rects,
+            offset_counts,
+            texel_lights: weight_maps.texel_lights,
+            slot_to_static_layer,
+        },
+        leaf_chunk_ranges,
+    }
+}
+
+/// Bake per-texel animated-light weights for every chunk. The atlas budget is
+/// not checked here: it depends on the slot count left after
+/// [`cull_unlit_chunks`], which only the finished bake can determine.
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
-) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+) -> AnimatedLightWeightMapsSection {
     bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
 }
 
 pub fn bake_animated_light_weight_maps_controlled(
     inputs: &WeightMapInputs<'_>,
     control: &BakeControl,
-) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
-    bake_animated_light_weight_maps_with_budget(inputs, control, ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
-}
-
-fn bake_animated_light_weight_maps_with_budget(
-    inputs: &WeightMapInputs<'_>,
-    control: &BakeControl,
-    atlas_budget_bytes: u64,
-) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+) -> AnimatedLightWeightMapsSection {
     if inputs.chunk_section.chunks.is_empty() {
-        return Ok(AnimatedLightWeightMapsSection::empty());
+        return AnimatedLightWeightMapsSection::empty();
     }
 
     let chunks = &inputs.chunk_section.chunks;
-    // `AnimatedLightChunk`s are the compiler's exact set of animated
-    // receivers. Keep their original order for baking/serialization; only this
-    // derived slot table is sorted so its index is a deterministic dense slot.
+    // `AnimatedLightChunk`s are the compiler's candidate animated receivers.
+    // Keep their original order for baking/serialization; only this derived
+    // slot table is sorted so its index is a deterministic dense slot.
     let mut slot_to_static_layer: Vec<u32> = chunks
         .iter()
         .map(|chunk| inputs.face_placements[chunk.face_index as usize].layer)
@@ -170,12 +295,6 @@ fn bake_animated_light_weight_maps_with_budget(
     slot_to_static_layer.sort_unstable();
     slot_to_static_layer.dedup();
     let animated_slot_count = slot_to_static_layer.len() as u32;
-    validate_animated_atlas_budget_with_limit(
-        inputs.atlas_width,
-        inputs.atlas_height,
-        animated_slot_count,
-        atlas_budget_bytes,
-    )?;
 
     control.publish_total(chunks.len());
     let light_indices_pool = &inputs.chunk_section.light_indices;
@@ -256,12 +375,12 @@ fn bake_animated_light_weight_maps_with_budget(
         peak_texels_per_chunk,
     );
 
-    Ok(AnimatedLightWeightMapsSection {
+    AnimatedLightWeightMapsSection {
         chunk_rects,
         offset_counts,
         texel_lights,
         slot_to_static_layer,
-    })
+    }
 }
 
 fn bake_one_chunk(
@@ -940,8 +1059,7 @@ mod tests {
             std::sync::Arc::new(crate::governor::Governor::new(2, false)),
             &progress,
         );
-        let section = bake_animated_light_weight_maps_controlled(&inputs, &control)
-            .expect("test fixture animated atlas must fit the production budget");
+        let section = bake_animated_light_weight_maps_controlled(&inputs, &control);
         if chunk_section.chunks.is_empty() {
             assert_eq!(progress.total(), None);
             assert_eq!(progress.completed(), 0);
@@ -979,9 +1097,12 @@ mod tests {
         }
     }
 
+    /// Two faces in two leaves, packed onto static layers 0 and 1, each lit by
+    /// its own animated light overhead. `first_face_normal` feeds face 0's
+    /// chart: `-Y` turns it away from its light so its chunk bakes unlit.
     fn bake_real_multi_layer_fixture(
-        atlas_budget_bytes: u64,
-    ) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
+        first_face_normal: glam::Vec3,
+    ) -> (AnimatedLightChunksSection, AnimatedLightWeightMapsSection) {
         let geometry = two_separate_floor_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH");
         let charts = vec![
@@ -991,7 +1112,7 @@ mod tests {
                 v_axis: glam::Vec3::Z,
                 uv_min: [0.0, 0.0],
                 uv_extent: [1.0, 1.0],
-                normal: glam::Vec3::Y,
+                normal: first_face_normal,
                 width_texels: 64,
                 height_texels: 64,
                 leaf_index: 0,
@@ -1052,17 +1173,13 @@ mod tests {
             area_sample_count: 1,
         };
 
-        bake_animated_light_weight_maps_with_budget(
-            &inputs,
-            &BakeControl::unrestricted(),
-            atlas_budget_bytes,
-        )
+        let section = bake_animated_light_weight_maps(&inputs);
+        (chunk_section, section)
     }
 
     #[test]
     fn real_multi_layer_pack_bakes_dense_slots_for_every_covered_layer() {
-        let section = bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
-            .expect("fixture animated atlas must fit the production budget");
+        let (_, section) = bake_real_multi_layer_fixture(glam::Vec3::Y);
 
         assert_eq!(section.slot_to_static_layer, vec![0, 1]);
         assert_eq!(
@@ -1088,8 +1205,7 @@ mod tests {
         }
         assert!(section.is_consistent());
 
-        let repeated = bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
-            .expect("repeated fixture animated atlas must fit the production budget");
+        let (_, repeated) = bake_real_multi_layer_fixture(glam::Vec3::Y);
         assert_eq!(section.to_bytes(), repeated.to_bytes());
     }
 
@@ -1097,8 +1213,7 @@ mod tests {
     fn real_multi_layer_bake_logs_static_layer_and_animated_slot_counts() {
         let capture = LogCapture::start();
 
-        bake_real_multi_layer_fixture(ANIMATED_ATLAS_VRAM_BUDGET_BYTES)
-            .expect("fixture animated atlas must fit the production budget");
+        bake_real_multi_layer_fixture(glam::Vec3::Y);
 
         capture.assert_logged_once(
             Level::Info,
@@ -1108,9 +1223,92 @@ mod tests {
     }
 
     #[test]
+    fn cull_keeps_every_chunk_when_all_are_lit() {
+        let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::Y);
+        let leaf_ranges = vec![(0, 1), (1, 1)];
+
+        let culled = cull_unlit_chunks(&chunks, section.clone(), &leaf_ranges);
+
+        assert_eq!(culled.chunk_section, chunks);
+        assert_eq!(culled.weight_maps, section);
+        assert_eq!(culled.leaf_chunk_ranges, leaf_ranges);
+    }
+
+    #[test]
+    fn cull_drops_unlit_chunk_and_rebases_every_parallel_table() {
+        // Face 0 faces away from its light, so chunk 0 bakes an all-zero rect
+        // and is the only occupant of static layer 0.
+        let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::NEG_Y);
+        let rect_entries = |s: &AnimatedLightWeightMapsSection, i: usize| {
+            let rect = s.chunk_rects[i];
+            let start = rect.texel_offset as usize;
+            s.offset_counts[start..start + (rect.width * rect.height) as usize].to_vec()
+        };
+        assert!(
+            rect_entries(&section, 0).iter().all(|e| e.count == 0),
+            "fixture precondition: face 0 must bake unlit",
+        );
+        assert_eq!(section.slot_to_static_layer, vec![0, 1]);
+
+        let capture = LogCapture::start();
+        let culled = cull_unlit_chunks(&chunks, section.clone(), &[(0, 1), (1, 1), (2, 0)]);
+
+        capture.assert_logged_once(Level::Info, "culled 1 of 2 chunks with no lit texel");
+        assert_eq!(culled.chunk_section.chunks.len(), 1);
+        assert_eq!(culled.chunk_section.chunks[0].face_index, 1);
+        assert_eq!(culled.chunk_section.chunks[0].index_offset, 0);
+        assert_eq!(culled.chunk_section.light_indices, vec![1]);
+
+        let rect = culled.weight_maps.chunk_rects[0];
+        assert_eq!(
+            rect,
+            ChunkAtlasRect {
+                texel_offset: 0,
+                ..section.chunk_rects[1]
+            },
+        );
+        assert_eq!(
+            rect_entries(&culled.weight_maps, 0),
+            rect_entries(&section, 1)
+        );
+        assert_eq!(culled.weight_maps.texel_lights, section.texel_lights);
+        assert_eq!(culled.weight_maps.slot_to_static_layer, vec![1]);
+        assert!(culled.weight_maps.is_consistent());
+
+        // Leaf 0 lost its only chunk; leaf 1's chunk moved to index 0; the
+        // trailing empty leaf stays empty at the end of the chunk array.
+        assert_eq!(culled.leaf_chunk_ranges, vec![(0, 0), (0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn cull_drops_every_chunk_when_none_is_lit() {
+        let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::NEG_Y);
+        let only_unlit = AnimatedLightChunksSection {
+            chunks: vec![chunks.chunks[0]],
+            light_indices: chunks.light_indices.clone(),
+        };
+        let rect = section.chunk_rects[0];
+        let unlit_section = AnimatedLightWeightMapsSection {
+            chunk_rects: vec![rect],
+            offset_counts: section.offset_counts[..(rect.width * rect.height) as usize].to_vec(),
+            texel_lights: Vec::new(),
+            slot_to_static_layer: vec![rect.layer],
+        };
+
+        let culled = cull_unlit_chunks(&only_unlit, unlit_section, &[(0, 1)]);
+
+        assert!(culled.chunk_section.chunks.is_empty());
+        assert!(culled.chunk_section.light_indices.is_empty());
+        assert!(culled.weight_maps.chunk_rects.is_empty());
+        assert!(culled.weight_maps.offset_counts.is_empty());
+        assert!(culled.weight_maps.slot_to_static_layer.is_empty());
+        assert_eq!(culled.leaf_chunk_ranges, vec![(0, 0)]);
+    }
+
+    #[test]
     fn animated_atlas_over_budget_names_budget_and_found_bytes() {
-        let err = bake_real_multi_layer_fixture(1)
-            .expect_err("injected low budget must abort the bake without a fallback rect");
+        let err = validate_animated_atlas_budget_with_limit(64, 64, 2, 1)
+            .expect_err("injected low budget must reject the atlas");
         let AnimatedWeightMapBakeError::AtlasOverBudget {
             budget_bytes,
             found_bytes,

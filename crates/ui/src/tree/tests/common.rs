@@ -260,7 +260,7 @@ pub fn anchored(root: Widget) -> AnchoredTree {
     }
 }
 
-/// A text leaf carrying an authored focus `id` (no bind).
+/// A text leaf carrying an authored `id` (a reference target, not a focus stop).
 pub fn text_id(content: &str, id: &str) -> Widget {
     Widget::Text(TextWidget {
         content: content.into(),
@@ -289,6 +289,25 @@ pub fn text(content: &str, font_size: f32) -> Widget {
         style_ranges: None,
         id: None,
         focus_neighbors: Default::default(),
+        visible_when: None,
+        role: None,
+    })
+}
+
+/// An interactive button whose accessible label is its id.
+pub fn button(id: &str, on_press: &str) -> Widget {
+    Widget::Button(ButtonWidget {
+        id: id.into(),
+        label: Some(id.into()),
+        labelled_by: None,
+        on_press: on_press.into(),
+        focus_neighbors: Default::default(),
+        repeat_on_hold: None,
+        selected: None,
+        checked: None,
+        bind: None,
+        style_ranges: None,
+        disabled: false,
         visible_when: None,
         role: None,
     })

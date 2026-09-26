@@ -26,19 +26,20 @@ A requested capability, raised by the developer, whose basis is a false premise 
 - **Every other event has a defined anchor.** Weapon fire, dry fire and reload anchor at the firing pawn. AI attack and state entry anchor at the enemy. Movement events anchor at the local pawn. A mover anchors at the center of its current world bounds, because mover transforms are origin-relative. An entity anchor follows the entity's render-interpolated pose each frame. Once the entity is gone, the sound freezes at its last position and plays out. Anchors capture a point at fire time, so a same-tick despawn still has a position.
 - **The listener's own pawn plays non-spatial.** A sound anchored on the pawn the listener is attached to plays on SFX without spatialization, which avoids panning at near-zero distance. Every other pawn's sounds spatialize, including a remote co-op player's fire heard on the host. A sound keeps the treatment it started with.
 - **The listener is the rendered eye.** The listener pose moves from the raw tick camera to the interpolated eye render uses, including the view-feel offset. It is evaluated once per frame and shared by audio and render. Audio → Render order stays (`index.md` §2).
+- **One spatial pipeline, built to scale in place.** Every positional play goes through one chokepoint in the audio module. That chokepoint owns each voice's spatial state: its anchor, and its direction and distance relative to the listener, computed engine-side each frame. It is also the only code that creates kira spatial tracks or updates their parameters. Later directional cues (front/back filtering), stereo spread and occlusion extend this chokepoint rather than adding a second pipeline.
 - **The voice counter never disagrees with kira.** Each positional sound plays on its own kira spatial track under the SFX bus, so the SFX volume control governs it. A request is admitted only when the engine's voice count and kira's live slot occupancy under SFX both have room. A slot the engine has reclaimed but kira has not yet removed still counts as occupied. Over the cap a request is refused, never queued. This keeps `audio.md` §1's rule, that no play the counter accepts fails in kira, exact under kira's deferred removal. Reclaim never cuts a tail.
 - **A connected client hears its own actions.**
   - Fire prediction is gated on the replicated ammo slot, so an empty magazine predicts a dry fire, not a fire and muzzle flash.
   - Hitscan prediction keeps world-geometry hits and every hit's normal, so predicted impacts match the host's contact data.
   - Reload edges derive from the replicated owner-private reload and ammo slots. Start is the reload flag rising. A shell is ammo rising while reloading. Complete is the flag falling after ammo rose. A cancel plays nothing. Own reload sounds lag by one round trip, and shells that arrive in one snapshot sound once.
   - Landing and jumping come from predicted movement.
-  - Remote peers' and world sounds wait for step 3, which reuses this derive-from-replicated-state pattern for door edges.
+  - Remote peers' and world sounds wait for the peer-audio step, which reuses this derive-from-replicated-state pattern for door edges.
 - **Level lifetime.** Unload, restart and return-to-frontend stop every positional voice with a short fade; none outlives its world. A hot-reload manifest commit rebuilds the descriptor sound table and reruns the unknown-key check, beside the V4a/V4b rerun. Attenuation applies when a sound starts, so live sounds keep theirs.
 - **Unknown sound keys are caught at install and on reload.** Every key a descriptor or a `playSound` names is checked after the registry loads. An unknown key warns once and the level still loads. The play-time drop remains as the backstop.
 - **Attenuation is a mod-wide setting with an engine-seeded default** (`scripting.md` §1: expose the axis, seed the default). It lives in the manifest's `audio.attenuation` block, beside `render.bloom` and `movers.autoCloseMs`, and follows their policy: a malformed value warns naming the field and falls back to the default.
 - **Placement: presentation, host-local, app drain.** Sound stays in the Presentation class, resolved after the tick loop. The sim carries emitter identity and contact data only, and never touches audio.
 - **Non-goals.**
-  - Reverb, peer audio and occlusion are later Epic 12 steps.
+  - Front/back filtering, stereo spread, reverb, peer audio and occlusion are later Epic 12 steps. Surround output is out: kira mixes stereo only.
   - Doppler and HRTF: kira has neither. HRTF is already an `audio.md` §7 non-goal.
   - Surface-material impact sounds and footsteps: the impact data is carried for a later brief, and no footstep event exists.
   - Remote pawns' movement sounds: those events are local-pawn only by design (`run_movement_tick`).
@@ -141,6 +142,7 @@ Content and format
 - [ ] A hot-reload commit that changes a descriptor sound key plays the new key on the next event, and one that introduces an unknown key warns once. (pin P3)
 - [ ] Unloading, restarting or returning to the frontend with positional voices live fades every one of them out. None plays after the next level installs, and none follows an entity from the next level. (pin P2)
 - [ ] The generated typedef fixtures match the new surface.
+- [ ] (grep gate) kira spatial-track creation and spatial parameter updates appear only in the spatial chokepoint's module.
 - [ ] (grep gate) The sim crates name no audio types. The IR value types stay Number and Bool. No sound key appears in a snapshot or other wire type.
 
 ### Manual

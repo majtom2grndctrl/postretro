@@ -1732,6 +1732,7 @@ fn run_after_parsing(
         lightmap: lightmap_bake_output,
         shadowmask: shadowmask_atlas_section,
         shadowmask_elapsed,
+        shadowmask_overlap,
     } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
@@ -1771,9 +1772,16 @@ fn run_after_parsing(
                 section.channels.len(),
                 section.data.len(),
             );
-        } else {
-            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
+        } else if shadowmask_overlap == crate::shadowmask_bake::ShadowmaskOverlapReport::NoSelection
+        {
+            log::info!(
+                "ShadowmaskAtlas: skipped (no selected static lights or no lightmap charts)"
+            );
         }
+        crate::shadowmask_bake::log_overlap_report(
+            shadowmask_overlap,
+            shadowmask_atlas_section.as_ref(),
+        );
     }
 
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
@@ -1879,12 +1887,6 @@ fn run_after_parsing(
 
         if let Some(section) = cached_wm_section {
             log::info!("[cache] animated_lm_weight_maps hit");
-            animated_light_weight_maps::validate_animated_atlas_budget(
-                atlas_width,
-                atlas_height,
-                section.slot_to_static_layer.len() as u32,
-            )
-            .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
             animated_weight_control.publish_total(animated_light_chunks_section.chunks.len());
             // Cache-hit fast-advance on the orchestrator thread: honor pause only,
             // no permit (the parallel bake path is what needs a permit).
@@ -1896,8 +1898,7 @@ fn run_after_parsing(
             let section = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
                 &wm_inputs,
                 &animated_weight_control,
-            )
-            .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
+            );
             if let Some(ref c) = stage_cache {
                 c.put(&wm_key, &section.to_bytes());
             }
@@ -1912,11 +1913,44 @@ fn run_after_parsing(
         animated_light_weight_maps_section.is_some(),
     );
 
-    let animated_light_chunks_section = if animated_light_chunks_section.chunks.is_empty() {
-        None
-    } else {
-        Some(animated_light_chunks_section)
-    };
+    // Drop chunks the bake found unlit before sizing the animated atlas: the
+    // influence-sphere chunk selection over-includes occluded and back-facing
+    // receivers, and each one would otherwise hold an atlas slot and compose
+    // tiles. The budget is checked on the surviving slot count.
+    let (animated_light_chunks_section, animated_light_weight_maps_section, bvh_chunk_ranges) =
+        match animated_light_weight_maps_section {
+            Some(weight_maps) => {
+                let culled = animated_light_weight_maps::cull_unlit_chunks(
+                    &animated_light_chunks_section,
+                    weight_maps,
+                    &bvh_chunk_ranges,
+                );
+                animated_light_weight_maps::validate_animated_atlas_budget(
+                    atlas_width,
+                    atlas_height,
+                    culled.weight_maps.slot_to_static_layer.len() as u32,
+                )
+                .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
+                (
+                    culled.chunk_section,
+                    Some(culled.weight_maps),
+                    culled.leaf_chunk_ranges,
+                )
+            }
+            None => (animated_light_chunks_section, None, bvh_chunk_ranges),
+        };
+
+    let (animated_light_chunks_section, animated_light_weight_maps_section) =
+        if animated_light_chunks_section.chunks.is_empty() {
+            // Every candidate culled (or none existed): emit neither section,
+            // the same shape as a map without animated lights.
+            (None, None)
+        } else {
+            (
+                Some(animated_light_chunks_section),
+                animated_light_weight_maps_section,
+            )
+        };
 
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
         let stage_start = begin_stage(reporter.as_ref(), StageId::SdfAtlasBake);

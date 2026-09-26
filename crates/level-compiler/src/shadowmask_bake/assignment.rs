@@ -1,7 +1,7 @@
 // Shadowmask overlap graph construction and deterministic four-channel assignment.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 
@@ -16,6 +16,9 @@ const SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS: usize = 1024;
 pub(super) struct OverlapGraph {
     light_count: usize,
     edges: Vec<AtomicU8>,
+    /// Most selected lights covering any one texel, as the analytic walk saw
+    /// it. Reported, never acted on: it is the mask-capacity question's input.
+    peak_texel_overlap: AtomicUsize,
 }
 
 const _: () = assert!(std::mem::size_of::<AtomicU8>() == 1);
@@ -28,7 +31,18 @@ impl OverlapGraph {
         Self {
             light_count,
             edges: (0..edge_count).map(|_| AtomicU8::new(0)).collect(),
+            peak_texel_overlap: AtomicUsize::new(0),
         }
+    }
+
+    pub(super) fn record_texel_overlap(&self, covering_lights: usize) {
+        self.peak_texel_overlap
+            .fetch_max(covering_lights, Ordering::Relaxed);
+    }
+
+    pub(super) fn peak_texel_overlap(&self) -> u32 {
+        u32::try_from(self.peak_texel_overlap.load(Ordering::Relaxed))
+            .expect("selected light count fits the u32 selection table")
     }
 
     pub(super) fn light_count(&self) -> usize {

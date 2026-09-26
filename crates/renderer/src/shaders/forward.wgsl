@@ -659,6 +659,8 @@ const SHADOWMASK_VISUALIZE_MODE: u32 = 5u;
 const SHADOWMASK_RAW_POOL_VISIBILITY_MODE: u32 = 6u;
 const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
 const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
+// `shadowmask_union_channel`'s skip sentinel; never a mask slot.
+const SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;
 const SHADOWMASK_POOL_SPOT: u32 = 0u;
 const SHADOWMASK_POOL_CUBE: u32 = 1u;
 const SHADOWMASK_POOL_SPOT_VALUE: f32 = 0.0;
@@ -692,18 +694,32 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
     }
 }
 
-// Rejected or absent shadowmask resources bind a one-layer all-white texture.
-// Clamp baked multi-layer vertex indices so that fallback always samples that
-// fully-visible layer instead of addressing outside the bound texture.
+// The atlas holds two BC5 mask groups side by side in each layer: slots 0/1
+// in the left half, 2/3 in the right. Returns the four slots in one vector.
+// Rejected or absent shadowmask resources bind a one-layer, two-texel white
+// texture. Clamp baked multi-layer vertex indices so that fallback always
+// samples that fully-visible layer instead of addressing outside the bound
+// texture.
 fn sample_shadowmask_atlas(lightmap_uv: vec2<f32>, lightmap_layer: u32) -> vec4<f32> {
     let last_layer = textureNumLayers(shadowmask_atlas) - 1u;
     let safe_layer = min(lightmap_layer, last_layer);
-    return textureSample(
+    // Clamping half a group texel inside the group gives each group its own
+    // clamp-to-edge, so bilinear taps never blend across the seam.
+    let group_half_texel = 1.0 / f32(textureDimensions(shadowmask_atlas).x);
+    let group_u = clamp(lightmap_uv.x, group_half_texel, 1.0 - group_half_texel);
+    let group0 = textureSample(
         shadowmask_atlas,
         lightmap_filtering_sampler,
-        lightmap_uv,
+        vec2<f32>(group_u * 0.5, lightmap_uv.y),
         i32(safe_layer),
     );
+    let group1 = textureSample(
+        shadowmask_atlas,
+        lightmap_filtering_sampler,
+        vec2<f32>((1.0 + group_u) * 0.5, lightmap_uv.y),
+        i32(safe_layer),
+    );
+    return vec4<f32>(group0.rg, group1.rg);
 }
 
 // Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
@@ -794,6 +810,19 @@ fn shadowmask_attenuation(baked_vis: f32, entity_vis: f32) -> f32 {
     return baked_vis * (1.0 - entity_vis);
 }
 
+// A promoted light's mask slot from its metadata channel float, or
+// SHADOWMASK_UNION_CHANNEL_NONE for a dropped, negative, fractional or
+// out-of-range value. The union skips a light whose slot is NONE, so the u32
+// cast here follows every guard.
+fn shadowmask_union_channel(channel_value: f32) -> u32 {
+    if channel_value < 0.0 ||
+       channel_value >= SHADOWMASK_CHANNEL_DROPPED ||
+       floor(channel_value) != channel_value {
+        return SHADOWMASK_UNION_CHANNEL_NONE;
+    }
+    return u32(channel_value);
+}
+
 fn shadowmask_union_subtraction(
     world_pos: vec3<f32>,
     lightmap_uv: vec2<f32>,
@@ -844,28 +873,25 @@ fn shadowmask_union_subtraction(
         let weight = clamp(meta0.w, 0.0, 1.0);
         let pool_kind_value = meta1.x;
         let slot_value = meta1.y;
-        let channel_value = meta1.z;
+        let channel = shadowmask_union_channel(meta1.z);
 
         if weight <= 0.0 ||
            spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE ||
            spec_idx_value >= f32(spec_len) ||
-           channel_value < 0.0 ||
-           channel_value >= SHADOWMASK_CHANNEL_DROPPED {
+           channel == SHADOWMASK_UNION_CHANNEL_NONE {
             continue;
         }
         if pool_kind_value != SHADOWMASK_POOL_SPOT_VALUE && pool_kind_value != SHADOWMASK_POOL_CUBE_VALUE {
             continue;
         }
         if floor(spec_idx_value) != spec_idx_value ||
-           floor(slot_value) != slot_value ||
-           floor(channel_value) != channel_value {
+           floor(slot_value) != slot_value {
             continue;
         }
 
         let spec_idx = u32(spec_idx_value);
         let pool_kind = u32(pool_kind_value);
         let slot = u32(slot_value);
-        let channel = u32(channel_value);
         let sl = spec_lights[spec_idx];
         let direct = shadowmask_direct(sl, world_pos, mesh_n, bump_n);
         if direct.valid == 0u {

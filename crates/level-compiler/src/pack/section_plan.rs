@@ -206,7 +206,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         if let Some(section) = shadowmask_atlas.filter(|section| !section.channels.is_empty()) {
             sections.push(PlannedSection::new(
                 SectionId::ShadowmaskAtlas as u32,
-                1,
+                2,
                 section.byte_len(),
                 || Ok(section.to_bytes()),
             ));

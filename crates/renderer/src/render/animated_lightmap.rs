@@ -9,10 +9,9 @@
 // alternate cameras) must share the same `VisibleCells` or skip animated-lit
 // chunks — otherwise it reads stale atlas contents for invisible cells.
 //
-// Dispatch limit: tile count is validated against
-// `max_compute_workgroups_per_dimension` (65535) at map load. The 2D-dispatch
-// fallback is not implemented — a map that trips the cap must be rebaked with
-// fewer/smaller animated chunks.
+// Dispatch shape: one workgroup per 8×8 tile, laid out as a row-major 2D grid
+// (`compose_grid`) so tile counts past `max_compute_workgroups_per_dimension`
+// still dispatch. The last row is padded with `PADDING_TILE` records.
 
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -33,8 +32,30 @@ use crate::lighting::lightmap::{
 
 use super::sh_volume::AnimatedLightBuffers;
 
-/// wgpu default `max_compute_workgroups_per_dimension`.
-const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
+/// Grid-padding record: the compose shader returns on this `chunk_idx`.
+/// Mirrors `PADDING_TILE` in `animated_lightmap_compose.wgsl`.
+const PADDING_TILE: DispatchTile = DispatchTile {
+    chunk_idx: u32::MAX,
+    tile_origin_x: 0,
+    tile_origin_y: 0,
+    target_slot: 0,
+};
+
+/// Row-major 2D workgroup grid `(columns, rows)` for `tile_count` one-tile
+/// workgroups, with neither dimension above `max_per_dim`. Rows are balanced,
+/// so the padding `columns * rows - tile_count` stays below `rows`. `None`
+/// when the count exceeds `max_per_dim²`.
+fn compose_grid(tile_count: u32, max_per_dim: u32) -> Option<(u32, u32)> {
+    let rows = tile_count.div_ceil(max_per_dim).max(1);
+    (rows <= max_per_dim).then(|| (tile_count.div_ceil(rows), rows))
+}
+
+/// Pad `tiles` with `PADDING_TILE` so it fills `grid` exactly; the shader
+/// indexes the tile buffer by flattened grid position.
+fn pad_tiles_to_grid(tiles: &mut Vec<DispatchTile>, (columns, rows): (u32, u32)) {
+    debug_assert!(tiles.len() <= (columns * rows) as usize);
+    tiles.resize((columns * rows) as usize, PADDING_TILE);
+}
 
 /// Array-atlas dimensions derived from the static lightmap dimensions and the
 /// section-25 animated slot count. `None` is the no-animated-atlas path: wgpu
@@ -123,9 +144,10 @@ fn animated_atlas_view_dimension() -> wgpu::TextureViewDimension {
     wgpu::TextureViewDimension::D2Array
 }
 
-/// One 8×8 atlas tile assigned to a chunk. Indexed by `workgroup_id.x` in the compose shader.
+/// One 8×8 atlas tile assigned to a chunk. Indexed by flattened 2D
+/// `workgroup_id` in the compose shader.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DispatchTile {
     chunk_idx: u32,
     tile_origin_x: u32,
@@ -193,9 +215,13 @@ pub struct AnimatedLightmapResources {
 struct DispatchState {
     compose_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
-    /// Sized to the master tile count; updated each frame with the
-    /// visibility-culled prefix via `queue.write_buffer`. Needs `COPY_DST`.
+    /// Sized to the master tile count plus the largest grid padding; updated
+    /// each frame with the visibility-culled, grid-padded prefix via
+    /// `queue.write_buffer`. Needs `COPY_DST`.
     dispatch_tiles_buffer: wgpu::Buffer,
+    /// Device `max_compute_workgroups_per_dimension`, the per-axis bound for
+    /// `compose_grid`.
+    max_workgroups_per_dim: u32,
     /// Full unfiltered tile list built at load time. Per-frame cull walks
     /// this and pushes only tiles in visible cells.
     master_tiles: Vec<DispatchTile>,
@@ -369,17 +395,29 @@ impl AnimatedLightmapResources {
 
         let static_layer_to_slot = static_layer_to_animated_slot(&section.slot_to_static_layer);
         let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects, &static_layer_to_slot);
-        if dispatch_tiles.len() as u32 > MAX_WORKGROUPS_PER_DIM {
+        let compose_workgroup_count = u32::try_from(dispatch_tiles.len())
+            .map_err(|_| "animated lightmap dispatch tile count exceeds u32".to_owned())?;
+        let limits = device.limits();
+        let max_workgroups_per_dim = limits.max_compute_workgroups_per_dimension;
+        let (_, master_rows) = compose_grid(compose_workgroup_count, max_workgroups_per_dim)
+            .ok_or_else(|| {
+                format!(
+                    "[AnimatedLightmap] dispatch tile count {compose_workgroup_count} exceeds \
+                     the {max_workgroups_per_dim}² compose workgroup grid",
+                )
+            })?;
+        // A visible subset never needs more rows than the full list, and each
+        // row pads by at most one tile, so this capacity holds every frame's grid.
+        let tile_capacity = dispatch_tiles.len() + master_rows as usize;
+        let tile_buffer_bytes = (tile_capacity * std::mem::size_of::<DispatchTile>()) as u64;
+        if tile_buffer_bytes > limits.max_storage_buffer_binding_size
+            || tile_buffer_bytes > limits.max_buffer_size
+        {
             return Err(format!(
-                "[AnimatedLightmap] dispatch tile count {} exceeds wgpu \
-                 max_compute_workgroups_per_dimension ({}); 2D-dispatch \
-                 fallback is not implemented — rebake with fewer / smaller \
-                 animated chunks.",
-                dispatch_tiles.len(),
-                MAX_WORKGROUPS_PER_DIM,
+                "[AnimatedLightmap] dispatch tile buffer ({tile_buffer_bytes} bytes for \
+                 {compose_workgroup_count} tiles) exceeds the device storage-buffer limit",
             ));
         }
-        let compose_workgroup_count = dispatch_tiles.len() as u32;
 
         // No `COPY_DST` needed — wgpu zero-initializes and the compose pass
         // overwrites every texel the forward pass will sample.
@@ -456,7 +494,9 @@ impl AnimatedLightmapResources {
         let chunk_rects_bytes = pack_chunk_rects(&section.chunk_rects);
         let offset_counts_bytes = pack_offset_counts(section);
         let texel_lights_bytes = pack_texel_lights(section);
-        let dispatch_tiles_bytes = pack_dispatch_tiles(&dispatch_tiles);
+        let mut seed_tiles = dispatch_tiles.clone();
+        seed_tiles.resize(tile_capacity, PADDING_TILE);
+        let dispatch_tiles_bytes = pack_dispatch_tiles(&seed_tiles);
 
         let chunk_rects_buffer =
             create_storage_buffer(device, "Animated LM Chunk Rects", &chunk_rects_bytes);
@@ -464,8 +504,8 @@ impl AnimatedLightmapResources {
             create_storage_buffer(device, "Animated LM Offset Counts", &offset_counts_bytes);
         let texel_lights_buffer =
             create_storage_buffer(device, "Animated LM Texel Lights", &texel_lights_bytes);
-        // Seeded with the full master list; the first frame's `DrawAll` path
-        // uploads an identical slice without needing a separate clear.
+        // Seeded with the full master list padded to capacity; every frame
+        // overwrites the prefix its grid reads, so no separate clear is needed.
         let dispatch_tiles_buffer = {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -579,10 +619,11 @@ impl AnimatedLightmapResources {
                 compose_pipeline,
                 compute_bind_group,
                 dispatch_tiles_buffer,
+                max_workgroups_per_dim,
                 master_tiles: dispatch_tiles,
                 chunk_cell_ids,
                 // Pre-sized so `DrawAll` on the first frame doesn't realloc.
-                scratch_tiles: Vec::with_capacity(total_tiles as usize),
+                scratch_tiles: Vec::with_capacity(tile_capacity),
                 scratch_bytes: Vec::with_capacity(dispatch_tiles_bytes.len()),
                 prev_kept: u32::MAX,
                 total_tiles,
@@ -664,6 +705,12 @@ impl AnimatedLightmapResources {
             return;
         }
 
+        // `kept` ≤ the master count validated at load, so the grid exists and
+        // its padded length fits the tile buffer.
+        let grid = compose_grid(kept, state.max_workgroups_per_dim)
+            .expect("visible tile count is bounded by the load-validated master grid");
+        pad_tiles_to_grid(&mut state.scratch_tiles, grid);
+
         state.scratch_bytes.clear();
         pack_dispatch_tiles_into(&state.scratch_tiles, &mut state.scratch_bytes);
         queue.write_buffer(&state.dispatch_tiles_buffer, 0, &state.scratch_bytes);
@@ -676,7 +723,7 @@ impl AnimatedLightmapResources {
         pass.set_bind_group(1, &state.compute_bind_group, &[]);
 
         pass.set_pipeline(&state.compose_pipeline);
-        pass.dispatch_workgroups(kept, 1, 1);
+        pass.dispatch_workgroups(grid.0, grid.1, 1);
     }
 }
 
@@ -1036,6 +1083,85 @@ mod tests {
         assert!(has_debug_struct, "DebugConfig struct missing from shader");
     }
 
+    /// `parse_str` skips uniformity analysis; the padding early-return must
+    /// still pass full validation.
+    #[test]
+    fn compose_shader_passes_naga_validation() {
+        let src = concat!(
+            include_str!("../shaders/animated_lightmap_compose.wgsl"),
+            "\n",
+            include_str!("../shaders/curve_eval.wgsl"),
+        );
+        let module = naga::front::wgsl::parse_str(src).expect("compose shader must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("compose shader must pass naga validation");
+    }
+
+    #[test]
+    fn compose_shader_indexes_tiles_by_flattened_grid_and_skips_padding() {
+        let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
+        assert!(src.contains("dispatch_tiles[wg.y * grid.x + wg.x]"));
+        assert!(src.contains("const PADDING_TILE: u32 = 0xFFFFFFFFu;"));
+        assert_eq!(PADDING_TILE.chunk_idx, 0xFFFF_FFFF);
+        assert!(src.contains("if (tile.chunk_idx == PADDING_TILE)"));
+    }
+
+    #[test]
+    fn compose_grid_is_one_row_within_the_per_dimension_limit() {
+        assert_eq!(compose_grid(1, 65_535), Some((1, 1)));
+        assert_eq!(compose_grid(65_535, 65_535), Some((65_535, 1)));
+    }
+
+    #[test]
+    fn compose_grid_balances_rows_past_the_per_dimension_limit() {
+        // The stress-warren-mini 0.08 m/texel bake that tripped the old cap.
+        assert_eq!(compose_grid(242_074, 65_535), Some((60_519, 4)));
+        assert_eq!(compose_grid(65_536, 65_535), Some((32_768, 2)));
+
+        for (count, max) in [
+            (242_074, 65_535),
+            (65_536, 65_535),
+            (1_000, 32),
+            (40, 7),
+            (49, 7),
+        ] {
+            let (columns, rows) = compose_grid(count, max).expect("count fits max²");
+            assert!(columns <= max && rows <= max);
+            let cells = columns * rows;
+            assert!(cells >= count, "grid must hold every tile");
+            assert!(cells - count < rows, "padding stays below one tile per row");
+        }
+    }
+
+    #[test]
+    fn compose_grid_rejects_counts_past_the_square_limit() {
+        assert_eq!(compose_grid(49, 7), Some((7, 7)));
+        assert_eq!(compose_grid(50, 7), None);
+    }
+
+    #[test]
+    fn padding_fills_the_grid_after_every_real_tile() {
+        let real = DispatchTile {
+            chunk_idx: 3,
+            tile_origin_x: 8,
+            tile_origin_y: 16,
+            target_slot: 1,
+        };
+        let mut tiles = vec![real; 10];
+        let grid = compose_grid(10, 4).expect("10 tiles fit a 4x4 limit");
+        assert_eq!(grid, (4, 3));
+
+        pad_tiles_to_grid(&mut tiles, grid);
+
+        assert_eq!(tiles.len(), 12);
+        assert!(tiles[..10].iter().all(|tile| *tile == real));
+        assert!(tiles[10..].iter().all(|tile| *tile == PADDING_TILE));
+    }
+
     #[test]
     fn compose_shader_uses_array_storage_and_slot_indexed_stores() {
         let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
@@ -1246,6 +1372,8 @@ mod tests {
             direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
+        // Atlas sizing reads the header install keeps after it takes the blobs.
+        let (section, _payloads) = section.into_parts();
         assert_eq!(
             usable_atlas_dimensions(Some(&section), 8192, 256),
             Some((4096, 2048)),

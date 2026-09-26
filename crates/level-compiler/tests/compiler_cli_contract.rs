@@ -51,12 +51,16 @@ struct TempBuildDir(PathBuf);
 
 impl TempBuildDir {
     fn new() -> Self {
+        // Parallel tests can read the same clock value (macOS ticks in
+        // microseconds), so a per-process sequence keeps names unique.
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "postretro-level-compiler-cli-{}-{nonce}",
+            "postretro-level-compiler-cli-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create isolated compiler output directory");
@@ -995,5 +999,92 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
         first_bc6h.compact_atlas.len(),
         second_bc6h.compact_atlas.len(),
         "lossy BC6H output is gated on stable compact-section length, not byte identity",
+    );
+}
+
+fn compile_overlap_fixture(output: &Path, cache_dir: &Path, verbose: bool) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    command
+        .env("RUST_LOG", "info")
+        .arg(workspace_root().join("content/dev/maps/shadowmask-groups-capture.map"))
+        .arg("-o")
+        .arg(output)
+        .arg("--no-tui")
+        .arg("--sh-probe-spacing")
+        .arg("4")
+        .arg("--lightmap-density")
+        .arg("0.25")
+        .arg("--cache-dir")
+        .arg(cache_dir);
+    if verbose {
+        command.arg("--verbose");
+    }
+    command.output().expect("spawn prl-build")
+}
+
+fn overlap_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.contains("[ShadowmaskAtlas] peak per-texel overlap:"))
+        .collect()
+}
+
+// Pin: overlap-memo-hit. The count comes from the graph only a memo miss
+// builds; the memo carries it so a hit reports the same value.
+#[test]
+#[ignore = "one cold and two warm prl-build bakes; run on demand with -- --ignored"]
+fn verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_not() {
+    let temp = TempBuildDir::new();
+    let cache_dir = temp.0.join("cache");
+
+    let cold = compile_overlap_fixture(&temp.0.join("cold.prl"), &cache_dir, true);
+    assert_success(&cold, 1);
+    let cold_stderr = String::from_utf8_lossy(&cold.stderr);
+    assert!(
+        cold_stderr.contains("[cache] shadowmask_atlas miss"),
+        "{cold_stderr}"
+    );
+    let cold_lines = overlap_lines(&cold_stderr);
+    assert_eq!(
+        cold_lines.len(),
+        1,
+        "one overlap line per verbose bake:\n{cold_stderr}"
+    );
+    assert!(
+        cold_lines[0].contains("4 selected light(s) at one texel")
+            && cold_lines[0].contains("layer(s), BC5 .rg side by side (4 slots)"),
+        "four overlapping lights must report peak 4 with layer count and format: {}",
+        cold_lines[0]
+    );
+
+    let warm = compile_overlap_fixture(&temp.0.join("warm.prl"), &cache_dir, true);
+    assert_success(&warm, 1);
+    let warm_stderr = String::from_utf8_lossy(&warm.stderr);
+    assert!(
+        warm_stderr.contains("[cache] shadowmask_atlas hit"),
+        "{warm_stderr}"
+    );
+    let peak_text = |line: &str| {
+        line.split("[ShadowmaskAtlas] ")
+            .nth(1)
+            .expect("overlap line carries its tag")
+            .to_string()
+    };
+    assert_eq!(
+        overlap_lines(&warm_stderr)
+            .into_iter()
+            .map(peak_text)
+            .collect::<Vec<_>>(),
+        vec![peak_text(cold_lines[0])],
+        "a memo hit must report the cold bake's value"
+    );
+
+    let quiet = compile_overlap_fixture(&temp.0.join("quiet.prl"), &cache_dir, false);
+    assert_success(&quiet, 1);
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    let quiet_stdout = String::from_utf8_lossy(&quiet.stdout);
+    assert!(
+        overlap_lines(&quiet_stderr).is_empty() && overlap_lines(&quiet_stdout).is_empty(),
+        "a non-verbose bake gains no overlap line"
     );
 }

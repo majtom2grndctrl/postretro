@@ -150,12 +150,16 @@ When explicitly requested, `--animated-frac` promotes a share of the baked
 
 Only baked lights animate; under `--lights dynamic` the animation flags are
 inert. The animated-light weight maps and delta-SH companions bake alongside the
-lightmap, so compile a map with animated lights like any other lit variant —
-**except** the animated-weight-map packer needs enough texels per face: use
-`--lightmap-density 0.25` (not 0.5). At 0.5 m/texel the warren's very large room
-walls give each animated chunk barely a texel and the packer aborts with
-`overlapping atlas rects`; 0.25 clears it and still stays under the 8192² atlas
-cap. This is why `--preset warren` is documented to bake at 0.25:
+lightmap, so compile a map with animated lights like any other lit variant, at
+any `--lightmap-density`; animated direct light bakes on every static atlas
+layer.
+
+The generator caps a map at six animated lights (`ANIMATED_LIGHT_CAP`) for bake
+size, not correctness. The compiler splits a face into animated chunks until
+each carries at most four lights, so many overlapping animated lights drive that
+split down to one-texel chunks: a 4×4×2 warren with 96 animated lights bakes
+~242k chunks at 0.5 m/texel. `--preset warren` bakes at the lit maps' 0.25
+default (see *Compile*):
 
 ```bash
 python3 tools/gen_stress_map.py --preset warren \

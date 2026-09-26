@@ -483,12 +483,23 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
+        .field("sounds?", "WeaponSounds", "Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; never replicated.")
         .field("placement?", "WeaponPlacementDescriptor", "Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.")
         .field("muzzleOffset?", "[f32; 3]", "Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .field("lowerMs?", "u32", "Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.")
         .field("raiseMs?", "u32", "Raising duration in milliseconds. Optional; defaults to 0.")
         .field("blockDuringReload?", "bool", "Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin.")
+        .finish();
+    registry
+        .register_type("WeaponSounds")
+        .doc("Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.")
+        .field("fire?", "String", "Played on `activate`.")
+        .field("dryFire?", "String", "Played on `dry_fire`.")
+        .field("impact?", "String", "Played on `impact`, hitscan and projectile alike.")
+        .field("reloadStart?", "String", "Played on `reload_started`.")
+        .field("reloadShell?", "String", "Played on `reload_shell_loaded`, per shell of a per-shell reload.")
+        .field("reloadComplete?", "String", "Played on `reload_completed`.")
         .finish();
     registry
         .register_type("TouchableDescriptor")
@@ -541,10 +552,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("AttackParams")
-        .doc("One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape.")
+        .doc("One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.")
         .alias(
-            "{ weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number }",
-            "{ weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number? }",
+            "{ weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string }",
+            "{ weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }",
         )
         .finish();
     registry
@@ -614,6 +625,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("motion?", "MotionVerb", "Leaf sugar for a single-entry `move` layer.")
         .field("action?", "ActionVerb", "Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map.")
         .field("onEnter?", "String", "Optional named event fired when a leaf activity is entered.")
+        .field("sound?", "String", "Optional sound key played at the enemy when a leaf activity is entered, whether or not it authors `onEnter`.")
         .field("layers?", "BehaviorLayers", "Composite-only orthogonal layers.")
         .finish();
     registry
@@ -678,6 +690,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.",
         )
         .field(
+            "sounds?",
+            "MovementSounds",
+            "Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated.",
+        )
+        .field(
             "stuckStopEnabled?",
             "bool",
             "Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.",
@@ -687,6 +704,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "f32",
             "Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.",
         )
+        .finish();
+    registry
+        .register_type("MovementSounds")
+        .doc("Sound keys for player-movement events. Every field is optional; an absent one plays nothing. Unknown keys are rejected.")
+        .field("land?", "String", "Played on `landed`.")
+        .field("jump?", "String", "Played on `jumped`.")
         .finish();
     registry
         .register_type("CapsuleParams")

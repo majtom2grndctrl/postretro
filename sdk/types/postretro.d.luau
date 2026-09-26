@@ -514,6 +514,8 @@ export type WeaponDescriptor = {
   thirdPersonModel: string?,
   --- Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
   viewmodel: string?,
+  --- Optional sound keys for this weapon's events, played whoever wields it. Each key names a sound under the mod's `sounds/` directory without its extension (`sfx/pistol_fire`). Presentation only; never replicated.
+  sounds: WeaponSounds?,
   --- Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.
   placement: WeaponPlacementDescriptor?,
   --- Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read.
@@ -526,6 +528,22 @@ export type WeaponDescriptor = {
   raiseMs: number?,
   --- Optional override of the mod-global switching rule. When present, it determines whether this weapon must finish reload activity before a switch can begin.
   blockDuringReload: boolean?,
+}
+
+--- Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.
+export type WeaponSounds = {
+  --- Played on `activate`.
+  fire: string?,
+  --- Played on `dry_fire`.
+  dryFire: string?,
+  --- Played on `impact`, hitscan and projectile alike.
+  impact: string?,
+  --- Played on `reload_started`.
+  reloadStart: string?,
+  --- Played on `reload_shell_loaded`, per shell of a per-shell reload.
+  reloadShell: string?,
+  --- Played on `reload_completed`.
+  reloadComplete: string?,
 }
 
 --- Host-authoritative touch interaction preset for a world-placeable descriptor. Maps choose the placement; this descriptor owns mode and radius tuning.
@@ -575,8 +593,8 @@ export type ActionVerb = {
   attack: string,
 }
 
---- One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape.
-export type AttackParams = { weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number? }
+--- One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds.
+export type AttackParams = { weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }
 
 --- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.
 export type PatrolMode =
@@ -633,6 +651,8 @@ export type BehaviorActivityDescriptor = {
   action: ActionVerb?,
   --- Optional named event fired when a leaf activity is entered.
   onEnter: string?,
+  --- Optional sound key played at the enemy when a leaf activity is entered, whether or not it authors `onEnter`.
+  sound: string?,
   --- Composite-only orthogonal layers.
   layers: BehaviorLayers?,
 }
@@ -703,10 +723,20 @@ export type PlayerMovementDescriptor = {
   slide: SlideParams?,
   --- Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.
   viewFeel: ViewFeelParams?,
+  --- Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated.
+  sounds: MovementSounds?,
   --- Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.
   stuckStopEnabled: boolean?,
   --- Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.
   stuckStopThreshold: number?,
+}
+
+--- Sound keys for player-movement events. Every field is optional; an absent one plays nothing. Unknown keys are rejected.
+export type MovementSounds = {
+  --- Played on `landed`.
+  land: string?,
+  --- Played on `jumped`.
+  jump: string?,
 }
 
 --- Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.

@@ -1211,6 +1211,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
         .set_component(
             id,
             WeaponComponent::from_descriptor(&WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
@@ -1293,6 +1294,7 @@ fn spawn_local_active_weapon(registry: &mut EntityRegistry) -> EntityId {
 
 fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        sounds: None,
         knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
@@ -1544,6 +1546,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 (
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
                         action: None,
@@ -1554,6 +1557,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 (
                     ALERT_STATE.to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some(locomotion_animation.to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: None,
@@ -1564,6 +1568,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 (
                     ATTACK_STATE.to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack("attack".to_string())),
@@ -1574,6 +1579,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 (
                     "death".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("death".to_string()),
                         motion: Some(MotionVerb::Freeze),
                         action: None,
@@ -1590,6 +1596,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(7.0),
                 max_range: Some(2.0),
@@ -2268,6 +2275,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
         .insert(
             "walk".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("walk".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
                 action: None,

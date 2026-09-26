@@ -2899,6 +2899,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
@@ -2973,6 +2974,7 @@ mod tests {
         let before = tuning_payload_for_pawn(&registry, pawn, &[], None);
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 14.0,
             pellet_count: 8,
@@ -3181,6 +3183,7 @@ mod tests {
 
     fn test_weapon(damage: f32, range: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage,
             pellet_count: 1,
@@ -3505,6 +3508,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 1.0,
                 pellet_count: 1,
@@ -5485,6 +5489,7 @@ mod tests {
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
+                sounds: None,
                 knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.4,

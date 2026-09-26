@@ -274,6 +274,11 @@ impl App {
                     );
                 }
                 self.trigger_bindings = trigger_bindings;
+                // Pin P3: the reloaded descriptors' sound keys play on the next
+                // event, and a newly unknown key warns once.
+                if let Some(session) = self.session.as_mut() {
+                    session.refresh_descriptor_sounds();
+                }
             }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile.

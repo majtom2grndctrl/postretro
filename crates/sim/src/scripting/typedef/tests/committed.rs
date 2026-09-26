@@ -288,8 +288,8 @@ fn sdk_attack_params_discriminate_weapon_and_contact_entries() {
     ))
     .expect("read committed postretro.d.luau");
 
-    let ts_attack_union = "export type AttackParams = { weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number };";
-    let luau_attack_union = "export type AttackParams = { weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number? }";
+    let ts_attack_union = "export type AttackParams = { weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };";
+    let luau_attack_union = "export type AttackParams = { weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string? }";
 
     assert!(
         generated_ts.contains(ts_attack_union) && committed_ts.contains(ts_attack_union),

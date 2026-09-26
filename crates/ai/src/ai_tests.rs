@@ -197,6 +197,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -269,6 +270,7 @@ fn enemy_mesh() -> MeshComponent {
 /// targets for the player POSITION lookup.
 fn player_movement_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        sounds: None,
         knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
@@ -4206,6 +4208,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -6687,6 +6690,7 @@ fn authored_state(
     action: Option<ActionVerb>,
 ) -> BehaviorActivityDescriptor {
     BehaviorActivityDescriptor {
+        sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
         action,
@@ -7187,6 +7191,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -7635,6 +7640,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
     attacker_graph.attacks.insert(
         "attack".to_string(),
         AttackParams {
+            sound: None,
             weapon: None,
             damage: Some(100.0),
             max_range: Some(2.0),
@@ -7835,6 +7841,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             (
                 "first".to_string(),
                 BehaviorActivityDescriptor {
+                    sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
                     action: None,
@@ -7845,6 +7852,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             (
                 "second".to_string(),
                 BehaviorActivityDescriptor {
+                    sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
                     action: None,
@@ -7874,6 +7882,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         activities: BTreeMap::from([(
             "engage".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("idle".to_string()),
                 motion: None,
                 action: None,
@@ -7891,6 +7900,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -8591,6 +8601,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(JAB_RANGE),
@@ -8602,6 +8613,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(14.0),
                     max_range: Some(SLAM_RANGE),
@@ -8652,6 +8664,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const SLAM_RECOVER_MS: f32 = 1450.0;
 
     let leaf = |animation: &str, action: Option<ActionVerb>| BehaviorActivityDescriptor {
+        sound: None,
         animation: Some(animation.to_string()),
         motion: None,
         action,
@@ -8756,6 +8769,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "engage".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("walk".to_string()),
                         motion: None,
                         action: None,
@@ -8934,6 +8948,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(JAB_RANGE),
@@ -8945,6 +8960,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(14.0),
                     max_range: Some(SLAM_RANGE),
@@ -9791,6 +9807,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "jab".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(2.0),
@@ -9802,6 +9819,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(14.0),
                     max_range: Some(3.5),
@@ -10254,6 +10272,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -10272,6 +10291,7 @@ fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescripto
     graph.attacks.insert(
         "attack".to_string(),
         AttackParams {
+            sound: None,
             weapon: Some(weapon_name.to_string()),
             damage: None,
             max_range: None,
@@ -10298,6 +10318,7 @@ fn projectile_weapon_descriptor(
         emitter: None,
         movement: None,
         weapon: Some(WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage,
             pellet_count: 1,
@@ -10410,6 +10431,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         activities: BTreeMap::from([(
             "engage".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("idle_aiming".to_string()),
                 motion: None,
                 action: None,
@@ -10439,6 +10461,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "shoot".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(5.0),
@@ -11329,6 +11352,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -11795,6 +11819,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(ATTACK_RANGE),
@@ -11903,6 +11928,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         graph.attacks.insert(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -11943,6 +11969,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         activities: BTreeMap::from([(
             "composite".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("locomotion".to_string()),
                 motion: None,
                 action: None,
@@ -11974,6 +12001,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),

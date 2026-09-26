@@ -195,6 +195,7 @@ mod tests {
     /// reads matter here, the rest are plausible defaults.
     fn minimal_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,

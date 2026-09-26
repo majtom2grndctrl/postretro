@@ -227,6 +227,15 @@ pub fn movement_descriptor_from_lua(
     };
     knockback.validate("movement.knockback")?;
 
+    // `sounds` is optional presentation data: landing and jumping keys.
+    let raw: LuaValue = table.get("sounds").map_err(lua_err)?;
+    let sounds = if matches!(raw, LuaValue::Nil) {
+        None
+    } else {
+        let json = conv::lua_to_json(raw).map_err(lua_err)?;
+        Some(movement_sounds_from_json(json)?)
+    };
+
     Ok(PlayerMovementDescriptor {
         knockback,
         capsule,
@@ -240,6 +249,7 @@ pub fn movement_descriptor_from_lua(
         crouch,
         slide,
         view_feel,
+        sounds,
     })
 }
 

@@ -200,6 +200,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
@@ -261,6 +262,7 @@ mod tests {
 
     fn refreshed_ammo_descriptor(reload_style: ReloadStyle) -> WeaponDescriptor {
         WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,

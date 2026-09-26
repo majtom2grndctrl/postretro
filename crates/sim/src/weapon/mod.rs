@@ -43,6 +43,7 @@ pub mod test_fixtures {
 
     pub fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 25.0,
             pellet_count: 1,
@@ -1343,6 +1344,7 @@ pub(crate) mod tests {
 
     pub(crate) fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 25.0,
             pellet_count: 1,
@@ -1391,6 +1393,7 @@ pub(crate) mod tests {
 
     fn weapon_descriptor(fire_mode: FireMode, cooldown_ms: f32) -> WeaponDescriptor {
         WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 25.0,
             pellet_count: 1,

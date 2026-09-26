@@ -1671,6 +1671,7 @@ mod tests {
                     (
                         "idle".to_string(),
                         BehaviorActivityDescriptor {
+                            sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
                             action: None,
@@ -1681,6 +1682,7 @@ mod tests {
                     (
                         "alert".to_string(),
                         BehaviorActivityDescriptor {
+                            sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
                             action: None,
@@ -1821,6 +1823,7 @@ mod tests {
 
     pub(super) fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,
@@ -1856,6 +1859,7 @@ mod tests {
         reload_ms: u32,
     ) -> (WeaponComponent, AmmoReserve) {
         let descriptor = WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,
@@ -1945,6 +1949,7 @@ mod tests {
 
     pub(super) fn trigger_movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,

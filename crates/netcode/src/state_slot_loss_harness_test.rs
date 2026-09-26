@@ -152,6 +152,7 @@ fn spawn_owned_health(
 fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (EntityId, EntityId) {
     let weapon = |ammo_type: &str| {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,

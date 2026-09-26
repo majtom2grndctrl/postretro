@@ -1619,6 +1619,7 @@ mod tests {
 
     fn mark_as_local_player(ctx: &ScriptCtx, target: EntityId) {
         let movement = PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,

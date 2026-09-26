@@ -230,6 +230,10 @@ pub struct PlayerMovementComponent {
     /// view feel disabled. A render-only camera effect consumed by the
     /// render-rate evaluator in `view_feel.rs`, called from `main.rs`; movement logic never reads it.
     pub view_feel: Option<ViewFeelParams>,
+    /// Optional landing and jumping sound keys, materialized from the
+    /// descriptor's `sounds`. Presentation only; movement logic never reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<crate::data_descriptors::MovementSounds>,
     /// Configured STANDING capsule half-height — the reference value the
     /// stand-up resize/probe grow back to. Seeded from `desc.capsule.half_height`
     /// at materialization and never mutated. Distinct from the live
@@ -375,6 +379,7 @@ impl PlayerMovementComponent {
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.
             view_feel: desc.view_feel.clone(),
+            sounds: desc.sounds.clone(),
             // Standing reference dimensions: captured from the descriptor's
             // configured capsule before any crouch shrink mutates the live
             // `capsule`. The stand-up resize/probe grow back to these.
@@ -489,6 +494,7 @@ mod tests {
     /// base (no dash, no crouch, no view feel, forgiveness windows zeroed).
     fn minimal_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,

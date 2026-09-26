@@ -19,5 +19,6 @@ mod movement_dash;
 mod movement_slide;
 mod movement_view_feel;
 mod reactions;
+mod sounds;
 mod ui_bridge;
 mod ui_bridge_drains;

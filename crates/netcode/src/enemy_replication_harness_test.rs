@@ -154,6 +154,7 @@ fn brain() -> BrainComponent {
             activities: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 BehaviorActivityDescriptor {
+                    sound: None,
                     animation: Some("idle".to_string()),
                     motion: Some(MotionVerb::Hold),
                     action: None,
@@ -337,6 +338,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
                         action: None,
@@ -347,6 +349,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "attack".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack("attack".to_string())),
@@ -377,6 +380,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
         attacks: std::collections::BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -1103,6 +1107,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
         .set_component(
             player,
             PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+                sounds: None,
                 knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.4,

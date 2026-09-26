@@ -47,6 +47,7 @@ pub use super::conv;
 
 mod audio_profile;
 mod error;
+mod movement_sounds;
 mod runtime_manifest;
 mod validate;
 mod vm_adapters;
@@ -76,6 +77,7 @@ mod lua {
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use audio_profile::*;
 pub use error::*;
+pub(crate) use movement_sounds::*;
 pub use runtime_manifest::*;
 pub use validate::*;
 pub use vm_adapters::*;

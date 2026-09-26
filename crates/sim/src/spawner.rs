@@ -434,6 +434,7 @@ mod tests {
 
     fn player_movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -540,6 +541,7 @@ mod tests {
         behavior.attacks.insert(
             "slam".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(12.0),
                 max_range: Some(2.0),
@@ -557,6 +559,7 @@ mod tests {
         behavior.envelope.activities.insert(
             "slam".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
                 action: Some(ActionVerb::Attack("slam".to_string())),

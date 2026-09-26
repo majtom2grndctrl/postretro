@@ -198,6 +198,12 @@ impl<B: kira::backend::Backend> Audio<B> {
         self.registry.clear();
     }
 
+    /// Whether the level's sound registry holds `key`. Install-time key checks
+    /// read this; `play` still drops an unknown key on its own.
+    pub fn has_sound(&self, key: &str) -> bool {
+        self.registry.contains(key)
+    }
+
     /// The per-level sound registry. Read-only so callers resolve
     /// `SoundRequest::sound` keys to loaded entries.
     #[allow(dead_code)]

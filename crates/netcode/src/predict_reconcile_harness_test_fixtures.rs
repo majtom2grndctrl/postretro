@@ -132,6 +132,7 @@ pub(crate) fn downhill_facet_normal(slope: f32) -> Vec3 {
 /// Control-channel `TuningPayload` delivery; snapshots carry the mutable tick state.
 pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        sounds: None,
         knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,

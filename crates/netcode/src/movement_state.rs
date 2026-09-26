@@ -180,6 +180,7 @@ mod tests {
     /// hiding an accidental overwrite).
     fn rich_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,

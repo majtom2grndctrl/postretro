@@ -172,6 +172,7 @@ fn remote_fire(pawn: EntityId, weapon: EntityId, shot_id: ShotId) -> RemotePawnC
 
 fn movement() -> PlayerMovementComponent {
     PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+        sounds: None,
         knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
@@ -241,6 +242,7 @@ fn target(registry: &mut EntityRegistry, position: Vec3, half_extents: Vec3) -> 
 
 fn projectile_weapon(source: &str) -> WeaponComponent {
     WeaponComponent::from_descriptor(&WeaponDescriptor {
+        sounds: None,
         knockback: None,
         damage: 10.0,
         pellet_count: 1,
@@ -309,6 +311,7 @@ fn descriptor(name: &str, placement: WeaponPlacementDescriptor) -> EntityTypeDes
 
 fn projectile_descriptor() -> WeaponDescriptor {
     WeaponDescriptor {
+        sounds: None,
         knockback: None,
         damage: 10.0,
         pellet_count: 1,
@@ -727,6 +730,7 @@ fn retaliation_graph() -> BehaviorGraphDescriptor {
             activities: BTreeMap::from([(
                 "engaged".into(),
                 BehaviorActivityDescriptor {
+                    sound: None,
                     animation: None,
                     motion: Some(MotionVerb::ChaseTarget),
                     action: None,

@@ -14,8 +14,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::{ActionVerb, AttackParams, MotionVerb, PatrolDescriptor};
 use crate::brain::bind_brain_guard;
 use crate::candidate::bind_candidate_filter;
-use crate::data_descriptors::DescriptorError;
 use crate::data_descriptors::types::behavior_lints;
+use crate::data_descriptors::{DescriptorError, validate_sound_key};
 use crate::ir::{IrNode, IrType};
 
 /// Maximum number of nested behavior envelopes, including the root envelope.
@@ -53,6 +53,10 @@ pub struct BehaviorActivityDescriptor {
     pub action: Option<ActionVerb>,
     #[serde(default)]
     pub on_enter: Option<String>,
+    /// Presentation-only sound key played at the enemy when this leaf is
+    /// entered, whether or not it authors `on_enter`.
+    #[serde(default)]
+    pub sound: Option<String>,
     #[serde(default)]
     pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
 }
@@ -431,6 +435,9 @@ fn validate_activity(
     attacks: &BTreeMap<String, AttackParams>,
     patrol: Option<&PatrolDescriptor>,
 ) -> Result<ActivePathVerbs, DescriptorError> {
+    if let Some(sound) = activity.sound.as_deref() {
+        validate_sound_key(&format!("{path}.sound"), sound)?;
+    }
     if !activity.layers.is_empty() {
         if activity.motion.is_some() {
             return Err(DescriptorError::InvalidShape {
@@ -447,6 +454,11 @@ fn validate_activity(
         if activity.on_enter.is_some() {
             return Err(DescriptorError::InvalidShape {
                 reason: format!("`{path}.onEnter` belongs to a leaf activity"),
+            });
+        }
+        if activity.sound.is_some() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{path}.sound` belongs to a leaf activity"),
             });
         }
         if activity.animation.as_ref().is_some_and(String::is_empty) {
@@ -856,6 +868,9 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
                 standoff_distance,
             )?;
         }
+        if let Some(sound) = attack.sound.as_deref() {
+            validate_sound_key(&format!("components.behavior.attacks.{name}.sound"), sound)?;
+        }
     }
     Ok(())
 }
@@ -933,6 +948,7 @@ mod tests {
             attacks: BTreeMap::from([(
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(1.0),
                     max_range: Some(4.0),
@@ -1010,6 +1026,7 @@ mod tests {
         let attacks = BTreeMap::from([(
             "slam".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(1.0),
                 max_range: Some(4.0),
@@ -1073,6 +1090,7 @@ mod tests {
             (
                 "damage",
                 AttackParams {
+                    sound: None,
                     weapon: Some("enemy_rifle".to_string()),
                     damage: Some(8.0),
                     max_range: None,
@@ -1084,6 +1102,7 @@ mod tests {
             (
                 "maxRange",
                 AttackParams {
+                    sound: None,
                     weapon: Some("enemy_rifle".to_string()),
                     damage: None,
                     max_range: Some(12.0),
@@ -1095,6 +1114,7 @@ mod tests {
             (
                 "cooldownMs",
                 AttackParams {
+                    sound: None,
                     weapon: Some("enemy_rifle".to_string()),
                     damage: None,
                     max_range: None,

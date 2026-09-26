@@ -463,6 +463,7 @@ mod tests {
 
     fn weapon_attack(weapon: &str) -> AttackParams {
         AttackParams {
+            sound: None,
             weapon: Some(weapon.to_string()),
             damage: None,
             max_range: None,
@@ -480,6 +481,7 @@ mod tests {
                 activities: BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: None,
                         motion: None,
                         action: None,
@@ -535,6 +537,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage,
                 pellet_count: 1,

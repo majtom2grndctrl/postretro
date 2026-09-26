@@ -74,6 +74,10 @@ pub struct AttackParams {
     pub engagement_radius: Option<f32>,
     #[serde(default)]
     pub standoff_distance: Option<f32>,
+    /// Presentation-only sound key played at the enemy when this attack fires.
+    /// A weapon attack plays it as well as the weapon's own sounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<String>,
 }
 
 /// How an authored patrol route moves when it reaches an endpoint.

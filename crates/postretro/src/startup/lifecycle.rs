@@ -1105,12 +1105,11 @@ impl App {
         // async `SystemReactionCommand` drained a frame later, after install
         // completes, so no reaction observes unloaded sounds.
         let content_root = self.content_root.clone();
-        if let Some(audio) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.audio.as_mut())
-        {
-            audio.load_level_sounds(&content_root);
+        if let Some(session) = self.session.as_mut() {
+            if let Some(audio) = session.audio.as_mut() {
+                audio.load_level_sounds(&content_root);
+            }
+            session.refresh_descriptor_sounds();
         }
         self.level_timings.record("audio_load");
 
@@ -1684,6 +1683,7 @@ mod tests {
                     command_diagnostics: Default::default(),
                     auto_close_timers: Default::default(),
                     mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
+                    descriptor_sounds: Default::default(),
                     spawn_context: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),

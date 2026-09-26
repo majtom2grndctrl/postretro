@@ -616,6 +616,7 @@ mod tests {
 
     fn descriptor(damage: f32, range: f32, cooldown_ms: f32) -> WeaponDescriptor {
         WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage,
             pellet_count: 1,

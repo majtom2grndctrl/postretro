@@ -873,6 +873,7 @@ mod tests {
                     (
                         "rest".to_string(),
                         BehaviorActivityDescriptor {
+                            sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
                             action: None,
@@ -883,6 +884,7 @@ mod tests {
                     (
                         "charge".to_string(),
                         BehaviorActivityDescriptor {
+                            sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
                             action: None,
@@ -913,6 +915,7 @@ mod tests {
             attacks: std::collections::BTreeMap::from([(
                 "claw".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(5.0),
                     max_range: Some(2.0),

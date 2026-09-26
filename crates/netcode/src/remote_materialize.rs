@@ -157,14 +157,16 @@ pub(super) fn materialize_armed_local_pawn(
         .has_component_kind(armed.entity_id, postretro_entities::ComponentKind::Mesh)
         .unwrap_or(false);
     if let Some(host_movement) = host_movement {
-        // View feel is deliberately local presentation. The host payload carries
-        // it as null, so recover only this one field from the local descriptor.
+        // View feel and movement sounds are deliberately local presentation.
+        // The host payload carries them as null, so recover only these fields
+        // from the local descriptor.
         let mut movement = host_movement.clone();
-        movement.view_feel = descriptors
+        let local = descriptors
             .iter()
             .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
-            .and_then(|descriptor| descriptor.movement.as_ref())
-            .and_then(|descriptor| descriptor.view_feel.clone());
+            .and_then(|descriptor| descriptor.movement.as_ref());
+        movement.view_feel = local.and_then(|descriptor| descriptor.view_feel.clone());
+        movement.sounds = local.and_then(|descriptor| descriptor.sounds.clone());
         crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component_from_tuning(
             &movement,
             registry,
@@ -366,6 +368,7 @@ mod tests {
         let mut descriptor = enemy_mesh_descriptor(classname);
         descriptor.mesh.as_mut().unwrap().shadow_only = true;
         descriptor.movement = Some(PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -409,6 +412,7 @@ mod tests {
         let mut descriptor = enemy_mesh_descriptor(classname);
         descriptor.mesh = None;
         descriptor.weapon = Some(WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 1.0,
             pellet_count: 1,
@@ -442,6 +446,7 @@ mod tests {
         let mut descriptor = enemy_mesh_descriptor(classname);
         descriptor.mesh = None;
         descriptor.weapon = Some(WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 1.0,
             pellet_count: 1,

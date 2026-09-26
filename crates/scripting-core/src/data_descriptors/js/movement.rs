@@ -227,6 +227,19 @@ pub fn movement_descriptor_from_js<'js>(
     };
     knockback.validate("movement.knockback")?;
 
+    // `sounds` is optional presentation data: landing and jumping keys.
+    let sounds = if obj.contains_key("sounds").map_err(js_err)? {
+        let raw: JsValue = obj.get("sounds").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+            Some(movement_sounds_from_json(json)?)
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         knockback,
         capsule,
@@ -240,6 +253,7 @@ pub fn movement_descriptor_from_js<'js>(
         crouch,
         slide,
         view_feel,
+        sounds,
     })
 }
 

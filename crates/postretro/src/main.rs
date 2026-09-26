@@ -192,6 +192,30 @@ impl PendingWeaponScriptEvent {
         }
     }
 
+    /// The descriptor sound this event plays: its weapon's key for the cue,
+    /// at the shooter (or the contact nearest the listener, for an impact).
+    fn descriptor_sound(
+        &self,
+        table: &sound_events::DescriptorSoundTable,
+        scene: &mut sound_events::AnchorScene<'_>,
+    ) -> Option<postretro_audio::SoundRequest> {
+        match self {
+            Self::Weapon(emission) => sound_events::weapon_emission_sound(table, emission, scene),
+            Self::Reload(delivery) => {
+                let weapon =
+                    postretro_sim::emission::descriptor_name(scene.registry, delivery.weapon());
+                let emitter = self.emitter(scene.registry);
+                sound_events::weapon_sound(
+                    table,
+                    delivery.outcome.event_name(),
+                    weapon.as_deref(),
+                    &emitter,
+                    scene,
+                )
+            }
+        }
+    }
+
     /// Where the event happened: the weapon emission's own emitter, or the
     /// reloading pawn.
     fn emitter(
@@ -3306,24 +3330,43 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let pending_mover_edges = {
+                // Descriptor sounds for this frame's events, placed at fire time.
+                // They play alongside any reaction addressed to the same event.
+                let (pending_mover_edges, descriptor_sounds) = {
                     let registry = script_ctx.registry.borrow();
                     let mut scene = sound_events::AnchorScene {
                         registry: &registry,
                         world: self.level.as_ref(),
                         movers: &mut self.kinematic_mover_render,
                     };
-                    sound_events::resolve_mover_edges(&pending_mover_events, &mut scene)
+                    let edges =
+                        sound_events::resolve_mover_edges(&pending_mover_events, &mut scene);
+                    let mut requests: Vec<postretro_audio::SoundRequest> = edges
+                        .iter()
+                        .filter_map(sound_events::MoverEdge::sound_request)
+                        .collect();
+                    if let Some(session) = self.session.as_ref() {
+                        let table = &session.scripting.descriptor_sounds;
+                        requests.extend(pending_movement_events.iter().filter_map(|emission| {
+                            sound_events::movement_sound(emission, &mut scene)
+                        }));
+                        for emission in &pending_ai_events {
+                            requests.extend(sound_events::ai_sounds(table, emission, &mut scene));
+                        }
+                        requests.extend(
+                            pending_weapon_script_events
+                                .iter()
+                                .filter_map(|event| event.descriptor_sound(table, &mut scene)),
+                        );
+                    }
+                    (edges, requests)
                 };
                 if let Some(audio) = self
                     .session
                     .as_mut()
                     .and_then(|session| session.audio.as_mut())
                 {
-                    for request in pending_mover_edges
-                        .iter()
-                        .filter_map(sound_events::MoverEdge::sound_request)
-                    {
+                    for request in descriptor_sounds {
                         audio.play(request);
                     }
                 }
@@ -9841,6 +9884,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(postretro_foundation::WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 1.0,
                 pellet_count: 1,
@@ -10853,6 +10897,7 @@ mod tests {
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -11484,6 +11529,99 @@ mod tests {
                 at: Some(emitter),
             }],
             "only the emitter-bearing fire plays",
+        );
+    }
+
+    // A descriptor sound and a reaction addressed to the same event both play;
+    // neither suppresses the other.
+    #[test]
+    fn descriptor_sound_and_reaction_both_play_for_one_event() {
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let weapon: postretro_foundation::WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 5.0, "range": 50.0, "fireRateMs": 100.0, "fireMode": "semi", "resolution": "hitscan",
+            "sounds": { "fire": "sfx/pistol_fire" }
+        }))
+        .expect("weapon parses");
+        let table = sound_events::DescriptorSoundTable::build(&[
+            postretro_entities::EntityTypeDescriptor {
+                faction: None,
+                tolerance: None,
+                canonical_name: Some("pistol".to_string()),
+                inventory: None,
+                light: None,
+                emitter: None,
+                movement: None,
+                weapon: Some(weapon),
+                touchable: None,
+                mesh: None,
+                health: None,
+                behavior: None,
+            },
+        ]);
+        let emission = postretro_sim::emission::WeaponEmission {
+            address: "activate",
+            emitter: postretro_sim::emission::entity_emitter(&script_ctx.registry.borrow(), pawn),
+            weapon: Some("pistol".to_string()),
+        };
+
+        let descriptor_sound = {
+            let registry = script_ctx.registry.borrow();
+            let mut movers = runtime_movers::KinematicMoverRenderCollector::new();
+            let mut scene = sound_events::AnchorScene {
+                registry: &registry,
+                world: None,
+                movers: &mut movers,
+            };
+            sound_events::weapon_emission_sound(&table, &emission, &mut scene)
+        };
+        assert_eq!(
+            descriptor_sound.map(|request| request.sound).as_deref(),
+            Some("sfx/pistol_fire"),
+        );
+
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "activate".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "sfx/brass" }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        drain_named_events_with_sequences(
+            [(emission.address, Some(emission.emitter.clone()))],
+            &data_registry,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "sfx/brass".to_string(),
+                bus: None,
+                at: None,
+            }],
+            "the reaction plays as well",
         );
     }
 

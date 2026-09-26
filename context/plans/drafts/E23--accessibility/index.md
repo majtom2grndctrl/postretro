@@ -133,6 +133,7 @@ Meet the Game Accessibility Guidelines basic tier and the common FPS accessibili
 **Contents.**
 - `restoreOnReturn` on by default; engine-default hold-to-repeat; slider hold-repeat with acceleration.
 - LB/RB tab/page intent and a tabbed pattern; scroll container with scroll-into-view.
+- Nested focus groups reachable by navigation: a focus-policy container inside another group is today reachable only by pointer, `focusNeighbors`, or `initialFocus`, and focus cannot leave it by policy. The tabbed pattern (tab strip group above a panel group) is the first consumer and pins the enter/exit rule.
 - Device-family button-prompt glyphs following input mode; confirm/cancel layout swap option; on-screen-keyboard shortcuts.
 - Confirmation dialogs for destructive actions, default focus on the safe choice.
 - Full remapping — keyboard/mouse and gamepad, UI nav actions included — with conflict detection, reset, a guard keeping confirm and cancel reachable, and a raw-capture input path.

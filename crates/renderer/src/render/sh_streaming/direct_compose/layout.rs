@@ -163,6 +163,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 2, 1, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28]
         );
+        let storage_count = |entries: &[wgpu::BindGroupLayoutEntry]| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.ty,
+                        wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { .. },
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(storage_count(&promotion), 6);
+        assert_eq!(storage_count(&animated), 8);
+        assert!(
+            DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64
+                <= wgpu::Limits::default().max_uniform_buffer_binding_size
+        );
     }
 
     #[test]

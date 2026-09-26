@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::render::sh_compose_dispatch::build_dynamic_compose_grid_upload_for_rows;
+
 impl StreamingIndirectCompose {
     /// Dense growth changes only the sampled/storage atlas views and the
     /// compact atlas geometry. The renderer-owned CSR backing remains live
@@ -178,13 +180,13 @@ impl StreamingIndirectCompose {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        dirty_ranges: &[(u32, u32)],
+        rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
     ) -> Result<(), ShResidencyDrainError> {
-        let upload = build_dynamic_compose_grid_upload_for_ranges(
+        let upload = build_dynamic_compose_grid_upload_for_rows(
             self.grid,
             STREAMED_SH_PHYSICAL_TILE_STRIDE,
-            dirty_ranges,
+            rows,
             self.max_workgroups_x,
             self.dynamic_alignment,
             self.max_buffer_size,
@@ -192,6 +194,9 @@ impl StreamingIndirectCompose {
         .ok_or(ShResidencyDrainError::GpuCapacity {
             reason: "streamed dirty compose range exceeds adapter limits",
         })?;
+        if upload.dispatches.is_empty() {
+            return Ok(());
+        }
         if u64::try_from(upload.bytes.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?
             > self.grid_capacity
         {

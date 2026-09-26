@@ -25,7 +25,7 @@ use crate::render::direct_sh_compose::{
     DirectShDebugOverride, nearest_sampler,
 };
 use crate::render::renderer_types::PromotedBakedLightState;
-use crate::render::sh_compose_dispatch::build_dynamic_compose_grid_upload_for_ranges;
+use crate::render::sh_compose_dispatch::build_dynamic_compose_grid_upload_for_rows;
 use crate::render::sh_indirection::WGSL_DECODE_HELPER;
 use crate::render::sh_streaming::gpu::AtlasShape;
 use crate::render::sh_volume::ShVolumeResources;
@@ -266,7 +266,7 @@ impl StreamingPromotionPass {
         encoder: &mut wgpu::CommandEncoder,
         light_term_mask: LightTermMask,
         debug_override: DirectShDebugOverride,
-        dirty_ranges: &[(u32, u32)],
+        rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) -> Result<(), ShResidencyDrainError> {
         if light_term_mask != self.last_light_term_mask {
@@ -295,7 +295,7 @@ impl StreamingPromotionPass {
             self.max_workgroups_x,
             self.dynamic_alignment,
             self.max_buffer_size,
-            dirty_ranges,
+            rows,
             timestamp_writes,
         )
     }
@@ -515,13 +515,13 @@ fn dispatch_dynamic_pass(
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
-    dirty_ranges: &[(u32, u32)],
+    rows: &[u32],
     timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
 ) -> Result<(), ShResidencyDrainError> {
-    let upload = build_dynamic_compose_grid_upload_for_ranges(
+    let upload = build_dynamic_compose_grid_upload_for_rows(
         grid,
         STREAMED_SH_PHYSICAL_TILE_STRIDE,
-        dirty_ranges,
+        rows,
         max_workgroups_x,
         dynamic_alignment,
         max_buffer_size,
@@ -529,6 +529,9 @@ fn dispatch_dynamic_pass(
     .ok_or(ShResidencyDrainError::GpuCapacity {
         reason: "streamed direct dirty compose range exceeds adapter limits",
     })?;
+    if upload.dispatches.is_empty() {
+        return Ok(());
+    }
     if u64::try_from(upload.bytes.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?
         > grid_capacity
     {

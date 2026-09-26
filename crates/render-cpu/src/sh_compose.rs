@@ -14,9 +14,14 @@ use postretro_level_format::sh_reconstruct::{
 /// Stable prefix shared by legacy and dynamically-offset SH compose records.
 /// The fields through the compact-atlas geometry retain their existing offsets.
 pub const COMPOSE_GRID_DIMS_PREFIX_SIZE: usize = 64;
-/// Full dynamically-offset `GridDims` record. The 16-byte tail carries the
-/// physical tile stride and flattened affinity-row dispatch range.
-pub const DYNAMIC_COMPOSE_GRID_DIMS_SIZE: usize = 80;
+/// Fixed header of a dynamically-offset gather record. The tail after this
+/// header carries packed affinity-row ids.
+pub const DYNAMIC_COMPOSE_GRID_HEADER_SIZE: usize = 80;
+/// Binding 18 uses the renderer's requested WebGPU uniform-binding floor.
+pub const DYNAMIC_COMPOSE_GRID_DIMS_SIZE: usize = 65_536;
+/// Four row ids fit in each std140-compatible `vec4<u32>` after the header.
+pub const DYNAMIC_COMPOSE_ROW_CAPACITY: usize =
+    (DYNAMIC_COMPOSE_GRID_DIMS_SIZE - DYNAMIC_COMPOSE_GRID_HEADER_SIZE) / 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeGridParams {
@@ -41,10 +46,6 @@ pub struct ComposeGridParams {
 pub struct DynamicComposeGridParams {
     pub grid: ComposeGridParams,
     pub physical_tile_stride: u32,
-    /// Flattened x-fastest affinity-cell row at which this dispatch begins.
-    pub range_start: u32,
-    /// Number of flattened affinity-cell rows in this dispatch.
-    pub range_count: u32,
 }
 
 /// Development-only description of the storage buffers bound by an SH compose
@@ -671,17 +672,24 @@ pub fn build_compose_grid_bytes(params: ComposeGridParams) -> [u8; COMPOSE_GRID_
     bytes
 }
 
-/// Build one 80-byte `GridDims` record for a dynamically-offset compose
-/// binding. Its first 64 bytes are exactly `build_compose_grid_bytes`.
+/// Build one binding-18 gather record. Its first 64 bytes are exactly
+/// `build_compose_grid_bytes`; row ids begin at byte 80.
 pub fn build_dynamic_compose_grid_bytes(
     params: DynamicComposeGridParams,
-) -> [u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE] {
-    let mut bytes = [0u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE];
+    rows: &[u32],
+) -> Option<Vec<u8>> {
+    if rows.len() > DYNAMIC_COMPOSE_ROW_CAPACITY {
+        return None;
+    }
+    let mut bytes = vec![0u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE];
     bytes[..COMPOSE_GRID_DIMS_PREFIX_SIZE].copy_from_slice(&build_compose_grid_bytes(params.grid));
     bytes[64..68].copy_from_slice(&params.physical_tile_stride.to_ne_bytes());
-    bytes[68..72].copy_from_slice(&params.range_start.to_ne_bytes());
-    bytes[72..76].copy_from_slice(&params.range_count.to_ne_bytes());
-    bytes
+    bytes[72..76].copy_from_slice(&u32::try_from(rows.len()).ok()?.to_ne_bytes());
+    for (index, row) in rows.iter().enumerate() {
+        let offset = DYNAMIC_COMPOSE_GRID_HEADER_SIZE + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&row.to_ne_bytes());
+    }
+    Some(bytes)
 }
 
 pub fn u16_slice_to_bytes(data: &[u16]) -> Vec<u8> {
@@ -1642,7 +1650,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_compose_grid_record_appends_stride_and_dirty_range() {
+    fn dynamic_compose_grid_record_appends_stride_and_gather_rows() {
         let grid = ComposeGridParams {
             grid_dimensions: [2, 3, 4],
             atlas_dimensions: [120, 60],
@@ -1656,12 +1664,14 @@ mod tests {
             compact_atlas_tiles_per_layer: 400,
         };
         let legacy = build_compose_grid_bytes(grid);
-        let bytes = build_dynamic_compose_grid_bytes(DynamicComposeGridParams {
-            grid,
-            physical_tile_stride: 8,
-            range_start: 17,
-            range_count: 3,
-        });
+        let bytes = build_dynamic_compose_grid_bytes(
+            DynamicComposeGridParams {
+                grid,
+                physical_tile_stride: 8,
+            },
+            &[17, 4, 91],
+        )
+        .unwrap();
         let word = |offset: usize| {
             u32::from_ne_bytes([
                 bytes[offset],
@@ -1674,8 +1684,11 @@ mod tests {
         assert_eq!(bytes.len(), DYNAMIC_COMPOSE_GRID_DIMS_SIZE);
         assert_eq!(&bytes[..COMPOSE_GRID_DIMS_PREFIX_SIZE], &legacy);
         assert_eq!(word(64), 8);
-        assert_eq!(word(68), 17);
+        assert_eq!(word(68), 0);
         assert_eq!(word(72), 3);
         assert_eq!(word(76), 0);
+        assert_eq!(word(DYNAMIC_COMPOSE_GRID_HEADER_SIZE), 17);
+        assert_eq!(word(DYNAMIC_COMPOSE_GRID_HEADER_SIZE + 4), 4);
+        assert_eq!(word(DYNAMIC_COMPOSE_GRID_HEADER_SIZE + 8), 91);
     }
 }

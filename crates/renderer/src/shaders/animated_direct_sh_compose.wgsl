@@ -37,9 +37,10 @@ struct GridDims {
     compact_atlas_tiles_per_row: u32,
     compact_atlas_tiles_per_layer: u32,
     physical_tile_stride: u32,
-    range_start: u32,
-    range_count: u32,
+    _reserved0: u32,
+    row_count: u32,
     _pad0: u32,
+    row_ids: array<vec4<u32>, 4091>,
 };
 
 // Binding 26 stays a uniform because Pass B already uses all eight supported
@@ -365,10 +366,11 @@ fn animated_compose_main(
 ) {
     // One workgroup owns one 4×4×4 affinity brick. Only stored-slot owners
     // write; the remaining invocations still participate in shared barriers.
-    if (workgroup.x >= grid.range_count) {
+    if (workgroup.x >= grid.row_count) {
         return;
     }
-    let cell_index = grid.range_start + workgroup.x;
+    let packed_rows = grid.row_ids[workgroup.x / 4u];
+    let cell_index = packed_rows[workgroup.x % 4u];
     let affinity_row_width = max(grid.affinity_dims.x, 1u);
     let affinity_layer_size = affinity_row_width * max(grid.affinity_dims.y, 1u);
     let brick = vec3<u32>(

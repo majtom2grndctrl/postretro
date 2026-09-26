@@ -324,16 +324,11 @@ impl StreamingGpuPools {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        dirty_ranges: &[(u32, u32)],
+        rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
     ) -> Result<(), ShResidencyDrainError> {
-        self.indirect_compose.dispatch(
-            queue,
-            encoder,
-            uniform_bind_group,
-            dirty_ranges,
-            timestamp_writes,
-        )
+        self.indirect_compose
+            .dispatch(queue, encoder, uniform_bind_group, rows, timestamp_writes)
     }
 
     pub(in crate::render::sh_streaming) fn indirect_has_active_animation(
@@ -377,8 +372,8 @@ impl StreamingGpuPools {
         promotion_override: DirectShDebugOverride,
         animated_override: AnimatedDirectShDebugOverride,
         promoted_animated_states: &[PromotedBakedLightState],
-        promotion_ranges: &[(u32, u32)],
-        animated_ranges: &[(u32, u32)],
+        promotion_rows: &[u32],
+        animated_rows: &[u32],
         force_full_resident: bool,
         promotion_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
         animated_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
@@ -394,9 +389,9 @@ impl StreamingGpuPools {
                 uniform_bind_group,
                 StreamingDirectComposeFrameInputs {
                     light_term_mask,
-                    dirty: StreamingDirectDirtyRanges {
-                        promotion: promotion_ranges,
-                        animated: animated_ranges,
+                    dirty: StreamingDirectDirtyRows {
+                        promotion: promotion_rows,
+                        animated: animated_rows,
                         force_full_resident,
                     },
                     promotion_override,

@@ -1372,6 +1372,8 @@ mod tests {
             direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
+        // Atlas sizing reads the header install keeps after it takes the blobs.
+        let (section, _payloads) = section.into_parts();
         assert_eq!(
             usable_atlas_dimensions(Some(&section), 8192, 256),
             Some((4096, 2048)),

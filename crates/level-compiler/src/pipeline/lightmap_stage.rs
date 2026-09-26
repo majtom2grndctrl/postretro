@@ -22,6 +22,7 @@ pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
+    pub shadowmask_overlap: shadowmask_bake::ShadowmaskOverlapReport,
 }
 
 pub(super) fn prepare(
@@ -63,7 +64,9 @@ pub(crate) fn bake_fused_prepared(
     };
     // P1: the shadowmask whole-section memo and channel assignment are both
     // resolved before the lightmap memo can choose to skip the walk.
+    let level_label = args.input.display().to_string();
     let mut shadowmask = shadowmask_bake::prepare_fused_shadowmask(
+        &level_label,
         shadow_selection,
         alpha_lights,
         &shared,
@@ -73,10 +76,14 @@ pub(crate) fn bake_fused_prepared(
         args.soft_shadow_samples,
         stage_cache,
         shadowmask_control,
-    );
+    )?;
 
     if static_lights.is_empty() || prepared.placements.is_empty() {
-        let (shadowmask, shadowmask_elapsed) = shadowmask.finish();
+        let shadowmask_bake::FusedShadowmaskOutput {
+            section: shadowmask,
+            elapsed: shadowmask_elapsed,
+            overlap: shadowmask_overlap,
+        } = shadowmask.finish();
         return Ok(FusedLightingOutput {
             lightmap: LightmapBakeOutput {
                 section: postretro_level_format::lightmap::LightmapSection::placeholder(),
@@ -88,6 +95,7 @@ pub(crate) fn bake_fused_prepared(
             },
             shadowmask,
             shadowmask_elapsed,
+            shadowmask_overlap,
         });
     }
 
@@ -282,7 +290,11 @@ pub(crate) fn bake_fused_prepared(
             cache.put(key, &section.to_bytes());
         }
     }
-    let (shadowmask, shadowmask_elapsed) = shadowmask.finish();
+    let shadowmask_bake::FusedShadowmaskOutput {
+        section: shadowmask,
+        elapsed: shadowmask_elapsed,
+        overlap: shadowmask_overlap,
+    } = shadowmask.finish();
     Ok(FusedLightingOutput {
         lightmap: LightmapBakeOutput {
             section,
@@ -294,6 +306,7 @@ pub(crate) fn bake_fused_prepared(
         },
         shadowmask,
         shadowmask_elapsed,
+        shadowmask_overlap,
     })
 }
 
@@ -713,8 +726,14 @@ mod tests {
             shadowmask.channels[0], shadowmask.channels[1],
             "overlapping selected lights must occupy distinct channels"
         );
+        let masks = shadowmask_bake::decode_side_by_side(
+            &shadowmask.data,
+            shadowmask.width,
+            shadowmask.height,
+            shadowmask.layer_count,
+        );
         let layer_plane_bytes = shadowmask.width as usize * shadowmask.height as usize * 4;
-        let layer_one = &shadowmask.data[layer_plane_bytes..];
+        let layer_one = &masks[layer_plane_bytes..];
         assert!(
             layer_one.chunks_exact(4).any(|texel| {
                 texel[shadowmask.channels[0] as usize] != 0

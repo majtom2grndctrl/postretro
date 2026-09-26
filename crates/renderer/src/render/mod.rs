@@ -46,6 +46,8 @@ mod ui;
 mod curve_eval_test;
 #[cfg(test)]
 mod sdf_light_select_test;
+#[cfg(test)]
+mod shadowmask_sample_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
 mod material_plan;

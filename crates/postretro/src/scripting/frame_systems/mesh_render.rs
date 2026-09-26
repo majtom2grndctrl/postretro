@@ -650,6 +650,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),

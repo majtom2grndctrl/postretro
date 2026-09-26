@@ -86,6 +86,9 @@ impl PreparedCapture {
                 &world.light_influences,
                 world.entity_shadow_lights(),
             );
+        // Capture installs the way the game does: the payloads move into the
+        // upload and the world keeps headers only.
+        let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
         let geometry = capture_level_geometry(
             &world,
             &texture_materials,
@@ -93,7 +96,7 @@ impl PreparedCapture {
             &static_light_influences,
             &static_entity_shadow_lights,
         );
-        renderer.install_level_geometry(&geometry);
+        renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
         let forced_active_writes = install_forced_active_animation_descriptors(
             &mut renderer,
             &world.lights,

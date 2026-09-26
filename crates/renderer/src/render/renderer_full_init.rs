@@ -332,6 +332,8 @@ pub(crate) fn build_full_renderer(
         queue,
         geometry.and_then(|g| g.lightmap),
         geometry.and_then(|g| g.shadowmask_atlas),
+        // Full init never carries a level; `install_level_geometry` uploads it.
+        postretro_level_loader::GpuLightingPayloads::default(),
         &lightmap_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,

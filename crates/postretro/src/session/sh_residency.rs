@@ -335,6 +335,10 @@ impl ShStreamingSession {
             pool_growth_events: live.pool_growth_events,
             pool_growth_bytes: live.pool_growth_bytes,
             pool_growth_cpu_micros: live.pool_growth_cpu_micros,
+            indirect_compose: live.indirect_compose,
+            static_direct_compose: live.static_direct_compose,
+            animated_direct_compose: live.animated_direct_compose,
+            compose_planning_cpu_micros: live.compose_planning_cpu_micros,
         })
     }
 

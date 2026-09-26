@@ -3764,6 +3764,7 @@ impl ApplicationHandler for App {
                     fog_reachable,
                     light_reachable_cell_mask,
                     reachable_cell_aabbs,
+                    visible_cell_aabbs,
                     stats,
                 } = visible_render;
                 // A streamed map retains only its validated manifest. Keep the
@@ -4117,6 +4118,7 @@ impl ApplicationHandler for App {
                                         &placement,
                                     ),
                                     weapon_seed,
+                                    &session.mesh_clip_tables,
                                 );
                             }
                         }
@@ -4426,6 +4428,12 @@ impl ApplicationHandler for App {
                         &light_reachable_cell_mask,
                         &reachable_cell_aabbs,
                         &fog_reachable,
+                        render::ShSampleRegionSets {
+                            visible_cells: &visible_cell_aabbs,
+                            fog_cells: &reachable_cell_aabbs,
+                            movers: self.kinematic_mover_render.sh_sample_regions(),
+                            meshes: session.mesh_render.sh_sample_regions(),
+                        },
                         Some(stats.camera_cell),
                         view_proj,
                         &particle_collections,
@@ -5675,6 +5683,11 @@ impl App {
             &visible_render.light_reachable_cell_mask,
             &visible_render.reachable_cell_aabbs,
             &visible_render.fog_reachable,
+            render::ShSampleRegionSets {
+                visible_cells: &visible_render.visible_cell_aabbs,
+                fog_cells: &visible_render.reachable_cell_aabbs,
+                ..Default::default()
+            },
             None,
             glam::Mat4::IDENTITY,
             &[],

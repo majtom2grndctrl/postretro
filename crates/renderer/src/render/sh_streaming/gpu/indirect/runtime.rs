@@ -182,7 +182,7 @@ impl StreamingIndirectCompose {
         uniform_bind_group: &wgpu::BindGroup,
         rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<usize, ShResidencyDrainError> {
         let upload = build_dynamic_compose_grid_upload_for_rows(
             self.grid,
             STREAMED_SH_PHYSICAL_TILE_STRIDE,
@@ -195,7 +195,7 @@ impl StreamingIndirectCompose {
             reason: "streamed dirty compose range exceeds adapter limits",
         })?;
         if upload.dispatches.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         if u64::try_from(upload.bytes.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?
             > self.grid_capacity
@@ -215,7 +215,7 @@ impl StreamingIndirectCompose {
             pass.set_bind_group(1, &self.bind_group, &[dispatch.dynamic_offset]);
             pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
         }
-        Ok(())
+        Ok(upload.dispatches.len())
     }
 
     pub(in crate::render::sh_streaming::gpu) fn clear_row_pair(

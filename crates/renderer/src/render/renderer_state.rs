@@ -316,6 +316,16 @@ impl Renderer {
         self.full_mut().animated_direct_sh_debug_override = value;
     }
 
+    /// Exactness/debug oracle: bypass sampled-row gating and compose every
+    /// resident row in all streamed passes on every recorded frame.
+    pub fn force_full_resident_sh_compose(&self) -> bool {
+        self.full().force_full_resident_sh_compose
+    }
+
+    pub fn set_force_full_resident_sh_compose(&mut self, enabled: bool) {
+        self.full_mut().force_full_resident_sh_compose = enabled;
+    }
+
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn probe_occlusion_enabled(&self) -> bool {
         self.full().probe_occlusion_enabled

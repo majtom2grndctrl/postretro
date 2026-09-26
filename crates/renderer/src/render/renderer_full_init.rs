@@ -730,6 +730,7 @@ pub(crate) fn build_full_renderer(
         direct_sh_debug_override: DirectShDebugOverride::default(),
         #[cfg(feature = "dev-tools")]
         animated_direct_sh_debug_override: AnimatedDirectShDebugOverride::default(),
+        force_full_resident_sh_compose: false,
         cube_shadow_vs_uniform_buffer,
         cube_shadow_vs_bind_group,
         shadow_vs_uniform_buffer,

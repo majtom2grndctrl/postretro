@@ -133,7 +133,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
 
         // The only readback is after all timed work. `scene_color` readback is
         // already RGBA8 sRGB; PNG publication remains the legacy atomic path.
-        let rgba = prepared.capture_frame()?;
+        let rgba = prepared.capture_measurement_output_frame()?;
         write_capture_png(output_path, &rgba, width, height)?;
         publish_staged_measurement_report(
             staged_report,

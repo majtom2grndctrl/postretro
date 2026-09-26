@@ -28,6 +28,10 @@ pub(crate) struct CaptureScene {
     /// one-frame capture cannot advance the normal ramp, so these expose known
     /// `(1 - w)` / `w` splits for same-adapter golden comparisons.
     pub(crate) force_promotion: Option<Vec<ForcedAnimatedPromotion>>,
+    /// Exactness oracle for streamed SH compose. This is capture-only and
+    /// defaults off so ordinary scenes exercise the shipped sampled-row gate.
+    #[serde(default)]
+    pub(crate) force_full_resident_sh_compose: bool,
     /// Optional repeated-frame measurement of this otherwise static capture
     /// workload. Omitting it preserves the legacy single-readback path.
     pub(crate) measurement: Option<CaptureMeasurement>,
@@ -243,6 +247,7 @@ mod tests {
             scene.measurement.is_none(),
             "an omitted measurement block must retain the legacy one-frame capture path"
         );
+        assert!(!scene.force_full_resident_sh_compose);
     }
 
     #[test]
@@ -295,6 +300,60 @@ mod tests {
                 weight: 0.5,
             }])
         );
+    }
+
+    #[test]
+    fn parse_scene_accepts_full_resident_compose_exactness_oracle() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_full_resident_sh_compose\": true",
+        );
+
+        let scene = parse_scene(&json).expect("full-resident oracle scene must parse");
+        assert!(scene.force_full_resident_sh_compose);
+    }
+
+    #[test]
+    fn sampled_row_exactness_scenes_pair_two_stepped_times_with_the_oracle() {
+        let cases = [
+            (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../measurements/sh-probe-streaming/sampled-row-gating/animroom-gated-t050.scene.json"
+                )),
+                false,
+                29,
+            ),
+            (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../measurements/sh-probe-streaming/sampled-row-gating/animroom-full-t050.scene.json"
+                )),
+                true,
+                29,
+            ),
+            (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../measurements/sh-probe-streaming/sampled-row-gating/animroom-gated-t100.scene.json"
+                )),
+                false,
+                59,
+            ),
+            (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../measurements/sh-probe-streaming/sampled-row-gating/animroom-full-t100.scene.json"
+                )),
+                true,
+                59,
+            ),
+        ];
+        for (json, forced, sample_frames) in cases {
+            let scene = parse_scene(json).expect("checked-in exactness scene must remain valid");
+            assert_eq!(scene.force_full_resident_sh_compose, forced);
+            assert_eq!(scene.measurement.unwrap().sample_frames, sample_frames);
+        }
     }
 
     #[test]
@@ -427,6 +486,7 @@ mod tests {
                 radiance: [f32::NAN, 0.0, 0.0],
             }]),
             force_promotion: None,
+            force_full_resident_sh_compose: false,
             measurement: None,
         };
         assert!(matches!(

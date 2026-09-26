@@ -374,6 +374,29 @@ struct ShStreamingLifecycleSummaryJson {
     pool_growth_events: u64,
     pool_growth_bytes: u64,
     pool_growth_cpu_micros: u64,
+    indirect_compose: ShComposePassDiagnosticsJson,
+    static_direct_compose: ShComposePassDiagnosticsJson,
+    animated_direct_compose: ShComposePassDiagnosticsJson,
+    compose_planning_cpu_micros: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ShComposePassDiagnosticsJson {
+    rows_composed: u64,
+    dispatches: u64,
+    lagged_rows_composed: u64,
+    resident_rows_still_lagging: u64,
+}
+
+impl From<postretro_renderer::ShComposePassDiagnostics> for ShComposePassDiagnosticsJson {
+    fn from(diagnostics: postretro_renderer::ShComposePassDiagnostics) -> Self {
+        Self {
+            rows_composed: diagnostics.rows_composed,
+            dispatches: diagnostics.dispatches,
+            lagged_rows_composed: diagnostics.lagged_rows_composed,
+            resident_rows_still_lagging: diagnostics.resident_rows_still_lagging,
+        }
+    }
 }
 
 impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
@@ -421,6 +444,10 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             pool_growth_events: summary.pool_growth_events,
             pool_growth_bytes: summary.pool_growth_bytes,
             pool_growth_cpu_micros: summary.pool_growth_cpu_micros,
+            indirect_compose: summary.indirect_compose.into(),
+            static_direct_compose: summary.static_direct_compose.into(),
+            animated_direct_compose: summary.animated_direct_compose.into(),
+            compose_planning_cpu_micros: summary.compose_planning_cpu_micros,
         }
     }
 }
@@ -533,6 +560,7 @@ mod tests {
             output: "capture.png".into(),
             force_active: None,
             force_promotion: None,
+            force_full_resident_sh_compose: false,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,
@@ -703,6 +731,25 @@ mod tests {
             install_cpu_max_drain_micros: 14,
             install_cpu_max_steady_drain_micros: 15,
             pool_growth_cpu_micros: 16,
+            indirect_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 17,
+                dispatches: 1,
+                lagged_rows_composed: 4,
+                resident_rows_still_lagging: 5,
+            },
+            static_direct_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 18,
+                dispatches: 2,
+                lagged_rows_composed: 6,
+                resident_rows_still_lagging: 7,
+            },
+            animated_direct_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 19,
+                dispatches: 3,
+                lagged_rows_composed: 8,
+                resident_rows_still_lagging: 9,
+            },
+            compose_planning_cpu_micros: 20,
             ..ShStreamingLifecycleSummary::default()
         });
         let json = as_json(measurement_report(
@@ -733,6 +780,17 @@ mod tests {
         assert_eq!(lifecycle["install_cpu_max_steady_drain_micros"], 15);
         assert_eq!(lifecycle["pool_growth_cpu_micros"], 16);
         assert_eq!(lifecycle["pool_growth_bytes"], 0);
+        assert_eq!(lifecycle["indirect_compose"]["rows_composed"], 17);
+        assert_eq!(lifecycle["indirect_compose"]["dispatches"], 1);
+        assert_eq!(
+            lifecycle["static_direct_compose"]["lagged_rows_composed"],
+            6
+        );
+        assert_eq!(
+            lifecycle["animated_direct_compose"]["resident_rows_still_lagging"],
+            9
+        );
+        assert_eq!(lifecycle["compose_planning_cpu_micros"], 20);
     }
 
     #[test]

@@ -13,4 +13,4 @@ remapped to `plasma_bolt_00`…`_59` in numeric order).
 
 **License: UNVERIFIED.** The uploaded pack bundled no LICENSE/readme. Confirm the
 pack's license and attribution before this asset ships (cf. the sibling
-`content/dev/textures/projectiles/LICENSE.txt` convention).
+`content/dev/textures/projectiles/license.txt` convention).

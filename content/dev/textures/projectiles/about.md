@@ -1,7 +1,5 @@
-From https://polo100.itch.io/essences-orbs ("Essence & Energy" asset pack)
-Author: Polo_100
-License: see `LICENSE.txt` — editing/use in commercial and non-commercial projects is allowed; reselling or redistributing the asset (edited or not) is not.
+Cropped from Master484's "Bullet Collection 1 (M484)" sheet (`M484BulletCollection1.png`, 520x361), CC0 — see `license.txt`. Only the crops are kept here, not the sheet.
 
-`Essences_Orbs.png` is the pack's original 64x64 spritesheet, a 4x4 grid of 16x16 icons (row 1-2: diamond-shaped essences, row 3-4: orb-shaped essences; columns: green, tan, orange, dark, then blue, purple, red, teal for rows 2 and 4).
+`plasma_blue_diamond.png` (15x15) is the cyan four-point star, sheet box (155,66)-(169,80). `plasma_blue_orb.png` (18x18) is the cyan orb, sheet box (252,325)-(269,342). Both are used as plasma projectile sprites.
 
-`plasma_blue_diamond.png` and `plasma_blue_orb.png` are the blue diamond and blue orb cells cropped out of that sheet (row 2 col 1 and row 4 col 1, respectively) for use as plasma projectile sprites.
+The sheet is drawn on opaque black; each crop keys pure black (0,0,0) to fully transparent.

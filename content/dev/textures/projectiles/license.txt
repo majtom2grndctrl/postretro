@@ -1,0 +1,10 @@
+Sprite Information:
+* title:	Bullet Collection 1 (M484)
+* source:	https://opengameart.org/content/bullet-collection-1-m484
+* author:	Master484 (https://opengameart.org/users/master484)
+
+Sprite License:
+* license type:	CC0 1.0 Universal — Public Domain Dedication
+* url:	https://creativecommons.org/publicdomain/zero/1.0/
+* requirements:	None. Public domain; free for any use, commercial or personal.
+                	Crediting "Master484" is appreciated but not required.

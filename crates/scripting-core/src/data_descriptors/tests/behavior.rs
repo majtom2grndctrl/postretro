@@ -443,7 +443,7 @@ const REFERENCE_ENTITIES_TS_SRC: &str =
 const REFERENCE_ENTITIES_LUAU_SRC: &str =
     include_str!("../../../../../sdk/behaviors/reference/entities.luau");
 
-fn shipped_reference_descriptor_from_typescript(
+pub(super) fn shipped_reference_descriptor_from_typescript(
     source: &str,
     export_name: &str,
     module_name: &str,
@@ -480,7 +480,7 @@ fn shipped_reference_descriptor_from_typescript(
     })
 }
 
-fn shipped_reference_descriptor_from_luau(
+pub(super) fn shipped_reference_descriptor_from_luau(
     source: &str,
     export_name: &str,
     module_name: &str,

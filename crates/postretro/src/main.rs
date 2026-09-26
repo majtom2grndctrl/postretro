@@ -11694,6 +11694,132 @@ mod tests {
         );
     }
 
+    // Row 27: the fixture's `door.open` (`playSound("sfx/door_open", { at:
+    // on.emitter })`, lowered as its scripting-core test pins) hands audio one
+    // request, anchored at the door's bounds center.
+    #[test]
+    fn door_open_fixture_hands_audio_one_request_at_the_bounds_center() {
+        use crate::runtime_movers::tests::{mover, single_cell_world};
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+            NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_level_loader::KinematicGeometry;
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let door = {
+            let mut registry = script_ctx.registry.borrow_mut();
+            let door = registry.spawn(Transform {
+                position: Vec3::new(10.0, 0.0, 0.0),
+                ..Transform::default()
+            });
+            let mut component = KinematicMoverComponent::new(
+                7,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::X],
+                    waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                    speed_mps: 1.0,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::PingPong,
+                    started: true,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            );
+            component.open_event = Some("door.open".to_string());
+            registry.set_component(door, component).unwrap();
+            door
+        };
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "door.open".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "sfx/door_open", "at": "@emitter" }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        let world = single_cell_world(KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        });
+        let mut movers = runtime_movers::KinematicMoverRenderCollector::new();
+
+        // The frame resolves the door edge to its address and emitter.
+        let edges = {
+            let registry = script_ctx.registry.borrow();
+            let mut scene = sound_events::AnchorScene {
+                registry: &registry,
+                world: Some(&world),
+                movers: &mut movers,
+            };
+            sound_events::resolve_mover_edges(
+                &[(kinematic_mover::MoverEventKind::Opened, 7)],
+                &mut scene,
+            )
+        };
+        let [edge] = edges.as_slice() else {
+            panic!("one door edge, got {edges:?}");
+        };
+        drain_named_events_with_sequences(
+            [(
+                edge.address.clone().unwrap(),
+                Some(postretro_entities::Emitter::Entity {
+                    id: edge.emitter,
+                    origin: edge.point.unwrap_or_default(),
+                }),
+            )],
+            &data_registry,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+        );
+        let commands = script_ctx.system_commands.take();
+        let [
+            SystemReactionCommand::PlaySound {
+                sound,
+                bus,
+                at: Some(emitter),
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("one anchored playSound, got {commands:?}");
+        };
+        assert_eq!((sound.as_str(), bus.as_deref()), ("sfx/door_open", None));
+
+        // The drain places the anchor as `dispatch_system_commands` does.
+        let registry = script_ctx.registry.borrow();
+        let mut scene = sound_events::AnchorScene {
+            registry: &registry,
+            world: Some(&world),
+            movers: &mut movers,
+        };
+        assert_eq!(
+            scene.sound_anchor(emitter),
+            postretro_audio::SoundAnchor::Entity {
+                key: u64::from(door.to_raw()),
+                point: [10.5, 0.5, 0.0],
+            },
+            "anchored at the door's world bounds center",
+        );
+    }
+
     // A descriptor sound and a reaction addressed to the same event both play;
     // neither suppresses the other.
     #[test]

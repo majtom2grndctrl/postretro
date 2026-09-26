@@ -193,3 +193,174 @@ fn attack_and_activity_sounds_parse_identically_in_both_runtimes() {
     );
     assert_eq!(js.envelope.activities["idle"].sound, None);
 }
+
+const FIXTURE_TS_SRC: &str = include_str!("../../../../../content/dev/scripts/positional-sound.ts");
+const FIXTURE_LUAU_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/positional-sound.luau");
+
+fn fixture_entity(export_name: &str) -> (EntityTypeDescriptor, EntityTypeDescriptor) {
+    (
+        super::behavior::shipped_reference_descriptor_from_typescript(
+            FIXTURE_TS_SRC,
+            export_name,
+            "content/dev/scripts/positional-sound.ts",
+        ),
+        super::behavior::shipped_reference_descriptor_from_luau(
+            FIXTURE_LUAU_SRC,
+            export_name,
+            "content/dev/scripts/positional-sound.luau",
+        ),
+    )
+}
+
+/// One export of the TypeScript fixture, bundled through `scripts-build` and
+/// lowered to JSON.
+fn fixture_ts_json(export_name: &str) -> serde_json::Value {
+    let directory = std::env::temp_dir().join(format!(
+        "postretro-positional-sound-{}-{export_name}",
+        std::process::id(),
+    ));
+    std::fs::create_dir_all(&directory).expect("create fixture directory");
+    let entry = directory.join("fixture.ts");
+    std::fs::write(
+        &entry,
+        format!("{FIXTURE_TS_SRC}\nglobalThis.__fixtureExport = {export_name};"),
+    )
+    .expect("write fixture");
+    let entry = std::fs::canonicalize(&entry).expect("canonicalize fixture");
+    let bundled = postretro_script_compiler::bundle_entry(&entry).expect("the fixture bundles");
+    let _ = std::fs::remove_dir_all(&directory);
+    let registry = crate::primitives_registry::PrimitiveRegistry::new();
+    let subsystem =
+        crate::quickjs::QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("quickjs definition context");
+    subsystem.definition_ctx().with(|ctx| {
+        let _: JsValue = crate::quickjs::run_script(&ctx, &bundled, "positional-sound.ts")
+            .expect("the fixture evaluates");
+        let value: JsValue = crate::quickjs::run_script(&ctx, "globalThis.__fixtureExport", "read")
+            .expect("the fixture exported the value");
+        conv::js_to_json(&ctx, value).expect("the export lowers to JSON")
+    })
+}
+
+/// One export of the Luau fixture, evaluated with the engine prelude and lowered to JSON.
+fn fixture_luau_json(export_name: &str) -> serde_json::Value {
+    let lua = crate::luau::build_lua_state(
+        &[],
+        None,
+        Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+    )
+    .expect("mod-rooted luau state");
+    let source =
+        format!("local M = (function()\n{FIXTURE_LUAU_SRC}\nend)()\nreturn M.{export_name}");
+    let value: LuaValue = lua
+        .load(&source)
+        .set_name("positional-sound.luau")
+        .eval()
+        .expect("the fixture evaluates");
+    conv::lua_to_json(value).expect("the export lowers to JSON")
+}
+
+// Row 27: the scripting surface installs as a dev fixture in both runtimes,
+// under its own canonical names, and every sound key it names ships.
+#[test]
+fn the_positional_sound_fixture_is_identical_in_both_authorings() {
+    for export in ["positionalSoundShotgunEntity", "positionalSoundGruntEntity"] {
+        let (ts, luau) = fixture_entity(export);
+        assert_eq!(ts, luau, "`{export}` differs between TS and Luau");
+    }
+    let (shotgun, _) = fixture_entity("positionalSoundShotgunEntity");
+    assert_eq!(
+        shotgun.canonical_name.as_deref(),
+        Some("positional_sound_shotgun")
+    );
+    let (grunt, _) = fixture_entity("positionalSoundGruntEntity");
+    assert_eq!(
+        grunt.canonical_name.as_deref(),
+        Some("positional_sound_grunt")
+    );
+
+    for export in [
+        "positionalSoundReactions",
+        "positionalSoundMovementSounds",
+        "positionalSoundAttenuation",
+    ] {
+        assert_eq!(
+            fixture_ts_json(export),
+            fixture_luau_json(export),
+            "`{export}` differs between TS and Luau",
+        );
+    }
+    let reactions = fixture_ts_json("positionalSoundReactions");
+    let door = reactions
+        .as_array()
+        .and_then(|reactions| {
+            reactions
+                .iter()
+                .find(|reaction| reaction["name"] == "door.open")
+        })
+        .expect("the fixture defines door.open");
+    assert_eq!(door["primitive"], "playSound");
+    assert_eq!(
+        door["args"],
+        serde_json::json!({ "sound": "sfx/door_open", "at": "@emitter" }),
+        "`at: on.emitter` lowers to the emitter token",
+    );
+}
+
+#[test]
+fn every_sound_key_the_positional_sound_fixture_names_ships_in_content_dev() {
+    let (shotgun, _) = fixture_entity("positionalSoundShotgunEntity");
+    let (grunt, _) = fixture_entity("positionalSoundGruntEntity");
+    let mut keys: Vec<String> = shotgun
+        .weapon
+        .unwrap()
+        .sounds
+        .unwrap()
+        .keys()
+        .map(|(_, key)| key.to_string())
+        .collect();
+    let graph = grunt.behavior.unwrap();
+    keys.extend(
+        graph
+            .attacks
+            .values()
+            .filter_map(|attack| attack.sound.clone()),
+    );
+    keys.extend(
+        graph
+            .envelope
+            .activities
+            .values()
+            .filter_map(|activity| activity.sound.clone()),
+    );
+    let movement = fixture_ts_json("positionalSoundMovementSounds");
+    keys.extend(
+        movement
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|key| key.as_str().unwrap().to_string()),
+    );
+    let reactions = fixture_ts_json("positionalSoundReactions");
+    keys.extend(
+        reactions
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|reaction| reaction["args"]["sound"].as_str().unwrap().to_string()),
+    );
+    assert_eq!(keys.len(), 12, "the fixture names twelve sounds: {keys:?}");
+
+    let sounds_root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/sounds");
+    for key in keys {
+        let ships = ["wav", "ogg"]
+            .iter()
+            .any(|extension| sounds_root.join(format!("{key}.{extension}")).is_file());
+        assert!(
+            ships,
+            "sound key `{key}` has no file under content/dev/sounds"
+        );
+    }
+}

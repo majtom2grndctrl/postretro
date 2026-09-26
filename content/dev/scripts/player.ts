@@ -2,6 +2,7 @@ import { defineEntity, runtime } from "postretro";
 import { referencePistolEntity } from "./reference-pistol";
 import { referenceRifleEntity } from "./reference-rifle";
 import { referenceShotgunEntity } from "./reference-shotgun";
+import { positionalSoundMovementSounds } from "./positional-sound";
 import {
   referencePlasmaBoltEntity,
   referenceRocketEntity,
@@ -108,6 +109,8 @@ export const playerEntity = defineEntity({
         entryBoost: 3.0,
         minDurationMs: 400.0,
       },
+      // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
+      sounds: positionalSoundMovementSounds,
       viewFeel: {
         bob: {
           verticalFrequency: 0.25,

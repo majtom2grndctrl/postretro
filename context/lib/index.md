@@ -22,7 +22,7 @@
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs** → `build_pipeline.md` §Compiler pipeline
 - **Build cache / warm vs cold builds / why a stage re-baked / cache disk footprint / stage epochs and keys** → `build_pipeline.md` §Build Cache
-- **Audio / spatial sound / reverb zones** → `audio.md`
+- **Audio / spatial sound / positional sound events / descriptor sound fields / reverb zones** → `audio.md` · emitter token: `scripting.md` §12
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Enemy AI / behavior state graph / transition guards / brain component** → `entity_model.md` §7c · `scripting.md` §11
 - **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `entity_model.md` §7c · `scripting.md` §11

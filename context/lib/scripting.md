@@ -492,6 +492,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | **levelLoad** | engine auto-fire (`"levelLoad"` address) | *(none)* — `Reaction<{}>` | — |
 | **crossing** | `onStateCrossing(ref, cond, [r])` | `CrossingParams` | `rising: Bool` |
 | **trigger event** | `onTriggerEvent({ tag }, "enter" \| "exit", [r])`; `triggerEvents` manifest key | `TriggerEventParams` | `activators`, `trigger` opaque command-target tokens; `occupancy: Number` |
+| **named gameplay event** *(decided, not yet built)* | weapon, reload, impact, enemy, movement and mover event addresses | `EmitterParams` | `emitter` opaque sound-anchor token |
 | **tick** *(accumulators only)* | number slot schema `accumulate` tracer | `TickParams` | `dt: Number` |
 
 **Two kinds of parameter, one spelling each.**
@@ -508,6 +509,8 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 **Per-tick is accumulator-only.** There is no bare per-tick reaction source. A Number slot may declare `accumulate: (t: TickParams) => delta`; the engine adds that delta each authoritative tick and clamps the result to the slot's declared range. `TickParams.dt` is available only to this schema tracer, never to `defineReaction`. A bare `onTick` reaction is added only if a concrete case blocks on it.
 
 **Trigger-event params have two channels.** `activators` and `trigger` are opaque command-target tokens. They are legal only in trigger-event command builders: `damage(on.activators, amount)` targets the fire's activators, while `armTrigger(on.trigger)` and `disarmTrigger(on.trigger)` target the firing volume. `occupancy` is a numeric runtime input: the effective occupant count at the enter or exit fire. It composes through `runtime` like other numeric inputs. Trigger events publish only `enter` and `exit`; occupancy-based conditions use crossings over ambient state.
+
+**Named gameplay events publish an emitter token (decided, not yet built).** `emitter` is an opaque token like `activators`, legal only as `playSound`'s `at`: `playSound(key, { at: on.emitter })` plays at that event's anchor (`audio.md` §4). It resolves on the app drain, never in IR, so the IR keeps its two value types. A reaction that reads it is scoped. A source that does not publish `emitter` (`levelLoad`, crossings, trigger events, deaths, completion follow-ups) skips it with a warn-once and never plays it dry. Like the trigger tokens, it is rejected after a `wait` and in a reaction targeted by `fire`. `at` pairs only with the SFX bus.
 
 **Target resolution: setup-id vs. fire-time-tag.** A descriptor addresses entities by one of two
 models, fixed by its binding key. **Setup-id** — `world.query({ component, tag? })` resolves matching

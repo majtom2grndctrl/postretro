@@ -201,7 +201,8 @@ Counters, capture and cost:
   chunk header plus row ids, which keeps binding numbers and counts intact. Static direct binds
   6 storage buffers, the other two passes 8.
 - Gather precedent: `AnimatedLightmapCompose::dispatch` filters `master_tiles` and uploads the
-  list. Its 65,535-tile 2D-dispatch gap is the chunking trap to avoid. Storage-count guard
+  list, laid out as a balanced 2D workgroup grid padded with skip records so counts past the
+  per-dimension limit still dispatch; that is the chunking precedent. Storage-count guard
   precedent: `billboard_pipeline_vertex_storage_request_matches_bgl_definitions`.
 - Per-row contribution per pass: the per-row ref tables in `row_refs.rs` (id 27 indirect;
   id 41 promotion vs id 35 base-only for static direct; id 45 animated direct).

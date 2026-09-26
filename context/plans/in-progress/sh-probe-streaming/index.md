@@ -409,7 +409,7 @@ Pinned scenarios the Slice 3 brief's tests cite:
 ## Open questions
 
 - **Residency covers most of the map at 1 m (finding, 2026-09-25).** The SH compose perf spike
-  (`drafts/perf-sh-compose-sampled-row-gating/spike-findings.md`) measured stress-warren-mini at
+  (`ready/perf-sh-compose-sampled-row-gating/spike-findings.md`) measured stress-warren-mini at
   1 m: 22 of 482 clusters installed, covering 91% of affinity bricks, and the owner closure of
   1–3 visible clusters spanning 18–19 of them. Likely cause (unverified): coarsened L1/L2 owner
   nodes with large patch spans. It limits residency relief and ruled out a cluster-grain compose

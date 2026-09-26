@@ -253,16 +253,25 @@ impl ShResidencyState {
             direct_required: sources.direct.is_some(),
             direct_compose_required: sources.direct_delta.is_some()
                 || sources.animated_direct_delta.is_some(),
+            animated_direct_compose_required: sources.animated_direct_delta.is_some(),
             direct_animation_descriptor_indices: sources
                 .animated_direct_delta
                 .as_ref()
                 .map_or_else(Vec::new, |source| {
                     source.animation_descriptor_indices.clone()
                 }),
-            indirect_was_active: false,
-            last_indirect_mask: LightTermMask::ALL,
-            direct_was_active: false,
-            last_direct_mask: LightTermMask::ALL,
+            compose_planner: StreamedComposePlanner::default(),
+            compose_frame_plan: None,
+            compose_input_regions: Vec::new(),
+            compose_region_rows: Vec::new(),
+            compose_residency_rows: Vec::new(),
+            compose_animated_weights: Vec::new(),
+            compose_direct_resident_rows: BTreeSet::new(),
+            compose_animated_resident_rows: BTreeSet::new(),
+            indirect_compose_diagnostics: ShComposePassDiagnostics::default(),
+            static_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
+            animated_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
+            compose_planning_cpu_micros: 0,
             generation_has_reset: false,
             indirect_compose_epoch: 0,
             direct_compose_epoch: 0,

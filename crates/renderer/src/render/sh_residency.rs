@@ -136,6 +136,11 @@ pub struct ShStreamingLifecycleSummary {
     pub pool_growth_events: u64,
     pub pool_growth_bytes: u64,
     pub pool_growth_cpu_micros: u64,
+    /// Current-frame compose gauges captured with this lifecycle snapshot.
+    pub indirect_compose: super::ShComposePassDiagnostics,
+    pub static_direct_compose: super::ShComposePassDiagnostics,
+    pub animated_direct_compose: super::ShComposePassDiagnostics,
+    pub compose_planning_cpu_micros: u64,
 }
 
 impl ShResidencyReport {

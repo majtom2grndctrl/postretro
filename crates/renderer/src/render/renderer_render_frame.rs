@@ -52,6 +52,7 @@ impl Renderer {
         light_reachable_cell_mask: &[bool],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         fog_reachable: &[u32],
+        sh_sample_regions: ShSampleRegionSets<'_>,
         camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
@@ -67,6 +68,11 @@ impl Renderer {
         let mut compose_submitted = false;
         let frame = (|| -> Result<Option<PresentHandle>> {
             let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
+                self.prepare_streamed_sh_compose(
+                    sh_sample_regions,
+                    fog_reachable.is_empty(),
+                    false,
+                )?;
                 return Ok(None);
             };
             let view = handle.surface_view();
@@ -84,6 +90,7 @@ impl Renderer {
                 light_reachable_cell_mask,
                 reachable_cell_aabbs,
                 fog_reachable,
+                sh_sample_regions,
                 camera_cell,
                 view_proj,
                 particle_collections,
@@ -118,6 +125,7 @@ impl Renderer {
         light_reachable_cell_mask: &[bool],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         fog_reachable: &[u32],
+        sh_sample_regions: ShSampleRegionSets<'_>,
         camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
@@ -132,13 +140,7 @@ impl Renderer {
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let frame_light_term_mask = self.frame_light_term_mask();
-        let mut compose_succeeded = self.record_pre_scene_compute(
-            encoder,
-            cam_vis,
-            view_proj,
-            render_world,
-            frame_light_term_mask,
-        );
+        let mut compose_succeeded = true;
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose
@@ -218,7 +220,23 @@ impl Renderer {
             self.full_mut().light_effective_brightness = eff_brightness;
             self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
+            self.prepare_streamed_sh_compose(sh_sample_regions, fog_reachable.is_empty(), true)?;
+            compose_succeeded &= self.record_pre_scene_compute(
+                encoder,
+                cam_vis,
+                view_proj,
+                true,
+                frame_light_term_mask,
+            );
             compose_succeeded &= self.record_direct_sh_pre_scene_compute(encoder);
+        } else {
+            compose_succeeded &= self.record_pre_scene_compute(
+                encoder,
+                cam_vis,
+                view_proj,
+                false,
+                frame_light_term_mask,
+            );
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------

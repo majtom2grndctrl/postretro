@@ -1,0 +1,16 @@
+{
+  "map": "content/dev/maps/stress-warren-mini.prl",
+  "camera": {
+    "position": [41.71, 3.23, -20.50],
+    "yaw_deg": 0.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [1280, 720],
+  "output": "measurements/sh-probe-streaming/sampled-row-gating/animroom-gated-t050.png",
+  "measurement": {
+    "report": "measurements/sh-probe-streaming/sampled-row-gating/animroom-gated-t050.report.json",
+    "warmup_frames": 1,
+    "sample_frames": 29
+  }
+}

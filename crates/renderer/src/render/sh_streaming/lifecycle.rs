@@ -238,10 +238,18 @@ impl ShResidencyState {
         self.direct_base_row_refs.clear();
         self.direct_promotion_row_refs.clear();
         self.direct_animated_row_refs.clear();
-        self.indirect_was_active = false;
-        self.last_indirect_mask = LightTermMask::ALL;
-        self.direct_was_active = false;
-        self.last_direct_mask = LightTermMask::ALL;
+        self.compose_planner.reset_generation();
+        self.compose_frame_plan = None;
+        self.compose_input_regions.clear();
+        self.compose_region_rows.clear();
+        self.compose_residency_rows.clear();
+        self.compose_animated_weights.clear();
+        self.compose_direct_resident_rows.clear();
+        self.compose_animated_resident_rows.clear();
+        self.indirect_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.static_direct_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.animated_direct_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.compose_planning_cpu_micros = 0;
         self.indirect_compose_epoch = 0;
         self.direct_compose_epoch = 0;
         for pool in self.sparse_pools.values_mut() {

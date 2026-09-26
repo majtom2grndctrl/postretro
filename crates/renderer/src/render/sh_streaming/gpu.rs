@@ -23,13 +23,9 @@ use wgpu::util::DeviceExt;
 
 use super::dense::DenseTextures;
 use super::direct_compose::{
-    DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose,
-    StreamingDirectComposeFrameInputs, StreamingDirectDirtyRows, StreamingDirectViews,
+    DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose, StreamingDirectViews,
 };
 use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacityFloors};
-use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
-use crate::render::direct_sh_compose::DirectShDebugOverride;
-use crate::render::renderer_types::PromotedBakedLightState;
 use crate::render::sh_indirection::WGSL_DECODE_HELPER;
 use crate::render::sh_volume::ShVolumeResources;
 

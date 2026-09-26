@@ -3,12 +3,26 @@
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.
 
+use super::super::Renderer;
+#[cfg(test)]
+use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
 
 pub(super) fn draw_streaming_tab(
     ui: &mut egui::Ui,
+    renderer: &mut Renderer,
     diagnostics: Option<&ShStreamingLiveDiagnostics>,
 ) {
+    let mut force_full_resident = renderer.force_full_resident_sh_compose();
+    if ui
+        .checkbox(
+            &mut force_full_resident,
+            "Force full-resident SH compose (exactness oracle)",
+        )
+        .changed()
+    {
+        renderer.set_force_full_resident_sh_compose(force_full_resident);
+    }
     let Some(diagnostics) = diagnostics else {
         ui.label("SH streaming inactive");
         return;
@@ -36,7 +50,7 @@ struct StreamingSection {
     rows: Vec<(&'static str, String)>,
 }
 
-fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 4] {
+fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
     [
         StreamingSection {
             title: "Residency",
@@ -144,6 +158,58 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 4] {
                 ("Growth CPU", format_micros(d.pool_growth_cpu_micros)),
             ],
         },
+        StreamingSection {
+            title: "Compose (current frame)",
+            rows: vec![
+                (
+                    "Indirect rows/dispatches",
+                    format!(
+                        "{} / {}",
+                        d.indirect_compose.rows_composed, d.indirect_compose.dispatches
+                    ),
+                ),
+                (
+                    "Indirect lagged composed/remaining",
+                    format!(
+                        "{} / {}",
+                        d.indirect_compose.lagged_rows_composed,
+                        d.indirect_compose.resident_rows_still_lagging
+                    ),
+                ),
+                (
+                    "Static direct rows/dispatches",
+                    format!(
+                        "{} / {}",
+                        d.static_direct_compose.rows_composed, d.static_direct_compose.dispatches
+                    ),
+                ),
+                (
+                    "Static direct lagged composed/remaining",
+                    format!(
+                        "{} / {}",
+                        d.static_direct_compose.lagged_rows_composed,
+                        d.static_direct_compose.resident_rows_still_lagging
+                    ),
+                ),
+                (
+                    "Animated direct rows/dispatches",
+                    format!(
+                        "{} / {}",
+                        d.animated_direct_compose.rows_composed,
+                        d.animated_direct_compose.dispatches
+                    ),
+                ),
+                (
+                    "Animated direct lagged composed/remaining",
+                    format!(
+                        "{} / {}",
+                        d.animated_direct_compose.lagged_rows_composed,
+                        d.animated_direct_compose.resident_rows_still_lagging
+                    ),
+                ),
+                ("CPU planning", format_micros(d.compose_planning_cpu_micros)),
+            ],
+        },
     ]
 }
 
@@ -211,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn sections_group_gauges_io_installs_and_growth() {
+    fn sections_group_gauges_io_installs_growth_and_compose() {
         let diagnostics = ShStreamingLiveDiagnostics {
             reads_issued: 8,
             coalesced_reads: 2,
@@ -223,11 +289,39 @@ mod tests {
             install_cpu_max_drain_micros: 1_500,
             install_cpu_max_steady_drain_micros: 600,
             pool_growth_cpu_micros: 900,
+            indirect_compose: ShComposePassDiagnostics {
+                rows_composed: 27,
+                dispatches: 1,
+                lagged_rows_composed: 8,
+                resident_rows_still_lagging: 6,
+            },
+            static_direct_compose: ShComposePassDiagnostics {
+                rows_composed: 4,
+                dispatches: 1,
+                lagged_rows_composed: 2,
+                resident_rows_still_lagging: 3,
+            },
+            animated_direct_compose: ShComposePassDiagnostics {
+                rows_composed: 19,
+                dispatches: 2,
+                lagged_rows_composed: 7,
+                resident_rows_still_lagging: 5,
+            },
+            compose_planning_cpu_micros: 1_250,
             ..ShStreamingLiveDiagnostics::default()
         };
         let sections = streaming_sections(&diagnostics);
         let titles: Vec<_> = sections.iter().map(|section| section.title).collect();
-        assert_eq!(titles, ["Residency", "I/O", "Installs", "Pool growth"]);
+        assert_eq!(
+            titles,
+            [
+                "Residency",
+                "I/O",
+                "Installs",
+                "Pool growth",
+                "Compose (current frame)"
+            ]
+        );
 
         let value = |title: &str, label: &str| {
             sections
@@ -247,5 +341,21 @@ mod tests {
         assert_eq!(value("Pool growth", "Growth events"), "3");
         assert_eq!(value("Pool growth", "Capacity added"), "2.0 KiB");
         assert_eq!(value("Pool growth", "Growth CPU"), "900 µs");
+        assert_eq!(
+            value("Compose (current frame)", "Indirect rows/dispatches"),
+            "27 / 1"
+        );
+        assert_eq!(
+            value(
+                "Compose (current frame)",
+                "Static direct lagged composed/remaining"
+            ),
+            "2 / 3"
+        );
+        assert_eq!(
+            value("Compose (current frame)", "Animated direct rows/dispatches"),
+            "19 / 2"
+        );
+        assert_eq!(value("Compose (current frame)", "CPU planning"), "1.25 ms");
     }
 }

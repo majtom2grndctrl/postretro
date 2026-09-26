@@ -79,7 +79,7 @@ impl StreamingAnimatedPass {
         promoted_animated_states: &[PromotedBakedLightState],
         rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<usize, ShResidencyDrainError> {
         let light_scale = debug_override.bytes(promoted_animated_states);
         if light_scale != self.last_light_scale {
             queue.write_buffer(&self.light_scale, 0, &light_scale);

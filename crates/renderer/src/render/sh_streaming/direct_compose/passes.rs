@@ -268,7 +268,7 @@ impl StreamingPromotionPass {
         debug_override: DirectShDebugOverride,
         rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<usize, ShResidencyDrainError> {
         if light_term_mask != self.last_light_term_mask {
             queue.write_buffer(
                 &self.light_term_mask,
@@ -517,7 +517,7 @@ fn dispatch_dynamic_pass(
     max_buffer_size: u64,
     rows: &[u32],
     timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-) -> Result<(), ShResidencyDrainError> {
+) -> Result<usize, ShResidencyDrainError> {
     let upload = build_dynamic_compose_grid_upload_for_rows(
         grid,
         STREAMED_SH_PHYSICAL_TILE_STRIDE,
@@ -530,7 +530,7 @@ fn dispatch_dynamic_pass(
         reason: "streamed direct dirty compose range exceeds adapter limits",
     })?;
     if upload.dispatches.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     if u64::try_from(upload.bytes.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?
         > grid_capacity
@@ -557,7 +557,7 @@ fn dispatch_dynamic_pass(
             pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
         }
     }
-    Ok(())
+    Ok(upload.dispatches.len())
 }
 
 #[cfg(test)]

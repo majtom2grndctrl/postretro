@@ -33,26 +33,6 @@ pub(super) struct StreamingDirectViews<'a> {
     pub(super) selection_weights: &'a wgpu::Buffer,
 }
 
-/// Sorted distinct flattened affinity rows selected by the residency owner.
-pub(super) struct StreamingDirectDirtyRows<'a> {
-    pub(super) promotion: &'a [u32],
-    pub(super) animated: &'a [u32],
-    pub(super) force_full_resident: bool,
-}
-
-/// Per-frame state that the legacy direct compose paths also retain. Streaming
-/// only changes the rows and physical atlas stride; it keeps masks, promotion
-/// weights, animation attenuation, and diagnostics byte-for-byte compatible.
-pub(super) struct StreamingDirectComposeFrameInputs<'a> {
-    pub(super) light_term_mask: LightTermMask,
-    pub(super) dirty: StreamingDirectDirtyRows<'a>,
-    pub(super) promotion_override: DirectShDebugOverride,
-    pub(super) animated_override: AnimatedDirectShDebugOverride,
-    pub(super) promoted_animated_states: &'a [PromotedBakedLightState],
-    pub(super) promotion_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
-    pub(super) animated_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
-}
-
 pub(super) struct StreamingDirectCompose {
     promotion: StreamingPromotionPass,
     animated: Option<StreamingAnimatedPass>,
@@ -414,55 +394,50 @@ impl StreamingDirectCompose {
         }
     }
 
-    pub(super) fn dispatch(
+    pub(super) fn dispatch_promotion(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        light_term_mask: LightTermMask,
+        debug_override: DirectShDebugOverride,
+        rows: &[u32],
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) -> Result<usize, ShResidencyDrainError> {
+        self.promotion.dispatch(
+            queue,
+            encoder,
+            light_term_mask,
+            debug_override,
+            rows,
+            timestamp_writes,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "animated compose keeps its queue, encoder, bindings, state, rows, and timestamps explicit"
+    )]
+    pub(super) fn dispatch_animated(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        inputs: StreamingDirectComposeFrameInputs<'_>,
-    ) -> Result<(), ShResidencyDrainError> {
-        let StreamingDirectComposeFrameInputs {
-            light_term_mask,
-            dirty,
-            promotion_override,
-            animated_override,
-            promoted_animated_states,
-            promotion_timestamp_writes,
-            animated_timestamp_writes,
-        } = inputs;
-        if dirty.force_full_resident
-            && (dirty.promotion.is_empty()
-                || (self.animated.is_some() && dirty.animated.is_empty()))
-        {
-            return Err(ShResidencyDrainError::MalformedChunk {
-                cluster_id: 0,
-                reason: "forced streamed direct compose must include resident row ranges for every pass",
-            });
-        }
-        if !dirty.promotion.is_empty() {
-            self.promotion.dispatch(
+        debug_override: AnimatedDirectShDebugOverride,
+        promoted_animated_states: &[PromotedBakedLightState],
+        rows: &[u32],
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) -> Result<usize, ShResidencyDrainError> {
+        self.animated.as_mut().map_or(Ok(0), |animated| {
+            animated.dispatch(
                 queue,
                 encoder,
-                light_term_mask,
-                promotion_override,
-                dirty.promotion,
-                promotion_timestamp_writes,
-            )?;
-        }
-        if !dirty.animated.is_empty() {
-            if let Some(animated) = self.animated.as_mut() {
-                animated.dispatch(
-                    queue,
-                    encoder,
-                    uniform_bind_group,
-                    animated_override,
-                    promoted_animated_states,
-                    dirty.animated,
-                    animated_timestamp_writes,
-                )?;
-            }
-        }
-        Ok(())
+                uniform_bind_group,
+                debug_override,
+                promoted_animated_states,
+                rows,
+                timestamp_writes,
+            )
+        })
     }
 
     pub(super) fn fixed_metadata_bytes(&self) -> u64 {

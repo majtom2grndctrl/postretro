@@ -14,6 +14,7 @@ use postretro_entities::{
 use postretro_level_loader::{
     KinematicGeometry, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
 };
+use postretro_renderer::ShSampleRegion;
 use postretro_visibility::VisibleCells;
 
 use crate::collision::moving::MoverCollider;
@@ -135,6 +136,10 @@ pub(crate) struct KinematicMoverRenderCollector {
     /// Renderable movers sent to shadow-depth recording.
     shadow_instances: Vec<KinematicMoverInstance>,
     occluder_aabbs: Vec<MoverOccluderAabb>,
+    /// World bounds sampled by camera-visible beauty draws only. Unlike
+    /// `occluder_aabbs`, this excludes shadow-only movers and encloses the
+    /// current-to-interpolated presentation sweep.
+    sh_sample_regions: Vec<ShSampleRegion>,
     mover_bounds: HashMap<u32, postretro_render_data::cone_frustum::Aabb>,
     mover_bounds_source: Option<MoverBoundsSource>,
     visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
@@ -146,6 +151,7 @@ impl KinematicMoverRenderCollector {
             instances: Vec::new(),
             shadow_instances: Vec::new(),
             occluder_aabbs: Vec::new(),
+            sh_sample_regions: Vec::new(),
             mover_bounds: HashMap::new(),
             mover_bounds_source: None,
             visible_cell_bounds: Vec::new(),
@@ -156,6 +162,7 @@ impl KinematicMoverRenderCollector {
         self.instances.clear();
         self.shadow_instances.clear();
         self.occluder_aabbs.clear();
+        self.sh_sample_regions.clear();
         self.mover_bounds.clear();
         self.mover_bounds_source = None;
         self.visible_cell_bounds.clear();
@@ -171,6 +178,7 @@ impl KinematicMoverRenderCollector {
         self.instances.clear();
         self.shadow_instances.clear();
         self.occluder_aabbs.clear();
+        self.sh_sample_regions.clear();
         self.refresh_mover_bounds(world);
         self.rebuild_visible_cell_bounds(world, visible);
 
@@ -213,6 +221,10 @@ impl KinematicMoverRenderCollector {
                 &self.visible_cell_bounds,
             ) {
                 self.instances.push(instance);
+                self.sh_sample_regions.push(ShSampleRegion::new(
+                    current_world_aabb.min.min(world_aabb.min),
+                    current_world_aabb.max.max(world_aabb.max),
+                ));
             }
         }
     }
@@ -229,6 +241,10 @@ impl KinematicMoverRenderCollector {
     /// World bounds for renderable movers used by promotion and depth culling.
     pub(crate) fn occluder_aabbs(&self) -> &[MoverOccluderAabb] {
         &self.occluder_aabbs
+    }
+
+    pub(crate) fn sh_sample_regions(&self) -> &[ShSampleRegion] {
+        &self.sh_sample_regions
     }
 
     fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
@@ -1156,6 +1172,7 @@ mod tests {
         assert!(collector.instances.is_empty());
         assert!(collector.shadow_instances.is_empty());
         assert!(collector.occluder_aabbs.is_empty());
+        assert!(collector.sh_sample_regions.is_empty());
         assert!(collector.mover_bounds.is_empty());
         assert_eq!(collector.mover_bounds_source, None);
         assert!(collector.visible_cell_bounds.is_empty());
@@ -1185,6 +1202,7 @@ mod tests {
         assert_eq!(collector.instances().len(), 1);
         assert_eq!(collector.shadow_instances().len(), 1);
         assert_eq!(collector.occluder_aabbs().len(), 1);
+        assert_eq!(collector.sh_sample_regions().len(), 1);
         let aabb = collector.occluder_aabbs()[0];
         assert_eq!(aabb.mover_id, 7);
         const EPSILON: f32 = 1.0e-5;
@@ -1202,6 +1220,9 @@ mod tests {
                 <= EPSILON,
             "interpolated mover AABB max must match the interpolated transform",
         );
+        let sampled = collector.sh_sample_regions()[0];
+        assert_eq!(sampled.min, Vec3::new(3.0, 2.0, 3.0));
+        assert_eq!(sampled.max, Vec3::new(6.0, 3.0, 3.0));
     }
 
     #[test]

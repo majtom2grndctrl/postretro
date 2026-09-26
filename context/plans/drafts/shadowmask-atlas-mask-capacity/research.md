@@ -141,7 +141,7 @@ capacity table's own arithmetic is what shows it.
 
 ## Consolidation sequencing after SH residency
 
-SH residency (Slices 1–3 of `context/plans/in-progress/sh-probe-streaming/`)
+SH residency (Slices 1–3 of `context/plans/done/sh-probe-streaming/`)
 shipped in PR #516. Its former in-flight sequencing constraint is satisfied;
 the parent epic remains open for independent authored hints. The original
 ordering mattered at three points of contact:

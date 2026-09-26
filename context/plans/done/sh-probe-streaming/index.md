@@ -1,10 +1,10 @@
 # SH Probe Streaming
 
-> **Status (2026-09-23):** Slices 1–3 shipped in PR #516 (merged as
-> `8ce91e682`); their specs are under `context/plans/done/`. Slice 4 authored
-> hints have not been drafted or implemented, so this parent epic remains in
-> progress. Adapter-backed frame-time, seam, and GPU growth-copy evidence is
-> still `not-yet-evaluable`, not a completed performance claim.
+> **Status (2026-09-25): done.** Slices 1–3 shipped in PR #516 (merged as
+> `8ce91e682`); Slice 4 authored hints shipped in PR #518 (merged as
+> `11ff39bb0`). Every slice spec is under `context/plans/done/`.
+> Adapter-backed frame-time, seam, and GPU growth-copy evidence is still
+> `not-yet-evaluable`, not a completed performance claim.
 > **Slice 4 scope clarification:** authored
 > seams cut cluster boundaries and prefer far-side warm-up while a doorway
 > hides the load. They do not delay door/portal/gameplay state. A cold opening

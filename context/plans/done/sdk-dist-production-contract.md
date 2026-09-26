@@ -1,11 +1,10 @@
 # SDK distribution: production-ready contract
 
-> **Status:** in progress, **builds paused at owner request**. Branch
-> `sdk-dist-production`.
-> **Read before any track brief.** Amend here when a track changes a decision.
-> **Do not start a build, test run, `dist`, `sdk-dist`, or preflight until the
-> owner says to resume.** The queue below is what remains; it is ordered so a
-> resume can start at the top.
+> **Status (2026-09-25): done.** Merged as PR #517 (`5289f69d7`, 2026-09-23).
+> Of the five review decisions below, the recipe-`source` and ignored-helper-flag
+> items were fixed before merge (`5520c64a7`). The D12 `texture-tool` exception,
+> the `cargo run -p xtask` engine diagnostics, and `prl-build --baked-root`
+> swallowing a following flag remain open follow-ups.
 
 ## Resume queue
 

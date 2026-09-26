@@ -98,6 +98,8 @@ Decided, not yet built:
 | Position tracking | An entity anchor follows the entity's render-interpolated pose each frame. Once the entity is gone, the sound freezes at its last position and plays out; a tail is never cut. |
 | Own pawn | A sound anchored on the pawn the listener is attached to plays non-spatial on SFX. A sound keeps the treatment it started with. |
 
+**One spatial pipeline (decided, not yet built).** Every positional play goes through one chokepoint in the audio module. It owns each voice's anchor, and the voice's direction and distance relative to the listener, computed engine-side each frame. It is the only code that touches kira's spatial tracks. Directional cues, such as front/back filtering and distance-based stereo spread, and occlusion extend this chokepoint in place. There is no second pipeline and no per-hardware renderer tier.
+
 **Level lifetime.** Unload, restart and return-to-frontend stop every positional voice with a short fade, so no sound outlives its world or follows an entity from the next level.
 
 ---
@@ -134,6 +136,7 @@ Cells outside any reverb zone will get no reverb effect (dry signal only).
 
 - HRTF (head-related transfer function) processing
 - Doppler shift
+- Surround (5.1/7.1) output — kira mixes stereo only
 - Real-time acoustic simulation or ray-traced audio
 - Ambisonics
 - Dynamic music system (adaptive soundtrack layers)

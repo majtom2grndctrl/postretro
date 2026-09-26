@@ -58,7 +58,7 @@ These notes are from the 0.12.0 source. 0.12.4 has not changed any of these APIs
 - **Capacity.** A spatial track created under the SFX track counts against SFX's `sub_track_capacity` (today 128, the `build_bus` default), not against the manager's `Capacities.sub_track_capacity` (16). The SFX `sound_capacity` of 32 no longer bounds sounds placed on child tracks.
 - **Tail safety.** A spatial track whose handle is dropped is removed on the next block even while its sound plays (`track/sub.rs`). Build positional tracks with `persist_until_sounds_finish(true)`, or keep the handle until the sound reports `Stopped`.
 - **Live occupancy.** `num_sounds()` / `num_sub_tracks()` count reserved arena slots from `try_reserve` until the audio thread removes the item, so they are the live occupancy the admission check reads.
-- **For step 2 (reverb).** `ReverbBuilder` and `FilterBuilder` handles expose tweenable parameters. Sends tap a child track's output before the parent's fader, so a reverb send must be coupled to the SFX volume explicitly.
+- **For the reverb step.** `ReverbBuilder` and `FilterBuilder` handles expose tweenable parameters. Sends tap a child track's output before the parent's fader, so a reverb send must be coupled to the SFX volume explicitly.
 
 ## Dependency currency (step 0)
 
@@ -67,7 +67,7 @@ These notes are from the 0.12.0 source. 0.12.4 has not changed any of these APIs
 - **Cost:** kira 0.12.1 and later require glam ^0.33, which duplicates glam against the workspace's 0.32.
 - **Change:** lockfile only (`cargo update -p kira`). Owner sequenced it as a separate chore.
 
-## Networking seams (step 3 inputs)
+## Networking seams (peer-audio step inputs)
 
 - Sound is `PrimitiveClass::Presentation` (sim/trigger_bindings.rs), host-local on the app drain (roadmap E18).
 - `ServerPresentationPayload` is append-only (net/wire.rs) and travels on the unreliable `Channel::Presentation`.

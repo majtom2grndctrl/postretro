@@ -24,6 +24,16 @@ export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true
 /** Opaque target for the trigger volume that fired the current edge. */
 export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
 
+declare const emitterTargetBrand: unique symbol;
+
+/** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
+export type EmitterTarget = Readonly<{ readonly [emitterTargetBrand]: true }>;
+
+/** Dispatch values published by a named gameplay event: weapon, reload, impact, enemy, movement and mover events. */
+export type EmitterParams = Readonly<{
+  emitter: EmitterTarget;
+}>;
+
 /** Dispatch values published by an enter/exit trigger event. */
 export type TriggerEventParams = Readonly<{
   activators: ActivatorsTarget;
@@ -592,6 +602,9 @@ type ReactionTracer<S> = (params: S) => ReactionBody;
 // these input nodes.
 const ACTIVATORS_TARGET = Object.freeze({}) as ActivatorsTarget;
 const TRIGGER_TARGET = Object.freeze({}) as TriggerTarget;
+// The emitter token carries its own wire spelling, so `playSound` (in the UI
+// reaction module) lowers it without importing this module's private tokens.
+const EMITTER_TARGET = Object.freeze({ __wire: "@emitter" }) as unknown as EmitterTarget;
 
 const DISPATCH_PARAMS = Object.freeze({
   rising: Object.freeze({ op: "input", name: "@rising" } as const),
@@ -599,6 +612,7 @@ const DISPATCH_PARAMS = Object.freeze({
   activators: ACTIVATORS_TARGET,
   trigger: TRIGGER_TARGET,
   occupancy: Object.freeze({ op: "input", name: "@occupancy" } as const),
+  emitter: EMITTER_TARGET,
 });
 
 export type TriggerEventDescriptor = {
@@ -782,6 +796,7 @@ function stableStringify(value: unknown): string {
 export function defineReaction(body: ReactionBody): Reaction<{}>;
 export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
 export function defineReaction(tracer: ReactionTracer<TriggerEventParams>): Reaction<TriggerEventParams>;
+export function defineReaction(tracer: ReactionTracer<EmitterParams>): Reaction<EmitterParams>;
 export function defineReaction(
   name: string,
   descriptor: ReactionBody,
@@ -795,9 +810,20 @@ export function defineReaction(
   tracer: ReactionTracer<TriggerEventParams>,
 ): Reaction<TriggerEventParams>;
 export function defineReaction(
-  nameOrBody: string | ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams>,
-  descriptor?: ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams>,
-): Reaction<{}> | Reaction<CrossingParams> | Reaction<TriggerEventParams> {
+  name: string,
+  tracer: ReactionTracer<EmitterParams>,
+): Reaction<EmitterParams>;
+export function defineReaction(
+  nameOrBody:
+    | string
+    | ReactionBody
+    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams>,
+  descriptor?: ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams>,
+):
+  | Reaction<{}>
+  | Reaction<CrossingParams>
+  | Reaction<TriggerEventParams>
+  | Reaction<EmitterParams> {
   const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
   const tracedBody = typeof authored === "function"
     ? authored(DISPATCH_PARAMS)

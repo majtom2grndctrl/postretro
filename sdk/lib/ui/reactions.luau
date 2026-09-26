@@ -166,14 +166,29 @@ function UiReactionsSdk.onStateCrossing(
   return descriptor
 end
 
---- Play a sound through the M12 audio module. Pure: returns a primitive
---- reaction body, no engine side effect. Pass the result as the descriptor of
---- `defineReaction("name", playSound(...))`. `sound` is an audio asset id; the
---- optional `bus` routes to a named mixer bus (omitted when nil).
-function UiReactionsSdk.playSound(sound: string, bus: string?): PrimitiveReactionDescriptor
+--- Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted);
+--- `at = on.emitter` positions the sound where the named gameplay event
+--- happened, on the SFX bus. A source that publishes no emitter skips the
+--- reaction with a warning.
+export type PlaySoundOptions = { bus: string?, at: any? }
+
+--- Play a sound through the audio module. Pure: returns a primitive reaction
+--- body, no engine side effect. Pass the result as the descriptor of
+--- `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
+--- Without `at` the sound plays unpositioned.
+function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): PrimitiveReactionDescriptor
   local args: { [string]: any } = { sound = sound }
-  if bus ~= nil then
-    args.bus = bus
+  if options ~= nil then
+    if options.bus ~= nil then
+      args.bus = options.bus
+    end
+    if options.at ~= nil then
+      -- The emitter token carries its wire spelling; anything else is rejected
+      -- by the engine when the reaction fires.
+      local at = options.at
+      local wire = if type(at) == "table" then at.__wire else nil
+      args.at = if wire == "@emitter" then "@emitter" else "@invalid"
+    end
   end
   return { primitive = "playSound", args = args }
 end

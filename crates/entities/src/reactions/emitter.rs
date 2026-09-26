@@ -11,6 +11,10 @@ use glam::Vec3;
 use crate::data_descriptors::BehaviorGraphDescriptor;
 use crate::registry::EntityId;
 
+/// Wire spelling of `on.emitter` as `playSound`'s `at`. The only anchor token a
+/// reaction may name; it resolves against the firing source's emitter.
+pub const EMITTER_AT_TOKEN: &str = "@emitter";
+
 /// The emitter of one named gameplay event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Emitter {

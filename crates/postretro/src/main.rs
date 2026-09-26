@@ -191,6 +191,20 @@ impl PendingWeaponScriptEvent {
             Self::Reload(delivery) => delivery.outcome.event_name(),
         }
     }
+
+    /// Where the event happened: the weapon emission's own emitter, or the
+    /// reloading pawn.
+    fn emitter(
+        &self,
+        registry: &postretro_entities::EntityRegistry,
+    ) -> postretro_entities::Emitter {
+        match self {
+            Self::Weapon(emission) => emission.emitter.clone(),
+            Self::Reload(delivery) => {
+                postretro_sim::emission::entity_emitter(registry, delivery.pawn())
+            }
+        }
+    }
 }
 
 fn append_tick_weapon_script_events(
@@ -401,9 +415,11 @@ fn rebuild_blocked_portals(
 
 /// Execute a batch of post-tick named events through the sequence-aware path.
 /// Plain `fire_named_event` only collects primitive `on_complete` names; it does
-/// not execute primitive or sequence bodies.
+/// not execute primitive or sequence bodies. An event carrying an emitter
+/// publishes it, so a reaction's `playSound` can play `at: on.emitter`; an
+/// event without one (deaths, follow-ups) publishes none.
 fn drain_named_events_with_sequences<I, S>(
-    event_names: I,
+    events: I,
     data_registry: &postretro_entities::DataRegistry,
     sequence_registry: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
@@ -411,19 +427,27 @@ fn drain_named_events_with_sequences<I, S>(
     script_ctx: &postretro_entities::ScriptCtx,
 ) -> Vec<String>
 where
-    I: IntoIterator<Item = S>,
+    I: IntoIterator<Item = (S, Option<postretro_entities::Emitter>)>,
     S: AsRef<str>,
 {
     let mut chained = Vec::new();
-    for event_name in event_names {
+    for (event_name, emitter) in events {
+        let event_name = event_name.as_ref();
+        let context = emitter.map(|emitter| {
+            postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext {
+                source: format!("named:{event_name}"),
+                values: &[],
+                emitter: Some(emitter),
+            }
+        });
         chained.extend(fire_named_event_with_sequences(
-            event_name.as_ref(),
+            event_name,
             data_registry,
             sequence_registry,
             reaction_registry,
             system_registry,
             script_ctx,
-            None,
+            context,
         ));
     }
     chained
@@ -3303,10 +3327,18 @@ impl ApplicationHandler for App {
                         audio.play(request);
                     }
                 }
-                let pending_mover_event_names: Vec<String> = pending_mover_edges
-                    .into_iter()
-                    .filter_map(|edge| edge.address)
-                    .collect();
+                // A mover edge's reactions may play `at: on.emitter`: the mover.
+                let pending_mover_event_names: Vec<(String, Option<postretro_entities::Emitter>)> =
+                    pending_mover_edges
+                        .into_iter()
+                        .filter_map(|edge| {
+                            let emitter = postretro_entities::Emitter::Entity {
+                                id: edge.emitter,
+                                origin: edge.point.unwrap_or_default(),
+                            };
+                            edge.address.map(|address| (address, Some(emitter)))
+                        })
+                        .collect();
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
                     // Every post-tick named source uses the executing path, then
@@ -3317,7 +3349,7 @@ impl ApplicationHandler for App {
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
                         pending_movement_events
                             .iter()
-                            .map(|emission| emission.address),
+                            .map(|emission| (emission.address, Some(emission.emitter.clone()))),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3325,9 +3357,12 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_ai_events
-                            .iter()
-                            .filter_map(|emission| emission.address.as_deref()),
+                        pending_ai_events.iter().filter_map(|emission| {
+                            emission
+                                .address
+                                .as_deref()
+                                .map(|address| (address, Some(emission.emitter.clone())))
+                        }),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3335,9 +3370,12 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_weapon_script_events
-                            .iter()
-                            .map(|event| event.event_name()),
+                        pending_weapon_script_events.iter().map(|event| {
+                            (
+                                event.event_name(),
+                                Some(event.emitter(&script_ctx.registry.borrow())),
+                            )
+                        }),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3345,7 +3383,7 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_mover_event_names.iter(),
+                        pending_mover_event_names.into_iter(),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3353,7 +3391,7 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_death_events.iter(),
+                        pending_death_events.iter().map(|name| (name, None)),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -6044,7 +6082,18 @@ impl App {
         };
         for command in script_ctx.system_commands.take() {
             match command {
-                SystemReactionCommand::PlaySound { sound, bus } => {
+                SystemReactionCommand::PlaySound { sound, bus, at } => {
+                    // Place an `at: on.emitter` anchor now, at fire time, so an
+                    // emitter removed before the audio step still has a position.
+                    let anchor = at.map(|emitter| {
+                        let registry = script_ctx.registry.borrow();
+                        let mut scene = sound_events::AnchorScene {
+                            registry: &registry,
+                            world: self.level.as_ref(),
+                            movers: &mut self.kinematic_mover_render,
+                        };
+                        scene.sound_anchor(&emitter)
+                    });
                     if let Some(audio) = self
                         .session
                         .as_mut()
@@ -6060,7 +6109,7 @@ impl App {
                             bus,
                             sound,
                             looping: false,
-                            anchor: None,
+                            anchor,
                         });
                     }
                     // Audio init failed ⇒ silent (the game runs without sound).
@@ -11362,7 +11411,7 @@ mod tests {
         assert!(script_ctx.system_commands.take().is_empty());
 
         drain_named_events_with_sequences(
-            event_names.iter(),
+            event_names.iter().map(|name| (name, None)),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -11374,8 +11423,67 @@ mod tests {
             vec![SystemReactionCommand::PlaySound {
                 sound: "door_open".to_string(),
                 bus: Some("sfx".to_string()),
+                at: None,
             }],
             "mover events must use the executing dispatch path so the audio drain receives playSound"
+        );
+    }
+
+    // The post-tick drain publishes each event's emitter, so an anchored
+    // reaction plays there; the same address fired with no emitter plays nothing.
+    #[test]
+    fn named_event_drain_publishes_emitters_to_anchored_reactions() {
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "activate".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({
+                        "sound": "sfx/shot",
+                        "at": postretro_entities::EMITTER_AT_TOKEN,
+                    }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        let emitter = postretro_entities::Emitter::Entity {
+            id: postretro_entities::EntityId::from_raw(9),
+            origin: Vec3::new(0.0, 1.5, 0.0),
+        };
+
+        drain_named_events_with_sequences(
+            [("activate", Some(emitter.clone())), ("activate", None)],
+            &data_registry,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "sfx/shot".to_string(),
+                bus: None,
+                at: Some(emitter),
+            }],
+            "only the emitter-bearing fire plays",
         );
     }
 
@@ -11441,7 +11549,7 @@ mod tests {
         data_registry.populate_level(reactions, Vec::new(), &[]);
 
         let chained = drain_named_events_with_sequences(
-            ["movementEvent", "aiEvent", "weaponEvent"],
+            ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -11477,14 +11585,17 @@ mod tests {
                 SystemReactionCommand::PlaySound {
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
+                    at: None,
                 },
                 SystemReactionCommand::PlaySound {
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
+                    at: None,
                 },
                 SystemReactionCommand::PlaySound {
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
+                    at: None,
                 },
             ],
             "the existing deferred dispatcher executes every chained target"

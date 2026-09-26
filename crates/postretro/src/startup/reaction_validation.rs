@@ -43,7 +43,25 @@ fn wait_is_interruptible(args: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Pass A — body-only validation (V1, V4a, V6). Reads and mutates the
+/// Whether a primitive's args read the emitter token: `playSound`'s
+/// `at: on.emitter` (`scripting.md` §12). Like the trigger sentinels, the token
+/// is fire context: no `wait` survives it and a `fire` step cannot supply it.
+fn args_read_emitter(args: &serde_json::Value) -> bool {
+    args.get("at").and_then(serde_json::Value::as_str) == Some(postretro_entities::EMITTER_AT_TOKEN)
+}
+
+/// A `playSound` that plays `at` an emitter names a bus other than SFX.
+/// Positional sounds play only on SFX, whose volume governs them.
+fn emitter_on_non_sfx_bus(args: &serde_json::Value) -> Option<&str> {
+    if !args_read_emitter(args) {
+        return None;
+    }
+    args.get("bus")
+        .and_then(serde_json::Value::as_str)
+        .filter(|bus| !bus.eq_ignore_ascii_case("sfx"))
+}
+
+/// Pass A — body-only validation (V1, V4a, V6, and the emitter-bus rule). Reads and mutates the
 /// `DataRegistry` alone. Must run before `build_trigger_bindings`, or the binder
 /// binds a body this pass rejects.
 pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
@@ -59,6 +77,26 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
         .collect();
 
     for index in 0..data_registry.reactions.len() {
+        // `at: on.emitter` pairs only with the SFX bus. Checked on every body
+        // shape before the sequence-only rows below.
+        let bus_violation = match &data_registry.reactions[index].descriptor {
+            ReactionDescriptor::Primitive(primitive) => emitter_on_non_sfx_bus(&primitive.args)
+                .map(|bus| (primitive.primitive.clone(), bus.to_string())),
+            ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
+                emitter_on_non_sfx_bus(&step.args)
+                    .map(|bus| (step.primitive.clone(), bus.to_string()))
+            }),
+            ReactionDescriptor::Progress(_) => None,
+        };
+        if let Some((primitive, bus)) = bus_violation {
+            let name = &data_registry.reactions[index].name;
+            log::error!(
+                "[Scripting] reaction `{name}`: `{primitive}` plays `at: on.emitter` on bus `{bus}`; positioned sounds play only on the sfx bus. Dropping the reaction"
+            );
+            data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
+            continue;
+        }
+
         let ReactionDescriptor::Sequence(steps) = &data_registry.reactions[index].descriptor else {
             continue;
         };
@@ -88,11 +126,11 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
                 matches!(
                     step.id,
                     SequenceTarget::Activators | SequenceTarget::FiredTrigger
-                )
+                ) || args_read_emitter(&step.args)
             }) {
                 let step_index = wait_pos + 1 + offset;
                 log::error!(
-                    "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step targets a trigger-fire sentinel (@activators/@trigger) whose fire context no `wait` survives; dropping the reaction (V4a)"
+                    "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (@activators/@trigger/on.emitter) that no `wait` survives; dropping the reaction (V4a)"
                 );
                 data_registry.reactions[index].descriptor =
                     ReactionDescriptor::Sequence(Vec::new());
@@ -212,7 +250,11 @@ fn scoped_fire_targets(
             ReactionDescriptor::Primitive(primitive) => primitive
                 .target
                 .as_deref()
-                .map(|target| format!("primitive target sentinel `{target}`")),
+                .map(|target| format!("primitive target sentinel `{target}`"))
+                .or_else(|| {
+                    args_read_emitter(&primitive.args)
+                        .then(|| format!("`{}` at `on.emitter`", primitive.primitive))
+                }),
             ReactionDescriptor::Sequence(steps) => {
                 steps
                     .iter()
@@ -225,7 +267,8 @@ fn scoped_fire_targets(
                             "sequence step {step_index} target sentinel `@trigger`"
                         )),
                         SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire => {
-                            None
+                            args_read_emitter(&step.args)
+                                .then(|| format!("sequence step {step_index} `at` `on.emitter`"))
                         }
                     })
             }
@@ -476,6 +519,36 @@ mod tests {
         }
     }
 
+    /// A `playSound` primitive reaction; `at_emitter` authors `at: on.emitter`.
+    fn play_sound(name: &str, bus: Option<&str>, at_emitter: bool) -> NamedReaction {
+        let mut args = json!({ "sound": "sfx/test_tone" });
+        if let Some(bus) = bus {
+            args["bus"] = json!(bus);
+        }
+        if at_emitter {
+            args["at"] = json!(postretro_entities::EMITTER_AT_TOKEN);
+        }
+        NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "playSound".to_string(),
+                target: None,
+                tag: None,
+                on_complete: None,
+                args,
+            }),
+        }
+    }
+
+    /// A raw sequence step reading the emitter token.
+    fn emitter_step() -> SequenceStep {
+        SequenceStep {
+            id: SequenceTarget::Entity(EntityId::from_raw(1)),
+            primitive: "playSound".to_string(),
+            args: json!({ "sound": "sfx/test_tone", "at": postretro_entities::EMITTER_AT_TOKEN }),
+        }
+    }
+
     fn ctx_with_reactions(reactions: Vec<NamedReaction>) -> ScriptCtx {
         let ctx = ScriptCtx::new();
         ctx.data_registry
@@ -688,6 +761,41 @@ mod tests {
         assert!(!is_dropped(&ctx, "reveal"));
     }
 
+    // The emitter token is fire context: no `wait` survives it.
+    #[test]
+    fn v4a_drops_post_wait_emitter_token_and_keeps_it_before_the_wait() {
+        let ctx = ctx_with_reactions(vec![
+            sequence("late", vec![wait_step(json!(200), false), emitter_step()]),
+            sequence("early", vec![emitter_step(), wait_step(json!(200), false)]),
+        ]);
+        let capture = LogCapture::start();
+        validate_reaction_bodies_pass_a(&ctx);
+        capture.assert_logged_once(log::Level::Error, "reaction `late` step 1");
+        assert!(is_dropped(&ctx, "late"));
+        assert!(!is_dropped(&ctx, "early"));
+    }
+
+    // `at: on.emitter` plays positioned, and positioned sounds play only on SFX.
+    #[test]
+    fn emitter_anchored_play_sound_rejects_a_non_sfx_bus() {
+        let ctx = ctx_with_reactions(vec![
+            play_sound("uiAnchored", Some("ui"), true),
+            play_sound("sfxAnchored", Some("SFX"), true),
+            play_sound("anchored", None, true),
+            play_sound("uiUnanchored", Some("ui"), false),
+        ]);
+        let capture = LogCapture::start();
+        validate_reaction_bodies_pass_a(&ctx);
+        capture.assert_logged_once(
+            log::Level::Error,
+            "reaction `uiAnchored`: `playSound` plays `at: on.emitter` on bus `ui`",
+        );
+        assert!(is_dropped(&ctx, "uiAnchored"));
+        for kept in ["sfxAnchored", "anchored", "uiUnanchored"] {
+            assert!(!is_dropped(&ctx, kept), "{kept} installs");
+        }
+    }
+
     // --- V6 (Pass A) --------------------------------------------------------
 
     // V6: a `fire` step naming an absent reaction drops the step and keeps the
@@ -820,6 +928,23 @@ mod tests {
             "requires trigger-fire dispatch scope (primitive target sentinel `@activators`)",
         );
         assert!(is_dropped(&ctx, "reveal"));
+    }
+
+    // A `fire` step dispatches with no emitter, so it cannot target a reaction
+    // that plays `at: on.emitter`; the same target without the token is fine.
+    #[test]
+    fn v4b_drops_fire_of_an_emitter_reading_reaction() {
+        let ctx = ctx_with_reactions(vec![
+            play_sound("thud", None, true),
+            play_sound("chime", None, false),
+            sequence("anchoredChain", vec![fire_step("thud")]),
+            sequence("plainChain", vec![fire_step("chime")]),
+        ]);
+        let capture = LogCapture::start();
+        run_pass_b(&ctx);
+        capture.assert_logged_once(log::Level::Error, "`playSound` at `on.emitter`");
+        assert!(is_dropped(&ctx, "anchoredChain"));
+        assert!(!is_dropped(&ctx, "plainChain"));
     }
 
     // Regression: a `fire` target can itself be a sequence whose entity-like

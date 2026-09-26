@@ -360,14 +360,47 @@ pub fn is_ir_node(value: &serde_json::Value) -> bool {
 /// - Presentation-cell write: `cellWrite`
 /// - Text-edit: `appendText`, `backspaceText`, `clearText`
 pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry) {
-    registry.register("playSound", |args, queue| {
+    // Sources warned about for a `playSound` that reads `on.emitter` but was
+    // fired without one: one warning per (source, sound), never a dry play.
+    let missing_emitter_warned: std::rc::Rc<
+        std::cell::RefCell<std::collections::HashSet<(String, String)>>,
+    > = Default::default();
+    registry.register("playSound", move |args, queue| {
         let parsed: PlaySoundArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("playSound: failed to deserialize args: {e}"),
             })?;
+        let at = match parsed.at.as_deref() {
+            None => None,
+            Some(postretro_entities::EMITTER_AT_TOKEN) => {
+                let context = queue.fire_context();
+                match context.emitter {
+                    Some(emitter) => Some(emitter),
+                    None => {
+                        if missing_emitter_warned
+                            .borrow_mut()
+                            .insert((context.source.clone(), parsed.sound.clone()))
+                        {
+                            log::warn!(
+                                "[Scripting] playSound `{}` reads `on.emitter`, but source `{}` publishes no emitter; skipping",
+                                parsed.sound,
+                                context.source,
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            Some(other) => {
+                return Err(ReactionError::InvalidArgument {
+                    reason: format!("playSound: `at` must be `on.emitter`, got `{other}`"),
+                });
+            }
+        };
         queue.push(SystemReactionCommand::PlaySound {
             sound: parsed.sound,
             bus: parsed.bus,
+            at,
         });
         Ok(())
     });
@@ -648,6 +681,9 @@ struct PlaySoundArgs {
     sound: String,
     #[serde(default)]
     bus: Option<String>,
+    /// `"@emitter"` when the reaction authored `at: on.emitter`.
+    #[serde(default)]
+    at: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1182,6 +1218,7 @@ mod tests {
             vec![SystemReactionCommand::PlaySound {
                 sound: "alarm".to_string(),
                 bus: Some("sfx".to_string()),
+                at: None,
             }]
         );
     }
@@ -1199,6 +1236,7 @@ mod tests {
             vec![SystemReactionCommand::PlaySound {
                 sound: "alarm".to_string(),
                 bus: None,
+                at: None,
             }]
         );
     }
@@ -1580,6 +1618,7 @@ mod tests {
         queue.replace_fire_context(postretro_entities::SystemCommandFireContext {
             source: "crossing:7".to_string(),
             values: vec![("@rising".to_string(), IrValue::Bool(true))],
+            emitter: None,
         });
 
         registry
@@ -1626,6 +1665,95 @@ mod tests {
             5.0,
             "literal setState must retain the shipped JSON write path",
         );
+    }
+
+    fn anchored_play_sound() -> serde_json::Value {
+        serde_json::json!({ "sound": "sfx/thud", "at": postretro_entities::EMITTER_AT_TOKEN })
+    }
+
+    fn fire_context(
+        source: &str,
+        emitter: Option<postretro_entities::Emitter>,
+    ) -> postretro_entities::SystemCommandFireContext {
+        postretro_entities::SystemCommandFireContext {
+            source: source.to_string(),
+            values: Vec::new(),
+            emitter,
+        }
+    }
+
+    // A named gameplay event publishes its emitter; `at: on.emitter` plays there.
+    #[test]
+    fn play_sound_at_emitter_takes_the_firing_sources_emitter() {
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+        let emitter = postretro_entities::Emitter::Entity {
+            id: postretro_entities::EntityId::from_raw(4),
+            origin: glam::Vec3::new(1.0, 2.0, 3.0),
+        };
+        queue.replace_fire_context(fire_context("named:activate", Some(emitter.clone())));
+
+        registry
+            .dispatch("playSound", &anchored_play_sound(), &queue)
+            .expect("anchored playSound dispatches");
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "sfx/thud".to_string(),
+                bus: None,
+                at: Some(emitter),
+            }],
+        );
+    }
+
+    // Pins P7: level load, crossings, triggers, deaths and follow-ups publish no
+    // emitter. The reaction is skipped with one warning per source; it never
+    // plays dry.
+    #[test]
+    fn play_sound_at_emitter_without_one_skips_and_warns_once_per_source() {
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+        let capture = LogCapture::start();
+
+        for source in ["named:levelLoad", "named:levelLoad", "crossing:3"] {
+            queue.replace_fire_context(fire_context(source, None));
+            registry
+                .dispatch("playSound", &anchored_play_sound(), &queue)
+                .expect("a skipped playSound is not an error");
+        }
+        // A contextless drain (trigger residual, death, follow-up) sees the default.
+        queue.replace_fire_context(postretro_entities::SystemCommandFireContext::default());
+        registry
+            .dispatch("playSound", &anchored_play_sound(), &queue)
+            .expect("a skipped playSound is not an error");
+
+        assert!(
+            queue.take().is_empty(),
+            "nothing plays, not even unpositioned"
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "playSound `sfx/thud` reads `on.emitter`, but source `named:levelLoad` publishes no emitter",
+        );
+        capture.assert_logged_once(log::Level::Warn, "source `crossing:3` publishes no emitter");
+    }
+
+    #[test]
+    fn play_sound_rejects_an_at_other_than_the_emitter_token() {
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+        let error = registry
+            .dispatch(
+                "playSound",
+                &serde_json::json!({ "sound": "sfx/thud", "at": "@activators" }),
+                &queue,
+            )
+            .expect_err("only the emitter token is an anchor");
+        assert!(error.to_string().contains("`at` must be `on.emitter`"));
+        assert!(queue.take().is_empty());
     }
 
     #[test]

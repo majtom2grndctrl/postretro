@@ -267,6 +267,11 @@
   export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
   export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
+  const emitterTargetBrand: unique symbol;
+  /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
+  export type EmitterTarget = Readonly<{ readonly [emitterTargetBrand]: true }>;
+  /** Dispatch values published by a named gameplay event: weapon, reload, impact, enemy, movement and mover events. */
+  export type EmitterParams = Readonly<{ emitter: EmitterTarget }>;
   const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
@@ -411,6 +416,9 @@
   export function defineReaction(
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
+  export function defineReaction(
+    tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<EmitterParams>;
 
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
   export function defineImpactEvent(
@@ -437,6 +445,10 @@
     name: string,
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<EmitterParams>;
 
   export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
   /** A seeded trap-pool declaration; exactly one arming form is required. */

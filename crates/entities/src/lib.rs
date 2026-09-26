@@ -43,7 +43,8 @@ pub use postretro_foundation::{
 };
 pub use provenance::*;
 pub use reactions::emitter::{
-    AiCue, AiEmission, ContactHit, Emitter, ImpactContact, MovementEmission, WeaponEmission,
+    AiCue, AiEmission, ContactHit, EMITTER_AT_TOKEN, Emitter, ImpactContact, MovementEmission,
+    WeaponEmission,
 };
 pub use reactions::system_commands::{
     SystemCommandFireContext, SystemCommandQueue, SystemReactionCommand,

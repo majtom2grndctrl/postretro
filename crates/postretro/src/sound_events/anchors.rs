@@ -4,8 +4,10 @@
 // See: context/lib/audio.md §4 (Anchors)
 
 use glam::Vec3;
+use postretro_audio::SoundAnchor;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent, Transform,
+    ComponentKind, ComponentValue, Emitter, EntityId, EntityRegistry, KinematicMoverComponent,
+    Transform,
 };
 use postretro_foundation::PlayerMovementComponent;
 use postretro_level_loader::LevelWorld;
@@ -40,6 +42,23 @@ impl AnchorScene<'_> {
     pub(crate) fn fire_time_point(&mut self, id: EntityId) -> Option<Vec3> {
         let pose = *self.registry.get_component::<Transform>(id).ok()?;
         self.placed(id, pose)
+    }
+
+    /// The audio anchor for an emitter, placed at fire time. An entity gone
+    /// before the drain falls back to the origin its emission captured.
+    pub(crate) fn sound_anchor(&mut self, emitter: &Emitter) -> SoundAnchor {
+        match emitter {
+            Emitter::Entity { id, origin } => SoundAnchor::Entity {
+                key: entity_key(*id),
+                point: self.fire_time_point(*id).unwrap_or(*origin).to_array(),
+            },
+            Emitter::Contacts(contacts) => SoundAnchor::Contacts(
+                contacts
+                    .iter()
+                    .map(|contact| contact.point.to_array())
+                    .collect(),
+            ),
+        }
     }
 
     /// Where the frame presents the emitter: its render-interpolated pose.

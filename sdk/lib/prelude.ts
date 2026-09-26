@@ -105,7 +105,12 @@ export type {
 } from "./ui/theme";
 export { defineTheme, getDesignTokens } from "./ui/theme";
 
-export type { CrossingCondition, CrossingOptions, CrossingDescriptor } from "./ui/reactions";
+export type {
+  CrossingCondition,
+  CrossingOptions,
+  CrossingDescriptor,
+  PlaySoundOptions,
+} from "./ui/reactions";
 export {
   onStateCrossing,
   playSound,

@@ -13,6 +13,7 @@ declare module "postretro/ui" {
     CrossingCondition,
     CrossingOptions,
     CrossingParams,
+    EmitterTarget,
     Reaction,
     CrossingDescriptor,
     NumberValue,
@@ -248,8 +249,10 @@ declare module "postretro/ui" {
   export function onStateCrossing(ref: ComputedRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
   export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
-  /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
-  export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
+  /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
+  export type PlaySoundOptions = { bus?: string; at?: EmitterTarget };
+  /** Play `sound`. Without `options.at` it plays unpositioned. A reaction reading `on.emitter` fired by a source that publishes no emitter is skipped with a warning. */
+  export function playSound(sound: string, options?: PlaySoundOptions): PrimitiveReactionDescriptor;
   /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */
   export function rumble(strong: number, durationMs: number, weak?: number | null): PrimitiveReactionDescriptor;
   /** Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds. */

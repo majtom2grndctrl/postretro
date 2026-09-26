@@ -1684,6 +1684,16 @@ export type TickParams = { dt: RuntimeRead }
 export type ActivatorsTarget = { __triggerActivatorsTarget: true }
 export type TriggerTarget = { __firedTriggerTarget: true }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
+--- Opaque anchor for where the current named gameplay event happened. Legal
+--- only as `playSound`'s `at`.
+export type EmitterTarget = { __emitterTarget: true }
+--- Dispatch values published by a named gameplay event: weapon, reload,
+--- impact, enemy, movement and mover events.
+export type EmitterParams = { emitter: EmitterTarget }
+--- `playSound` options: `bus` routes to a mixer bus (SFX when omitted); `at =
+--- on.emitter` positions the sound where the named gameplay event happened,
+--- on the SFX bus.
+export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Impact-policy IR skin. These refs lower to the existing closed runtime IR;
@@ -1882,6 +1892,8 @@ declare defineReaction: (
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
+  & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
+  & ((name: string, tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
 )
 
 --- Define a pure impact-policy descriptor. Register it only by returning it
@@ -2602,8 +2614,8 @@ export type PostretroUiModule = {
   --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
   onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
     & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
-  --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
-  playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
+  --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
+  playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
   rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
   --- Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds.

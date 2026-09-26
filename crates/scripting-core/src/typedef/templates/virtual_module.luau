@@ -66,8 +66,8 @@ export type PostretroUiModule = {
   --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
   onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
     & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
-  --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
-  playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
+  --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
+  playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
   rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
   --- Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds.

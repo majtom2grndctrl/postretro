@@ -17,6 +17,18 @@ pub struct ReloadDelivery {
     pub outcome: ReloadOutcome,
 }
 
+impl ReloadDelivery {
+    /// The pawn whose weapon reloaded: the event's emitter.
+    pub fn pawn(&self) -> EntityId {
+        self.pawn
+    }
+
+    /// The weapon instance that reloaded; its descriptor supplies the sounds.
+    pub fn weapon(&self) -> EntityId {
+        self.weapon
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReloadOutcome {
     Started,

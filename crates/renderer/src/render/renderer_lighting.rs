@@ -32,6 +32,18 @@ fn bridge_dynamic_prefix_count(
     (dynamic_count <= dynamic_capacity).then_some(dynamic_count)
 }
 
+/// Keep the bridge's authored animated-baked tail that follows the dynamic
+/// prefix, so each frame's promotion weight scales the same base.
+fn retain_authored_animated_tail(
+    full: &mut super::renderer_types::FullRenderer,
+    lights_bytes: &[u8],
+) {
+    let dynamic_bytes = full.light_count as usize * GPU_LIGHT_SIZE;
+    full.authored_animated_tail.clear();
+    full.authored_animated_tail
+        .extend_from_slice(lights_bytes.get(dynamic_bytes..).unwrap_or_default());
+}
+
 /// Validate the bridge upload that fills all forward descriptors: the compact
 /// dynamic prefix plus the raw animated-baked tail. Promoted static records
 /// append later and deliberately have no descriptors.
@@ -708,6 +720,7 @@ impl Renderer {
                 .count() as u32;
         full.last_lights_upload.clear();
         full.last_lights_upload.extend_from_slice(lights_bytes);
+        retain_authored_animated_tail(full, lights_bytes);
         full.last_influence_upload.clear();
         full.last_influence_upload
             .extend_from_slice(influence_bytes);
@@ -773,6 +786,7 @@ impl Renderer {
         // animated base data written here with static bytes.
         full.last_lights_upload.clear();
         full.last_lights_upload.extend_from_slice(lights_bytes);
+        retain_authored_animated_tail(full, lights_bytes);
     }
 
     /// Upload the influence record paired with each compact dynamic light.

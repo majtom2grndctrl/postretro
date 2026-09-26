@@ -167,7 +167,7 @@
 // name is dropped; the script targets the door by tag, not by name.
 // Its authored closed rest AABB intersects alarm_light's rest cone. That is
 // intentional: the animated-direct capture freezes this pose to prove section
-// 45's flat delta handoff to the shared runtime shadow-pool self-shadow.
+// 45's flat delta handoff to the shared runtime shadow pool.
 {
 "classname" "kinematic_mover"
 "path" "closet_door_closed"
@@ -292,10 +292,13 @@
 }
 // entity 13
 // Both receiver fixtures stay in the main room, away from the closet doorway
-// and the spawner's local +X fan-out, but inside alarm_light's cone.
+// and the spawner's local +X fan-out, but inside alarm_light's cone. The prop
+// stands close enough to the closed door that alarm_light casts its shadow
+// onto the door's lit face. The promoted capture needs that shadow: the door
+// is convex, so it cannot shadow itself.
 {
 "classname" "prop_mesh"
-"origin" "104 -112 0"
+"origin" "128 -112 0"
 "angles" "0 45 0"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 }

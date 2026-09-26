@@ -6,6 +6,10 @@ use std::path::Path;
 
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::cluster_sh_payloads::{
+    CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, ClusterShPayloadsSection,
+    ClusterShPayloadsSourceKind,
+};
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_format::{SectionBlob, SectionId};
 
@@ -88,19 +92,29 @@ pub(super) fn without_receiver(map: &Path, receiver: Receiver) -> tempfile::Temp
 pub(super) fn without_animated_direct(map: &Path, slot: u32) -> tempfile::TempPath {
     let mut source = File::open(map).expect("open capture PRL");
     let meta = postretro_level_format::read_container(&mut source).expect("read PRL container");
+    let read_section = |source: &mut File, section_id: u32| {
+        postretro_level_format::read_section_data(source, &meta, section_id)
+            .expect("read PRL section")
+            .expect("listed section exists")
+    };
+    let animated_direct = AnimatedDirectShDeltaVolumesSection::from_bytes(&read_section(
+        &mut source,
+        SectionId::AnimatedDirectShDeltaVolumes as u32,
+    ))
+    .expect("decode animated direct SH");
     let mut sections = Vec::new();
     let mut found = false;
     for entry in &meta.sections {
-        let mut data =
-            postretro_level_format::read_section_data(&mut source, &meta, entry.section_id)
-                .expect("read PRL section")
-                .expect("listed section exists");
+        let mut data = read_section(&mut source, entry.section_id);
         if entry.section_id == SectionId::AnimatedDirectShDeltaVolumes as u32 {
-            let mut section = AnimatedDirectShDeltaVolumesSection::from_bytes(&data)
-                .expect("decode animated direct SH");
+            let mut section = animated_direct.clone();
             zero_animated_direct_light(&mut section, slot);
             data = section.to_bytes();
             found = true;
+        } else if entry.section_id == SectionId::ClusterShPayloads as u32 {
+            // A streamed load reads id 45 only from these per-cluster copies,
+            // so zeroing the whole-section body alone leaves the light intact.
+            data = zero_streamed_animated_direct_light(&data, &animated_direct, slot);
         }
         sections.push(SectionBlob {
             section_id: entry.section_id,
@@ -141,6 +155,81 @@ fn zero_animated_direct_light(section: &mut AnimatedDirectShDeltaVolumesSection,
         changed,
         "fixture alarm must have nonzero animated direct SH"
     );
+}
+
+/// Zero this light's id-45 sparse rows inside every id-50 cluster chunk, then
+/// rehash each chunk. Block and entry offsets are unchanged, so the metadata
+/// still validates against id 49 and the id-45 section it was built from.
+fn zero_streamed_animated_direct_light(
+    data: &[u8],
+    animated_direct: &AnimatedDirectShDeltaVolumesSection,
+    slot: u32,
+) -> Vec<u8> {
+    let mut section = ClusterShPayloadsSection::from_bytes(data).expect("decode id-50 payloads");
+    let animated_direct_id = SectionId::AnimatedDirectShDeltaVolumes as u32;
+    assert!(
+        section.sources.iter().any(|source| {
+            source.section_id == animated_direct_id
+                && source.kind == ClusterShPayloadsSourceKind::SparseAffinity
+        }),
+        "fixture id 50 must stream id 45 as sparse affinity rows"
+    );
+    let metadata_len =
+        ClusterShPayloadsSection::metadata_len_from_header(data).expect("id-50 metadata length");
+    let mut payload = data[metadata_len..].to_vec();
+    let mut changed = false;
+    for entry in &mut section.index {
+        let range =
+            entry.payload_offset as usize..(entry.payload_offset + entry.payload_len) as usize;
+        let chunk = &mut payload[range];
+        if chunk.is_empty() {
+            continue;
+        }
+        let block_count = read_u32(chunk, 8) as usize;
+        for block in 0..block_count {
+            let record = CLUSTER_SH_CHUNK_HEADER_SIZE + block * CLUSTER_SH_BLOCK_RECORD_SIZE;
+            if read_u32(chunk, record) != animated_direct_id {
+                continue;
+            }
+            let body_offset = read_u64(chunk, record + 16) as usize;
+            let body_len = read_u64(chunk, record + 24) as usize;
+            let body = &mut chunk[body_offset..body_offset + body_len];
+            // Sparse rows: 16-byte header, 16-byte row records, 16-byte
+            // `(light, first_f16, f16_count, 0)` entries, then f16 tiles.
+            let row_count = read_u32(body, 0) as usize;
+            let entry_count = read_u32(body, 4) as usize;
+            let entries = 16 + row_count * 16;
+            let tiles = entries + entry_count * 16;
+            for sparse_entry in 0..entry_count {
+                let record = entries + sparse_entry * 16;
+                let light = read_u32(body, record) as usize;
+                if animated_direct.animation_descriptor_indices[light] != slot {
+                    continue;
+                }
+                let first = tiles + read_u32(body, record + 4) as usize * 2;
+                let len = read_u32(body, record + 8) as usize * 2;
+                let values = &mut body[first..first + len];
+                changed |= values.iter().any(|&byte| byte != 0);
+                values.fill(0);
+            }
+        }
+        entry.hash = *blake3::hash(chunk).as_bytes();
+    }
+    assert!(
+        changed,
+        "fixture alarm must have nonzero streamed animated direct SH"
+    );
+    section
+        .try_to_bytes(&payload)
+        .expect("re-encode id-50 payloads")
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 field"))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 field"))
 }
 
 #[test]

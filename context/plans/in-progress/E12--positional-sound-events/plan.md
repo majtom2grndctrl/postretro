@@ -1,19 +1,11 @@
 # E12--positional-sound-events — plan of record
 
 mode: resumable
-status: blocked
+status: proposed
 read at: b99101534
 
-## Block
-
-AC row 15 ("Every impact request carries each contact's point, its normal, and whether it hit an entity or world geometry") cannot hold for one producer as the Decisions stand. On the host, a remote client's hitscan shot is never ray-cast; the host learns it only from the client's `HitDeclaration` (`crates/net/src/wire.rs` `HitRecord { target, point, zone }`). Hit records carry no normal: `apply_valid_hit_record` (`crates/netcode/src/lib.rs:2258`) builds its `WeaponImpact` with `normal: Vec3::ZERO`. They also declare no world-geometry hits for hitscan. Every other producer carries a real normal: local hitscan, host projectiles, and the client's predicted hitscan and projectiles.
-
-Owner decides one of:
-
-- **A (recommended): restate the row.** Proposed wording: "Every impact request carries each contact's point and whether it hit an entity or world geometry, plus its surface normal wherever the producer resolves one. On the host, a remote client's hitscan shot contributes its declared entity hits with no normal; its world contacts are unknown to the host until the peer-audio step." Cost: none now. Surface-material routing later treats a missing normal as "default surface".
-- **B: extend the wire.** Add `normal` to `HitRecord`, and have hitscan declarations also carry world contacts under the existing `u32::MAX` presentation-contact sentinel that projectile declarations use. Host validation must learn a presentation-only hitscan contact. Cost: a wire change plus a netcode validation change, beyond the Decisions' "client hears its own actions" scope.
-
-On resolution, apply the wording, set `status: proposed`, and report for the owner's skim.
+## Owner resolutions
+- **AC 15 block → B, extend the wire (owner, 2026-09-26).** "What sets PostRetro up to thrive long term," not parity. `wire::HitRecord` gains `normal: [f32; 3]`. Hitscan declarations also carry world contacts under the `u32::MAX` presentation-contact sentinel that projectile declarations already use (`PROJECTILE_PRESENTATION_CONTACT_TARGET`). The host validates a presentation-only hitscan contact with the same range and eye line-of-sight checks as an entity hit, allowing for the contact surface itself; it applies no damage. A non-finite or non-unit normal invalidates that record's contact data only, never damage validation. `WIRE_VERSION` 22 → 23. `apply_valid_hit_record` and the projectile-contact path build their `WeaponImpact` from the declared normal instead of `Vec3::ZERO`. The host emits one impact per remote activation carrying every validated contact. Row 15 stands as written. The brief's client Decision records the extension.
 
 ## Corrections
 - Read-at commit `b3548b603` is not an ancestor of `main` → every cited symbol was re-read at `b99101534` (four read-only verification passes). Planning proceeds from those reads.
@@ -61,7 +53,7 @@ On resolution, apply the wording, set `status: proposed`, and report for the own
 | 12 each descriptor field plays once at its anchor (all kinds) | `sound_events` tests: emissions → requests audio receives, asserting key and anchor per field | achievable as stated |
 | 13 P4 multi-pellet one impact at nearest; none on miss; two shots two | sim emission test plus spatial nearest-contact test | achievable as stated |
 | 14 P14 projectile despawned on hit still sounds once; per-tick grouping | sim projectile-stage emission test | achievable as stated |
-| 15 every impact carries point, normal, entity/world | — | **needs restatement** (see Block) |
+| 15 every impact carries point, normal, entity/world | sim emission tests (local hitscan, projectile) plus netcode ingest test: a remote hitscan declaration with entity and world contacts yields one impact whose contacts carry the declared normals and hit kinds | achievable as stated |
 | 16 enemy projectile contact fires `impact` once; weapon sound from projectile | sim test with an enemy-spawned projectile | achievable as stated |
 | 17 enemy attack naming weapon: fire at enemy, impact at contact, plus `AttackParams.sound` | ai/sim emission plus `sound_events` resolution test | achievable as stated |
 | 18 descriptor sound and reaction both play | `sound_events` test with a `playSound` reaction on `activate` | achievable as stated |
@@ -108,6 +100,7 @@ On resolution, apply the wording, set `status: proposed`, and report for the own
 | 6 | Emitter token: fire context carries emitter; `playSound(sound, { bus, at })` in Rust, TS and Luau; `EmitterParams`, `DISPATCH_PARAMS.emitter`; warn-once skip; V4a/V4b extension; `at` with non-SFX bus rejected; consumers fixed; typedefs regenerated. Rows 28, 29, 31, 32, 41 | integrating executor | 5 | |
 | 7 | Descriptor sound fields (weapon `sounds`, movement `sounds`, `AttackParams.sound`, activity `sound`) in foundation, JS, Luau and the SDK. `DescriptorSoundTable` built at install and rebuilt on commit. Unknown-key check at install and commit. `sound_events` drain resolves descriptor sounds and dispatches with emitter. Rows 12, 17, 18, 20, 21, 30, 33, 36, 39 | integrating executor | 5, 6 | |
 | 8 | Manifest `audio.attenuation` (JS and Luau drains, warn-and-fallback, commit applies to new voices). Row 37 | delegated worker | 2 | |
-| 9 | Client hears its own actions: ammo-gated fire and dry-fire prediction, hitscan world hits and normals (declaration unchanged), predicted projectile impacts, reload-edge tracker, client emissions. Rows 22–26 | integrating executor | 5, 7 | |
+| 9a | Hit-declaration wire: `HitRecord.normal`; hitscan world contacts under the sentinel; host validation of presentation-only hitscan contacts; declared normals in `WeaponImpact`; remote-activation impact emission on host; `WIRE_VERSION` 23. Row 15 (remote half) | integrating executor | 5 | |
+| 9 | Client hears its own actions: ammo-gated fire and dry-fire prediction, hitscan world hits and normals (declared through 9a), predicted projectile impacts, reload-edge tracker, client emissions. Rows 22–26 | integrating executor | 5, 7, 9a | |
 | 10 | Content: Scripting-surface fixtures (TS and Luau) under their own canonical names, generated sound assets under `content/dev/sounds/sfx`, `door.open` fixture, `arena-lights.ts` migrated. Row 27 | integrating executor | 6, 7, 3 | |
 | 11 | Grep gates and full preflight. Rows 42, 43 | integrating executor | all | |

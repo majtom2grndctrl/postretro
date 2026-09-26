@@ -1,7 +1,7 @@
 # Large-Map Spatial Residency
 
 > **Status:** Epic seed. SH is the first resource and ships through stages 1–4 below
-> (`context/plans/in-progress/sh-probe-streaming/`). Generalizing to further resources is
+> (`context/plans/done/sh-probe-streaming/`). Generalizing to further resources is
 > unplanned. Not ready for `/build-spec`; a planning session turns stage 5 into scoped
 > specs after the listed measurements exist.
 > **Supporting research:** `context/research/spatial-streaming.md`. Shipped SH residency:

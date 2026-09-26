@@ -149,19 +149,28 @@ reaches the ambient floor. Baked owners remain installed for dependent halo clus
 physical light accumulates once and an owner cannot be evicted out from under a resident
 boundary.
 
-**Sampled-row compose (decided, not yet built).** Each frame, after visibility and draw
-culls and before compose, the application hands the renderer the world regions SH consumers
-can sample: visible and fog-reachable cells (an empty fog-reachable set means every cell),
-drawn movers at their interpolated transform, whole drawn skinned meshes, and first-person
-viewmodels. Only the renderer maps regions to affinity rows, dilated by the sampler
-footprint and closed over scaled-node writer rows; the region input carries no row indices.
+**Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
+the application hands the renderer `ShSampleRegionSets`: world AABBs for visible cells,
+fog-reachable cells, and drawn movers swept from their current to interpolated transform.
+Renderer-admitted `MeshFramePlan`s supply the accepted forward-mesh bounds; only the
+windowed path also supplies first-person viewmodel bounds, while capture excludes them.
+An empty fog-reachable set means every cell and therefore gates all resident rows. Only the
+renderer maps these regions to affinity rows; it expands them by 1.1 cell spacings for the
+sampler footprint, intersects them with resident rows, and closes the result over
+scaled-node writer rows. No row indices cross the application/renderer boundary. Rows are
+also filtered per pass by whether the resident streamed data actually contributes: indirect
+section 27, static-direct section 41, or animated-direct section 45.
+
 Invariant: every stored slot a consumer can sample in frame N equals what full-resident
-compose would write in frame N, so no stale slot is sampled. Rows outside the gate may lag,
-and compose on the frame they re-enter it, before any consumer samples them. Unlike the warm
+compose would write in frame N, so no stale slot is sampled. Per-pass generations record
+changes while rows are outside the gate or a frame cannot encode; lagging rows compose on
+the frame they re-enter the gate, before any consumer samples them. Install, eviction, and
+slot-reuse rows bypass the view gate, including their scaled-node writers. Unlike the warm
 set, the gate is view-dependent: turning in place composes lagging rows as they come into
 view. Any new SH consumer (an alternate camera, GPU particles, reflection probes) adds its
-sample regions before compose or forces full-resident compose. This is the SH counterpart of
-the animated-lightmap visibility rule in §7.1 step 4.
+sample regions before compose or forces full-resident compose. The dev/capture exactness
+switch forces every resident row through every available pass. This is the SH counterpart
+of the animated-lightmap visibility rule in §7.1 step 4.
 
 An install journals every residency change and undoes it newest-first on failure, so its
 cost scales with the cluster being installed rather than the map. Install and eviction
@@ -179,9 +188,9 @@ the dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. 
 tuning and gate nothing. The dev-tools SH Volumes probe markers draw on streamed maps from
 the streaming base metadata. A Residency marker mode colors each probe from the renderer's
 sampled and composed word mirrors: sampleable, installed awaiting compose, requested,
-miss, or invalid. Decided, not yet built: per-pass compose counters (rows composed,
-dispatches, rows composed because they lagged, rows still lagging, and CPU planning time)
-join the log line, the Streaming tab, and the capture report.
+miss, or invalid. Per-pass compose counters report rows composed, dispatches, rows composed
+because they lagged, resident rows still lagging, and CPU planning time through the same
+log, Streaming-tab, and capture-report surfaces.
 
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
@@ -273,18 +282,24 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
    retains its full-affinity-grid dispatch whenever its composed atlas changes. In streamed
    mode, the renderer drains accepted cluster work once before every SH compose path. It
    samples the prior installed-and-composed set while new cluster data composes, and
-   promotes that data only at the following drain. Streamed indirect and direct families dispatch only coalesced
-   affinity-row ranges; they never dispatch arbitrary dense indices or unrelated whole-map
-   rows. Decided, not yet built: each streamed pass instead composes a gathered list of rows,
-   one dispatch per pass or per chunk past a per-dispatch capacity, without adding or
-   renumbering a compose binding. Each streamed pass fires on its own inputs, each with a
+   promotes that data only at the following drain. Each streamed pass composes a packed
+   gathered row list through the existing dynamic uniform binding 18, in chunks of at most
+   16,364 rows (and any lower device limit), so empty plans dispatch nothing and unrelated
+   whole-map rows are never touched. Indirect records before static-direct Pass A, which
+   records before animated-direct Pass B, and all three precede every scene draw. Each
+   pass commits its planner generation only after successful encoding; if Pass B fails,
+   committed Pass A is not repeated and Pass B remains pending for retry. Each streamed
+   pass fires on its own inputs, each with a
    one-frame tail: indirect while an animated indirect light is active, animated direct
    while an animated direct light is active, and static direct only when its uploaded
    promotion weights change. A firing pass composes only sampled rows (§4 "Sampled-row
    compose") that carry its contribution. Rows touched by an install, slot reuse, or partial
    eviction, and their scaled-node writer rows, compose regardless. A light-term mask or
-   dev-override change forces one full-resident frame. A dev switch forces full-resident
-   compose every frame; it is the exactness reference. The legacy whole-load path keeps its
+   dev-override change forces one full-resident frame. A dev/capture switch forces
+   full-resident compose every frame; it is the exactness reference. Measurement captures
+   advance renderer animation time by a fixed 1/60 second per warmup and sampled frame,
+   while preload and ordinary single-image captures remain at time zero. The legacy
+   whole-load path keeps its
    full-grid row set. The indirect SH pass reads the static base octahedral irradiance atlas and per-light animated delta tile data; evaluates animation curves for each light at the current frame time; accumulates the mask-selected contributions and writes the shared stored-slot composed indirect atlas. The static-indirect bit selects the base and the animated-indirect bit gates every delta accumulation path. Dropped-valid delta probes reconstruct strictly within their 4×4×4 brick; base L1 probes reconstruct across their complete aligned node. For each CSR entry, all coarsened compose passes load each brick's kept lattice once into workgroup memory, while L0 probes keep direct reads. It dispatches only when its composed atlas would change — on level-load copy-through, while any animated indirect light is active, once when activity returns to zero, and whenever the current mask differs from the mask that produced the atlas. The direct SH pass is the static-entity-shadow sibling: whenever usable base direct SH is present, it writes the shared stored-slot composed direct atlas with static and animated contributions selected by their mask bits; promotion subtraction is enabled only with dynamic direct. It composes even without selected direct deltas, copying the base when baked direct is enabled and writing zero when it is disabled, so the baked-direct-static mask can isolate base direct SH. It dispatches on level-load copy-through, while any weight is nonzero, once when weights return to all-zero, and whenever the current mask differs from the mask that produced the atlas; maps without usable direct SH allocate no composed direct atlas and keep the no-direct binding behavior. The animated billboard-scatter sibling keeps its whole-resident path: it copies section 47 then accumulates section 48's dense deltas with the shared descriptors, time, and mask; static-only maps bind section 47 directly. All compose passes run before the depth prepass and before their consumers sample the results. See §4 "Animated SH delta volumes" and "Promoted static lights".
 6. **Shadow cone cull** (compute) — for each occupied spot-shadow slot that needs a world-depth update, dispatches BVH traversal gated by that slot's cone frustum only. The visible-cells buffer is all-ones: an occluder outside the camera's portal-visible set can still cast a shadow onto a visible receiver. Each slot writes into its own sub-region of a single shared indirect buffer. A second instance of the same cull pipeline serves the cube pool: one sub-region per `(cube slot, face)` layer, gated by that face's 90° perspective frustum (dispatched inside step 8). Runs after the camera cull compute pass and before the shadow depth render passes. This cull serves static world geometry only. Skinned and rigid-instance occluders are outside the world BVH and CPU cone-culled per slot in steps 7–8. Warm promoted-static and dynamic-cache slots skip these sub-region dispatches because their static world depth is already cached.
 
@@ -449,12 +464,12 @@ unsupported or incomplete timing is named as absent, never reported as zero. War
 state is discarded before samples. The normal PNG publishes before the staged measurement
 report, so a failed run cannot leave a new valid-looking report.
 
-Capture is VM-free and single-instant: no script VM, no trigger firing, no game
-tick — one authored frame. Decided, not yet built: measurement mode may advance animation
-time by a fixed step per sampled frame, still VM-free, so exactness comparisons see
-animated compose change; default capture stays single-instant. Byte-stable across runs on one adapter; adapter
-rounding rules out cross-adapter goldens, so regressions compare same-adapter
-frames, not committed reference PNGs.
+Capture remains VM-free: no script VM, trigger firing, or game tick. Preload and ordinary PNG
+capture render the authored instant at time zero. Measurement mode advances renderer animation
+time by a fixed 1/60 second for each warmup and sampled frame, still without gameplay or a VM;
+its inspectable PNG renders at the resulting stepped time so exactness comparisons see animated
+compose change. Output is byte-stable across runs on one adapter; adapter rounding rules out
+cross-adapter goldens, so regressions compare same-adapter frames, not committed reference PNGs.
 
 Dynamic receivers (kinematic movers and skinned prop meshes) draw in capture at
 their authored rest pose through the same renderer draw seams the windowed frame

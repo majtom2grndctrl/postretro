@@ -78,7 +78,8 @@ impl ShStreamingLogWindow {
         let start = *self.window_start.get_or_insert(now_seconds);
         let elapsed = now_seconds - start;
         if elapsed < DIAGNOSTICS_LOG_INTERVAL_SECONDS
-            || cumulative_counters(live) == cumulative_counters(&self.baseline)
+            || (cumulative_counters(live) == cumulative_counters(&self.baseline)
+                && !compose_gauges_changed_or_active(&self.baseline, live))
         {
             return None;
         }
@@ -87,6 +88,18 @@ impl ShStreamingLogWindow {
         self.window_start = Some(now_seconds);
         Some(line)
     }
+}
+
+fn compose_gauges_changed_or_active(
+    before: &ShStreamingLiveDiagnostics,
+    now: &ShStreamingLiveDiagnostics,
+) -> bool {
+    now.indirect_compose != Default::default()
+        || now.static_direct_compose != Default::default()
+        || now.animated_direct_compose != Default::default()
+        || now.indirect_compose != before.indirect_compose
+        || now.static_direct_compose != before.static_direct_compose
+        || now.animated_direct_compose != before.animated_direct_compose
 }
 
 fn cumulative_counters(d: &ShStreamingLiveDiagnostics) -> [u64; 17] {
@@ -126,6 +139,11 @@ fn format_line(
          {discarded} discarded ({discarded_bytes}), {budget_limited} budget-limited drains, \
          {growths} pool growths (+{growth_bytes}), install CPU {install_ms:.2} ms \
          (growth {growth_ms:.2} ms) \
+         | compose frame: indirect {ind_rows} rows/{ind_dispatches} dispatches \
+         ({ind_lagged} lagged, {ind_remaining} remain), static-direct \
+         {static_rows}/{static_dispatches} ({static_lagged} lagged, {static_remaining} remain), \
+         animated-direct {animated_rows}/{animated_dispatches} ({animated_lagged} lagged, \
+         {animated_remaining} remain), planning {planning_ms:.3} ms \
          | now: {targets} targets ({warm} warm), {sampleable} sampleable, {queued} queued, \
          {ready} ready, {permits}/{MAX_STREAM_PERMITS} permits, pool {occupancy} of {capacity}, \
          read latency p50 {p50:.1} / p95 {p95:.1} / max {read_max:.1} ms, \
@@ -148,6 +166,19 @@ fn format_line(
         growth_bytes = format_bytes(delta(|d| d.pool_growth_bytes)),
         install_ms = delta(|d| d.install_cpu_total_micros) as f64 / 1000.0,
         growth_ms = delta(|d| d.pool_growth_cpu_micros) as f64 / 1000.0,
+        ind_rows = now.indirect_compose.rows_composed,
+        ind_dispatches = now.indirect_compose.dispatches,
+        ind_lagged = now.indirect_compose.lagged_rows_composed,
+        ind_remaining = now.indirect_compose.resident_rows_still_lagging,
+        static_rows = now.static_direct_compose.rows_composed,
+        static_dispatches = now.static_direct_compose.dispatches,
+        static_lagged = now.static_direct_compose.lagged_rows_composed,
+        static_remaining = now.static_direct_compose.resident_rows_still_lagging,
+        animated_rows = now.animated_direct_compose.rows_composed,
+        animated_dispatches = now.animated_direct_compose.dispatches,
+        animated_lagged = now.animated_direct_compose.lagged_rows_composed,
+        animated_remaining = now.animated_direct_compose.resident_rows_still_lagging,
+        planning_ms = now.compose_planning_cpu_micros as f64 / 1000.0,
         targets = now.target_clusters,
         warm = now.warm_clusters,
         sampleable = now.sampleable_clusters,
@@ -301,6 +332,25 @@ mod tests {
             warm_clusters: 8,
             permits_in_use: 4,
             read_latency_p95_ms: 9.3,
+            indirect_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 31,
+                dispatches: 1,
+                lagged_rows_composed: 7,
+                resident_rows_still_lagging: 4,
+            },
+            static_direct_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 9,
+                dispatches: 2,
+                lagged_rows_composed: 3,
+                resident_rows_still_lagging: 2,
+            },
+            animated_direct_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 11,
+                dispatches: 1,
+                lagged_rows_composed: 5,
+                resident_rows_still_lagging: 6,
+            },
+            compose_planning_cpu_micros: 275,
             ..ShStreamingLiveDiagnostics::default()
         };
         let line = format_line(5.0, &before, &now);
@@ -309,6 +359,65 @@ mod tests {
         assert!(line.contains("24 targets (8 warm)"), "{line}");
         assert!(line.contains("4/8 permits"), "{line}");
         assert!(line.contains("p95 9.3"), "{line}");
+        assert!(
+            line.contains("indirect 31 rows/1 dispatches (7 lagged, 4 remain)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("static-direct 9/2 (3 lagged, 2 remain)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("animated-direct 11/1 (5 lagged, 6 remain)"),
+            "{line}"
+        );
+        assert!(line.contains("planning 0.275 ms"), "{line}");
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn active_compose_gauges_keep_periodic_log_alive_without_cumulative_changes() {
+        let mut window = ShStreamingLogWindow::default();
+        let live = ShStreamingLiveDiagnostics {
+            indirect_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 12,
+                dispatches: 1,
+                ..Default::default()
+            },
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        assert!(window.line_if_due(0.0, &live).is_none());
+        assert!(window.line_if_due(5.0, &live).is_some());
+        assert!(window.line_if_due(10.0, &live).is_some());
+
+        let idle = ShStreamingLiveDiagnostics::default();
+        assert!(window.line_if_due(15.0, &idle).is_some());
+        assert!(window.line_if_due(20.0, &idle).is_none());
+    }
+
+    // Regression: per-frame planning time used to keep an otherwise idle log window alive.
+    #[test]
+    fn planning_time_is_reported_with_real_activity_but_does_not_activate_log_window() {
+        let mut window = ShStreamingLogWindow::default();
+        let planning_only = ShStreamingLiveDiagnostics {
+            compose_planning_cpu_micros: 275,
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        assert!(window.line_if_due(0.0, &planning_only).is_none());
+        assert!(window.line_if_due(5.0, &planning_only).is_none());
+        assert!(window.line_if_due(10.0, &planning_only).is_none());
+
+        let active = ShStreamingLiveDiagnostics {
+            compose_planning_cpu_micros: 275,
+            indirect_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 1,
+                ..Default::default()
+            },
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        let line = window
+            .line_if_due(15.0, &active)
+            .expect("compose activity should activate the log window");
+        assert!(line.contains("planning 0.275 ms"), "{line}");
     }
 }

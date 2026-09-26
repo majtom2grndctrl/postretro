@@ -3,6 +3,7 @@
 
 use glam::{Mat4, Vec3};
 use postretro_level_loader::LevelWorld;
+use postretro_renderer::ShSampleRegion;
 use postretro_visibility::{
     CameraCullVisibility, VisibilityPath, VisibilityStats, VisibleCells, determine_visible_cells,
 };
@@ -15,6 +16,9 @@ pub(crate) struct VisibleRenderPreparation {
     pub(crate) fog_reachable: Vec<u32>,
     pub(crate) light_reachable_cell_mask: Vec<bool>,
     pub(crate) reachable_cell_aabbs: Vec<(Vec3, Vec3)>,
+    /// Drawable-cell world bounds. Kept separate from fog reach so the empty
+    /// fog list can retain its DrawAll sentinel at the renderer boundary.
+    pub(crate) visible_cell_aabbs: Vec<ShSampleRegion>,
     pub(crate) stats: VisibilityStats,
 }
 
@@ -41,12 +45,14 @@ impl VisibleRenderPreparation {
         let fog_reachable = visibility.fog_reachable;
         let (light_reachable_cell_mask, reachable_cell_aabbs) =
             light_reachability_inputs(world, &fog_reachable);
+        let visible_cell_aabbs = visible_cell_regions(world, &visibility.visible_cells);
 
         Self {
             visible_cells: visibility.visible_cells,
             fog_reachable,
             light_reachable_cell_mask,
             reachable_cell_aabbs,
+            visible_cell_aabbs,
             stats: visibility.stats,
         }
     }
@@ -59,6 +65,7 @@ impl VisibleRenderPreparation {
             fog_reachable: Vec::new(),
             light_reachable_cell_mask: Vec::new(),
             reachable_cell_aabbs: Vec::new(),
+            visible_cell_aabbs: Vec::new(),
             stats: VisibilityStats {
                 camera_cell: 0,
                 total_faces: 0,
@@ -73,6 +80,21 @@ impl VisibleRenderPreparation {
             cells: &self.visible_cells,
             path: self.stats.path,
         }
+    }
+}
+
+fn visible_cell_regions(world: &LevelWorld, visible: &VisibleCells) -> Vec<ShSampleRegion> {
+    match visible {
+        VisibleCells::DrawAll => world
+            .cells
+            .iter()
+            .map(|cell| ShSampleRegion::new(cell.bounds_min, cell.bounds_max))
+            .collect(),
+        VisibleCells::Culled(cells) => cells
+            .iter()
+            .filter_map(|&cell| world.cells.get(cell as usize))
+            .map(|cell| ShSampleRegion::new(cell.bounds_min, cell.bounds_max))
+            .collect(),
     }
 }
 

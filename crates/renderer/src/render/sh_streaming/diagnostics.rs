@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use super::ShResidencySnapshot;
+use super::{ShComposePassDiagnostics, ShResidencySnapshot};
 
 /// Cumulative CPU time the renderer spent installing ready clusters, measured
 /// once per drain that carried at least one ready cluster. A drain that grew
@@ -65,8 +65,9 @@ fn duration_micros(elapsed: Duration) -> u64 {
 }
 
 /// One frame's view of SH streaming for the dev-tools Streaming tab and the
-/// periodic log. Plain data: gauges are current values, every other field is a
-/// cumulative count since the controller or renderer state was created.
+/// periodic log. Plain data: residency and compose work are current-frame
+/// gauges; controller, worker, install, and growth fields are cumulative
+/// counts since their owning state was created.
 ///
 /// The application fills controller and worker fields; the renderer fields
 /// come from [`ShResidencySnapshot`] via [`Self::record_renderer_snapshot`].
@@ -111,6 +112,11 @@ pub struct ShStreamingLiveDiagnostics {
     pub pool_growth_events: u64,
     pub pool_growth_bytes: u64,
     pub pool_growth_cpu_micros: u64,
+    // Current-frame renderer compose gauges.
+    pub indirect_compose: ShComposePassDiagnostics,
+    pub static_direct_compose: ShComposePassDiagnostics,
+    pub animated_direct_compose: ShComposePassDiagnostics,
+    pub compose_planning_cpu_micros: u64,
 }
 
 impl ShStreamingLiveDiagnostics {
@@ -127,6 +133,10 @@ impl ShStreamingLiveDiagnostics {
         self.pool_growth_events = snapshot.pool_growth_events;
         self.pool_growth_bytes = snapshot.pool_growth_bytes;
         self.pool_growth_cpu_micros = snapshot.pool_growth_cpu_micros;
+        self.indirect_compose = snapshot.indirect_compose;
+        self.static_direct_compose = snapshot.static_direct_compose;
+        self.animated_direct_compose = snapshot.animated_direct_compose;
+        self.compose_planning_cpu_micros = snapshot.compose_planning_cpu_micros;
     }
 }
 
@@ -195,6 +205,13 @@ mod tests {
             pool_growth_events: 2,
             pool_growth_bytes: 4096,
             pool_growth_cpu_micros: 250,
+            indirect_compose: ShComposePassDiagnostics {
+                rows_composed: 21,
+                dispatches: 2,
+                lagged_rows_composed: 5,
+                resident_rows_still_lagging: 8,
+            },
+            compose_planning_cpu_micros: 77,
             ..ShResidencySnapshot::default()
         });
         assert_eq!(live.target_clusters, 9);
@@ -209,5 +226,10 @@ mod tests {
         assert_eq!(live.pool_growth_events, 2);
         assert_eq!(live.pool_growth_bytes, 4096);
         assert_eq!(live.pool_growth_cpu_micros, 250);
+        assert_eq!(live.indirect_compose.rows_composed, 21);
+        assert_eq!(live.indirect_compose.dispatches, 2);
+        assert_eq!(live.indirect_compose.lagged_rows_composed, 5);
+        assert_eq!(live.indirect_compose.resident_rows_still_lagging, 8);
+        assert_eq!(live.compose_planning_cpu_micros, 77);
     }
 }

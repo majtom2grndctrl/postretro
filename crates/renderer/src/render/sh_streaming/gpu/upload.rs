@@ -2,6 +2,9 @@
 //! See: context/lib/rendering_pipeline.md §4; context/lib/resource_management.md §8.
 
 use super::*;
+use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
+use crate::render::direct_sh_compose::DirectShDebugOverride;
+use crate::render::renderer_types::PromotedBakedLightState;
 
 /// Largest upload scratch vector kept between batches. Budgeted drains stage
 /// well under this; an oversized cluster's scratch is released after use.
@@ -320,20 +323,15 @@ impl StreamingGpuPools {
     }
 
     pub(in crate::render::sh_streaming) fn dispatch_indirect_compose<'a>(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        dirty_ranges: &[(u32, u32)],
+        rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
-    ) -> Result<(), ShResidencyDrainError> {
-        self.indirect_compose.dispatch(
-            queue,
-            encoder,
-            uniform_bind_group,
-            dirty_ranges,
-            timestamp_writes,
-        )
+    ) -> Result<usize, ShResidencyDrainError> {
+        self.indirect_compose
+            .dispatch(queue, encoder, uniform_bind_group, rows, timestamp_writes)
     }
 
     pub(in crate::render::sh_streaming) fn indirect_has_active_animation(
@@ -367,44 +365,54 @@ impl StreamingGpuPools {
         }
     }
 
+    pub(in crate::render::sh_streaming) fn dispatch_direct_promotion<'a>(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        light_term_mask: postretro_render_cpu::frame_uniforms::LightTermMask,
+        promotion_override: DirectShDebugOverride,
+        rows: &[u32],
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
+    ) -> Result<usize, ShResidencyDrainError> {
+        self.direct_compose
+            .as_mut()
+            .ok_or(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed direct compose requested without a compose pool",
+            })?
+            .dispatch_promotion(
+                queue,
+                encoder,
+                light_term_mask,
+                promotion_override,
+                rows,
+                timestamp_writes,
+            )
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::render::sh_streaming) fn dispatch_direct_compose<'a>(
+    pub(in crate::render::sh_streaming) fn dispatch_direct_animated<'a>(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        light_term_mask: postretro_render_cpu::frame_uniforms::LightTermMask,
-        promotion_override: DirectShDebugOverride,
         animated_override: AnimatedDirectShDebugOverride,
         promoted_animated_states: &[PromotedBakedLightState],
-        promotion_ranges: &[(u32, u32)],
-        animated_ranges: &[(u32, u32)],
-        force_full_resident: bool,
-        promotion_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
-        animated_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
-    ) -> Result<(), ShResidencyDrainError> {
+        rows: &[u32],
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
+    ) -> Result<usize, ShResidencyDrainError> {
         self.direct_compose
             .as_mut()
             .ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed direct compose dispatch requested without a compose pool",
+                reason: "streamed animated direct compose requested without a compose pool",
             })?
-            .dispatch(
+            .dispatch_animated(
                 queue,
                 encoder,
                 uniform_bind_group,
-                StreamingDirectComposeFrameInputs {
-                    light_term_mask,
-                    dirty: StreamingDirectDirtyRanges {
-                        promotion: promotion_ranges,
-                        animated: animated_ranges,
-                        force_full_resident,
-                    },
-                    promotion_override,
-                    animated_override,
-                    promoted_animated_states,
-                    promotion_timestamp_writes,
-                    animated_timestamp_writes,
-                },
+                animated_override,
+                promoted_animated_states,
+                rows,
+                timestamp_writes,
             )
     }
 

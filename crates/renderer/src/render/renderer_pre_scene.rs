@@ -84,6 +84,52 @@ fn count_submitted_candidates(
 }
 
 impl Renderer {
+    pub(super) fn prepare_streamed_sh_compose(
+        &mut self,
+        region_sets: ShSampleRegionSets<'_>,
+        mesh_frame_plans: Option<&mesh_instances::MeshFramePlans>,
+        include_viewmodels: bool,
+        fog_draw_all: bool,
+        records_compose: bool,
+    ) -> std::result::Result<(), ShResidencyDrainError> {
+        #[cfg(feature = "dev-tools")]
+        let promotion_override = self.full().direct_sh_debug_override;
+        #[cfg(not(feature = "dev-tools"))]
+        let promotion_override = DirectShDebugOverride::default();
+        #[cfg(feature = "dev-tools")]
+        let animated_override = self.full().animated_direct_sh_debug_override;
+        #[cfg(not(feature = "dev-tools"))]
+        let animated_override = AnimatedDirectShDebugOverride::default();
+
+        let frame_light_term_mask = self.frame_light_term_mask();
+        let full = self.full_mut();
+        let indirect_active = full.sh_streaming.as_ref().is_some_and(|streaming| {
+            streaming.indirect_has_active_animation(&full.sh_volume_resources.animation)
+        });
+        let animated_direct_active = full.sh_streaming.as_ref().is_some_and(|streaming| {
+            streaming.direct_has_active_animation(&full.sh_volume_resources.animation)
+        }) || animated_override.active();
+        let force_full_resident = full.force_full_resident_sh_compose;
+        let Some(streaming) = full.sh_streaming.as_mut() else {
+            return Ok(());
+        };
+        streaming.prepare_compose_frame(
+            region_sets,
+            mesh_frame_plans,
+            include_viewmodels,
+            fog_draw_all,
+            records_compose,
+            force_full_resident,
+            indirect_active,
+            animated_direct_active,
+            frame_light_term_mask,
+            promotion_override,
+            animated_override,
+            &full.promoted_static_weights,
+            &full.promoted_animated_states,
+        )
+    }
+
     /// Refresh dev-tools camera-cull diagnostics from the current frame's CPU
     /// visibility inputs before the debug UI reads them. The tree-walk baseline
     /// and candidate counts are both computed here so the Spatial tab does not

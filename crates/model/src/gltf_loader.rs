@@ -940,11 +940,11 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         build_pose_modifier_stack(&skeleton, pose_masks, &aim_bend_weights, &legs, &path_str);
 
     // --- Mesh -------------------------------------------------------------
-    let (skinned_mesh, submeshes) =
+    let (mut skinned_mesh, submeshes) =
         load_mesh(&mesh, &buffers, &skin_joint_to_topo, parent_dir, &path_str)?;
 
     // --- Animation clips --------------------------------------------------
-    let clips = document
+    let clips: Vec<AnimationClip> = document
         .animations()
         .map(|anim| {
             load_clip(
@@ -957,6 +957,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
             )
         })
         .collect();
+    skinned_mesh.compute_conservative_animation_bounds(&skeleton, &clips, &pose_stack);
 
     // --- Entity tags (top-level extras) -----------------------------------
     // Author metadata; a missing/garbled `extras` yields no tags, not an error.
@@ -1626,8 +1627,9 @@ fn load_mesh(
         });
     }
 
-    // Tight local-space bound over the merged vertex positions. The current
-    // per-light caster cull transforms this bound by the instance transform.
+    // Tight bind-pose bound over the merged vertex positions. `load_model`
+    // replaces the renderer-facing bound with the conservative pose envelope
+    // after clips and pose modifiers are available.
     out.compute_bounds();
 
     Ok((out, submeshes))

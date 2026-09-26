@@ -41,18 +41,29 @@ const CAPTURE_PORTAL_WALK: bool = false;
 /// Measurement advances authored GPU animation without running gameplay or a
 /// script VM. Keep this aligned with the engine's default 60 Hz fixed tick so
 /// capture samples have an easy-to-reason-about temporal coordinate.
-const CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS: f32 = 1.0 / 60.0;
+const CAPTURE_MEASUREMENT_ANIMATION_TICKS_PER_SECOND: f64 = 60.0;
 
 #[derive(Debug, Default)]
 struct CaptureMeasurementAnimationClock {
-    time_seconds: f32,
+    ticks: u64,
 }
 
 impl CaptureMeasurementAnimationClock {
     fn advance_frame(&mut self) -> f32 {
-        self.time_seconds += CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS;
-        self.time_seconds
+        self.ticks = self
+            .ticks
+            .checked_add(1)
+            .expect("capture measurement tick count must fit u64");
+        measurement_animation_time_seconds(self.ticks)
     }
+
+    fn time_seconds(&self) -> f32 {
+        measurement_animation_time_seconds(self.ticks)
+    }
+}
+
+pub(super) fn measurement_animation_time_seconds(ticks: u64) -> f32 {
+    (ticks as f64 / CAPTURE_MEASUREMENT_ANIMATION_TICKS_PER_SECOND) as f32
 }
 
 /// Renderer-owned static scene state prepared once for one or more identical
@@ -66,7 +77,6 @@ pub(super) struct PreparedCapture {
     eye: Vec3,
     forced_promotion_weights: Vec<(usize, f32)>,
     mover_sample_regions: Vec<ShSampleRegion>,
-    mesh_sample_regions: Vec<ShSampleRegion>,
     measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
 }
@@ -189,7 +199,6 @@ impl PreparedCapture {
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         renderer.set_mesh_draws(mesh_collector.instances());
         let mover_sample_regions = mover_collector.sh_sample_regions().to_vec();
-        let mesh_sample_regions = mesh_collector.sh_sample_regions().to_vec();
 
         let mut prepared = Self {
             renderer,
@@ -199,7 +208,6 @@ impl PreparedCapture {
             eye,
             forced_promotion_weights,
             mover_sample_regions,
-            mesh_sample_regions,
             measurement_animation: CaptureMeasurementAnimationClock::default(),
             resolution: [width, height],
         };
@@ -261,7 +269,7 @@ impl PreparedCapture {
     /// Measurement's inspectable PNG uses the same stepped animation instant
     /// as its completed warmup/sample sequence. Ordinary capture remains at 0.
     pub(super) fn capture_measurement_output_frame(&mut self) -> Result<Vec<u8>> {
-        self.capture_frame_at(self.measurement_animation.time_seconds)
+        self.capture_frame_at(self.measurement_animation.time_seconds())
     }
 
     fn capture_frame_at(&mut self, animation_time_seconds: f32) -> Result<Vec<u8>> {
@@ -275,7 +283,6 @@ impl PreparedCapture {
                 visible_cells: &self.visible_render.visible_cell_aabbs,
                 fog_cells: &self.visible_render.reachable_cell_aabbs,
                 movers: &self.mover_sample_regions,
-                meshes: &self.mesh_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
             self.view_proj,
@@ -327,7 +334,6 @@ impl PreparedCapture {
                 visible_cells: &self.visible_render.visible_cell_aabbs,
                 fog_cells: &self.visible_render.reachable_cell_aabbs,
                 movers: &self.mover_sample_regions,
-                meshes: &self.mesh_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
             self.view_proj,
@@ -387,17 +393,34 @@ impl PreparedCapture {
 #[cfg(test)]
 mod measurement_animation_tests {
     use super::*;
+    use crate::capture::scene::{MAX_MEASUREMENT_SAMPLE_FRAMES, MAX_MEASUREMENT_WARMUP_FRAMES};
 
     #[test]
     fn measurement_frames_advance_animation_without_vm() {
         let mut clock = CaptureMeasurementAnimationClock::default();
+        assert_eq!(clock.time_seconds(), 0.0);
 
         let first = clock.advance_frame();
         let second = clock.advance_frame();
 
-        assert!((first - CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS).abs() < f32::EPSILON);
-        assert!((second - CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS * 2.0).abs() < f32::EPSILON);
+        assert_eq!(first, measurement_animation_time_seconds(1));
+        assert_eq!(second, measurement_animation_time_seconds(2));
         assert!(second > first);
+    }
+
+    // Regression: repeated f32 additions drifted at the accepted measurement maximum.
+    #[test]
+    fn maximum_measurement_tick_count_derives_one_stable_time_coordinate() {
+        let total =
+            u64::from(MAX_MEASUREMENT_WARMUP_FRAMES) + u64::from(MAX_MEASUREMENT_SAMPLE_FRAMES);
+        let mut clock = CaptureMeasurementAnimationClock { ticks: total - 1 };
+
+        let actual = clock.advance_frame();
+        let expected = (total as f64 / 60.0) as f32;
+
+        assert_eq!(clock.ticks, total);
+        assert_eq!(actual, expected);
+        assert_eq!(clock.time_seconds(), expected);
     }
 }
 

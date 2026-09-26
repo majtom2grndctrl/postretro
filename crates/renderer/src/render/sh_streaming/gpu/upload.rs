@@ -323,7 +323,7 @@ impl StreamingGpuPools {
     }
 
     pub(in crate::render::sh_streaming) fn dispatch_indirect_compose<'a>(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,

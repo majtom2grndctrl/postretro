@@ -15,7 +15,6 @@ use postretro_render_cpu::mesh_instances::{MeshInstanceInput, MeshPaletteCacheKe
 use postretro_render_cpu::mesh_pass::mesh_visible;
 use postretro_render_data::cone_frustum::Aabb;
 use postretro_render_data::influence::LightInfluence;
-use postretro_renderer::ShSampleRegion;
 use postretro_visibility::VisibleCells;
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
@@ -127,9 +126,6 @@ pub(crate) struct MeshRenderCollector {
     /// This stays separate from attachment handles because a viewmodel is never a
     /// holder attachment and must enter the planner's dedicated plan.
     viewmodel_model_handles: HashMap<String, ModelHandle>,
-    /// Interpolated world-space whole-model bounds for forward draws, including
-    /// the separately appended first-person viewmodel.
-    sh_sample_regions: Vec<ShSampleRegion>,
 }
 
 impl MeshRenderCollector {
@@ -143,7 +139,6 @@ impl MeshRenderCollector {
             attachment_world_pose: Vec::new(),
             attachment_model_handles: HashMap::new(),
             viewmodel_model_handles: HashMap::new(),
-            sh_sample_regions: Vec::new(),
         }
     }
 
@@ -155,7 +150,6 @@ impl MeshRenderCollector {
         self.attachment_world_pose.clear();
         self.attachment_model_handles.clear();
         self.viewmodel_model_handles.clear();
-        self.sh_sample_regions.clear();
     }
 
     /// Walk `ComponentKind::Mesh` entities, cull each against the frame's
@@ -267,7 +261,6 @@ impl MeshRenderCollector {
         force_resample_model: impl Fn(&ModelHandle) -> bool,
     ) {
         self.instances.clear();
-        self.sh_sample_regions.clear();
         // Rebuild the last-state map into the scratch so entries absent this
         // frame (despawned / culled-out entities) drop — bounding it by the live
         // animated-entity count. Swapped back at the end; both allocations carry.
@@ -389,18 +382,6 @@ impl MeshRenderCollector {
             self.instances[holder_index].resample = resample;
         }
 
-        self.sh_sample_regions.extend(
-            self.instances
-                .iter()
-                .filter(|instance| instance.forward_visible)
-                .map(|instance| {
-                    let bounds = tables
-                        .model_bounds(&instance.model)
-                        .transformed(&instance.transform);
-                    ShSampleRegion::new(bounds.min, bounds.max)
-                }),
-        );
-
         // Swap the rebuilt map in (the old one becomes next frame's scratch) and
         // advance the frame phase. `wrapping_add` so the modulo phase keeps going
         // past `u64::MAX` without a panic.
@@ -411,10 +392,6 @@ impl MeshRenderCollector {
     /// The per-instance draw inputs to plan this frame (cull already applied).
     pub(crate) fn instances(&self) -> &[MeshInstanceInput] {
         &self.instances
-    }
-
-    pub(crate) fn sh_sample_regions(&self) -> &[ShSampleRegion] {
-        &self.sh_sample_regions
     }
 
     /// Append the local weapon's world-space presentation after world collection.
@@ -428,7 +405,6 @@ impl MeshRenderCollector {
         model: &str,
         transform: glam::Mat4,
         weapon_seed: u32,
-        tables: &MeshClipTables,
     ) {
         let handle = if let Some(handle) = self.viewmodel_model_handles.get(model) {
             handle.clone()
@@ -438,9 +414,6 @@ impl MeshRenderCollector {
                 .insert(model.to_owned(), handle.clone());
             handle
         };
-        let bounds = tables.model_bounds(&handle).transformed(&transform);
-        self.sh_sample_regions
-            .push(ShSampleRegion::new(bounds.min, bounds.max));
         self.instances.push(MeshInstanceInput {
             model: handle,
             transform,
@@ -794,17 +767,8 @@ mod tests {
     fn collect_viewmodel_appends_only_a_world_space_viewmodel_instance() {
         let mut collector = MeshRenderCollector::new();
         let transform = glam::Mat4::from_translation(Vec3::new(0.3, -0.2, -0.6));
-        let mut tables = MeshClipTables::new();
-        tables.insert_with_bounds(
-            ModelHandle::from("models/pistol/view.gltf"),
-            &[],
-            Aabb {
-                min: Vec3::splat(-0.5),
-                max: Vec3::splat(0.5),
-            },
-        );
 
-        collector.collect_viewmodel("models/pistol/view.gltf", transform, 42, &tables);
+        collector.collect_viewmodel("models/pistol/view.gltf", transform, 42);
 
         let instances = collector.instances();
         assert_eq!(instances.len(), 1);
@@ -822,61 +786,6 @@ mod tests {
             }
         );
         assert!(instances[0].pose_inputs.is_none());
-        let expected = ShSampleRegion::new(Vec3::new(-0.2, -0.7, -1.1), Vec3::new(0.8, 0.3, -0.1));
-        let actual = collector.sh_sample_regions()[0];
-        assert!((actual.min - expected.min).abs().max_element() < 1.0e-6);
-        assert!((actual.max - expected.max).abs().max_element() < 1.0e-6);
-    }
-
-    #[test]
-    fn drawn_sh_consumers_emit_complete_world_bounds() {
-        let mut registry = EntityRegistry::new();
-        let world = single_cell_world();
-        spawn_mesh(&mut registry, "body", Vec3::new(4.0, 0.0, 0.0));
-        let mut tables = MeshClipTables::new();
-        tables.insert_with_bounds(
-            ModelHandle::from("body"),
-            &[],
-            Aabb {
-                min: Vec3::new(-3.0, -1.0, -1.0),
-                max: Vec3::new(3.0, 1.0, 1.0),
-            },
-        );
-        tables.insert_with_bounds(
-            ModelHandle::from("viewmodel"),
-            &[],
-            Aabb {
-                min: Vec3::ZERO,
-                max: Vec3::ONE,
-            },
-        );
-
-        let mut collector = MeshRenderCollector::new();
-        collector.collect(
-            &registry,
-            &world,
-            &VisibleCells::DrawAll,
-            1.0,
-            0.0,
-            &tables,
-            Vec3::ZERO,
-        );
-        collector.collect_viewmodel(
-            "viewmodel",
-            glam::Mat4::from_translation(Vec3::new(20.0, 0.0, 0.0)),
-            7,
-            &tables,
-        );
-
-        assert_eq!(collector.sh_sample_regions().len(), 2);
-        assert_eq!(
-            collector.sh_sample_regions()[0],
-            ShSampleRegion::new(Vec3::new(1.0, -1.0, -1.0), Vec3::new(7.0, 1.0, 1.0))
-        );
-        assert_eq!(
-            collector.sh_sample_regions()[1],
-            ShSampleRegion::new(Vec3::new(20.0, 0.0, 0.0), Vec3::new(21.0, 1.0, 1.0))
-        );
     }
 
     // Regression: default-only fixtures let dropped collector/planner copies preserve 1.0.

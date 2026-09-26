@@ -53,7 +53,7 @@ read at: b3548b603
 | G1 fragmented rows, exact-capacity/overflow chunking, exact decode, one visit, device dispatch bound | `gather_plan_chunks_fragmented_rows_without_duplication` and `gather_plan_splits_only_above_capacity` | proved |
 | G2 empty pass emits no dispatch and zero counters | `empty_gather_plan_has_no_dispatch` | proved |
 | G3 list contains only distinct resident rows | `planned_rows_are_unique_resident_rows` property test | proved |
-| G4 compose storage-buffer budgets and uniform chunk size stay within requested limits | GPU-free layout-builder test `compose_pipeline_storage_and_gather_uniform_budgets_fit_requested_limits` | proved |
+| G4 compose storage-buffer budgets and uniform chunk size stay within requested limits | GPU-free layout-builder tests `streamed_indirect_compose_layout_fits_requested_compute_limits` and `direct_compose_keeps_existing_binding_numbers_and_dynamic_grid` | proved |
 | G5 legacy whole-load upload covers every affinity row exactly once | `legacy_gather_compose_covers_every_affinity_row_once` | proved |
 | R1 trigger selects only gated contributing rows | `trigger_selects_only_gated_contributing_rows_per_pass` | proved |
 | R2 idle pass selects only residency-change rows | `idle_plan_contains_only_pending_residency_rows` | proved |
@@ -81,7 +81,7 @@ read at: b3548b603
 | C1 counters equal planned row/dispatch/lag sets and capture report includes planning time | planner counter assertions plus capture report serialization test | proved |
 | C2 measurement mode advances fixed animation time, stays VM-free, and retains force-active pulses | capture driver tests `measurement_frames_advance_animation_without_vm` | proved |
 | C3 exactness fixture changes across stepped frames and records nonzero compose rows with authored curve visible | capture integration test, GPU/fixture gated | compiled; execution covered by M1 |
-| C4 warm planning retains caller-owned scratch capacity | counting-allocator-free capacity watermark test `compose_planning_reuses_warmed_scratch` | proved |
+| C4 warm planning and gathered-upload encoding retain caller-owned capacity | capacity-watermark tests `compose_planning_reuses_warmed_scratch`, `compose_planner_reuses_warmed_pass_vectors`, and `gathered_upload_encoding_retains_warmed_capacity` cover region resolution, per-pass plan ownership, and binding-18 record/dispatch scratch | proved |
 | M1 shipped vs force-full-resident capture PNGs are byte-identical at pinned poses and stepped times | owner, GPU runbook in `research.md` plus generated exactness scenes | manual-blocking |
 | M2 1 m/3 m capture and live measurement against spike baseline with compose counters | owner, hardware measurement protocol in `research.md` | manual-blocking |
 | M3 live pulses, turning, off-state, dynamic receivers, fog, mask and boundary crossings have no visual stale artifact | owner, in-engine visual runbook | manual-blocking |

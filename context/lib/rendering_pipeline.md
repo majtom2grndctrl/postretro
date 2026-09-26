@@ -151,14 +151,15 @@ boundary.
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: world AABBs for visible cells,
-fog-reachable cells, drawn movers swept from their current to interpolated transform,
-whole drawn forward meshes, and first-person viewmodels. An empty fog-reachable set means
-every cell and therefore gates all resident rows. Only the renderer maps these regions to
-affinity rows; it expands them by 1.1 cell spacings for the sampler footprint, intersects
-them with resident rows, and closes the result over scaled-node writer rows. No row indices
-cross the application/renderer boundary. Rows are also filtered per pass by whether the
-resident streamed data actually contributes: indirect section 27, static-direct section
-41, or animated-direct section 45.
+fog-reachable cells, and drawn movers swept from their current to interpolated transform.
+Renderer-admitted `MeshFramePlan`s supply the accepted forward-mesh bounds; only the
+windowed path also supplies first-person viewmodel bounds, while capture excludes them.
+An empty fog-reachable set means every cell and therefore gates all resident rows. Only the
+renderer maps these regions to affinity rows; it expands them by 1.1 cell spacings for the
+sampler footprint, intersects them with resident rows, and closes the result over
+scaled-node writer rows. No row indices cross the application/renderer boundary. Rows are
+also filtered per pass by whether the resident streamed data actually contributes: indirect
+section 27, static-direct section 41, or animated-direct section 45.
 
 Invariant: every stored slot a consumer can sample in frame N equals what full-resident
 compose would write in frame N, so no stale slot is sampled. Per-pass generations record

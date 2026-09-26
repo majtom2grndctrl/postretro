@@ -4118,7 +4118,6 @@ impl ApplicationHandler for App {
                                         &placement,
                                     ),
                                     weapon_seed,
-                                    &session.mesh_clip_tables,
                                 );
                             }
                         }
@@ -4432,7 +4431,6 @@ impl ApplicationHandler for App {
                             visible_cells: &visible_cell_aabbs,
                             fog_cells: &reachable_cell_aabbs,
                             movers: self.kinematic_mover_render.sh_sample_regions(),
-                            meshes: session.mesh_render.sh_sample_regions(),
                         },
                         Some(stats.camera_cell),
                         view_proj,

@@ -61,7 +61,7 @@ pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
     /// Adapter-bounded rows of the flattened affinity grid. Each selects a
-    /// matching dynamically-offset 80-byte grid record at binding 18.
+    /// matching dynamically-offset fixed 64 KiB gather record at binding 18.
     dispatches: Vec<DynamicComposeDispatch>,
     /// Per-delta-light map to the shared animated-light descriptor slot.
     /// This is the same list bound at binding 25.

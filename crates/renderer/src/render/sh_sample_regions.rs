@@ -18,8 +18,9 @@ impl ShSampleRegion {
     }
 }
 
-/// App-owned drawn-consumer bounds for one frame. The renderer resolves these
-/// world regions to private affinity rows only after the residency drain.
+/// App-owned non-mesh consumer bounds for one frame. Renderer-admitted mesh
+/// plans contribute separately, after budget and cache admission. The renderer
+/// resolves all world regions to private affinity rows after the residency drain.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ShSampleRegionSets<'a> {
     pub visible_cells: &'a [ShSampleRegion],
@@ -27,8 +28,4 @@ pub struct ShSampleRegionSets<'a> {
     /// preparation. Empty retains the established DrawAll sentinel.
     pub fog_cells: &'a [(Vec3, Vec3)],
     pub movers: &'a [ShSampleRegion],
-    /// Candidate mesh bounds retained for API compatibility. Streamed compose
-    /// derives mesh regions from renderer-admitted frame plans instead, so
-    /// uncached and overflow-dropped instances cannot widen the gate.
-    pub meshes: &'a [ShSampleRegion],
 }

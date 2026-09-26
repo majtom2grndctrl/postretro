@@ -28,6 +28,7 @@ pub(super) struct StreamingIndirectCompose {
     tile_f16_capacity: u32,
     animation_descriptor_indices: Vec<u32>,
     source_present: bool,
+    grid_upload: crate::render::sh_compose_dispatch::DynamicComposeGridUpload,
 }
 
 /// The four independently grown id-27 sparse backing buffers retained until
@@ -313,6 +314,7 @@ impl StreamingIndirectCompose {
             tile_f16_capacity,
             animation_descriptor_indices: descriptor_words,
             source_present: source.is_some(),
+            grid_upload: Default::default(),
         })
     }
 

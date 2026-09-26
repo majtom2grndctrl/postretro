@@ -9,13 +9,15 @@ pub(crate) const DEFAULT_FOV_DEG: f32 = 100.0;
 use crate::camera::{MAX_FOV_DEG, MIN_FOV_DEG};
 const MAX_ABS_PITCH_DEG: f32 = 89.0;
 const MAX_CAPTURE_DIMENSION: u32 = 8192;
+pub(super) const MAX_MEASUREMENT_WARMUP_FRAMES: u32 = 10_000;
+pub(super) const MAX_MEASUREMENT_SAMPLE_FRAMES: u32 = 100_000;
 // Capture overrides are linear HDR radiance. Six stops above unit white
 // cover diagnostic lighting while leaving roughly 1023x headroom below the
 // Rgba16Float atlas/scene ceiling (65504) for transport and accumulation.
 // This is a capture-authoring budget, not a new scripting intensity limit.
 const MAX_FORCED_RADIANCE: f32 = 64.0;
 
-/// A deterministic capture of world geometry and authored receivers at rest.
+/// A deterministic capture of world geometry and authored receivers.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) struct CaptureScene {
@@ -32,12 +34,12 @@ pub(crate) struct CaptureScene {
     /// defaults off so ordinary scenes exercise the shipped sampled-row gate.
     #[serde(default)]
     pub(crate) force_full_resident_sh_compose: bool,
-    /// Optional repeated-frame measurement of this otherwise static capture
-    /// workload. Omitting it preserves the legacy single-readback path.
+    /// Optional stepped-frame measurement. Warmup and samples advance renderer
+    /// animation at fixed 1/60-second steps; omission keeps the single readback.
     pub(crate) measurement: Option<CaptureMeasurement>,
 }
 
-/// Author-controlled output and bounds for a repeated static capture run.
+/// Author-controlled output and bounds for a stepped capture measurement.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) struct CaptureMeasurement {
@@ -142,12 +144,12 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
         if measurement.report.trim().is_empty() {
             return Err(SceneError::EmptyMeasurementReport);
         }
-        if !(1..=10_000).contains(&measurement.warmup_frames) {
+        if !(1..=MAX_MEASUREMENT_WARMUP_FRAMES).contains(&measurement.warmup_frames) {
             return Err(SceneError::MeasurementWarmupFramesOutOfRange {
                 value: measurement.warmup_frames,
             });
         }
-        if !(1..=100_000).contains(&measurement.sample_frames) {
+        if !(1..=MAX_MEASUREMENT_SAMPLE_FRAMES).contains(&measurement.sample_frames) {
             return Err(SceneError::MeasurementSampleFramesOutOfRange {
                 value: measurement.sample_frames,
             });

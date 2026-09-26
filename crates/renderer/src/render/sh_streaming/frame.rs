@@ -2,21 +2,6 @@
 
 use super::*;
 
-fn coalesce_rows(rows: &BTreeSet<u32>) -> Vec<(u32, u32)> {
-    let mut ranges: Vec<(u32, u32)> = Vec::new();
-    for &row in rows {
-        match ranges.last_mut() {
-            Some((start, count)) if start.checked_add(*count) == Some(row) => {
-                *count = count
-                    .checked_add(1)
-                    .expect("validated affinity row count must fit u32");
-            }
-            _ => ranges.push((row, 1)),
-        }
-    }
-    ranges
-}
-
 /// Collect the two direct-compose dirty unions for this frame. Pass B may
 /// own an id-45 row without owning an id-35/id-41 row itself. During a forced
 /// resident refresh, seed Pass A for that row first so Pass B never samples
@@ -90,8 +75,8 @@ impl ShResidencyState {
             promotion_override,
             animated_override,
             promoted_animated_states,
-            &coalesce_rows(&promotion_rows),
-            &coalesce_rows(&animated_rows),
+            &promotion_rows.iter().copied().collect::<Vec<_>>(),
+            &animated_rows.iter().copied().collect::<Vec<_>>(),
             force_resident,
             promotion_timestamp_writes,
             animated_timestamp_writes,
@@ -140,7 +125,6 @@ impl ShResidencyState {
         if rows.is_empty() {
             return Ok(());
         }
-        let ranges = coalesce_rows(&rows);
         let gpu = self
             .gpu
             .as_ref()
@@ -151,7 +135,7 @@ impl ShResidencyState {
             queue,
             encoder,
             uniform_bind_group,
-            &ranges,
+            &rows.iter().copied().collect::<Vec<_>>(),
             timestamp_writes,
         )?;
         self.indirect_compose_epoch = self

@@ -24,13 +24,12 @@ use wgpu::util::DeviceExt;
 use super::dense::DenseTextures;
 use super::direct_compose::{
     DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose,
-    StreamingDirectComposeFrameInputs, StreamingDirectDirtyRanges, StreamingDirectViews,
+    StreamingDirectComposeFrameInputs, StreamingDirectDirtyRows, StreamingDirectViews,
 };
 use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacityFloors};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
-use crate::render::sh_compose_dispatch::build_dynamic_compose_grid_upload_for_ranges;
 use crate::render::sh_indirection::WGSL_DECODE_HELPER;
 use crate::render::sh_volume::ShVolumeResources;
 
@@ -515,6 +514,40 @@ pub(in crate::render::sh_streaming) fn stage_buffer_writes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_indirect_compose_layout_fits_requested_compute_limits() {
+        let entries = compose_bgl_entries();
+        let storage_count = entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(storage_count, 8);
+        let grid = entries
+            .iter()
+            .find(|entry| entry.binding == 18)
+            .expect("streamed indirect compose must retain binding 18");
+        assert!(matches!(
+            grid.ty,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: Some(size),
+            } if size.get() == DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64
+        ));
+        assert!(
+            DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64
+                <= wgpu::Limits::default().max_uniform_buffer_binding_size
+        );
+    }
 
     #[test]
     fn adjacent_sparse_writes_merge_without_filling_live_gaps() {

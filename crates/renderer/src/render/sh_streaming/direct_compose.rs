@@ -33,12 +33,10 @@ pub(super) struct StreamingDirectViews<'a> {
     pub(super) selection_weights: &'a wgpu::Buffer,
 }
 
-/// Coalesced flattened affinity-row ranges. The residency owner must union
-/// resident rows into these slices when `force_full_resident` is set: Pass A
-/// uses id 35 + 41, while Pass B uses id 35 + 41 + 45.
-pub(super) struct StreamingDirectDirtyRanges<'a> {
-    pub(super) promotion: &'a [(u32, u32)],
-    pub(super) animated: &'a [(u32, u32)],
+/// Sorted distinct flattened affinity rows selected by the residency owner.
+pub(super) struct StreamingDirectDirtyRows<'a> {
+    pub(super) promotion: &'a [u32],
+    pub(super) animated: &'a [u32],
     pub(super) force_full_resident: bool,
 }
 
@@ -47,7 +45,7 @@ pub(super) struct StreamingDirectDirtyRanges<'a> {
 /// weights, animation attenuation, and diagnostics byte-for-byte compatible.
 pub(super) struct StreamingDirectComposeFrameInputs<'a> {
     pub(super) light_term_mask: LightTermMask,
-    pub(super) dirty: StreamingDirectDirtyRanges<'a>,
+    pub(super) dirty: StreamingDirectDirtyRows<'a>,
     pub(super) promotion_override: DirectShDebugOverride,
     pub(super) animated_override: AnimatedDirectShDebugOverride,
     pub(super) promoted_animated_states: &'a [PromotedBakedLightState],

@@ -90,7 +90,7 @@ read at: b3548b603
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Prove and implement the binding-18 gather carrier, bounded chunk planner, shared-shader row-list indexing, legacy coverage, and pipeline budget guards (G1–G5). This is the thinnest test of the highest-risk no-new-binding premise. | integrating executor | — | |
+| 1 | Prove and implement the binding-18 gather carrier, bounded chunk planner, shared-shader row-list indexing, legacy coverage, and pipeline budget guards (G1–G5). This is the thinnest test of the highest-risk no-new-binding premise. | integrating executor | — | complete — `cargo check -p postretro-renderer`; 7 `sh_compose_dispatch` tests; 10 `compose_shader` tests; legacy/streamed layout guards; render-cpu gather record test |
 | 2 | Add per-pass compose counters, planning-time accounting, caller-owned scratch, and the dev force-full-resident switch over today's resident sets; expose them through renderer snapshots, periodic diagnostics, Streaming UI, and capture reporting (G2, R7, C1, C4). | integrating executor | 1 | |
 | 3 | Build the GPU-free per-pass trigger and staleness state machine, including effective promotion-weight snapshots, tails across skipped frames, residency-change pending work, direct-pass ordering, commit-on-success, and generation reset (R1–R6, S1–S8, S11). | integrating executor | 1 | |
 | 4 | Add the app-owned `ShSampleRegion` collection for visible/fog cells, drawn movers, accepted skinned meshes, and viewmodels; add renderer-owned 1.1-spacing region-to-row resolution and scaled-node writer closure against post-drain residency (S9–S10, S12–S16). | integrating executor | 3 | |

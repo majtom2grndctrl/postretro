@@ -424,14 +424,26 @@ pub(super) fn build_grid_and_sparse(
     let limits = device.limits();
     let record_size = u64::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE)
         .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+    if record_size > limits.max_uniform_buffer_binding_size {
+        return Err(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed direct compose gather record exceeds uniform binding limit",
+        });
+    }
     let alignment = u64::from(limits.min_uniform_buffer_offset_alignment.max(1));
     let stride = record_size
         .checked_add(alignment - 1)
         .and_then(|value| value.checked_div(alignment))
         .and_then(|value| value.checked_mul(alignment))
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    let chunk_capacity = crate::render::sh_compose_dispatch::gather_chunk_capacity(
+        limits.max_compute_workgroups_per_dimension,
+    )
+    .ok_or(ShResidencyDrainError::GpuCapacity {
+        reason: "streamed direct compose gather has zero row capacity",
+    })?;
+    let chunk_count = cells.max(1).div_ceil(chunk_capacity);
     let grid_capacity = stride
-        .checked_mul(u64::from(cells.max(1)))
+        .checked_mul(u64::from(chunk_count))
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
     if grid_capacity > limits.max_buffer_size {
         return Err(ShResidencyDrainError::GpuCapacity {

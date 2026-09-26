@@ -1,6 +1,6 @@
 # SH Probe Streaming — Per-Cluster Residency
 
-> Slice 3 shipped in PR #516. Parent: `context/plans/in-progress/sh-probe-streaming/`.
+> Slice 3 shipped in PR #516. Parent: `context/plans/done/sh-probe-streaming/`.
 > GPU frame-time, seam, and growth-copy reads remain `not-yet-evaluable`; see
 > `execution.md` and `measurements/sh-probe-streaming/cluster-residency.md`.
 

@@ -182,7 +182,7 @@ Consequences for the brief:
 
 | Finding | Owner |
 |---|---|
-| 22 of 482 clusters cover 91% of the 1 m grid; a few visible clusters close over most installed ones | `in-progress/sh-probe-streaming` (Open questions) |
+| 22 of 482 clusters cover 91% of the 1 m grid; a few visible clusters close over most installed ones | `done/sh-probe-streaming` (Open questions) |
 | stress-warren-mini failed to bake animated lightmaps below `--lightmap-density 0.16` (atlas over budget; >65,535 dispatch tiles with no 2D fallback) | resolved: unlit-chunk cull plus a 2D compose dispatch grid |
 | Coarsened-brick sampling cost in forward | not this brief: the spike measured compose, not sampling, as the 1 m bottleneck; revisit if frame time stays high after this lands |
 | Bake-side density and coarsening policy | the lighting-scale coarsenability line; this brief removes per-frame work at any density |

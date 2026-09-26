@@ -1,6 +1,6 @@
 # SH Streaming — Warm Set, Ordered I/O, Install Budget, Diagnostics (contract)
 
-Follow-up to the SH probe streaming epic (`context/plans/in-progress/sh-probe-streaming/`).
+Follow-up to the SH probe streaming epic (`context/plans/done/sh-probe-streaming/`).
 Every track reads this file first. Background: `context/lib/rendering_pipeline.md`
 §"Cluster SH residency"; `context/lib/build_pipeline.md` §PRL section IDs (ids 46, 49, 50).
 

@@ -2,10 +2,14 @@
 
 use super::common::*;
 
+use crate::modal_stack::{ModalStack, ScopeTier};
+use log::Level;
+use postretro_test_log_capture::LogCapture;
+
 #[test]
 fn focus_export_lists_ids_rects_and_a_linear_group() {
     use crate::descriptor::{FocusKind, FocusPolicy};
-    // A vstack declaring a linear focus policy over three id'd text leaves.
+    // A vstack declaring a linear focus policy over three buttons.
     let root = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(10.0),
         padding: SpacingValue::Literal(0.0),
@@ -20,7 +24,11 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         local_state: None,
         visible_when: None,
         role: None,
-        children: vec![text_id("A", "a"), text_id("B", "b"), text_id("C", "c")],
+        children: vec![
+            button("a", "pressA"),
+            button("b", "pressB"),
+            button("c", "pressC"),
+        ],
     });
     let tree = AnchoredTree {
         anchor: Anchor::TopLeft,
@@ -37,7 +45,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
     let draw = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
     let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
 
-    // Three focusable nodes, one linear group with all three as members.
+    // Three focusable buttons, one linear group with all three as members.
     let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(ids, ["a", "b", "c"], "ids in tree order");
     assert_eq!(focus.groups.len(), 1);
@@ -50,7 +58,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
     assert!(focus.rects[0].z < focus.rects[1].z && focus.rects[1].z < focus.rects[2].z);
 
     // The exported rect uses the SAME device-pixel projection as the draw: each
-    // focusable text node's rect [x, y] matches its drawn text run position.
+    // button's rect [x, y] matches its drawn label run position.
     for (i, run) in draw.texts.iter().enumerate() {
         assert!(
             approx(focus.rects[i].rect[0], run.position[0])
@@ -60,65 +68,171 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
     }
 }
 
-#[test]
-fn focus_export_auto_generates_ids_from_tree_position() {
+/// A linear-wrap focus group vstack over `children` (no authored id).
+fn linear_group(children: Vec<Widget>) -> Widget {
     use crate::descriptor::{FocusKind, FocusPolicy};
-    // Children with NO authored id, under a focus-policy container, get a
-    // deterministic auto-id from their child-index path (runtime-only).
-    let root = Widget::VStack(ContainerWidget {
+    let mut root = vstack(0.0, 0.0, Align::Start, children);
+    if let Widget::VStack(stack) = &mut root {
+        stack.focus = Some(FocusPolicy::Shorthand(FocusKind::Linear));
+    }
+    root
+}
+
+fn export(tree: &AnchoredTree) -> FocusRectList {
+    let mut ui = UiTree::from_descriptor(tree, &theme());
+    let mut fs = font_system();
+    ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+    ui.export_focus_rects(tree, [1280, 720], &no_slots(), &no_cells())
+}
+
+// Regression: every passive node under a focus group (menu title, section label,
+// nested layout stack) exported as a focus stop, so nav landed on the title.
+#[test]
+fn focus_export_skips_passive_nodes_inside_a_focus_group() {
+    let tree = anchored(linear_group(vec![
+        text("TITLE", 20.0),
+        button("b1", "one"),
+        vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![text("SECTION", 20.0), button("b2", "two")],
+        ),
+        button("b3", "three"),
+    ]));
+    let focus = export(&tree);
+
+    let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["b1", "b2", "b3"], "only the buttons are focus stops");
+    assert_eq!(focus.groups.len(), 1);
+    assert_eq!(
+        focus.groups[0].members,
+        vec![0, 1, 2],
+        "all three buttons join the root group, in tree order",
+    );
+    assert!(focus.rects.iter().all(|r| r.group == Some(0)));
+    assert!(
+        focus.rects.iter().all(|r| r.interaction.is_some()),
+        "every exported rect is interactive",
+    );
+}
+
+#[test]
+fn focus_export_skips_passive_node_with_authored_id_outside_a_group() {
+    // A passive id is a `labelledBy` reference target, never a focus stop.
+    let tree = anchored(vstack(
+        0.0,
+        0.0,
+        Align::Start,
+        vec![text_id("VOLUME", "volumeLabel"), button("go", "goNow")],
+    ));
+    let focus = export(&tree);
+
+    let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["go"], "the id-bearing text is not exported");
+    assert!(focus.groups.is_empty());
+}
+
+#[test]
+fn focus_export_nested_interactive_widgets_join_the_enclosing_group() {
+    // The options-menu shape: a two-column grid (label | control) inside a
+    // section stack inside the focus group. The grid declares no policy, so its
+    // slider and button join the outer group; the labels do not.
+    let grid = Widget::Grid(GridWidget {
+        cols: 2,
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
-        width: None,
-        fill: None,
-        border: None,
         id: None,
-        focus_neighbors: crate::descriptor::FocusNeighbors::default(),
-        focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+        focus_neighbors: Default::default(),
+        focus: None,
         restore_on_return: false,
-        local_state: None,
         visible_when: None,
         role: None,
-        children: vec![text("X", 20.0), text("Y", 20.0)],
+        children: vec![
+            text_id("VOLUME", "volLabel"),
+            slider("vol", "audio.master", &["nav.left", "nav.right"]),
+            text_id("MUTE", "muteLabel"),
+            button("mute", "toggleMute"),
+        ],
     });
-    let tree = AnchoredTree {
-        anchor: Anchor::TopLeft,
-        offset: [0.0, 0.0],
-        root,
-        capture_mode: CaptureMode::Passthrough,
-        initial_focus: None,
-        text_entry_target: None,
-        accessible_name: None,
-        role: None,
-    };
-    let mut ui = UiTree::from_descriptor(&tree, &theme());
-    let mut fs = font_system();
-    ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-    let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
+    let tree = anchored(linear_group(vec![
+        text("OPTIONS", 20.0),
+        vstack(0.0, 0.0, Align::Start, vec![text("AUDIO", 20.0), grid]),
+        button("back", "closeOptions"),
+    ]));
+    let focus = export(&tree);
+
     let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
-    // Auto-ids are the slash-joined child paths from the root.
-    assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
+    assert_eq!(ids, ["vol", "mute", "back"]);
+    assert_eq!(focus.groups.len(), 1, "passive containers open no group");
+    assert_eq!(focus.groups[0].members, vec![0, 1, 2]);
+    assert!(matches!(
+        focus.rects[0].interaction,
+        Some(NodeInteraction::Slider { .. })
+    ));
+    assert!(matches!(
+        focus.rects[1].interaction,
+        Some(NodeInteraction::Button { .. })
+    ));
+}
+
+#[test]
+fn focus_export_nested_policy_container_opens_its_own_group() {
+    // The innermost focus-policy ancestor wins: the inner button joins the inner
+    // group only, while the outer buttons on either side join the outer group.
+    let inner_group = linear_group(vec![text("INNER", 20.0), button("inner", "pressInner")]);
+    let tree = anchored(linear_group(vec![
+        button("before", "pressBefore"),
+        vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![text("SECTION", 20.0), inner_group],
+        ),
+        button("after", "pressAfter"),
+    ]));
+    let focus = export(&tree);
+
+    let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["before", "inner", "after"]);
+    assert_eq!(focus.groups.len(), 2);
+    assert_eq!(
+        focus.rects[1].group,
+        Some(1),
+        "inner button carries the inner group"
+    );
+    assert_eq!(focus.groups[1].members, vec![1]);
+    assert_eq!(
+        focus.groups[0].members,
+        vec![0, 2],
+        "the outer group holds its own buttons, not the nested group's",
+    );
+    assert_eq!(focus.rects[0].group, Some(0));
+    assert_eq!(focus.rects[2].group, Some(0));
+}
+
+#[test]
+fn focus_export_passive_only_group_exports_an_empty_group_and_no_rects() {
+    let tree = anchored(linear_group(vec![
+        text("TITLE", 20.0),
+        vstack(0.0, 0.0, Align::Start, vec![text_id("NOTE", "note")]),
+    ]));
+    let focus = export(&tree);
+
+    assert!(
+        focus.rects.is_empty(),
+        "passive nodes are never focus stops"
+    );
+    assert_eq!(
+        focus.groups.len(),
+        1,
+        "the declaring container still opens a group"
+    );
+    assert!(focus.groups[0].members.is_empty());
 }
 
 // --- Interactive widgets ---
-
-fn button(id: &str, on_press: &str) -> Widget {
-    Widget::Button(ButtonWidget {
-        id: id.into(),
-        label: Some(id.into()),
-        labelled_by: None,
-        on_press: on_press.into(),
-        focus_neighbors: Default::default(),
-        repeat_on_hold: None,
-        selected: None,
-        checked: None,
-        bind: None,
-        style_ranges: None,
-        disabled: false,
-        visible_when: None,
-        role: None,
-    })
-}
 
 fn slider(id: &str, slot: &str, captures: &[&str]) -> Widget {
     Widget::Slider(SliderWidget {
@@ -646,4 +760,135 @@ fn focus_rect_selected_predicate_resolves_false_when_unmatched() {
         Some(0.0),
         "unmatched selected predicate resolves to 0.0, not None",
     );
+}
+
+// --- Focus-authoring diagnostics (fire at registration, once per tree) ---
+
+/// Register `tree` under `name` the way the boot and mod paths do.
+fn register(name: &str, tree: AnchoredTree) {
+    ModalStack::new()
+        .registry_mut()
+        .register(name, tree, ScopeTier::Engine, false);
+}
+
+/// A button whose `focusNeighbors.down` names `target`.
+fn button_with_down_neighbor(id: &str, target: &str) -> Widget {
+    let mut widget = button(id, "press");
+    if let Widget::Button(b) = &mut widget {
+        b.focus_neighbors.down = Some(target.into());
+    }
+    widget
+}
+
+#[test]
+fn focus_authoring_warns_when_initial_focus_names_a_passive_widget() {
+    let mut tree = anchored(linear_group(vec![
+        text_id("TITLE", "title"),
+        button("play", "openPlay"),
+    ]));
+    tree.initial_focus = Some("title".into());
+
+    let capture = LogCapture::start();
+    register("titleMenu", tree.clone());
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] tree 'titleMenu': initialFocus 'title' is not an interactive widget",
+    );
+
+    capture.clear();
+    tree.initial_focus = Some("play".into());
+    register("titleMenu", tree);
+    capture.assert_not_logged(Level::Warn, "initialFocus");
+}
+
+#[test]
+fn focus_authoring_warns_when_a_neighbor_target_is_not_interactive() {
+    let passive_target = anchored(linear_group(vec![
+        text_id("TITLE", "title"),
+        button_with_down_neighbor("play", "title"),
+    ]));
+
+    let capture = LogCapture::start();
+    register("titleMenu", passive_target);
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] tree 'titleMenu': widget 'play' focusNeighbors.down 'title' is not an interactive widget",
+    );
+
+    capture.clear();
+    let interactive_target = anchored(linear_group(vec![
+        button_with_down_neighbor("play", "exit"),
+        button("exit", "ui.exitToDesktop"),
+    ]));
+    register("titleMenu", interactive_target);
+    capture.assert_not_logged(Level::Warn, "focusNeighbors");
+}
+
+#[test]
+fn focus_authoring_warns_when_a_passive_widget_authors_neighbors() {
+    let mut title = text_id("TITLE", "title");
+    if let Widget::Text(t) = &mut title {
+        t.focus_neighbors.down = Some("play".into());
+    }
+    let tree = anchored(linear_group(vec![title, button("play", "openPlay")]));
+
+    let capture = LogCapture::start();
+    register("titleMenu", tree);
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] tree 'titleMenu': passive widget 'title' authors focusNeighbors; ignored",
+    );
+
+    // Clean case: neighbors authored only on the interactive widget, targeting
+    // another interactive widget — no warning.
+    capture.clear();
+    let clean = anchored(linear_group(vec![
+        button_with_down_neighbor("play", "exit"),
+        button("exit", "ui.exitToDesktop"),
+    ]));
+    register("titleMenu", clean);
+    capture.assert_not_logged(Level::Warn, "focusNeighbors");
+}
+
+#[test]
+fn focus_authoring_initial_focus_naming_a_hidden_button_does_not_warn() {
+    // `visibleWhen` is a runtime concern; the authoring check only asks whether
+    // the id names an interactive widget in the descriptor, not whether it is
+    // currently shown.
+    let mut hidden = button("play", "openPlay");
+    if let Widget::Button(b) = &mut hidden {
+        b.visible_when = Some(pred("menu.showPlay", None));
+    }
+    let mut tree = anchored(linear_group(vec![
+        hidden,
+        button("exit", "ui.exitToDesktop"),
+    ]));
+    tree.initial_focus = Some("play".into());
+
+    let capture = LogCapture::start();
+    register("titleMenu", tree);
+    capture.assert_not_logged(Level::Warn, "initialFocus");
+}
+
+#[test]
+fn focus_authoring_warns_on_duplicate_interactive_id() {
+    let duplicate = anchored(linear_group(vec![
+        button("play", "openPlay"),
+        button("play", "openPlayAgain"),
+    ]));
+
+    let capture = LogCapture::start();
+    register("titleMenu", duplicate);
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] tree 'titleMenu': interactive id 'play' is registered more than once",
+    );
+
+    capture.clear();
+    let distinct = anchored(linear_group(vec![
+        button("play", "openPlay"),
+        button("exit", "ui.exitToDesktop"),
+    ]));
+    register("titleMenu", distinct);
+    capture.assert_not_logged(Level::Warn, "registered more than once");
 }

@@ -48,6 +48,7 @@ pub use draw::{
 pub use draw::FocusNeighbors;
 pub use presentation_layout::PresentationTemplateLayout;
 pub use ui_tree::UiTree;
+pub use ui_tree_focus::warn_focus_authoring;
 
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)
 /// for `image` nodes. Threaded into the measure seam so an image sizes from its

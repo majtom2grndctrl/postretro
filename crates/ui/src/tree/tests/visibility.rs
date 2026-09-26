@@ -1,21 +1,23 @@
 // Reactive visibleWhen show/hide across draw and focus.
 
 use super::common::*;
-/// A focusable text leaf carrying a `visibleWhen` predicate over `slot`
-/// (boolean truthiness). Drawn (one glyph run) and focusable when shown.
-fn text_id_visible(content: &str, id: &str, slot: &str) -> Widget {
-    Widget::Text(TextWidget {
-        content: content.into(),
-        font_size: 20.0,
-        color: ColorValue::Literal([1.0; 4]),
-        font: None,
-        id: Some(id.to_string()),
-        focus_neighbors: crate::descriptor::FocusNeighbors::default(),
-        bind: None,
-        style_ranges: None,
-        visible_when: Some(pred(slot, None)),
-        role: None,
-    })
+/// A button labelled `label` (the drawn run) with focus id `id`.
+fn labelled_button(label: &str, id: &str) -> Widget {
+    let mut widget = button(id, "noop");
+    if let Widget::Button(b) = &mut widget {
+        b.label = Some(label.into());
+    }
+    widget
+}
+
+/// A focusable button carrying a `visibleWhen` predicate over `slot` (boolean
+/// truthiness). Draws its label run and is focusable when shown.
+fn button_visible(label: &str, id: &str, slot: &str) -> Widget {
+    let mut widget = labelled_button(label, id);
+    if let Widget::Button(b) = &mut widget {
+        b.visible_when = Some(pred(slot, None));
+    }
+    widget
 }
 
 /// A linear-focus vstack wrapping `children` (each its own focusable leaf).
@@ -51,8 +53,8 @@ fn visible_when_false_hides_subtree_from_draw_and_focus() {
     // hidden leaf, its focusable drops out of the rect list, and it is not a
     // candidate for the declared initial focus.
     let root = focus_vstack(vec![
-        text_id("Always", "always"),
-        text_id_visible("Maybe", "maybe", "hud.advanced"),
+        labelled_button("Always", "always"),
+        button_visible("Maybe", "maybe", "hud.advanced"),
     ]);
     let tree = AnchoredTree {
         anchor: Anchor::TopLeft,
@@ -103,8 +105,8 @@ fn visible_when_true_restores_draw_and_focus() {
     // Round-trip the same tree with the predicate true: the previously hidden
     // node draws its glyph run and rejoins the focus rect list.
     let root = focus_vstack(vec![
-        text_id("Always", "always"),
-        text_id_visible("Maybe", "maybe", "hud.advanced"),
+        labelled_button("Always", "always"),
+        button_visible("Maybe", "maybe", "hud.advanced"),
     ]);
     let tree = AnchoredTree {
         anchor: Anchor::TopLeft,
@@ -149,7 +151,7 @@ fn visible_when_resolved_change_marks_dirty_and_reexports() {
     // A change in the predicate's resolved value relays out (marks dirty) and
     // the re-exported focus rect list reflects the new visibility; an unchanged
     // resolved value does NOT relayout (targeted invalidation).
-    let root = focus_vstack(vec![text_id_visible("Maybe", "maybe", "hud.advanced")]);
+    let root = focus_vstack(vec![button_visible("Maybe", "maybe", "hud.advanced")]);
     let tree = AnchoredTree {
         anchor: Anchor::TopLeft,
         offset: [0.0, 0.0],

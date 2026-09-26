@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use cosmic_text::FontSystem;
 use taffy::prelude::{NodeId, Size, TaffyTree};
 
-use super::super::descriptor::{BindSource, LocalState, Predicate, Widget};
+use super::super::descriptor::{
+    BindSource, FocusNeighbors as DescriptorFocusNeighbors, LocalState, Predicate, Widget,
+};
 use super::ImageSizes;
 use super::draw::{FocusNeighbors, NodeInteraction};
 use super::node_context::{BarExitFadeState, NodeContext, VisibilityState};
@@ -68,26 +70,47 @@ pub fn measure_node(
     }
 }
 
-/// A widget's authored focus id and neighbor overrides, for the focus-rect
-/// export. Every kind carries `id`/`focus_neighbors` except `spacer` (id only,
-/// never focusable). Returns the authored id (borrowed) and the exported
-/// neighbor overrides.
-pub fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
+/// A widget's authored id (borrowed), or `None` for a passive kind with no
+/// authored id. `button`/`slider` always carry one (required by the schema).
+pub fn widget_id(widget: &Widget) -> Option<&String> {
     match widget {
-        Widget::Text(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
-        Widget::Panel(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
-        Widget::Image(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
-        Widget::Spacer(w) => (w.id.as_ref(), FocusNeighbors::default()),
-        Widget::VStack(w) | Widget::HStack(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
-        Widget::Grid(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
-        // Interactive widgets carry a REQUIRED id (focusable markers): button and
-        // slider always export as focusable. `bar` is passive — id only.
-        Widget::Button(w) => (Some(&w.id), (&w.focus_neighbors).into()),
-        Widget::Slider(w) => (Some(&w.id), (&w.focus_neighbors).into()),
-        Widget::Bar(w) => (w.id.as_ref(), FocusNeighbors::default()),
-        Widget::Ring(w) => (w.id.as_ref(), FocusNeighbors::default()),
-        // M13 G2: a non-visual announcement carries no focus id/neighbors.
-        Widget::Announce(_) => (None, FocusNeighbors::default()),
+        Widget::Text(w) => w.id.as_ref(),
+        Widget::Panel(w) => w.id.as_ref(),
+        Widget::Image(w) => w.id.as_ref(),
+        Widget::Spacer(w) => w.id.as_ref(),
+        Widget::VStack(w) | Widget::HStack(w) => w.id.as_ref(),
+        Widget::Grid(w) => w.id.as_ref(),
+        Widget::Button(w) => Some(&w.id),
+        Widget::Slider(w) => Some(&w.id),
+        Widget::Bar(w) => w.id.as_ref(),
+        Widget::Ring(w) => w.id.as_ref(),
+        Widget::Announce(_) => None,
+    }
+}
+
+/// A widget's authored id and exported neighbor overrides, for the focus-rect
+/// export. Whether a widget is a focus stop is decided by `widget_interaction`,
+/// not by an id: an interactive kind carries a required id, a passive id is only
+/// a reference target. `focus_neighbors` is honored only on interactive widgets.
+pub fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
+    let neighbors = authored_focus_neighbors(widget)
+        .map(Into::into)
+        .unwrap_or_default();
+    (widget_id(widget), neighbors)
+}
+
+/// The `focusNeighbors` a widget kind can author, or `None` for kinds with no
+/// such field (`spacer`, `bar`, `ring`, `announce`).
+pub fn authored_focus_neighbors(widget: &Widget) -> Option<&DescriptorFocusNeighbors> {
+    match widget {
+        Widget::Text(w) => Some(&w.focus_neighbors),
+        Widget::Panel(w) => Some(&w.focus_neighbors),
+        Widget::Image(w) => Some(&w.focus_neighbors),
+        Widget::VStack(w) | Widget::HStack(w) => Some(&w.focus_neighbors),
+        Widget::Grid(w) => Some(&w.focus_neighbors),
+        Widget::Button(w) => Some(&w.focus_neighbors),
+        Widget::Slider(w) => Some(&w.focus_neighbors),
+        Widget::Spacer(_) | Widget::Bar(_) | Widget::Ring(_) | Widget::Announce(_) => None,
     }
 }
 
@@ -110,6 +133,14 @@ pub fn widget_interaction(widget: &Widget) -> Option<NodeInteraction> {
         }),
         _ => None,
     }
+}
+
+/// Whether `widget` is an interactive focus stop (`button`/`slider`), per
+/// `widget_interaction` — kept in sync with it. Cheaper than
+/// `widget_interaction(widget).is_some()` when only the boolean matters, since
+/// building the `NodeInteraction` clones the widget's fields for no reason.
+pub fn is_interactive(widget: &Widget) -> bool {
+    matches!(widget, Widget::Button(_) | Widget::Slider(_))
 }
 
 /// The `localState` scope a container opens for the focus walk's `{ local }`
@@ -161,7 +192,9 @@ pub fn widget_a11y_state(
 }
 
 /// The focus policy a container declares, or `None` for leaves and policy-less
-/// containers. A declaring container opens a focus group its direct children join.
+/// containers. A declaring container opens a focus group whose members are the
+/// interactive descendants nested under it through any passive containers, up to
+/// the next nested focus-policy container (which opens its own group).
 pub fn container_focus_policy(widget: &Widget) -> Option<&super::super::descriptor::FocusPolicy> {
     match widget {
         Widget::VStack(w) | Widget::HStack(w) => w.focus.as_ref(),

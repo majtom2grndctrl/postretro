@@ -1,8 +1,8 @@
-// Focus / hit-test rect export for the retained `UiTree`: the lockstep
-// descriptor+taffy walk that pairs each focusable node with its device-pixel rect.
+// Focus / hit-test rect export for the retained `UiTree` (the lockstep
+// descriptor+taffy walk), plus the focus-authoring diagnostics run at registration.
 // See: context/lib/ui.md §4 (interaction / focus)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use taffy::prelude::NodeId;
 
@@ -17,8 +17,8 @@ use super::draw::{
 };
 use super::ui_tree::UiTree;
 use super::widget_meta::{
-    any_restore_on_return, container_focus_policy, container_local_scope, focus_meta,
-    widget_a11y_state, widget_children, widget_interaction,
+    any_restore_on_return, authored_focus_neighbors, container_focus_policy, container_local_scope,
+    focus_meta, is_interactive, widget_a11y_state, widget_children, widget_id, widget_interaction,
 };
 
 impl UiTree {
@@ -32,12 +32,15 @@ impl UiTree {
     /// Assumes layout is already computed for `device_size` (the caller's gate ran
     /// the compute). Pure read-back — no taffy mutation, no GPU.
     ///
-    /// A node is exported as focusable when it carries an authored `id` OR sits
-    /// (directly) under a container that declares a focus policy. The auto-id is
-    /// the node's path from the root (`"0/2/1"`), regenerated deterministically
-    /// each build — so it is stable across rebuilds for an unchanged structure but
-    /// is runtime-only and never serialized. Authored ids carry across structural
-    /// rebuilds (focus restore relies on them).
+    /// Only interactive widgets (those `widget_interaction` recognizes) export as
+    /// focus stops; they join the group of their nearest focus-policy ancestor,
+    /// however deeply nested under passive containers. Passive nodes — text,
+    /// images, layout containers — never export, even with an authored `id` (a
+    /// passive id is a `labelledBy` reference target, not a focus stop).
+    ///
+    /// Every interactive kind requires an authored id, so each exported id is
+    /// authored and carries across structural rebuilds (focus restore relies on
+    /// that).
     pub fn export_focus_rects(
         &self,
         descriptor: &AnchoredTree,
@@ -65,7 +68,6 @@ impl UiTree {
         self.collect_focus_node(
             &descriptor.root,
             self.root,
-            String::new(),
             None,
             None,
             root_origin,
@@ -79,17 +81,15 @@ impl UiTree {
         out
     }
 
-    /// Lockstep descriptor+taffy walk for `export_focus_rects`. `path` is the
-    /// node's slash-joined child-index path from the root (the auto-id when no id
-    /// is authored). `group` is the index (into `out.groups`) of the nearest
-    /// ancestor container that declared a focus policy. `z` rises in tree order so
-    /// a later-drawn node hit-tests as topmost.
+    /// Lockstep descriptor+taffy walk for `export_focus_rects`. `group` is the
+    /// index (into `out.groups`) of the nearest ancestor container that declared a
+    /// focus policy. `z` rises in tree order so a later-drawn node hit-tests as
+    /// topmost.
     #[allow(clippy::too_many_arguments)]
     fn collect_focus_node(
         &self,
         widget: &Widget,
         node: NodeId,
-        path: String,
         group: Option<usize>,
         scope: Option<&str>,
         ref_origin: [f32; 2],
@@ -113,18 +113,16 @@ impl UiTree {
         let this_z = *z;
         *z += 1;
 
-        let (authored_id, neighbors) = focus_meta(widget);
-        // A node is focusable when it carries an authored id or is governed by an
-        // ancestor focus group. Auto-id falls back to the tree path.
-        let focusable = authored_id.is_some() || group.is_some();
-        let id = authored_id.cloned().unwrap_or_else(|| {
-            if path.is_empty() {
-                "root".to_string()
-            } else {
-                path.clone()
-            }
+        // Only an interactive widget is a focus stop. A passive node under a group
+        // (a menu title, a label, a nested layout stack) must not become one, or
+        // nav stops on it; its group still propagates to its children below.
+        // Interactive kinds carry a required id, so `focus_meta` always yields one
+        // here; no fallback id is needed.
+        let stop = widget_interaction(widget).and_then(|interaction| {
+            let (id, neighbors) = focus_meta(widget);
+            id.map(|id| (id, neighbors, interaction))
         });
-        if focusable {
+        if let Some((id, neighbors, interaction)) = stop {
             let rect = project_rect(ref_origin, layout, scale, canvas_origin);
             let rect_index = out.rects.len();
             // M13 G2: resolve the widget's a11y `selected`/`checked` predicates (if
@@ -139,7 +137,7 @@ impl UiTree {
                 z: this_z,
                 group,
                 neighbors,
-                interaction: widget_interaction(widget),
+                interaction: Some(interaction),
                 selected,
                 checked,
                 disabled,
@@ -153,9 +151,9 @@ impl UiTree {
         // `{ local }` predicate binds resolve against (mirrors `build_stack`).
         let child_scope = container_local_scope(widget).or(scope);
 
-        // A container declaring a focus policy opens a new group its DIRECT
-        // children join. Register the group before recursing so children carry its
-        // index. Children of a non-policy container inherit the ancestor group.
+        // A container declaring a focus policy opens a new group its interactive
+        // descendants join. Register the group before recursing so children carry
+        // its index. Children of a non-policy container inherit the ancestor group.
         let child_group = match container_focus_policy(widget) {
             Some(policy) => {
                 let idx = out.groups.len();
@@ -172,21 +170,15 @@ impl UiTree {
 
         if let Some(children) = widget_children(widget) {
             let taffy_children = self.taffy.children(node).expect("node children resolve");
-            for (i, (child_widget, child_node)) in children.iter().zip(taffy_children).enumerate() {
+            for (child_widget, child_node) in children.iter().zip(taffy_children) {
                 let child_layout = self.taffy.layout(child_node).expect("child has layout");
                 let child_origin = [
                     ref_origin[0] + child_layout.location.x,
                     ref_origin[1] + child_layout.location.y,
                 ];
-                let child_path = if path.is_empty() {
-                    i.to_string()
-                } else {
-                    format!("{path}/{i}")
-                };
                 self.collect_focus_node(
                     child_widget,
                     child_node,
-                    child_path,
                     child_group,
                     child_scope,
                     child_origin,
@@ -199,5 +191,79 @@ impl UiTree {
                 );
             }
         }
+    }
+}
+
+/// Warn about focus authoring the export ignores: an `initialFocus` or a
+/// `focusNeighbors` target that names no interactive widget in the tree, and
+/// `focusNeighbors` authored on a passive widget. Runs once when a named tree is
+/// registered — the tree name is known there, not at `UiTree` build — so the
+/// per-frame export stays log-free. Logging only: at runtime an unmatched
+/// initial focus falls back to the first focusable node, and an unmatched
+/// neighbor to the group policy.
+pub fn warn_focus_authoring(tree_name: &str, tree: &AnchoredTree) {
+    let mut interactive = HashSet::new();
+    collect_interactive_ids(tree_name, &tree.root, &mut interactive);
+
+    let initial = tree.initial_focus.as_deref();
+    if let Some(initial) = initial.filter(|id| !interactive.contains(id)) {
+        log::warn!(
+            "[UI] tree '{tree_name}': initialFocus '{initial}' is not an interactive \
+             widget in the tree; focus starts on the first focusable node instead"
+        );
+    }
+    warn_neighbors(tree_name, &tree.root, &interactive);
+}
+
+/// Collect every interactive widget's id, warning (once per registration) about
+/// an empty id or one that duplicates another interactive id already seen in
+/// `tree_name`. Reads only the id (`widget_id`), not the neighbor overrides
+/// `focus_meta` also computes.
+fn collect_interactive_ids<'a>(tree_name: &str, widget: &'a Widget, out: &mut HashSet<&'a str>) {
+    if is_interactive(widget) {
+        let id = widget_id(widget).map_or("", String::as_str);
+        if id.is_empty() {
+            log::warn!("[UI] tree '{tree_name}': an interactive widget has an empty id");
+        } else if !out.insert(id) {
+            log::warn!(
+                "[UI] tree '{tree_name}': interactive id '{id}' is registered more than once"
+            );
+        }
+    }
+    for child in widget_children(widget).unwrap_or_default() {
+        collect_interactive_ids(tree_name, child, out);
+    }
+}
+
+fn warn_neighbors(tree_name: &str, widget: &Widget, interactive: &HashSet<&str>) {
+    if let Some(neighbors) = authored_focus_neighbors(widget).filter(|n| !n.is_empty()) {
+        let id = widget_id(widget).map_or("<no id>", String::as_str);
+        if is_interactive(widget) {
+            let directions = [
+                ("up", &neighbors.up),
+                ("down", &neighbors.down),
+                ("left", &neighbors.left),
+                ("right", &neighbors.right),
+            ];
+            let unmatched = directions.into_iter().filter_map(|(direction, target)| {
+                let target = target.as_deref()?;
+                (!interactive.contains(target)).then_some((direction, target))
+            });
+            for (direction, target) in unmatched {
+                log::warn!(
+                    "[UI] tree '{tree_name}': widget '{id}' focusNeighbors.{direction} \
+                     '{target}' is not an interactive widget in the tree; that direction \
+                     falls back to the group policy"
+                );
+            }
+        } else {
+            log::warn!(
+                "[UI] tree '{tree_name}': passive widget '{id}' authors focusNeighbors; \
+                 ignored (only buttons and sliders are focus stops)"
+            );
+        }
+    }
+    for child in widget_children(widget).unwrap_or_default() {
+        warn_neighbors(tree_name, child, interactive);
     }
 }

@@ -2244,4 +2244,115 @@ mod tests {
             "a disabled focused button does not activate (App-side gate)"
         );
     }
+
+    /// Export a real descriptor's focus rects the way the renderer does each frame.
+    fn export_from_json(json: &str) -> FocusRectList {
+        let tree: postretro_ui::descriptor::AnchoredTree =
+            serde_json::from_str(json).expect("test descriptor parses");
+        let theme = postretro_ui::theme::UiTheme::engine_default();
+        let mut ui = postretro_ui::tree::UiTree::from_descriptor(&tree, &theme);
+        let mut font_system = postretro_ui::text::build_font_system();
+        let slots = std::collections::HashMap::new();
+        let cells = postretro_ui::tree::CellValues::new();
+        ui.build_draw_data(
+            [1280, 720],
+            &mut font_system,
+            &postretro_ui::tree::ImageSizes::new(),
+            &slots,
+        );
+        ui.export_focus_rects(&tree, [1280, 720], &slots, &cells)
+    }
+
+    // Regression: nav down from EXIT (wrap) landed on the non-interactive
+    // "POSTRETRO" title because the export made every group descendant a stop.
+    #[test]
+    fn linear_wrap_from_last_button_skips_the_title_to_the_first_button() {
+        // The dev title-menu shape: a title text above three buttons in one
+        // linear, wrapping focus group.
+        let list = export_from_json(
+            r#"{
+                "anchor": "center",
+                "offset": [0.0, 0.0],
+                "captureMode": "capture",
+                "initialFocus": "exit",
+                "root": {
+                    "kind": "vstack",
+                    "gap": 12.0,
+                    "padding": 24.0,
+                    "align": "stretch",
+                    "focus": { "policy": "linear", "wrap": true },
+                    "children": [
+                        { "kind": "text", "content": "POSTRETRO", "fontSize": 36.0, "color": "ok" },
+                        { "kind": "button", "id": "play", "label": "PLAY", "onPress": "openPlay" },
+                        { "kind": "button", "id": "options", "label": "OPTIONS", "onPress": "openOptions" },
+                        { "kind": "button", "id": "exit", "label": "EXIT", "onPress": "ui.exitToDesktop" }
+                    ]
+                }
+            }"#,
+        );
+        let mut fe = UiFocusEngine::new();
+        let tick = |fe: &mut UiFocusEngine, intents: &[NavIntent]| {
+            fe.tick(
+                Some("title"),
+                Some(&list),
+                intents,
+                None,
+                &[],
+                InputMode::Focus,
+                0.0,
+            )
+            .focused
+        };
+        assert_eq!(tick(&mut fe, &[]).as_deref(), Some("exit"));
+        assert_eq!(
+            tick(&mut fe, &[NavIntent::Down]).as_deref(),
+            Some("play"),
+            "down from the last button wraps to the first button, not the title",
+        );
+        assert_eq!(
+            tick(&mut fe, &[NavIntent::Up]).as_deref(),
+            Some("exit"),
+            "up from the first button wraps to the last button, not the title",
+        );
+    }
+
+    #[test]
+    fn passive_only_focus_group_yields_no_focus() {
+        let list = export_from_json(
+            r#"{
+                "anchor": "center",
+                "offset": [0.0, 0.0],
+                "captureMode": "capture",
+                "root": {
+                    "kind": "vstack",
+                    "gap": 12.0,
+                    "padding": 24.0,
+                    "align": "stretch",
+                    "focus": { "policy": "linear", "wrap": true },
+                    "children": [
+                        { "kind": "text", "content": "POSTRETRO", "fontSize": 36.0, "color": "ok" },
+                        { "kind": "vstack", "gap": 0.0, "padding": 0.0, "align": "start", "children": [
+                            { "kind": "text", "id": "note", "content": "LOADING", "fontSize": 18.0, "color": "ok" }
+                        ] }
+                    ]
+                }
+            }"#,
+        );
+        let mut fe = UiFocusEngine::new();
+        let focused = fe
+            .tick(
+                Some("title"),
+                Some(&list),
+                &[NavIntent::Down],
+                None,
+                &[],
+                InputMode::Focus,
+                0.0,
+            )
+            .focused;
+        assert_eq!(
+            focused, None,
+            "a tree with no interactive widget takes no focus"
+        );
+    }
 }

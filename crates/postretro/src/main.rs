@@ -6,6 +6,7 @@
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
 mod camera;
+mod frame_eye;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -3560,15 +3561,86 @@ impl ApplicationHandler for App {
                 self.reconcile_ui_focus();
                 self.apply_frontend_menu_camera_pose_if_present();
 
+                // Position interpolated from tick-state slots; yaw/pitch from
+                // `self.camera` directly so zero-tick frames still see this
+                // frame's look rotation.
+                let interp = self.frame_timing.interpolated_state();
+
+                // M15 Phase 3 Task 5: the connected client's local-pawn presentation
+                // offset is already baked into the camera pose `frame_timing` carries
+                // (folded in at the tick-rate camera-follow seam above, where the offset
+                // also decays once per tick). So the interpolated eye IS the presented
+                // eye — re-adding the offset here would double-count it and re-introduce
+                // the ∝-velocity oscillation it was moved to fix. `frame_timing`
+                // interpolates between consecutive PRESENTED poses, so the smoothed
+                // correction reaches the view matrix, camera uniforms, cell locator,
+                // and portal apex continuously across each reconcile snap.
+                // Single-player and the host carry a ZERO offset, so this is the bare
+                // interpolated eye for them, unchanged.
+                let presented_eye = interp.position;
+
+                // View-feel assembly (movement.md D1/D5/D6) runs once per frame,
+                // here, ahead of the audio step: render and the audio listener
+                // read this one evaluated eye (`audio.md` §3). View feel only runs
+                // when the camera-following pawn carries `view_feel`; another
+                // pawn's preset must not leak onto the selected camera.
+                let view_feel_driver = {
+                    let registry = script_ctx.registry.borrow();
+                    followed_player_pawn(&registry).and_then(|pawn| {
+                        registry
+                            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                            .ok()
+                            .and_then(|component| {
+                                component.view_feel.as_ref().map(|params| {
+                                    frame_eye::ViewFeelDriver {
+                                        pawn,
+                                        params: params.clone(),
+                                        velocity: component.velocity,
+                                        is_grounded: component.is_grounded(),
+                                    }
+                                })
+                            })
+                    })
+                };
+                let view_feel_scale = self
+                    .session
+                    .as_ref()
+                    .map(|session| session.player_options.view_feel_scale)
+                    .unwrap_or(1.0);
+                let eye = frame_eye::assemble_frame_eye(
+                    frame_eye::FrameEyeInputs {
+                        presented_eye,
+                        aspect: self.camera.aspect(),
+                        render_yaw: render_camera_yaw,
+                        pitch: self.camera.pitch,
+                        driver: view_feel_driver,
+                        movement_edges: &pending_movement_edges,
+                        frame_dt,
+                        view_feel_scale,
+                    },
+                    frame_eye::ViewFeelTracking {
+                        state: &mut self.view_feel_state,
+                        followed_pawn: &mut self.view_feel_followed_pawn,
+                        descriptor: &mut self.view_feel_descriptor,
+                    },
+                );
+                let render_camera = eye.camera;
+                let view_proj = render_camera.view_projection;
+                // The render eye and matrix are assembled together.
+                // Portal traversal, camera uniforms, and every render-stage
+                // distance/cell query must use the same point. Using the
+                // unbobbed interpolated position here can put the visibility
+                // apex in a different cell or on the opposite side of a
+                // portal plane, causing one-frame clear-color holes.
+                let render_eye_position = render_camera.eye_position;
+
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
-                // game logic settles every entity and before render. Convert the
-                // glam-typed camera to the primitive `ListenerState` here at the
-                // call site (the boundary carries no glam); `forward` uses the
-                // aim ray's direction so it includes pitch, unlike yaw-only
-                // `forward()`, and `up` is world up per the `ListenerState`
-                // contract. Guarded for the silent (init-failed) case. The anchor
-                // resolver places each positional voice at its emitter's
+                // game logic settles every entity and before render. The listener
+                // is the rendered eye assembled above, converted to the primitive
+                // `ListenerState` at this call site (the boundary carries no glam).
+                // Guarded for the silent (init-failed) case. The anchor resolver
+                // places each positional voice at its emitter's
                 // render-interpolated pose this frame.
                 let listener_registry = self
                     .session
@@ -3581,12 +3653,10 @@ impl ApplicationHandler for App {
                         .and_then(|session| session.audio.as_mut()),
                 ) {
                     let registry = registry.borrow();
-                    let listener = postretro_audio::ListenerState {
-                        position: self.camera.position.to_array(),
-                        forward: self.camera.aim_ray().1.to_array(),
-                        up: [0.0, 1.0, 0.0],
-                        attached: sound_events::listener_attached_key(&registry),
-                    };
+                    let listener = frame_eye::listener_for(
+                        &render_camera,
+                        sound_events::listener_attached_key(&registry),
+                    );
                     let mut scene = sound_events::AnchorScene {
                         registry: &registry,
                         world: self.level.as_ref(),
@@ -3619,130 +3689,6 @@ impl ApplicationHandler for App {
                     // scale 0 holds every clip and fade. See scripting.md §10.3.
                     self.anim_time = frame_anim_time;
                 }
-
-                // Position interpolated from tick-state slots; yaw/pitch from
-                // `self.camera` directly so zero-tick frames still see this
-                // frame's look rotation.
-                let interp = self.frame_timing.interpolated_state();
-
-                // M15 Phase 3 Task 5: the connected client's local-pawn presentation
-                // offset is already baked into the camera pose `frame_timing` carries
-                // (folded in at the tick-rate camera-follow seam above, where the offset
-                // also decays once per tick). So the interpolated eye IS the presented
-                // eye — re-adding the offset here would double-count it and re-introduce
-                // the ∝-velocity oscillation it was moved to fix. `frame_timing`
-                // interpolates between consecutive PRESENTED poses, so the smoothed
-                // correction reaches the view matrix, camera uniforms, cell locator,
-                // and portal apex continuously across each reconcile snap.
-                // Single-player and the host carry a ZERO offset, so this is the bare
-                // interpolated eye for them, unchanged.
-                let presented_eye = interp.position;
-
-                // View-feel assembly (movement.md D1/D5/D6): a render-only,
-                // pawn-driven camera effect. When the camera-driving pawn carries
-                // `view_feel`, run the render-rate evaluator and fold its output
-                // into the look angles, roll, and eye offset. When no pawn drives
-                // the camera, or it carries no `view_feel`, take the pass-through
-                // path with `roll = 0` / `eye_offset = ZERO` and no angle offsets
-                // so the matrix is bit-identical to the no-view-feel render.
-                //
-                // The evaluator owns the integrator state (`self.view_feel_state`)
-                // and never sees the camera basis; we derive its two velocity-space
-                // inputs from the pawn velocity and the camera RIGHT vector here,
-                // then map its scalar output back onto that basis. The same
-                // carry-yaw-adjusted render angle that enters `RenderCamera` below
-                // supplies the yaw-derived, Y-free, unit-length right vector that
-                // `view_feel_inputs`/`map_output_to_camera` expect, so view feel and
-                // the view matrix do not disagree during a sub-tick turntable rotation.
-                let camera_right = camera_right_for_yaw(render_camera_yaw);
-                // Match the camera-follow resolver above: marked local pawn
-                // first, then the legacy first PlayerMovement+Transform
-                // fallback. View feel only runs when that driving pawn carries
-                // `view_feel`; another pawn's preset must not leak onto the
-                // selected camera.
-                let view_feel_inputs = {
-                    let registry = script_ctx.registry.borrow();
-                    followed_player_pawn(&registry).and_then(|id| {
-                        registry
-                            .get_component::<postretro_foundation::PlayerMovementComponent>(id)
-                            .ok()
-                            .and_then(|component| {
-                                component.view_feel.as_ref().map(|params| {
-                                    (
-                                        id,
-                                        params.clone(),
-                                        component.velocity,
-                                        component.is_grounded(),
-                                    )
-                                })
-                            })
-                    })
-                };
-                // `player_options` is session-owned; copy the accessibility scale
-                // out before the `&mut self.view_feel_state` borrow below.
-                let view_feel_scale = self
-                    .session
-                    .as_ref()
-                    .map(|session| session.player_options.view_feel_scale)
-                    .unwrap_or(1.0);
-                let (vf_fov_offset, vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
-                    if let Some((pawn, params, velocity, is_grounded)) = view_feel_inputs {
-                        sync_view_feel_driver(
-                            &mut self.view_feel_state,
-                            &mut self.view_feel_followed_pawn,
-                            &mut self.view_feel_descriptor,
-                            Some((pawn, &params)),
-                        );
-                        let (horizontal_speed, lateral_velocity) =
-                            view_feel::view_feel_inputs(velocity, camera_right);
-                        let output = view_feel::evaluate_with_edges(
-                            &params,
-                            horizontal_speed,
-                            lateral_velocity,
-                            is_grounded,
-                            &pending_movement_edges,
-                            &mut self.view_feel_state,
-                            // Zero-frame_dt guard: the evaluator leaves the
-                            // integrator untouched at `frame_dt == 0` (Task 2
-                            // contract), so passing it through is safe — we do
-                            // not introduce a separate advance step here.
-                            frame_dt,
-                            // Accessibility scale (D6): owned/clamped by the
-                            // options module; passed verbatim, not re-clamped.
-                            view_feel_scale,
-                        );
-                        let (roll, yaw, pitch, eye) =
-                            view_feel::map_output_to_camera(&output, camera_right);
-                        (output.impulse_fov, roll, yaw, pitch, eye)
-                    } else {
-                        sync_view_feel_driver(
-                            &mut self.view_feel_state,
-                            &mut self.view_feel_followed_pawn,
-                            &mut self.view_feel_descriptor,
-                            None,
-                        );
-                        // Pass-through: no driving pawn, or it carries no
-                        // `view_feel`. Identical-to-today render path.
-                        (0.0, 0.0, 0.0, 0.0, Vec3::ZERO)
-                    };
-
-                let render_camera = camera::RenderCamera::new(
-                    presented_eye,
-                    self.camera.aspect(),
-                    render_camera_yaw + vf_yaw_offset,
-                    self.camera.pitch + vf_pitch_offset,
-                    vf_roll,
-                    vf_eye_offset,
-                    vf_fov_offset,
-                );
-                let view_proj = render_camera.view_projection;
-                // The render eye and matrix are assembled together.
-                // Portal traversal, camera uniforms, and every render-stage
-                // distance/cell query must use the same point. Using the
-                // unbobbed interpolated position here can put the visibility
-                // apex in a different cell or on the opposite side of a
-                // portal plane, causing one-frame clear-color holes.
-                let render_eye_position = render_camera.eye_position;
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
@@ -4120,11 +4066,11 @@ impl ApplicationHandler for App {
                                     model,
                                     viewmodel_world_transform(
                                         render_camera.view_matrix,
-                                        camera_right,
-                                        vf_eye_offset,
-                                        vf_roll,
-                                        vf_yaw_offset,
-                                        vf_pitch_offset,
+                                        eye.camera_right,
+                                        eye.eye_offset,
+                                        eye.roll,
+                                        eye.yaw_offset,
+                                        eye.pitch_offset,
                                         &placement,
                                     ),
                                     weapon_seed,

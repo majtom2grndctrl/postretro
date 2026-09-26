@@ -349,6 +349,7 @@ mod tests {
             version: "1.0.0".to_string(),
             render: ModRenderProfile::default(),
             movers: Default::default(),
+            audio: Default::default(),
             switching: Default::default(),
             default_weapon_placement: None,
             entities: vec![entity_descriptor()],

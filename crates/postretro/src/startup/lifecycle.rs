@@ -2182,6 +2182,10 @@ mod tests {
                     close_event: None,
                     blocked_event: None,
                     crush_event: None,
+                    open_sound: None,
+                    close_sound: None,
+                    blocked_sound: None,
+                    crush_sound: None,
                     sealed_portal_ids: Vec::new(),
                     carried_lights: vec![LoadedMemberLight {
                         alpha_light_index: 0,
@@ -3173,6 +3177,7 @@ mod tests {
                 version: "1".to_string(),
                 render: Default::default(),
                 movers: Default::default(),
+                audio: Default::default(),
                 switching: Default::default(),
                 default_weapon_placement: None,
                 entities: Vec::new(),

@@ -475,6 +475,11 @@ pub struct LoadedKinematicMover {
     pub crush_event: Option<String>,
     pub sealed_portal_ids: Vec<u32>,
     pub carried_lights: Vec<LoadedMemberLight>,
+    /// Presentation-only sound keys; outside the multiplayer content hash.
+    pub open_sound: Option<String>,
+    pub close_sound: Option<String>,
+    pub blocked_sound: Option<String>,
+    pub crush_sound: Option<String>,
 }
 
 /// Runtime copy of a KinematicGeometry member-light relation. Alpha-light
@@ -534,6 +539,10 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             crush_event: record.crush_event,
             sealed_portal_ids: record.sealed_portal_ids,
             carried_lights: record.carried_lights.into_iter().map(Into::into).collect(),
+            open_sound: record.open_sound,
+            close_sound: record.close_sound,
+            blocked_sound: record.blocked_sound,
+            crush_sound: record.crush_sound,
         }
     }
 }
@@ -4767,6 +4776,10 @@ mod tests {
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
                 carried_lights: Vec::new(),
+                open_sound: None,
+                close_sound: None,
+                blocked_sound: None,
+                crush_sound: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -4798,6 +4811,8 @@ mod tests {
         record.close_event = Some("closed".to_string());
         record.blocked_event = Some("blocked".to_string());
         record.crush_event = Some("crushed".to_string());
+        record.open_sound = Some("sfx/opened".to_string());
+        record.crush_sound = Some("sfx/crushed".to_string());
 
         let mover = LoadedKinematicMover::from(record);
 
@@ -4813,6 +4828,10 @@ mod tests {
         assert_eq!(mover.close_event.as_deref(), Some("closed"));
         assert_eq!(mover.blocked_event.as_deref(), Some("blocked"));
         assert_eq!(mover.crush_event.as_deref(), Some("crushed"));
+        assert_eq!(mover.open_sound.as_deref(), Some("sfx/opened"));
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound, None);
+        assert_eq!(mover.crush_sound.as_deref(), Some("sfx/crushed"));
     }
 
     fn minimal_sections_with_kinematic(

@@ -404,6 +404,10 @@ fn spawn_from_geometry_with_auto_close_default(
             component.close_event = mover.close_event.clone();
             component.blocked_event = mover.blocked_event.clone();
             component.crush_event = mover.crush_event.clone();
+            component.open_sound = mover.open_sound.clone();
+            component.close_sound = mover.close_sound.clone();
+            component.blocked_sound = mover.blocked_sound.clone();
+            component.crush_sound = mover.crush_sound.clone();
             component.sealed_portal_ids = mover.sealed_portal_ids.clone();
             log::info!("{}", kinematic_mover_load_summary(mover, &component));
             registry
@@ -664,6 +668,10 @@ pub(crate) mod tests {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            open_sound: None,
+            close_sound: None,
+            blocked_sound: None,
+            crush_sound: None,
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
         }
@@ -750,6 +758,27 @@ pub(crate) mod tests {
             level_content_digest(&without_members, &world),
             level_content_digest(&with_members, &world),
             "presentation-only carried-light members must stay outside the content digest"
+        );
+    }
+
+    #[test]
+    fn level_content_digest_excludes_mover_sound_keys() {
+        let without_sounds = KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        };
+        let world = single_cell_world(without_sounds.clone());
+        let mut with_sounds = without_sounds.clone();
+        let authored = &mut with_sounds.movers[0];
+        authored.open_sound = Some("sfx/door_open".to_string());
+        authored.close_sound = Some("sfx/door_close".to_string());
+        authored.blocked_sound = Some("sfx/door_blocked".to_string());
+        authored.crush_sound = Some("sfx/door_crush".to_string());
+
+        assert_eq!(
+            level_content_digest(&without_sounds, &world),
+            level_content_digest(&with_sounds, &world),
+            "presentation-only mover sound keys must stay outside the content digest"
         );
     }
 
@@ -980,6 +1009,26 @@ pub(crate) mod tests {
             0,
             "the failed batch must leave no mover components behind"
         );
+    }
+
+    #[test]
+    fn spawn_loaded_movers_copies_mover_sound_keys_into_the_component() {
+        let mut geometry = geometry(1);
+        let authored = &mut geometry.movers[0];
+        authored.open_sound = Some("sfx/door_open".to_string());
+        authored.blocked_sound = Some("sfx/door_blocked".to_string());
+        authored.crush_sound = Some("sfx/door_crush".to_string());
+
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .expect("mover component must be seeded");
+
+        assert_eq!(mover.open_sound.as_deref(), Some("sfx/door_open"));
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound.as_deref(), Some("sfx/door_blocked"));
+        assert_eq!(mover.crush_sound.as_deref(), Some("sfx/door_crush"));
     }
 
     #[test]

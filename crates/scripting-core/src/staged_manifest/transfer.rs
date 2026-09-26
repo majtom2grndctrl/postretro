@@ -10,7 +10,9 @@ use super::super::data_descriptors::{
 use super::super::data_registry::{
     FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
 };
-use super::super::runtime::{Frontend, ModMapEntry, ModMoverDefaults, ModRenderProfile};
+use super::super::runtime::{
+    Frontend, ModAudioProfile, ModMapEntry, ModMoverDefaults, ModRenderProfile,
+};
 use super::super::slot_table::StoreDeclarationSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +50,7 @@ pub struct StagedManifest {
     pub version: String,
     pub render: ModRenderProfile,
     pub movers: ModMoverDefaults,
+    pub audio: ModAudioProfile,
     pub switching: SwitchingDescriptor,
     pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
     pub entities: Vec<EntityTypeDescriptor>,

@@ -4,7 +4,9 @@
 // See: context/lib/boot_sequence.md §1 · context/lib/scripting.md
 
 use postretro_foundation::SwitchingDescriptor;
-use postretro_scripting_core::runtime::{ModRenderProfile, StagedManifestCommitOutcome};
+use postretro_scripting_core::runtime::{
+    ModAudioProfile, ModRenderProfile, StagedManifestCommitOutcome,
+};
 use postretro_scripting_core::staged_manifest::{
     StagedManifestBuildResult, StagedManifestBuildStatus,
 };
@@ -61,6 +63,24 @@ pub(crate) fn staged_render_profile(
     match &result.status {
         StagedManifestBuildStatus::Built(manifest) => Some(manifest.render),
         StagedManifestBuildStatus::NoStartScript => Some(ModRenderProfile::default()),
+        StagedManifestBuildStatus::Failed => None,
+    }
+}
+
+/// Audio profile a staged manifest result commits, if any. Same whole-snapshot
+/// rule as the render profile: only a committed result moves it, and a
+/// committed `NoStartScript` restores the engine seed.
+pub(crate) fn staged_audio_profile(
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) -> Option<ModAudioProfile> {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return None;
+    }
+
+    match &result.status {
+        StagedManifestBuildStatus::Built(manifest) => Some(manifest.audio),
+        StagedManifestBuildStatus::NoStartScript => Some(ModAudioProfile::default()),
         StagedManifestBuildStatus::Failed => None,
     }
 }
@@ -260,6 +280,9 @@ impl App {
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
                 self.apply_mod_bloom_render_profile(render_profile);
             }
+            if let Some(audio_profile) = staged_audio_profile(&result, &outcome) {
+                self.apply_mod_audio_profile(audio_profile);
+            }
             if let Some(switching) = staged_switching(&result, &outcome) {
                 self.switching = switching;
             }
@@ -307,6 +330,14 @@ mod tests {
         render: ModRenderProfile,
         switching: SwitchingDescriptor,
     ) -> StagedManifestBuildResult {
+        built_result_with(render, switching, ModAudioProfile::default())
+    }
+
+    fn built_result_with(
+        render: ModRenderProfile,
+        switching: SwitchingDescriptor,
+        audio: ModAudioProfile,
+    ) -> StagedManifestBuildResult {
         StagedManifestBuildResult {
             generation: GENERATION,
             mod_root: PathBuf::from("content/dev"),
@@ -316,6 +347,7 @@ mod tests {
                 version: "1".to_string(),
                 render,
                 movers: Default::default(),
+                audio,
                 switching,
                 default_weapon_placement: None,
                 entities: Vec::new(),
@@ -620,6 +652,42 @@ mod tests {
                 None,
                 "{outcome:?} must not move the active bloom profile",
             );
+        }
+    }
+
+    // Pin P9: a manifest reload that changes attenuation reaches the audio
+    // subsystem only through a successful commit.
+    #[test]
+    fn staged_audio_profile_commits_only_successful_whole_snapshots() {
+        let authored = ModAudioProfile {
+            attenuation: postretro_scripting_core::runtime::ModAttenuation {
+                min_distance: 4.0,
+                max_distance: 80.0,
+                curve: postretro_scripting_core::runtime::ModAttenuationCurve::Quadratic,
+            },
+        };
+        let result = built_result_with(
+            ModRenderProfile::default(),
+            SwitchingDescriptor::default(),
+            authored,
+        );
+        assert_eq!(staged_audio_profile(&result, &committed()), Some(authored));
+        assert_eq!(
+            staged_audio_profile(
+                &status_result(StagedManifestBuildStatus::NoStartScript),
+                &committed(),
+            ),
+            Some(ModAudioProfile::default()),
+        );
+        assert_eq!(
+            staged_audio_profile(
+                &status_result(StagedManifestBuildStatus::Failed),
+                &committed()
+            ),
+            None,
+        );
+        for outcome in non_committed_outcomes() {
+            assert_eq!(staged_audio_profile(&result, &outcome), None, "{outcome:?}");
         }
     }
 

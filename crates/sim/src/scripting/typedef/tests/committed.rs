@@ -89,6 +89,50 @@ fn committed_sdk_types_contain_mod_bloom_render_profile() {
 }
 
 #[test]
+fn committed_sdk_types_contain_mod_audio_attenuation() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type AttenuationCurve ="));
+        assert!(output.contains("| \"quadratic\""));
+        assert!(output.contains("export type AudioAttenuation = {"));
+        assert!(output.contains("minDistance?: number;"));
+        assert!(output.contains("maxDistance?: number;"));
+        assert!(output.contains("curve?: AttenuationCurve;"));
+        assert!(output.contains("export type AudioProfile = {"));
+        assert!(output.contains("attenuation?: AudioAttenuation;"));
+        assert!(output.contains("audio?: AudioProfile;"));
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type AttenuationCurve ="));
+        assert!(output.contains("| \"quadratic\""));
+        assert!(output.contains("export type AudioAttenuation = {"));
+        assert!(output.contains("minDistance: number?,"));
+        assert!(output.contains("maxDistance: number?,"));
+        assert!(output.contains("curve: AttenuationCurve?,"));
+        assert!(output.contains("export type AudioProfile = {"));
+        assert!(output.contains("attenuation: AudioAttenuation?,"));
+        assert!(output.contains("audio: AudioProfile?,"));
+    }
+}
+
+#[test]
 fn committed_sdk_types_contain_weapon_ammo_resource() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;

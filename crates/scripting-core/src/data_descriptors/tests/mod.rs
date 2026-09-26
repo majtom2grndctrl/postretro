@@ -4,6 +4,7 @@
 mod common;
 
 mod ai;
+mod audio_profile;
 mod behavior;
 mod entity;
 mod frontend;

@@ -117,6 +117,10 @@ struct PendingKinematicMover {
     close_event: Option<String>,
     blocked_event: Option<String>,
     crush_event: Option<String>,
+    open_sound: Option<String>,
+    close_sound: Option<String>,
+    blocked_sound: Option<String>,
+    crush_sound: Option<String>,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -459,6 +463,7 @@ fn parse_kinematic_mover(
             auto_close_ms.expect("checked as present")
         );
     }
+    // Events and sound keys share one rule: trimmed, and blank reads as absent.
     let optional_event = |key: &str| {
         props
             .get(key)
@@ -470,6 +475,10 @@ fn parse_kinematic_mover(
     let close_event = optional_event("close_event");
     let blocked_event = optional_event("blocked_event");
     let crush_event = optional_event("crush_event");
+    let open_sound = optional_event("open_sound");
+    let close_sound = optional_event("close_sound");
+    let blocked_sound = optional_event("blocked_sound");
+    let crush_sound = optional_event("crush_sound");
 
     let move_mode = match props
         .get("move_mode")
@@ -521,6 +530,10 @@ fn parse_kinematic_mover(
         close_event,
         blocked_event,
         crush_event,
+        open_sound,
+        close_sound,
+        blocked_sound,
+        crush_sound,
         move_mode,
         start_on_spawn,
         brush_ids,
@@ -2227,6 +2240,10 @@ fn resolve_kinematic_movers(
             close_event: pending.close_event,
             blocked_event: pending.blocked_event,
             crush_event: pending.crush_event,
+            open_sound: pending.open_sound,
+            close_sound: pending.close_sound,
+            blocked_sound: pending.blocked_sound,
+            crush_sound: pending.crush_sound,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -4217,6 +4234,10 @@ mod tests {
             "close_event(string) : \"Named event when the mover reaches its closed terminus\" : \"\"",
             "blocked_event(string) : \"Named event when a blocking mover reacts to contact\" : \"\"",
             "crush_event(string) : \"Named event when a crusher deals damage\" : \"\"",
+            "open_sound(string) : \"Sound key played when the mover reaches its open terminus\" : \"\"",
+            "close_sound(string) : \"Sound key played when the mover reaches its closed terminus\" : \"\"",
+            "blocked_sound(string) : \"Sound key played when a blocking mover reacts to contact\" : \"\"",
+            "crush_sound(string) : \"Sound key played when a crusher deals damage\" : \"\"",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -5657,6 +5678,49 @@ mod tests {
         assert_eq!(record.close_event.as_deref(), Some("lift_closed"));
         assert_eq!(record.blocked_event.as_deref(), Some("lift_blocked"));
         assert_eq!(record.crush_event, None);
+    }
+
+    #[test]
+    fn kinematic_mover_sound_keys_parse_trimmed_and_blank_reads_as_absent() {
+        let absent = parse_inline_map(&kinematic_test_map("wp_b")).unwrap();
+        let mover = &absent.kinematic_movers[0];
+        assert_eq!(mover.open_sound, None);
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound, None);
+        assert_eq!(mover.crush_sound, None);
+
+        let map_text = kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"open_sound\" \"  sfx/door_open  \"\n\"close_sound\" \"sfx/door_close\"\n\"blocked_sound\" \"   \"\n\"crush_sound\" \"\"\n",
+            1,
+        );
+        let map_data = parse_inline_map(&map_text).expect("mover sound keys must parse");
+        let authored = &map_data.kinematic_movers[0];
+        assert_eq!(authored.open_sound.as_deref(), Some("sfx/door_open"));
+        assert_eq!(authored.close_sound.as_deref(), Some("sfx/door_close"));
+        assert_eq!(authored.blocked_sound, None);
+        assert_eq!(authored.crush_sound, None);
+
+        let mut texture_names =
+            postretro_level_format::texture_names::TextureNamesSection { names: Vec::new() };
+        let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
+            &map_data.kinematic_movers,
+            &map_data.kinematic_waypoints,
+            &[],
+            &[],
+            &mut texture_names,
+        )
+        .expect("mover sound keys must encode into kinematic geometry");
+        let restored =
+            postretro_level_format::kinematic_geometry::KinematicGeometrySection::from_bytes(
+                &section.to_bytes(),
+            )
+            .expect("emitted kinematic geometry must decode");
+        let record = &restored.movers[0];
+        assert_eq!(record.open_sound.as_deref(), Some("sfx/door_open"));
+        assert_eq!(record.close_sound.as_deref(), Some("sfx/door_close"));
+        assert_eq!(record.blocked_sound, None);
+        assert_eq!(record.crush_sound, None);
     }
 
     // Regression: collapsing both forms to zero made an authored disable

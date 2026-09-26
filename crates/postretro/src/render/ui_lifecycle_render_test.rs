@@ -94,6 +94,7 @@ fn staged_manifest_result(
             version: "1".to_string(),
             render: Default::default(),
             movers: Default::default(),
+            audio: Default::default(),
             switching: Default::default(),
             default_weapon_placement: None,
             entities: Vec::new(),

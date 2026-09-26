@@ -268,6 +268,60 @@ pub fn drain_mover_defaults_lua(
     })
 }
 
+/// Luau twin of [`drain_audio_profile_js`]: same validation and degradation,
+/// through the same shared attenuation resolver.
+pub fn drain_audio_profile_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<ModAudioProfile, DescriptorError> {
+    let raw_audio: LuaValue = table.get("audio").map_err(lua_err)?;
+    let audio = match raw_audio {
+        LuaValue::Nil => return Ok(ModAudioProfile::default()),
+        LuaValue::Table(audio) => audio,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `audio` must be a table; using the default audio profile"
+            );
+            return Ok(ModAudioProfile::default());
+        }
+    };
+    let raw_attenuation: LuaValue = audio.get("attenuation").map_err(lua_err)?;
+    let attenuation = match raw_attenuation {
+        LuaValue::Nil => return Ok(ModAudioProfile::default()),
+        LuaValue::Table(attenuation) => attenuation,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `audio.attenuation` must be a table; using the default attenuation"
+            );
+            return Ok(ModAudioProfile::default());
+        }
+    };
+    Ok(ModAudioProfile {
+        attenuation: resolve_authored_attenuation(
+            scope,
+            attenuation_field_lua(&attenuation, "minDistance")?,
+            attenuation_field_lua(&attenuation, "maxDistance")?,
+            attenuation_field_lua(&attenuation, "curve")?,
+        ),
+    })
+}
+
+fn attenuation_field_lua(
+    attenuation: &Table,
+    key: &str,
+) -> Result<AuthoredAttenuationField, DescriptorError> {
+    Ok(match attenuation.get::<LuaValue>(key).map_err(lua_err)? {
+        LuaValue::Nil => AuthoredAttenuationField::Absent,
+        LuaValue::Integer(value) => AuthoredAttenuationField::Number(value as f64),
+        LuaValue::Number(value) => AuthoredAttenuationField::Number(value),
+        LuaValue::String(value) => match value.to_str() {
+            Ok(value) => AuthoredAttenuationField::String(value.to_string()),
+            Err(_) => AuthoredAttenuationField::Other,
+        },
+        _ => AuthoredAttenuationField::Other,
+    })
+}
+
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. The event
 /// remains opaque policy data here; Task 5 owns validation, merging, and
 /// execution.

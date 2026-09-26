@@ -995,6 +995,29 @@ declare module "postretro" {
     autoCloseMs?: number;
   };
 
+  /** How a positional sound's level falls off between `minDistance` and `maxDistance`. Valid values: `linear`, `quadratic`. */
+  export type AttenuationCurve =
+    /** Fall off evenly, in decibels, across the range. This is the default. */
+    | "linear"
+    /** Hold level near `minDistance`, then fall off faster toward `maxDistance`. */
+    | "quadratic";
+
+  /** Mod-wide distance attenuation for positional sounds, in metres. Applies to sounds that start after the manifest commits; sounds already playing keep theirs. A malformed field, a negative distance, or `minDistance` >= `maxDistance` warns naming the field and uses the whole default (2, 60, `"linear"`). */
+  export type AudioAttenuation = {
+    /** Distance at and below which a sound plays at full level, in metres. Finite and >= 0. Optional; defaults to 2. */
+    minDistance?: number;
+    /** Distance at and beyond which a sound is silent, in metres. Finite and greater than `minDistance`. Optional; defaults to 60. */
+    maxDistance?: number;
+    /** Falloff shape between the two distances. Optional; defaults to `"linear"`. */
+    curve?: AttenuationCurve;
+  };
+
+  /** Static audio preferences declared once for the entire mod. */
+  export type AudioProfile = {
+    /** Distance attenuation for positional sounds. Optional; defaults to 2 to 60 metres, linear. */
+    attenuation?: AudioAttenuation;
+  };
+
   /** Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption. */
   export type SwitchingDescriptor = {
     /** Whether a direct slot-select action emits a commit immediately. Input-layer policy only. */
@@ -1037,6 +1060,8 @@ declare module "postretro" {
     render?: RenderProfile;
     /** Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay. */
     movers?: MoverDefaults;
+    /** Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation. */
+    audio?: AudioProfile;
     /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
     switching?: SwitchingDescriptor;
     /** Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */

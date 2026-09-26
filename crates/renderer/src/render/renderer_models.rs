@@ -552,6 +552,10 @@ mod tests {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            open_sound: None,
+            close_sound: None,
+            blocked_sound: None,
+            crush_sound: None,
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
         }

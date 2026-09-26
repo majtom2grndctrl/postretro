@@ -75,6 +75,10 @@ pub fn encode_kinematic_geometry_section(
                 close_event: mover.close_event.clone(),
                 blocked_event: mover.blocked_event.clone(),
                 crush_event: mover.crush_event.clone(),
+                open_sound: mover.open_sound.clone(),
+                close_sound: mover.close_sound.clone(),
+                blocked_sound: mover.blocked_sound.clone(),
+                crush_sound: mover.crush_sound.clone(),
                 sealed_portal_ids,
                 carried_lights: carried_lights_by_mover
                     .get(mover_index)
@@ -408,6 +412,10 @@ mod tests {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            open_sound: None,
+            close_sound: None,
+            blocked_sound: None,
+            crush_sound: None,
             move_mode: KinematicMoveMode::Once,
             start_on_spawn: false,
             brush_volumes,

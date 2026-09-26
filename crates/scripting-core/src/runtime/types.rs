@@ -66,6 +66,49 @@ pub struct ModMoverDefaults {
     pub auto_close_ms: f32,
 }
 
+/// Falloff shape between an attenuation's minimum and maximum distance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModAttenuationCurve {
+    #[default]
+    Linear,
+    Quadratic,
+}
+
+/// Mod-wide distance attenuation for positional sounds, parsed from
+/// `audio.attenuation`. Mirrors the audio crate's `Attenuation` without
+/// depending on it; the binary converts between the two at one chokepoint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModAttenuation {
+    /// Distance at and below which a sound plays at full level, in metres.
+    pub min_distance: f32,
+    /// Distance at and beyond which a sound is silent, in metres.
+    pub max_distance: f32,
+    pub curve: ModAttenuationCurve,
+}
+
+impl ModAttenuation {
+    /// Engine seed used when the manifest omits the block or authors a
+    /// malformed value (`scripting.md` §1: expose the axis, seed the default).
+    pub const DEFAULT: Self = Self {
+        min_distance: 2.0,
+        max_distance: 60.0,
+        curve: ModAttenuationCurve::Linear,
+    };
+}
+
+impl Default for ModAttenuation {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Mod-global audio preferences parsed from the optional `audio` manifest
+/// object. Omission or malformed values normalize to the engine seed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModAudioProfile {
+    pub attenuation: ModAttenuation,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModManifestResult {
     pub name: String,
@@ -80,6 +123,9 @@ pub struct ModManifestResult {
     /// Static defaults parsed from the optional `movers` manifest object.
     /// Per-mover authored KVP values take precedence during level install.
     pub movers: ModMoverDefaults,
+    /// Mod-global audio preferences parsed from the optional `audio` object.
+    /// Malformed values warn and fall back to the engine seed.
+    pub audio: ModAudioProfile,
     /// Mod-global weapon-switching rules. Omission resolves to the engine
     /// compatibility defaults before this manifest is committed.
     pub switching: SwitchingDescriptor,

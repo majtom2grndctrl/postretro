@@ -93,7 +93,7 @@ read at: b99101534
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Extract `crates/audio` (`postretro-audio`) from `crates/postretro/src/audio/`, splitting `mod.rs` (tests to a sibling, boundary types to their own file); no behavior change; layering test pins sim-side crates off it; `crate-graph.md` regenerated | integrating executor | — | |
+| 1 | Extract `crates/audio` (`postretro-audio`) from `crates/postretro/src/audio/`, splitting `mod.rs` (tests to a sibling, boundary types to their own file); no behavior change; layering test pins sim-side crates off it; `crate-graph.md` regenerated | integrating executor | — | done: `cargo test -p postretro-audio` 31 passed (31 before the move); `layering_invariants_hold` passes; `cargo check -p postretro --tests` and `--features dev-tools` clean; `crate-graph --write` |
 | 2 | Thinnest risky slice: the `audio/spatial.rs` chokepoint (admission against kira occupancy, SFX capacities 2× cap, deferred start, reposition and freeze, own-pawn treatment, attenuation at start, fade-all). Plus runtime-only mover sound fields and mover emissions anchored at bounds center, played end to end. Rows 1–9, 38, 40, 42 | integrating executor | 1 | |
 | 3 | KinematicGeometry v7: codec, compiler KVPs, FGD, loader, component population; hash test. Rows 34, 35 | delegated worker | 2 (component fields) | |
 | 4 | Listener is the rendered eye: extract frame-eye evaluation ahead of audio; `ListenerState` attached pawn. Rows 10, 11 | integrating executor | 2 | |

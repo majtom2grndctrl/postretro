@@ -5,7 +5,6 @@
 // separation, built on the `agent` harness and `nav::find_path`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
-mod audio;
 mod camera;
 #[cfg(test)]
 mod candidate_cull {
@@ -3574,7 +3573,7 @@ impl ApplicationHandler for App {
                 // contract. Guarded for the silent (init-failed) case.
                 // Audio is session-owned; build the primitive listener from the
                 // disjoint `self.camera` field first, then borrow the subsystem.
-                let listener = audio::ListenerState {
+                let listener = postretro_audio::ListenerState {
                     position: self.camera.position.to_array(),
                     forward: self.camera.aim_ray().1.to_array(),
                     up: [0.0, 1.0, 0.0],
@@ -6080,7 +6079,7 @@ impl App {
                         let bus = bus.unwrap_or_else(|| "sfx".to_string());
                         // `play` warns-and-drops on an unknown bus or sound, so an
                         // unregistered sound name never panics.
-                        let _ = audio.play(audio::SoundRequest {
+                        let _ = audio.play(postretro_audio::SoundRequest {
                             bus,
                             sound,
                             looping: false,
@@ -8516,7 +8515,7 @@ impl App {
                     .as_mut()
                     .and_then(|session| session.audio.as_mut())
                 {
-                    audio.play(audio::SoundRequest {
+                    audio.play(postretro_audio::SoundRequest {
                         bus: "sfx".to_string(),
                         sound: "sfx/test_tone".to_string(),
                         looping: false,

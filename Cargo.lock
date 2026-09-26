@@ -3670,12 +3670,12 @@ dependencies = [
  "gilrs",
  "glam",
  "image",
- "kira",
  "log",
  "mlua",
  "notify",
  "notify-debouncer-full",
  "postretro-ai",
+ "postretro-audio",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -3723,6 +3723,15 @@ dependencies = [
  "postretro-test-log-capture",
  "rquickjs",
  "serde_json",
+]
+
+[[package]]
+name = "postretro-audio"
+version = "0.1.0"
+dependencies = [
+ "kira",
+ "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

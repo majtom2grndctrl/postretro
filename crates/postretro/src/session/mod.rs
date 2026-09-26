@@ -39,7 +39,7 @@ use crate::scripting::reactions::system_commands::{
 use crate::scripting::state_persistence::{PerOwnerSaveTimer, PersistedState, StateStoreLifecycle};
 use crate::scripting_systems;
 use crate::startup::StartupTimings;
-use crate::{audio, netcode, options};
+use crate::{netcode, options};
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::reaction_dispatch::{
     ProgressTracker, validate_scoped_sequence_primitives,
@@ -239,7 +239,7 @@ pub(crate) struct Session {
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
     /// See: context/lib/audio.md §1.
-    pub(crate) audio: Option<audio::Audio>,
+    pub(crate) audio: Option<postretro_audio::Audio>,
 
     /// CPU-side egui debug-UI state (dev-tools only). Inner `Option` is a genuine
     /// runtime/lazy state, NOT "session not yet installed": the constructor needs
@@ -396,7 +396,7 @@ impl Session {
         //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
         //    recorded before the scripting bootstrap so the boot order keeps
         //    audio ahead of `script_runtime_ctor`. See: context/lib/audio.md §1.
-        let audio = match audio::Audio::new() {
+        let audio = match postretro_audio::Audio::new() {
             Ok(audio) => {
                 log::info!("[Audio] Initialized");
                 Some(audio)

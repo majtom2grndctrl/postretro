@@ -8,7 +8,7 @@
 
 ## 1. Subsystem Boundary
 
-Audio is a self-contained subsystem. It does not depend on the renderer or wgpu.
+Audio is a self-contained subsystem in its own crate, `postretro-audio`, the only crate that names kira. It depends on no other workspace crate, and only the binary depends on it (`layering_invariants_hold`).
 
 | Direction | Data |
 |-----------|------|

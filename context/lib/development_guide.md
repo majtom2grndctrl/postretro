@@ -55,7 +55,7 @@ Crates form a one-way dependency graph: `foundation` and `entities` at the base,
 | Windowing | winit 0.30 |
 | Math | glam |
 | PRL loading | postretro-level-format |
-| Audio | kira 0.12 |
+| Audio | kira 0.12, owned by `postretro-audio` |
 | Gamepad | gilrs 0.11 |
 | Errors | thiserror 2 (subsystems), anyhow 1 (top-level) |
 | Logging | log 0.4 + env_logger 0.11 |
@@ -211,7 +211,7 @@ Split along natural boundaries:
 
 ### 2.4 Directory structure
 
-- **Subsystem directories** (`src/render/`, `src/audio/`, `src/input/`): use `mod.rs` or a barrel file for the public API. Internal modules are `pub(crate)` or private.
+- **Subsystem directories** (`src/render/`, `src/input/`): use `mod.rs` or a barrel file for the public API. Internal modules are `pub(crate)` or private.
 - **Shaders directory** `src/shaders`: Keep all shaders in `.wgsl` files under `src/shaders`. Load them with `include_str!()`. Never embed shader source inline in Rust files.
 - **Flat is fine for uniform directories** (all the same kind of thing — e.g., all entity types, all texture loaders). 20+ files OK.
 - **Mixed-concern directories**: introduce subdirectories when you can't tell at a glance which files relate to each other.

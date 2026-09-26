@@ -544,5 +544,20 @@ mod tests {
             vec!["postretro".to_string()],
             "only the `postretro` binary may depend on `postretro-ai`"
         );
+
+        // 6. Audio is a presentation leaf that owns kira. It learns no engine
+        //    crate (anchors cross as opaque primitives), and only the binary
+        //    drives it: the sim carries emitter identity and never names audio.
+        let audio_deps = graph.reachable("postretro-audio", Direction::Dependencies);
+        assert!(
+            audio_deps.is_empty(),
+            "`postretro-audio` must have no internal dependencies, found: {audio_deps:?}"
+        );
+        let audio_dependents = graph.reachable("postretro-audio", Direction::Dependents);
+        assert_eq!(
+            audio_dependents,
+            vec!["postretro".to_string()],
+            "only the `postretro` binary may depend on `postretro-audio`"
+        );
     }
 }

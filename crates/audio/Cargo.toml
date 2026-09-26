@@ -1,0 +1,25 @@
+[package]
+name = "postretro-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Audio subsystem for the Postretro engine: kira mixer, sound registry, and spatial playback"
+license.workspace = true
+
+[dependencies]
+# Sole owner of kira in the workspace — see context/lib/audio.md §2. The public
+# surface carries primitives only, so no kira, glam, or registry type crosses it.
+kira.workspace = true
+
+# `[Audio]`-tagged warnings on degraded plays and asset loads.
+log.workspace = true
+
+# Typed init error at the subsystem boundary.
+thiserror.workspace = true
+
+# No kira dev-dependency is needed to reach its mock backend: kira 0.12 compiles
+# `kira::backend::mock` unconditionally (it is NOT behind a feature flag), so
+# `MockBackend` is always available to tests regardless of the trimmed feature
+# set declared in the workspace manifest. All `kira::backend::mock` references
+# are confined to `#[cfg(test)]`, so the non-test crate never names mock even
+# though it ships in the kira dependency.

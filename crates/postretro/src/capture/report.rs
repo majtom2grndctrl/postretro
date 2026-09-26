@@ -5,6 +5,7 @@
 use postretro_renderer::ShStreamingAllocationSummary;
 use serde::Serialize;
 
+use super::prepared::measurement_animation_time_seconds;
 use super::scene::{CameraPose, CaptureScene};
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ShResidencyAllocation,
@@ -52,6 +53,10 @@ pub(super) fn measurement_report(
             output: scene.output.clone(),
             resolution: scene.resolution,
             camera: CameraReport::from(&scene.camera),
+            force_full_resident_sh_compose: scene.force_full_resident_sh_compose,
+            animation_time_seconds: measurement_animation_time_seconds(
+                u64::from(measurement.warmup_frames) + u64::from(measurement.sample_frames),
+            ),
         },
         workload: WorkloadReport {
             warmup_frames: measurement.warmup_frames,
@@ -162,6 +167,8 @@ struct CaptureReport {
     output: String,
     resolution: [u32; 2],
     camera: CameraReport,
+    force_full_resident_sh_compose: bool,
+    animation_time_seconds: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -374,6 +381,29 @@ struct ShStreamingLifecycleSummaryJson {
     pool_growth_events: u64,
     pool_growth_bytes: u64,
     pool_growth_cpu_micros: u64,
+    indirect_compose: ShComposePassDiagnosticsJson,
+    static_direct_compose: ShComposePassDiagnosticsJson,
+    animated_direct_compose: ShComposePassDiagnosticsJson,
+    compose_planning_cpu_micros: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ShComposePassDiagnosticsJson {
+    rows_composed: u64,
+    dispatches: u64,
+    lagged_rows_composed: u64,
+    resident_rows_still_lagging: u64,
+}
+
+impl From<postretro_renderer::ShComposePassDiagnostics> for ShComposePassDiagnosticsJson {
+    fn from(diagnostics: postretro_renderer::ShComposePassDiagnostics) -> Self {
+        Self {
+            rows_composed: diagnostics.rows_composed,
+            dispatches: diagnostics.dispatches,
+            lagged_rows_composed: diagnostics.lagged_rows_composed,
+            resident_rows_still_lagging: diagnostics.resident_rows_still_lagging,
+        }
+    }
 }
 
 impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
@@ -421,6 +451,10 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             pool_growth_events: summary.pool_growth_events,
             pool_growth_bytes: summary.pool_growth_bytes,
             pool_growth_cpu_micros: summary.pool_growth_cpu_micros,
+            indirect_compose: summary.indirect_compose.into(),
+            static_direct_compose: summary.static_direct_compose.into(),
+            animated_direct_compose: summary.animated_direct_compose.into(),
+            compose_planning_cpu_micros: summary.compose_planning_cpu_micros,
         }
     }
 }
@@ -533,6 +567,7 @@ mod tests {
             output: "capture.png".into(),
             force_active: None,
             force_promotion: None,
+            force_full_resident_sh_compose: false,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,
@@ -583,6 +618,30 @@ mod tests {
         assert_eq!(json["gpu_timing"]["availability"], "not-requested");
         assert_eq!(json["gpu_timing"]["reason"], "env-disabled");
         assert!(json["gpu_timing"].get("windows").is_none());
+    }
+
+    #[test]
+    fn report_identifies_compose_mode_and_derived_animation_time() {
+        let mut scene = scene_with_measurement();
+        scene.force_full_resident_sh_compose = true;
+        let json = as_json(measurement_report(
+            &scene,
+            99,
+            None,
+            adapter(),
+            None,
+            vec![1.0],
+            CaptureGpuTimingState::NotRequested,
+            0,
+            Vec::new(),
+        ));
+
+        assert_eq!(json["capture"]["force_full_resident_sh_compose"], true);
+        let actual = json["capture"]["animation_time_seconds"]
+            .as_f64()
+            .expect("animation time serializes as a number");
+        let expected = f64::from(measurement_animation_time_seconds(123));
+        assert!((actual - expected).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -703,6 +762,25 @@ mod tests {
             install_cpu_max_drain_micros: 14,
             install_cpu_max_steady_drain_micros: 15,
             pool_growth_cpu_micros: 16,
+            indirect_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 17,
+                dispatches: 1,
+                lagged_rows_composed: 4,
+                resident_rows_still_lagging: 5,
+            },
+            static_direct_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 18,
+                dispatches: 2,
+                lagged_rows_composed: 6,
+                resident_rows_still_lagging: 7,
+            },
+            animated_direct_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 19,
+                dispatches: 3,
+                lagged_rows_composed: 8,
+                resident_rows_still_lagging: 9,
+            },
+            compose_planning_cpu_micros: 20,
             ..ShStreamingLifecycleSummary::default()
         });
         let json = as_json(measurement_report(
@@ -733,6 +811,17 @@ mod tests {
         assert_eq!(lifecycle["install_cpu_max_steady_drain_micros"], 15);
         assert_eq!(lifecycle["pool_growth_cpu_micros"], 16);
         assert_eq!(lifecycle["pool_growth_bytes"], 0);
+        assert_eq!(lifecycle["indirect_compose"]["rows_composed"], 17);
+        assert_eq!(lifecycle["indirect_compose"]["dispatches"], 1);
+        assert_eq!(
+            lifecycle["static_direct_compose"]["lagged_rows_composed"],
+            6
+        );
+        assert_eq!(
+            lifecycle["animated_direct_compose"]["resident_rows_still_lagging"],
+            9
+        );
+        assert_eq!(lifecycle["compose_planning_cpu_micros"], 20);
     }
 
     #[test]

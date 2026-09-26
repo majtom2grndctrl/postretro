@@ -72,6 +72,116 @@ fn hdr_capture_writes_png_at_requested_dimensions() {
     );
 }
 
+// Regression: sampled-row compose must stay pixel-exact with the full-resident
+// oracle while measurement capture advances an authored animation curve.
+#[test]
+#[ignore = "requires a GPU adapter and the checked-in sampled-row measurement fixtures; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
+fn sampled_row_gate_capture_matches_full_resident_at_stepped_times() {
+    let workspace = workspace_root();
+    let fixture_root = workspace.join("measurements/sh-probe-streaming/sampled-row-gating");
+    let temp = tempfile::tempdir().expect("create isolated sampled-row capture directory");
+    let mut pngs = std::collections::BTreeMap::new();
+
+    for (name, fixture) in [
+        ("gated-t050", "animroom-gated-t050.scene.json"),
+        ("gated-t100", "animroom-gated-t100.scene.json"),
+        ("full-t050", "animroom-full-t050.scene.json"),
+        ("full-t100", "animroom-full-t100.scene.json"),
+    ] {
+        let fixture_path = fixture_root.join(fixture);
+        let fixture_bytes = fs::read(&fixture_path)
+            .unwrap_or_else(|err| panic!("read capture fixture {}: {err}", fixture_path.display()));
+        let mut scene: serde_json::Value =
+            serde_json::from_slice(&fixture_bytes).unwrap_or_else(|err| {
+                panic!("parse capture fixture {}: {err}", fixture_path.display())
+            });
+        let output_path = temp.path().join(format!("{name}.png"));
+        let report_path = temp.path().join(format!("{name}.report.json"));
+
+        // The fixture owns its map, camera, timing, and force settings. Test
+        // isolation changes only the two capture products.
+        scene["output"] = serde_json::Value::String(output_path.display().to_string());
+        scene["measurement"]["report"] =
+            serde_json::Value::String(report_path.display().to_string());
+        let scene_path = temp.path().join(format!("{name}.scene.json"));
+        fs::write(
+            &scene_path,
+            serde_json::to_vec_pretty(&scene).expect("serialize isolated capture fixture"),
+        )
+        .unwrap_or_else(|err| panic!("write capture scene {}: {err}", scene_path.display()));
+
+        if !run_capture_or_skip_without_adapter(&workspace, &scene_path) {
+            return;
+        }
+        let compose_rows = capture_report_compose_rows(&report_path);
+        assert!(
+            compose_rows > 0,
+            "{name} must report composed streamed-SH rows across its measurement frames"
+        );
+        pngs.insert(
+            name,
+            fs::read(&output_path)
+                .unwrap_or_else(|err| panic!("read capture PNG {}: {err}", output_path.display())),
+        );
+    }
+
+    assert_ne!(
+        pngs["gated-t050"], pngs["gated-t100"],
+        "the stepped authored curve must change the gated capture image",
+    );
+    assert_ne!(
+        pngs["full-t050"], pngs["full-t100"],
+        "the stepped authored curve must change the full-resident capture image",
+    );
+    for time in ["t050", "t100"] {
+        let gated = format!("gated-{time}");
+        let full = format!("full-{time}");
+        assert_eq!(
+            pngs[gated.as_str()],
+            pngs[full.as_str()],
+            "sampled-row and force-full-resident captures must be byte-identical at {time}",
+        );
+    }
+}
+
+fn capture_report_compose_rows(report_path: &std::path::Path) -> u64 {
+    let report_bytes = fs::read(report_path)
+        .unwrap_or_else(|err| panic!("read capture report {}: {err}", report_path.display()));
+    let report: serde_json::Value = serde_json::from_slice(&report_bytes)
+        .unwrap_or_else(|err| panic!("parse capture report {}: {err}", report_path.display()));
+    let lifecycle = report
+        .pointer("/renderer_accounted_sh/streaming_lifecycle")
+        .and_then(serde_json::Value::as_object)
+        .unwrap_or_else(|| {
+            panic!(
+                "capture report {} must contain renderer_accounted_sh.streaming_lifecycle",
+                report_path.display()
+            )
+        });
+
+    [
+        "indirect_compose",
+        "static_direct_compose",
+        "animated_direct_compose",
+    ]
+    .into_iter()
+    .map(|pass| {
+        lifecycle
+            .get(pass)
+            .and_then(serde_json::Value::as_object)
+            .and_then(|diagnostics| diagnostics.get("rows_composed"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| {
+                panic!(
+                    "capture report {} must contain a u64 streaming_lifecycle.{pass}.rows_composed",
+                    report_path.display()
+                )
+            })
+    })
+    .try_fold(0_u64, |total, rows| total.checked_add(rows))
+    .expect("capture report compose-row total must not overflow")
+}
+
 // Manual A/B gate for specular-shadowmask occlusion. The source fixture exists
 // only on this branch, so bake it once and hand the exact PRL plus its material
 // cache to both binaries through a shared standard dev-layout artifact tree:

@@ -35,6 +35,7 @@ mod sh_diagnostics;
 mod sh_diagnostics_residency;
 mod sh_indirection;
 mod sh_residency;
+mod sh_sample_regions;
 mod sh_streaming;
 mod sh_volume;
 mod shadowmask;
@@ -130,7 +131,11 @@ pub use sh_residency::{
     ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
     ShStreamingLifecycleSummary,
 };
-pub use sh_streaming::{ShResidencyDrainError, ShResidencySnapshot, ShStreamingLiveDiagnostics};
+pub use sh_sample_regions::{ShSampleRegion, ShSampleRegionSets};
+pub use sh_streaming::{
+    ShComposePassDiagnostics, ShResidencyDrainError, ShResidencySnapshot,
+    ShStreamingLiveDiagnostics,
+};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};

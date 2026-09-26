@@ -1,47 +1,198 @@
-//! Frame-bound compose dispatch and streamed residency reporting.
+//! Frame-bound compose planning, dispatch, and streamed residency reporting.
+
+use std::time::Instant;
+
+use postretro_render_cpu::mesh_instances;
 
 use super::*;
 
-fn coalesce_rows(rows: &BTreeSet<u32>) -> Vec<(u32, u32)> {
-    let mut ranges: Vec<(u32, u32)> = Vec::new();
-    for &row in rows {
-        match ranges.last_mut() {
-            Some((start, count)) if start.checked_add(*count) == Some(row) => {
-                *count = count
-                    .checked_add(1)
-                    .expect("validated affinity row count must fit u32");
-            }
-            _ => ranges.push((row, 1)),
-        }
-    }
-    ranges
-}
-
-/// Collect the two direct-compose dirty unions for this frame. Pass B may
-/// own an id-45 row without owning an id-35/id-41 row itself. During a forced
-/// resident refresh, seed Pass A for that row first so Pass B never samples
-/// an uninitialized intermediate target.
-fn direct_dispatch_rows(
-    force_resident: bool,
-    promotion_dirty: &BTreeSet<u32>,
-    animated_dirty: &BTreeSet<u32>,
-    promotion_resident: &BTreeSet<u32>,
-    animated_resident: &BTreeSet<u32>,
-) -> (BTreeSet<u32>, BTreeSet<u32>) {
-    let mut promotion_rows = promotion_dirty.clone();
-    let mut animated_rows = animated_dirty.clone();
-    if force_resident {
-        promotion_rows.extend(promotion_resident);
-        animated_rows.extend(animated_resident);
-        // Id-45-only owners have no id-35/id-41 contribution to Pass A's
-        // normal dirty union. A forced recompose must nevertheless rebuild
-        // their intermediate cell before Pass B samples it.
-        promotion_rows.extend(&animated_rows);
-    }
-    (promotion_rows, animated_rows)
-}
-
 impl ShResidencyState {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "compose planning keeps the three passes' exact frame inputs explicit"
+    )]
+    pub(in crate::render) fn prepare_compose_frame(
+        &mut self,
+        region_sets: crate::render::ShSampleRegionSets<'_>,
+        mesh_frame_plans: Option<&mesh_instances::MeshFramePlans>,
+        include_viewmodels: bool,
+        fog_draw_all: bool,
+        records_compose: bool,
+        force_full_resident: bool,
+        indirect_active: bool,
+        animated_direct_active: bool,
+        frame_light_term_mask: LightTermMask,
+        promotion_override: DirectShDebugOverride,
+        animated_override: AnimatedDirectShDebugOverride,
+        promoted_static_weights: &[f32],
+        promoted_animated_states: &[PromotedBakedLightState],
+    ) -> Result<(), ShResidencyDrainError> {
+        let started = Instant::now();
+        self.indirect_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.static_direct_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.animated_direct_compose_diagnostics = ShComposePassDiagnostics::default();
+
+        self.compose_input_regions.clear();
+        self.compose_input_regions
+            .extend_from_slice(region_sets.visible_cells);
+        self.compose_input_regions.extend(
+            region_sets
+                .fog_cells
+                .iter()
+                .map(|&(min, max)| crate::render::ShSampleRegion::new(min, max)),
+        );
+        self.compose_input_regions
+            .extend_from_slice(region_sets.movers);
+        if let Some(plans) = mesh_frame_plans {
+            self.compose_input_regions.extend(
+                mesh_instances::planned_forward_sample_bounds(plans, include_viewmodels)
+                    .map(|bounds| crate::render::ShSampleRegion::new(bounds.min, bounds.max)),
+            );
+        }
+        let mut region_rows = std::mem::take(&mut self.compose_region_rows);
+        self.resolve_sample_region_rows(
+            &self.compose_input_regions,
+            fog_draw_all,
+            &mut region_rows,
+        )?;
+
+        self.compose_indirect_resident_rows.clear();
+        self.compose_indirect_resident_rows
+            .extend(self.indirect_resident_rows.iter().copied());
+        self.compose_direct_resident_rows.clear();
+        self.compose_direct_resident_rows
+            .extend(self.direct_promotion_resident_rows.iter().copied());
+        if self.animated_direct_compose_required {
+            self.compose_direct_resident_rows
+                .extend(self.direct_animated_resident_rows.iter().copied());
+        }
+        self.compose_direct_resident_rows.sort_unstable();
+        self.compose_direct_resident_rows.dedup();
+        self.compose_animated_resident_rows.clear();
+        if self.animated_direct_compose_required {
+            self.compose_animated_resident_rows
+                .extend(self.compose_direct_resident_rows.iter().copied());
+        }
+        self.prune_nonresident_dirty_rows();
+
+        let mut residency_rows = std::mem::take(&mut self.compose_residency_rows);
+        self.close_residency_rows_over_scaled_writers(
+            self.indirect_dirty_rows.iter().copied(),
+            &self.compose_indirect_resident_rows,
+            &mut residency_rows,
+        )?;
+        self.compose_planner.mark_residency_rows(
+            compose_plan::ComposePass::Indirect,
+            residency_rows.iter().copied(),
+        );
+
+        self.close_residency_rows_over_scaled_writers(
+            self.direct_promotion_dirty_rows
+                .iter()
+                .chain(&self.direct_animated_dirty_rows)
+                .copied(),
+            &self.compose_direct_resident_rows,
+            &mut residency_rows,
+        )?;
+        self.compose_planner.mark_residency_rows(
+            compose_plan::ComposePass::StaticDirect,
+            residency_rows.iter().copied(),
+        );
+        if self.animated_direct_compose_required {
+            self.compose_planner.mark_residency_rows(
+                compose_plan::ComposePass::AnimatedDirect,
+                residency_rows.iter().copied(),
+            );
+        }
+
+        self.compose_animated_weights.clear();
+        self.compose_animated_weights
+            .extend((0..MAX_ANIMATED_BAKED_LIGHTS).map(|index| {
+                1.0 - animated_baked_promotion_weight(index, promoted_animated_states.get(index))
+            }));
+
+        self.compose_indirect_contributing_rows.clear();
+        self.compose_indirect_contributing_rows
+            .extend(self.indirect_delta_row_refs.keys().copied());
+        self.compose_static_contributing_rows.clear();
+        self.compose_static_contributing_rows
+            .extend(self.direct_promotion_row_refs.keys().copied());
+        self.compose_animated_contributing_rows.clear();
+        self.compose_animated_contributing_rows
+            .extend(self.direct_animated_row_refs.keys().copied());
+        let mut frame_plan = self.compose_frame_plan.take().unwrap_or_default();
+        self.compose_planner.plan_frame_into(
+            compose_plan::ComposePlannerFrame {
+                records_compose,
+                force_full_resident,
+                gated_rows: &region_rows,
+                indirect_rows: compose_plan::ComposePassRows {
+                    resident: &self.compose_indirect_resident_rows,
+                    contributing: &self.compose_indirect_contributing_rows,
+                },
+                static_direct_rows: compose_plan::ComposePassRows {
+                    resident: &self.compose_direct_resident_rows,
+                    contributing: &self.compose_static_contributing_rows,
+                },
+                animated_direct_rows: compose_plan::ComposePassRows {
+                    resident: &self.compose_animated_resident_rows,
+                    contributing: &self.compose_animated_contributing_rows,
+                },
+                indirect_active,
+                animated_direct_active,
+                effective_static_weights: promoted_static_weights,
+                effective_animated_weights: &self.compose_animated_weights,
+                controls: compose_plan::ComposeControlSnapshot {
+                    light_term_mask: frame_light_term_mask,
+                    promotion_override,
+                    animated_override,
+                },
+            },
+            &mut frame_plan,
+        );
+        self.indirect_compose_diagnostics = lag_diagnostics(self.compose_planner.lagging_rows(
+            compose_plan::ComposePass::Indirect,
+            &self.compose_indirect_resident_rows,
+        ));
+        self.static_direct_compose_diagnostics =
+            lag_diagnostics(self.compose_planner.lagging_rows(
+                compose_plan::ComposePass::StaticDirect,
+                &self.compose_direct_resident_rows,
+            ));
+        self.animated_direct_compose_diagnostics =
+            lag_diagnostics(self.compose_planner.lagging_rows(
+                compose_plan::ComposePass::AnimatedDirect,
+                &self.compose_animated_resident_rows,
+            ));
+        self.compose_frame_plan = Some(frame_plan);
+        self.compose_region_rows = region_rows;
+        self.compose_residency_rows = residency_rows;
+        self.compose_planning_cpu_micros =
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        Ok(())
+    }
+
+    pub(super) fn prune_nonresident_dirty_rows(&mut self) {
+        let indirect_resident_rows = &self.indirect_resident_rows;
+        self.indirect_dirty_rows
+            .retain(|row| indirect_resident_rows.contains(row));
+        let direct_resident_rows = &self.compose_direct_resident_rows;
+        self.direct_promotion_dirty_rows
+            .retain(|row| direct_resident_rows.binary_search(row).is_ok());
+        let animated_resident_rows = &self.compose_animated_resident_rows;
+        self.direct_animated_dirty_rows
+            .retain(|row| animated_resident_rows.binary_search(row).is_ok());
+        let indirect_delta_row_refs = &self.indirect_delta_row_refs;
+        let direct_promotion_row_refs = &self.direct_promotion_row_refs;
+        let direct_animated_row_refs = &self.direct_animated_row_refs;
+        self.dirty_rows.retain(|&(section, row)| match section {
+            INDIRECT_DELTA_ID => indirect_delta_row_refs.contains_key(&row),
+            DIRECT_DELTA_ID => direct_promotion_row_refs.contains_key(&row),
+            ANIMATED_DIRECT_DELTA_ID => direct_animated_row_refs.contains_key(&row),
+            _ => true,
+        });
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the frame boundary must pass the queue, encoder, uniform binding, direct-compose state, and separate promotion/animated timing-pass inputs together"
@@ -51,7 +202,7 @@ impl ShResidencyState {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        active: bool,
+        _active: bool,
         frame_light_term_mask: LightTermMask,
         promotion_override: DirectShDebugOverride,
         animated_override: AnimatedDirectShDebugOverride,
@@ -62,52 +213,93 @@ impl ShResidencyState {
         if !self.direct_compose_required {
             return Ok(());
         }
-        let force_resident =
-            active || self.direct_was_active || frame_light_term_mask != self.last_direct_mask;
-        let (promotion_rows, animated_rows) = direct_dispatch_rows(
-            force_resident,
-            &self.direct_promotion_dirty_rows,
-            &self.direct_animated_dirty_rows,
-            &self.direct_promotion_resident_rows,
-            &self.direct_animated_resident_rows,
-        );
-        if promotion_rows.is_empty() && animated_rows.is_empty() {
-            self.direct_was_active = active;
-            self.last_direct_mask = frame_light_term_mask;
-            return Ok(());
-        }
-        let gpu = self
-            .gpu
-            .as_mut()
-            .ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed direct compose dispatch requested before GPU initialization",
-            })?;
-        gpu.dispatch_direct_compose(
-            queue,
-            encoder,
-            uniform_bind_group,
-            frame_light_term_mask,
-            promotion_override,
-            animated_override,
-            promoted_animated_states,
-            &coalesce_rows(&promotion_rows),
-            &coalesce_rows(&animated_rows),
-            force_resident,
-            promotion_timestamp_writes,
-            animated_timestamp_writes,
-        )?;
-        self.direct_compose_epoch = self
-            .direct_compose_epoch
-            .checked_add(1)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        self.direct_promotion_dirty_rows.clear();
-        self.direct_animated_dirty_rows.clear();
-        self.dirty_rows.retain(|(section, _)| {
-            *section != DIRECT_DELTA_ID && *section != ANIMATED_DIRECT_DELTA_ID
-        });
-        self.direct_was_active = active;
-        self.last_direct_mask = frame_light_term_mask;
-        Ok(())
+        let Some(frame_plan) = self.compose_frame_plan.take() else {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed direct compose dispatched before frame planning",
+            });
+        };
+        let result: Result<(), ShResidencyDrainError> = (|| {
+            let promotion_plan = &frame_plan.static_direct;
+            let animated_plan = &frame_plan.animated_direct;
+            let mut encoded_any = false;
+
+            if !promotion_plan.rows().is_empty() {
+                let dispatches = self
+                    .gpu
+                    .as_mut()
+                    .ok_or(ShResidencyDrainError::GpuCapacity {
+                        reason:
+                            "streamed direct compose dispatch requested before GPU initialization",
+                    })?
+                    .dispatch_direct_promotion(
+                        queue,
+                        encoder,
+                        frame_light_term_mask,
+                        promotion_override,
+                        promotion_plan.rows(),
+                        promotion_timestamp_writes,
+                    )?;
+                self.compose_planner.commit_pass(promotion_plan);
+                self.static_direct_compose_diagnostics = pass_diagnostics(
+                    promotion_plan,
+                    dispatches,
+                    self.compose_planner.lagging_rows(
+                        compose_plan::ComposePass::StaticDirect,
+                        &self.compose_direct_resident_rows,
+                    ),
+                );
+                self.direct_promotion_dirty_rows.clear();
+                // Planning Pass A already made the matching Pass-B work durable.
+                // Clearing both residency dirty sets here prevents a failed Pass B
+                // from needlessly reseeding and rewriting committed Pass A.
+                self.direct_animated_dirty_rows.clear();
+                self.dirty_rows
+                    .retain(|(section, _)| *section != DIRECT_DELTA_ID);
+                encoded_any = true;
+            }
+
+            if !animated_plan.rows().is_empty() {
+                let dispatches = self
+                    .gpu
+                    .as_mut()
+                    .ok_or(ShResidencyDrainError::GpuCapacity {
+                        reason:
+                            "streamed animated direct compose dispatched before GPU initialization",
+                    })?
+                    .dispatch_direct_animated(
+                        queue,
+                        encoder,
+                        uniform_bind_group,
+                        animated_override,
+                        promoted_animated_states,
+                        animated_plan.rows(),
+                        animated_timestamp_writes,
+                    )?;
+                self.compose_planner.commit_pass(animated_plan);
+                self.animated_direct_compose_diagnostics = pass_diagnostics(
+                    animated_plan,
+                    dispatches,
+                    self.compose_planner.lagging_rows(
+                        compose_plan::ComposePass::AnimatedDirect,
+                        &self.compose_animated_resident_rows,
+                    ),
+                );
+                self.direct_animated_dirty_rows.clear();
+                self.dirty_rows
+                    .retain(|(section, _)| *section != ANIMATED_DIRECT_DELTA_ID);
+                encoded_any = true;
+            }
+
+            if encoded_any {
+                self.direct_compose_epoch = self
+                    .direct_compose_epoch
+                    .checked_add(1)
+                    .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            }
+            Ok(())
+        })();
+        self.compose_frame_plan = Some(frame_plan);
+        result
     }
 
     /// Encode only coalesced affinity-row work after the one pre-compose
@@ -118,52 +310,54 @@ impl ShResidencyState {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        active: bool,
-        frame_light_term_mask: LightTermMask,
+        _active: bool,
+        _frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
     ) -> Result<(), ShResidencyDrainError> {
-        let force_resident =
-            active || self.indirect_was_active || frame_light_term_mask != self.last_indirect_mask;
-        if !should_dispatch(
-            active,
-            !self.indirect_dirty_rows.is_empty(),
-            self.indirect_was_active,
-            frame_light_term_mask,
-            self.last_indirect_mask,
-        ) {
+        let Some(frame_plan) = self.compose_frame_plan.take() else {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed indirect compose dispatched before frame planning",
+            });
+        };
+        let plan = &frame_plan.indirect;
+        if plan.rows().is_empty() {
+            self.compose_frame_plan = Some(frame_plan);
             return Ok(());
         }
-        let mut rows = self.indirect_dirty_rows.clone();
-        if force_resident {
-            rows.extend(&self.indirect_resident_rows);
-        }
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let ranges = coalesce_rows(&rows);
-        let gpu = self
-            .gpu
-            .as_ref()
-            .ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed compose dispatch requested before GPU initialization",
-            })?;
-        gpu.dispatch_indirect_compose(
-            queue,
-            encoder,
-            uniform_bind_group,
-            &ranges,
-            timestamp_writes,
-        )?;
-        self.indirect_compose_epoch = self
-            .indirect_compose_epoch
-            .checked_add(1)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        self.indirect_dirty_rows.clear();
-        self.dirty_rows
-            .retain(|(section, _)| *section != INDIRECT_DELTA_ID);
-        self.indirect_was_active = active;
-        self.last_indirect_mask = frame_light_term_mask;
-        Ok(())
+        let result: Result<(), ShResidencyDrainError> = (|| {
+            let gpu = self
+                .gpu
+                .as_mut()
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed compose dispatch requested before GPU initialization",
+                })?;
+            let dispatches = gpu.dispatch_indirect_compose(
+                queue,
+                encoder,
+                uniform_bind_group,
+                plan.rows(),
+                timestamp_writes,
+            )?;
+            self.compose_planner.commit_pass(plan);
+            self.indirect_compose_diagnostics = pass_diagnostics(
+                plan,
+                dispatches,
+                self.compose_planner.lagging_rows(
+                    compose_plan::ComposePass::Indirect,
+                    &self.compose_indirect_resident_rows,
+                ),
+            );
+            self.indirect_compose_epoch = self
+                .indirect_compose_epoch
+                .checked_add(1)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            self.indirect_dirty_rows.clear();
+            self.dirty_rows
+                .retain(|(section, _)| *section != INDIRECT_DELTA_ID);
+            Ok(())
+        })();
+        self.compose_frame_plan = Some(frame_plan);
+        result
     }
 
     pub(in crate::render) fn snapshot(&self) -> ShResidencySnapshot {
@@ -256,6 +450,10 @@ impl ShResidencyState {
             pool_growth_events: pool_growth.events,
             pool_growth_bytes: pool_growth.bytes,
             pool_growth_cpu_micros: pool_growth.cpu_micros,
+            indirect_compose: self.indirect_compose_diagnostics,
+            static_direct_compose: self.static_direct_compose_diagnostics,
+            animated_direct_compose: self.animated_direct_compose_diagnostics,
+            compose_planning_cpu_micros: self.compose_planning_cpu_micros,
         }
     }
 
@@ -274,24 +472,56 @@ impl ShResidencyState {
     }
 }
 
+fn pass_diagnostics(
+    plan: &compose_plan::ComposePassPlan,
+    dispatches: usize,
+    remaining_lag: usize,
+) -> ShComposePassDiagnostics {
+    ShComposePassDiagnostics {
+        rows_composed: u64::try_from(plan.rows().len()).unwrap_or(u64::MAX),
+        dispatches: u64::try_from(dispatches).unwrap_or(u64::MAX),
+        lagged_rows_composed: u64::try_from(plan.lagged_rows()).unwrap_or(u64::MAX),
+        resident_rows_still_lagging: u64::try_from(remaining_lag).unwrap_or(u64::MAX),
+    }
+}
+
+fn lag_diagnostics(remaining_lag: usize) -> ShComposePassDiagnostics {
+    ShComposePassDiagnostics {
+        resident_rows_still_lagging: u64::try_from(remaining_lag).unwrap_or(u64::MAX),
+        ..ShComposePassDiagnostics::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn forced_direct_refresh_seeds_pass_a_for_an_id45_only_owner() {
-        let animated_only = BTreeSet::from([7]);
-        let (promotion, animated) = direct_dispatch_rows(
-            true,
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-            &animated_only,
+    fn compose_counters_match_successful_plan_and_dispatches() {
+        let plan = compose_plan::ComposePassPlan::test_plan(
+            compose_plan::ComposePass::Indirect,
+            vec![1, 3, 8],
+            2,
         );
+        assert_eq!(
+            pass_diagnostics(&plan, 1, 4),
+            ShComposePassDiagnostics {
+                rows_composed: 3,
+                dispatches: 1,
+                lagged_rows_composed: 2,
+                resident_rows_still_lagging: 4,
+            }
+        );
+    }
 
-        // Pass A produces the intermediate target, so its forced range must
-        // cover every Pass-B-only resident id-45 row before Pass B reads it.
-        assert_eq!(promotion, animated_only);
-        assert_eq!(animated, BTreeSet::from([7]));
+    #[test]
+    fn empty_dispatch_diagnostics_preserve_resident_lag() {
+        assert_eq!(
+            lag_diagnostics(3),
+            ShComposePassDiagnostics {
+                resident_rows_still_lagging: 3,
+                ..ShComposePassDiagnostics::default()
+            }
+        );
     }
 }

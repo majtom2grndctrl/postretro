@@ -407,11 +407,24 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         direct_animated_row_refs: BTreeMap::new(),
         direct_required: false,
         direct_compose_required: false,
+        animated_direct_compose_required: false,
         direct_animation_descriptor_indices: Vec::new(),
-        indirect_was_active: false,
-        last_indirect_mask: LightTermMask::ALL,
-        direct_was_active: false,
-        last_direct_mask: LightTermMask::ALL,
+        compose_planner: StreamedComposePlanner::default(),
+        compose_frame_plan: None,
+        compose_input_regions: Vec::new(),
+        compose_region_rows: Vec::new(),
+        compose_residency_rows: Vec::new(),
+        compose_indirect_resident_rows: Vec::new(),
+        compose_indirect_contributing_rows: Vec::new(),
+        compose_static_contributing_rows: Vec::new(),
+        compose_animated_contributing_rows: Vec::new(),
+        compose_animated_weights: Vec::new(),
+        compose_direct_resident_rows: Vec::new(),
+        compose_animated_resident_rows: Vec::new(),
+        indirect_compose_diagnostics: ShComposePassDiagnostics::default(),
+        static_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
+        animated_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
+        compose_planning_cpu_micros: 0,
         generation_has_reset: false,
         indirect_compose_epoch: 0,
         direct_compose_epoch: 0,
@@ -431,7 +444,22 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
     state.indirect_dirty_rows.insert(2);
     state.direct_promotion_dirty_rows.insert(4);
     state.direct_animated_dirty_rows.insert(4);
-    assert_eq!(state.snapshot().dirty_affinity_rows, 2);
+    state.dirty_rows.extend([
+        (INDIRECT_DELTA_ID, 2),
+        (DIRECT_DELTA_ID, 4),
+        (ANIMATED_DIRECT_DELTA_ID, 4),
+    ]);
+    state.prune_nonresident_dirty_rows();
+    assert_eq!(state.snapshot().dirty_affinity_rows, 0);
+
+    // Regression: a fully evicted row was rescanned forever, but a later
+    // install must still be able to seed fresh work for the same row.
+    state.indirect_delta_row_refs.insert(2, 1);
+    state.indirect_resident_rows.insert(2);
+    state.indirect_dirty_rows.insert(2);
+    state.dirty_rows.insert((INDIRECT_DELTA_ID, 2));
+    state.prune_nonresident_dirty_rows();
+    assert_eq!(state.snapshot().dirty_affinity_rows, 1);
 }
 
 #[test]

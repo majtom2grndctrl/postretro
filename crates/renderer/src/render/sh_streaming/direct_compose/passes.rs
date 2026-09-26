@@ -25,7 +25,9 @@ use crate::render::direct_sh_compose::{
     DirectShDebugOverride, nearest_sampler,
 };
 use crate::render::renderer_types::PromotedBakedLightState;
-use crate::render::sh_compose_dispatch::build_dynamic_compose_grid_upload_for_ranges;
+use crate::render::sh_compose_dispatch::{
+    DynamicComposeGridUpload, build_dynamic_compose_grid_upload_for_rows_into,
+};
 use crate::render::sh_indirection::WGSL_DECODE_HELPER;
 use crate::render::sh_streaming::gpu::AtlasShape;
 use crate::render::sh_volume::ShVolumeResources;
@@ -56,6 +58,7 @@ pub(super) struct StreamingPromotionPass {
     last_light_term_mask: LightTermMask,
     debug_override: wgpu::Buffer,
     last_debug_override: [u8; DEBUG_OVERRIDE_SIZE],
+    grid_upload: DynamicComposeGridUpload,
 }
 
 impl StreamingPromotionPass {
@@ -159,6 +162,7 @@ impl StreamingPromotionPass {
             last_light_term_mask: LightTermMask::ALL,
             debug_override,
             last_debug_override: initial_debug_override,
+            grid_upload: DynamicComposeGridUpload::default(),
         })
     }
 
@@ -266,9 +270,9 @@ impl StreamingPromotionPass {
         encoder: &mut wgpu::CommandEncoder,
         light_term_mask: LightTermMask,
         debug_override: DirectShDebugOverride,
-        dirty_ranges: &[(u32, u32)],
+        rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<usize, ShResidencyDrainError> {
         if light_term_mask != self.last_light_term_mask {
             queue.write_buffer(
                 &self.light_term_mask,
@@ -295,7 +299,8 @@ impl StreamingPromotionPass {
             self.max_workgroups_x,
             self.dynamic_alignment,
             self.max_buffer_size,
-            dirty_ranges,
+            rows,
+            &mut self.grid_upload,
             timestamp_writes,
         )
     }
@@ -346,6 +351,7 @@ pub(super) struct StreamingAnimatedPass {
     descriptor_indices: wgpu::Buffer,
     light_scale: wgpu::Buffer,
     last_light_scale: [u8; ANIMATED_LIGHT_SCALE_SIZE],
+    grid_upload: DynamicComposeGridUpload,
 }
 
 impl StreamingAnimatedPass {
@@ -459,6 +465,7 @@ impl StreamingAnimatedPass {
             descriptor_indices,
             light_scale,
             last_light_scale: initial_light_scale,
+            grid_upload: DynamicComposeGridUpload::default(),
         })
     }
 
@@ -515,13 +522,15 @@ fn dispatch_dynamic_pass(
     max_workgroups_x: u32,
     dynamic_alignment: u32,
     max_buffer_size: u64,
-    dirty_ranges: &[(u32, u32)],
+    rows: &[u32],
+    grid_upload: &mut DynamicComposeGridUpload,
     timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-) -> Result<(), ShResidencyDrainError> {
-    let upload = build_dynamic_compose_grid_upload_for_ranges(
+) -> Result<usize, ShResidencyDrainError> {
+    build_dynamic_compose_grid_upload_for_rows_into(
+        grid_upload,
         grid,
         STREAMED_SH_PHYSICAL_TILE_STRIDE,
-        dirty_ranges,
+        rows,
         max_workgroups_x,
         dynamic_alignment,
         max_buffer_size,
@@ -529,6 +538,10 @@ fn dispatch_dynamic_pass(
     .ok_or(ShResidencyDrainError::GpuCapacity {
         reason: "streamed direct dirty compose range exceeds adapter limits",
     })?;
+    let upload = &*grid_upload;
+    if upload.dispatches.is_empty() {
+        return Ok(0);
+    }
     if u64::try_from(upload.bytes.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?
         > grid_capacity
     {
@@ -554,7 +567,7 @@ fn dispatch_dynamic_pass(
             pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
         }
     }
-    Ok(())
+    Ok(upload.dispatches.len())
 }
 
 #[cfg(test)]

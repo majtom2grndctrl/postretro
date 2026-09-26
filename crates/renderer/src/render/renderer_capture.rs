@@ -45,11 +45,13 @@ impl Renderer {
         light_reachable_cell_mask: &[bool],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         fog_reachable: &[u32],
+        sh_sample_regions: ShSampleRegionSets<'_>,
         camera_cell: Option<u32>,
         view_proj: Mat4,
         camera_position: Vec3,
         particle_collections: &[(&str, &[u8])],
         capture_animated_promotion_weights: &[(usize, f32)],
+        animation_time_seconds: f32,
         clear_color: ClearColor,
         render_world: bool,
         sh_drain_batch: ShDrainBatch,
@@ -60,7 +62,7 @@ impl Renderer {
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
         let mut compose_submitted = false;
         let frame = (|| -> Result<Option<CaptureGpuTimingWindow>> {
-            self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
+            self.update_per_frame_uniforms(view_proj, camera_position, animation_time_seconds);
 
             let mut encoder = self
                 .device
@@ -75,11 +77,12 @@ impl Renderer {
                 light_reachable_cell_mask,
                 reachable_cell_aabbs,
                 fog_reachable,
+                sh_sample_regions,
                 camera_cell,
                 view_proj,
                 particle_collections,
                 capture_animated_promotion_weights,
-                0.0,
+                f64::from(animation_time_seconds),
                 clear_color,
                 render_world,
             )?;
@@ -151,18 +154,20 @@ impl Renderer {
         light_reachable_cell_mask: &[bool],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         fog_reachable: &[u32],
+        sh_sample_regions: ShSampleRegionSets<'_>,
         camera_cell: Option<u32>,
         view_proj: Mat4,
         camera_position: Vec3,
         particle_collections: &[(&str, &[u8])],
         capture_animated_promotion_weights: &[(usize, f32)],
+        animation_time_seconds: f32,
         clear_color: ClearColor,
         render_world: bool,
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Vec<u8>>, ShResidencyDrainError> {
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
         let frame = (|| -> Result<(Vec<u8>, bool)> {
-            self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
+            self.update_per_frame_uniforms(view_proj, camera_position, animation_time_seconds);
 
             let mut encoder = self
                 .device
@@ -177,11 +182,12 @@ impl Renderer {
                 light_reachable_cell_mask,
                 reachable_cell_aabbs,
                 fog_reachable,
+                sh_sample_regions,
                 camera_cell,
                 view_proj,
                 particle_collections,
                 capture_animated_promotion_weights,
-                0.0,
+                f64::from(animation_time_seconds),
                 clear_color,
                 render_world,
             )?;

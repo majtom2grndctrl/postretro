@@ -24,8 +24,9 @@ pub use postretro_renderer::{
     DEFAULT_INDIRECT_SCALE, KinematicMoverInstance, LevelGeometry, LightTermMask,
     LocatorDiagnostics, MoverOccluderAabb, PortalOverlayState, PresentHandle, Renderer,
     SdfShadowMode, ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
-    ShResidencyReport, ShResidencySource, ShStreamingLifecycleSummary, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
+    ShResidencyReport, ShResidencySource, ShSampleRegion, ShSampleRegionSets,
+    ShStreamingLifecycleSummary, SpatialCellSetDiagnostics, SpatialDiagnostics,
+    SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
     sprite_specular_exponent_is_valid,
 };
 

@@ -333,7 +333,9 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
             DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
             DiagnosticsTab::Triggers => draw_triggers_tab(ui, trigger_rows),
-            DiagnosticsTab::Streaming => streaming_tab::draw_streaming_tab(ui, sh_streaming),
+            DiagnosticsTab::Streaming => {
+                streaming_tab::draw_streaming_tab(ui, renderer, sh_streaming)
+            }
         }
     });
 }

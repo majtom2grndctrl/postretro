@@ -11,7 +11,7 @@ use postretro_visibility::VisibleCells;
 
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor, Renderer,
-    ShResidencyReport,
+    ShResidencyReport, ShSampleRegion,
 };
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::runtime_movers::{
@@ -38,6 +38,33 @@ use super::setup::{
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
 /// consumer, so avoid allocating a one-frame trace.
 const CAPTURE_PORTAL_WALK: bool = false;
+/// Measurement advances authored GPU animation without running gameplay or a
+/// script VM. Keep this aligned with the engine's default 60 Hz fixed tick so
+/// capture samples have an easy-to-reason-about temporal coordinate.
+const CAPTURE_MEASUREMENT_ANIMATION_TICKS_PER_SECOND: f64 = 60.0;
+
+#[derive(Debug, Default)]
+struct CaptureMeasurementAnimationClock {
+    ticks: u64,
+}
+
+impl CaptureMeasurementAnimationClock {
+    fn advance_frame(&mut self) -> f32 {
+        self.ticks = self
+            .ticks
+            .checked_add(1)
+            .expect("capture measurement tick count must fit u64");
+        measurement_animation_time_seconds(self.ticks)
+    }
+
+    fn time_seconds(&self) -> f32 {
+        measurement_animation_time_seconds(self.ticks)
+    }
+}
+
+pub(super) fn measurement_animation_time_seconds(ticks: u64) -> f32 {
+    (ticks as f64 / CAPTURE_MEASUREMENT_ANIMATION_TICKS_PER_SECOND) as f32
+}
 
 /// Renderer-owned static scene state prepared once for one or more identical
 /// offscreen capture frames. It retains every plain render input whose
@@ -49,6 +76,8 @@ pub(super) struct PreparedCapture {
     view_proj: Mat4,
     eye: Vec3,
     forced_promotion_weights: Vec<(usize, f32)>,
+    mover_sample_regions: Vec<ShSampleRegion>,
+    measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
 }
 
@@ -69,6 +98,7 @@ impl PreparedCapture {
         let [width, height] = scene.resolution;
         let mut renderer = Renderer::new_offscreen(width, height)
             .context("failed to initialize offscreen frame capture renderer")?;
+        renderer.set_force_full_resident_sh_compose(scene.force_full_resident_sh_compose);
 
         let texture_materials = derive_texture_materials(&world.texture_names);
         let content_root = content_root_from_map(Some(&scene.map));
@@ -168,6 +198,7 @@ impl PreparedCapture {
         );
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         renderer.set_mesh_draws(mesh_collector.instances());
+        let mover_sample_regions = mover_collector.sh_sample_regions().to_vec();
 
         let mut prepared = Self {
             renderer,
@@ -176,6 +207,8 @@ impl PreparedCapture {
             view_proj,
             eye,
             forced_promotion_weights,
+            mover_sample_regions,
+            measurement_animation: CaptureMeasurementAnimationClock::default(),
             resolution: [width, height],
         };
         prepared.preload_visible_sh(max_preload_frames)?;
@@ -214,7 +247,7 @@ impl PreparedCapture {
             // forced `w` back into the promotion ramp, which cannot advance at
             // capture's frozen instant, so a pinned zero would drop the row's
             // record before the captured frame could pin it.
-            let _ = self.submit_measurement_frame(false)?;
+            let _ = self.submit_frame_without_readback(false, 0.0)?;
         }
         bail!("SH capture preload did not make its visible cluster closure sampleable")
     }
@@ -230,17 +263,33 @@ impl PreparedCapture {
     /// Render the prepared static workload through the unchanged PNG/readback
     /// capture path.
     pub(super) fn capture_frame(&mut self) -> Result<Vec<u8>> {
+        self.capture_frame_at(0.0)
+    }
+
+    /// Measurement's inspectable PNG uses the same stepped animation instant
+    /// as its completed warmup/sample sequence. Ordinary capture remains at 0.
+    pub(super) fn capture_measurement_output_frame(&mut self) -> Result<Vec<u8>> {
+        self.capture_frame_at(self.measurement_animation.time_seconds())
+    }
+
+    fn capture_frame_at(&mut self, animation_time_seconds: f32) -> Result<Vec<u8>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
         let result = self.renderer.capture_frame_indirect(
             self.visible_render.camera_cull(),
             &self.visible_render.light_reachable_cell_mask,
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
+            postretro_renderer::ShSampleRegionSets {
+                visible_cells: &self.visible_render.visible_cell_aabbs,
+                fog_cells: &self.visible_render.reachable_cell_aabbs,
+                movers: &self.mover_sample_regions,
+            },
             Some(self.visible_render.stats.camera_cell),
             self.view_proj,
             self.eye,
             &[],
             &self.forced_promotion_weights,
+            animation_time_seconds,
             ClearColor {
                 r: 0.05,
                 g: 0.05,
@@ -261,12 +310,14 @@ impl PreparedCapture {
 
     /// Submit and complete one prepared static sample without PNG readback.
     pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
-        self.submit_measurement_frame(true)
+        let animation_time_seconds = self.measurement_animation.advance_frame();
+        self.submit_frame_without_readback(true, animation_time_seconds)
     }
 
-    fn submit_measurement_frame(
+    fn submit_frame_without_readback(
         &mut self,
         pin_promotion: bool,
+        animation_time_seconds: f32,
     ) -> Result<Option<CaptureGpuTimingWindow>> {
         let sh_drain_batch = self.take_sh_drain_batch()?;
         let forced_promotion_weights: &[(usize, f32)] = if pin_promotion {
@@ -279,11 +330,17 @@ impl PreparedCapture {
             &self.visible_render.light_reachable_cell_mask,
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
+            postretro_renderer::ShSampleRegionSets {
+                visible_cells: &self.visible_render.visible_cell_aabbs,
+                fog_cells: &self.visible_render.reachable_cell_aabbs,
+                movers: &self.mover_sample_regions,
+            },
             Some(self.visible_render.stats.camera_cell),
             self.view_proj,
             self.eye,
             &[],
             forced_promotion_weights,
+            animation_time_seconds,
             ClearColor {
                 r: 0.05,
                 g: 0.05,
@@ -330,6 +387,40 @@ impl PreparedCapture {
 
     pub(super) const fn resolution(&self) -> [u32; 2] {
         self.resolution
+    }
+}
+
+#[cfg(test)]
+mod measurement_animation_tests {
+    use super::*;
+    use crate::capture::scene::{MAX_MEASUREMENT_SAMPLE_FRAMES, MAX_MEASUREMENT_WARMUP_FRAMES};
+
+    #[test]
+    fn measurement_frames_advance_animation_without_vm() {
+        let mut clock = CaptureMeasurementAnimationClock::default();
+        assert_eq!(clock.time_seconds(), 0.0);
+
+        let first = clock.advance_frame();
+        let second = clock.advance_frame();
+
+        assert_eq!(first, measurement_animation_time_seconds(1));
+        assert_eq!(second, measurement_animation_time_seconds(2));
+        assert!(second > first);
+    }
+
+    // Regression: repeated f32 additions drifted at the accepted measurement maximum.
+    #[test]
+    fn maximum_measurement_tick_count_derives_one_stable_time_coordinate() {
+        let total =
+            u64::from(MAX_MEASUREMENT_WARMUP_FRAMES) + u64::from(MAX_MEASUREMENT_SAMPLE_FRAMES);
+        let mut clock = CaptureMeasurementAnimationClock { ticks: total - 1 };
+
+        let actual = clock.advance_frame();
+        let expected = (total as f64 / 60.0) as f32;
+
+        assert_eq!(clock.ticks, total);
+        assert_eq!(actual, expected);
+        assert_eq!(clock.time_seconds(), expected);
     }
 }
 

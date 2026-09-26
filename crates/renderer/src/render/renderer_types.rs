@@ -969,6 +969,9 @@ pub(super) struct FullRenderer {
     pub(super) direct_sh_debug_override: DirectShDebugOverride,
     #[cfg(feature = "dev-tools")]
     pub(super) animated_direct_sh_debug_override: AnimatedDirectShDebugOverride,
+    /// Exactness/debug bypass for streamed SH compose. Kept in all builds so
+    /// VM-free capture can compare shipped gating against the resident oracle.
+    pub(super) force_full_resident_sh_compose: bool,
     /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
     /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
     /// matrix; the skinned-depth pass selects it by dynamic offset.

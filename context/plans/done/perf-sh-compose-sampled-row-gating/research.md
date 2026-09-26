@@ -178,6 +178,77 @@ Consequences for the brief:
 - Report per-pass rows, dispatches, lag counters, CPU planning time and frame time against the
   spike baseline table above.
 
+## Owner GPU/manual runbooks
+
+These checks are landing-blocking. Run all captures and comparisons on one adapter; keep the
+adapter/driver/backend and resolution in the recorded result.
+
+### M1 — exactness
+
+1. Build once with `cargo build --release -p postretro --features capture`.
+2. Run each checked-in `measurements/sh-probe-streaming/sampled-row-gating/animroom-*.scene.json`
+   with `POSTRETRO_SH_STREAMING=sync-proof target/release/postretro --capture <scene>`.
+3. Compare the pairs with
+   `cmp animroom-gated-t050.png animroom-full-t050.png` and
+   `cmp animroom-gated-t100.png animroom-full-t100.png`; both must exit zero. Confirm the two
+   gated-time PNGs differ, and each report's three `rows_composed` fields sum to a nonzero value.
+4. Repeat the gated/full pair at spawn `(16.26, 3.23, 65.02)`, yaw 0, pitch 0 and floor at the
+   same position/yaw with pitch −89 by copying a scene pair and changing only camera and output
+   paths. Check at both 0.5 s (1 warmup + 29 samples) and 1.0 s (1 + 59). Record every `cmp`
+   result and the report counters.
+
+### M2 — performance
+
+The owner corrected this gate during testing: compare the same baked 1 m
+`stress-warren-mini.prl` on main and the feature branch. A 1 m/3 m comparison changes the
+workload and is only secondary diagnostic evidence. Record the qualitative or measured Windows
+A/B result and any hitch or artifact separately.
+
+### M3 — live visual behavior
+
+Launch the 1 m PRL in a release dev-tools run. In sequence: watch a pulsing room, leave both its
+view and fog reach, return, turn through it in place, switch the light off and return again;
+cross a streaming boundary while the light is active; exercise a mover, skinned mesh, and
+viewmodel straddling a hidden-cell boundary; look through fog toward a non-visible room; then
+toggle each light-term mask. There must be no stale flash, pop, seam, wrong off-state, missing
+receiver lighting, or fog discontinuity. Repeat once with **Force full-resident SH compose** in
+the Streaming tab and record adapter, PRL, pose/transition, and pass/fail for each observation.
+
+## Landing results — 2026-09-26
+
+M1 passed on revision `f299b77ce66ec0635e6f4da6fc676c325250e0d0`, AMD Radeon Pro 5300M,
+Metal, 1280×720, `stress-warren-mini.prl`, and `POSTRETRO_SH_STREAMING=sync-proof`. The map's
+retired untagged raw shadowmask section was ignored with the expected re-bake warning; the SH
+streaming sections loaded and all exactness comparisons completed.
+
+| Pose | Time | Gated rows (indirect/static/animated) | Full rows (indirect/static/animated) | PNG comparison |
+|---|---:|---:|---:|---|
+| animroom | 0.5 s | 211 / 0 / 211 | 7,067 / 7,067 / 7,067 | passed, byte-identical |
+| animroom | 1.0 s | 211 / 0 / 211 | 7,067 / 7,067 / 7,067 | passed, byte-identical |
+| spawn | 0.5 s | 213 / 0 / 213 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+| spawn | 1.0 s | 213 / 0 / 213 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+| floor | 0.5 s | 90 / 0 / 90 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+| floor | 1.0 s | 90 / 0 / 90 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+
+Every report's three-pass row sum was nonzero. The gated animroom PNG changed between 0.5 s and
+1.0 s, proving that the authored curve advanced. Spawn and floor remained identical across the
+two times because those views did not contain the changing authored light. Compose-planning CPU
+time ranged from 4,543–5,536 µs for gated captures and 11,213–14,220 µs for force-full captures
+on this adapter.
+
+M2 passed by owner approval on the Windows play-test box. The owner compared the same checked-in
+1 m `stress-warren-mini.prl` on main and this feature branch, reported that the feature branch
+was very smooth and materially better, and noted occasional minor hitching on mini. Main's frame
+rate was too low to expose comparable hitching; the owner judged the hitch not demonstrated to
+be a regression from this brief and approved landing. No numeric frame windows or Windows
+adapter/driver string were captured, so this is a qualitative owner A/B rather than a benchmark.
+
+M3 passed by owner approval after live Windows play tests on `stress-warren-mini.prl` and
+`campaign-test.prl`, the latter exercising its scripted and pulsing light phases. No stale-light,
+seam, pop, off-state, receiver, or fog artifact was reported; the only reported issue was the
+minor intermittent mini hitch recorded under M2. The Windows adapter/driver string was not
+captured.
+
 ## Handed off
 
 | Finding | Owner |

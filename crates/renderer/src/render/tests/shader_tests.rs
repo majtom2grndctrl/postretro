@@ -1305,7 +1305,8 @@ fn sh_compose_grid_dims_shader_layouts_match_cpu_packer() {
     ] {
         let span = wgsl_struct_span(source, "GridDims", label);
         assert_eq!(
-            span, 80,
+            span as usize,
+            postretro_render_cpu::sh_compose::DYNAMIC_COMPOSE_GRID_DIMS_SIZE,
             "{label}.wgsl GridDims stride ({span}) must match the dynamic compose grid record",
         );
     }
@@ -1354,8 +1355,10 @@ fn sh_sampling_and_compose_use_the_physical_tile_stride_without_new_bindings() {
             source.matches("* grid.physical_tile_stride").count() == expected_stride_uses,
             "{label}.wgsl must use the dynamic-record stride on both tile axes"
         );
-        assert!(source.contains("range_start: u32,"));
-        assert!(source.contains("range_count: u32,"));
+        assert!(source.contains("row_count: u32,"));
+        assert!(source.contains("row_ids: array<vec4<u32>, 4091>,"));
+        assert!(source.contains("let packed_rows = grid.row_ids[workgroup.x / 4u];"));
+        assert!(source.contains("let cell_index = packed_rows[workgroup.x % 4u];"));
         assert!(source.contains("let offset_index = cell_index * 2u;"));
         assert!(source.contains("affinity_offsets[offset_index + 1u]"));
     }

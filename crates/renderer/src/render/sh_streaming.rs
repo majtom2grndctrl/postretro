@@ -18,12 +18,15 @@ use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_loader::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest};
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
+use super::Renderer;
 use super::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use super::direct_sh_compose::DirectShDebugOverride;
-use super::renderer_types::PromotedBakedLightState;
-use super::{Renderer, sh_compose_dispatch::should_dispatch};
+use super::renderer_types::{
+    MAX_ANIMATED_BAKED_LIGHTS, PromotedBakedLightState, animated_baked_promotion_weight,
+};
 
 mod allocator;
+mod compose_plan;
 mod dense;
 mod diagnostics;
 mod direct_compose;
@@ -42,12 +45,14 @@ mod payload;
 mod probe_diagnostics;
 mod row_refs;
 mod rows;
+mod sample_regions;
 mod setup;
 mod sparse_install;
 #[cfg(test)]
 mod tests;
 
 use allocator::{FirstFitRanges, PoolRange, SparsePool};
+use compose_plan::{ComposeFramePlan, StreamedComposePlanner};
 pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 use direct_compose::DirectSparseRowUpload;
@@ -82,6 +87,19 @@ const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as
 /// canonical cluster. Values include the allocator's missing-row sentinel
 /// and f16 word alignment, but never reserve all legacy CSR payloads.
 type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
+
+/// One streamed SH compose pass's current-frame work and remaining lag.
+///
+/// These values are gauges, not lifetime counters: the renderer replaces them
+/// on every planned frame so diagnostics describe the work consumers can
+/// correlate with that frame's timing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShComposePassDiagnostics {
+    pub rows_composed: u64,
+    pub dispatches: u64,
+    pub lagged_rows_composed: u64,
+    pub resident_rows_still_lagging: u64,
+}
 
 /// A plain-data read of renderer ownership.  This intentionally reports pool
 /// capacity and logical occupancy separately: one is physical GPU backing,
@@ -139,6 +157,14 @@ pub struct ShResidencySnapshot {
     /// Cumulative CPU microseconds spent inside pool growth transactions;
     /// part of `install_cpu_total_micros`.
     pub pool_growth_cpu_micros: u64,
+    /// Current-frame streamed indirect compose work.
+    pub indirect_compose: ShComposePassDiagnostics,
+    /// Current-frame streamed static-direct (promotion) compose work.
+    pub static_direct_compose: ShComposePassDiagnostics,
+    /// Current-frame streamed animated-direct compose work.
+    pub animated_direct_compose: ShComposePassDiagnostics,
+    /// Current-frame CPU time spent planning all streamed compose passes.
+    pub compose_planning_cpu_micros: u64,
 }
 
 /// A malformed renderer handoff is never repaired by inventing an address.
@@ -302,11 +328,24 @@ pub(super) struct ShResidencyState {
     direct_animated_row_refs: BTreeMap<u32, u32>,
     direct_required: bool,
     direct_compose_required: bool,
+    animated_direct_compose_required: bool,
     direct_animation_descriptor_indices: Vec<u32>,
-    indirect_was_active: bool,
-    last_indirect_mask: LightTermMask,
-    direct_was_active: bool,
-    last_direct_mask: LightTermMask,
+    compose_planner: StreamedComposePlanner,
+    compose_frame_plan: Option<ComposeFramePlan>,
+    compose_input_regions: Vec<crate::render::ShSampleRegion>,
+    compose_region_rows: Vec<u32>,
+    compose_residency_rows: Vec<u32>,
+    compose_indirect_resident_rows: Vec<u32>,
+    compose_indirect_contributing_rows: Vec<u32>,
+    compose_static_contributing_rows: Vec<u32>,
+    compose_animated_contributing_rows: Vec<u32>,
+    compose_animated_weights: Vec<f32>,
+    compose_direct_resident_rows: Vec<u32>,
+    compose_animated_resident_rows: Vec<u32>,
+    indirect_compose_diagnostics: ShComposePassDiagnostics,
+    static_direct_compose_diagnostics: ShComposePassDiagnostics,
+    animated_direct_compose_diagnostics: ShComposePassDiagnostics,
+    compose_planning_cpu_micros: u64,
     generation_has_reset: bool,
     indirect_compose_epoch: u64,
     direct_compose_epoch: u64,

@@ -77,9 +77,9 @@ impl StreamingAnimatedPass {
         uniform_bind_group: &wgpu::BindGroup,
         debug_override: AnimatedDirectShDebugOverride,
         promoted_animated_states: &[PromotedBakedLightState],
-        dirty_ranges: &[(u32, u32)],
+        rows: &[u32],
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<usize, ShResidencyDrainError> {
         let light_scale = debug_override.bytes(promoted_animated_states);
         if light_scale != self.last_light_scale {
             queue.write_buffer(&self.light_scale, 0, &light_scale);
@@ -98,7 +98,8 @@ impl StreamingAnimatedPass {
             self.max_workgroups_x,
             self.dynamic_alignment,
             self.max_buffer_size,
-            dirty_ranges,
+            rows,
+            &mut self.grid_upload,
             timestamp_writes,
         )
     }

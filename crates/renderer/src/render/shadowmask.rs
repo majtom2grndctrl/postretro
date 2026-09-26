@@ -184,7 +184,7 @@ fn metadata_index_value(index: u32) -> f32 {
     }
 }
 
-fn metadata_channel_value(channel: u8) -> f32 {
+pub(crate) fn metadata_channel_value(channel: u8) -> f32 {
     if channel == SHADOWMASK_CHANNEL_DROPPED {
         FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
     } else {
@@ -240,17 +240,19 @@ mod tests {
         let lights = vec![light(true), light(false)];
         let entity_shadow_lights = [1];
         let atlas = ShadowmaskAtlasSection {
-            width: 1,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 1,
             channels: vec![2],
-            data: vec![255; 4],
+            data: vec![255; ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()],
         };
         let bvh = BvhTree {
             nodes: Vec::new(),
             leaves: Vec::new(),
             root_node_index: 0,
         };
+        let (atlas_header, _payload) = atlas.clone().into_parts();
         let mut geometry = LevelGeometry {
             vertices: &[],
             indices: &[],
@@ -270,7 +272,7 @@ mod tests {
             billboard_direct_scatter_volume: None,
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: &entity_shadow_lights,
-            shadowmask_atlas: Some(&atlas),
+            shadowmask_atlas: Some(&atlas_header),
             sdf_atlas: None,
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,

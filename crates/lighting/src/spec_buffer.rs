@@ -19,7 +19,10 @@ use postretro_level_loader::{LightType, MapLight, ShadowType};
 ///   44..48  light_type         (f32) — SPEC_LIGHT_TYPE_* discriminant
 ///   48..52  cos(inner_angle)   (f32) — cone full-bright cutoff, 1.0 for non-spot
 ///   52..56  cos(outer_angle)   (f32) — cone zero cutoff, -1.0 for non-spot
-///   56..60  shadowmask_channel (f32) — 0.0..3.0 selects RGBA; 4.0 means none
+///   56..60  shadowmask_channel (f32) — 0.0..3.0 selects a mask slot in the
+///           forward shader's (g0.r, g0.g, g1.r, g1.g) vector: slot s is BC5
+///           group s/2, channel s%2 of the side-by-side ShadowmaskAtlas.
+///           4.0 (SPEC_LIGHT_SHADOWMASK_NONE) means no mask.
 ///   60..64  falloff_model      (f32) — 0 Linear, 1 InverseDistance, 2 InverseSquared
 ///
 /// Cone direction/angles are packed here (rather than recomputed in-shader) so

@@ -47,7 +47,10 @@ pub(crate) const MIN_ATLAS_DIMENSION: u32 = 64;
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
 /// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
 /// (see `crates/postretro/src/render/renderer_init_resources.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
-const MAX_ATLAS_DIMENSION: u32 = 8192;
+/// Also pins the shadowmask bake's max texture width (`shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH`):
+/// its side-by-side texture is twice the lightmap width, so lightmap layers wider than half this
+/// omit the `ShadowmaskAtlas`.
+pub(crate) const MAX_ATLAS_DIMENSION: u32 = 8192;
 
 /// Maximum atlas array layers. The atlas is a `texture_2d_array`; the multi-bin
 /// packer opens a new layer whenever a BVH leaf's charts don't fit the current

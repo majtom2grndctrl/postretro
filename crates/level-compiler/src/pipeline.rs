@@ -1732,6 +1732,7 @@ fn run_after_parsing(
         lightmap: lightmap_bake_output,
         shadowmask: shadowmask_atlas_section,
         shadowmask_elapsed,
+        shadowmask_overlap,
     } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
@@ -1771,9 +1772,16 @@ fn run_after_parsing(
                 section.channels.len(),
                 section.data.len(),
             );
-        } else {
-            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
+        } else if shadowmask_overlap == crate::shadowmask_bake::ShadowmaskOverlapReport::NoSelection
+        {
+            log::info!(
+                "ShadowmaskAtlas: skipped (no selected static lights or no lightmap charts)"
+            );
         }
+        crate::shadowmask_bake::log_overlap_report(
+            shadowmask_overlap,
+            shadowmask_atlas_section.as_ref(),
+        );
     }
 
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);

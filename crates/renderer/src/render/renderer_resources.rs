@@ -103,7 +103,7 @@ impl Renderer {
             kinematic_geometry: None,
             texture_materials: &empty_materials,
         };
-        self.install_level_geometry(&empty_geometry);
+        self.install_level_geometry(&empty_geometry, Default::default());
 
         self.full_mut().smoke_pass.clear_collections();
         self.full_mut().mesh_pass.release_level_resources();
@@ -123,8 +123,14 @@ impl Renderer {
     }
 
     /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
+    /// Takes the level's GPU-only lightmap and shadowmask payloads by value and
+    /// drops them once their textures exist.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
-    pub fn install_level_geometry(&mut self, geometry: &LevelGeometry<'_>) {
+    pub fn install_level_geometry(
+        &mut self,
+        geometry: &LevelGeometry<'_>,
+        gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
+    ) {
         let Self {
             device,
             queue,
@@ -613,9 +619,15 @@ impl Renderer {
         let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
         // Match the animated atlas to the static lightmap atlas the same way the
         // constructor does — one resolver, one device limit, guaranteed-equal
-        // dimensions (see `usable_atlas_dimensions`).
+        // dimensions (see `usable_atlas_dimensions`). The constructor also
+        // falls back when the header's payload is missing, so sizing sees the
+        // header only when its payload is present. The constructor still gets
+        // the header itself, so that fallback logs its error.
+        let sized_lightmap = geometry
+            .lightmap
+            .filter(|_| gpu_lighting_payloads.lightmap.is_some());
         let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
-            geometry.lightmap,
+            sized_lightmap,
             device.limits().max_texture_dimension_2d,
             device.limits().max_texture_array_layers,
         );
@@ -653,6 +665,7 @@ impl Renderer {
             queue,
             geometry.lightmap,
             geometry.shadowmask_atlas,
+            gpu_lighting_payloads,
             &lightmap_bgl,
             &animated_lightmap.forward_view,
             &animated_lightmap.direction_forward_view,

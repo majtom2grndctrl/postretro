@@ -27,7 +27,7 @@ pub use prl::{
     LoadedKinematicWaypoint, LoadedMemberLight, PrlLoadError,
 };
 #[cfg(feature = "load-prl")]
-pub use prl_lighting::LevelWorldLighting;
+pub use prl_lighting::{GpuLightingPayloads, LevelWorldLighting};
 #[cfg(feature = "load-prl")]
 pub use prl_streaming::load_prl;
 #[cfg(feature = "load-prl")]

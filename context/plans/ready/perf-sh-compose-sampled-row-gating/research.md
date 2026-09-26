@@ -165,7 +165,8 @@ Consequences for the brief:
 ## Measurement protocol
 
 - Fixture: stress-warren-mini, baked by the owner at `--sh-probe-spacing 1.0` and `3.0` with
-  `--lightmap-density 0.16` (lower densities fail on this map; see Handed off). Confirm PRL
+  `--lightmap-density 0.16`, matching the spike baseline (lower densities now bake too; see
+  Handed off). Confirm PRL
   ids 49/50 are present.
 - Pin: machine, GPU/driver, backend (Vulkan), release build, resolution (1280×720),
   streaming mode (`POSTRETRO_SH_STREAMING=sync-proof` for capture), and the spike's poses:
@@ -182,7 +183,7 @@ Consequences for the brief:
 | Finding | Owner |
 |---|---|
 | 22 of 482 clusters cover 91% of the 1 m grid; a few visible clusters close over most installed ones | `in-progress/sh-probe-streaming` (Open questions) |
-| stress-warren-mini fails to bake animated lightmaps below `--lightmap-density 0.16` (atlas over budget; >65,535 dispatch tiles with no 2D fallback) | spawned task "Fix stress-warren-mini animated lightmap bake at default density" |
+| stress-warren-mini failed to bake animated lightmaps below `--lightmap-density 0.16` (atlas over budget; >65,535 dispatch tiles with no 2D fallback) | resolved: unlit-chunk cull plus a 2D compose dispatch grid |
 | Coarsened-brick sampling cost in forward | not this brief: the spike measured compose, not sampling, as the 1 m bottleneck; revisit if frame time stays high after this lands |
 | Bake-side density and coarsening policy | the lighting-scale coarsenability line; this brief removes per-frame work at any density |
 

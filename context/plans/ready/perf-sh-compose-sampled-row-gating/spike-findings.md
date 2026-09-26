@@ -1,7 +1,7 @@
 # Spike findings: streamed SH compose cost at 1 m (perf-sh-compose-sampled-row-gating)
 
 Worktree: `C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\agent-aa6de6e4217c81417`, base 0218faacd, spike diff uncommitted.
-Brief under test: `postretro-main-brief/context/plans/drafts/perf-sh-compose-sampled-row-gating/`.
+Brief under test: `context/plans/ready/perf-sh-compose-sampled-row-gating/` (drafted at the time of the spike).
 
 ## TL;DR
 

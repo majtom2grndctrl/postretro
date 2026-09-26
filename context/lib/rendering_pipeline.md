@@ -149,6 +149,20 @@ reaches the ambient floor. Baked owners remain installed for dependent halo clus
 physical light accumulates once and an owner cannot be evicted out from under a resident
 boundary.
 
+**Sampled-row compose (decided, not yet built).** Each frame, after visibility and draw
+culls and before compose, the application hands the renderer the world regions SH consumers
+can sample: visible and fog-reachable cells (an empty fog-reachable set means every cell),
+drawn movers at their interpolated transform, whole drawn skinned meshes, and first-person
+viewmodels. Only the renderer maps regions to affinity rows, dilated by the sampler
+footprint and closed over scaled-node writer rows; the region input carries no row indices.
+Invariant: every stored slot a consumer can sample in frame N equals what full-resident
+compose would write in frame N, so no stale slot is sampled. Rows outside the gate may lag,
+and compose on the frame they re-enter it, before any consumer samples them. Unlike the warm
+set, the gate is view-dependent: turning in place composes lagging rows as they come into
+view. Any new SH consumer (an alternate camera, GPU particles, reflection probes) adds its
+sample regions before compose or forces full-resident compose. This is the SH counterpart of
+the animated-lightmap visibility rule in §7.1 step 4.
+
 An install journals every residency change and undoes it newest-first on failure, so its
 cost scales with the cluster being installed rather than the map. Install and eviction
 update affinity-row refcounts and resident-row unions once per touched row, never per
@@ -165,7 +179,9 @@ the dev-tools Streaming tab, and the capture report's streaming lifecycle JSON. 
 tuning and gate nothing. The dev-tools SH Volumes probe markers draw on streamed maps from
 the streaming base metadata. A Residency marker mode colors each probe from the renderer's
 sampled and composed word mirrors: sampleable, installed awaiting compose, requested,
-miss, or invalid.
+miss, or invalid. Decided, not yet built: per-pass compose counters (rows composed,
+dispatches, rows composed because they lagged, rows still lagging, and CPU planning time)
+join the log line, the Streaming tab, and the capture report.
 
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
@@ -259,7 +275,17 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
    samples the prior installed-and-composed set while new cluster data composes, and
    promotes that data only at the following drain. Streamed indirect and direct families dispatch only coalesced
    affinity-row ranges; they never dispatch arbitrary dense indices or unrelated whole-map
-   rows. The indirect SH pass reads the static base octahedral irradiance atlas and per-light animated delta tile data; evaluates animation curves for each light at the current frame time; accumulates the mask-selected contributions and writes the shared stored-slot composed indirect atlas. The static-indirect bit selects the base and the animated-indirect bit gates every delta accumulation path. Dropped-valid delta probes reconstruct strictly within their 4×4×4 brick; base L1 probes reconstruct across their complete aligned node. For each CSR entry, all coarsened compose passes load each brick's kept lattice once into workgroup memory, while L0 probes keep direct reads. It dispatches only when its composed atlas would change — on level-load copy-through, while any animated indirect light is active, once when activity returns to zero, and whenever the current mask differs from the mask that produced the atlas. The direct SH pass is the static-entity-shadow sibling: whenever usable base direct SH is present, it writes the shared stored-slot composed direct atlas with static and animated contributions selected by their mask bits; promotion subtraction is enabled only with dynamic direct. It composes even without selected direct deltas, copying the base when baked direct is enabled and writing zero when it is disabled, so the baked-direct-static mask can isolate base direct SH. It dispatches on level-load copy-through, while any weight is nonzero, once when weights return to all-zero, and whenever the current mask differs from the mask that produced the atlas; maps without usable direct SH allocate no composed direct atlas and keep the no-direct binding behavior. The animated billboard-scatter sibling keeps its whole-resident path: it copies section 47 then accumulates section 48's dense deltas with the shared descriptors, time, and mask; static-only maps bind section 47 directly. All compose passes run before the depth prepass and before their consumers sample the results. See §4 "Animated SH delta volumes" and "Promoted static lights".
+   rows. Decided, not yet built: each streamed pass instead composes a gathered list of rows,
+   one dispatch per pass or per chunk past a per-dispatch capacity, without adding or
+   renumbering a compose binding. Each streamed pass fires on its own inputs, each with a
+   one-frame tail: indirect while an animated indirect light is active, animated direct
+   while an animated direct light is active, and static direct only when its uploaded
+   promotion weights change. A firing pass composes only sampled rows (§4 "Sampled-row
+   compose") that carry its contribution. Rows touched by an install, slot reuse, or partial
+   eviction, and their scaled-node writer rows, compose regardless. A light-term mask or
+   dev-override change forces one full-resident frame. A dev switch forces full-resident
+   compose every frame; it is the exactness reference. The legacy whole-load path keeps its
+   full-grid row set. The indirect SH pass reads the static base octahedral irradiance atlas and per-light animated delta tile data; evaluates animation curves for each light at the current frame time; accumulates the mask-selected contributions and writes the shared stored-slot composed indirect atlas. The static-indirect bit selects the base and the animated-indirect bit gates every delta accumulation path. Dropped-valid delta probes reconstruct strictly within their 4×4×4 brick; base L1 probes reconstruct across their complete aligned node. For each CSR entry, all coarsened compose passes load each brick's kept lattice once into workgroup memory, while L0 probes keep direct reads. It dispatches only when its composed atlas would change — on level-load copy-through, while any animated indirect light is active, once when activity returns to zero, and whenever the current mask differs from the mask that produced the atlas. The direct SH pass is the static-entity-shadow sibling: whenever usable base direct SH is present, it writes the shared stored-slot composed direct atlas with static and animated contributions selected by their mask bits; promotion subtraction is enabled only with dynamic direct. It composes even without selected direct deltas, copying the base when baked direct is enabled and writing zero when it is disabled, so the baked-direct-static mask can isolate base direct SH. It dispatches on level-load copy-through, while any weight is nonzero, once when weights return to all-zero, and whenever the current mask differs from the mask that produced the atlas; maps without usable direct SH allocate no composed direct atlas and keep the no-direct binding behavior. The animated billboard-scatter sibling keeps its whole-resident path: it copies section 47 then accumulates section 48's dense deltas with the shared descriptors, time, and mask; static-only maps bind section 47 directly. All compose passes run before the depth prepass and before their consumers sample the results. See §4 "Animated SH delta volumes" and "Promoted static lights".
 6. **Shadow cone cull** (compute) — for each occupied spot-shadow slot that needs a world-depth update, dispatches BVH traversal gated by that slot's cone frustum only. The visible-cells buffer is all-ones: an occluder outside the camera's portal-visible set can still cast a shadow onto a visible receiver. Each slot writes into its own sub-region of a single shared indirect buffer. A second instance of the same cull pipeline serves the cube pool: one sub-region per `(cube slot, face)` layer, gated by that face's 90° perspective frustum (dispatched inside step 8). Runs after the camera cull compute pass and before the shadow depth render passes. This cull serves static world geometry only. Skinned and rigid-instance occluders are outside the world BVH and CPU cone-culled per slot in steps 7–8. Warm promoted-static and dynamic-cache slots skip these sub-region dispatches because their static world depth is already cached.
 
 7. **Spot-shadow depth passes** — one live-pool render pass per occupied dynamic slot; slots with no ranked light are skipped. An uncached slot clears to the far plane, then draws static world from its indirect sub-region via `multi_draw_indexed_indirect` per material bucket (same per-bucket contiguous layout as §5) and live entity occluders. A cold dynamic-cache key clears and fills its cache layer with static world. Each cached frame copies that layer to the live pool before the entity pass loads it and adds current occluders; a warm key skips the world cull and cache raster pass. **Fallback:** when no BVH is present (no-BVH maps), a required world pass draws all world geometry. Skinned dynamic casters include portal-visible meshes plus explicitly authored shadow-only meshes; the latter stay eligible outside camera PVS. Broader off-PVS mesh retention for promoted-static relevance does not enter dynamic slots. Rigid mover occluders are position-only depth draws, CPU cone-culled from every present mover's world AABB per slot; camera-PVS culling limits their beauty pass only. Movers are the first caller of this generic rigid-occluder path. Promoted static spot slots use a dedicated promoted-depth cache sized to `MAX_PROMOTED_SPOT` layers at the selected spot resolution: on assignment/reassignment the world pass renders once into the cache layer, which entity receivers sample directly; every frame the live pool layer clears to the far plane and every retained statically relevant skinned caster and rigid entity occluder draws into it, so the slot holds entity depth only. Movers never enter the static-depth cache. Runs before the depth pre-pass so shadow maps are fully written before the forward pass samples them.
@@ -424,7 +450,9 @@ state is discarded before samples. The normal PNG publishes before the staged me
 report, so a failed run cannot leave a new valid-looking report.
 
 Capture is VM-free and single-instant: no script VM, no trigger firing, no game
-tick — one authored frame. Byte-stable across runs on one adapter; adapter
+tick — one authored frame. Decided, not yet built: measurement mode may advance animation
+time by a fixed step per sampled frame, still VM-free, so exactness comparisons see
+animated compose change; default capture stays single-instant. Byte-stable across runs on one adapter; adapter
 rounding rules out cross-adapter goldens, so regressions compare same-adapter
 frames, not committed reference PNGs.
 

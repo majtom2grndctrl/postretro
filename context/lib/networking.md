@@ -492,6 +492,11 @@ against an owner-private cooldown fact, the same pattern movement prediction use
 Client-side ammo and reload prediction/reconciliation remain out of scope. Owner-private
 state-slot projection supplies each owner with the host's authoritative magazine,
 reserve, reload progress, and reload-active state.
+Decided, not yet built: fire prediction reads that projected magazine, so an empty magazine
+predicts a dry fire rather than a shot and muzzle flash. Hitscan prediction keeps world
+hits and each hit's normal. Reload presentation edges (start, shell, complete) derive from
+changes in the projected reload-active and ammo state rather than from prediction; a
+cancel is a fall with no ammo rise. This is presentation only, and ammo stays unpredicted.
 
 Projectile launch prediction is not rewind-synchronized. The firing client launches from
 its rendered local camera and rendered target state; the host later reconstructs from the

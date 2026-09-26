@@ -1,13 +1,14 @@
 # E12--positional-sound-events — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: b99101534
 
 ## Owner resolutions
 - **AC 15 block → B, extend the wire (owner, 2026-09-26).** "What sets PostRetro up to thrive long term," not parity. `wire::HitRecord` gains `normal: [f32; 3]`. Hitscan declarations also carry world contacts under the `u32::MAX` presentation-contact sentinel that projectile declarations already use (`PROJECTILE_PRESENTATION_CONTACT_TARGET`). The host validates a presentation-only hitscan contact with the same range and eye line-of-sight checks as an entity hit, allowing for the contact surface itself; it applies no damage. A non-finite or non-unit normal invalidates that record's contact data only, never damage validation. `WIRE_VERSION` 22 → 23. `apply_valid_hit_record` and the projectile-contact path build their `WeaponImpact` from the declared normal instead of `Vec3::ZERO`. The host emits one impact per remote activation carrying every validated contact. Row 15 stands as written. The brief's client Decision records the extension.
 
 ## Corrections
+- Path: "`audio/mod.rs` (930 lines) splits before the anchor and voice work lands" → extract the audio subsystem into its own crate, `crates/audio` (package `postretro-audio`), and split `mod.rs` along the way (owner, 2026-09-26). The crate depends on no workspace crate; kira lives only there. `layering_invariants_hold` pins that no sim-side crate depends on it.
 - Read-at commit `b3548b603` is not an ancestor of `main` → every cited symbol was re-read at `b99101534` (four read-only verification passes). Planning proceeds from those reads.
 - `RuntimeMovers` keeps local bounds → no such type. The per-mover cache is `KinematicMoverRenderCollector.mover_bounds: HashMap<u32, Aabb>` (`runtime_movers.rs:143`), filled from `mover_local_bounds` (`:463`). The mover anchor computes `local_bounds.transformed(interpolated transform)` the same way `collect` does (`:171-230`).
 - `WeaponFireEvents::event_names()` flattens `impacts` → it emits `dry_fire`, `activate`, `impact`, `spawned` (`crates/sim/src/weapon/mod.rs:395-411`). The address is `impact`, as the Decisions use.
@@ -92,7 +93,7 @@ read at: b99101534
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Split `audio/mod.rs` (tests to a sibling, boundary types to their own file); no behavior change | integrating executor | — | |
+| 1 | Extract `crates/audio` (`postretro-audio`) from `crates/postretro/src/audio/`, splitting `mod.rs` (tests to a sibling, boundary types to their own file); no behavior change; layering test pins sim-side crates off it; `crate-graph.md` regenerated | integrating executor | — | |
 | 2 | Thinnest risky slice: the `audio/spatial.rs` chokepoint (admission against kira occupancy, SFX capacities 2× cap, deferred start, reposition and freeze, own-pawn treatment, attenuation at start, fade-all). Plus runtime-only mover sound fields and mover emissions anchored at bounds center, played end to end. Rows 1–9, 38, 40, 42 | integrating executor | 1 | |
 | 3 | KinematicGeometry v7: codec, compiler KVPs, FGD, loader, component population; hash test. Rows 34, 35 | delegated worker | 2 (component fields) | |
 | 4 | Listener is the rendered eye: extract frame-eye evaluation ahead of audio; `ListenerState` attached pawn. Rows 10, 11 | integrating executor | 2 | |

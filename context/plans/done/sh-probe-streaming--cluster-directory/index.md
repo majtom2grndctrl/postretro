@@ -1,6 +1,6 @@
 # SH Probe Streaming — Cell Clustering and Cluster Directory
 
-> Slice 2 shipped in PR #516. Parent: `context/plans/in-progress/sh-probe-streaming/`.
+> Slice 2 shipped in PR #516. Parent: `context/plans/done/sh-probe-streaming/`.
 > The spec below records the original implementation contract. Slice 1's GPU premise
 > remains `not-yet-evaluable`; this record does not claim a measured streaming benefit.
 

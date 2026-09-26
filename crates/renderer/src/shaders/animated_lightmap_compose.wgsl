@@ -9,10 +9,9 @@
 // clear is needed.
 //
 // Dispatch shape: one workgroup per 8×8 atlas tile (a `DispatchTile`
-// record), flattened in `workgroup_id.x`. CPU-side `animated_lightmap.rs`
-// refuses to load a map whose tile count exceeds 65535 — the 2D-dispatch
-// fallback in the spec is not wired up. Bundled maps stay well below the
-// cap; if a future authored map trips it, revisit here.
+// record). The CPU lays the tile list out as a row-major 2D workgroup grid so
+// tile counts past `max_compute_workgroups_per_dimension` still dispatch; the
+// final row is padded with `PADDING_TILE` records, which return immediately.
 //
 // Curve helpers come from `curve_eval.wgsl`, concatenated after this
 // source at pipeline-build time. Both helpers read `anim_samples` by
@@ -74,6 +73,10 @@ struct DispatchTile {
     tile_origin_y: u32,
     target_slot: u32,
 };
+
+// `chunk_idx` of a grid-padding record. Mirrors `PADDING_TILE_CHUNK_IDX` in
+// `animated_lightmap.rs`.
+const PADDING_TILE: u32 = 0xFFFFFFFFu;
 
 // Debug visualization uniform. Written once at init from the
 // `POSTRETRO_ANIMATED_LM_DEBUG` env var (see `animated_lightmap.rs`).
@@ -146,9 +149,13 @@ fn encode_direction_oct(dir: vec3<f32>) -> vec2<f32> {
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(
     @builtin(workgroup_id) wg: vec3<u32>,
+    @builtin(num_workgroups) grid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
-    let tile = dispatch_tiles[wg.x];
+    let tile = dispatch_tiles[wg.y * grid.x + wg.x];
+    if (tile.chunk_idx == PADDING_TILE) {
+        return;
+    }
     let rect = chunk_rects[tile.chunk_idx];
     let rect_x = tile.tile_origin_x + lid.x;
     let rect_y = tile.tile_origin_y + lid.y;

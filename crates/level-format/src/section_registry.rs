@@ -175,9 +175,10 @@ pub enum SectionId {
     /// cell. See `direct_sh_delta_volumes::DirectShDeltaVolumesSection`.
     DirectShDeltaVolumes = 41,
 
-    /// Per-selected-light baked world-visibility masks, packed up to four
-    /// overlapping selected lights into RGBA channels. See
-    /// `shadowmask_atlas::ShadowmaskAtlasSection`.
+    /// Per-selected-light baked world-visibility masks for up to four
+    /// overlapping selected lights, packed as two BC5 `.rg` mask groups
+    /// side by side per layer (slot `s` in group `s / 2`, channel `s % 2`).
+    /// See `shadowmask_atlas::ShadowmaskAtlasSection`.
     ShadowmaskAtlas = 42,
 
     /// Origin-relative brush geometry and waypoint records for deterministic

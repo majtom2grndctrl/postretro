@@ -167,3 +167,8 @@ path = "src/main.rs"
 name = "capture_frame"
 path = "tests/capture_frame.rs"
 required-features = ["capture"]
+
+[[test]]
+name = "capture_shadowmask_groups"
+path = "tests/capture_shadowmask_groups.rs"
+required-features = ["capture"]

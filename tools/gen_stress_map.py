@@ -91,10 +91,9 @@ feature-heavy map.
   scattered baked lights animate: half are KVP-driven (an authored
   `brightness_curve`, baked entirely at compile time) and half are
   script-driven (tagged `warren_script_pulse` and pulsed by the companion data
-  script `content/dev/scripts/stress-warren.ts` via `setLightAnimation`). Bake a
-  map with animated lights at `--lightmap-density 0.25`: the warren's large
-  faces collapse animated chunks into overlapping weight-map atlas rects at the
-  coarser 0.5 and the packer aborts (0.25 clears it, under the atlas cap).
+  script `content/dev/scripts/stress-warren.ts` via `setLightAnimation`). The
+  total is capped at `ANIMATED_LIGHT_CAP` to keep the animated-chunk bake small;
+  any `--lightmap-density` compiles.
 * Static room-lighting contract. When room lights are enabled, the normal
   contract is four baked spotlights plus one dim bake-only point light per room.
   `--preset warren` uses that contract and deterministically consumes the six-light
@@ -269,15 +268,14 @@ LIGHT_COLORS = [
 SCRIPT_LIGHT_TAG = "warren_script_pulse"
 SCRIPT_DATA_SCRIPT = "content/dev/scripts/stress-warren.ts"
 
-# Hard cap on the number of ANIMATED baked lights per map. Every animated baked
-# light forces the animated-light weight-map bake, whose per-face chunk packer
-# (`animated_light_weight_maps.rs::assert_no_overlapping_rects_per_face`) aborts
-# when the warren's very large faces subdivide into chunks that collapse into the
-# same 1-texel atlas rect -- a compiler-side packer limitation (the assertion
-# itself says "fix the packer, not this baker"). The collision risk scales with
-# the total animated-chart area, so bounding the animated set to a small number
-# keeps the bake inside the range that compiles. `--animated-frac` still chooses
-# *which* baked lights animate, but never more than this many total.
+# Budget on the number of ANIMATED baked lights per map. Any count compiles, but
+# the compiler splits a face into animated chunks until each carries at most
+# four lights, so heavily overlapping influence spheres drive that subdivision
+# down to its one-texel floor: a 4x4x2 warren with 96 animated lights bakes
+# ~242k chunks at 0.5 m/texel. Bounding the set keeps generated maps cheap to
+# bake and makes `--preset warren` (animated_frac=1.0) a fixed six.
+# `--animated-frac` still chooses *which* baked lights animate, but never more
+# than this many total.
 ANIMATED_LIGHT_CAP = 6
 
 # Wieldable pickups the dev mod registers globally (start-script.ts). Placing
@@ -1489,8 +1487,8 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng, lights_m
         # Baked coverage lights: steady ones are BAKE-ONLY; an animated one is
         # PROMOTABLE (it keeps a runtime entity) but only while under the
         # promotable cap. Animation is a baked-light feature bounded by the
-        # shared animation budget (the compiler's animated weight-map packer
-        # limit -- see ANIMATED_LIGHT_CAP). Dynamic lights are runtime already;
+        # shared animation budget (see ANIMATED_LIGHT_CAP). Dynamic lights are
+        # runtime already;
         # `_bake_only` does not apply to them (light_entity ignores it).
         animate = None
         bake_only = False
@@ -1619,11 +1617,8 @@ def main(argv):
     # warren:   the full gameplay showcase -- arenas, enemies, weapon pickups,
     #           sliding doors, lifts, and animated lights (KVP + script) on a
     #           conservative feature-heavy grid. Bake it at
-    #           --lightmap-density 0.25: the animated-light weight-map packer
-    #           needs enough texels per face, and the warren's large room walls
-    #           collapse animated chunks into overlapping atlas rects at the
-    #           coarser 0.5 (the packer aborts). 0.25 clears it and stays under
-    #           the 8192^2 atlas cap.
+    #           --lightmap-density 0.25, the lit maps' sharpness/bake-time
+    #           default; 0.5 also compiles and bakes ~4x faster.
     PRESETS = {
         "overflow": dict(
             grid=[4, 4, 2], crates=4, lights="static", spot_frac=0.3,

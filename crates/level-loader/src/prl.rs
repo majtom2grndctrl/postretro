@@ -43,7 +43,7 @@ use postretro_level_format::kinematic_geometry::{
     KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
 };
 #[cfg(feature = "load-prl")]
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::LightmapHeader;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
@@ -53,7 +53,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasHeader;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
@@ -62,7 +62,7 @@ use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
-use crate::prl_lighting::LoadedLighting;
+use crate::prl_lighting::{GpuLightingPayloads, LoadedLighting};
 #[cfg(feature = "load-prl")]
 use crate::sh_stream::ShStorage;
 #[cfg(feature = "load-prl")]
@@ -594,8 +594,9 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub sh_storage: ShStorage,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
+    /// The header only: the blobs live in `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
-    pub lightmap: Option<LightmapSection>,
+    pub lightmap: Option<LightmapHeader>,
     /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
     /// or carries unshadowed irradiance that requires runtime SDF visibility
     /// multiplication (`Unshadowed`). Legacy PRLs without the on-disk marker
@@ -655,9 +656,14 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub entity_shadow_lights: Vec<u32>,
     /// Per-selected-light world visibility masks for entity→world static-light
-    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`.
+    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`. The header
+    /// only: the BC5 blocks live in `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
-    pub shadowmask_atlas: Option<ShadowmaskAtlasSection>,
+    pub shadowmask_atlas: Option<ShadowmaskAtlasHeader>,
+    /// Id-22 and id-42 payloads, held only until install moves them into the
+    /// GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
+    #[cfg(feature = "load-prl")]
+    pub gpu_lighting_payloads: GpuLightingPayloads,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     #[cfg(feature = "load-prl")]
@@ -768,7 +774,7 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             sh_storage: ShStorage::Legacy,
             #[cfg(feature = "load-prl")]
-            lightmap: lighting.lightmap,
+            lightmap: None,
             #[cfg(feature = "load-prl")]
             lightmap_mode: lighting.lightmap_mode,
             #[cfg(feature = "load-prl")]
@@ -795,7 +801,9 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             entity_shadow_lights: lighting.entity_shadow_lights,
             #[cfg(feature = "load-prl")]
-            shadowmask_atlas: lighting.shadowmask_atlas,
+            shadowmask_atlas: None,
+            #[cfg(feature = "load-prl")]
+            gpu_lighting_payloads: GpuLightingPayloads::default(),
             #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
@@ -1864,6 +1872,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -1962,6 +1971,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -2014,6 +2024,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            gpu_lighting_payloads: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -6301,11 +6312,12 @@ mod tests {
     #[test]
     fn load_prl_exposes_shadowmask_atlas_multi_layer_payload() {
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            width: 2,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 2,
             channels: vec![0],
-            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            data: (0..64).collect(),
         };
         let direct_sh = minimal_direct_sh_volume_section();
         let direct_sh_delta = direct_delta_section_for(
@@ -6323,7 +6335,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(2, 1, 2),
+            lightmap_blob(4, 4, 2),
             shadowmask_blob(shadowmask.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6333,11 +6345,16 @@ mod tests {
         let world = load_prl(tmp.to_str().unwrap()).expect("PRL with ShadowmaskAtlas must load");
         let loaded = world
             .shadowmask_atlas
+            .as_ref()
             .expect("ShadowmaskAtlas section must be exposed");
 
         assert_eq!(loaded.layer_count, 2);
         assert_eq!(loaded.channels, shadowmask.channels);
-        assert_eq!(loaded.data, shadowmask.data);
+        assert_eq!(
+            world.gpu_lighting_payloads.shadowmask.as_ref(),
+            Some(&shadowmask.data),
+            "the payload waits beside the header for the GPU upload"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }
@@ -6353,11 +6370,13 @@ mod tests {
         );
         let mut malformed_shadowmask = shadowmask_blob(
             postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-                width: 2,
-                height: 1,
+                format:
+                    postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+                width: 4,
+                height: 4,
                 layer_count: 2,
                 channels: vec![0],
-                data: vec![255; 16],
+                data: vec![255; 64],
             },
         );
         malformed_shadowmask
@@ -6375,7 +6394,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(2, 1, 2),
+            lightmap_blob(4, 4, 2),
             malformed_shadowmask,
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6395,14 +6414,189 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    fn selected_light_sections_with(
+        shadowmask: prl_format::SectionBlob,
+    ) -> Vec<prl_format::SectionBlob> {
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            lightmap_blob(4, 4, 2),
+            shadowmask,
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ]
+    }
+
+    /// A ShadowmaskAtlas payload in the retired untagged raw `Rgba8Unorm` layout.
+    fn pre_bc5_shadowmask_blob(
+        width: u32,
+        height: u32,
+        layer_count: u32,
+    ) -> prl_format::SectionBlob {
+        let mut data = Vec::new();
+        for word in [width, height, layer_count, 1] {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        data.extend_from_slice(&[0, 0, 0, 0]);
+        data.resize(
+            data.len() + width as usize * height as usize * layer_count as usize * 4,
+            255,
+        );
+        prl_format::SectionBlob {
+            section_id: SectionId::ShadowmaskAtlas as u32,
+            version: 1,
+            data,
+        }
+    }
+
+    // Lifecycle: the loaded world keeps the id-42 slot table and dimensions and
+    // the id-22 header; the payloads leave in one take and cannot be taken twice.
+    #[test]
+    fn taking_gpu_lighting_payloads_leaves_headers_and_nothing_to_take_twice() {
+        use postretro_level_format::shadowmask_atlas::{
+            SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
+        };
+        let section = ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
+            layer_count: 2,
+            channels: vec![2],
+            data: (0..64).collect(),
+        };
+        let tmp = write_prl_fixture(
+            selected_light_sections_with(shadowmask_blob(section.clone())),
+            "postretro_test_take_gpu_lighting_payloads.prl",
+        );
+        let mut world = load_prl(tmp.to_str().unwrap()).expect("fixture loads");
+        std::fs::remove_file(&tmp).ok();
+
+        let lightmap_header = world.lightmap.clone().expect("fixture has id 22");
+        let taken = world.take_gpu_lighting_payloads();
+        let lightmap = taken.lightmap.expect("id-22 payloads move out");
+        assert_eq!(
+            lightmap.irradiance.len(),
+            4 * 4 * 2 * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES
+        );
+        assert_eq!(taken.shadowmask, Some(section.data.clone()));
+
+        assert_eq!(world.lightmap, Some(lightmap_header), "id-22 header stays");
+        let kept = world.shadowmask_atlas.as_ref().expect("id-42 header stays");
+        assert_eq!((kept.width, kept.height, kept.layer_count), (4, 4, 2));
+        assert_eq!(
+            kept.channels,
+            vec![2],
+            "the slot table stays for spec-light mapping"
+        );
+        assert_eq!(world.lighting().shadowmask_atlas, Some(kept));
+        assert_eq!(
+            world.take_gpu_lighting_payloads(),
+            GpuLightingPayloads::default(),
+            "nothing remains to upload twice"
+        );
+    }
+
+    // Pin: partial-lighting-install. Whatever is present moves; absence stays absent.
+    #[test]
+    fn splitting_partial_lighting_moves_only_the_present_payloads() {
+        let lightmap = postretro_level_format::lightmap::LightmapSection::from_bytes(
+            &lightmap_blob(4, 4, 1).data,
+        )
+        .expect("fixture lightmap parses");
+        let (lightmap_header, shadowmask_header, payloads) =
+            crate::prl_lighting::split_gpu_lighting(Some(lightmap), None);
+        assert!(lightmap_header.is_some() && shadowmask_header.is_none());
+        assert!(payloads.lightmap.is_some() && payloads.shadowmask.is_none());
+
+        let (lightmap_header, shadowmask_header, payloads) =
+            crate::prl_lighting::split_gpu_lighting(None, None);
+        assert!(lightmap_header.is_none() && shadowmask_header.is_none());
+        assert_eq!(payloads, GpuLightingPayloads::default());
+    }
+
+    // Pins: stale-payload, stale-payload-tag-collision. A pre-change id 42
+    // loads fully lit (no section) with a warning naming the format mismatch;
+    // bytes that read as a valid tag must not fall through to a length error.
+    #[test]
+    fn load_prl_rejects_pre_bc5_shadowmask_by_format_and_keeps_entity_shadow_selection() {
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE;
+        for (label, blob) in [
+            ("raw", pre_bc5_shadowmask_blob(4, 4, 2)),
+            (
+                "tag-collision",
+                pre_bc5_shadowmask_blob(SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, 0, 2),
+            ),
+        ] {
+            let tmp = write_prl_fixture(
+                selected_light_sections_with(blob),
+                &format!("postretro_test_pre_bc5_shadowmask_{label}.prl"),
+            );
+            let capture = LogCapture::start();
+            let world = load_prl(tmp.to_str().unwrap())
+                .unwrap_or_else(|err| panic!("{label}: a stale id 42 must not fail load: {err}"));
+            capture.assert_logged_once(
+                log::Level::Warn,
+                "ShadowmaskAtlas malformed; ignoring section",
+            );
+            capture.assert_logged_once(log::Level::Warn, "shadowmask atlas format mismatch");
+            assert!(
+                world.shadowmask_atlas.is_none(),
+                "{label}: must degrade to absence"
+            );
+            assert_eq!(world.entity_shadow_lights, vec![0], "{label}");
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
+    // Pin: all-sentinel. Every selected light dropped still ships a tagged
+    // section, which loads; every slot is the sentinel, so it reads fully lit.
+    #[test]
+    fn load_prl_keeps_an_all_sentinel_shadowmask_section() {
+        use postretro_level_format::shadowmask_atlas::{
+            SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            ShadowmaskAtlasSection,
+        };
+        let section = ShadowmaskAtlasSection {
+            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
+            layer_count: 2,
+            channels: vec![SHADOWMASK_CHANNEL_DROPPED],
+            data: [255u8, 255, 0, 0, 0, 0, 0, 0].repeat(8),
+        };
+        let tmp = write_prl_fixture(
+            selected_light_sections_with(shadowmask_blob(section.clone())),
+            "postretro_test_all_sentinel_shadowmask.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("all-sentinel id 42 must load");
+        let (header, payload) = section.into_parts();
+        assert_eq!(world.shadowmask_atlas, Some(header));
+        assert_eq!(world.gpu_lighting_payloads.shadowmask, Some(payload));
+        std::fs::remove_file(&tmp).ok();
+    }
+
     #[test]
     fn load_prl_clears_direct_selection_set_when_id41_validity_disagrees_with_id34() {
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            width: 2,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 2,
             channels: vec![0],
-            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            data: (0..64).collect(),
         };
         let direct_sh = minimal_direct_sh_volume_section();
         let mut direct_sh_delta = direct_delta_section_for(
@@ -6425,7 +6619,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(2, 1, 2),
+            lightmap_blob(4, 4, 2),
             shadowmask_blob(shadowmask),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6455,11 +6649,12 @@ mod tests {
             vec![0],
         );
         let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            width: 2,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 2,
             channels: vec![0],
-            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            data: (0..64).collect(),
         };
         let sections = vec![
             geometry_blob(sample_geometry()),

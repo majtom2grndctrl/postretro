@@ -408,6 +408,12 @@ Pinned scenarios the Slice 3 brief's tests cite:
 
 ## Open questions
 
+- **Residency covers most of the map at 1 m (finding, 2026-09-25).** The SH compose perf spike
+  (`ready/perf-sh-compose-sampled-row-gating/spike-findings.md`) measured stress-warren-mini at
+  1 m: 22 of 482 clusters installed, covering 91% of affinity bricks, and the owner closure of
+  1–3 visible clusters spanning 18–19 of them. Likely cause (unverified): coarsened L1/L2 owner
+  nodes with large patch spans. It limits residency relief and ruled out a cluster-grain compose
+  gate. That brief doesn't address it; targeting and owner-closure width belong to this epic.
 - **Premise magnitude (Slice 1, measurement-owned).** Whether the 1660 sluggishness is
   VRAM oversubscription (driver thrash) vs bandwidth-bound within 6 GB, and the size of
   the frame-time win from shrinking resident SH. Slice 1's finding decides whether Phase 2

@@ -14,12 +14,12 @@ use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{LightmapHeader, LightmapPayloads, LightmapSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::{
     OctahedralShVolumeSection, validate_storage_levels_against_delta,
 };
-use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasHeader, ShadowmaskAtlasSection};
 use postretro_level_format::{self as prl_format, SectionId};
 use postretro_render_data::influence::LightInfluence;
 
@@ -83,6 +83,39 @@ impl Default for LoadedLighting {
     }
 }
 
+/// Lightmap (id 22) and shadowmask (id 42) payloads that only the GPU upload
+/// reads. A loaded level holds them until install moves them into the upload,
+/// which drops them once the textures exist; the level keeps only the headers.
+/// An install that uploads nothing leaves them here.
+#[derive(Debug, Default, PartialEq)]
+pub struct GpuLightingPayloads {
+    pub lightmap: Option<LightmapPayloads>,
+    pub shadowmask: Option<Vec<u8>>,
+}
+
+/// The headers a loaded level keeps for ids 22 and 42, and their payloads.
+pub(crate) fn split_gpu_lighting(
+    lightmap: Option<LightmapSection>,
+    shadowmask_atlas: Option<ShadowmaskAtlasSection>,
+) -> (
+    Option<LightmapHeader>,
+    Option<ShadowmaskAtlasHeader>,
+    GpuLightingPayloads,
+) {
+    let (lightmap_header, lightmap_payloads) = lightmap.map(LightmapSection::into_parts).unzip();
+    let (shadowmask_header, shadowmask_payload) = shadowmask_atlas
+        .map(ShadowmaskAtlasSection::into_parts)
+        .unzip();
+    (
+        lightmap_header,
+        shadowmask_header,
+        GpuLightingPayloads {
+            lightmap: lightmap_payloads,
+            shadowmask: shadowmask_payload,
+        },
+    )
+}
+
 /// Borrowed legacy lighting view. It is an additive access seam: existing
 /// direct `LevelWorld` fields remain available until streaming owns their
 /// storage, while new code can depend on one coherent lighting boundary.
@@ -91,7 +124,7 @@ pub struct LevelWorldLighting<'a> {
     pub lights: &'a [MapLight],
     pub light_influences: &'a [LightInfluence],
     pub sh_volume: Option<&'a OctahedralShVolumeSection>,
-    pub lightmap: Option<&'a LightmapSection>,
+    pub lightmap: Option<&'a LightmapHeader>,
     pub lightmap_mode: LightmapMode,
     pub sdf_atlas: Option<&'a SdfAtlasSection>,
     pub chunk_light_list: Option<&'a ChunkLightListSection>,
@@ -105,7 +138,7 @@ pub struct LevelWorldLighting<'a> {
     pub animated_billboard_direct_scatter_delta_volumes:
         Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
     pub entity_shadow_lights: &'a [u32],
-    pub shadowmask_atlas: Option<&'a ShadowmaskAtlasSection>,
+    pub shadowmask_atlas: Option<&'a ShadowmaskAtlasHeader>,
     pub cluster_directory: Option<&'a ClusterDirectorySection>,
     pub sh_storage: &'a crate::sh_stream::ShStorage,
 }
@@ -168,8 +201,14 @@ impl LevelWorld {
         &self.entity_shadow_lights
     }
 
-    pub fn shadowmask_atlas(&self) -> Option<&ShadowmaskAtlasSection> {
+    pub fn shadowmask_atlas(&self) -> Option<&ShadowmaskAtlasHeader> {
         self.shadowmask_atlas.as_ref()
+    }
+
+    /// Move the GPU-only lightmap and shadowmask payloads out for upload.
+    /// The level keeps their headers; a second take finds nothing.
+    pub fn take_gpu_lighting_payloads(&mut self) -> GpuLightingPayloads {
+        std::mem::take(&mut self.gpu_lighting_payloads)
     }
 
     pub fn cluster_directory(&self) -> Option<&ClusterDirectorySection> {

@@ -2978,6 +2978,8 @@ pub(crate) fn load_prl_from_container(
         texture_names.len(),
     );
 
+    let (lightmap, shadowmask_atlas, gpu_lighting_payloads) =
+        crate::prl_lighting::split_gpu_lighting(lighting.lightmap, lighting.shadowmask_atlas);
     Ok(LevelWorld {
         vertices,
         indices,
@@ -2999,7 +3001,7 @@ pub(crate) fn load_prl_from_container(
             Some(manifest) => ShStorage::Streaming(manifest),
             None => ShStorage::Legacy,
         },
-        lightmap: lighting.lightmap,
+        lightmap,
         // Current bakes load as Shadowed. Unshadowed remains for legacy PRL
         // wire compatibility; new lightmaps should carry baked visibility.
         lightmap_mode: lighting.lightmap_mode,
@@ -3015,7 +3017,8 @@ pub(crate) fn load_prl_from_container(
         animated_billboard_direct_scatter_delta_volumes: lighting
             .animated_billboard_direct_scatter_delta_volumes,
         entity_shadow_lights: lighting.entity_shadow_lights,
-        shadowmask_atlas: lighting.shadowmask_atlas,
+        shadowmask_atlas,
+        gpu_lighting_payloads,
         data_script,
         map_entities,
         kinematic_geometry,

@@ -1115,11 +1115,12 @@ mod tests {
 
     fn minimal_shadowmask_atlas() -> ShadowmaskAtlasSection {
         ShadowmaskAtlasSection {
-            width: 1,
-            height: 1,
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width: 4,
+            height: 4,
             layer_count: 1,
             channels: vec![0],
-            data: vec![255; 4],
+            data: vec![255; ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()],
         }
     }
 
@@ -1656,56 +1657,102 @@ mod tests {
     }
 
     #[test]
-    fn pack_write_emits_shadowmask_only_with_usable_entity_shadow_selection() {
-        fn write_with(
-            output: &Path,
-            direct_sh_volume: Option<&DirectShVolumeSection>,
-            entity_shadow_lights: Option<&EntityShadowLightsSection>,
-            direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
-            shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
-        ) {
-            let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
-            pack_and_write_portals(
-                output,
-                &sample_geo_result(),
-                &texture_cache_keys,
-                &sample_leaves(),
-                &sample_tree(),
-                &PortalsSection {
-                    vertices: vec![],
-                    portals: vec![],
-                },
-                &HashSet::new(),
-                &sample_bvh(),
-                &[],
-                &empty_alpha_lights(),
-                &empty_light_influence(),
-                &minimal_sh_volume(),
-                direct_sh_volume,
-                entity_shadow_lights,
-                direct_sh_delta_volumes,
-                shadowmask_atlas,
-                &placeholder_lightmap(),
-                &placeholder_chunk_light_list(),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                &FogVolumesSection::default(),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(&sample_cell_draw_index_section()),
-                None,
-                None,
-            )
-            .expect("pack should succeed");
-        }
+    fn shadowmask_footprint_payload_is_half_the_raw_rgba_arithmetic() {
+        let (width, height, layer_count) = (64u32, 32u32, 3u32);
+        let raw_payload = (width * height * layer_count * 4) as usize;
+        let shadowmask = ShadowmaskAtlasSection {
+            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
+            width,
+            height,
+            layer_count,
+            channels: vec![0],
+            data: vec![
+                255;
+                ShadowmaskAtlasSection::payload_len(width, height, layer_count).unwrap()
+            ],
+        };
+        let header_and_slots = shadowmask.byte_len() - shadowmask.data.len();
+        let output = std::env::temp_dir().join(format!(
+            "postretro_test_pack_shadowmask_footprint_{}.prl",
+            std::process::id()
+        ));
 
+        let capture = postretro_test_log_capture::LogCapture::start();
+        write_pack_with_shadowmask(
+            &output,
+            Some(&minimal_direct_sh_volume()),
+            Some(&EntityShadowLightsSection {
+                light_indices: vec![0],
+            }),
+            Some(&minimal_direct_sh_delta_volumes()),
+            Some(&shadowmask),
+        );
+        let expected_payload = raw_payload / 2;
+        assert_eq!(
+            expected_payload,
+            (2 * width * height * layer_count) as usize
+        );
+        capture.assert_logged_once(
+            log::Level::Info,
+            &format!(
+                "[Compiler] PRL section footprint: id 42 (ShadowmaskAtlas), {} payload bytes",
+                header_and_slots + expected_payload
+            ),
+        );
+        let _ = std::fs::remove_file(&output);
+    }
+
+    fn write_pack_with_shadowmask(
+        output: &Path,
+        direct_sh_volume: Option<&DirectShVolumeSection>,
+        entity_shadow_lights: Option<&EntityShadowLightsSection>,
+        direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+        shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+    ) {
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+        pack_and_write_portals(
+            output,
+            &sample_geo_result(),
+            &texture_cache_keys,
+            &sample_leaves(),
+            &sample_tree(),
+            &PortalsSection {
+                vertices: vec![],
+                portals: vec![],
+            },
+            &HashSet::new(),
+            &sample_bvh(),
+            &[],
+            &empty_alpha_lights(),
+            &empty_light_influence(),
+            &minimal_sh_volume(),
+            direct_sh_volume,
+            entity_shadow_lights,
+            direct_sh_delta_volumes,
+            shadowmask_atlas,
+            &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &FogVolumesSection::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&sample_cell_draw_index_section()),
+            None,
+            None,
+        )
+        .expect("pack should succeed");
+    }
+
+    #[test]
+    fn pack_write_emits_shadowmask_only_with_usable_entity_shadow_selection() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
         let _ = std::fs::create_dir_all(&dir);
         let direct = minimal_direct_sh_volume();
@@ -1716,7 +1763,7 @@ mod tests {
         let shadowmask = minimal_shadowmask_atlas();
 
         let output_valid = dir.join("test_pack_shadowmask_valid.prl");
-        write_with(
+        write_pack_with_shadowmask(
             &output_valid,
             Some(&direct),
             Some(&selected),
@@ -1732,7 +1779,7 @@ mod tests {
         );
 
         let output_no_delta = dir.join("test_pack_shadowmask_no_delta.prl");
-        write_with(
+        write_pack_with_shadowmask(
             &output_no_delta,
             Some(&direct),
             Some(&selected),

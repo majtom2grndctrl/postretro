@@ -1,7 +1,7 @@
 # perf-sh-compose-sampled-row-gating — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: b3548b603
 
 ## Corrections

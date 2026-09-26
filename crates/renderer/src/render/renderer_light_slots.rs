@@ -1934,13 +1934,18 @@ fn build_count_split_light_upload(
         bytes.resize(dynamic_bytes, 0);
     }
 
-    // Section-45 tail records are authored/unweighted when the bridge uploads
-    // them. Apply the exact same `state.weight` that Pass B converts into its
-    // `(1 - w)` compose factor, then patch the shadow-pool slot selected this
-    // frame. Tail records at/above the fixed uniform cap remain unpromotable.
+    // Start the section-45 tail from the bridge's authored records, never the
+    // weighted mirror. Apply the exact same `state.weight` that Pass B converts
+    // into its `(1 - w)` compose factor, then patch the shadow-pool slot
+    // selected this frame. Tail records at/above the fixed uniform cap remain
+    // unpromotable.
     if bytes.len() < forward_prefix_bytes {
         bytes.resize(forward_prefix_bytes, 0);
     }
+    restore_authored_animated_tail(
+        &mut bytes[dynamic_bytes..forward_prefix_bytes],
+        &full.authored_animated_tail,
+    );
     patch_animated_promotion_tail_records(
         bytes,
         full.light_count as usize,
@@ -1985,6 +1990,15 @@ fn build_count_split_light_upload(
 
     if bytes.is_empty() {
         bytes.resize(postretro_lighting::GPU_LIGHT_SIZE, 0);
+    }
+}
+
+/// A tail without a bridge snapshot has no authored light and stays zero.
+fn restore_authored_animated_tail(tail: &mut [u8], authored: &[u8]) {
+    if authored.len() == tail.len() {
+        tail.copy_from_slice(authored);
+    } else {
+        tail.fill(0);
     }
 }
 
@@ -2508,6 +2522,47 @@ mod tests {
             1.0,
             "forward w and compose (1-w) derive from the identical state entry",
         );
+    }
+
+    // Regression: the tail was re-weighted from the previous frame's weighted
+    // upload, so a promoted term decayed as w^n between bridge uploads.
+    #[test]
+    fn animated_tail_weight_does_not_compound_across_frames_without_bridge_upload() {
+        let animated = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let authored = postretro_lighting::pack_light(&animated).to_vec();
+        let states = [PromotedBakedLightState {
+            weight: 0.5,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 3,
+            ..PromotedBakedLightState::default()
+        }];
+
+        // Each frame starts from the previous weighted upload, as
+        // `build_count_split_light_upload` does when the bridge is idle.
+        let mut uploaded = authored.clone();
+        let mut frames = Vec::new();
+        for _ in 0..3 {
+            let mut bytes = uploaded.clone();
+            restore_authored_animated_tail(&mut bytes, &authored);
+            patch_animated_promotion_tail_records(&mut bytes, 0, 1, &states);
+            frames.push(bytes.clone());
+            uploaded = bytes;
+        }
+
+        for offset in [16, 20, 24] {
+            assert_eq!(
+                read_light_float(&frames[0], offset),
+                0.5 * read_light_float(&authored, offset),
+            );
+        }
+        assert!(
+            frames.windows(2).all(|pair| pair[0] == pair[1]),
+            "a steady w must upload identical tail records every frame",
+        );
+
+        let mut without_snapshot = authored.clone();
+        restore_authored_animated_tail(&mut without_snapshot, &[]);
+        assert!(without_snapshot.iter().all(|&byte| byte == 0));
     }
 
     // Regression: an all-non-promotable sparse roster took the empty-candidate

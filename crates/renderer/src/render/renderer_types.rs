@@ -866,6 +866,11 @@ pub(super) struct FullRenderer {
     /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
     /// redundant `queue.write_buffer` when the packed bytes are unchanged.
     pub(super) last_lights_upload: Vec<u8>,
+    /// The bridge's unweighted animated-baked tail records. Promotion scales
+    /// this copy by `w` each frame; `last_lights_upload` holds the weighted
+    /// result, so re-weighting that would compound `w` on frames without a
+    /// bridge upload.
+    pub(super) authored_animated_tail: Vec<u8>,
     /// Cached dynamic influences plus the raw animated-baked tail, index-parallel
     /// to `last_lights_upload`. Shadow-slot updates preserve both before appending
     /// selected-static influences and shadowmask metadata.

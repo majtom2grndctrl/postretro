@@ -764,6 +764,7 @@ impl Renderer {
 
         full.has_geometry = has_geometry;
         full.last_lights_upload.clear();
+        full.authored_animated_tail.clear();
         full.last_influence_upload.clear();
         full.lights_pack_scratch.clear();
         full.influence_pack_scratch.clear();

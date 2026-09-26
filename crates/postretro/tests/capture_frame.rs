@@ -24,11 +24,10 @@ const RECEIVER_FOV_DEG: f32 = 90.0;
 #[ignore = "requires a GPU adapter; run with `cargo test -p postretro --features capture --test capture_frame -- --ignored`"]
 fn hdr_capture_writes_png_at_requested_dimensions() {
     let workspace = workspace_root();
-    let map = workspace.join(
-        "crates/level-compiler/tests/fixtures/golden/\
-         test_animated_weight_maps_mixed.pre-script-light-membership.prl",
-    );
-    assert!(map.is_file(), "capture fixture missing: {}", map.display());
+    // Compile fresh: the level-compiler golden PRL of this map is pinned to
+    // historical bytes and goes stale whenever a runtime section version moves.
+    let map_guard = compile_dev_map(&workspace, "test_animated_weight_maps_mixed");
+    let map = map_guard.to_path_buf();
 
     let temp = tempfile::tempdir().expect("create isolated capture directory");
     let scene_path = temp.path().join("scene.json");
@@ -395,7 +394,7 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
         .iter()
         .map(|(weight, output)| (*weight, load_capture_rgba(output)))
         .collect();
-    assert_promoted_door_red_self_shadow_crossfade(
+    assert_promoted_door_red_shadow_crossfade(
         &red,
         &dark,
         &promoted_frames,
@@ -472,18 +471,20 @@ fn rgb_sum(pixel: [u8; 4]) -> i32 {
 
 // The full promoted endpoint gives the stable split: door texels whose
 // section-45 delta was already close to the true unoccluded result remain
-// constant, while texels that need the door's own depth are darker. The test
-// selects both populations from the independently receiver-proven mask, then
-// requires every intermediate forced-w frame to track the appropriate trend.
-fn assert_promoted_door_red_self_shadow_crossfade(
+// constant, while texels in the prop's cast shadow are darker. Only the
+// promoted slot's entity depth knows that shadow; the convex door cannot shadow
+// its own lit faces. The test selects both populations from the independently
+// receiver-proven mask, then requires every intermediate forced-w frame to
+// track the appropriate trend.
+fn assert_promoted_door_red_shadow_crossfade(
     v1_delta: &RgbaImage,
     dark: &RgbaImage,
     promoted_frames: &[(f32, RgbaImage)],
     door_pixels: &[(u32, u32)],
 ) {
-    const MIN_SELF_SHADOWED_PIXELS: usize = 32;
+    const MIN_SHADOWED_PIXELS: usize = 32;
     const MIN_LIT_PIXELS: usize = 32;
-    const SELF_SHADOW_DARKENING: i32 = 8;
+    const SHADOW_DARKENING: i32 = 8;
     const LIT_ENDPOINT_DRIFT: i32 = 12;
     const INTERMEDIATE_LIT_DRIFT: i32 = 16;
 
@@ -500,29 +501,29 @@ fn assert_promoted_door_red_self_shadow_crossfade(
         .expect("forced-w golden has a w=1 frame")
         .1;
 
-    let self_shadowed: Vec<_> = door_pixels
+    let shadowed: Vec<_> = door_pixels
         .iter()
         .filter(|&&(x, y)| {
             let delta = rgb_sum(v1_delta.get_pixel(x, y).0);
             let promoted = rgb_sum(fully_promoted.get_pixel(x, y).0);
             let dark_red = i32::from(dark.get_pixel(x, y).0[0]);
-            delta - promoted >= SELF_SHADOW_DARKENING
+            delta - promoted >= SHADOW_DARKENING
                 && i32::from(v1_delta.get_pixel(x, y).0[0]) - dark_red > 8
         })
         .copied()
         .collect();
     assert!(
-        self_shadowed.len() >= MIN_SELF_SHADOWED_PIXELS,
-        "promoted closet door must expose at least {MIN_SELF_SHADOWED_PIXELS} red self-shadow texels; found {}",
-        self_shadowed.len(),
+        shadowed.len() >= MIN_SHADOWED_PIXELS,
+        "promoted closet door must expose at least {MIN_SHADOWED_PIXELS} red prop-shadowed texels; found {}",
+        shadowed.len(),
     );
     for pair in promoted_frames.windows(2) {
         let (previous_weight, previous) = &pair[0];
         let (next_weight, next) = &pair[1];
-        for &(x, y) in &self_shadowed {
+        for &(x, y) in &shadowed {
             assert!(
                 rgb_sum(next.get_pixel(x, y).0) <= rgb_sum(previous.get_pixel(x, y).0),
-                "self-shadow texel ({x}, {y}) brightened from forced w={previous_weight} to w={next_weight}",
+                "prop-shadowed texel ({x}, {y}) brightened from forced w={previous_weight} to w={next_weight}",
             );
         }
     }

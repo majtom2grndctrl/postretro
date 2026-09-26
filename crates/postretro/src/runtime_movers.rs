@@ -247,6 +247,21 @@ impl KinematicMoverRenderCollector {
         &self.sh_sample_regions
     }
 
+    /// World-space center of a mover's bounds under `pose`. Mover transforms are
+    /// origin-relative, so the transform position alone is not where a door
+    /// visibly is; this is the point its sounds come from (`audio.md` §4).
+    pub(crate) fn world_bounds_center(
+        &mut self,
+        world: &LevelWorld,
+        mover_id: u32,
+        pose: Transform,
+    ) -> Option<Vec3> {
+        self.refresh_mover_bounds(world);
+        let local = self.mover_bounds.get(&mover_id)?;
+        let center = (local.min + local.max) * 0.5;
+        Some(transform_matrix(pose).transform_point3(center))
+    }
+
     fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
         let source = MoverBoundsSource::from_movers(&world.kinematic_geometry.movers);
         if self.mover_bounds_source == Some(source) {
@@ -596,7 +611,7 @@ fn mover_mode(mover: &LoadedKinematicMover) -> Result<KinematicMoverMode, Runtim
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use postretro_entities::ComponentKind;
     use postretro_level_format::geometry::Vertex;
@@ -617,7 +632,9 @@ mod tests {
         )
     }
 
-    fn mover(mode: u8) -> LoadedKinematicMover {
+    /// A loaded mover fixture (id 7): one triangle with local bounds
+    /// `[0,0,0]..[1,1,0]`. Shared with the sound-anchor tests.
+    pub(crate) fn mover(mode: u8) -> LoadedKinematicMover {
         LoadedKinematicMover {
             mover_id: 7,
             name: "lift".to_string(),
@@ -650,6 +667,28 @@ mod tests {
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
         }
+    }
+
+    #[test]
+    fn world_bounds_center_follows_the_mover_pose() {
+        let world = single_cell_world(KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        });
+        let mut collector = KinematicMoverRenderCollector::new();
+        let pose = Transform {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let center = collector
+            .world_bounds_center(&world, 7, pose)
+            .expect("mover 7 has bounds");
+        assert!(
+            center.abs_diff_eq(Vec3::new(10.5, 0.5, 0.0), 1.0e-5),
+            "origin-relative bounds center moves with the pose, got {center}",
+        );
+        assert!(collector.world_bounds_center(&world, 99, pose).is_none());
     }
 
     #[test]
@@ -814,7 +853,7 @@ mod tests {
         }
     }
 
-    fn single_cell_world(kinematic_geometry: KinematicGeometry) -> LevelWorld {
+    pub(crate) fn single_cell_world(kinematic_geometry: KinematicGeometry) -> LevelWorld {
         let mut world = LevelWorld::new_visibility_only(
             vec![CellData {
                 bounds_min: Vec3::splat(-1.0e6),

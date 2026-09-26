@@ -6,6 +6,8 @@ use super::*;
 use kira::backend::mock::MockBackend;
 use kira::backend::{Backend, Renderer};
 
+mod spatial;
+
 /// A test backend that captures kira's [`Renderer`] so a test can pull the
 /// mixer's processed output samples into a readable buffer.
 ///
@@ -18,7 +20,7 @@ use kira::backend::{Backend, Renderer};
 /// only way to observe that lowering a bus's volume reduces the signal that
 /// would reach the OS. `Audio<B>` being generic over the backend is what
 /// lets a test construct `Audio<CapturingBackend>` and drive it device-free.
-struct CapturingBackend {
+pub(super) struct CapturingBackend {
     renderer: Option<Renderer>,
 }
 
@@ -43,7 +45,7 @@ impl CapturingBackend {
     /// audible) and render `frame_count` stereo frames, returning the peak
     /// absolute sample amplitude across both channels. A return of `0.0`
     /// means total silence.
-    fn capture_peak(&mut self, frame_count: usize) -> f32 {
+    pub(super) fn capture_peak(&mut self, frame_count: usize) -> f32 {
         let renderer = self.renderer.as_mut().expect("renderer started");
         // Flush play/volume commands into the mixer before rendering.
         renderer.on_start_processing();
@@ -59,7 +61,26 @@ impl CapturingBackend {
     /// tween that ramps in over its first few milliseconds still reads as a
     /// proportionally quieter signal rather than being masked by the brief
     /// pre-ramp transient at the very start of the clip.
-    fn capture_rms(&mut self, frame_count: usize) -> f32 {
+    /// Drain queued commands and render `frame_count` stereo frames, returning
+    /// the RMS of the left and right channels separately. The panning readout.
+    pub(super) fn capture_channel_rms(&mut self, frame_count: usize) -> (f32, f32) {
+        let renderer = self.renderer.as_mut().expect("renderer started");
+        renderer.on_start_processing();
+        let mut out = vec![0.0_f32; frame_count * 2];
+        renderer.process(&mut out, 2);
+        let rms = |channel: usize| {
+            let sum_sq: f64 = out
+                .iter()
+                .skip(channel)
+                .step_by(2)
+                .map(|s| (*s as f64) * (*s as f64))
+                .sum();
+            ((sum_sq / frame_count as f64).sqrt()) as f32
+        };
+        (rms(0), rms(1))
+    }
+
+    pub(super) fn capture_rms(&mut self, frame_count: usize) -> f32 {
         let renderer = self.renderer.as_mut().expect("renderer started");
         renderer.on_start_processing();
         let mut out = vec![0.0_f32; frame_count * 2];
@@ -74,7 +95,7 @@ impl CapturingBackend {
 /// loaded. The 8 kHz rate matches the `test_tone.wav` fixture so rendered
 /// frames carry the tone at full resolution (kira's `MockBackend` defaults
 /// to 1 Hz, which would resample the clip away to near-nothing).
-fn capturing_audio() -> Audio<CapturingBackend> {
+pub(super) fn capturing_audio() -> Audio<CapturingBackend> {
     let settings = AudioManagerSettings::<CapturingBackend> {
         capacities: Audio::CAPACITIES,
         backend_settings: 8_000,
@@ -87,13 +108,7 @@ fn capturing_audio() -> Audio<CapturingBackend> {
         .expect("listener allocates");
     let buses = BusTree::build(&mut manager).expect("bus tree builds");
 
-    let mut audio = Audio {
-        manager,
-        listener,
-        registry: SoundRegistry::new(),
-        buses,
-        voices: VoiceTable::new(),
-    };
+    let mut audio = Audio::from_parts(manager, listener, buses);
     audio.load_level_sounds(&dev_content_root());
     audio
 }
@@ -101,7 +116,7 @@ fn capturing_audio() -> Audio<CapturingBackend> {
 /// Absolute path to the repo's `content/dev`, so the committed sound fixtures
 /// resolve regardless of where `cargo test` runs from. Mirrors the helper in
 /// `assets.rs`.
-fn dev_content_root() -> std::path::PathBuf {
+pub(super) fn dev_content_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/dev")
         .canonicalize()
@@ -113,7 +128,7 @@ fn dev_content_root() -> std::path::PathBuf {
 /// Exercises the production code paths without a sound device. Returns the
 /// `Audio` and its `MockBackend` manager pieces — kira's mock backend lives
 /// inside the manager, reached via `manager.backend_mut()`.
-fn mock_audio() -> Audio<MockBackend> {
+pub(super) fn mock_audio() -> Audio<MockBackend> {
     let settings = AudioManagerSettings::<MockBackend> {
         capacities: Audio::CAPACITIES,
         ..Default::default()
@@ -125,23 +140,18 @@ fn mock_audio() -> Audio<MockBackend> {
         .expect("listener allocates under mock backend");
     let buses = BusTree::build(&mut manager).expect("bus tree builds under mock backend");
 
-    let mut audio = Audio {
-        manager,
-        listener,
-        registry: SoundRegistry::new(),
-        buses,
-        voices: VoiceTable::new(),
-    };
+    let mut audio = Audio::from_parts(manager, listener, buses);
     audio.load_level_sounds(&dev_content_root());
     audio
 }
 
 /// A one-shot SFX request for the committed static fixture.
-fn sfx_request() -> SoundRequest {
+pub(super) fn sfx_request() -> SoundRequest {
     SoundRequest {
         bus: "sfx".to_string(),
         sound: "sfx/test_tone".to_string(),
         looping: false,
+        anchor: None,
     }
 }
 
@@ -385,6 +395,7 @@ fn unknown_bus_returns_none_without_holding_a_voice() {
         bus: "reverb".to_string(),
         sound: "sfx/test_tone".to_string(),
         looping: false,
+        anchor: None,
     });
     assert!(handle.is_none(), "unknown bus is dropped");
     for bus in BusId::ALL {
@@ -399,6 +410,7 @@ fn unknown_sound_returns_none_without_holding_a_voice() {
         bus: "sfx".to_string(),
         sound: "sfx/does_not_exist".to_string(),
         looping: false,
+        anchor: None,
     });
     assert!(handle.is_none(), "unknown sound is dropped");
     assert_eq!(
@@ -418,12 +430,13 @@ fn looping_request_holds_its_voice_across_a_sweep() {
         bus: "sfx".to_string(),
         sound: "sfx/test_tone".to_string(),
         looping: true,
+        anchor: None,
     });
     assert!(handle.is_some(), "looping fixture plays");
     assert_eq!(audio.active_voices(BusId::Sfx), 1);
 
     advance_playback(&mut audio, 8);
-    audio.update(forward_listener(), 1.0 / 60.0);
+    audio.update(forward_listener(), 1.0 / 60.0, |_| None);
 
     assert_eq!(
         audio.active_voices(BusId::Sfx),
@@ -445,7 +458,7 @@ fn finished_sweep_reclaims_a_stopped_one_shot() {
     // the 0.25s fixture — and `on_start_processing` flushes the play command.
     advance_playback(&mut audio, 8);
 
-    audio.update(forward_listener(), 1.0 / 60.0);
+    audio.update(forward_listener(), 1.0 / 60.0, |_| None);
     assert_eq!(
         audio.active_voices(BusId::Sfx),
         0,
@@ -454,18 +467,19 @@ fn finished_sweep_reclaims_a_stopped_one_shot() {
 }
 
 /// A listener looking down -Z, world up — the kira reference pose.
-fn forward_listener() -> ListenerState {
+pub(super) fn forward_listener() -> ListenerState {
     ListenerState {
         position: [0.0, 0.0, 0.0],
         forward: [0.0, 0.0, -1.0],
         up: [0.0, 1.0, 0.0],
+        attached: None,
     }
 }
 
 /// Step the mock renderer so queued play commands take effect and playback
 /// advances. `on_start_processing` drains command buffers; `process` advances
 /// audio time. Interleaved `steps` times.
-fn advance_playback(audio: &mut Audio<MockBackend>, steps: usize) {
+pub(super) fn advance_playback(audio: &mut Audio<MockBackend>, steps: usize) {
     for _ in 0..steps {
         audio.manager.backend_mut().on_start_processing();
         audio.manager.backend_mut().process();

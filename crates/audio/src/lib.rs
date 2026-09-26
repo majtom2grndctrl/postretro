@@ -7,40 +7,34 @@ mod assets;
 mod boundary;
 mod buses;
 mod orientation;
+mod playable;
+mod spatial;
 mod voices;
 
-pub use boundary::{AudioError, ListenerState, SoundRequest};
+pub use boundary::{
+    Attenuation, AttenuationCurve, AudioError, ListenerState, SoundAnchor, SoundRequest,
+};
 pub use buses::BusId;
 pub use voices::SoundHandle;
 
 use std::path::Path;
+use std::time::Duration;
 
 use buses::BusTree;
 use kira::listener::ListenerHandle;
 use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend, Tween};
 
-use assets::LoadedSound;
 use assets::SoundRegistry;
 use boundary::parse_bus;
 use orientation::orientation_from_forward_up;
+use playable::Playable;
+use spatial::SpatialVoices;
 use voices::VoiceTable;
 
-/// A sound resolved out of the registry into its playable kira form, ready to
-/// hand to a track. Static clones the decoded buffer (cheap Arc bump); Streaming
-/// is a freshly re-opened decoder. Kept module-private so kira sound-data types
-/// never cross the public surface.
-enum Playable {
-    Static(kira::sound::static_sound::StaticSoundData),
-    Streaming(kira::sound::streaming::StreamingSoundData<kira::sound::FromFileError>),
-}
-
-/// A freshly started sound's raw kira playback handle, carried out of the
-/// track-borrow scope in `play` so the handle can be registered in the voice
-/// table after the bus borrow ends. Module-private; never crosses the boundary.
-enum Started {
-    Static(kira::sound::static_sound::StaticSoundHandle),
-    Streaming(kira::sound::streaming::StreamingSoundHandle<kira::sound::FromFileError>),
-}
+/// Fade applied to every positional voice when its world goes away (unload,
+/// restart, return to frontend): long enough to avoid a click, short enough to
+/// finish before the next level's first frame.
+const POSITIONAL_UNLOAD_FADE: Duration = Duration::from_millis(150);
 
 /// Owns the kira audio manager and the spatial listener anchor.
 ///
@@ -61,10 +55,17 @@ pub struct Audio<B: kira::backend::Backend = DefaultBackend> {
     /// Master → SFX/Music/UI mixer tree plus the per-bus voice budget. The play
     /// API routes sounds to a bus and consults its voice counter.
     buses: BusTree,
-    /// Live playback handles for sounds started via `play`, keyed by the opaque
-    /// `SoundHandle`. `stop` looks handles up here; the per-frame sweep reclaims
-    /// finished non-looping voices from it.
+    /// Live playback handles for unpositioned sounds started via `play`, keyed
+    /// by the opaque `SoundHandle`. `stop` looks handles up here; the per-frame
+    /// sweep reclaims finished non-looping voices from it.
     voices: VoiceTable,
+    /// Positional voices: the spatial chokepoint (`audio.md` §5).
+    spatial: SpatialVoices,
+    /// Attenuation captured by each positional sound as it is admitted.
+    attenuation: Attenuation,
+    /// The listener's pawn as of the last `update`. A sound anchored on it plays
+    /// unpositioned and keeps that treatment for its whole life.
+    attached: Option<u64>,
 }
 
 impl Audio {
@@ -108,13 +109,7 @@ impl Audio {
         let buses =
             BusTree::build(&mut manager).map_err(|err| AudioError::Init(err.to_string()))?;
 
-        Ok(Self {
-            manager,
-            listener,
-            registry: SoundRegistry::new(),
-            buses,
-            voices: VoiceTable::new(),
-        })
+        Ok(Self::from_parts(manager, listener, buses))
     }
 }
 
@@ -124,6 +119,31 @@ impl Audio {
 /// generic impl is what lets unit tests drive `play`/`stop`/`update` without a
 /// sound device.
 impl<B: kira::backend::Backend> Audio<B> {
+    fn from_parts(manager: AudioManager<B>, listener: ListenerHandle, buses: BusTree) -> Self {
+        Self {
+            manager,
+            listener,
+            registry: SoundRegistry::new(),
+            buses,
+            voices: VoiceTable::new(),
+            spatial: SpatialVoices::default(),
+            attenuation: Attenuation::DEFAULT,
+            attached: None,
+        }
+    }
+
+    /// Set the attenuation positional sounds admitted from now on start with.
+    /// Sounds already playing keep theirs. An invalid value warns and falls back
+    /// to [`Attenuation::DEFAULT`]; callers validate authored values first.
+    pub fn set_attenuation(&mut self, attenuation: Attenuation) {
+        self.attenuation = if attenuation.is_valid() {
+            attenuation
+        } else {
+            log::warn!("[Audio] invalid attenuation {attenuation:?}; using the default");
+            Attenuation::DEFAULT
+        };
+    }
+
     /// Set the runtime volume of a mixer bus, in decibels (0 dB = unity gain,
     /// negative attenuates, positive boosts). The public volume control for
     /// SFX/Music/UI; delegates to the bus tree.
@@ -185,20 +205,22 @@ impl<B: kira::backend::Backend> Audio<B> {
         &self.registry
     }
 
-    /// Start playing the requested sound on its target bus, returning an opaque
-    /// [`SoundHandle`] the caller can later pass to [`stop`](Self::stop). Returns
-    /// `None` — never panicking — when the request can't be honored:
+    /// Start playing the requested sound, returning an opaque [`SoundHandle`] the
+    /// caller can later pass to [`stop`](Self::stop). Returns `None` — never
+    /// panicking — when the request can't be honored:
     ///
-    /// - the bus name is unrecognized (warns),
+    /// - the bus name is unrecognized, or a positioned request names a bus other
+    ///   than SFX or asks to loop (warns),
     /// - the sound key isn't in the registry (warns),
-    /// - the bus is at its voice cap (already dropped-and-logged by
-    ///   [`try_acquire_voice`](Self::try_acquire_voice)),
-    /// - or kira refuses the play / a streaming asset became unreadable (warns,
-    ///   and the just-acquired voice is released so the bus doesn't leak).
+    /// - the bus is at its voice cap, or kira still holds every slot the request
+    ///   would need (warns; refused, never queued),
+    /// - or kira refuses the play (warns, and the voice is released).
     ///
-    /// A `looping` request applies a whole-clip loop region so the sound repeats
-    /// until `stop`; it therefore holds its voice indefinitely (the finished-voice
-    /// sweep never reclaims a looping sound, which never reaches `Stopped`).
+    /// An unanchored request starts now on its bus. An anchored request is
+    /// admitted now and starts at the next [`update`](Self::update), against
+    /// that frame's listener; one anchored on the listener's own pawn instead
+    /// starts now, unpositioned. A `looping` request applies a whole-clip loop
+    /// region and holds its voice until `stop`.
     pub fn play(&mut self, req: SoundRequest) -> Option<SoundHandle> {
         let bus = match parse_bus(&req.bus) {
             Some(bus) => bus,
@@ -211,116 +233,152 @@ impl<B: kira::backend::Backend> Audio<B> {
                 return None;
             }
         };
-
-        // Resolve the asset before touching the voice budget so a missing sound
-        // never consumes a slot. Clone the entry's playable form out of the
-        // registry borrow so the subsequent `&mut self` track/voice work is clear
-        // of the immutable registry borrow.
-        let playable = match self.registry.get(&req.sound) {
-            Some(LoadedSound::Static(data)) => Playable::Static(data.as_ref().clone()),
-            Some(entry @ LoadedSound::Streaming { .. }) => {
-                // `open_streaming` does blocking disk I/O on this thread.
-                // Acceptable while music is the only streaming sound. If
-                // streaming sounds ever play on SFX/UI buses at gameplay
-                // frequency, move decoding off the game thread.
-                // `open_streaming` already warned on failure; nothing acquired yet.
-                Playable::Streaming(entry.open_streaming()?)
-            }
-            None => {
-                log::warn!("[Audio] unknown sound '{}' — request dropped", req.sound);
-                return None;
-            }
-        };
-
-        // Reserve the voice last. On any failure past this point the slot is
-        // released so the bus counter stays honest.
-        if !self.buses.try_acquire_voice(bus) {
-            // `try_acquire_voice` dropped-and-logged.
+        if req.anchor.is_some() && (bus != BusId::Sfx || req.looping) {
+            log::warn!(
+                "[Audio] positioned sound '{}' must be a one-shot on the sfx bus — request dropped",
+                req.sound,
+            );
             return None;
         }
 
-        // Start the sound on the bus's track. Scope the `&mut` track borrow so it
-        // ends before the voice-budget bookkeeping below (both borrow
-        // `self.buses`). `play` is the only kira call here; on `Err` the voice
-        // slot is released so the bus counter stays honest.
-        let started = {
-            let track = self.buses.track_mut(bus);
-            match playable {
-                Playable::Static(data) => {
-                    let data = if req.looping {
-                        // Whole-clip loop: repeat from the start until stopped.
-                        data.loop_region(0.0..)
-                    } else {
-                        data
-                    };
-                    // Normalize the error to a string here: the two sound-data
-                    // kinds carry different kira error types (`()` vs
-                    // `FromFileError`), so the arms can't share a `Result` type.
-                    track
-                        .play(data)
-                        .map(Started::Static)
-                        .map_err(|err| err.to_string())
-                }
-                Playable::Streaming(data) => {
-                    let data = if req.looping {
-                        data.loop_region(0.0..)
-                    } else {
-                        data
-                    };
-                    track
-                        .play(data)
-                        .map(Started::Streaming)
-                        .map_err(|err| err.to_string())
-                }
-            }
+        // Resolve the asset before touching the voice budget so a missing sound
+        // never consumes a slot.
+        let playable = Playable::resolve(&self.registry, &req.sound)?;
+        let playable = if req.looping {
+            playable.looped()
+        } else {
+            playable
         };
 
-        match started {
-            Ok(Started::Static(h)) => Some(self.voices.insert_static(h, bus)),
-            Ok(Started::Streaming(h)) => Some(self.voices.insert_streaming(h, bus)),
+        match req.anchor {
+            Some(anchor) if !self.is_attached(&anchor) => {
+                self.admit_positional(&req.sound, playable, anchor)
+            }
+            anchor => self.play_unpositioned(bus, &req.sound, playable, anchor.is_some()),
+        }
+    }
+
+    fn is_attached(&self, anchor: &SoundAnchor) -> bool {
+        matches!(anchor, SoundAnchor::Entity { key, .. } if Some(*key) == self.attached)
+    }
+
+    fn play_unpositioned(
+        &mut self,
+        bus: BusId,
+        sound: &str,
+        playable: Playable,
+        anchored: bool,
+    ) -> Option<SoundHandle> {
+        // kira frees a finished sound's slot on its own thread, after the engine
+        // reclaims the voice, so its pool can be fuller than the counter says.
+        let track = self.buses.track(bus);
+        if track.num_sounds() >= track.sound_capacity() {
+            log::warn!("[Audio] bus {bus:?} has no free kira sound slot — '{sound}' dropped");
+            return None;
+        }
+        if !self.buses.try_acquire_voice(bus) {
+            return None;
+        }
+        match playable.start_on(self.buses.track_mut(bus)) {
+            Ok(voice) => Some(self.voices.insert(voice, bus, anchored)),
             Err(err) => {
-                log::warn!("[Audio] kira rejected sound '{}': {err}", req.sound);
+                log::warn!("[Audio] kira rejected sound '{sound}': {err}");
                 self.buses.release_voice(bus);
                 None
             }
         }
     }
 
+    fn admit_positional(
+        &mut self,
+        sound: &str,
+        playable: Playable,
+        anchor: SoundAnchor,
+    ) -> Option<SoundHandle> {
+        if !self.spatial.has_room(self.buses.track(BusId::Sfx)) {
+            log::warn!("[Audio] sfx has no free kira track slot — '{sound}' dropped");
+            return None;
+        }
+        if !self.buses.try_acquire_voice(BusId::Sfx) {
+            return None;
+        }
+        let handle = self.voices.mint();
+        self.spatial
+            .admit(handle, playable, anchor, self.attenuation);
+        Some(handle)
+    }
+
     /// Stop a sound started via [`play`](Self::play) and release its voice slot.
-    /// The voice is removed from the active table immediately; kira applies its
-    /// default ~10 ms tween to fade the audio out. A no-op if `handle` is
-    /// unknown — already finished and reclaimed, or never minted by this `Audio`.
+    /// The voice is removed immediately; kira applies its default ~10 ms tween
+    /// to fade the audio out. A no-op if `handle` is unknown — already finished
+    /// and reclaimed, or never minted by this `Audio`.
     pub fn stop(&mut self, handle: SoundHandle) {
         if let Some(bus) = self.voices.remove_and_stop(handle, Tween::default()) {
+            self.buses.release_voice(bus);
+        } else if self.spatial.stop(handle, Tween::default()) {
+            self.buses.release_voice(BusId::Sfx);
+        }
+    }
+
+    /// Fade out every sound anchored in the world — positional voices and
+    /// own-pawn sounds alike — and release their slots. Called when the world
+    /// goes away, so no sound outlives its level or follows an entity into the
+    /// next one. Unanchored sounds (music, UI) are untouched.
+    pub fn fade_out_positional(&mut self) {
+        let tween = Tween {
+            duration: POSITIONAL_UNLOAD_FADE,
+            ..Tween::default()
+        };
+        for _ in 0..self.spatial.stop_all(tween) {
+            self.buses.release_voice(BusId::Sfx);
+        }
+        for bus in self.voices.stop_anchored(tween) {
             self.buses.release_voice(bus);
         }
     }
 
     /// Per-frame audio step. Runs third in frame order (Input → Game logic →
-    /// **Audio** → Render → Present). Control-plane only: re-anchors the kira
-    /// listener to the camera pose and sweeps finished voices. Never decodes or
+    /// **Audio** → Render → Present). Control-plane only: never decodes or
     /// touches disk, so it never blocks the frame.
     ///
-    /// Voice reclamation: kira advances non-looping sounds to `Stopped` on its
-    /// own audio thread. The sweep observes that and releases one bus voice slot
-    /// per finished sound, dropping its handle — without this, buses would leak
-    /// capacity as one-shot sounds finished. Looping sounds never reach `Stopped`
-    /// and so hold their voice until [`stop`](Self::stop).
+    /// In order, it:
+    /// 1. re-anchors the kira listener to `listener` and records its pawn;
+    /// 2. reclaims finished one-shots, so a voice that ended frees its slot here
+    ///    and not earlier in the frame;
+    /// 3. moves each tracked positional voice to where `resolve` now places its
+    ///    entity, freezing it once `resolve` returns `None`;
+    /// 4. starts the positional voices admitted since the last step.
     ///
-    /// `dt` is the frame delta in seconds. Spatialization is out of scope for now;
-    /// the listener pose is updated instantly (no tween) and `dt` is currently
-    /// unused beyond satisfying the per-frame contract.
-    pub fn update(&mut self, listener: ListenerState, _dt: f32) {
-        // Anchor the listener to the camera. Position as a primitive array;
-        // orientation as a kira-convention quaternion built from forward/up.
+    /// `resolve` maps an anchor's entity key to its presented world position.
+    /// `dt` (seconds) paces the reposition tween.
+    pub fn update(
+        &mut self,
+        listener: ListenerState,
+        dt: f32,
+        mut resolve: impl FnMut(u64) -> Option<[f32; 3]>,
+    ) {
         self.listener
             .set_position(listener.position, Tween::default());
         let orientation = orientation_from_forward_up(listener.forward, listener.up);
         self.listener.set_orientation(orientation, Tween::default());
+        self.attached = listener.attached;
 
-        // Reclaim finished non-looping voices so buses don't leak capacity.
         for bus in self.voices.reclaim_finished() {
             self.buses.release_voice(bus);
+        }
+        for _ in 0..self.spatial.reclaim_finished() {
+            self.buses.release_voice(BusId::Sfx);
+        }
+
+        let failed = self.spatial.update(
+            self.buses.track_mut(BusId::Sfx),
+            self.listener.id(),
+            listener.position,
+            dt,
+            &mut resolve,
+        );
+        for _ in 0..failed {
+            self.buses.release_voice(BusId::Sfx);
         }
     }
 

@@ -77,6 +77,15 @@ pub struct KinematicMoverComponent {
     pub blocked_event: Option<String>,
     /// Optional host-local named-event address dispatched when a crusher deals damage.
     pub crush_event: Option<String>,
+    /// Optional presentation-only sound key played at the open terminus. Sound
+    /// keys never replicate; see context/lib/audio.md §4.
+    pub open_sound: Option<String>,
+    /// Optional sound key played at the closed terminus.
+    pub close_sound: Option<String>,
+    /// Optional sound key played on reactive block contact.
+    pub blocked_sound: Option<String>,
+    /// Optional sound key played each time a crusher deals damage.
+    pub crush_sound: Option<String>,
     /// Portal ids this mover fully seals at its closed dock. The renderer derives
     /// the live blocked set from this static association and current phase.
     pub sealed_portal_ids: Vec<u32>,
@@ -144,6 +153,10 @@ impl KinematicMoverComponent {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            open_sound: None,
+            close_sound: None,
+            blocked_sound: None,
+            crush_sound: None,
             sealed_portal_ids: Vec::new(),
             segment_index: 0,
             direction_sign: 1,

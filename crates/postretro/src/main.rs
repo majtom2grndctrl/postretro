@@ -72,6 +72,7 @@ mod session;
 // App-side session policy for streamed SH targets, bounded loader batches, and
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
+mod sound_events;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;
@@ -366,31 +367,6 @@ fn apply_client_switch_resolution(
         .gameplay_input_latch
         .wieldable_selection_mut()
         .reset_to_active_with_last(active_slot, last_weapon_slot);
-}
-
-/// Resolve host-local mover transition edges to the authored named-reaction
-/// addresses on their source movers. Missing movers and absent event KVPs are
-/// ordinary no-ops.
-fn mover_event_dispatch_addresses(
-    events: &[(kinematic_mover::MoverEventKind, u32)],
-    registry: &postretro_entities::EntityRegistry,
-) -> Vec<String> {
-    events
-        .iter()
-        .filter_map(|(kind, mover_id)| {
-            registry
-                .iter_with_kind(ComponentKind::KinematicMover)
-                .filter_map(|(_, value)| {
-                    let ComponentValue::KinematicMover(mover) = value else {
-                        return None;
-                    };
-                    Some(mover)
-                })
-                .find(|mover| mover.mover_id == *mover_id)
-                .and_then(|mover| kind.dispatch_address(mover))
-                .map(str::to_owned)
-        })
-        .collect()
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -3289,10 +3265,31 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let pending_mover_event_names = {
+                let pending_mover_edges = {
                     let registry = script_ctx.registry.borrow();
-                    mover_event_dispatch_addresses(&pending_mover_events, &registry)
+                    let mut scene = sound_events::AnchorScene {
+                        registry: &registry,
+                        world: self.level.as_ref(),
+                        movers: &mut self.kinematic_mover_render,
+                    };
+                    sound_events::resolve_mover_edges(&pending_mover_events, &mut scene)
                 };
+                if let Some(audio) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
+                    for request in pending_mover_edges
+                        .iter()
+                        .filter_map(sound_events::MoverEdge::sound_request)
+                    {
+                        audio.play(request);
+                    }
+                }
+                let pending_mover_event_names: Vec<String> = pending_mover_edges
+                    .into_iter()
+                    .filter_map(|edge| edge.address)
+                    .collect();
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
                     // Every post-tick named source uses the executing path, then
@@ -3570,20 +3567,34 @@ impl ApplicationHandler for App {
                 // call site (the boundary carries no glam); `forward` uses the
                 // aim ray's direction so it includes pitch, unlike yaw-only
                 // `forward()`, and `up` is world up per the `ListenerState`
-                // contract. Guarded for the silent (init-failed) case.
-                // Audio is session-owned; build the primitive listener from the
-                // disjoint `self.camera` field first, then borrow the subsystem.
-                let listener = postretro_audio::ListenerState {
-                    position: self.camera.position.to_array(),
-                    forward: self.camera.aim_ray().1.to_array(),
-                    up: [0.0, 1.0, 0.0],
-                };
-                if let Some(audio) = self
+                // contract. Guarded for the silent (init-failed) case. The anchor
+                // resolver places each positional voice at its emitter's
+                // render-interpolated pose this frame.
+                let listener_registry = self
                     .session
-                    .as_mut()
-                    .and_then(|session| session.audio.as_mut())
-                {
-                    audio.update(listener, frame_dt);
+                    .as_ref()
+                    .map(|session| session.scripting.script_ctx.registry.clone());
+                if let (Some(registry), Some(audio)) = (
+                    listener_registry,
+                    self.session
+                        .as_mut()
+                        .and_then(|session| session.audio.as_mut()),
+                ) {
+                    let registry = registry.borrow();
+                    let listener = postretro_audio::ListenerState {
+                        position: self.camera.position.to_array(),
+                        forward: self.camera.aim_ray().1.to_array(),
+                        up: [0.0, 1.0, 0.0],
+                        attached: sound_events::listener_attached_key(&registry),
+                    };
+                    let mut scene = sound_events::AnchorScene {
+                        registry: &registry,
+                        world: self.level.as_ref(),
+                        movers: &mut self.kinematic_mover_render,
+                    };
+                    audio.update(listener, frame_dt, |key| {
+                        scene.presented_point(key, frame_result.alpha)
+                    });
                 }
 
                 // Level-relative monotonic clock consumed by light_bridge.update,
@@ -6083,6 +6094,7 @@ impl App {
                             bus,
                             sound,
                             looping: false,
+                            anchor: None,
                         });
                     }
                     // Audio init failed ⇒ silent (the game runs without sound).
@@ -8519,6 +8531,7 @@ impl App {
                         bus: "sfx".to_string(),
                         sound: "sfx/test_tone".to_string(),
                         looping: false,
+                        anchor: None,
                     });
                     log::info!("[Audio] smoke check: played sfx/test_tone on SFX bus");
                 }
@@ -11310,13 +11323,22 @@ mod tests {
             .set_component(mover_entity, mover)
             .expect("mover fixture attaches");
 
-        let event_names = mover_event_dispatch_addresses(
+        let mut movers = runtime_movers::KinematicMoverRenderCollector::new();
+        let mut scene = sound_events::AnchorScene {
+            registry: &registry,
+            world: None,
+            movers: &mut movers,
+        };
+        let event_names: Vec<String> = sound_events::resolve_mover_edges(
             &[
                 (kinematic_mover::MoverEventKind::Opened, 17),
                 (kinematic_mover::MoverEventKind::Closed, 17),
             ],
-            &registry,
-        );
+            &mut scene,
+        )
+        .into_iter()
+        .filter_map(|edge| edge.address)
+        .collect();
         assert_eq!(event_names, vec!["door.open"]);
 
         let script_ctx = ScriptCtx::new();

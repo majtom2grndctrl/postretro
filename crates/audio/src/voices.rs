@@ -30,9 +30,9 @@ impl SoundHandle {
 }
 
 /// A live kira playback handle, one variant per kira sound-data kind. Held
-/// internally only — never exposed across the module boundary. Both variants
+/// internally only — never exposed across the crate boundary. Both variants
 /// share the `state()` / `stop()` control surface the sweep and `stop` use.
-enum KiraVoice {
+pub(crate) enum KiraVoice {
     Static(StaticSoundHandle),
     /// `StreamingSoundData::from_file` is parameterized over kira's
     /// `FromFileError`, so its handle carries that same error type.
@@ -42,7 +42,7 @@ enum KiraVoice {
 impl KiraVoice {
     /// Current kira playback state. `Stopped` means the sound finished (a
     /// non-looping clip ran to its end) and its voice can be reclaimed.
-    fn state(&self) -> PlaybackState {
+    pub(crate) fn state(&self) -> PlaybackState {
         match self {
             KiraVoice::Static(h) => h.state(),
             KiraVoice::Streaming(h) => h.state(),
@@ -50,9 +50,8 @@ impl KiraVoice {
     }
 
     /// Stop playback, fading out over `tween`. The caller chooses the tween;
-    /// the voice is removed from the table immediately at the call site.
-    #[allow(dead_code)]
-    fn stop(&mut self, tween: Tween) {
+    /// the voice is removed from its table immediately at the call site.
+    pub(crate) fn stop(&mut self, tween: Tween) {
         match self {
             KiraVoice::Static(h) => h.stop(tween),
             KiraVoice::Streaming(h) => h.stop(tween),
@@ -61,10 +60,13 @@ impl KiraVoice {
 }
 
 /// One playing sound: its kira handle plus the bus its voice was reserved on,
-/// so reclamation releases the right counter.
+/// so reclamation releases the right counter. `anchored` marks an own-pawn
+/// sound played unpositioned: it belongs to the world, so level unload fades
+/// it with the positional voices.
 struct ActiveVoice {
     voice: KiraVoice,
     bus: BusId,
+    anchored: bool,
 }
 
 /// Engine-owned table of currently playing sounds, keyed by `SoundHandle`. The
@@ -83,31 +85,46 @@ impl VoiceTable {
         Self::default()
     }
 
-    /// Register a freshly started static voice, returning its opaque id.
-    pub(crate) fn insert_static(&mut self, handle: StaticSoundHandle, bus: BusId) -> SoundHandle {
-        self.insert(KiraVoice::Static(handle), bus)
-    }
-
-    /// Register a freshly started streaming voice, returning its opaque id.
-    pub(crate) fn insert_streaming(
-        &mut self,
-        handle: StreamingSoundHandle<kira::sound::FromFileError>,
-        bus: BusId,
-    ) -> SoundHandle {
-        self.insert(KiraVoice::Streaming(handle), bus)
-    }
-
-    fn insert(&mut self, voice: KiraVoice, bus: BusId) -> SoundHandle {
+    /// Mint a fresh id. Positional voices draw from the same id space so one
+    /// `SoundHandle` names a sound whichever table holds it.
+    pub(crate) fn mint(&mut self) -> SoundHandle {
         let id = SoundHandle(self.next_id);
         self.next_id += 1;
-        self.voices.insert(id, ActiveVoice { voice, bus });
         id
+    }
+
+    /// Register a freshly started voice under a new id.
+    pub(crate) fn insert(&mut self, voice: KiraVoice, bus: BusId, anchored: bool) -> SoundHandle {
+        let id = self.mint();
+        self.voices.insert(
+            id,
+            ActiveVoice {
+                voice,
+                bus,
+                anchored,
+            },
+        );
+        id
+    }
+
+    /// Stop every anchored voice with `tween`, returning one bus per stopped
+    /// voice for the caller to release.
+    pub(crate) fn stop_anchored(&mut self, tween: Tween) -> Vec<BusId> {
+        let anchored: Vec<SoundHandle> = self
+            .voices
+            .iter()
+            .filter(|(_, active)| active.anchored)
+            .map(|(id, _)| *id)
+            .collect();
+        anchored
+            .into_iter()
+            .filter_map(|id| self.remove_and_stop(id, tween))
+            .collect()
     }
 
     /// Stop and remove the voice for `id`, returning the bus whose counter must
     /// be released. `None` if the id is unknown (already finished or never
     /// existed) — `stop` is a no-op in that case.
-    #[allow(dead_code)]
     pub(crate) fn remove_and_stop(&mut self, id: SoundHandle, tween: Tween) -> Option<BusId> {
         let mut active = self.voices.remove(&id)?;
         active.voice.stop(tween);

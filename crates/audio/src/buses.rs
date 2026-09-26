@@ -36,9 +36,9 @@ impl BusId {
     /// Active-voice cap for this bus: the maximum number of sounds that may
     /// play simultaneously on it. A bus at its cap drops further requests.
     ///
-    /// INVARIANT: each bus's kira `TrackBuilder::sound_capacity` is sized
-    /// `>= voice_cap` (see [`Self::track_sound_capacity`]), so a `play` accepted
-    /// by the voice counter is never silently dropped at the kira layer.
+    /// INVARIANT: each bus's kira pools are sized to twice this cap (see
+    /// [`Self::track_sound_capacity`]), so a full cap of new requests still finds
+    /// kira slots while kira frees the previous cap's slots on its own thread.
     pub(crate) fn voice_cap(self) -> usize {
         match self {
             BusId::Sfx => 32,
@@ -47,12 +47,21 @@ impl BusId {
         }
     }
 
-    /// kira sound capacity to preallocate for this bus's sub-track. Sized equal
-    /// to the voice cap: the engine's voice counter is the binding limit, and
-    /// kira's per-track sound pool must be at least as large so accepted plays
-    /// always find a slot.
+    /// kira sound capacity to preallocate for this bus's sub-track. kira frees
+    /// a finished sound's slot one to two audio chunks after the engine reclaims
+    /// its voice, so the pool holds two caps: the voices the counter admits plus
+    /// the ones kira has yet to release. Admission still checks live occupancy.
     fn track_sound_capacity(self) -> usize {
-        self.voice_cap()
+        2 * self.voice_cap()
+    }
+
+    /// kira child-track capacity for this bus. Only SFX hosts positional voices,
+    /// one spatial child track each, with the same two-cap headroom as sounds.
+    fn track_sub_track_capacity(self) -> usize {
+        match self {
+            BusId::Sfx => 2 * self.voice_cap(),
+            BusId::Music | BusId::UI => 0,
+        }
     }
 
     /// Human-readable bus name for log messages.
@@ -121,7 +130,8 @@ impl BusTree {
         // 0 dB == unity gain; volume is set in decibels (kira's `Value<Decibels>`).
         let builder = TrackBuilder::new()
             .volume(0.0)
-            .sound_capacity(bus.track_sound_capacity());
+            .sound_capacity(bus.track_sound_capacity())
+            .sub_track_capacity(bus.track_sub_track_capacity());
         let handle = manager.add_sub_track(builder)?;
 
         debug_assert!(
@@ -133,6 +143,12 @@ impl BusTree {
         );
 
         Ok(handle)
+    }
+
+    /// Read access to a bus's kira sub-track, for admission checks against its
+    /// live slot occupancy.
+    pub(crate) fn track(&self, bus: BusId) -> &TrackHandle {
+        &self.tracks[bus.index()]
     }
 
     /// Mutable access to a bus's kira sub-track, for the play path to start

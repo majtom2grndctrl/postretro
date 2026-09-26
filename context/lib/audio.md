@@ -23,7 +23,7 @@ Sound assets load at level install time from `content/<mod>/sounds/<collection>/
 
 ### Mixer bus tree
 
-kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's provisioned budget so play commands accepted by the voice counter always find a kira slot. Decided, not yet built: kira removes finished sounds and tracks on its audio thread one to two blocks after the engine reclaims them. SFX admission therefore checks kira's live slot occupancy as well as the engine's count. A slot the engine has reclaimed but kira still holds counts as occupied, so the counter never disagrees with the mixer. Over the cap a request is refused, never queued.
+kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's provisioned budget so play commands accepted by the voice counter always find a kira slot. Decided, not yet built: kira frees a finished sound's slot on its own audio thread, after the engine reclaims the voice. SFX admission therefore also checks kira's live slot occupancy, and a slot kira still holds counts as occupied. The counter never disagrees with the mixer. Over the cap a request is refused, never queued.
 
 ---
 
@@ -51,16 +51,7 @@ The step is control-plane only — it never decodes or touches disk. kira manage
 
 Callers emit `SoundRequest` values targeting a named bus. `Audio::play` resolves the bus and sound key, routes to the bus's kira sub-track, and returns an opaque `SoundHandle`. `Audio::stop` stops the sound and releases its voice slot. Looping sounds repeat until stopped; one-shot sounds release their voice automatically once kira reports them finished.
 
-| Event | Example trigger |
-|-------|-----------------|
-| Footstep | Player or entity movement tick |
-| Gunshot | Weapon fire |
-| Explosion | Projectile impact |
-| Pickup | Item collection |
-| Door | Door open/close |
-| Impact | Projectile hitting a surface |
-
-Surface-material-aware routing (varying footstep/impact sounds by texture prefix) and the shared material enum with the renderer's decal system are later goals. Impact events already carry each contact's normal and what it hit (an entity or world geometry), so surface routing needs no new plumbing.
+Surface-material-aware routing (varying impact sounds by surface) and a material enum shared with the renderer's decal system are later goals. Footsteps have no source event yet. Decided, not yet built: impact events carry each contact's normal and what it hit (an entity or world geometry), so surface routing needs no new plumbing.
 
 ### Sound sources (decided, not yet built)
 
@@ -68,8 +59,8 @@ Gameplay sounds are presentation. They resolve on the app drain after the tick l
 
 | Path | Surface | Use |
 |------|---------|-----|
-| Descriptor sounds | Sound fields on weapons, player movement, enemy attacks and behavior states; `*_sound` KVPs on movers | The common path. Declared on the thing that makes the sound, with no script. The only per-instance path where the engine owns the event name (weapon fire, impact, enemy attack), because a reaction addressed to such a name is global. |
-| Positional reaction | `playSound(key, { at: on.emitter })` | Scripted cases. The emitter token and its scope rules are in `scripting.md` §12. |
+| Descriptor sounds | Sound fields on weapons, player movement, enemy attacks and behavior states; `*_sound` KVPs on movers | Common path; no script. The only per-instance path for engine-owned event names (weapon fire, impact, enemy attack), where a reaction is global. |
+| Positional reaction | `playSound(key, { at: on.emitter })` | Scripted cases. Emitter token and scope rules: `scripting.md` §12. |
 
 - **Weapon sounds follow the weapon, whoever wields it.** An enemy attack that names a weapon plays that weapon's sounds. A projectile records at spawn the weapon it was fired from, so its contact resolves sounds from the projectile, not from the shooter.
 - **An impact is one event per activation per tick**, carrying every contact of that tick. A multi-pellet hitscan shot yields one impact sound; each projectile contact yields its own. Projectile and hitscan contacts both fire `impact` reactions, whoever fired them.
@@ -98,9 +89,9 @@ Decided, not yet built:
 | Position tracking | An entity anchor follows the entity's render-interpolated pose each frame. Once the entity is gone, the sound freezes at its last position and plays out; a tail is never cut. |
 | Own pawn | A sound anchored on the pawn the listener is attached to plays non-spatial on SFX. A sound keeps the treatment it started with. |
 
-**One spatial pipeline (decided, not yet built).** Every positional play goes through one chokepoint in the audio module. It owns each voice's anchor, and the voice's direction and distance relative to the listener, computed engine-side each frame. It is the only code that touches kira's spatial tracks. Directional cues, such as front/back filtering and distance-based stereo spread, and occlusion extend this chokepoint in place. There is no second pipeline and no per-hardware renderer tier.
+**One spatial pipeline (decided, not yet built).** Every positional play goes through one chokepoint in the audio module. The chokepoint owns each voice's anchor and computes its direction and distance from the listener each frame. It is the only code that touches kira's spatial tracks. Later features extend it in place: front/back filtering, distance-based stereo spread, occlusion. No second pipeline, no per-hardware renderer tier.
 
-**Level lifetime.** Unload, restart and return-to-frontend stop every positional voice with a short fade, so no sound outlives its world or follows an entity from the next level.
+**Level lifetime (decided, not yet built).** Unload, restart and return-to-frontend stop every positional voice with a short fade. No sound outlives its world or follows an entity into the next level.
 
 ---
 

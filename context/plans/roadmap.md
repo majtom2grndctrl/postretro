@@ -152,7 +152,7 @@ Plans ship in this sequence:
 - Minigames-as-built-in-entity-types (research §17).
 - In-world viewport UI (research §19).
 - Localization runtime (research §19).
-- Screen-reader a11y (research §19, §20).
+- Screen-reader a11y (research §19, §20). → moved to Epic 23 (U4).
 - [x] **Radial / ring / arc UI primitive.** The widget vocabulary is axis-aligned quads + text only — no ring, arc, or state-driven widget size (`crates/ui/src/output.rs` `UiInstance`; shader `crates/renderer/src/shaders/ui_quad.wgsl`). A crosshair-anchored spread ring, cooldown arc, or charge ring needs a radial-fill primitive: a new descriptor variant, collector support, and a shader path beyond `ui_quad.wgsl`. Cross-cutting UI-layer work, reusable across features; the Weapon Feel crosshair spread-ring widget consumes it. Linear crosshair meters (reload) reuse the existing `Bar` and do **not** need this. `context/plans/done/radial-ui-primitive/`
 - **UI compositor fidelity + image asset pipeline.** Exact source-over ordering between translucent quads/images and glyphon text needs a deliberate compositor design; the current single glyphon render call cannot perfectly interleave text with translucent UI geometry. UI image widgets also need an authored asset registration path so production trees receive texture sizes and bind groups through the renderer-owned registry.
 
@@ -435,6 +435,24 @@ Epic hub + source-grounded research: `context/plans/drafts/E22--kinematic-assemb
 - [ ] **`E22--runtime-addressable-assemblies`** — an assembly addressable by scripts/reactions (toggle, target, batch). Gated on a concrete gameplay consumer; may land in Epic 18.
 
 **Testable outcome:** a mapper authors a moving platform with a dynamic light bound to it; the light travels with the platform across start/reverse/stop and holds at terminus; a TrenchBroom `func_group` compiles as a recognized assembly (static groups still flatten, now named in diagnostics); a linked-group prefab stamped N times compiles to one shared template drawn at N transforms; no `func_group`/`_tb_*` vocabulary reaches runtime.
+
+---
+
+## Epic 23: Accessibility
+
+Meet the Game Accessibility Guidelines basic tier and the common FPS accessibility failures as engine mechanisms. Epic 13 built the authoring side of UI accessibility (names, roles, `Announce`, selected/checked) and deferred its consumption; no epic owned player-side accommodations. Mods author where content must (theme variants, captions), OS accessibility settings seed defaults, menus reach native screen readers through AccessKit, and gamepad menu navigation meets console conventions. Preference resolution is player-set > OS value > engine default; the flash limiter is engine-owned and mods cannot bypass it.
+
+**Prerequisite:** Epic 13 G2 (accessibility metadata) ✓. U5's caption and cue part waits on Epic 12 step 1 (Positional sound events).
+
+Epic hub + research: `context/plans/drafts/E23--accessibility/`. Five units, each with its own brief drafted when the unit comes up:
+
+- [ ] **U1 — Preferences and comfort floor** — accessibility preference substrate with OS seeding and tolerant per-field storage; flash limiter (on by default); reduce motion; per-bus volume and mono audio. No dependency; concurrent with U3.
+- [ ] **U2 — Visual accessibility** — theme variants (engine high-contrast fallback), tokenized engine visuals, authored focus visuals, contrast diagnostic, text scale. After U1 (its fields sit on U1's substrate). Absorbs the retired `ui-focus-accessibility-visuals` draft's visual track.
+- [ ] **U3 — Gamepad and input** — focus-group fix, console menu conventions (restore-on-return, hold-repeat, tabs, scroll, glyphs, confirmation dialogs), full remapping, gamepad look options, hold/toggle sprint. No dependency; concurrent with U1.
+- [ ] **U4 — Screen reader** — engine accessibility snapshot projected through `accesskit_winit`; window created hidden and shown after the adapter exists. After U3's focus-group fix (the snapshot's focusable set).
+- [ ] **U5 — Hearing and directional cues** — captions per sound asset, subtitle primitive with speaker, directional damage indicator, sound-direction cues. Damage direction after U1; captions and cues after Epic 12 step 1 and U2.
+
+**Testable outcome:** a player on first boot gets OS contrast, reduced-motion, and text-scale preferences without touching a menu; a mod's strobe is tamed unless the player turns the limiter off; NVDA, VoiceOver, and Orca read and operate every dev menu; a gamepad-only player completes every dev menu and remaps any action; captions show for authored sounds with a direction arrow; a hit from the left shows a left-side indicator.
 
 ---
 

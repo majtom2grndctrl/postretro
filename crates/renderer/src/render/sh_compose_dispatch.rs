@@ -4,7 +4,7 @@
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::sh_compose::{
     ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE, DYNAMIC_COMPOSE_ROW_CAPACITY,
-    DynamicComposeGridParams, build_dynamic_compose_grid_bytes,
+    DynamicComposeGridParams, write_dynamic_compose_grid_bytes,
 };
 
 pub(super) fn should_dispatch(
@@ -31,9 +31,17 @@ pub(super) struct DynamicComposeDispatch {
     pub(super) workgroup_count: u32,
 }
 
+#[derive(Default)]
 pub(super) struct DynamicComposeGridUpload {
     pub(super) bytes: Vec<u8>,
     pub(super) dispatches: Vec<DynamicComposeDispatch>,
+}
+
+impl DynamicComposeGridUpload {
+    #[cfg(test)]
+    fn capacities(&self) -> (usize, usize) {
+        (self.bytes.capacity(), self.dispatches.capacity())
+    }
 }
 
 pub(super) fn gather_chunk_capacity(max_workgroups_x: u32) -> Option<u32> {
@@ -43,16 +51,18 @@ pub(super) fn gather_chunk_capacity(max_workgroups_x: u32) -> Option<u32> {
     (capacity > 0).then_some(capacity)
 }
 
-fn dynamic_compose_dispatches(
+fn dynamic_compose_dispatches_into(
     row_count: usize,
     max_workgroups_x: u32,
     dynamic_offset_alignment: u32,
-) -> Option<Vec<DynamicComposeDispatch>> {
+    dispatches: &mut Vec<DynamicComposeDispatch>,
+) -> Option<()> {
+    dispatches.clear();
     if dynamic_offset_alignment == 0 {
         return None;
     }
     if row_count == 0 {
-        return Some(Vec::new());
+        return Some(());
     }
     let chunk_capacity = usize::try_from(gather_chunk_capacity(max_workgroups_x)?).ok()?;
     let record_size = u32::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE).ok()?;
@@ -60,7 +70,7 @@ fn dynamic_compose_dispatches(
         .checked_add(dynamic_offset_alignment.checked_sub(1)?)?
         .checked_div(dynamic_offset_alignment)?
         .checked_mul(dynamic_offset_alignment)?;
-    let mut dispatches = Vec::with_capacity(row_count.div_ceil(chunk_capacity));
+    dispatches.reserve(row_count.div_ceil(chunk_capacity));
     for row_offset in (0..row_count).step_by(chunk_capacity) {
         let row_count = (row_count - row_offset).min(chunk_capacity);
         let chunk_index = u32::try_from(dispatches.len()).ok()?;
@@ -72,7 +82,58 @@ fn dynamic_compose_dispatches(
             workgroup_count: row_count,
         });
     }
-    Some(dispatches)
+    Some(())
+}
+
+pub(super) fn build_dynamic_compose_grid_upload_for_rows_into(
+    upload: &mut DynamicComposeGridUpload,
+    grid: ComposeGridParams,
+    physical_tile_stride: u32,
+    rows: &[u32],
+    max_workgroups_x: u32,
+    dynamic_offset_alignment: u32,
+    max_buffer_size: u64,
+) -> Option<()> {
+    let total_rows = checked_affinity_range_count(grid.affinity_dims)?;
+    if rows.windows(2).any(|pair| pair[0] >= pair[1])
+        || rows.last().is_some_and(|row| *row >= total_rows)
+    {
+        return None;
+    }
+    dynamic_compose_dispatches_into(
+        rows.len(),
+        max_workgroups_x,
+        dynamic_offset_alignment,
+        &mut upload.dispatches,
+    )?;
+    upload.bytes.clear();
+    if upload.dispatches.is_empty() {
+        return Some(());
+    }
+    let last = upload.dispatches.last()?;
+    let byte_len = u64::from(last.dynamic_offset)
+        .checked_add(u64::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE).ok()?)?;
+    if byte_len > max_buffer_size {
+        return None;
+    }
+    upload.bytes.resize(usize::try_from(byte_len).ok()?, 0);
+    upload.bytes.fill(0);
+    for dispatch in &upload.dispatches {
+        let start = usize::try_from(dispatch.row_offset).ok()?;
+        let end = start.checked_add(usize::try_from(dispatch.row_count).ok()?)?;
+        let offset = usize::try_from(dispatch.dynamic_offset).ok()?;
+        write_dynamic_compose_grid_bytes(
+            upload
+                .bytes
+                .get_mut(offset..offset + DYNAMIC_COMPOSE_GRID_DIMS_SIZE)?,
+            DynamicComposeGridParams {
+                grid,
+                physical_tile_stride,
+            },
+            rows.get(start..end)?,
+        )?;
+    }
+    Some(())
 }
 
 pub(super) fn build_dynamic_compose_grid_upload_for_rows(
@@ -83,41 +144,17 @@ pub(super) fn build_dynamic_compose_grid_upload_for_rows(
     dynamic_offset_alignment: u32,
     max_buffer_size: u64,
 ) -> Option<DynamicComposeGridUpload> {
-    let total_rows = checked_affinity_range_count(grid.affinity_dims)?;
-    if rows.windows(2).any(|pair| pair[0] >= pair[1])
-        || rows.last().is_some_and(|row| *row >= total_rows)
-    {
-        return None;
-    }
-    let dispatches =
-        dynamic_compose_dispatches(rows.len(), max_workgroups_x, dynamic_offset_alignment)?;
-    if dispatches.is_empty() {
-        return Some(DynamicComposeGridUpload {
-            bytes: Vec::new(),
-            dispatches,
-        });
-    }
-    let last = dispatches.last()?;
-    let byte_len = u64::from(last.dynamic_offset)
-        .checked_add(u64::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE).ok()?)?;
-    if byte_len > max_buffer_size {
-        return None;
-    }
-    let mut bytes = vec![0; usize::try_from(byte_len).ok()?];
-    for dispatch in &dispatches {
-        let start = usize::try_from(dispatch.row_offset).ok()?;
-        let end = start.checked_add(usize::try_from(dispatch.row_count).ok()?)?;
-        let record = build_dynamic_compose_grid_bytes(
-            DynamicComposeGridParams {
-                grid,
-                physical_tile_stride,
-            },
-            rows.get(start..end)?,
-        )?;
-        let offset = usize::try_from(dispatch.dynamic_offset).ok()?;
-        bytes[offset..offset + DYNAMIC_COMPOSE_GRID_DIMS_SIZE].copy_from_slice(&record);
-    }
-    Some(DynamicComposeGridUpload { bytes, dispatches })
+    let mut upload = DynamicComposeGridUpload::default();
+    build_dynamic_compose_grid_upload_for_rows_into(
+        &mut upload,
+        grid,
+        physical_tile_stride,
+        rows,
+        max_workgroups_x,
+        dynamic_offset_alignment,
+        max_buffer_size,
+    )?;
+    Some(upload)
 }
 
 pub(super) fn build_dynamic_compose_grid_upload(
@@ -280,5 +317,81 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1, 2, 3, 4]
         );
+    }
+
+    #[test]
+    fn gather_records_honor_non_256_dynamic_offset_alignment() {
+        let rows = [0, 1];
+        for alignment in [64, 384] {
+            let stride = (u32::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE).unwrap() + alignment - 1)
+                / alignment
+                * alignment;
+            let upload = build_dynamic_compose_grid_upload_for_rows(
+                grid(2),
+                8,
+                &rows,
+                1,
+                alignment,
+                u64::MAX,
+            )
+            .unwrap();
+            assert_eq!(upload.dispatches.len(), 2);
+            assert_eq!(upload.dispatches[0].dynamic_offset, 0);
+            assert_eq!(upload.dispatches[1].dynamic_offset % alignment, 0);
+            assert_eq!(upload.dispatches[1].dynamic_offset, stride);
+            assert_eq!(
+                upload.bytes.len(),
+                stride as usize + DYNAMIC_COMPOSE_GRID_DIMS_SIZE
+            );
+        }
+    }
+
+    #[test]
+    fn gathered_upload_preserves_exact_buffer_limit_boundary() {
+        let rows = [0, 1];
+        let required = 65_664_u64 + DYNAMIC_COMPOSE_GRID_DIMS_SIZE as u64;
+        assert!(
+            build_dynamic_compose_grid_upload_for_rows(grid(2), 8, &rows, 1, 384, required,)
+                .is_some()
+        );
+        assert!(
+            build_dynamic_compose_grid_upload_for_rows(grid(2), 8, &rows, 1, 384, required - 1,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gathered_upload_encoding_retains_warmed_capacity() {
+        let rows = (0..64).collect::<Vec<_>>();
+        let mut upload = DynamicComposeGridUpload::default();
+        build_dynamic_compose_grid_upload_for_rows_into(
+            &mut upload,
+            grid(64),
+            8,
+            &rows,
+            7,
+            384,
+            u64::MAX,
+        )
+        .unwrap();
+        let warmed = upload.capacities();
+        let byte_ptr = upload.bytes.as_ptr();
+        let dispatch_ptr = upload.dispatches.as_ptr();
+
+        for row_count in [1, 7, 31, 64] {
+            build_dynamic_compose_grid_upload_for_rows_into(
+                &mut upload,
+                grid(64),
+                8,
+                &rows[..row_count],
+                7,
+                384,
+                u64::MAX,
+            )
+            .unwrap();
+            assert_eq!(upload.capacities(), warmed);
+            assert_eq!(upload.bytes.as_ptr(), byte_ptr);
+            assert_eq!(upload.dispatches.as_ptr(), dispatch_ptr);
+        }
     }
 }

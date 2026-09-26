@@ -94,11 +94,9 @@ fn compose_gauges_changed_or_active(
     before: &ShStreamingLiveDiagnostics,
     now: &ShStreamingLiveDiagnostics,
 ) -> bool {
-    now.compose_planning_cpu_micros != 0
-        || now.indirect_compose != Default::default()
+    now.indirect_compose != Default::default()
         || now.static_direct_compose != Default::default()
         || now.animated_direct_compose != Default::default()
-        || now.compose_planning_cpu_micros != before.compose_planning_cpu_micros
         || now.indirect_compose != before.indirect_compose
         || now.static_direct_compose != before.static_direct_compose
         || now.animated_direct_compose != before.animated_direct_compose
@@ -395,5 +393,31 @@ mod tests {
         let idle = ShStreamingLiveDiagnostics::default();
         assert!(window.line_if_due(15.0, &idle).is_some());
         assert!(window.line_if_due(20.0, &idle).is_none());
+    }
+
+    // Regression: per-frame planning time used to keep an otherwise idle log window alive.
+    #[test]
+    fn planning_time_is_reported_with_real_activity_but_does_not_activate_log_window() {
+        let mut window = ShStreamingLogWindow::default();
+        let planning_only = ShStreamingLiveDiagnostics {
+            compose_planning_cpu_micros: 275,
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        assert!(window.line_if_due(0.0, &planning_only).is_none());
+        assert!(window.line_if_due(5.0, &planning_only).is_none());
+        assert!(window.line_if_due(10.0, &planning_only).is_none());
+
+        let active = ShStreamingLiveDiagnostics {
+            compose_planning_cpu_micros: 275,
+            indirect_compose: postretro_renderer::ShComposePassDiagnostics {
+                rows_composed: 1,
+                ..Default::default()
+            },
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        let line = window
+            .line_if_due(15.0, &active)
+            .expect("compose activity should activate the log window");
+        assert!(line.contains("planning 0.275 ms"), "{line}");
     }
 }

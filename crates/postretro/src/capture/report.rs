@@ -5,6 +5,7 @@
 use postretro_renderer::ShStreamingAllocationSummary;
 use serde::Serialize;
 
+use super::prepared::measurement_animation_time_seconds;
 use super::scene::{CameraPose, CaptureScene};
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ShResidencyAllocation,
@@ -52,6 +53,10 @@ pub(super) fn measurement_report(
             output: scene.output.clone(),
             resolution: scene.resolution,
             camera: CameraReport::from(&scene.camera),
+            force_full_resident_sh_compose: scene.force_full_resident_sh_compose,
+            animation_time_seconds: measurement_animation_time_seconds(
+                u64::from(measurement.warmup_frames) + u64::from(measurement.sample_frames),
+            ),
         },
         workload: WorkloadReport {
             warmup_frames: measurement.warmup_frames,
@@ -162,6 +167,8 @@ struct CaptureReport {
     output: String,
     resolution: [u32; 2],
     camera: CameraReport,
+    force_full_resident_sh_compose: bool,
+    animation_time_seconds: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -611,6 +618,30 @@ mod tests {
         assert_eq!(json["gpu_timing"]["availability"], "not-requested");
         assert_eq!(json["gpu_timing"]["reason"], "env-disabled");
         assert!(json["gpu_timing"].get("windows").is_none());
+    }
+
+    #[test]
+    fn report_identifies_compose_mode_and_derived_animation_time() {
+        let mut scene = scene_with_measurement();
+        scene.force_full_resident_sh_compose = true;
+        let json = as_json(measurement_report(
+            &scene,
+            99,
+            None,
+            adapter(),
+            None,
+            vec![1.0],
+            CaptureGpuTimingState::NotRequested,
+            0,
+            Vec::new(),
+        ));
+
+        assert_eq!(json["capture"]["force_full_resident_sh_compose"], true);
+        let actual = json["capture"]["animation_time_seconds"]
+            .as_f64()
+            .expect("animation time serializes as a number");
+        let expected = f64::from(measurement_animation_time_seconds(123));
+        assert!((actual - expected).abs() < f64::EPSILON);
     }
 
     #[test]

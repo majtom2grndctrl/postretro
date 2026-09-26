@@ -91,7 +91,7 @@ type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
 /// One streamed SH compose pass's current-frame work and remaining lag.
 ///
 /// These values are gauges, not lifetime counters: the renderer replaces them
-/// on every recorded frame so diagnostics describe the work consumers can
+/// on every planned frame so diagnostics describe the work consumers can
 /// correlate with that frame's timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ShComposePassDiagnostics {

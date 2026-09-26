@@ -73,6 +73,7 @@ impl ShResidencyState {
             self.compose_animated_resident_rows
                 .extend(self.compose_direct_resident_rows.iter().copied());
         }
+        self.prune_nonresident_dirty_rows();
 
         let mut residency_rows = std::mem::take(&mut self.compose_residency_rows);
         self.close_residency_rows_over_scaled_writers(
@@ -119,7 +120,8 @@ impl ShResidencyState {
         self.compose_animated_contributing_rows.clear();
         self.compose_animated_contributing_rows
             .extend(self.direct_animated_row_refs.keys().copied());
-        self.compose_frame_plan = Some(self.compose_planner.plan_frame(
+        let mut frame_plan = self.compose_frame_plan.take().unwrap_or_default();
+        self.compose_planner.plan_frame_into(
             compose_plan::ComposePlannerFrame {
                 records_compose,
                 force_full_resident,
@@ -146,12 +148,49 @@ impl ShResidencyState {
                     animated_override,
                 },
             },
+            &mut frame_plan,
+        );
+        self.indirect_compose_diagnostics = lag_diagnostics(self.compose_planner.lagging_rows(
+            compose_plan::ComposePass::Indirect,
+            &self.compose_indirect_resident_rows,
         ));
+        self.static_direct_compose_diagnostics =
+            lag_diagnostics(self.compose_planner.lagging_rows(
+                compose_plan::ComposePass::StaticDirect,
+                &self.compose_direct_resident_rows,
+            ));
+        self.animated_direct_compose_diagnostics =
+            lag_diagnostics(self.compose_planner.lagging_rows(
+                compose_plan::ComposePass::AnimatedDirect,
+                &self.compose_animated_resident_rows,
+            ));
+        self.compose_frame_plan = Some(frame_plan);
         self.compose_region_rows = region_rows;
         self.compose_residency_rows = residency_rows;
         self.compose_planning_cpu_micros =
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         Ok(())
+    }
+
+    pub(super) fn prune_nonresident_dirty_rows(&mut self) {
+        let indirect_resident_rows = &self.indirect_resident_rows;
+        self.indirect_dirty_rows
+            .retain(|row| indirect_resident_rows.contains(row));
+        let direct_resident_rows = &self.compose_direct_resident_rows;
+        self.direct_promotion_dirty_rows
+            .retain(|row| direct_resident_rows.binary_search(row).is_ok());
+        let animated_resident_rows = &self.compose_animated_resident_rows;
+        self.direct_animated_dirty_rows
+            .retain(|row| animated_resident_rows.binary_search(row).is_ok());
+        let indirect_delta_row_refs = &self.indirect_delta_row_refs;
+        let direct_promotion_row_refs = &self.direct_promotion_row_refs;
+        let direct_animated_row_refs = &self.direct_animated_row_refs;
+        self.dirty_rows.retain(|&(section, row)| match section {
+            INDIRECT_DELTA_ID => indirect_delta_row_refs.contains_key(&row),
+            DIRECT_DELTA_ID => direct_promotion_row_refs.contains_key(&row),
+            ANIMATED_DIRECT_DELTA_ID => direct_animated_row_refs.contains_key(&row),
+            _ => true,
+        });
     }
 
     #[expect(
@@ -174,89 +213,93 @@ impl ShResidencyState {
         if !self.direct_compose_required {
             return Ok(());
         }
-        let frame_plan =
-            self.compose_frame_plan
-                .as_ref()
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed direct compose dispatched before frame planning",
-                })?;
-        let promotion_plan = frame_plan.static_direct.clone();
-        let animated_plan = frame_plan.animated_direct.clone();
-        let mut encoded_any = false;
+        let Some(frame_plan) = self.compose_frame_plan.take() else {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed direct compose dispatched before frame planning",
+            });
+        };
+        let result: Result<(), ShResidencyDrainError> = (|| {
+            let promotion_plan = &frame_plan.static_direct;
+            let animated_plan = &frame_plan.animated_direct;
+            let mut encoded_any = false;
 
-        if !promotion_plan.rows().is_empty() {
-            let dispatches = self
-                .gpu
-                .as_mut()
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed direct compose dispatch requested before GPU initialization",
-                })?
-                .dispatch_direct_promotion(
-                    queue,
-                    encoder,
-                    frame_light_term_mask,
-                    promotion_override,
-                    promotion_plan.rows(),
-                    promotion_timestamp_writes,
-                )?;
-            self.compose_planner.commit_pass(&promotion_plan);
-            self.static_direct_compose_diagnostics = pass_diagnostics(
-                &promotion_plan,
-                dispatches,
-                self.compose_planner.lagging_rows(
-                    compose_plan::ComposePass::StaticDirect,
-                    &self.compose_direct_resident_rows,
-                ),
-            );
-            self.direct_promotion_dirty_rows.clear();
-            // Planning Pass A already made the matching Pass-B work durable.
-            // Clearing both residency dirty sets here prevents a failed Pass B
-            // from needlessly reseeding and rewriting committed Pass A.
-            self.direct_animated_dirty_rows.clear();
-            self.dirty_rows
-                .retain(|(section, _)| *section != DIRECT_DELTA_ID);
-            encoded_any = true;
-        }
+            if !promotion_plan.rows().is_empty() {
+                let dispatches = self
+                    .gpu
+                    .as_mut()
+                    .ok_or(ShResidencyDrainError::GpuCapacity {
+                        reason:
+                            "streamed direct compose dispatch requested before GPU initialization",
+                    })?
+                    .dispatch_direct_promotion(
+                        queue,
+                        encoder,
+                        frame_light_term_mask,
+                        promotion_override,
+                        promotion_plan.rows(),
+                        promotion_timestamp_writes,
+                    )?;
+                self.compose_planner.commit_pass(promotion_plan);
+                self.static_direct_compose_diagnostics = pass_diagnostics(
+                    promotion_plan,
+                    dispatches,
+                    self.compose_planner.lagging_rows(
+                        compose_plan::ComposePass::StaticDirect,
+                        &self.compose_direct_resident_rows,
+                    ),
+                );
+                self.direct_promotion_dirty_rows.clear();
+                // Planning Pass A already made the matching Pass-B work durable.
+                // Clearing both residency dirty sets here prevents a failed Pass B
+                // from needlessly reseeding and rewriting committed Pass A.
+                self.direct_animated_dirty_rows.clear();
+                self.dirty_rows
+                    .retain(|(section, _)| *section != DIRECT_DELTA_ID);
+                encoded_any = true;
+            }
 
-        if !animated_plan.rows().is_empty() {
-            let dispatches = self
-                .gpu
-                .as_mut()
-                .ok_or(ShResidencyDrainError::GpuCapacity {
-                    reason: "streamed animated direct compose dispatched before GPU initialization",
-                })?
-                .dispatch_direct_animated(
-                    queue,
-                    encoder,
-                    uniform_bind_group,
-                    animated_override,
-                    promoted_animated_states,
-                    animated_plan.rows(),
-                    animated_timestamp_writes,
-                )?;
-            self.compose_planner.commit_pass(&animated_plan);
-            self.animated_direct_compose_diagnostics = pass_diagnostics(
-                &animated_plan,
-                dispatches,
-                self.compose_planner.lagging_rows(
-                    compose_plan::ComposePass::AnimatedDirect,
-                    &self.compose_animated_resident_rows,
-                ),
-            );
-            self.direct_animated_dirty_rows.clear();
-            self.dirty_rows
-                .retain(|(section, _)| *section != ANIMATED_DIRECT_DELTA_ID);
-            encoded_any = true;
-        }
+            if !animated_plan.rows().is_empty() {
+                let dispatches = self
+                    .gpu
+                    .as_mut()
+                    .ok_or(ShResidencyDrainError::GpuCapacity {
+                        reason:
+                            "streamed animated direct compose dispatched before GPU initialization",
+                    })?
+                    .dispatch_direct_animated(
+                        queue,
+                        encoder,
+                        uniform_bind_group,
+                        animated_override,
+                        promoted_animated_states,
+                        animated_plan.rows(),
+                        animated_timestamp_writes,
+                    )?;
+                self.compose_planner.commit_pass(animated_plan);
+                self.animated_direct_compose_diagnostics = pass_diagnostics(
+                    animated_plan,
+                    dispatches,
+                    self.compose_planner.lagging_rows(
+                        compose_plan::ComposePass::AnimatedDirect,
+                        &self.compose_animated_resident_rows,
+                    ),
+                );
+                self.direct_animated_dirty_rows.clear();
+                self.dirty_rows
+                    .retain(|(section, _)| *section != ANIMATED_DIRECT_DELTA_ID);
+                encoded_any = true;
+            }
 
-        if !encoded_any {
-            return Ok(());
-        }
-        self.direct_compose_epoch = self
-            .direct_compose_epoch
-            .checked_add(1)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        Ok(())
+            if encoded_any {
+                self.direct_compose_epoch = self
+                    .direct_compose_epoch
+                    .checked_add(1)
+                    .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            }
+            Ok(())
+        })();
+        self.compose_frame_plan = Some(frame_plan);
+        result
     }
 
     /// Encode only coalesced affinity-row work after the one pre-compose
@@ -271,47 +314,50 @@ impl ShResidencyState {
         _frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'a>>,
     ) -> Result<(), ShResidencyDrainError> {
-        let plan = self
-            .compose_frame_plan
-            .as_ref()
-            .ok_or(ShResidencyDrainError::GpuCapacity {
+        let Some(frame_plan) = self.compose_frame_plan.take() else {
+            return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed indirect compose dispatched before frame planning",
-            })?
-            .indirect
-            .clone();
+            });
+        };
+        let plan = &frame_plan.indirect;
         if plan.rows().is_empty() {
+            self.compose_frame_plan = Some(frame_plan);
             return Ok(());
         }
-        let gpu = self
-            .gpu
-            .as_ref()
-            .ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed compose dispatch requested before GPU initialization",
-            })?;
-        let dispatches = gpu.dispatch_indirect_compose(
-            queue,
-            encoder,
-            uniform_bind_group,
-            plan.rows(),
-            timestamp_writes,
-        )?;
-        self.compose_planner.commit_pass(&plan);
-        self.indirect_compose_diagnostics = pass_diagnostics(
-            &plan,
-            dispatches,
-            self.compose_planner.lagging_rows(
-                compose_plan::ComposePass::Indirect,
-                &self.compose_indirect_resident_rows,
-            ),
-        );
-        self.indirect_compose_epoch = self
-            .indirect_compose_epoch
-            .checked_add(1)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        self.indirect_dirty_rows.clear();
-        self.dirty_rows
-            .retain(|(section, _)| *section != INDIRECT_DELTA_ID);
-        Ok(())
+        let result: Result<(), ShResidencyDrainError> = (|| {
+            let gpu = self
+                .gpu
+                .as_mut()
+                .ok_or(ShResidencyDrainError::GpuCapacity {
+                    reason: "streamed compose dispatch requested before GPU initialization",
+                })?;
+            let dispatches = gpu.dispatch_indirect_compose(
+                queue,
+                encoder,
+                uniform_bind_group,
+                plan.rows(),
+                timestamp_writes,
+            )?;
+            self.compose_planner.commit_pass(plan);
+            self.indirect_compose_diagnostics = pass_diagnostics(
+                plan,
+                dispatches,
+                self.compose_planner.lagging_rows(
+                    compose_plan::ComposePass::Indirect,
+                    &self.compose_indirect_resident_rows,
+                ),
+            );
+            self.indirect_compose_epoch = self
+                .indirect_compose_epoch
+                .checked_add(1)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            self.indirect_dirty_rows.clear();
+            self.dirty_rows
+                .retain(|(section, _)| *section != INDIRECT_DELTA_ID);
+            Ok(())
+        })();
+        self.compose_frame_plan = Some(frame_plan);
+        result
     }
 
     pub(in crate::render) fn snapshot(&self) -> ShResidencySnapshot {
@@ -439,6 +485,13 @@ fn pass_diagnostics(
     }
 }
 
+fn lag_diagnostics(remaining_lag: usize) -> ShComposePassDiagnostics {
+    ShComposePassDiagnostics {
+        resident_rows_still_lagging: u64::try_from(remaining_lag).unwrap_or(u64::MAX),
+        ..ShComposePassDiagnostics::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +510,17 @@ mod tests {
                 dispatches: 1,
                 lagged_rows_composed: 2,
                 resident_rows_still_lagging: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn empty_dispatch_diagnostics_preserve_resident_lag() {
+        assert_eq!(
+            lag_diagnostics(3),
+            ShComposePassDiagnostics {
+                resident_rows_still_lagging: 3,
+                ..ShComposePassDiagnostics::default()
             }
         );
     }

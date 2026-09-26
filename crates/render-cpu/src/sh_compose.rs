@@ -678,10 +678,21 @@ pub fn build_dynamic_compose_grid_bytes(
     params: DynamicComposeGridParams,
     rows: &[u32],
 ) -> Option<Vec<u8>> {
-    if rows.len() > DYNAMIC_COMPOSE_ROW_CAPACITY {
+    let mut bytes = vec![0u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE];
+    write_dynamic_compose_grid_bytes(&mut bytes, params, rows)?;
+    Some(bytes)
+}
+
+/// Fill one caller-owned binding-18 gather record without allocating.
+pub fn write_dynamic_compose_grid_bytes(
+    bytes: &mut [u8],
+    params: DynamicComposeGridParams,
+    rows: &[u32],
+) -> Option<()> {
+    if bytes.len() != DYNAMIC_COMPOSE_GRID_DIMS_SIZE || rows.len() > DYNAMIC_COMPOSE_ROW_CAPACITY {
         return None;
     }
-    let mut bytes = vec![0u8; DYNAMIC_COMPOSE_GRID_DIMS_SIZE];
+    bytes.fill(0);
     bytes[..COMPOSE_GRID_DIMS_PREFIX_SIZE].copy_from_slice(&build_compose_grid_bytes(params.grid));
     bytes[64..68].copy_from_slice(&params.physical_tile_stride.to_ne_bytes());
     bytes[72..76].copy_from_slice(&u32::try_from(rows.len()).ok()?.to_ne_bytes());
@@ -689,7 +700,7 @@ pub fn build_dynamic_compose_grid_bytes(
         let offset = DYNAMIC_COMPOSE_GRID_HEADER_SIZE + index * 4;
         bytes[offset..offset + 4].copy_from_slice(&row.to_ne_bytes());
     }
-    Some(bytes)
+    Some(())
 }
 
 pub fn u16_slice_to_bytes(data: &[u16]) -> Vec<u8> {
@@ -1690,5 +1701,48 @@ mod tests {
         assert_eq!(word(DYNAMIC_COMPOSE_GRID_HEADER_SIZE), 17);
         assert_eq!(word(DYNAMIC_COMPOSE_GRID_HEADER_SIZE + 4), 4);
         assert_eq!(word(DYNAMIC_COMPOSE_GRID_HEADER_SIZE + 8), 91);
+    }
+
+    #[test]
+    fn dynamic_compose_grid_record_fills_caller_owned_storage() {
+        let grid = ComposeGridParams {
+            grid_dimensions: [1, 1, 1],
+            atlas_dimensions: [1, 1],
+            tile_dimension: 4,
+            tile_border: 1,
+            atlas_tiles_per_row: 1,
+            tiles_per_layer: 1,
+            atlas_layer_count: 1,
+            affinity_dims: [2, 1, 1],
+            compact_atlas_tiles_per_row: 1,
+            compact_atlas_tiles_per_layer: 1,
+        };
+        let mut bytes = vec![0xff; DYNAMIC_COMPOSE_GRID_DIMS_SIZE];
+        let pointer = bytes.as_ptr();
+        write_dynamic_compose_grid_bytes(
+            &mut bytes,
+            DynamicComposeGridParams {
+                grid,
+                physical_tile_stride: 8,
+            },
+            &[1],
+        )
+        .unwrap();
+
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(u32::from_ne_bytes(bytes[72..76].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_ne_bytes(
+                bytes[DYNAMIC_COMPOSE_GRID_HEADER_SIZE..DYNAMIC_COMPOSE_GRID_HEADER_SIZE + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            1
+        );
+        assert!(
+            bytes[DYNAMIC_COMPOSE_GRID_HEADER_SIZE + 4..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
     }
 }

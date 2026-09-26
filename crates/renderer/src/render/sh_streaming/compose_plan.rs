@@ -52,12 +52,13 @@ pub(super) struct ComposePlannerFrame<'a> {
 
 /// Work for one pass. State changes only when this plan is committed after a
 /// successful encode.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct ComposePassPlan {
     pass: ComposePass,
     rows: Vec<u32>,
     required_generations: Vec<u64>,
     lagged_rows: usize,
+    full_repair: bool,
 }
 
 impl ComposePassPlan {
@@ -81,13 +82,14 @@ impl ComposePassPlan {
             pass,
             rows,
             lagged_rows,
+            full_repair: false,
         }
     }
 }
 
 /// Current-frame work in encode order. Pass B is planned after Pass A and is
 /// guaranteed to contain every row Pass A rewrites.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct ComposeFramePlan {
     pub(super) indirect: ComposePassPlan,
     pub(super) static_direct: ComposePassPlan,
@@ -95,12 +97,24 @@ pub(super) struct ComposeFramePlan {
 }
 
 impl ComposeFramePlan {
-    fn empty() -> Self {
+    fn new() -> Self {
         Self {
             indirect: ComposePassPlan::empty(ComposePass::Indirect),
             static_direct: ComposePassPlan::empty(ComposePass::StaticDirect),
             animated_direct: ComposePassPlan::empty(ComposePass::AnimatedDirect),
         }
+    }
+
+    fn clear(&mut self) {
+        self.indirect.clear();
+        self.static_direct.clear();
+        self.animated_direct.clear();
+    }
+
+    #[cfg(test)]
+    fn capacities(&self) -> [(usize, usize); 3] {
+        self.ordered()
+            .map(|plan| (plan.rows.capacity(), plan.required_generations.capacity()))
     }
 
     #[cfg(test)]
@@ -116,7 +130,21 @@ impl ComposePassPlan {
             rows: Vec::new(),
             required_generations: Vec::new(),
             lagged_rows: 0,
+            full_repair: false,
         }
+    }
+
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.required_generations.clear();
+        self.lagged_rows = 0;
+        self.full_repair = false;
+    }
+}
+
+impl Default for ComposeFramePlan {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -126,6 +154,7 @@ struct PassStaleness {
     required: BTreeMap<u32, u64>,
     composed: BTreeMap<u32, u64>,
     pending: BTreeSet<u32>,
+    full_repair_pending: bool,
 }
 
 impl PassStaleness {
@@ -162,56 +191,59 @@ impl PassStaleness {
             .retain(|row| resident.binary_search(row).is_ok());
     }
 
-    fn plan(
+    fn plan_into(
         &self,
         pass: ComposePass,
         resident: &[u32],
         gated: &[u32],
         force_full_resident: bool,
-    ) -> ComposePassPlan {
-        let mut rows: Vec<u32> = self
-            .pending
-            .iter()
-            .copied()
-            .filter(|row| resident.binary_search(row).is_ok())
-            .collect();
-        if force_full_resident {
-            rows.extend(resident.iter().copied().filter(|row| {
+        plan: &mut ComposePassPlan,
+    ) {
+        plan.clear();
+        plan.pass = pass;
+        plan.full_repair = self.full_repair_pending;
+        plan.rows.extend(
+            self.pending
+                .iter()
+                .copied()
+                .filter(|row| resident.binary_search(row).is_ok()),
+        );
+        if force_full_resident || self.full_repair_pending {
+            plan.rows.extend(resident.iter().copied().filter(|row| {
                 self.composed.get(row).copied().unwrap_or(0)
                     < self.required.get(row).copied().unwrap_or(0)
             }));
         } else {
-            rows.extend(gated.iter().copied().filter(|row| {
+            plan.rows.extend(gated.iter().copied().filter(|row| {
                 resident.binary_search(row).is_ok()
                     && self.composed.get(row).copied().unwrap_or(0)
                         < self.required.get(row).copied().unwrap_or(0)
             }));
         }
-        rows.sort_unstable();
-        rows.dedup();
-        let lagged_rows = rows
+        plan.rows.sort_unstable();
+        plan.rows.dedup();
+        plan.lagged_rows = plan
+            .rows
             .iter()
             .filter(|row| {
                 self.composed.get(row).copied().unwrap_or(0)
                     < self.required.get(row).copied().unwrap_or(0)
             })
             .count();
-        let required_generations = rows
-            .iter()
-            .map(|row| self.required.get(row).copied().unwrap_or(0))
-            .collect();
-        ComposePassPlan {
-            pass,
-            rows,
-            required_generations,
-            lagged_rows,
-        }
+        plan.required_generations.extend(
+            plan.rows
+                .iter()
+                .map(|row| self.required.get(row).copied().unwrap_or(0)),
+        );
     }
 
     fn commit(&mut self, plan: &ComposePassPlan) {
         for (&row, &generation) in plan.rows.iter().zip(&plan.required_generations) {
             self.composed.insert(row, generation);
             self.pending.remove(&row);
+        }
+        if plan.full_repair {
+            self.full_repair_pending = false;
         }
     }
 
@@ -253,7 +285,19 @@ impl StreamedComposePlanner {
         self.pass_mut(pass).pending.extend(rows);
     }
 
+    #[cfg(test)]
     pub(super) fn plan_frame(&mut self, frame: ComposePlannerFrame<'_>) -> ComposeFramePlan {
+        let mut plan = ComposeFramePlan::default();
+        self.plan_frame_into(frame, &mut plan);
+        plan
+    }
+
+    pub(super) fn plan_frame_into(
+        &mut self,
+        frame: ComposePlannerFrame<'_>,
+        plan: &mut ComposeFramePlan,
+    ) {
+        plan.clear();
         self.indirect.retain_resident(frame.indirect_rows.resident);
         self.static_direct
             .retain_resident(frame.static_direct_rows.resident);
@@ -281,6 +325,9 @@ impl StreamedComposePlanner {
             || controls_changed;
 
         if controls_changed {
+            self.indirect.full_repair_pending = true;
+            self.static_direct.full_repair_pending = true;
+            self.animated_direct.full_repair_pending = true;
             self.indirect
                 .mark_changed(frame.indirect_rows.resident.iter());
             self.static_direct
@@ -321,37 +368,34 @@ impl StreamedComposePlanner {
         self.animated_direct_was_active = frame.animated_direct_active;
 
         if !frame.records_compose {
-            return ComposeFramePlan::empty();
+            return;
         }
 
-        let indirect = self.indirect.plan(
+        self.indirect.plan_into(
             ComposePass::Indirect,
             frame.indirect_rows.resident,
             frame.gated_rows,
             frame.force_full_resident,
+            &mut plan.indirect,
         );
-        let static_direct = self.static_direct.plan(
+        self.static_direct.plan_into(
             ComposePass::StaticDirect,
             frame.static_direct_rows.resident,
             frame.gated_rows,
             frame.force_full_resident,
+            &mut plan.static_direct,
         );
         // Planning Pass A creates durable Pass-B retry work before encoding.
         self.animated_direct
             .pending
-            .extend(static_direct.rows.iter().copied());
-        let animated_direct = self.animated_direct.plan(
+            .extend(plan.static_direct.rows.iter().copied());
+        self.animated_direct.plan_into(
             ComposePass::AnimatedDirect,
             frame.animated_direct_rows.resident,
             frame.gated_rows,
             frame.force_full_resident,
+            &mut plan.animated_direct,
         );
-
-        ComposeFramePlan {
-            indirect,
-            static_direct,
-            animated_direct,
-        }
     }
 
     pub(super) fn commit_pass(&mut self, plan: &ComposePassPlan) {
@@ -600,6 +644,62 @@ mod tests {
     }
 
     #[test]
+    fn control_change_bypasses_partial_or_empty_gate_until_committed() {
+        let mut planner = StreamedComposePlanner::default();
+        let mut fixture = Fixture::all(&[1, 2, 3]);
+        let initial = planner.plan_frame(fixture.frame(true, false, false));
+        commit_all(&mut planner, &initial);
+
+        fixture.gated = list(&[2]);
+        let mut changed = fixture.frame(true, false, false);
+        changed.controls.light_term_mask = LightTermMask::AMBIENT_FLOOR;
+        let partial = planner.plan_frame(changed);
+        for pass in partial.ordered() {
+            assert_eq!(pass.rows(), &[1, 2, 3]);
+        }
+
+        fixture.gated.clear();
+        let mut retry = fixture.frame(true, false, false);
+        retry.controls.light_term_mask = LightTermMask::AMBIENT_FLOOR;
+        let empty_gate_retry = planner.plan_frame(retry);
+        for pass in empty_gate_retry.ordered() {
+            assert_eq!(pass.rows(), &[1, 2, 3]);
+        }
+        commit_all(&mut planner, &empty_gate_retry);
+        fixture.gated = list(&[1, 2, 3]);
+        let mut clean_frame = fixture.frame(true, false, false);
+        clean_frame.controls.light_term_mask = LightTermMask::AMBIENT_FLOOR;
+        let clean = planner.plan_frame(clean_frame);
+        assert!(clean.ordered().iter().all(|plan| plan.rows().is_empty()));
+    }
+
+    #[test]
+    fn control_change_on_nonrecording_frame_repairs_full_resident_later() {
+        let mut planner = StreamedComposePlanner::default();
+        let mut fixture = Fixture::all(&[4, 5]);
+        let initial = planner.plan_frame(fixture.frame(true, false, false));
+        commit_all(&mut planner, &initial);
+        fixture.gated.clear();
+
+        let mut skipped = fixture.frame(false, false, false);
+        skipped.controls.animated_override.enabled = true;
+        assert!(
+            planner
+                .plan_frame(skipped)
+                .ordered()
+                .iter()
+                .all(|plan| plan.rows().is_empty())
+        );
+
+        let mut recorded = fixture.frame(true, false, false);
+        recorded.controls.animated_override.enabled = true;
+        let repair = planner.plan_frame(recorded);
+        for pass in repair.ordered() {
+            assert_eq!(pass.rows(), &[4, 5]);
+        }
+    }
+
+    #[test]
     fn force_full_resident_plans_all_resident_rows() {
         let mut planner = StreamedComposePlanner::default();
         let mut fixture = Fixture::all(&[1, 2, 3]);
@@ -656,13 +756,9 @@ mod tests {
         let mut planner = StreamedComposePlanner::default();
         let mut fixture = Fixture::all(&[5]);
         fixture.gated.clear();
-        assert!(
-            planner
-                .plan_frame(fixture.frame(true, true, false))
-                .indirect
-                .rows()
-                .is_empty()
-        );
+        let empty = planner.plan_frame(fixture.frame(true, true, false));
+        assert!(empty.indirect.rows().is_empty());
+        assert_eq!(planner.lagging_rows(ComposePass::Indirect, &[5]), 1);
 
         fixture.gated.push(5);
         assert_eq!(
@@ -798,6 +894,50 @@ mod tests {
         let retry = planner.plan_frame(fixture.frame(true, false, false));
         assert!(retry.static_direct.rows().is_empty());
         assert_eq!(retry.animated_direct.rows(), &[13]);
+    }
+
+    #[test]
+    fn failed_control_repair_pass_b_keeps_its_full_retry_only() {
+        let mut planner = StreamedComposePlanner::default();
+        let mut fixture = Fixture::all(&[13, 14]);
+        let initial = planner.plan_frame(fixture.frame(true, false, false));
+        commit_all(&mut planner, &initial);
+        fixture.gated = list(&[13]);
+
+        let mut changed = fixture.frame(true, false, false);
+        changed.controls.promotion_override.enabled = true;
+        let first = planner.plan_frame(changed);
+        assert_eq!(first.static_direct.rows(), &[13, 14]);
+        assert_eq!(first.animated_direct.rows(), &[13, 14]);
+        planner.commit_pass(&first.static_direct);
+        // Pass B fails and retains its independent full-repair latch.
+
+        fixture.gated.clear();
+        let mut retry_frame = fixture.frame(true, false, false);
+        retry_frame.controls.promotion_override.enabled = true;
+        let retry = planner.plan_frame(retry_frame);
+        assert!(retry.static_direct.rows().is_empty());
+        assert_eq!(retry.animated_direct.rows(), &[13, 14]);
+    }
+
+    #[test]
+    fn compose_planner_reuses_warmed_pass_vectors() {
+        let rows = (0..64).collect::<Vec<_>>();
+        let fixture = Fixture::all(&rows);
+        let mut planner = StreamedComposePlanner::default();
+        let mut plan = ComposeFramePlan::default();
+        let mut first = fixture.frame(true, true, true);
+        first.force_full_resident = true;
+        planner.plan_frame_into(first, &mut plan);
+        let warmed = plan.capacities();
+
+        for _ in 0..32 {
+            commit_all(&mut planner, &plan);
+            let mut frame = fixture.frame(true, true, true);
+            frame.force_full_resident = true;
+            planner.plan_frame_into(frame, &mut plan);
+            assert_eq!(plan.capacities(), warmed);
+        }
     }
 
     proptest! {

@@ -962,11 +962,11 @@ pub struct MeshPass {
     /// level-load model sweep populates this via [`MeshPass::insert_model`].
     pub(super) models: HashMap<ModelHandle, UploadedModel>,
 
-    /// Per-model LOCAL-space AABB, keyed by handle, populated at `insert_model`
-    /// from the CPU `SkinnedMesh::bounds`. Kept on the cache (not in
-    /// `UploadedModel`, which stays GPU-only) so the GPU-free frame planner can
-    /// stamp each `PlannedInstance` with its model's bound for the CPU per-light
-    /// caster cull — the renderer's GPU draw never reads it.
+    /// Per-model conservative LOCAL-space pose envelope, keyed by handle and
+    /// populated at `insert_model` from the CPU `SkinnedMesh::bounds`. Kept on
+    /// the cache (not in `UploadedModel`, which stays GPU-only) so the GPU-free
+    /// frame planner can stamp each `PlannedInstance` for CPU shadow and
+    /// sampled-SH planning. The renderer's GPU draw never reads it.
     pub(super) model_bounds: HashMap<ModelHandle, postretro_render_data::cone_frustum::Aabb>,
 
     /// Per-model animation clips, keyed by handle, in glTF (authored) index
@@ -1575,9 +1575,9 @@ impl MeshPass {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        // Stash the CPU-side local bound for the planner (drives the per-light
-        // caster cull). Lives on the cache, NOT in `UploadedModel` — the GPU draw
-        // never reads it.
+        // Stash the CPU-side conservative pose envelope for shadow and
+        // sampled-SH planning. It lives outside `UploadedModel`; GPU draws never
+        // read it.
         self.model_bounds.insert(handle.clone(), mesh.bounds());
         // Stash the full clip list cache-side (same rationale as `model_bounds`):
         // it keeps the clip-name / metadata query seam testable without a GPU.
@@ -1628,8 +1628,8 @@ impl MeshPass {
         clip_metadata(&self.model_clips, handle)
     }
 
-    /// The cached local-space bound for a skinned model. Returns a zero box when
-    /// the model is absent, matching the frame planner's degradation path.
+    /// The cached conservative local-space pose envelope for a skinned model.
+    /// Returns a zero box when absent, matching the planner's degradation path.
     pub fn model_local_bounds(
         &self,
         handle: &ModelHandle,

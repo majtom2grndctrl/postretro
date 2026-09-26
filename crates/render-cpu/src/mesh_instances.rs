@@ -122,7 +122,7 @@ pub struct MeshInstanceInput {
 /// One instance's resolved placement in the frame plan: its world transform, the
 /// base index of its contiguous palette run in the shared buffer, its phase seed
 /// (carried through so the GPU layer can sample its clip into the run at a
-/// per-instance phase), and its model's LOCAL-space bound.
+/// per-instance phase), and its model's conservative LOCAL-space pose envelope.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedInstance {
     pub transform: Mat4,
@@ -131,11 +131,10 @@ pub struct PlannedInstance {
     pub palette_base: u32,
     pub phase_seed: u32,
     pub palette_cache_key: MeshPaletteCacheKey,
-    /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
-    /// the renderer's model cache at plan time. The per-light caster cull
-    /// transforms this by `transform` and tests it against a light's
-    /// cone/face frustum to decide whether the instance casts into that light's
-    /// shadow map. Surfaced CPU-side here; the GPU draw never reads it.
+    /// The instance model's conservative LOCAL-space pose envelope, stamped from
+    /// the renderer's model cache at plan time. It encloses clip samples,
+    /// crossfades, snapshots, and pose modifiers. Shadow and sampled-SH planning
+    /// transform it by `transform`; the GPU draw never reads it.
     pub bounds: Aabb,
     /// Resolved per-frame sample parameters carried verbatim from the collector
     /// — the GPU layer feeds these to the pose sampler (single / blended /
@@ -230,16 +229,15 @@ pub fn planned_forward_sample_bounds(
 
 /// Per-model lookups the GPU-free frame planner needs from the renderer's model
 /// cache: the skeleton's joint count (the palette-run length) and the model's
-/// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
+/// conservative local-space pose envelope (stamped onto each `PlannedInstance`).
 /// `joint_count` returning `None` means the handle is not in the cache (never
 /// uploaded). A missing holder skips its whole holder group; a missing
 /// attachment is omitted while the cached holder remains drawable. Keeps the
 /// planner GPU-free: the cache provides plain values, no wgpu reference crosses.
 pub trait JointCounts {
     fn joint_count(&self, model: &ModelHandle) -> Option<u32>;
-    /// The model's local-space AABB, or a zero box if the handle is uncached
-    /// (those instances are skipped before the bound is read, so the value is a
-    /// harmless default).
+    /// The model's conservative local-space pose envelope, or a zero box if the
+    /// handle is uncached (those instances are skipped before the bound is read).
     fn model_bounds(&self, model: &ModelHandle) -> Aabb;
 }
 
@@ -531,7 +529,8 @@ fn plan_instance_group(
 }
 
 /// Whether a planned skinned instance casts into a spot light's shadow slot:
-/// its model's LOCAL-space bound, transformed by the instance's world matrix,
+/// its model's conservative LOCAL-space pose envelope, transformed by the
+/// instance's world matrix,
 /// must intersect the slot's cone frustum. Pure CPU data logic (no GPU, no BVH —
 /// entities are not in the world BVH), mirroring the GPU cone-cull convention via
 /// the shared `aabb_intersects_frustum`, so the caster cull provably agrees with
@@ -752,6 +751,26 @@ mod tests {
 
         assert_eq!(planned_forward_sample_bounds(&plans, true).count(), 2);
         assert_eq!(planned_forward_sample_bounds(&plans, false).count(), 1);
+    }
+
+    // Regression: bind-pose-only bounds omitted rows reached by animated vertices.
+    #[test]
+    fn planned_forward_sample_bounds_use_model_pose_envelope() {
+        let mut fixed = joints(&[("animated", 1)]);
+        fixed.bounds.insert(
+            "animated".to_string(),
+            Aabb {
+                min: Vec3::splat(-6.0),
+                max: Vec3::splat(6.0),
+            },
+        );
+        let plans = plan_mesh_frame_plans(&[instance("animated", 10.0, 1)], &fixed);
+
+        let bounds: Vec<_> = planned_forward_sample_bounds(&plans, true).collect();
+
+        assert_eq!(bounds.len(), 1);
+        assert_eq!(bounds[0].min, Vec3::new(4.0, -6.0, -6.0));
+        assert_eq!(bounds[0].max, Vec3::new(16.0, 6.0, 6.0));
     }
 
     #[test]
@@ -1266,10 +1285,9 @@ mod tests {
 
     #[test]
     fn plan_stamps_model_local_bounds_onto_planned_instances() {
-        // Each planned instance must carry its model's LOCAL-space bound (the
-        // per-light caster cull transforms it by `transform` at cull time). The
-        // planner stamps it from the model-info lookup, so two distinct models'
-        // instances carry distinct bounds.
+        // Each planned instance must carry its model's conservative LOCAL-space
+        // pose envelope. The planner stamps it from the model-info lookup, so two
+        // distinct models' instances carry distinct bounds.
         let model_bounds = Aabb {
             min: Vec3::new(-1.0, -2.0, -3.0),
             max: Vec3::new(1.0, 2.0, 3.0),

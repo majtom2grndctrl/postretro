@@ -99,6 +99,7 @@ impl StreamingAnimatedPass {
             self.dynamic_alignment,
             self.max_buffer_size,
             rows,
+            &mut self.grid_upload,
             timestamp_writes,
         )
     }

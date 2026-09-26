@@ -1,7 +1,7 @@
 // Cone-frustum geometry for spotlight shadow culling (planes + enclosing AABB
 // from a spotlight's light-space view-projection matrix) and world-space Aabb
 // utilities: transformed enclosure, from_points, empty/expand, Pod/Zeroable —
-// shared by both the cone-cull and entity bind-pose cull paths.
+// shared by both cone culling and conservative entity-pose bounds.
 //
 // See: context/lib/rendering_pipeline.md §7.1
 
@@ -45,7 +45,7 @@ impl Aabb {
     /// so an arbitrary rotation (or shear/scale) produces a correct axis-aligned
     /// enclosure rather than the wrong box a component-wise transform of just
     /// `min`/`max` would give. Used by the per-light entity caster cull: the
-    /// instance's local (bind-pose) model bound is transformed by its world
+    /// instance's conservative local pose envelope is transformed by its world
     /// matrix before testing against a cone frustum.
     pub fn transformed(&self, transform: &Mat4) -> Aabb {
         let corners = [

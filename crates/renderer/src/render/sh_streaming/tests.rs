@@ -444,7 +444,22 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
     state.indirect_dirty_rows.insert(2);
     state.direct_promotion_dirty_rows.insert(4);
     state.direct_animated_dirty_rows.insert(4);
-    assert_eq!(state.snapshot().dirty_affinity_rows, 2);
+    state.dirty_rows.extend([
+        (INDIRECT_DELTA_ID, 2),
+        (DIRECT_DELTA_ID, 4),
+        (ANIMATED_DIRECT_DELTA_ID, 4),
+    ]);
+    state.prune_nonresident_dirty_rows();
+    assert_eq!(state.snapshot().dirty_affinity_rows, 0);
+
+    // Regression: a fully evicted row was rescanned forever, but a later
+    // install must still be able to seed fresh work for the same row.
+    state.indirect_delta_row_refs.insert(2, 1);
+    state.indirect_resident_rows.insert(2);
+    state.indirect_dirty_rows.insert(2);
+    state.dirty_rows.insert((INDIRECT_DELTA_ID, 2));
+    state.prune_nonresident_dirty_rows();
+    assert_eq!(state.snapshot().dirty_affinity_rows, 1);
 }
 
 #[test]

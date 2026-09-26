@@ -2,6 +2,8 @@
 
 use std::time::Instant;
 
+use postretro_render_cpu::mesh_instances;
+
 use super::*;
 
 impl ShResidencyState {
@@ -12,6 +14,8 @@ impl ShResidencyState {
     pub(in crate::render) fn prepare_compose_frame(
         &mut self,
         region_sets: crate::render::ShSampleRegionSets<'_>,
+        mesh_frame_plans: Option<&mesh_instances::MeshFramePlans>,
+        include_viewmodels: bool,
         fog_draw_all: bool,
         records_compose: bool,
         force_full_resident: bool,
@@ -39,8 +43,12 @@ impl ShResidencyState {
         );
         self.compose_input_regions
             .extend_from_slice(region_sets.movers);
-        self.compose_input_regions
-            .extend_from_slice(region_sets.meshes);
+        if let Some(plans) = mesh_frame_plans {
+            self.compose_input_regions.extend(
+                mesh_instances::planned_forward_sample_bounds(plans, include_viewmodels)
+                    .map(|bounds| crate::render::ShSampleRegion::new(bounds.min, bounds.max)),
+            );
+        }
         let mut region_rows = std::mem::take(&mut self.compose_region_rows);
         self.resolve_sample_region_rows(
             &self.compose_input_regions,
@@ -48,6 +56,9 @@ impl ShResidencyState {
             &mut region_rows,
         )?;
 
+        self.compose_indirect_resident_rows.clear();
+        self.compose_indirect_resident_rows
+            .extend(self.indirect_resident_rows.iter().copied());
         self.compose_direct_resident_rows.clear();
         self.compose_direct_resident_rows
             .extend(self.direct_promotion_resident_rows.iter().copied());
@@ -55,6 +66,8 @@ impl ShResidencyState {
             self.compose_direct_resident_rows
                 .extend(self.direct_animated_resident_rows.iter().copied());
         }
+        self.compose_direct_resident_rows.sort_unstable();
+        self.compose_direct_resident_rows.dedup();
         self.compose_animated_resident_rows.clear();
         if self.animated_direct_compose_required {
             self.compose_animated_resident_rows
@@ -64,7 +77,7 @@ impl ShResidencyState {
         let mut residency_rows = std::mem::take(&mut self.compose_residency_rows);
         self.close_residency_rows_over_scaled_writers(
             self.indirect_dirty_rows.iter().copied(),
-            &self.indirect_resident_rows,
+            &self.compose_indirect_resident_rows,
             &mut residency_rows,
         )?;
         self.compose_planner.mark_residency_rows(
@@ -72,14 +85,11 @@ impl ShResidencyState {
             residency_rows.iter().copied(),
         );
 
-        let direct_changed = self
-            .direct_promotion_dirty_rows
-            .iter()
-            .chain(&self.direct_animated_dirty_rows)
-            .copied()
-            .collect::<BTreeSet<_>>();
         self.close_residency_rows_over_scaled_writers(
-            direct_changed,
+            self.direct_promotion_dirty_rows
+                .iter()
+                .chain(&self.direct_animated_dirty_rows)
+                .copied(),
             &self.compose_direct_resident_rows,
             &mut residency_rows,
         )?;
@@ -100,38 +110,31 @@ impl ShResidencyState {
                 1.0 - animated_baked_promotion_weight(index, promoted_animated_states.get(index))
             }));
 
-        let gated_rows = region_rows.iter().copied().collect::<BTreeSet<_>>();
-        let indirect_contributing = self
-            .indirect_delta_row_refs
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let static_contributing = self
-            .direct_promotion_row_refs
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let animated_contributing = self
-            .direct_animated_row_refs
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
+        self.compose_indirect_contributing_rows.clear();
+        self.compose_indirect_contributing_rows
+            .extend(self.indirect_delta_row_refs.keys().copied());
+        self.compose_static_contributing_rows.clear();
+        self.compose_static_contributing_rows
+            .extend(self.direct_promotion_row_refs.keys().copied());
+        self.compose_animated_contributing_rows.clear();
+        self.compose_animated_contributing_rows
+            .extend(self.direct_animated_row_refs.keys().copied());
         self.compose_frame_plan = Some(self.compose_planner.plan_frame(
             compose_plan::ComposePlannerFrame {
                 records_compose,
                 force_full_resident,
-                gated_rows: &gated_rows,
+                gated_rows: &region_rows,
                 indirect_rows: compose_plan::ComposePassRows {
-                    resident: &self.indirect_resident_rows,
-                    contributing: &indirect_contributing,
+                    resident: &self.compose_indirect_resident_rows,
+                    contributing: &self.compose_indirect_contributing_rows,
                 },
                 static_direct_rows: compose_plan::ComposePassRows {
                     resident: &self.compose_direct_resident_rows,
-                    contributing: &static_contributing,
+                    contributing: &self.compose_static_contributing_rows,
                 },
                 animated_direct_rows: compose_plan::ComposePassRows {
                     resident: &self.compose_animated_resident_rows,
-                    contributing: &animated_contributing,
+                    contributing: &self.compose_animated_contributing_rows,
                 },
                 indirect_active,
                 animated_direct_active,
@@ -298,7 +301,7 @@ impl ShResidencyState {
             dispatches,
             self.compose_planner.lagging_rows(
                 compose_plan::ComposePass::Indirect,
-                &self.indirect_resident_rows,
+                &self.compose_indirect_resident_rows,
             ),
         );
         self.indirect_compose_epoch = self

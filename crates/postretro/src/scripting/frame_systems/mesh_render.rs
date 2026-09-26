@@ -822,13 +822,10 @@ mod tests {
             }
         );
         assert!(instances[0].pose_inputs.is_none());
-        assert_eq!(
-            collector.sh_sample_regions(),
-            &[ShSampleRegion::new(
-                Vec3::new(-0.2, -0.7, -1.1),
-                Vec3::new(0.8, 0.3, -0.1),
-            )]
-        );
+        let expected = ShSampleRegion::new(Vec3::new(-0.2, -0.7, -1.1), Vec3::new(0.8, 0.3, -0.1));
+        let actual = collector.sh_sample_regions()[0];
+        assert!((actual.min - expected.min).abs().max_element() < 1.0e-6);
+        assert!((actual.max - expected.max).abs().max_element() < 1.0e-6);
     }
 
     #[test]

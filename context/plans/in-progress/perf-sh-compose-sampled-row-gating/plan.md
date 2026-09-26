@@ -1,7 +1,7 @@
 # perf-sh-compose-sampled-row-gating — plan of record
 
 mode: resumable
-status: approved
+status: test-ready
 read at: b3548b603
 
 ## Corrections
@@ -50,38 +50,38 @@ read at: b3548b603
 
 | AC | Proof | Status |
 |---|---|---|
-| G1 fragmented rows, exact-capacity/overflow chunking, exact decode, one visit, device dispatch bound | `gather_plan_chunks_fragmented_rows_without_duplication` and `gather_plan_splits_only_above_capacity` | achievable as stated |
-| G2 empty pass emits no dispatch and zero counters | `empty_gather_plan_has_no_dispatch` | achievable as stated |
-| G3 list contains only distinct resident rows | `planned_rows_are_unique_resident_rows` property test | achievable as stated |
-| G4 compose storage-buffer budgets and uniform chunk size stay within requested limits | GPU-free layout-builder test `compose_pipeline_storage_and_gather_uniform_budgets_fit_requested_limits` | achievable as stated |
-| G5 legacy whole-load upload covers every affinity row exactly once | `legacy_gather_compose_covers_every_affinity_row_once` | achievable as stated |
-| R1 trigger selects only gated contributing rows | `trigger_selects_only_gated_contributing_rows_per_pass` | achievable as stated |
-| R2 idle pass selects only residency-change rows | `idle_plan_contains_only_pending_residency_rows` | achievable as stated |
-| R3 promotion change compares effective uploaded weights after cache zeroing | `effective_uploaded_promotion_weights_drive_static_trigger` | achievable as stated |
-| R4 animated-only activity leaves static idle; promotion rewrite orders static then animated | `direct_plan_splits_activity_and_follows_static_rewrite` | achievable as stated |
-| R5 deactivation tail survives a skipped compose frame | `deactivation_tail_waits_for_next_recorded_compose` | achievable as stated |
-| R6 mask or dev-override change forces all resident rows, static before animated | `mask_or_override_change_forces_all_passes_in_order` | achievable as stated |
-| R7 force-full-resident bypasses gate and triggers every pass every frame | `force_full_resident_plans_all_resident_rows` | achievable as stated |
-| S1 mixed frame sequences leave no gated resident row lagging after recorded compose | state-machine property test `recorded_compose_clears_all_gated_lag` | achievable as stated |
-| S2 lagging re-entry composes; current re-entry stays idle | `only_lagging_rows_compose_on_idle_reentry` | achievable as stated |
-| S3 active pass with empty useful gate dispatches nothing and later entry composes | `empty_contributing_gate_advances_generation_without_dispatch` | achievable as stated |
-| S4 deactivation while exiting gate composes off state on re-entry | `deactivation_outside_gate_is_repaired_on_reentry` | achievable as stated |
-| S5 off-gate promotion change repairs both direct passes in order | `promotion_change_outside_gate_repairs_both_direct_passes` | achievable as stated |
-| S6 camera cut repairs newly gated rows in the same frame | `camera_cut_rows_compose_before_sampling` | achievable as stated |
-| S7 full eviction drops row; partial eviction composes; new generation starts current | `eviction_and_generation_reset_preserve_lag_contract` | achievable as stated |
-| S8 install or reuse outside gate composes before promotion and does not recompose on clean entry | `install_and_slot_reuse_bypass_gate_before_promotion` | achievable as stated |
-| S9 install/evict adds foreign scaled-node writer row | `residency_change_closes_over_foreign_writer_row` | achievable as stated |
-| S10 post-drain resolution excludes evicted rows and includes promoted writer closure | `gate_resolution_observes_post_drain_residency` | achievable as stated |
-| S11 encode failure retains lag and residency work for retry | `failed_encode_commits_no_compose_state` | achievable as stated |
-| S12 1.1-spacing dilation includes footprint edge and excludes beyond edge | `region_dilation_matches_sampler_footprint` | achievable as stated |
-| S13 scaled-node sample adds at most one origin writer row | `scaled_node_gate_adds_single_writer_row` property test | achievable as stated |
-| S14 skinned body, interpolated mover sweep, and viewmodel contribute world bounds | app-side collector tests `drawn_sh_consumers_emit_complete_world_bounds` | achievable as stated |
-| S15 empty fog reach gates all resident rows; non-empty stays scoped plus other consumers | `fog_reachability_sentinel_controls_gate_scope` | achievable as stated |
-| S16 frame input exposes world bounds and no row indices | review plus compile-time construction tests around `ShSampleRegion` | achievable as stated |
-| C1 counters equal planned row/dispatch/lag sets and capture report includes planning time | planner counter assertions plus capture report serialization test | achievable as stated |
-| C2 measurement mode advances fixed animation time, stays VM-free, and retains force-active pulses | capture driver tests `measurement_frames_advance_animation_without_vm` | achievable as stated |
-| C3 exactness fixture changes across stepped frames and records nonzero compose rows with authored curve visible | capture integration test, GPU/fixture gated | achievable as stated |
-| C4 warm planning retains caller-owned scratch capacity | counting-allocator-free capacity watermark test `compose_planning_reuses_warmed_scratch` | achievable as stated |
+| G1 fragmented rows, exact-capacity/overflow chunking, exact decode, one visit, device dispatch bound | `gather_plan_chunks_fragmented_rows_without_duplication` and `gather_plan_splits_only_above_capacity` | proved |
+| G2 empty pass emits no dispatch and zero counters | `empty_gather_plan_has_no_dispatch` | proved |
+| G3 list contains only distinct resident rows | `planned_rows_are_unique_resident_rows` property test | proved |
+| G4 compose storage-buffer budgets and uniform chunk size stay within requested limits | GPU-free layout-builder test `compose_pipeline_storage_and_gather_uniform_budgets_fit_requested_limits` | proved |
+| G5 legacy whole-load upload covers every affinity row exactly once | `legacy_gather_compose_covers_every_affinity_row_once` | proved |
+| R1 trigger selects only gated contributing rows | `trigger_selects_only_gated_contributing_rows_per_pass` | proved |
+| R2 idle pass selects only residency-change rows | `idle_plan_contains_only_pending_residency_rows` | proved |
+| R3 promotion change compares effective uploaded weights after cache zeroing | `effective_uploaded_promotion_weights_drive_static_trigger` | proved |
+| R4 animated-only activity leaves static idle; promotion rewrite orders static then animated | `direct_plan_splits_activity_and_follows_static_rewrite` | proved |
+| R5 deactivation tail survives a skipped compose frame | `deactivation_tail_waits_for_next_recorded_compose` | proved |
+| R6 mask or dev-override change forces all resident rows, static before animated | `mask_or_override_change_forces_all_passes_in_order` | proved |
+| R7 force-full-resident bypasses gate and triggers every pass every frame | `force_full_resident_plans_all_resident_rows` | proved |
+| S1 mixed frame sequences leave no gated resident row lagging after recorded compose | state-machine property test `recorded_compose_clears_all_gated_lag` | proved |
+| S2 lagging re-entry composes; current re-entry stays idle | `only_lagging_rows_compose_on_idle_reentry` | proved |
+| S3 active pass with empty useful gate dispatches nothing and later entry composes | `empty_contributing_gate_advances_generation_without_dispatch` | proved |
+| S4 deactivation while exiting gate composes off state on re-entry | `deactivation_outside_gate_is_repaired_on_reentry` | proved |
+| S5 off-gate promotion change repairs both direct passes in order | `promotion_change_outside_gate_repairs_both_direct_passes` | proved |
+| S6 camera cut repairs newly gated rows in the same frame | `camera_cut_rows_compose_before_sampling` | proved |
+| S7 full eviction drops row; partial eviction composes; new generation starts current | `eviction_and_generation_reset_preserve_lag_contract` | proved |
+| S8 install or reuse outside gate composes before promotion and does not recompose on clean entry | `install_and_slot_reuse_bypass_gate_before_promotion` | proved |
+| S9 install/evict adds foreign scaled-node writer row | `residency_change_closes_over_foreign_writer_row` | proved |
+| S10 post-drain resolution excludes evicted rows and includes promoted writer closure | `gate_resolution_observes_post_drain_residency` | proved |
+| S11 encode failure retains lag and residency work for retry | `failed_encode_commits_no_compose_state` | proved |
+| S12 1.1-spacing dilation includes footprint edge and excludes beyond edge | `region_dilation_matches_sampler_footprint` | proved |
+| S13 scaled-node sample adds at most one origin writer row | `scaled_node_gate_adds_single_writer_row` property test | proved |
+| S14 skinned body, interpolated mover sweep, and viewmodel contribute world bounds | app-side collector tests `drawn_sh_consumers_emit_complete_world_bounds` | proved |
+| S15 empty fog reach gates all resident rows; non-empty stays scoped plus other consumers | `fog_reachability_sentinel_controls_gate_scope` | proved |
+| S16 frame input exposes world bounds and no row indices | review plus compile-time construction tests around `ShSampleRegion` | proved |
+| C1 counters equal planned row/dispatch/lag sets and capture report includes planning time | planner counter assertions plus capture report serialization test | proved |
+| C2 measurement mode advances fixed animation time, stays VM-free, and retains force-active pulses | capture driver tests `measurement_frames_advance_animation_without_vm` | proved |
+| C3 exactness fixture changes across stepped frames and records nonzero compose rows with authored curve visible | capture integration test, GPU/fixture gated | compiled; execution covered by M1 |
+| C4 warm planning retains caller-owned scratch capacity | counting-allocator-free capacity watermark test `compose_planning_reuses_warmed_scratch` | proved |
 | M1 shipped vs force-full-resident capture PNGs are byte-identical at pinned poses and stepped times | owner, GPU runbook in `research.md` plus generated exactness scenes | manual-blocking |
 | M2 1 m/3 m capture and live measurement against spike baseline with compose counters | owner, hardware measurement protocol in `research.md` | manual-blocking |
 | M3 live pulses, turning, off-state, dynamic receivers, fog, mask and boundary crossings have no visual stale artifact | owner, in-engine visual runbook | manual-blocking |
@@ -96,7 +96,7 @@ read at: b3548b603
 | 4 | Add the app-owned `ShSampleRegion` collection for visible/fog cells, drawn movers, accepted skinned meshes, and viewmodels; add renderer-owned 1.1-spacing region-to-row resolution and scaled-node writer closure against post-drain residency (S9–S10, S12–S16). | integrating executor | 3 | complete — 6 resolver tests plus mesh/viewmodel and interpolated-mover collector tests; renderer/app checks |
 | 5 | Integrate gather, split triggers, gate, staleness, residency/promotion ordering, and retry semantics into the streamed indirect/static-direct/animated-direct compose passes; run focused state-sequence and renderer crate tests. | integrating executor | 2, 3, 4 | complete — normal/dev-tools/capture checks; renderer lib 654 passed, 1 ignored; focused app collectors green |
 | 6 | Add capture measurement animation stepping, exactness fixtures/assertions, and complete measurement counters while preserving default single-instant capture and VM-free execution (C1–C3). | integrating executor | 5 | complete — 1/60 s VM-free stepping test; 16 scene parser tests; paired 0.5 s/1.0 s gated/oracle scenes; default/preload remain time zero; manual GPU pixel/counter assertion remains landing-blocking |
-| 7 | Update `context/lib/rendering_pipeline.md` from planned to built, run review-readiness checks, `/review-panel` → `/fix-review-findings` loops with focused retests, then `/preflight` once. Record all automated results and prepare the three owner GPU/manual runbooks; because manual proof blocks landing, finish at `status: test-ready`. | integrating executor | 6 | |
+| 7 | Update `context/lib/rendering_pipeline.md` from planned to built, run review-readiness checks, `/review-panel` → `/fix-review-findings` loops with focused retests, then `/preflight` once. Record all automated results and prepare the three owner GPU/manual runbooks; because manual proof blocks landing, finish at `status: test-ready`. | integrating executor | 6 | complete — review panel clean after repair loops; `cargo fmt --check`, workspace clippy with `-D warnings`, and full workspace `cargo test` pass; M1–M3 runbooks recorded and remain landing-blocking |
 
 ## Landing policy
 

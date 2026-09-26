@@ -11,7 +11,7 @@ use postretro_visibility::VisibleCells;
 
 use crate::render::{
     CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor, Renderer,
-    ShResidencyReport,
+    ShResidencyReport, ShSampleRegion,
 };
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::runtime_movers::{
@@ -65,6 +65,8 @@ pub(super) struct PreparedCapture {
     view_proj: Mat4,
     eye: Vec3,
     forced_promotion_weights: Vec<(usize, f32)>,
+    mover_sample_regions: Vec<ShSampleRegion>,
+    mesh_sample_regions: Vec<ShSampleRegion>,
     measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
 }
@@ -186,6 +188,8 @@ impl PreparedCapture {
         );
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         renderer.set_mesh_draws(mesh_collector.instances());
+        let mover_sample_regions = mover_collector.sh_sample_regions().to_vec();
+        let mesh_sample_regions = mesh_collector.sh_sample_regions().to_vec();
 
         let mut prepared = Self {
             renderer,
@@ -194,6 +198,8 @@ impl PreparedCapture {
             view_proj,
             eye,
             forced_promotion_weights,
+            mover_sample_regions,
+            mesh_sample_regions,
             measurement_animation: CaptureMeasurementAnimationClock::default(),
             resolution: [width, height],
         };
@@ -268,7 +274,8 @@ impl PreparedCapture {
             postretro_renderer::ShSampleRegionSets {
                 visible_cells: &self.visible_render.visible_cell_aabbs,
                 fog_cells: &self.visible_render.reachable_cell_aabbs,
-                ..Default::default()
+                movers: &self.mover_sample_regions,
+                meshes: &self.mesh_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
             self.view_proj,
@@ -319,7 +326,8 @@ impl PreparedCapture {
             postretro_renderer::ShSampleRegionSets {
                 visible_cells: &self.visible_render.visible_cell_aabbs,
                 fog_cells: &self.visible_render.reachable_cell_aabbs,
-                ..Default::default()
+                movers: &self.mover_sample_regions,
+                meshes: &self.mesh_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
             self.view_proj,
@@ -387,8 +395,8 @@ mod measurement_animation_tests {
         let first = clock.advance_frame();
         let second = clock.advance_frame();
 
-        assert_eq!(first, CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS);
-        assert_eq!(second, CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS * 2.0);
+        assert!((first - CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS).abs() < f32::EPSILON);
+        assert!((second - CAPTURE_MEASUREMENT_ANIMATION_STEP_SECONDS * 2.0).abs() < f32::EPSILON);
         assert!(second > first);
     }
 }

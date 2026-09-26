@@ -70,6 +70,8 @@ impl Renderer {
             let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
                 self.prepare_streamed_sh_compose(
                     sh_sample_regions,
+                    None,
+                    false,
                     fog_reachable.is_empty(),
                     false,
                 )?;
@@ -220,7 +222,13 @@ impl Renderer {
             self.full_mut().light_effective_brightness = eff_brightness;
             self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
-            self.prepare_streamed_sh_compose(sh_sample_regions, fog_reachable.is_empty(), true)?;
+            self.prepare_streamed_sh_compose(
+                sh_sample_regions,
+                mesh_frame_plans.as_ref(),
+                swapchain_view.is_some(),
+                fog_reachable.is_empty(),
+                true,
+            )?;
             compose_succeeded &= self.record_pre_scene_compute(
                 encoder,
                 cam_vis,

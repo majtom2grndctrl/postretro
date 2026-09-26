@@ -87,6 +87,8 @@ impl Renderer {
     pub(super) fn prepare_streamed_sh_compose(
         &mut self,
         region_sets: ShSampleRegionSets<'_>,
+        mesh_frame_plans: Option<&mesh_instances::MeshFramePlans>,
+        include_viewmodels: bool,
         fog_draw_all: bool,
         records_compose: bool,
     ) -> std::result::Result<(), ShResidencyDrainError> {
@@ -113,6 +115,8 @@ impl Renderer {
         };
         streaming.prepare_compose_frame(
             region_sets,
+            mesh_frame_plans,
+            include_viewmodels,
             fog_draw_all,
             records_compose,
             force_full_resident,

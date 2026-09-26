@@ -207,6 +207,27 @@ pub struct MeshFramePlans {
     pub viewmodel: MeshFramePlan,
 }
 
+/// World-space bounds for forward receivers admitted by the shared mesh-frame
+/// budget. Shadow-only instances and inputs rejected for cache absence or
+/// overflow never enter this iterator.
+pub fn planned_forward_sample_bounds(
+    plans: &MeshFramePlans,
+    include_viewmodels: bool,
+) -> impl Iterator<Item = Aabb> + '_ {
+    plans
+        .world
+        .groups
+        .iter()
+        .chain(if include_viewmodels {
+            plans.viewmodel.groups.as_slice()
+        } else {
+            &[]
+        })
+        .flat_map(|group| group.instances.iter())
+        .filter(|instance| instance.forward_visible)
+        .map(|instance| instance.bounds.transformed(&instance.transform))
+}
+
 /// Per-model lookups the GPU-free frame planner needs from the renderer's model
 /// cache: the skeleton's joint count (the palette-run length) and the model's
 /// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
@@ -686,6 +707,51 @@ mod tests {
         for r in runs {
             assert!((r.palette_base + per) as usize <= MAX_PALETTE_ENTRIES);
         }
+    }
+
+    // Regression: candidate bounds were added to the SH compose gate before
+    // the mesh-frame budget dropped the corresponding instance.
+    #[test]
+    fn planned_forward_sample_bounds_exclude_palette_overflow() {
+        let per = (MAX_PALETTE_ENTRIES / 2) as u32;
+        let mut fixed = joints(&[("big", per)]);
+        fixed.bounds.insert(
+            "big".to_string(),
+            Aabb {
+                min: Vec3::splat(-0.5),
+                max: Vec3::splat(0.5),
+            },
+        );
+        let inputs = [
+            instance("big", 1.0, 1),
+            instance("big", 2.0, 2),
+            instance("big", 99.0, 3),
+        ];
+
+        let plans = plan_mesh_frame_plans(&inputs, &fixed);
+        let bounds: Vec<_> = planned_forward_sample_bounds(&plans, true).collect();
+
+        assert_eq!(plans.world.dropped, 1);
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(bounds[0].min.x, 0.5);
+        assert_eq!(bounds[1].min.x, 1.5);
+        assert!(
+            bounds.iter().all(|bounds| bounds.min.x < 90.0),
+            "the overflow instance must not remain in the SH gate input",
+        );
+    }
+
+    #[test]
+    fn planned_forward_sample_bounds_omit_viewmodel_for_offscreen_scene() {
+        let fixed = joints(&[("world", 1), ("weapon", 1)]);
+        let world = instance("world", 1.0, 1);
+        let mut viewmodel = instance("weapon", 2.0, 2);
+        viewmodel.is_viewmodel = true;
+        viewmodel.dynamic_shadow_visible = false;
+        let plans = plan_mesh_frame_plans(&[world, viewmodel], &fixed);
+
+        assert_eq!(planned_forward_sample_bounds(&plans, true).count(), 2);
+        assert_eq!(planned_forward_sample_bounds(&plans, false).count(), 1);
     }
 
     #[test]

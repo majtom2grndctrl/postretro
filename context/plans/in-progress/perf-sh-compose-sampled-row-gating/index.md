@@ -76,10 +76,9 @@ in a frame holds exactly what full-resident compose would have written.
   single-instant contract for measurement mode only. Cost measurement runs frozen, like the
   spike baseline, because the flag-based triggers still fire at a frozen instant.
   `E20--scripted-run-capture` still owns scripted ticks.
-- **`context/lib/` records these decisions** as "decided, not yet built": §4 "Sampled-row
-  compose" and its diagnostics sentence, §7.1 step 5, and §7.8's measurement-mode time step.
-  Each slice removes its markers and the superseded range-dispatch and trigger sentences when
-  it lands.
+- **`context/lib/` records the built contract:** §4 "Sampled-row compose" and its diagnostics
+  sentence, §7.1 step 5, and §7.8's measurement-mode time step now describe the implemented
+  gather, gate, staleness, diagnostics, and capture behavior.
 - **Non-goals:**
   - The legacy whole-load path keeps its full-grid row set (owner: streamed only). Because it
     shares the compose shaders, gather must keep it composing every affinity row.

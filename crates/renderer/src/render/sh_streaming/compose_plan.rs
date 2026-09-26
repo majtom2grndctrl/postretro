@@ -18,8 +18,8 @@ pub(super) enum ComposePass {
 /// Resident rows and the subset whose contents depend on a pass's inputs.
 #[derive(Clone, Copy)]
 pub(super) struct ComposePassRows<'a> {
-    pub(super) resident: &'a BTreeSet<u32>,
-    pub(super) contributing: &'a BTreeSet<u32>,
+    pub(super) resident: &'a [u32],
+    pub(super) contributing: &'a [u32],
 }
 
 /// Input values that force a full-resident repair when they change.
@@ -37,7 +37,7 @@ pub(super) struct ComposePlannerFrame<'a> {
     pub(super) records_compose: bool,
     /// Exactness/debug bypass: compose every resident row in every pass.
     pub(super) force_full_resident: bool,
-    pub(super) gated_rows: &'a BTreeSet<u32>,
+    pub(super) gated_rows: &'a [u32],
     pub(super) indirect_rows: ComposePassRows<'a>,
     pub(super) static_direct_rows: ComposePassRows<'a>,
     pub(super) animated_direct_rows: ComposePassRows<'a>,
@@ -153,23 +153,40 @@ impl PassStaleness {
         }
     }
 
-    fn retain_resident(&mut self, resident: &BTreeSet<u32>) {
-        self.required.retain(|row, _| resident.contains(row));
-        self.composed.retain(|row, _| resident.contains(row));
-        self.pending.retain(|row| resident.contains(row));
+    fn retain_resident(&mut self, resident: &[u32]) {
+        self.required
+            .retain(|row, _| resident.binary_search(row).is_ok());
+        self.composed
+            .retain(|row, _| resident.binary_search(row).is_ok());
+        self.pending
+            .retain(|row| resident.binary_search(row).is_ok());
     }
 
     fn plan(
         &self,
         pass: ComposePass,
-        resident: &BTreeSet<u32>,
-        gated: &BTreeSet<u32>,
+        resident: &[u32],
+        gated: &[u32],
+        force_full_resident: bool,
     ) -> ComposePassPlan {
-        let mut rows: Vec<u32> = self.pending.intersection(resident).copied().collect();
-        rows.extend(gated.intersection(resident).copied().filter(|row| {
-            self.composed.get(row).copied().unwrap_or(0)
-                < self.required.get(row).copied().unwrap_or(0)
-        }));
+        let mut rows: Vec<u32> = self
+            .pending
+            .iter()
+            .copied()
+            .filter(|row| resident.binary_search(row).is_ok())
+            .collect();
+        if force_full_resident {
+            rows.extend(resident.iter().copied().filter(|row| {
+                self.composed.get(row).copied().unwrap_or(0)
+                    < self.required.get(row).copied().unwrap_or(0)
+            }));
+        } else {
+            rows.extend(gated.iter().copied().filter(|row| {
+                resident.binary_search(row).is_ok()
+                    && self.composed.get(row).copied().unwrap_or(0)
+                        < self.required.get(row).copied().unwrap_or(0)
+            }));
+        }
         rows.sort_unstable();
         rows.dedup();
         let lagged_rows = rows
@@ -198,11 +215,12 @@ impl PassStaleness {
         }
     }
 
-    fn lagging_count(&self, resident: &BTreeSet<u32>) -> usize {
+    fn lagging_count(&self, resident: &[u32]) -> usize {
         self.required
             .iter()
             .filter(|(row, required)| {
-                resident.contains(row) && self.composed.get(row).copied().unwrap_or(0) < **required
+                resident.binary_search(row).is_ok()
+                    && self.composed.get(row).copied().unwrap_or(0) < **required
             })
             .count()
     }
@@ -309,20 +327,14 @@ impl StreamedComposePlanner {
         let indirect = self.indirect.plan(
             ComposePass::Indirect,
             frame.indirect_rows.resident,
-            if frame.force_full_resident {
-                frame.indirect_rows.resident
-            } else {
-                frame.gated_rows
-            },
+            frame.gated_rows,
+            frame.force_full_resident,
         );
         let static_direct = self.static_direct.plan(
             ComposePass::StaticDirect,
             frame.static_direct_rows.resident,
-            if frame.force_full_resident {
-                frame.static_direct_rows.resident
-            } else {
-                frame.gated_rows
-            },
+            frame.gated_rows,
+            frame.force_full_resident,
         );
         // Planning Pass A creates durable Pass-B retry work before encoding.
         self.animated_direct
@@ -331,11 +343,8 @@ impl StreamedComposePlanner {
         let animated_direct = self.animated_direct.plan(
             ComposePass::AnimatedDirect,
             frame.animated_direct_rows.resident,
-            if frame.force_full_resident {
-                frame.animated_direct_rows.resident
-            } else {
-                frame.gated_rows
-            },
+            frame.gated_rows,
+            frame.force_full_resident,
         );
 
         ComposeFramePlan {
@@ -349,7 +358,7 @@ impl StreamedComposePlanner {
         self.pass_mut(plan.pass).commit(plan);
     }
 
-    pub(super) fn lagging_rows(&self, pass: ComposePass, resident: &BTreeSet<u32>) -> usize {
+    pub(super) fn lagging_rows(&self, pass: ComposePass, resident: &[u32]) -> usize {
         self.pass(pass).lagging_count(resident)
     }
 
@@ -390,8 +399,8 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn set(rows: &[u32]) -> BTreeSet<u32> {
-        rows.iter().copied().collect()
+    fn list(rows: &[u32]) -> Vec<u32> {
+        rows.to_vec()
     }
 
     fn controls() -> ComposeControlSnapshot {
@@ -403,28 +412,27 @@ mod tests {
     }
 
     struct Fixture {
-        gated: BTreeSet<u32>,
-        indirect_resident: BTreeSet<u32>,
-        indirect_contributing: BTreeSet<u32>,
-        static_resident: BTreeSet<u32>,
-        static_contributing: BTreeSet<u32>,
-        animated_resident: BTreeSet<u32>,
-        animated_contributing: BTreeSet<u32>,
+        gated: Vec<u32>,
+        indirect_resident: Vec<u32>,
+        indirect_contributing: Vec<u32>,
+        static_resident: Vec<u32>,
+        static_contributing: Vec<u32>,
+        animated_resident: Vec<u32>,
+        animated_contributing: Vec<u32>,
         static_weights: Vec<f32>,
         animated_weights: Vec<f32>,
     }
 
     impl Fixture {
         fn all(rows: &[u32]) -> Self {
-            let all = set(rows);
             Self {
-                gated: all.clone(),
-                indirect_resident: all.clone(),
-                indirect_contributing: all.clone(),
-                static_resident: all.clone(),
-                static_contributing: all.clone(),
-                animated_resident: all.clone(),
-                animated_contributing: all,
+                gated: rows.to_vec(),
+                indirect_resident: rows.to_vec(),
+                indirect_contributing: rows.to_vec(),
+                static_resident: rows.to_vec(),
+                static_contributing: rows.to_vec(),
+                animated_resident: rows.to_vec(),
+                animated_contributing: rows.to_vec(),
                 static_weights: vec![0.0],
                 animated_weights: vec![1.0],
             }
@@ -471,9 +479,9 @@ mod tests {
     fn trigger_selects_only_gated_contributing_rows_per_pass() {
         let mut planner = StreamedComposePlanner::default();
         let mut fixture = Fixture::all(&[1, 2, 3, 4]);
-        fixture.gated = set(&[1, 2, 4]);
-        fixture.indirect_contributing = set(&[2, 3]);
-        fixture.animated_contributing = set(&[1, 3]);
+        fixture.gated = list(&[1, 2, 4]);
+        fixture.indirect_contributing = list(&[2, 3]);
+        fixture.animated_contributing = list(&[1, 3]);
 
         let plan = planner.plan_frame(fixture.frame(true, true, true));
         assert_eq!(plan.indirect.rows(), &[2]);
@@ -595,7 +603,7 @@ mod tests {
     fn force_full_resident_plans_all_resident_rows() {
         let mut planner = StreamedComposePlanner::default();
         let mut fixture = Fixture::all(&[1, 2, 3]);
-        fixture.gated = set(&[2]);
+        fixture.gated = list(&[2]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
 
@@ -619,7 +627,7 @@ mod tests {
     fn only_lagging_rows_compose_on_idle_reentry() {
         let mut planner = StreamedComposePlanner::default();
         let mut fixture = Fixture::all(&[1, 2]);
-        fixture.gated = set(&[1]);
+        fixture.gated = list(&[1]);
         let first = planner.plan_frame(fixture.frame(true, true, false));
         planner.commit_pass(&first.indirect);
 
@@ -628,12 +636,12 @@ mod tests {
         let tail = planner.plan_frame(fixture.frame(true, false, false));
         planner.commit_pass(&tail.indirect);
 
-        fixture.gated = set(&[2]);
+        fixture.gated = list(&[2]);
         let reentry = planner.plan_frame(fixture.frame(true, false, false));
         assert_eq!(reentry.indirect.rows(), &[2]);
         planner.commit_pass(&reentry.indirect);
 
-        fixture.gated = set(&[1, 2]);
+        fixture.gated = list(&[1, 2]);
         assert!(
             planner
                 .plan_frame(fixture.frame(true, false, false))
@@ -656,7 +664,7 @@ mod tests {
                 .is_empty()
         );
 
-        fixture.gated.insert(5);
+        fixture.gated.push(5);
         assert_eq!(
             planner
                 .plan_frame(fixture.frame(true, false, false))
@@ -680,7 +688,7 @@ mod tests {
                 .rows()
                 .is_empty()
         );
-        fixture.gated.insert(6);
+        fixture.gated.push(6);
         assert_eq!(
             planner
                 .plan_frame(fixture.frame(true, false, false))
@@ -700,7 +708,7 @@ mod tests {
         fixture.static_weights[0] = 0.75;
         let hidden = planner.plan_frame(fixture.frame(true, false, false));
         assert!(hidden.static_direct.rows().is_empty());
-        fixture.gated.insert(3);
+        fixture.gated.push(3);
         let reentry = planner.plan_frame(fixture.frame(true, false, false));
         assert_eq!(reentry.static_direct.rows(), &[3]);
         assert_eq!(reentry.animated_direct.rows(), &[3]);
@@ -712,7 +720,7 @@ mod tests {
         let mut fixture = Fixture::all(&[11]);
         fixture.gated.clear();
         planner.plan_frame(fixture.frame(true, true, false));
-        fixture.gated.insert(11);
+        fixture.gated.push(11);
         let cut = planner.plan_frame(fixture.frame(true, false, false));
         assert_eq!(cut.indirect.rows(), &[11]);
     }
@@ -723,10 +731,10 @@ mod tests {
         let mut fixture = Fixture::all(&[1, 2]);
         fixture.gated.clear();
         planner.plan_frame(fixture.frame(true, true, false));
-        fixture.indirect_resident.remove(&1);
-        fixture.indirect_contributing.remove(&1);
+        fixture.indirect_resident.retain(|row| *row != 1);
+        fixture.indirect_contributing.retain(|row| *row != 1);
         planner.mark_residency_rows(ComposePass::Indirect, [1, 2]);
-        fixture.gated.insert(2);
+        fixture.gated.push(2);
         let eviction = planner.plan_frame(fixture.frame(true, false, false));
         assert_eq!(eviction.indirect.rows(), &[2]);
 
@@ -753,7 +761,7 @@ mod tests {
         let install = planner.plan_frame(fixture.frame(true, false, false));
         assert_eq!(install.indirect.rows(), &[8]);
         planner.commit_pass(&install.indirect);
-        fixture.gated.insert(8);
+        fixture.gated.push(8);
         assert!(
             planner
                 .plan_frame(fixture.frame(true, false, false))
@@ -810,7 +818,8 @@ mod tests {
             let rows: Vec<u32> = (0..16).collect();
             let mut fixture = Fixture::all(&rows);
             let mut planner = StreamedComposePlanner::default();
-            let mut previous_resident = fixture.indirect_resident.clone();
+            let mut previous_resident: BTreeSet<u32> =
+                fixture.indirect_resident.iter().copied().collect();
 
             for (gate_bits, resident_bits, records, indirect_active, animated_active, weight) in frames {
                 let resident: BTreeSet<u32> = rows
@@ -823,12 +832,12 @@ mod tests {
                     planner.mark_residency_rows(pass, newly_resident.iter().copied());
                 }
                 previous_resident = resident.clone();
-                fixture.indirect_resident = resident.clone();
-                fixture.static_resident = resident.clone();
-                fixture.animated_resident = resident.clone();
-                fixture.indirect_contributing = resident.clone();
-                fixture.static_contributing = resident.clone();
-                fixture.animated_contributing = resident;
+                fixture.indirect_resident = resident.iter().copied().collect();
+                fixture.static_resident = resident.iter().copied().collect();
+                fixture.animated_resident = resident.iter().copied().collect();
+                fixture.indirect_contributing = resident.iter().copied().collect();
+                fixture.static_contributing = resident.iter().copied().collect();
+                fixture.animated_contributing = resident.iter().copied().collect();
                 fixture.gated = rows
                     .iter()
                     .copied()
@@ -839,14 +848,38 @@ mod tests {
 
                 let plan = planner.plan_frame(fixture.frame(records, indirect_active, animated_active));
                 if records {
+                    for (pass, pass_plan) in [
+                        ComposePass::Indirect,
+                        ComposePass::StaticDirect,
+                        ComposePass::AnimatedDirect,
+                    ]
+                    .into_iter()
+                    .zip(plan.ordered())
+                    {
+                        let resident = match pass {
+                            ComposePass::Indirect => fixture.indirect_resident.as_slice(),
+                            ComposePass::StaticDirect => fixture.static_resident.as_slice(),
+                            ComposePass::AnimatedDirect => fixture.animated_resident.as_slice(),
+                        };
+                        prop_assert!(pass_plan.rows().windows(2).all(|rows| rows[0] < rows[1]));
+                        prop_assert!(pass_plan
+                            .rows()
+                            .iter()
+                            .all(|row| resident.binary_search(row).is_ok()));
+                    }
                     commit_all(&mut planner, &plan);
                     for pass in [ComposePass::Indirect, ComposePass::StaticDirect, ComposePass::AnimatedDirect] {
                         let resident = match pass {
-                            ComposePass::Indirect => &fixture.indirect_resident,
-                            ComposePass::StaticDirect => &fixture.static_resident,
-                            ComposePass::AnimatedDirect => &fixture.animated_resident,
+                            ComposePass::Indirect => fixture.indirect_resident.as_slice(),
+                            ComposePass::StaticDirect => fixture.static_resident.as_slice(),
+                            ComposePass::AnimatedDirect => fixture.animated_resident.as_slice(),
                         };
-                        let gated_resident: BTreeSet<_> = fixture.gated.intersection(resident).copied().collect();
+                        let gated_resident: Vec<_> = fixture
+                            .gated
+                            .iter()
+                            .copied()
+                            .filter(|row| resident.binary_search(row).is_ok())
+                            .collect();
                         prop_assert_eq!(planner.pass(pass).lagging_count(&gated_resident), 0);
                     }
                 }

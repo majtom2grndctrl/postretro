@@ -27,5 +27,8 @@ pub struct ShSampleRegionSets<'a> {
     /// preparation. Empty retains the established DrawAll sentinel.
     pub fog_cells: &'a [(Vec3, Vec3)],
     pub movers: &'a [ShSampleRegion],
+    /// Candidate mesh bounds retained for API compatibility. Streamed compose
+    /// derives mesh regions from renderer-admitted frame plans instead, so
+    /// uncached and overflow-dropped instances cannot widen the gate.
     pub meshes: &'a [ShSampleRegion],
 }

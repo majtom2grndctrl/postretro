@@ -178,6 +178,50 @@ Consequences for the brief:
 - Report per-pass rows, dispatches, lag counters, CPU planning time and frame time against the
   spike baseline table above.
 
+## Owner GPU/manual runbooks
+
+These checks are landing-blocking. Run all captures and comparisons on one adapter; keep the
+adapter/driver/backend and resolution in the recorded result.
+
+### M1 — exactness
+
+1. Build once with `cargo build --release -p postretro --features capture`.
+2. Run each checked-in `measurements/sh-probe-streaming/sampled-row-gating/animroom-*.scene.json`
+   with `POSTRETRO_SH_STREAMING=sync-proof target/release/postretro --capture <scene>`.
+3. Compare the pairs with
+   `cmp animroom-gated-t050.png animroom-full-t050.png` and
+   `cmp animroom-gated-t100.png animroom-full-t100.png`; both must exit zero. Confirm the two
+   gated-time PNGs differ, and each report's three `rows_composed` fields sum to a nonzero value.
+4. Repeat the gated/full pair at spawn `(16.26, 3.23, 65.02)`, yaw 0, pitch 0 and floor at the
+   same position/yaw with pitch −89 by copying a scene pair and changing only camera and output
+   paths. Check at both 0.5 s (1 warmup + 29 samples) and 1.0 s (1 + 59). Record every `cmp`
+   result and the report counters.
+
+### M2 — performance
+
+1. Bake `stress-warren-mini.map` twice with release `prl-build`, `--no-tui`,
+   `--lightmap-density 0.16`, and respectively `--sh-probe-spacing 1.0` and `3.0`; keep the two
+   PRLs under `content/dev/maps/` so capture resolves the normal content and material roots.
+2. For each PRL, make spawn measurement scenes at 1280×720 with 120 warmup and 600 sample
+   frames. Run three release captures in `POSTRETRO_SH_STREAMING=sync-proof`, alternating 1 m
+   and 3 m. Record `cpu_completion` median/p95, each pass's rows/dispatches/lag counters, and
+   `compose_planning_cpu_micros`.
+3. Run each PRL live at spawn for 45 seconds, toggle vsync off with Alt+Shift+V, and record the
+   last three 240-frame windows. Alternate density order across three runs. Compare with the
+   spike table: expected 1 m is near 7.2 ms capture / 5.9 ms live; 3 m must be no slower than
+   3.67 ms capture / 5.02 ms live. A miss is a failure report with the observed counters, not
+   an adjusted threshold.
+
+### M3 — live visual behavior
+
+Launch the 1 m PRL in a release dev-tools run. In sequence: watch a pulsing room, leave both its
+view and fog reach, return, turn through it in place, switch the light off and return again;
+cross a streaming boundary while the light is active; exercise a mover, skinned mesh, and
+viewmodel straddling a hidden-cell boundary; look through fog toward a non-visible room; then
+toggle each light-term mask. There must be no stale flash, pop, seam, wrong off-state, missing
+receiver lighting, or fog discontinuity. Repeat once with **Force full-resident SH compose** in
+the Streaming tab and record adapter, PRL, pose/transition, and pass/fail for each observation.
+
 ## Handed off
 
 | Finding | Owner |

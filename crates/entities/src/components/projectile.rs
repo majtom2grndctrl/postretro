@@ -55,6 +55,15 @@ pub struct ProjectileComponent {
     /// impact path uses this snapshot rather than consulting the live weapon.
     #[serde(default)]
     pub splash: Option<SplashDescriptor>,
+    /// Canonical name of the weapon descriptor this projectile was fired from.
+    /// Its contact presentation resolves from the projectile, never through
+    /// the shooter, so an enemy's projectile sounds like its weapon.
+    #[serde(default)]
+    pub source_weapon: Option<String>,
+    /// The first projectile of this one's activation. Contacts that share it on
+    /// one tick are one impact; `None` groups the projectile alone.
+    #[serde(default)]
+    pub activation: Option<EntityId>,
 }
 
 /// Presentation-only timing for a projectile replicated as a visual entity.

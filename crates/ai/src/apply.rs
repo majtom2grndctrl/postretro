@@ -11,12 +11,13 @@ use super::{
 };
 use crate::agent_steering;
 use crate::ai_host::AiHost;
-use crate::sim::EnemyProjectilePresentationSpawn;
+use crate::emission::entity_emitter;
+use crate::sim::{EnemyProjectilePresentationSpawn, ProjectileSource};
 use glam::Quat;
-use postretro_entities::Transform;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
+use postretro_entities::{AiCue, AiEmission, Transform};
 use postretro_foundation::DamagePayload;
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -49,7 +50,7 @@ pub(super) fn apply_outcomes<H>(
 where
     H: AiHost + ?Sized,
 {
-    let mut events: Vec<Cow<'static, str>> = Vec::new();
+    let mut events: Vec<AiEmission> = Vec::new();
     let mut projectile_spawns = Vec::new();
     // Once an entity crosses the terminal simulation gate in this batch, a
     // synchronous impact policy may restore positive health but cannot make a
@@ -77,10 +78,17 @@ where
             continue;
         }
 
-        // The entered state's authored entry event. Raised before this tick's
+        // The entered state's entry emission. Raised before this tick's
         // action so a reaction reads the state the brain is now IN.
-        if let Some(address) = outcome.on_enter.take() {
-            events.push(Cow::Owned(address));
+        if let Some(entered) = outcome.entered.take() {
+            events.push(AiEmission {
+                address: entered.on_enter.map(Cow::Owned),
+                emitter: entity_emitter(registry, outcome.id),
+                cue: AiCue::Entered {
+                    graph: outcome.brain.graph.clone(),
+                    path: entered.path,
+                },
+            });
         }
 
         let path_state = agent_steering::path_state(registry, outcome.id);
@@ -186,6 +194,7 @@ where
             && !invalidated_entities.contains(&target.entity)
             && selected_target_alive(registry, target.entity)
         {
+            let attack_name = pending.attack_name.clone();
             let attack_fired = match pending.effect {
                 AttackOutcome::Contact { damage } => {
                     if commit_attack_fire(
@@ -228,8 +237,14 @@ where
                     // Enemies have no materialized weapon entity. The projectile
                     // impact path uses this id only as engine-internal damage
                     // context provenance, never as a weapon lookup.
+                    // The projectile records the weapon it was fired from, so
+                    // its contact sounds like that weapon, not like the enemy.
+                    let source = ProjectileSource {
+                        weapon: Some(descriptor_class.clone()),
+                        activation: None,
+                    };
                     let projectile =
-                        host.spawn_projectile(registry, outcome.id, outcome.id, *launch);
+                        host.spawn_projectile(registry, outcome.id, outcome.id, *launch, source);
                     if let Some(projectile) = projectile
                         && commit_attack_fire(
                             registry,
@@ -249,7 +264,14 @@ where
                 }
             };
             if attack_fired {
-                events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
+                events.push(AiEmission {
+                    address: Some(Cow::Borrowed(ENEMY_ATTACK_EVENT)),
+                    emitter: entity_emitter(registry, outcome.id),
+                    cue: AiCue::Attack {
+                        graph: outcome.brain.graph.clone(),
+                        attack: attack_name,
+                    },
+                });
             }
         }
 

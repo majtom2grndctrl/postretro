@@ -839,6 +839,8 @@ mod tests {
                     flipbook_active: false,
                     impact_light: None,
                     splash: None,
+                    source_weapon: None,
+                    activation: None,
                 },
             )
             .expect("gameplay projectile accepts the common component");
@@ -1054,6 +1056,8 @@ mod tests {
                     flipbook_active: false,
                     impact_light: None,
                     splash: None,
+                    source_weapon: None,
+                    activation: None,
                 },
             )
             .expect("gameplay projectile accepts the common component");
@@ -1530,6 +1534,7 @@ mod tests {
                 None,
             ),
             None,
+            crate::sim::ProjectileSource::default(),
         )
         .expect("host local projectile spawns");
         assert_eq!(
@@ -2150,6 +2155,8 @@ mod tests {
                 flipbook_active: false,
                 impact_light: Some(impact_light),
                 splash: None,
+                source_weapon: None,
+                activation: None,
             },
         );
         let mut allocator = NetworkIdAllocator::new();
@@ -2288,6 +2295,8 @@ mod tests {
                     flipbook_active: false,
                     impact_light: None,
                     splash: None,
+                    source_weapon: None,
+                    activation: None,
                 },
             )
             .unwrap();

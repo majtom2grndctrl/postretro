@@ -809,9 +809,18 @@ impl SimHarness {
         predicate_crossing_fires: Vec<(String, bool)>,
     ) -> RecordedTick {
         RecordedTick {
-            movement: events.movement,
-            ai: events.ai,
-            weapon: events.weapon,
+            // Emitters carry raw ids; the determinism record keeps addresses.
+            movement: events
+                .movement
+                .iter()
+                .map(|emission| emission.address)
+                .collect(),
+            ai: events
+                .ai
+                .into_iter()
+                .filter_map(|emission| emission.address)
+                .collect(),
+            weapon: crate::emission::weapon_addresses(&events.weapon),
             weapon_impact_points: events.weapon_impact_points,
             death: events.death,
             authorized_shots: events
@@ -3570,7 +3579,11 @@ fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
 
     assert_eq!(
-        events.addresses,
+        events
+            .emissions
+            .iter()
+            .map(|emission| emission.address)
+            .collect::<Vec<_>>(),
         vec!["jumped"],
         "only the marked local pawn may emit movement outcomes"
     );
@@ -3635,7 +3648,11 @@ fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
 
     assert_eq!(
-        events.addresses,
+        events
+            .emissions
+            .iter()
+            .map(|emission| emission.address)
+            .collect::<Vec<_>>(),
         vec!["jumped"],
         "no-marker fallback applies the local command to one deterministic pawn"
     );
@@ -3697,7 +3714,11 @@ fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
 
     assert_eq!(
-        events.addresses,
+        events
+            .emissions
+            .iter()
+            .map(|emission| emission.address)
+            .collect::<Vec<_>>(),
         vec!["jumped"],
         "invalid marker fallback applies the local command to one deterministic pawn"
     );
@@ -3859,7 +3880,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     );
 
     assert_eq!(
-        events.weapon,
+        crate::emission::weapon_addresses(&events.weapon),
         vec!["activate"],
         "valid non-unit aim still fires, but range is measured after normalization"
     );

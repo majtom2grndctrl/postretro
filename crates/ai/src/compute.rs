@@ -49,7 +49,7 @@ use super::targeting::{
     TargetSelection, acquisition_due, is_hostile, select_target_with_attacker_ledger,
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
-use super::{AttackOutcome, EnemyOutcome, PendingAttack};
+use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
 use crate::agent_steering;
 use crate::nav::find_path;
 use crate::weapon::ProjectileLaunch;
@@ -576,15 +576,17 @@ pub(super) fn evaluate(
 
         let state_changed = graph_reseated || transitioned || entered.is_some();
         let announce_entry = brain.take_entry_event_pending() && entered.is_some();
-        let on_enter = if announce_entry {
-            brain
+        // An announced entry is an emission even without an authored
+        // `on_enter`: the activity's entry sound plays regardless. The path
+        // names the entered leaf in the graph the brain holds now.
+        let entered = announce_entry.then(|| EnteredActivity {
+            on_enter: brain
                 .active_depth()
                 .checked_sub(1)
                 .and_then(|depth| brain.activity_at_depth(depth))
-                .and_then(|(_, activity)| activity.on_enter.clone())
-        } else {
-            None
-        };
+                .and_then(|(_, activity)| activity.on_enter.clone()),
+            path: brain.active_path().to_vec(),
+        });
         let standoff_distance = programs
             .with_entry_scope(snap.id, |bound, scope| {
                 action_for_path(bound, scope, &brain)
@@ -604,7 +606,7 @@ pub(super) fn evaluate(
             attack: attack_outcome,
             prior_standoff_distance,
             standoff_distance,
-            on_enter,
+            entered,
             steering,
             engaged,
             facing_direction,

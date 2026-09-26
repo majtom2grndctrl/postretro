@@ -178,16 +178,16 @@ use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 /// the remainder spent decaying back to rest. See `dispatch_system_commands`.
 const VIGNETTE_RISE_FRACTION: f32 = 0.2;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum PendingWeaponScriptEvent {
-    Weapon(&'static str),
+    Weapon(postretro_sim::emission::WeaponEmission),
     Reload(sim::ReloadDelivery),
 }
 
 impl PendingWeaponScriptEvent {
-    const fn event_name(self) -> &'static str {
+    fn event_name(&self) -> &'static str {
         match self {
-            Self::Weapon(event_name) => event_name,
+            Self::Weapon(emission) => emission.address,
             Self::Reload(delivery) => delivery.outcome.event_name(),
         }
     }
@@ -195,7 +195,7 @@ impl PendingWeaponScriptEvent {
 
 fn append_tick_weapon_script_events(
     pending: &mut Vec<PendingWeaponScriptEvent>,
-    weapon_events: Vec<&'static str>,
+    weapon_events: Vec<postretro_sim::emission::WeaponEmission>,
     reload_deliveries: Vec<sim::ReloadDelivery>,
 ) {
     pending.extend(
@@ -2650,9 +2650,10 @@ impl ApplicationHandler for App {
                 // consequential work instead executes and rechecks inside each fixed tick.
                 // Weapon and reload events share one stream so catch-up ticks stay ordered.
                 // See: context/lib/entity_model.md §5
-                let mut pending_movement_events: Vec<&'static str> = Vec::new();
+                let mut pending_movement_events: Vec<postretro_sim::emission::MovementEmission> =
+                    Vec::new();
                 let mut pending_movement_edges: Vec<view_feel::TimedMovementEdge> = Vec::new();
-                let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
+                let mut pending_ai_events: Vec<postretro_sim::emission::AiEmission> = Vec::new();
                 let mut pending_weapon_script_events = Vec::new();
                 // These edges are populated only by the authoritative simulation
                 // branch below. Connected clients run the shared mover driver but
@@ -2864,9 +2865,24 @@ impl ApplicationHandler for App {
                             if let Some(prediction_tick) =
                                 self.client_predict_movement_tick(&command, tick_dt)
                             {
+                                let mut addresses = Vec::new();
                                 prediction_tick
                                     .movement_events
-                                    .append_named_events(&mut pending_movement_events);
+                                    .append_named_events(&mut addresses);
+                                // Predicted movement sounds from the local pawn.
+                                if let Some(emitter) = self.session.as_ref().and_then(|session| {
+                                    let registry = session.scripting.script_ctx.registry.borrow();
+                                    registry.local_player_movement_pawn().map(|pawn| {
+                                        postretro_sim::emission::entity_emitter(&registry, pawn)
+                                    })
+                                }) {
+                                    pending_movement_events.extend(addresses.into_iter().map(
+                                        |address| postretro_sim::emission::MovementEmission {
+                                            address,
+                                            emitter: emitter.clone(),
+                                        },
+                                    ));
+                                }
                                 pending_movement_edges.extend(
                                     prediction_tick
                                         .movement_events
@@ -3299,7 +3315,9 @@ impl ApplicationHandler for App {
                     // semantically aligned and lets waits enroll through the common
                     // sequence control arm.
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_movement_events.iter().copied(),
+                        pending_movement_events
+                            .iter()
+                            .map(|emission| emission.address),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3307,7 +3325,9 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_ai_events.iter().map(|event| event.as_ref()),
+                        pending_ai_events
+                            .iter()
+                            .filter_map(|emission| emission.address.as_deref()),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -7189,7 +7209,20 @@ impl App {
             // single-player weapon-activation ("activate") event. It drains with the
             // shared sequence-aware named-event batch; a host reject rolls this shot's
             // `muzzle_fx_visible` state back in reconcile.
-            pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon("activate"));
+            let (shooter, weapon_name) = {
+                let registry = script_ctx.registry.borrow();
+                (
+                    postretro_sim::emission::entity_emitter(&registry, local_pawn),
+                    postretro_sim::emission::descriptor_name(&registry, weapon_id),
+                )
+            };
+            pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon(
+                postretro_sim::emission::WeaponEmission {
+                    address: "activate",
+                    emitter: shooter,
+                    weapon: weapon_name.clone(),
+                },
+            ));
             let projectile_spawned = projectile_launch.is_some_and(|launch| {
                 sim::spawn_projectile(
                     &mut script_ctx.registry.borrow_mut(),
@@ -7197,6 +7230,10 @@ impl App {
                     weapon_id,
                     launch,
                     Some(shot_id),
+                    sim::ProjectileSource {
+                        weapon: weapon_name,
+                        activation: None,
+                    },
                 )
                 .is_some()
             });
@@ -11218,7 +11255,14 @@ mod tests {
         );
         append_tick_weapon_script_events(
             &mut pending,
-            vec!["activate"],
+            vec![postretro_sim::emission::WeaponEmission {
+                address: "activate",
+                emitter: postretro_sim::emission::Emitter::Entity {
+                    id: pawn,
+                    origin: Vec3::ZERO,
+                },
+                weapon: None,
+            }],
             vec![sim::ReloadDelivery {
                 pawn,
                 weapon,

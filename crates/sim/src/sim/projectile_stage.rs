@@ -11,6 +11,7 @@ use postretro_entities::{
 };
 
 use crate::collision::{CollisionWorld, cast_sphere_exact};
+use crate::emission::{Emitter, ImpactContact, WeaponEmission};
 use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
 };
@@ -51,10 +52,54 @@ pub enum PredictedProjectileResolution {
     Expired { shot_id: u64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One locally simulated projectile's contact, carried out of the tick in
+/// which the projectile despawns.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectileContactEvent {
     pub projectile: EntityId,
     pub point: Vec3,
+    pub normal: Vec3,
+    pub target: Option<EntityId>,
+    /// Weapon descriptor the projectile was fired from.
+    pub source_weapon: Option<String>,
+    /// The first projectile of its activation; contacts sharing it on one tick
+    /// are one impact.
+    pub activation: EntityId,
+}
+
+/// One `impact` per activation among a tick's projectile contacts, in the order
+/// each activation first made contact, carrying every contact of that group.
+pub(crate) fn projectile_impact_emissions(
+    contacts: &[ProjectileContactEvent],
+) -> Vec<WeaponEmission> {
+    let mut emissions: Vec<(EntityId, WeaponEmission)> = Vec::new();
+    for contact in contacts {
+        let impact = ImpactContact::new(contact.point, contact.normal, contact.target);
+        match emissions
+            .iter_mut()
+            .find(|(activation, _)| *activation == contact.activation)
+        {
+            Some((
+                _,
+                WeaponEmission {
+                    emitter: Emitter::Contacts(points),
+                    ..
+                },
+            )) => points.push(impact),
+            _ => emissions.push((
+                contact.activation,
+                WeaponEmission {
+                    address: "impact",
+                    emitter: Emitter::Contacts(vec![impact]),
+                    weapon: contact.source_weapon.clone(),
+                },
+            )),
+        }
+    }
+    emissions
+        .into_iter()
+        .map(|(_, emission)| emission)
+        .collect()
 }
 
 struct WorldHit {
@@ -109,6 +154,10 @@ pub fn advance(
             contacts.push(ProjectileContactEvent {
                 projectile,
                 point: impact.point,
+                normal: impact.normal,
+                target: impact.target,
+                source_weapon: component.source_weapon.clone(),
+                activation: component.activation.unwrap_or(projectile),
             });
             weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
             if let Some(config) = component.impact_light.as_ref() {
@@ -617,6 +666,8 @@ mod tests {
                     flipbook_active: false,
                     impact_light: None,
                     splash: None,
+                    source_weapon: None,
+                    activation: None,
                 },
             )
             .expect("projectile component attaches");
@@ -1317,6 +1368,88 @@ mod tests {
             "the swept width should reach the expanded hitbox"
         );
         assert!(!registry.borrow().exists(projectile));
+    }
+
+    fn contact(activation: u32, weapon: &str, x: f32) -> ProjectileContactEvent {
+        ProjectileContactEvent {
+            projectile: EntityId::from_raw(100 + x as u32),
+            point: Vec3::new(x, 0.0, 0.0),
+            normal: Vec3::Z,
+            target: None,
+            source_weapon: Some(weapon.to_string()),
+            activation: EntityId::from_raw(activation),
+        }
+    }
+
+    // Pin P14: one impact per activation per tick, with every contact.
+    #[test]
+    fn projectile_contacts_group_into_one_impact_per_activation() {
+        let emissions = projectile_impact_emissions(&[
+            contact(1, "shotgun", 0.0),
+            contact(2, "rifle", 5.0),
+            contact(1, "shotgun", 1.0),
+        ]);
+        assert_eq!(emissions.len(), 2, "two activations made contact this tick");
+        assert!(
+            emissions
+                .iter()
+                .all(|emission| emission.address == "impact")
+        );
+        assert_eq!(emissions[0].weapon.as_deref(), Some("shotgun"));
+        assert_eq!(
+            emissions[0].emitter,
+            Emitter::Contacts(vec![
+                ImpactContact::new(Vec3::ZERO, Vec3::Z, None),
+                ImpactContact::new(Vec3::X, Vec3::Z, None),
+            ]),
+        );
+        assert_eq!(emissions[1].weapon.as_deref(), Some("rifle"));
+        assert!(projectile_impact_emissions(&[]).is_empty());
+    }
+
+    // Pin P14: the projectile despawns on the tick it hits; its contact survives.
+    #[test]
+    fn projectile_despawned_on_hit_reports_its_full_contact_and_source() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        {
+            let mut registry = registry.borrow_mut();
+            let mut component = registry
+                .get_component::<ProjectileComponent>(projectile)
+                .unwrap()
+                .clone();
+            component.source_weapon = Some("enemy.rifle".to_string());
+            registry.set_component(projectile, component).unwrap();
+        }
+
+        let world = CollisionWorld::default();
+        let zones = HitZoneStore::new();
+        // The spawn tick only clears the launch grace; the next tick hits.
+        assert!(advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {}).is_empty());
+        let contacts = advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {});
+
+        assert!(
+            !registry.borrow().exists(projectile),
+            "despawned in the hit tick"
+        );
+        let [event] = contacts.as_slice() else {
+            panic!("one contact, got {contacts:?}");
+        };
+        assert_eq!(event.target, Some(target));
+        assert_eq!(event.source_weapon.as_deref(), Some("enemy.rifle"));
+        assert_eq!(
+            event.activation, projectile,
+            "a lone projectile is its own activation"
+        );
+        assert!(event.normal.is_finite() && event.normal != Vec3::ZERO);
+        let emissions = projectile_impact_emissions(&contacts);
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].weapon.as_deref(), Some("enemy.rifle"));
     }
 
     #[test]

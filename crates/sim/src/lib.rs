@@ -11,6 +11,7 @@ pub mod ai_host;
 #[cfg(any(test, feature = "test-support"))]
 pub mod alloc_probe;
 pub mod combat_positioning;
+pub mod emission;
 mod fx;
 mod grant;
 #[cfg(not(feature = "test-support"))]

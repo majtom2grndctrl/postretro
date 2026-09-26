@@ -282,6 +282,13 @@ impl BrainComponent {
         }
     }
 
+    /// Root-to-leaf activity indices of the active path. Paired with `graph`,
+    /// this names the active leaf even after the brain moves on or is removed
+    /// (see [`activity_at_path`]).
+    pub fn active_path(&self) -> &[usize] {
+        &self.active_activity_path[..self.active_depth()]
+    }
+
     pub fn active_depth(&self) -> usize {
         self.active_activity_path_len
             .min(MAX_BEHAVIOR_NESTING_DEPTH)
@@ -601,6 +608,24 @@ fn evicts_before(candidate: RecentAttacker, current: RecentAttacker) -> bool {
             std::cmp::Ordering::Equal => candidate.attacker < current.attacker,
         },
     }
+}
+
+/// Resolve an activity by root-to-leaf indices, as [`BrainComponent::active_path`]
+/// reports them. `None` when the path does not fit `graph`.
+pub fn activity_at_path<'a>(
+    graph: &'a BehaviorGraphDescriptor,
+    path: &[usize],
+) -> Option<(&'a str, &'a BehaviorActivityDescriptor)> {
+    let (leaf, parents) = path.split_last()?;
+    let mut envelope = &graph.envelope;
+    for index in parents {
+        envelope = nested_graph(envelope.activities.values().nth(*index)?)?;
+    }
+    envelope
+        .activities
+        .iter()
+        .nth(*leaf)
+        .map(|(name, activity)| (name.as_str(), activity))
 }
 
 fn nested_graph(activity: &BehaviorActivityDescriptor) -> Option<&BehaviorGraphEnvelope> {

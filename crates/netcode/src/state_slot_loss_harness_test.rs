@@ -566,6 +566,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
             None,
         ),
         None,
+        crate::sim::ProjectileSource::default(),
     )
     .expect("host enemy projectile has capacity to spawn");
     assert_eq!(
@@ -714,6 +715,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
             }),
         ),
         None,
+        crate::sim::ProjectileSource::default(),
     )
     .expect("host enemy splash projectile has capacity to spawn");
 

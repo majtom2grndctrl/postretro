@@ -8,6 +8,7 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_entities::{Emitter, ImpactContact, WeaponEmission};
 use postretro_foundation::{
     FireMode, KnockbackDescriptor, ProjectileDescriptor, ResolutionMode, SplashDescriptor,
     WeaponPlacementDescriptor,
@@ -393,20 +394,46 @@ pub struct WeaponFireEvents {
 
 impl WeaponFireEvents {
     pub fn event_names(&self) -> Vec<&'static str> {
-        let mut names = Vec::with_capacity(3);
+        self.emissions(&Emitter::Contacts(Vec::new()), None)
+            .into_iter()
+            .map(|emission| emission.address)
+            .collect()
+    }
+
+    /// This activation's named events, in dispatch order. Fire, dry fire and
+    /// spawn come from `shooter`; one `impact` carries every contact of the
+    /// activation. `weapon` names the weapon descriptor the events came from.
+    pub fn emissions(&self, shooter: &Emitter, weapon: Option<String>) -> Vec<WeaponEmission> {
+        let from_shooter = |address| WeaponEmission {
+            address,
+            emitter: shooter.clone(),
+            weapon: weapon.clone(),
+        };
+        let mut emissions = Vec::with_capacity(3);
         if self.dry_fire {
-            names.push("dry_fire");
+            emissions.push(from_shooter("dry_fire"));
         }
         if self.activate.is_some() {
-            names.push("activate");
+            emissions.push(from_shooter("activate"));
         }
         if !self.impacts.is_empty() {
-            names.push("impact");
+            emissions.push(WeaponEmission {
+                address: "impact",
+                emitter: Emitter::Contacts(
+                    self.impacts
+                        .iter()
+                        .map(|impact| {
+                            ImpactContact::new(impact.point, impact.normal, impact.target)
+                        })
+                        .collect(),
+                ),
+                weapon: weapon.clone(),
+            });
         }
         if !self.spawned.is_empty() {
-            names.push("spawned");
+            emissions.push(from_shooter("spawned"));
         }
-        names
+        emissions
     }
 }
 
@@ -2041,6 +2068,94 @@ pub(crate) mod tests {
         );
     }
 
+    // Pin P4: a multi-pellet shot is one impact event carrying every contact.
+    #[test]
+    fn multi_pellet_shot_is_one_impact_emission_carrying_every_contact() {
+        let mut registry = EntityRegistry::new();
+        let mut component = weapon_component(FireMode::Semi, 100.0);
+        component.pellet_count = 8;
+        component.spread_degrees = 0.0;
+        let weapon_id = spawn_weapon(&mut registry, component);
+        let shooter = Emitter::Entity {
+            id: weapon_id,
+            origin: Vec3::ZERO,
+        };
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &TestAim::forward(Vec3::ZERO),
+            &wall_world(),
+            1.0 / 60.0,
+        );
+        let emissions = events.emissions(&shooter, Some("shotgun".to_string()));
+
+        let addresses: Vec<_> = emissions.iter().map(|emission| emission.address).collect();
+        assert_eq!(
+            addresses,
+            ["activate", "impact"],
+            "eight pellets, one impact"
+        );
+        assert_eq!(
+            emissions[0].emitter, shooter,
+            "fire sounds from the shooter"
+        );
+        let Emitter::Contacts(contacts) = &emissions[1].emitter else {
+            panic!(
+                "the impact carries its contacts, got {:?}",
+                emissions[1].emitter
+            );
+        };
+        assert_eq!(contacts.len(), 8);
+        for contact in contacts {
+            assert_eq!(contact.hit, postretro_entities::ContactHit::World);
+            assert_vec3_approx(contact.point, Vec3::new(0.0, 0.0, -5.0));
+            assert!(
+                contact.normal.abs_diff_eq(Vec3::Z, 1.0e-4)
+                    || contact.normal.abs_diff_eq(Vec3::NEG_Z, 1.0e-4),
+                "each contact keeps the wall's normal, got {}",
+                contact.normal,
+            );
+        }
+        assert!(
+            emissions
+                .iter()
+                .all(|emission| emission.weapon.as_deref() == Some("shotgun")),
+            "every event names the weapon it came from",
+        );
+    }
+
+    #[test]
+    fn shot_with_no_contact_emits_no_impact() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        // The only wall stands behind the shooter.
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &TestAim::forward(Vec3::ZERO),
+            &wall_world_at(5.0),
+            1.0 / 60.0,
+        );
+        let shooter = Emitter::Entity {
+            id: weapon_id,
+            origin: Vec3::ZERO,
+        };
+        let addresses: Vec<_> = events
+            .emissions(&shooter, None)
+            .iter()
+            .map(|emission| emission.address)
+            .collect();
+        assert_eq!(addresses, ["activate"]);
+    }
+
     #[test]
     fn eight_zero_spread_pellets_resolve_eight_exact_axis_impacts() {
         let mut registry = EntityRegistry::new();
@@ -3147,6 +3262,8 @@ pub(crate) mod tests {
                         flipbook_active: false,
                         impact_light: None,
                         splash: None,
+                        source_weapon: None,
+                        activation: None,
                     },
                 )
                 .expect("predicted projectile state attaches");

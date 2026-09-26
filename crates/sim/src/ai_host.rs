@@ -2,7 +2,6 @@
 //! See: context/lib/development_guide.md §Workspace · context/lib/entity_model.md §7c
 
 use postretro_entities::components::health::{DamageContext, apply_damage_with_context};
-use std::borrow::Cow;
 use std::cell::RefCell;
 
 use postretro_entities::{
@@ -12,7 +11,7 @@ use postretro_foundation::DamagePayload;
 use postretro_physics::collision::CollisionWorld;
 
 use crate::nav::NavGraph;
-use crate::sim::{EnemyProjectilePresentationSpawn, spawn_projectile};
+use crate::sim::{EnemyProjectilePresentationSpawn, ProjectileSource, spawn_projectile};
 use crate::weapon::ProjectileLaunch;
 
 /// Effects AI may apply synchronously while publishing one tick's outcomes.
@@ -29,6 +28,7 @@ pub trait AiHost {
         owner_pawn: EntityId,
         owner_weapon: EntityId,
         launch: ProjectileLaunch,
+        source: ProjectileSource,
     ) -> Option<EntityId>;
 
     /// Apply damage synchronously through the contextual health chokepoint.
@@ -79,7 +79,9 @@ pub struct AiTickInputs<'a> {
 /// failed spawn attempts appear in neither collection. Once returned, the host
 /// has completed all synchronous damage and impact work for those outcomes.
 pub struct AiTickResult {
-    pub events: Vec<Cow<'static, str>>,
+    /// Every enemy event this tick, each on its enemy with the descriptor
+    /// identity its sounds resolve from.
+    pub events: Vec<postretro_entities::AiEmission>,
     pub projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
 }
 
@@ -87,9 +89,9 @@ pub struct AiTickResult {
 /// dev-dependency cycle through `postretro-ai`. Production runners return
 /// `AiTickResult` directly and never allocate or rebuild projectile output.
 #[cfg(any(test, feature = "test-support"))]
-impl From<(Vec<Cow<'static, str>>, Vec<(EntityId, String)>)> for AiTickResult {
+impl From<(Vec<postretro_entities::AiEmission>, Vec<(EntityId, String)>)> for AiTickResult {
     fn from(
-        (events, projectile_spawns): (Vec<Cow<'static, str>>, Vec<(EntityId, String)>),
+        (events, projectile_spawns): (Vec<postretro_entities::AiEmission>, Vec<(EntityId, String)>),
     ) -> Self {
         Self {
             events,
@@ -144,8 +146,9 @@ impl AiHost for SimAiHost<'_> {
         owner_pawn: EntityId,
         owner_weapon: EntityId,
         launch: ProjectileLaunch,
+        source: ProjectileSource,
     ) -> Option<EntityId> {
-        spawn_projectile(registry, owner_pawn, owner_weapon, launch, None)
+        spawn_projectile(registry, owner_pawn, owner_weapon, launch, None, source)
     }
 
     fn apply_damage(

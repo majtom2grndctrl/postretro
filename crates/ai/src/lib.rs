@@ -36,7 +36,8 @@ pub(crate) use postretro_physics::{kinematic_mover, movement};
 #[doc(hidden)]
 pub use postretro_sim as __postretro_sim;
 pub(crate) use postretro_sim::{
-    agent_steering, ai_host, combat_positioning, nav, scripting, scripting_systems, sim, weapon,
+    agent_steering, ai_host, combat_positioning, emission, nav, scripting, scripting_systems, sim,
+    weapon,
 };
 #[cfg(test)]
 pub(crate) use postretro_sim::{
@@ -174,9 +175,16 @@ pub(crate) struct EnemyOutcome {
     /// transition. Combat slots are path-relative, not root-graph-relative.
     pub(crate) prior_standoff_distance: f32,
     pub(crate) standoff_distance: f32,
-    /// The entered state's authored `on_enter` address, present only on the tick
-    /// the brain entered it.
+    /// The activity entered this tick, present only on the tick the brain
+    /// entered it.
+    entered: Option<EnteredActivity>,
+}
+
+/// An activity the brain entered this tick: its authored `on_enter` address,
+/// if any, and its root-to-leaf index path in the brain's graph.
+pub(crate) struct EnteredActivity {
     on_enter: Option<String>,
+    path: Vec<usize>,
 }
 
 /// One successful fire-latch's engine-owned resolution. Contact attacks keep
@@ -377,6 +385,9 @@ pub(crate) fn run_ai_tick_with_navigation(
         |_| {},
     )
     .events
+    .into_iter()
+    .filter_map(|emission| emission.address)
+    .collect()
 }
 
 #[cfg(any(test, feature = "test-support"))]

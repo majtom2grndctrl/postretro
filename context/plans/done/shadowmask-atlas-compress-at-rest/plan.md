@@ -145,18 +145,18 @@ self-skip is not a pass.
 | B2 texture description: BC5, `2W × H × L`, half raw bytes; the upload uses it | a pure `shadowmask_texture_descriptor` fn, unit-tested and called by the upload | achievable as stated | pass — `shadowmask_texture_description_is_bc5_double_width_at_half_the_raw_bytes` |
 | B3 miss holds one raw fill + one output + ≤ 3 raw layers of scratch; raw gone before cache/return | test-only byte-residency tracker in the encode module | achievable as stated | pass — `cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch` |
 | B4 byte-identical across worker counts; warm = uncached | adapt `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers` and the cached/uncached golden tests | achievable as stated | pass — `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers`; warm = uncached per W5 |
-| B5 max and mean per-channel encode error, measured | measurement test printing both on a fixture; yardstick numbers in the landing note | manual (measured, not gated) | measured — see Measurements; yardstick figure outstanding with MN1 |
+| B5 max and mean per-channel encode error, measured | measurement test printing both on a fixture; yardstick numbers in the landing note | manual (measured, not gated) | measured — see Measurements; yardstick: 2048²×73, max 18/255, mean < 0.0001/255, 99.9998% of samples exact |
 | L1 world keeps headers; payloads have no place after install | type-level split plus a loader/seam test (see *Corrections* clarification) | achievable as clarified | pass — `taking_gpu_lighting_payloads_leaves_headers_and_nothing_to_take_twice` (owner-confirmed reading) |
 | L2 released only after upload; renderer-less install keeps them | unit test on the install take seam | achievable as stated | pass for the keep half — `install_without_renderer_keeps_gpu_lighting_payloads_in_the_world`; game renderer-branch release is manual (MN6/MN7) |
 | L3 capture takes the payloads the same way | capture setup test: world holds headers only after install | achievable as stated | pass (adapter) — capture takes before install; L4 and L5 captures show no `[Renderer]` payload errors |
 | L4 animated atlas dims equal static after take; animated lights render | renderer test: `usable_atlas_dimensions` reads the header after the take; animated capture fixture (*adapter*) | achievable as stated | pass (adapter) — `animated_lights_render_after_lightmap_payloads_move_into_the_upload` plus header-sized animated atlas unit test |
 | L5 lightmap-without-shadowmask and neither install without panic; first releases | take-seam unit test plus a capture of a no-shadowmask fixture (*adapter*) | achievable as stated | pass (adapter) — `level_with_a_lightmap_but_no_shadowmask_captures_cleanly` (byte-identical to all-open masks); split and pairing unit tests |
 | O1 `--verbose` overlap line on cold and warm; none when not verbose | compiler test with log capture across miss, hit and non-verbose | achievable as stated | pass — ignored CLI `verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_not` plus unit tests |
-| MN1 id 42/22 bytes, layers, dims, peak RSS pre/post on the yardstick | owner or attended run, landing note | manual | outstanding — owner |
-| MN2 process memory after install pre/post, net of texture bytes, metric named | attended run | manual | outstanding — owner |
-| MN3 specular highlight capture A/B, both images inspected | attended capture | manual | outstanding — owner |
-| MN4 capture-harness CPU completion median and p95 | attended run per `testing_guide.md` §Resource bounds | manual | outstanding — owner (Windows box; this Mac lacks GPU timestamps) |
-| MN5 peak overlap on the yardstick | attended `--verbose` bake | manual | outstanding — owner |
+| MN1 id 42/22 bytes, layers, dims, peak RSS pre/post on the yardstick | owner or attended run, landing note | manual | measured (attended, 2026-09-25) — id 42 1,224,737,124 → 612,368,744 B (exactly ½); id 22 459,276,336 B both; 2048²×73 grid both (after: 4096×2048×73 BC5). Peak RSS 5.60 → 4.86 GB, not like-for-like (14 vs 10 workers). See Measurements § Yardstick |
+| MN2 process memory after install pre/post, net of texture bytes, metric named | attended run | manual | measured (attended, peak not post-install) — `time -l` peak memory footprint over a capture run 4.33 → 2.53–2.86 GB; the ≈1.5–1.8 GB drop matches the 1.68 GB of id 42 + id 22 CPU copies now released. Discrete-GPU Mac, so texture bytes are not in the footprint. A steady-state post-install figure on the owner's Windows box is still open |
+| MN3 specular highlight capture A/B, both images inspected | attended capture | manual | measured (attended), owner look outstanding — before/after pixel-identical (max 0/255) at three yardstick views, including one where the shadowmask contributes up to 94/255 (control: after binary on the retired-format PRL, which falls back to fully lit). Views exercise hard occlusion; penumbra error is covered by B5 |
+| MN4 capture-harness CPU completion median and p95 | attended run per `testing_guide.md` §Resource bounds | manual | measured (attended), no regression but not discriminating — median 1,693.6–1,694.3 ms before, 1,693.0–1,695.5 ms after; p95 1,695.6–1,788.8 ms, spread by run not build. ≈1.7 s frames: the 0.04 m yardstick exceeds this 4 GB GPU. A meaningful frame-time A/B stays with the owner's Windows box |
+| MN5 peak overlap on the yardstick | attended `--verbose` bake | manual | measured (attended) — `peak per-texel overlap: 6 selected light(s) at one texel; 73 layer(s), BC5 .rg side by side (4 slots)` |
 | MN6 second-group shadows after reload and a dev level cycle | owner, in-engine | manual | outstanding — owner |
 | MN7 level cycle between differing lightmap widths and back | owner, in-engine | manual | outstanding — owner |
 
@@ -169,7 +169,12 @@ self-skip is not a pass.
   - `soft_shadow_test`: 1024²×1, max 17/255, mean 0.0031/255.
   - `gate-heavily-lit`: 1024²×2, max 17/255, mean < 0.0001/255.
   Hard shadows are exact because their blocks hold endpoints only. Error sits in
-  penumbra blocks. The yardstick number is part of MN1.
+  penumbra blocks.
+- Yardstick (2026-09-25, same test with the yardstick added locally and the error folded
+  in a streaming histogram): `stress-warren-hallway-inspection`, 2048²×73, 4 used slots,
+  1,224,736,768 samples. Max 18/255, mean < 0.0001/255, 99.9998% exact, p99.9 0/255. The
+  fixture pipeline parses map lights directly without data-script membership, but its
+  atlas matches the `--release` bake's 2048²×73 grid.
 - After review round 1 (BC4 six-value mode, chosen per block only when it lowers total
   squared error):
   - `shadowmask-groups-capture`: max 0/255.
@@ -178,6 +183,33 @@ self-skip is not a pass.
   The mean falls about 40% on the soft fixture and the chart-edge worst case collapses.
   One soft-penumbra texel's max rises by 2 levels because the choice minimizes block
   error, not per-texel max.
+
+### Yardstick (manual rows, attended 2026-09-25)
+
+- **Fixture and inputs.** `content/dev/maps/stress-warren-hallway-inspection.map`, freshly baked on
+  both sides with `prl-build --release -v` at the default 0.04 m lightmap density. Before is
+  `main` 804351717; after is this branch at 0218faacd.
+- **Machine.** MacBook Pro, 16 logical cores, AMD Radeon Pro 5300M (4 GB, discrete, Metal),
+  release binaries.
+- **Density caveat.** The 88 MB id-42 figure in the brief came from the 2026-08-31 artifact
+  (84 × 512², a coarser non-default density). At the default density the map is 73 × 2048²,
+  and id 42 is 1.22 GB before, in line with the brief's "projected 1.29 GB at 0.04". The halving
+  holds at either density.
+- **Bakes.** Before: 14 workers (the default), 10,088 s wall, max RSS 5.60 GB, peak footprint
+  4.35 GB. After: 10 workers at the owner's request (`-j 10`, `RAYON_NUM_THREADS=10`, nice 10),
+  13,502 s wall, max RSS 4.86 GB, peak footprint 4.62 GB. The worker counts differ, so the
+  peak-memory pair is not like-for-like.
+- **Unchanged pre-existing behavior.** Both bakes log the same channel-assignment fallback.
+  It drops 70 selected light masks, because the exact search exhausted its 100,000-node budget.
+- **Engine behavior on load.** The engine disables animated-light contribution on load for
+  both builds. The animated dispatch has 2,419,938 tiles, over the 65,535 workgroup limit. This
+  is pre-existing at this density.
+- **Capture settings.** `POSTRETRO_SH_STREAMING=sync-proof`, 1280×720, 120 warmup and 600
+  sample frames, run A-B-A-B. The camera is at [45.5, 4.6, 63.4], yaw 90, pitch −20, FOV 90.
+  The cache mode does not apply to capture. The runs overlapped other owner work on the machine.
+- **MN3 views.** Pixel-identical at the view above, and at [37.6, 5.0, 86.97] yaw 0, pitch −30.
+  The second view is a floor the shadowmask fully occludes: the after-binary control, falling
+  back to fully lit, differs by up to 94/255 and 8/255 on average.
 
 ## Tasks
 

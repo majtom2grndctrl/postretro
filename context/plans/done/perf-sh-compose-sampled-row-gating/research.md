@@ -199,18 +199,10 @@ adapter/driver/backend and resolution in the recorded result.
 
 ### M2 — performance
 
-1. Bake `stress-warren-mini.map` twice with release `prl-build`, `--no-tui`,
-   `--lightmap-density 0.16`, and respectively `--sh-probe-spacing 1.0` and `3.0`; keep the two
-   PRLs under `content/dev/maps/` so capture resolves the normal content and material roots.
-2. For each PRL, make spawn measurement scenes at 1280×720 with 120 warmup and 600 sample
-   frames. Run three release captures in `POSTRETRO_SH_STREAMING=sync-proof`, alternating 1 m
-   and 3 m. Record `cpu_completion` median/p95, each pass's rows/dispatches/lag counters, and
-   `compose_planning_cpu_micros`.
-3. Run each PRL live at spawn for 45 seconds, toggle vsync off with Alt+Shift+V, and record the
-   last three 240-frame windows. Alternate density order across three runs. Compare with the
-   spike table: expected 1 m is near 7.2 ms capture / 5.9 ms live; 3 m must be no slower than
-   3.67 ms capture / 5.02 ms live. A miss is a failure report with the observed counters, not
-   an adjusted threshold.
+The owner corrected this gate during testing: compare the same baked 1 m
+`stress-warren-mini.prl` on main and the feature branch. A 1 m/3 m comparison changes the
+workload and is only secondary diagnostic evidence. Record the qualitative or measured Windows
+A/B result and any hitch or artifact separately.
 
 ### M3 — live visual behavior
 
@@ -221,6 +213,41 @@ viewmodel straddling a hidden-cell boundary; look through fog toward a non-visib
 toggle each light-term mask. There must be no stale flash, pop, seam, wrong off-state, missing
 receiver lighting, or fog discontinuity. Repeat once with **Force full-resident SH compose** in
 the Streaming tab and record adapter, PRL, pose/transition, and pass/fail for each observation.
+
+## Landing results — 2026-09-26
+
+M1 passed on revision `f299b77ce66ec0635e6f4da6fc676c325250e0d0`, AMD Radeon Pro 5300M,
+Metal, 1280×720, `stress-warren-mini.prl`, and `POSTRETRO_SH_STREAMING=sync-proof`. The map's
+retired untagged raw shadowmask section was ignored with the expected re-bake warning; the SH
+streaming sections loaded and all exactness comparisons completed.
+
+| Pose | Time | Gated rows (indirect/static/animated) | Full rows (indirect/static/animated) | PNG comparison |
+|---|---:|---:|---:|---|
+| animroom | 0.5 s | 211 / 0 / 211 | 7,067 / 7,067 / 7,067 | passed, byte-identical |
+| animroom | 1.0 s | 211 / 0 / 211 | 7,067 / 7,067 / 7,067 | passed, byte-identical |
+| spawn | 0.5 s | 213 / 0 / 213 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+| spawn | 1.0 s | 213 / 0 / 213 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+| floor | 0.5 s | 90 / 0 / 90 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+| floor | 1.0 s | 90 / 0 / 90 | 8,127 / 8,127 / 8,127 | passed, byte-identical |
+
+Every report's three-pass row sum was nonzero. The gated animroom PNG changed between 0.5 s and
+1.0 s, proving that the authored curve advanced. Spawn and floor remained identical across the
+two times because those views did not contain the changing authored light. Compose-planning CPU
+time ranged from 4,543–5,536 µs for gated captures and 11,213–14,220 µs for force-full captures
+on this adapter.
+
+M2 passed by owner approval on the Windows play-test box. The owner compared the same checked-in
+1 m `stress-warren-mini.prl` on main and this feature branch, reported that the feature branch
+was very smooth and materially better, and noted occasional minor hitching on mini. Main's frame
+rate was too low to expose comparable hitching; the owner judged the hitch not demonstrated to
+be a regression from this brief and approved landing. No numeric frame windows or Windows
+adapter/driver string were captured, so this is a qualitative owner A/B rather than a benchmark.
+
+M3 passed by owner approval after live Windows play tests on `stress-warren-mini.prl` and
+`campaign-test.prl`, the latter exercising its scripted and pulsing light phases. No stale-light,
+seam, pop, off-state, receiver, or fog artifact was reported; the only reported issue was the
+minor intermittent mini hitch recorded under M2. The Windows adapter/driver string was not
+captured.
 
 ## Handed off
 

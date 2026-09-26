@@ -175,14 +175,14 @@ Counters, capture and cost:
   frames.
 
 ### Manual
-- [ ] Exactness (§7.8 capture, measurement mode): at the spike's pinned poses (spawn, animated
+- [x] Exactness (§7.8 capture, measurement mode): at the spike's pinned poses (spawn, animated
   room, floor), with animation time advancing, frame PNGs are byte-identical between the shipped
   path and force-full-resident, at several time steps.
-- [ ] Measurement (§Resource bounds): the protocol in research.md §Measurement protocol, against
-  the spike baseline (1 m: 47.9 ms capture, 41.9 ms live). Expected: 1 m near the spike's gated
-  emulation (7.2 ms capture, 5.9 ms live), which is a lower bound on rows. 3 m no slower than
-  today (3.67 ms capture, 5.02 ms live). A miss is reported with its counters.
-- [ ] Visual, live with script pulses: a pulsing room leaves view and fog reach, then returns,
+- [x] Measurement (§Resource bounds): owner-corrected Windows A/B of the same baked 1 m
+  `stress-warren-mini.prl` on main and this branch. The feature branch was materially smoother;
+  a minor intermittent hitch was observed but accepted as not a demonstrated regression. The
+  earlier 1 m/3 m comparison is secondary rather than the landing criterion.
+- [x] Visual, live with script pulses: a pulsing room leaves view and fog reach, then returns,
   with no stale flash. Turning in place shows no pop. A light switched off returns its region to
   base. Movers, skinned meshes and the viewmodel straddling unseen cells light correctly. Fog
   looking into non-visible rooms keeps its ambient scatter. Mask toggles and streaming-boundary

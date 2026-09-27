@@ -28,6 +28,10 @@ No shipped game applies an automatic full-frame limiter; games edit their own co
 
 **Area.** Per-cell counting alone misjudges area both ways. A threshold-sized flash straddling cell boundaries covers no whole cell, and a cell-sized flash smaller than the threshold would count. Cells stay smaller than the threshold, and a flash counts when the cells transitioning together reach the threshold area. IRIS's changed-pixel fraction is the whole-frame version of that test.
 
+**Grid and hitch.** A 16×9 grid gives cells of 1/144 of the frame; the 0.111 threshold spans about sixteen. A partly covered cell sees a diluted change: under a full-strength flash it still counts once coverage passes about 10%, so edge error leans toward counting. That is the fail-safe direction, and why a coarser 8×8 grid (FFmpeg's) also passes the quarter-threshold constraint but judges area more coarsely. The hitch ceiling of 1/30 s is the slowest cadence hub AC 4 proves. A longer frame is treated as a hitch for the intensity allowance alone.
+
+**Fixture safety.** A player payload ships only the maps the mod catalog names (`build_pipeline.md` §Distribution packaging), so an uncatalogued strobe map never reaches players. The SDK bundle ships `.map` sources, which a modder must build and load by name.
+
 **Time.** `FrameTickResult::frame_dt` is raw elapsed time; only the sim accumulator is clamped. The renderer receives `now_seconds = script_time`, which dev-tools freezes. Precedent for a renderer-side clamped delta: `renderer_light_slots.rs` computes `(now - prev).clamp(0, 0.25)`.
 
 ## OS reader (`mundy` 0.2.3)
@@ -46,6 +50,7 @@ No shipped game applies an automatic full-frame limiter; games edit their own co
 - No reaction carries an owner or seat. Scaling at the pack step affects only the presenting machine.
 
 ## Audio
+
 
 `crates/audio` (moved by E12). `Audio::new` builds `AudioManagerSettings` (kira 0.12) with the default `main_track_builder`, then runs `BusTree::build` (`BusId { Sfx, Music, UI }` under the main track). `Audio::set_bus_volume(BusId, dB)` and `Audio::set_main_volume(dB)` have test-only callers. Positional voices are spatial sub-tracks of SFX (`spatial.rs` `start_voice`), so a main-track mono effect composes after panning. No UI-sound play path exists. Music plays only when a script names the `music` bus.
 

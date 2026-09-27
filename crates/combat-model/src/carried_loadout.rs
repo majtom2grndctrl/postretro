@@ -87,8 +87,9 @@ pub struct WieldableTuningPayload {
 ///
 /// Movement is optional for pawn classes without a movement descriptor. The
 /// wieldable array is capacity-sized so a slot's identity survives empty
-/// positions. `movement.view_feel` is always cleared because view feel is local
-/// presentation rather than predicted simulation tuning.
+/// positions. `movement.view_feel` and `movement.sounds` are always cleared
+/// because they are local presentation rather than predicted simulation tuning;
+/// no sound key crosses the wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuningPayload {
     epoch: u32,
@@ -103,6 +104,7 @@ impl TuningPayload {
     ) -> Self {
         if let Some(descriptor) = movement.as_mut() {
             descriptor.view_feel = None;
+            descriptor.sounds = None;
         }
         Self {
             epoch: TUNING_PAYLOAD_EPOCH,

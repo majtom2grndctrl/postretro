@@ -98,6 +98,7 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
     let slot_c = host_registry.spawn(Transform::default());
     let test_weapon = || {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,

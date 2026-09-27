@@ -47,6 +47,17 @@ impl MoverEventKind {
             Self::Crushed => mover.crush_event.as_deref(),
         }
     }
+
+    /// Return this edge's authored presentation sound key, if any. The key is
+    /// descriptor content the app resolves; the simulation never plays it.
+    pub fn sound_key(self, mover: &KinematicMoverComponent) -> Option<&str> {
+        match self {
+            Self::Opened => mover.open_sound.as_deref(),
+            Self::Closed => mover.close_sound.as_deref(),
+            Self::Blocked => mover.blocked_sound.as_deref(),
+            Self::Crushed => mover.crush_sound.as_deref(),
+        }
+    }
 }
 
 /// Host-only blocking timers, keyed by full generation-aware mover and actor
@@ -737,6 +748,7 @@ mod tests {
 
     fn player_movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.25,
@@ -2457,6 +2469,46 @@ mod tests {
                 .filter(|(kind, _)| *kind == MoverEventKind::Crushed)
                 .count(),
             5
+        );
+    }
+
+    // Pin P11: each crushed actor is its own edge, so each is its own sound.
+    #[test]
+    fn crushing_two_actors_on_one_tick_emits_two_crush_edges() {
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let mover_entity = registry.spawn(Transform::default());
+        let mut mover = mover(mover_id);
+        mover.block_policy = BlockPolicy::Crush;
+        mover.crush_damage = 10.0;
+        mover.crush_interval_ms = 100.0;
+        registry
+            .set_component(mover_entity, mover)
+            .expect("mover attaches");
+        add_player(&mut registry, Some(50.0));
+        add_player(&mut registry, Some(50.0));
+
+        let collider = swept_wall(mover_id);
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &blocking_static_wall(),
+            std::slice::from_ref(&collider),
+            &moving_contact_pose(mover_id),
+            &mut MoverBlockingState::default(),
+            0.05,
+            &mut events,
+            &mut |registry| {
+                registry.take_impact_dispatches();
+            },
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                (MoverEventKind::Crushed, mover_id),
+                (MoverEventKind::Crushed, mover_id)
+            ],
         );
     }
 

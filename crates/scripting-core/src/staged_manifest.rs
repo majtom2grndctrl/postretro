@@ -11,14 +11,14 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
-    drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
-    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
-    drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
-    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_audio_profile_js, drain_audio_profile_lua, drain_default_weapon_placement_js,
+    drain_default_weapon_placement_lua, drain_faction_sentiment_decay_js,
+    drain_faction_sentiment_decay_lua, drain_faction_sentiments_js, drain_faction_sentiments_lua,
+    drain_factions_js, drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js,
+    drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
+    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
+    drain_impact_events_lua, drain_maps_js, drain_maps_lua, drain_mover_defaults_js,
+    drain_mover_defaults_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
@@ -332,6 +332,7 @@ fn run_staged_manifest_build(
         version: manifest.version,
         render: manifest.render,
         movers: manifest.movers,
+        audio: manifest.audio,
         switching: manifest.switching,
         default_weapon_placement: manifest.default_weapon_placement,
         entities: manifest.entities,
@@ -611,6 +612,13 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let audio = drain_audio_profile_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `audio` invalid: {e}"
+            ),
+        }
+    })?;
     let switching = drain_switching_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -695,6 +703,7 @@ fn manifest_from_js_value<'js>(
         version,
         render,
         movers,
+        audio,
         switching,
         default_weapon_placement,
         entities,
@@ -935,6 +944,11 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let audio = drain_audio_profile_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `audio` invalid: {e}"),
+        }
+    })?;
     let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -1013,6 +1027,7 @@ fn run_staged_mod_init_luau(
         version,
         render,
         movers,
+        audio,
         switching,
         default_weapon_placement,
         entities,
@@ -1156,6 +1171,54 @@ mod tests {
             bloom: ModBloomProfile {
                 resolution: ModBloomResolution::Half,
                 pixelated: true,
+            },
+        };
+        assert_eq!(js, expected);
+        assert_eq!(luau, expected);
+    }
+
+    #[test]
+    fn staged_manifest_audio_attenuation_snapshot_matches_in_both_runtimes() {
+        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile};
+
+        let staged_audio = |name: &str, entry: &str, source: &str| {
+            let dir = temp_mod_root(name);
+            fs::write(dir.join(entry), source).unwrap();
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            let StagedManifestBuildStatus::Built(manifest) = result.status else {
+                panic!("expected built staged manifest, got {:?}", result.status);
+            };
+            manifest.audio
+        };
+        let js = staged_audio(
+            "js_audio_profile",
+            "start-script.js",
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "AudioMod",
+                    id: "audio-mod",
+                    version: "1",
+                    audio: { attenuation: { minDistance: 1, maxDistance: 25, curve: "quadratic" } },
+                };
+            "#,
+        );
+        let luau = staged_audio(
+            "luau_audio_profile",
+            "start-script.luau",
+            r#"
+                return {
+                    name = "AudioMod",
+                    id = "audio-mod",
+                    version = "1",
+                    audio = { attenuation = { minDistance = 1, maxDistance = 25, curve = "quadratic" } },
+                }
+            "#,
+        );
+        let expected = ModAudioProfile {
+            attenuation: ModAttenuation {
+                min_distance: 1.0,
+                max_distance: 25.0,
+                curve: ModAttenuationCurve::Quadratic,
             },
         };
         assert_eq!(js, expected);

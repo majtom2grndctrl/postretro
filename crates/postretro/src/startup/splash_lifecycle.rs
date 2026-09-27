@@ -274,6 +274,7 @@ impl App {
         // Switching is App-owned input policy, so lift it out of the runtime
         // manifest before the registry drain mutably borrows the session.
         let committed_switching: postretro_foundation::SwitchingDescriptor;
+        let committed_audio_profile: postretro_scripting_core::runtime::ModAudioProfile;
         let committed_mover_auto_close_ms: f32;
         {
             let session = self
@@ -307,6 +308,12 @@ impl App {
                     .script_runtime
                     .mod_manifest()
                     .map(|manifest| manifest.switching)
+                    .unwrap_or_default();
+                committed_audio_profile = session
+                    .scripting
+                    .script_runtime
+                    .mod_manifest()
+                    .map(|manifest| manifest.audio)
                     .unwrap_or_default();
                 committed_mover_auto_close_ms = session
                     .scripting
@@ -443,6 +450,7 @@ impl App {
             self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
         self.apply_mod_bloom_render_profile(committed_render_profile);
+        self.apply_mod_audio_profile(committed_audio_profile);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_presentation_templates(committed_presentation_templates);
         }

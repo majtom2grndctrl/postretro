@@ -16,10 +16,24 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     let luau = generate_luau(&r);
 
     // The name-optional `(body)` overload is present alongside `(name, body)`.
+    // Four authoring shapes (data, crossing, trigger-event, emitter tracer),
+    // each with and without an explicit name.
     assert_eq!(
         ts.matches("export function defineReaction(").count(),
-        6,
+        8,
         "ts must declare data and all dispatch-scope tracer defineReaction overloads"
+    );
+    assert!(
+        ts.contains("export type EmitterParams = Readonly<{ emitter: EmitterTarget }>")
+            && ts.contains("tracer: (params: EmitterParams)")
+            && ts.contains("export function playSound(sound: string, options?: PlaySoundOptions)"),
+        "ts must expose the emitter dispatch scope and playSound options:\n{ts}"
+    );
+    assert!(
+        luau.contains("export type EmitterParams = { emitter: EmitterTarget }")
+            && luau.contains("(tracer: (EmitterParams) ->")
+            && luau.contains("export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }"),
+        "luau must expose the emitter dispatch scope and playSound options:\n{luau}"
     );
     assert!(
         ts.contains("levels?: string[]")

@@ -52,6 +52,36 @@ pub struct PlayerMovementDescriptor {
     /// `ViewFeelParams` materialized).
     /// A render-only camera effect — see `ViewFeelParams`.
     pub view_feel: Option<ViewFeelParams>,
+    /// Optional presentation-only sound keys for the local pawn's landing and
+    /// jumping. Like `view_feel`, cleared before the tuning crosses the wire;
+    /// skipped when absent, so the encoded tuning payload is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<MovementSounds>,
+}
+
+/// Sound keys for player-movement events. Every field is optional; an absent
+/// one plays nothing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MovementSounds {
+    /// Played at the pawn on `landed`.
+    #[serde(default)]
+    pub land: Option<String>,
+    /// Played at the pawn on `jumped`.
+    #[serde(default)]
+    pub jump: Option<String>,
+}
+
+impl MovementSounds {
+    /// Every key named, with its authored field name.
+    pub fn keys(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [
+            ("land", self.land.as_deref()),
+            ("jump", self.jump.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(field, key)| key.map(|key| (field, key)))
+    }
 }
 
 impl PlayerMovementDescriptor {

@@ -247,6 +247,21 @@ impl KinematicMoverRenderCollector {
         &self.sh_sample_regions
     }
 
+    /// World-space center of a mover's bounds under `pose`. Mover transforms are
+    /// origin-relative, so the transform position alone is not where a door
+    /// visibly is; this is the point its sounds come from (`audio.md` §4).
+    pub(crate) fn world_bounds_center(
+        &mut self,
+        world: &LevelWorld,
+        mover_id: u32,
+        pose: Transform,
+    ) -> Option<Vec3> {
+        self.refresh_mover_bounds(world);
+        let local = self.mover_bounds.get(&mover_id)?;
+        let center = (local.min + local.max) * 0.5;
+        Some(transform_matrix(pose).transform_point3(center))
+    }
+
     fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
         let source = MoverBoundsSource::from_movers(&world.kinematic_geometry.movers);
         if self.mover_bounds_source == Some(source) {
@@ -389,6 +404,10 @@ fn spawn_from_geometry_with_auto_close_default(
             component.close_event = mover.close_event.clone();
             component.blocked_event = mover.blocked_event.clone();
             component.crush_event = mover.crush_event.clone();
+            component.open_sound = mover.open_sound.clone();
+            component.close_sound = mover.close_sound.clone();
+            component.blocked_sound = mover.blocked_sound.clone();
+            component.crush_sound = mover.crush_sound.clone();
             component.sealed_portal_ids = mover.sealed_portal_ids.clone();
             log::info!("{}", kinematic_mover_load_summary(mover, &component));
             registry
@@ -596,7 +615,7 @@ fn mover_mode(mover: &LoadedKinematicMover) -> Result<KinematicMoverMode, Runtim
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use postretro_entities::ComponentKind;
     use postretro_level_format::geometry::Vertex;
@@ -617,7 +636,9 @@ mod tests {
         )
     }
 
-    fn mover(mode: u8) -> LoadedKinematicMover {
+    /// A loaded mover fixture (id 7): one triangle with local bounds
+    /// `[0,0,0]..[1,1,0]`. Shared with the sound-anchor tests.
+    pub(crate) fn mover(mode: u8) -> LoadedKinematicMover {
         LoadedKinematicMover {
             mover_id: 7,
             name: "lift".to_string(),
@@ -647,9 +668,35 @@ mod tests {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            open_sound: None,
+            close_sound: None,
+            blocked_sound: None,
+            crush_sound: None,
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
         }
+    }
+
+    #[test]
+    fn world_bounds_center_follows_the_mover_pose() {
+        let world = single_cell_world(KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        });
+        let mut collector = KinematicMoverRenderCollector::new();
+        let pose = Transform {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let center = collector
+            .world_bounds_center(&world, 7, pose)
+            .expect("mover 7 has bounds");
+        assert!(
+            center.abs_diff_eq(Vec3::new(10.5, 0.5, 0.0), 1.0e-5),
+            "origin-relative bounds center moves with the pose, got {center}",
+        );
+        assert!(collector.world_bounds_center(&world, 99, pose).is_none());
     }
 
     #[test]
@@ -711,6 +758,27 @@ mod tests {
             level_content_digest(&without_members, &world),
             level_content_digest(&with_members, &world),
             "presentation-only carried-light members must stay outside the content digest"
+        );
+    }
+
+    #[test]
+    fn level_content_digest_excludes_mover_sound_keys() {
+        let without_sounds = KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        };
+        let world = single_cell_world(without_sounds.clone());
+        let mut with_sounds = without_sounds.clone();
+        let authored = &mut with_sounds.movers[0];
+        authored.open_sound = Some("sfx/door_open".to_string());
+        authored.close_sound = Some("sfx/door_close".to_string());
+        authored.blocked_sound = Some("sfx/door_blocked".to_string());
+        authored.crush_sound = Some("sfx/door_crush".to_string());
+
+        assert_eq!(
+            level_content_digest(&without_sounds, &world),
+            level_content_digest(&with_sounds, &world),
+            "presentation-only mover sound keys must stay outside the content digest"
         );
     }
 
@@ -814,7 +882,7 @@ mod tests {
         }
     }
 
-    fn single_cell_world(kinematic_geometry: KinematicGeometry) -> LevelWorld {
+    pub(crate) fn single_cell_world(kinematic_geometry: KinematicGeometry) -> LevelWorld {
         let mut world = LevelWorld::new_visibility_only(
             vec![CellData {
                 bounds_min: Vec3::splat(-1.0e6),
@@ -941,6 +1009,26 @@ mod tests {
             0,
             "the failed batch must leave no mover components behind"
         );
+    }
+
+    #[test]
+    fn spawn_loaded_movers_copies_mover_sound_keys_into_the_component() {
+        let mut geometry = geometry(1);
+        let authored = &mut geometry.movers[0];
+        authored.open_sound = Some("sfx/door_open".to_string());
+        authored.blocked_sound = Some("sfx/door_blocked".to_string());
+        authored.crush_sound = Some("sfx/door_crush".to_string());
+
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .expect("mover component must be seeded");
+
+        assert_eq!(mover.open_sound.as_deref(), Some("sfx/door_open"));
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound.as_deref(), Some("sfx/door_blocked"));
+        assert_eq!(mover.crush_sound.as_deref(), Some("sfx/door_crush"));
     }
 
     #[test]

@@ -358,6 +358,7 @@ mod statechart_tests {
         layers: BTreeMap<String, BehaviorLayerDescriptor>,
     ) -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            sound: None,
             animation: Some(animation.to_string()),
             motion,
             action,
@@ -476,6 +477,7 @@ mod statechart_tests {
             attacks: BTreeMap::from([(
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(2.0),

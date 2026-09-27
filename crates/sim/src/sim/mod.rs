@@ -10,7 +10,6 @@ mod projectile_stage;
 pub mod splash;
 pub mod touch;
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -68,7 +67,7 @@ pub use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
     projectile_splash_occlusion_origin, resolve_projectile_impact,
 };
-pub use weapon_stage::{projectile_model_body_rotation, spawn_projectile};
+pub use weapon_stage::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
 
 #[derive(Debug, Clone)]
 pub struct SimCommand {
@@ -311,15 +310,19 @@ pub struct TriggerTickContext<'a> {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct TickEvents {
-    pub movement: Vec<&'static str>,
+    /// Local-pawn movement events, each on the pawn that raised it.
+    pub movement: Vec<crate::emission::MovementEmission>,
     /// Ordered local-pawn state edges for render-rate view-feel presentation.
     /// This is frame-local, never serialized, and deliberately separate from
     /// the script-address drain above.
     pub movement_edges: Vec<crate::movement::MovementStateEdge>,
-    /// AI events raised this tick: the static enemy-attack address plus each
-    /// entered graph state's authored `on_enter`, which is owned.
-    pub ai: Vec<Cow<'static, str>>,
-    pub weapon: Vec<&'static str>,
+    /// AI events raised this tick, each on its enemy: attacks fired and
+    /// activities entered (an entry with no authored `on_enter` fires nothing
+    /// but still plays its sound).
+    pub ai: Vec<crate::emission::AiEmission>,
+    /// Weapon events this tick: fire, dry fire, spawn, and one impact per
+    /// activation carrying its contacts (hitscan and projectile alike).
+    pub weapon: Vec<crate::emission::WeaponEmission>,
     /// Per-pellet cast points for determinism tests. Capture precedes impact
     /// policy, so tests compare the cast set rather than the applied subset.
     #[cfg(test)]
@@ -345,6 +348,11 @@ pub struct TickEvents {
     /// Locally simulated projectile contacts that retire listen-host mirror flights.
     pub local_projectile_contacts: Vec<ProjectileContactEvent>,
     pub reload_deliveries: Vec<ReloadDelivery>,
+    /// `reload_deliveries` stamped for presentation when they fired, in the
+    /// same order: each anchored at its reloading pawn and naming its weapon's
+    /// descriptor, as `weapon` emissions are. The frame drain reads these, so a
+    /// pawn or weapon gone by then still sounds its reload.
+    pub reload: Vec<crate::emission::WeaponEmission>,
     /// Pawns whose active inventory slot repointed this tick. Presentation drains
     /// this after simulation so the hand socket follows committed ownership, never
     /// a pending selection.
@@ -822,11 +830,18 @@ where
         );
     let mut reload_deliveries = remote_weapon_result.reload_deliveries;
     reload_deliveries.extend(local_result.reload_deliveries);
+    let mut reload = remote_weapon_result.reload_emissions;
+    reload.extend(local_result.reload_emissions);
     let mut weapon = local_result.weapon_events;
     let repointed_pawn = local_result.repointed_pawn;
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_result.weapon_events);
+    // Projectile contacts fire `impact` as hitscan contacts do, one per
+    // activation per tick, whoever fired them.
+    weapon.extend(projectile_stage::projectile_impact_emissions(
+        &local_projectile_contacts,
+    ));
     // AI and weapon stages can both launch after the flight pass. Consume the
     // launch tick's grace without moving those projectiles; next tick's
     // pre-AI flight pass advances them exactly once.
@@ -847,7 +862,7 @@ where
     repointed_pawns.dedup();
 
     TickEvents {
-        movement: movement.addresses,
+        movement: movement.emissions,
         movement_edges: movement.state_edges,
         ai,
         weapon,
@@ -863,6 +878,7 @@ where
         enemy_projectile_spawns,
         local_projectile_contacts,
         reload_deliveries,
+        reload,
         repointed_pawns,
         dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,
@@ -1561,7 +1577,7 @@ pub(crate) mod predict_reconcile;
 /// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
-    addresses: Vec<&'static str>,
+    emissions: Vec<crate::emission::MovementEmission>,
     state_edges: Vec<crate::movement::MovementStateEdge>,
 }
 
@@ -1578,7 +1594,7 @@ fn run_movement_tick(
     };
     let Some(id) = local else {
         return LocalMovementTickEvents {
-            addresses: Vec::new(),
+            emissions: Vec::new(),
             state_edges: Vec::new(),
         };
     };
@@ -1600,8 +1616,15 @@ fn run_movement_tick(
             state_edges = movement_events.state_edges;
         }
     }
+    let emitter = crate::emission::entity_emitter(&registry, id);
     LocalMovementTickEvents {
-        addresses,
+        emissions: addresses
+            .into_iter()
+            .map(|address| crate::emission::MovementEmission {
+                address,
+                emitter: emitter.clone(),
+            })
+            .collect(),
         state_edges,
     }
 }
@@ -1656,6 +1679,7 @@ mod tests {
                     (
                         "idle".to_string(),
                         BehaviorActivityDescriptor {
+                            sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
                             action: None,
@@ -1666,6 +1690,7 @@ mod tests {
                     (
                         "alert".to_string(),
                         BehaviorActivityDescriptor {
+                            sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
                             action: None,
@@ -1806,6 +1831,7 @@ mod tests {
 
     pub(super) fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,
@@ -1841,6 +1867,7 @@ mod tests {
         reload_ms: u32,
     ) -> (WeaponComponent, AmmoReserve) {
         let descriptor = WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,
@@ -1930,6 +1957,7 @@ mod tests {
 
     pub(super) fn trigger_movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,

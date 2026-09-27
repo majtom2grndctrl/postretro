@@ -30,6 +30,9 @@ pub const SPRINT_MULTIPLIER: f32 = 2.0;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderCamera {
     pub(crate) eye_position: Vec3,
+    /// Unit look direction, including render-rate view-feel angles. The audio
+    /// listener faces this way, so sound pans with what the player sees.
+    pub(crate) forward: Vec3,
     /// World-to-camera transform paired with `view_projection`. Viewmodel
     /// assembly uses its inverse to keep model/shading positions in world space
     /// while the renderer applies a dedicated tight projection.
@@ -49,7 +52,8 @@ impl RenderCamera {
         fov_offset_degrees: f32,
     ) -> Self {
         let eye_position = effective_eye_position(position, eye_offset);
-        let view = render_view_matrix(position, yaw, pitch, roll, eye_offset);
+        let forward = look_direction(yaw, pitch);
+        let view = render_view_matrix(position, forward, roll, eye_offset);
 
         // Clamp aspect to avoid degenerate projection (near-zero aspect produces
         // vfov near PI, which makes tan(vfov/2) explode).
@@ -67,6 +71,7 @@ impl RenderCamera {
 
         Self {
             eye_position,
+            forward,
             view_matrix: view,
             view_projection: projection * view,
         }
@@ -83,15 +88,18 @@ fn effective_eye_position(position: Vec3, eye_offset: Vec3) -> Vec3 {
     }
 }
 
-/// Build a render view matrix from an interpolated position and render-rate
-/// orientation, including optional roll and world-space eye translation.
-fn render_view_matrix(position: Vec3, yaw: f32, pitch: f32, roll: f32, eye_offset: Vec3) -> Mat4 {
-    let look_dir = Vec3::new(
+/// Unit look direction for a yaw (zero faces -Z) and pitch (positive looks up).
+fn look_direction(yaw: f32, pitch: f32) -> Vec3 {
+    Vec3::new(
         -yaw.sin() * pitch.cos(),
         pitch.sin(),
         -yaw.cos() * pitch.cos(),
-    );
+    )
+}
 
+/// Build a render view matrix from an interpolated position and render-rate
+/// look direction, including optional roll and world-space eye translation.
+fn render_view_matrix(position: Vec3, look_dir: Vec3, roll: f32, eye_offset: Vec3) -> Mat4 {
     // Keep the no-effect path bit-identical to the pre-view-feel matrix.
     if roll == 0.0 && eye_offset == Vec3::ZERO {
         return Mat4::look_at_rh(position, position + look_dir, Vec3::Y);
@@ -527,7 +535,7 @@ mod tests {
         );
         let expected = Mat4::look_at_rh(position, position + look_dir, Vec3::Y);
 
-        let actual = render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
+        let actual = render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
 
         assert_eq!(actual.to_cols_array(), expected.to_cols_array());
     }
@@ -556,7 +564,7 @@ mod tests {
         let camera = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO, 0.0);
         let old_vfov = 2.0 * ((HFOV / 2.0).tan() / aspect.max(0.1)).atan();
         let expected = Mat4::perspective_rh(old_vfov, aspect.max(0.1), NEAR, FAR)
-            * render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
+            * render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
         assert_eq!(
             camera.view_projection.to_cols_array(),
             expected.to_cols_array()
@@ -590,8 +598,8 @@ mod tests {
         let yaw = 0.4;
         let pitch = 0.1;
 
-        let level = render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
-        let rolled = render_view_matrix(position, yaw, pitch, 0.15, Vec3::ZERO);
+        let level = render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
+        let rolled = render_view_matrix(position, look_direction(yaw, pitch), 0.15, Vec3::ZERO);
 
         assert_ne!(level.to_cols_array(), rolled.to_cols_array());
     }
@@ -601,8 +609,8 @@ mod tests {
         let position = Vec3::new(0.0, 200.0, 500.0);
         let offset = Vec3::new(5.0, 0.0, 0.0);
 
-        let no_offset = render_view_matrix(position, 0.0, 0.0, 0.0, Vec3::ZERO);
-        let offset_view = render_view_matrix(position, 0.0, 0.0, 0.0, offset);
+        let no_offset = render_view_matrix(position, look_direction(0.0, 0.0), 0.0, Vec3::ZERO);
+        let offset_view = render_view_matrix(position, look_direction(0.0, 0.0), 0.0, offset);
         let eye_in_no_offset = no_offset.transform_point3(position);
         let eye_in_offset = offset_view.transform_point3(position);
 
@@ -616,8 +624,13 @@ mod tests {
         let yaw = 0.4;
         let pitch = 0.1;
 
-        let no_offset = render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
-        let offset_view = render_view_matrix(position, yaw, pitch, 0.0, Vec3::new(2.0, -3.0, 1.0));
+        let no_offset = render_view_matrix(position, look_direction(yaw, pitch), 0.0, Vec3::ZERO);
+        let offset_view = render_view_matrix(
+            position,
+            look_direction(yaw, pitch),
+            0.0,
+            Vec3::new(2.0, -3.0, 1.0),
+        );
 
         for col in 0..3 {
             for row in 0..3 {

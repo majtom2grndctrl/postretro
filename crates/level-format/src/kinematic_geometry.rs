@@ -1,6 +1,6 @@
 // KinematicGeometry PRL section (ID 43): origin-relative brush mover geometry
 // plus waypoint path records.
-// See: context/lib/build_pipeline.md §PRL KinematicGeometrySection.
+// See: context/lib/build_pipeline.md §PRL section IDs (KinematicGeometry, id 43).
 
 use std::collections::HashSet;
 
@@ -8,13 +8,17 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 6;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = KINEMATIC_GEOMETRY_VERSION_V7;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
 pub const KINEMATIC_GEOMETRY_VERSION_V4: u16 = 4;
 /// Version 5 introduced sealed portal ids. Its byte layout remains stable.
 pub const KINEMATIC_GEOMETRY_VERSION_V5: u16 = 5;
+/// Version 6 appended per-mover carried dynamic-light links.
+pub const KINEMATIC_GEOMETRY_VERSION_V6: u16 = 6;
+/// Version 7 appended presentation-only mover transition sound keys.
+pub const KINEMATIC_GEOMETRY_VERSION_V7: u16 = 7;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -70,6 +74,12 @@ pub struct KinematicMoverRecord {
     /// Dynamic AlphaLights records carried by this mover. These are derived
     /// compiler links, not mover geometry, and are empty in v1-v5 payloads.
     pub carried_lights: Vec<MemberLight>,
+    /// Presentation-only sound keys for the mover's transition edges. Absent
+    /// in v1-v6 payloads; never part of the multiplayer static-content hash.
+    pub open_sound: Option<String>,
+    pub close_sound: Option<String>,
+    pub blocked_sound: Option<String>,
+    pub crush_sound: Option<String>,
 }
 
 /// One dynamic light in the positional AlphaLights namespace carried by a
@@ -130,10 +140,11 @@ impl KinematicGeometrySection {
                 | KINEMATIC_GEOMETRY_VERSION_V3
                 | KINEMATIC_GEOMETRY_VERSION_V4
                 | KINEMATIC_GEOMETRY_VERSION_V5
-                | KINEMATIC_GEOMETRY_VERSION
+                | KINEMATIC_GEOMETRY_VERSION_V6
+                | KINEMATIC_GEOMETRY_VERSION_V7
         ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, 5, or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, 5, 6, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -229,8 +240,14 @@ fn mover_byte_len(mover: &KinematicMoverRecord, version: u16) -> usize {
     if version >= KINEMATIC_GEOMETRY_VERSION_V5 {
         len += 4 + mover.sealed_portal_ids.len() * 4;
     }
-    if version >= KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V6 {
         len += 4 + mover.carried_lights.len() * 16;
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION_V7 {
+        len += optional_string_len(mover.open_sound.as_ref());
+        len += optional_string_len(mover.close_sound.as_ref());
+        len += optional_string_len(mover.blocked_sound.as_ref());
+        len += optional_string_len(mover.crush_sound.as_ref());
     }
     len
 }
@@ -304,12 +321,18 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
             buf.extend_from_slice(&portal_id.to_le_bytes());
         }
     }
-    if version >= KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V6 {
         write_count(buf, mover.carried_lights.len());
         for member in &mover.carried_lights {
             buf.extend_from_slice(&member.alpha_light_index.to_le_bytes());
             write_vec3(buf, member.local_offset);
         }
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION_V7 {
+        write_optional_string(buf, mover.open_sound.as_deref());
+        write_optional_string(buf, mover.close_sound.as_deref());
+        write_optional_string(buf, mover.blocked_sound.as_deref());
+        write_optional_string(buf, mover.crush_sound.as_deref());
     }
 }
 
@@ -500,7 +523,7 @@ fn read_mover(
         Vec::new()
     };
 
-    let carried_lights = if version >= KINEMATIC_GEOMETRY_VERSION {
+    let carried_lights = if version >= KINEMATIC_GEOMETRY_VERSION_V6 {
         let count = read_count(
             data,
             offset,
@@ -555,6 +578,18 @@ fn read_mover(
         Vec::new()
     };
 
+    let (open_sound, close_sound, blocked_sound, crush_sound) =
+        if version >= KINEMATIC_GEOMETRY_VERSION_V7 {
+            (
+                read_optional_string(data, offset, &format!("mover {mover_idx} open_sound"))?,
+                read_optional_string(data, offset, &format!("mover {mover_idx} close_sound"))?,
+                read_optional_string(data, offset, &format!("mover {mover_idx} blocked_sound"))?,
+                read_optional_string(data, offset, &format!("mover {mover_idx} crush_sound"))?,
+            )
+        } else {
+            (None, None, None, None)
+        };
+
     let mover = KinematicMoverRecord {
         mover_id,
         name,
@@ -582,6 +617,10 @@ fn read_mover(
         crush_event,
         sealed_portal_ids,
         carried_lights,
+        open_sound,
+        close_sound,
+        blocked_sound,
+        crush_sound,
     };
     validate_mover_geometry(mover_idx, &mover)?;
     Ok(mover)
@@ -1007,6 +1046,10 @@ mod tests {
                     alpha_light_index: 3,
                     local_offset: [0.5, 1.0, -0.25],
                 }],
+                open_sound: Some("sfx/lift_open".to_string()),
+                close_sound: Some("sfx/lift_close".to_string()),
+                blocked_sound: Some("sfx/lift_blocked".to_string()),
+                crush_sound: Some("sfx/lift_crush".to_string()),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -1024,15 +1067,116 @@ mod tests {
     }
 
     #[test]
-    fn v6_round_trip_preserves_member_light_records() {
+    fn v7_round_trip_preserves_member_light_records_and_mover_sounds() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
+        assert_eq!(
+            restored.movers[0].crush_sound.as_deref(),
+            Some("sfx/lift_crush")
+        );
     }
 
     #[test]
-    fn byte_len_matches_v1_v5_and_v6_kinematic_payloads() {
-        for section in [sample_section(), v5_fixture_section(), v1_fixture_section()] {
+    fn v7_round_trips_a_mix_of_present_and_absent_mover_sounds() {
+        let mut section = sample_section();
+        section.movers[0].close_sound = None;
+        section.movers[0].blocked_sound = None;
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
+
+        let mover = &restored.movers[0];
+        assert_eq!(mover.open_sound.as_deref(), Some("sfx/lift_open"));
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound, None);
+        assert_eq!(mover.crush_sound.as_deref(), Some("sfx/lift_crush"));
+        assert_eq!(restored, section);
+    }
+
+    #[test]
+    fn v7_appends_mover_sounds_after_the_v6_carried_light_tail() {
+        let mut v7 = v1_fixture_section();
+        v7.version = KINEMATIC_GEOMETRY_VERSION_V7;
+        v7.movers[0].open_sound = Some("open_snd".to_string());
+        v7.movers[0].crush_sound = Some("crush_snd".to_string());
+        let mut v6 = v7.clone();
+        v6.version = KINEMATIC_GEOMETRY_VERSION_V6;
+
+        let v7_bytes = v7.to_bytes();
+        let v6_bytes = v6.to_bytes();
+        let mover_end = v6_bytes.len() - 4; // final waypoint count
+
+        // Same optional-string encoding as the `*_event` fields: presence
+        // byte, then a length-prefixed string. Order: open, close, blocked, crush.
+        let mut expected_tail = vec![1];
+        expected_tail.extend_from_slice(&8u32.to_le_bytes());
+        expected_tail.extend_from_slice(b"open_snd");
+        expected_tail.push(0);
+        expected_tail.push(0);
+        expected_tail.push(1);
+        expected_tail.extend_from_slice(&9u32.to_le_bytes());
+        expected_tail.extend_from_slice(b"crush_snd");
+
+        assert_eq!(&v7_bytes[..2], &[7, 0]);
+        assert_eq!(&v7_bytes[2..mover_end], &v6_bytes[2..mover_end]);
+        assert_eq!(
+            &v7_bytes[mover_end..mover_end + expected_tail.len()],
+            expected_tail.as_slice()
+        );
+        assert_eq!(
+            &v7_bytes[mover_end + expected_tail.len()..],
+            &v6_bytes[mover_end..]
+        );
+        assert_eq!(KinematicGeometrySection::from_bytes(&v7_bytes).unwrap(), v7);
+    }
+
+    #[test]
+    fn v6_payload_decodes_with_no_mover_sounds() {
+        let fixture = exact_v6_fixture();
+        let mut authored = v5_fixture_section();
+        authored.version = KINEMATIC_GEOMETRY_VERSION_V6;
+        authored.movers[0].open_sound = Some("ignored".to_string());
+
+        // A v6 writer has no sound tail, so authored sounds cannot leak into
+        // the legacy layout.
+        assert_eq!(authored.to_bytes(), fixture);
+
+        let restored = KinematicGeometrySection::from_bytes(&fixture)
+            .expect("v6 kinematic geometry must remain loadable");
+
+        assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V6);
+        let mover = &restored.movers[0];
+        assert_eq!(mover.sealed_portal_ids, vec![11, 29]);
+        assert_eq!(mover.open_sound, None);
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound, None);
+        assert_eq!(mover.crush_sound, None);
+    }
+
+    #[test]
+    fn rejects_invalid_v7_mover_sound_presence_byte() {
+        let mut section = v1_fixture_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V7;
+        let mut bytes = section.to_bytes();
+        let open_sound_presence = bytes.len() - 4 - 4; // four absent sounds, then waypoint count
+        bytes[open_sound_presence] = 2;
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("an invalid mover sound presence byte must reject");
+
+        assert!(error.to_string().contains("open_sound"));
+    }
+
+    #[test]
+    fn byte_len_matches_v1_v5_v6_and_v7_kinematic_payloads() {
+        let mut v6 = v5_fixture_section();
+        v6.version = KINEMATIC_GEOMETRY_VERSION_V6;
+        for section in [
+            sample_section(),
+            v5_fixture_section(),
+            v6,
+            v1_fixture_section(),
+        ] {
             assert_eq!(section.byte_len(), section.to_bytes().len());
         }
     }
@@ -1055,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_records_decode_with_no_v5_or_v6_fields() {
+    fn v4_records_decode_with_no_v5_v6_or_v7_fields() {
         let mut section = sample_section();
         section.version = KINEMATIC_GEOMETRY_VERSION_V4;
 
@@ -1065,13 +1209,15 @@ mod tests {
         assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V4);
         assert!(restored.movers[0].sealed_portal_ids.is_empty());
         assert!(restored.movers[0].carried_lights.is_empty());
+        assert_eq!(restored.movers[0].open_sound, None);
+        assert_eq!(restored.movers[0].crush_sound, None);
     }
 
     #[test]
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![6, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![7, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -1080,10 +1226,14 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![7, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
-        assert!(error.to_string().contains("expected 1, 2, 3, 4, 5, or 6"));
+        assert!(
+            error
+                .to_string()
+                .contains("expected 1, 2, 3, 4, 5, 6, or 7")
+        );
     }
 
     // Regression: V3 encoded zero as inherit; treating it as an authored
@@ -1144,6 +1294,10 @@ mod tests {
         assert_eq!(restored.movers[0].close_event, None);
         assert_eq!(restored.movers[0].blocked_event, None);
         assert_eq!(restored.movers[0].crush_event, None);
+        assert_eq!(restored.movers[0].open_sound, None);
+        assert_eq!(restored.movers[0].close_sound, None);
+        assert_eq!(restored.movers[0].blocked_sound, None);
+        assert_eq!(restored.movers[0].crush_sound, None);
     }
 
     #[test]
@@ -1472,6 +1626,10 @@ mod tests {
                 crush_event: Some("crush".to_string()),
                 sealed_portal_ids: Vec::new(),
                 carried_lights: Vec::new(),
+                open_sound: None,
+                close_sound: None,
+                blocked_sound: None,
+                crush_sound: None,
             }],
             waypoints: Vec::new(),
         }
@@ -1494,6 +1652,10 @@ mod tests {
         section.movers[0].crush_event = None;
         section.movers[0].sealed_portal_ids = vec![11, 29];
         section.movers[0].carried_lights = Vec::new();
+        section.movers[0].open_sound = None;
+        section.movers[0].close_sound = None;
+        section.movers[0].blocked_sound = None;
+        section.movers[0].crush_sound = None;
         section
     }
 
@@ -1543,6 +1705,15 @@ mod tests {
         v5_append.extend_from_slice(&11u32.to_le_bytes());
         v5_append.extend_from_slice(&29u32.to_le_bytes());
         bytes.splice(mover_end..mover_end, v5_append);
+        bytes
+    }
+
+    fn exact_v6_fixture() -> Vec<u8> {
+        let mut bytes = exact_v5_fixture();
+        bytes[..2].copy_from_slice(&KINEMATIC_GEOMETRY_VERSION_V6.to_le_bytes());
+        let mover_end = bytes.len() - 4; // final waypoint count
+        // Empty carried-light list; v6 ends the mover record here.
+        bytes.splice(mover_end..mover_end, 0u32.to_le_bytes());
         bytes
     }
 

@@ -43,6 +43,46 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_enum("AttenuationCurve")
+        .doc("How a positional sound's level falls off between `minDistance` and `maxDistance`.")
+        .variant(
+            "linear",
+            "Fall off evenly, in decibels, across the range. This is the default.",
+        )
+        .variant(
+            "quadratic",
+            "Hold level near `minDistance`, then fall off faster toward `maxDistance`.",
+        )
+        .finish();
+    registry
+        .register_type("AudioAttenuation")
+        .doc("Mod-wide distance attenuation for positional sounds, in metres. Applies to sounds that start after the manifest commits; sounds already playing keep theirs. A malformed field, a negative distance, or `minDistance` >= `maxDistance` warns naming the field and uses the whole default (2, 60, `\"linear\"`).")
+        .field(
+            "minDistance?",
+            "f32",
+            "Distance at and below which a sound plays at full level, in metres. Finite and >= 0. Optional; defaults to 2.",
+        )
+        .field(
+            "maxDistance?",
+            "f32",
+            "Distance at and beyond which a sound is silent, in metres. Finite and greater than `minDistance`. Optional; defaults to 60.",
+        )
+        .field(
+            "curve?",
+            "AttenuationCurve",
+            "Falloff shape between the two distances. Optional; defaults to `\"linear\"`.",
+        )
+        .finish();
+    registry
+        .register_type("AudioProfile")
+        .doc("Static audio preferences declared once for the entire mod.")
+        .field(
+            "attenuation?",
+            "AudioAttenuation",
+            "Distance attenuation for positional sounds. Optional; defaults to 2 to 60 metres, linear.",
+        )
+        .finish();
+    registry
         .register_type("SwitchingDescriptor")
         .doc("Mod-global switching policy. Omit the whole block to preserve immediate direct selection, zero cycle dwell, and reload interruption.")
         .field(
@@ -98,6 +138,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "movers?",
             "MoverDefaults",
             "Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay.",
+        )
+        .field(
+            "audio?",
+            "AudioProfile",
+            "Static audio preferences for the entire mod. Optional; defaults to 2 to 60 metre linear attenuation.",
         )
         .field(
             "switching?",
@@ -207,7 +252,7 @@ mod tests {
     };
     use postretro_scripting_core::primitives_registry::TypeShape;
     use postretro_scripting_core::runtime::{
-        ModManifestResult, ModMoverDefaults, ModRenderProfile,
+        ModAudioProfile, ModManifestResult, ModMoverDefaults, ModRenderProfile,
     };
 
     #[test]
@@ -232,6 +277,7 @@ mod tests {
             version: String::new(),
             render: ModRenderProfile::default(),
             movers: ModMoverDefaults::default(),
+            audio: ModAudioProfile::default(),
             switching: SwitchingDescriptor::default(),
             default_weapon_placement: None,
             entities: Vec::new(),
@@ -259,6 +305,7 @@ mod tests {
             "version",
             "render",
             "movers",
+            "audio",
             "switching",
             "defaultWeaponPlacement",
             "entities",
@@ -332,6 +379,42 @@ mod tests {
                 ["resolution?", "pixelated?"].as_slice(),
             ),
             ("RenderProfile", ["bloom?"].as_slice()),
+        ] {
+            let registered = registry
+                .iter_types()
+                .find(|registered| registered.name == name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let TypeShape::Struct { fields } = &registered.shape else {
+                panic!("{name} must be a Struct, got {:?}", registered.shape);
+            };
+            let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+            assert_eq!(names, expected_fields);
+        }
+    }
+
+    #[test]
+    fn audio_attenuation_sdk_types_are_closed_and_optional() {
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+
+        let curve = registry
+            .iter_types()
+            .find(|registered| registered.name == "AttenuationCurve")
+            .expect("AttenuationCurve must be registered");
+        match &curve.shape {
+            TypeShape::StringEnum { variants } => {
+                let names: Vec<&str> = variants.iter().map(|variant| variant.name).collect();
+                assert_eq!(names, ["linear", "quadratic"]);
+            }
+            other => panic!("AttenuationCurve must be a StringEnum, got {other:?}"),
+        }
+
+        for (name, expected_fields) in [
+            (
+                "AudioAttenuation",
+                ["minDistance?", "maxDistance?", "curve?"].as_slice(),
+            ),
+            ("AudioProfile", ["attenuation?"].as_slice()),
         ] {
             let registered = registry
                 .iter_types()

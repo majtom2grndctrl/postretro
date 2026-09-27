@@ -39,6 +39,12 @@ import {
 } from "./scripts/faction-sentiment";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import {
+  positionalSoundAttenuation,
+  positionalSoundGruntEntity,
+  positionalSoundReactions,
+  positionalSoundShotgunEntity,
+} from "./scripts/positional-sound";
+import {
   ammoReadout,
   hud,
   hudTheme,
@@ -90,6 +96,8 @@ export default defineMod({
       pixelated: false,
     },
   },
+  // Dogfoods the mod-wide positional attenuation surface (`audio.md` §5).
+  audio: { attenuation: positionalSoundAttenuation },
   frontend: {
     menuTree: frontendMenu.name,
     backgroundLevel: "combat-demo",
@@ -116,7 +124,7 @@ export default defineMod({
   presentationTemplates: [damageNumber, damagedEnemyBar],
   presentationOverlays: damagedEnemyOverlay,
   theme: hudTheme,
-  reactions: [...frontendReactions, ...factionSentimentReactions],
+  reactions: [...frontendReactions, ...factionSentimentReactions, ...positionalSoundReactions],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and
@@ -183,6 +191,10 @@ export default defineMod({
   ],
   entities: [
     playerEntity,
+    // DEV FIXTURE: positional sound events. Descriptor sounds on a weapon and
+    // an enemy; see scripts/positional-sound.ts.
+    positionalSoundShotgunEntity,
+    positionalSoundGruntEntity,
     referencePistolEntity,
     referenceRifleEntity,
     referenceShotgunEntity,

@@ -10,13 +10,13 @@
 // paths keep the moved modules readable without re-exporting sim's API from
 // the higher netcode layer.
 pub(crate) use postretro_physics::{collision, kinematic_mover, movement};
+pub(crate) use postretro_sim::{
+    emission, impact_policy, presentation_pool, scripting, sim, sprite_collection, weapon,
+};
 #[cfg(test)]
 pub(crate) use postretro_sim::{
     frame_timing, impact_effects, spawner, trigger_bindings, trigger_commands, trigger_pools,
     trigger_system,
-};
-pub(crate) use postretro_sim::{
-    impact_policy, presentation_pool, scripting, sim, sprite_collection, weapon,
 };
 pub(crate) mod scripting_systems {
     pub(crate) use postretro_sim::scripting_systems::*;
@@ -152,7 +152,7 @@ pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
 
 pub const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;
-const PROJECTILE_PRESENTATION_CONTACT_TARGET: u32 = u32::MAX;
+const PRESENTATION_CONTACT_TARGET: u32 = u32::MAX;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
 // submodules and are imported by callers via the direct submodule path.
@@ -928,10 +928,9 @@ pub fn client_receive_and_apply(
                 snapshot.faction_sentiment_record.as_ref(),
             );
             frame_outcome.replicated_state_changed |= !state_outcome.fresh_slots.is_empty();
-            if state_outcome.fresh_weapon_cooldown_slot.is_some() {
-                frame_outcome.owner_private_weapon_cooldown_slot =
-                    state_outcome.fresh_weapon_cooldown_slot;
-            }
+            frame_outcome
+                .owner_private_weapon
+                .merge(&state_outcome.fresh_weapon_projection);
             if let Some(ack) = outcome.ack.as_mut() {
                 ack.slot_baselines = state_outcome.slot_baselines;
                 ack.faction_sentiment_baseline = faction_sentiment_baseline;
@@ -1328,6 +1327,17 @@ pub fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<Ne
     }
 }
 
+/// The connected client's owner-private weapon values as last committed, each
+/// with the host wieldable slot it describes. Empty on any other role.
+pub fn client_weapon_projection(
+    endpoint: Option<&NetEndpoint>,
+) -> weapon::ReplicatedWeaponProjection {
+    match endpoint {
+        Some(NetEndpoint::Client { state_slots, .. }) => *state_slots.weapon_projection(),
+        _ => weapon::ReplicatedWeaponProjection::default(),
+    }
+}
+
 pub fn shot_id_raw(pawn: NetworkId, client_tick: u32) -> u64 {
     ShotId::from_parts(pawn, client_tick).raw()
 }
@@ -1336,6 +1346,7 @@ pub fn client_send_hit_declaration(
     endpoint: Option<&mut NetEndpoint>,
     shot_id: u64,
     hits: &[weapon::LocalHitRecord],
+    world_contacts: &[weapon::WorldContact],
 ) -> Option<usize> {
     let Some(NetEndpoint::Client {
         client,
@@ -1346,7 +1357,7 @@ pub fn client_send_hit_declaration(
         return None;
     };
 
-    let records = local_hits_to_wire_records(hits, |entity_id| {
+    let records = local_hits_to_wire_records(hits, world_contacts, |entity_id| {
         replication.network_id_for_entity(entity_id)
     });
     let record_count = records.len();
@@ -1379,11 +1390,12 @@ pub fn client_send_projectile_resolution_declaration(
             let target = impact
                 .target
                 .and_then(|target| replication.network_id_for_entity(target))
-                .map_or(PROJECTILE_PRESENTATION_CONTACT_TARGET, |target| target.0);
+                .map_or(PRESENTATION_CONTACT_TARGET, |target| target.0);
             vec![wire::HitRecord {
                 target,
                 point: impact.point.to_array(),
                 zone: impact.zone.clone(),
+                normal: impact.normal.to_array(),
             }]
         })
         .unwrap_or_default();
@@ -1394,8 +1406,11 @@ pub fn client_send_projectile_resolution_declaration(
     Some(record_count)
 }
 
+/// Entity hits become damage claims; world contacts ride as presentation-only
+/// records under the reserved target, so the host holds every contact.
 fn local_hits_to_wire_records(
     hits: &[weapon::LocalHitRecord],
+    world_contacts: &[weapon::WorldContact],
     mut resolve: impl FnMut(EntityId) -> Option<NetworkId>,
 ) -> Vec<wire::HitRecord> {
     hits.iter()
@@ -1405,8 +1420,15 @@ fn local_hits_to_wire_records(
                 target: target.0,
                 point: hit.point.to_array(),
                 zone: hit.zone.clone(),
+                normal: hit.normal.to_array(),
             })
         })
+        .chain(world_contacts.iter().map(|contact| wire::HitRecord {
+            target: PRESENTATION_CONTACT_TARGET,
+            point: contact.point.to_array(),
+            zone: None,
+            normal: contact.normal.to_array(),
+        }))
         .collect()
 }
 
@@ -1821,16 +1843,51 @@ struct HostHitIngestContext<'a> {
     anim_time: f64,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct HitDeclarationResult {
     fire_accepted: bool,
     hit_accepted: bool,
     projectile_contact: Option<Vec3>,
+    /// Every validated contact of the shot, for its one `impact` event.
+    contacts: Vec<emission::ImpactContact>,
+    /// Canonical name of the shot's weapon, whose sounds the impact plays.
+    weapon: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ProjectileContact {
-    point: Vec3,
+/// How far short of a declared world contact the line-of-sight probe stops, so
+/// the surface the pellet struck never blocks its own validation.
+const WORLD_CONTACT_LOS_PULLBACK: f32 = 0.01;
+
+/// How far from unit length a declared normal may be and still count.
+const DECLARED_NORMAL_TOLERANCE: f32 = 1.0e-2;
+
+/// A declared normal is contact data only: finite and unit length, or the
+/// record's contact is dropped. Damage validation never reads it.
+fn declared_normal(record: &wire::HitRecord) -> Option<Vec3> {
+    let normal = Vec3::from_array(record.normal);
+    (normal.is_finite() && (normal.length() - 1.0).abs() <= DECLARED_NORMAL_TOLERANCE)
+        .then(|| normal.normalize())
+}
+
+/// A presentation-only hitscan world contact: within range of the shooter's
+/// live eye, with a clear line to just short of the struck surface.
+fn valid_hitscan_world_contact(
+    registry: &EntityRegistry,
+    collision_world: &CollisionWorld,
+    shot: &AuthorizedShot,
+    record: &wire::HitRecord,
+) -> Option<Vec3> {
+    let point = Vec3::from_array(record.point);
+    if !point.is_finite() {
+        return None;
+    }
+    let eye = attacker_eye(registry, shot.pawn)?;
+    let max_range = shot.range * HIT_RANGE_TOLERANCE;
+    if !max_range.is_finite() || eye.distance(point) > max_range {
+        return None;
+    }
+    let short_of_surface = point + (eye - point).normalize_or_zero() * WORLD_CONTACT_LOS_PULLBACK;
+    collision::line_of_sight(eye, short_of_surface, collision_world).then_some(point)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1848,6 +1905,7 @@ pub fn host_flush_pending_hit_declarations(
     anim_time: f64,
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
+    mut on_remote_impact: impl FnMut(emission::WeaponEmission),
 ) -> bool {
     let ready = host_take_ready_hit_declarations(
         command_queues,
@@ -1868,6 +1926,7 @@ pub fn host_flush_pending_hit_declarations(
         ready,
         &mut on_impact,
         &mut on_projectile_contact,
+        &mut on_remote_impact,
     )
 }
 
@@ -1895,6 +1954,7 @@ pub fn host_ingest_ready_hit_declarations(
     ready: Vec<PendingHitDeclaration>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
+    mut on_remote_impact: impl FnMut(emission::WeaponEmission),
 ) -> bool {
     let mut accepted_any_hit = false;
     for pending in ready {
@@ -1922,6 +1982,15 @@ pub fn host_ingest_ready_hit_declarations(
         );
         if let Some(point) = result.projectile_contact {
             on_projectile_contact(ShotId::from_raw(pending.declaration.shot_id), point);
+        }
+        // A remote shot's validated contacts are its one `impact`, as a local
+        // activation's are.
+        if !result.contacts.is_empty() {
+            on_remote_impact(emission::WeaponEmission {
+                address: "impact",
+                emitter: emission::Emitter::Contacts(result.contacts),
+                weapon: result.weapon,
+            });
         }
         accepted_any_hit |= result.hit_accepted;
     }
@@ -2034,12 +2103,15 @@ fn ingest_hit_declaration(
     // The peek above already confirmed the entry; nothing mutates the store between,
     // so retire for its removal side effect and reuse the peeked shot.
     context.open_shots.retire(shot_id);
+    let weapon = emission::descriptor_name(context.registry, open.shot.weapon);
     let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
         return HitDeclarationResult {
             fire_accepted: true,
             hit_accepted: false,
             projectile_contact: None,
+            contacts: Vec::new(),
+            weapon,
         };
     }
 
@@ -2050,12 +2122,14 @@ fn ingest_hit_declaration(
             .records
             .iter()
             .take(pellet_count)
-            .any(|record| valid_projectile_contact(&open.shot, record).is_some());
+            .any(|record| valid_projectile_contact(&open.shot, record));
         if !declared_contact {
             return HitDeclarationResult {
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
+                contacts: Vec::new(),
+                weapon,
             };
         }
         let Some(impact) = resolve_authorized_splash_projectile_impact(&context, &open.shot) else {
@@ -2063,6 +2137,8 @@ fn ingest_hit_declaration(
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
+                contacts: Vec::new(),
+                weapon,
             };
         };
         // Splash replaces direct health damage, but its impulse may compose with
@@ -2118,20 +2194,40 @@ fn ingest_hit_declaration(
             fire_accepted: true,
             hit_accepted,
             projectile_contact: Some(point),
+            // The host resolved this impact itself, so its own normal stands.
+            contacts: vec![emission::ImpactContact::new(
+                impact.point,
+                impact.normal,
+                impact.target,
+            )],
+            weapon,
         };
     }
 
     // Non-splash projectile contact presentation keeps the existing declared
     // endpoint contract. Splash is stricter because its point is a damage origin.
-    let projectile_contact = if open.shot.is_projectile {
+    let projectile_record = if open.shot.is_projectile {
         declaration
             .records
             .iter()
             .take(pellet_count)
-            .find_map(|record| valid_projectile_contact(&open.shot, record))
+            .find(|record| valid_projectile_contact(&open.shot, record))
     } else {
         None
     };
+    let mut contacts = Vec::new();
+    if let Some(record) = projectile_record
+        && let Some(normal) = declared_normal(record)
+    {
+        let target = context
+            .allocator
+            .entity_for_network_id(NetworkId(record.target));
+        contacts.push(emission::ImpactContact::new(
+            Vec3::from_array(record.point),
+            normal,
+            target,
+        ));
+    }
 
     let mut hit_accepted = false;
     for record in declaration.records.iter().take(pellet_count) {
@@ -2149,26 +2245,50 @@ fn ingest_hit_declaration(
             on_impact(context.registry);
             hit_accepted = true;
         }
+        if open.shot.is_projectile {
+            continue;
+        }
+        // Every validated hitscan pellet is a contact of the shot's one impact:
+        // an accepted entity hit, or a presentation-only world contact. A bad
+        // normal drops only this record's contact data.
+        let Some(normal) = declared_normal(record) else {
+            continue;
+        };
+        let point = Vec3::from_array(record.point);
+        if accepted {
+            let target = context
+                .allocator
+                .entity_for_network_id(NetworkId(record.target));
+            contacts.push(emission::ImpactContact::new(point, normal, target));
+        } else if record.target == PRESENTATION_CONTACT_TARGET
+            && valid_hitscan_world_contact(
+                context.registry,
+                context.collision_world,
+                &open.shot,
+                record,
+            )
+            .is_some()
+        {
+            contacts.push(emission::ImpactContact::new(point, normal, None));
+        }
     }
 
     HitDeclarationResult {
         fire_accepted: true,
         hit_accepted,
-        projectile_contact: projectile_contact.map(|contact| contact.point),
+        projectile_contact: projectile_record.map(|record| Vec3::from_array(record.point)),
+        contacts,
+        weapon,
     }
 }
 
-fn valid_projectile_contact(
-    shot: &AuthorizedShot,
-    record: &wire::HitRecord,
-) -> Option<ProjectileContact> {
+fn valid_projectile_contact(shot: &AuthorizedShot, record: &wire::HitRecord) -> bool {
     let point = Vec3::from_array(record.point);
     if !point.is_finite() || !shot.fire_origin.is_finite() {
-        return None;
+        return false;
     }
     let max_range = shot.range * HIT_RANGE_TOLERANCE;
-    (max_range.is_finite() && shot.fire_origin.distance(point) <= max_range)
-        .then_some(ProjectileContact { point })
+    max_range.is_finite() && shot.fire_origin.distance(point) <= max_range
 }
 
 fn resolve_authorized_splash_projectile_impact(
@@ -2307,7 +2427,9 @@ fn apply_valid_hit_record(
 
     let impact = WeaponImpact {
         point,
-        normal: Vec3::ZERO,
+        // A malformed declared normal leaves the impact normal-less; damage
+        // never depends on it.
+        normal: declared_normal(record).unwrap_or(Vec3::ZERO),
         target: Some(target),
         zone: record.zone.clone(),
         outcome: ActivationOutcome::Hit(weapon::DamagePayload {
@@ -2899,6 +3021,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
@@ -2973,6 +3096,7 @@ mod tests {
         let before = tuning_payload_for_pawn(&registry, pawn, &[], None);
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 14.0,
             pellet_count: 8,
@@ -3181,6 +3305,7 @@ mod tests {
 
     fn test_weapon(damage: f32, range: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage,
             pellet_count: 1,
@@ -3505,6 +3630,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 1.0,
                 pellet_count: 1,
@@ -3670,29 +3796,33 @@ mod tests {
         let records = local_hits_to_wire_records(
             &[
                 weapon::LocalHitRecord {
+                    normal: Vec3::Y,
                     target: named,
                     point: Vec3::new(1.0, 2.0, 3.0),
                     zone: Some("head".to_string()),
                 },
                 weapon::LocalHitRecord {
+                    normal: Vec3::Y,
                     target: unnamed,
                     point: Vec3::new(4.0, 5.0, 6.0),
                     zone: None,
                 },
             ],
+            &[],
             |entity_id| (entity_id == named).then_some(NetworkId(77)),
         );
 
         assert_eq!(
             records,
             vec![wire::HitRecord {
+                normal: [0.0, 1.0, 0.0],
                 target: 77,
                 point: [1.0, 2.0, 3.0],
                 zone: Some("head".to_string()),
             }]
         );
 
-        let empty = local_hits_to_wire_records(&[], |_| Some(NetworkId(1)));
+        let empty = local_hits_to_wire_records(&[], &[], |_| Some(NetworkId(1)));
         assert!(empty.is_empty(), "empty declarations remain valid misses");
     }
 
@@ -3701,19 +3831,121 @@ mod tests {
         let target = EntityId::from_raw(1);
         let hits = (0..8)
             .map(|pellet| weapon::LocalHitRecord {
+                normal: Vec3::Y,
                 target,
                 point: Vec3::new(pellet as f32, 2.0, 3.0),
                 zone: None,
             })
             .collect::<Vec<_>>();
 
-        let records = local_hits_to_wire_records(&hits, |_| Some(NetworkId(77)));
+        let records = local_hits_to_wire_records(&hits, &[], |_| Some(NetworkId(77)));
 
         assert_eq!(records.len(), 8);
         for (pellet, record) in records.iter().enumerate() {
             assert_eq!(record.target, 77);
             assert_eq!(record.point, [pellet as f32, 2.0, 3.0]);
         }
+    }
+
+    // Wall hits ride the declaration as presentation-only contacts, so the host
+    // holds every contact of the shot, normals included.
+    fn world_contact(point: Vec3, normal: Vec3) -> wire::HitRecord {
+        wire::HitRecord {
+            target: PRESENTATION_CONTACT_TARGET,
+            point: point.to_array(),
+            zone: None,
+            normal: normal.to_array(),
+        }
+    }
+
+    // Row 15 (remote half): the host holds every contact of a remote hitscan
+    // shot, entity and world, each with its declared normal.
+    #[test]
+    fn remote_hitscan_declaration_yields_every_contact_with_its_normal() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(8.0));
+        fixture.set_live_pellet_count(2);
+        fixture.mint_shot_from_live_weapon();
+        let mut entity_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        entity_hit.normal = [-1.0, 0.0, 0.0];
+        let wall_hit = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+
+        let result = fixture.ingest_result(7, &fixture.declaration(vec![entity_hit, wall_hit]));
+
+        assert!(result.hit_accepted, "the entity pellet still deals damage");
+        assert_eq!(
+            result.contacts,
+            vec![
+                emission::ImpactContact::new(
+                    Vec3::new(4.0, 0.5, 0.0),
+                    Vec3::NEG_X,
+                    Some(fixture.target),
+                ),
+                emission::ImpactContact::new(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X, None),
+            ],
+        );
+    }
+
+    // A malformed normal voids only that record's contact data; damage
+    // validation never reads it. A wall contact the shooter cannot see is not a
+    // contact.
+    #[test]
+    fn remote_contact_normals_and_sightlines_gate_only_contact_data() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(2.0));
+        fixture.set_live_pellet_count(2);
+        fixture.mint_shot_from_live_weapon();
+        let mut bad_normal = fixture.record(Vec3::new(1.5, 0.5, 0.0), None);
+        bad_normal.target = PRESENTATION_CONTACT_TARGET;
+        bad_normal.normal = [0.0, 0.0, 0.0];
+        let behind_wall = world_contact(Vec3::new(8.0, 0.5, 0.0), Vec3::NEG_X);
+        let result = fixture.ingest_result(7, &fixture.declaration(vec![bad_normal, behind_wall]));
+        assert!(result.contacts.is_empty(), "{:?}", result.contacts);
+
+        let mut fixture = HitIngestFixture::new(wall_at_x(8.0));
+        let health_before = fixture.target_health().current;
+        let mut entity_hit = fixture.record(Vec3::new(4.0, 0.5, 0.0), None);
+        entity_hit.normal = [f32::NAN, 0.0, 0.0];
+        let result = fixture.ingest_result(7, &fixture.declaration(vec![entity_hit]));
+        assert!(result.hit_accepted, "damage validation ignores the normal");
+        assert!(fixture.target_health().current < health_before);
+        assert!(
+            result.contacts.is_empty(),
+            "the bad normal voids the contact"
+        );
+    }
+
+    #[test]
+    fn local_hit_wire_conversion_declares_world_contacts_with_their_normals() {
+        let target = EntityId::from_raw(1);
+        let records = local_hits_to_wire_records(
+            &[weapon::LocalHitRecord {
+                normal: Vec3::X,
+                target,
+                point: Vec3::new(1.0, 2.0, 3.0),
+                zone: None,
+            }],
+            &[weapon::WorldContact {
+                point: Vec3::new(0.0, 0.0, -5.0),
+                normal: Vec3::Z,
+            }],
+            |_| Some(NetworkId(77)),
+        );
+        assert_eq!(
+            records,
+            vec![
+                wire::HitRecord {
+                    target: 77,
+                    point: [1.0, 2.0, 3.0],
+                    zone: None,
+                    normal: [1.0, 0.0, 0.0],
+                },
+                wire::HitRecord {
+                    target: PRESENTATION_CONTACT_TARGET,
+                    point: [0.0, 0.0, -5.0],
+                    zone: None,
+                    normal: [0.0, 0.0, 1.0],
+                },
+            ],
+        );
     }
 
     fn movement_component_with_eye_height(eye_height: f32) -> PlayerMovementComponent {
@@ -3819,6 +4051,7 @@ mod tests {
 
         fn record(&self, point: Vec3, zone: Option<&str>) -> wire::HitRecord {
             wire::HitRecord {
+                normal: [0.0, 1.0, 0.0],
                 target: self.target_net.0,
                 point: point.to_array(),
                 zone: zone.map(str::to_string),
@@ -4625,8 +4858,8 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            22,
-            "enemy projectile damage and presentation add nothing beyond the current knockback transport layout"
+            23,
+            "enemy projectile damage and presentation add nothing beyond the current transport layout (23: hit records carry contact normals)"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
@@ -4647,7 +4880,8 @@ mod tests {
             .is_projectile = true;
         let point = Vec3::new(4.0, 0.5, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
             point: point.to_array(),
             zone: None,
         }]);
@@ -4670,7 +4904,8 @@ mod tests {
         fixture.configure_projectile_splash(0.0);
         let point = Vec3::new(1.0, 0.0, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
             point: point.to_array(),
             zone: None,
         }]);
@@ -4707,7 +4942,8 @@ mod tests {
         let future_target = fixture.spawn_splash_target(Vec3::new(4.0, 0.0, 0.0));
         fixture.configure_projectile_splash(0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
             point: Vec3::new(9.0, 0.0, 0.0).to_array(),
             zone: None,
         }]);
@@ -4747,7 +4983,8 @@ mod tests {
             .shot
             .projectile_lifetime_seconds = Some(0.005);
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
             point: Vec3::new(0.5, 0.0, 0.0).to_array(),
             zone: None,
         }]);
@@ -4768,6 +5005,7 @@ mod tests {
         let struck_net = fixture.allocator.stamp(struck);
         fixture.configure_projectile_splash(0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
+            normal: [0.0, 1.0, 0.0],
             target: struck_net.0,
             point: Vec3::new(9.0, 0.0, 0.0).to_array(),
             zone: None,
@@ -4801,7 +5039,8 @@ mod tests {
         let far_side = fixture.spawn_splash_target(Vec3::new(1.5, 0.0, 0.75));
         fixture.configure_projectile_splash(0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
             point: Vec3::new(4.0, 0.0, 0.0).to_array(),
             zone: None,
         }]);
@@ -4854,7 +5093,8 @@ mod tests {
         .expect("the local authoritative sweep reaches the wall");
         assert!(local_impact.target.is_none());
         let declaration = fixture.declaration(vec![wire::HitRecord {
-            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            normal: [0.0, 1.0, 0.0],
+            target: PRESENTATION_CONTACT_TARGET,
             point: Vec3::new(4.0, 0.0, 0.0).to_array(),
             zone: None,
         }]);
@@ -4887,6 +5127,7 @@ mod tests {
             .is_projectile = true;
         let point = Vec3::new(4.0, 0.5, 0.0);
         let declaration = fixture.declaration(vec![wire::HitRecord {
+            normal: [0.0, 1.0, 0.0],
             target: 999_999,
             point: point.to_array(),
             zone: None,
@@ -4938,6 +5179,7 @@ mod tests {
         let declaration = fixture.declaration(vec![
             fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
             wire::HitRecord {
+                normal: [0.0, 1.0, 0.0],
                 target: second_net.0,
                 point: Vec3::new(5.0, 0.5, 0.0).to_array(),
                 zone: None,
@@ -4963,6 +5205,7 @@ mod tests {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         let declaration = fixture.declaration(vec![
             wire::HitRecord {
+                normal: [0.0, 1.0, 0.0],
                 target: 999_999,
                 point: Vec3::new(4.0, 0.5, 0.0).to_array(),
                 zone: None,
@@ -5018,6 +5261,7 @@ mod tests {
         fixture.set_live_pellet_count(8);
         fixture.mint_shot_from_live_weapon();
         let mut records = vec![wire::HitRecord {
+            normal: [0.0, 1.0, 0.0],
             target: 999_999,
             point: Vec3::new(4.0, 0.5, 0.0).to_array(),
             zone: None,
@@ -5485,6 +5729,7 @@ mod tests {
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
+                sounds: None,
                 knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.4,

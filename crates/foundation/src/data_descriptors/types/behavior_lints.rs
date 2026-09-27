@@ -71,6 +71,7 @@ mod tests {
 
     fn leaf() -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            sound: None,
             animation: Some("idle".to_string()),
             motion: None,
             action: None,

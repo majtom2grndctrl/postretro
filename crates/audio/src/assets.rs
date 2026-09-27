@@ -316,7 +316,13 @@ mod tests {
         let mut registry = SoundRegistry::new();
         registry.load_from_content_root(&dev_content_root());
 
-        // The committed fixtures: a static SFX tone and a streaming music loop.
+        // The committed fixtures cover both decoders and both load paths: a
+        // static WAV tone, a static Ogg Vorbis placeholder, and a streaming Ogg
+        // Vorbis music loop.
+        assert!(
+            matches!(registry.get("fixtures/jump"), Some(LoadedSound::Static(_))),
+            "a static Ogg Vorbis fixture decodes and registers",
+        );
         assert!(
             registry.contains("sfx/test_tone"),
             "static SFX fixture registers under its content-relative key",

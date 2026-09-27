@@ -155,12 +155,16 @@ pub fn fire_named_event_with_sequences(
         || format!("named:{event_name}"),
         |context| context.source.clone(),
     );
-    let values = dispatch_context
-        .map(|context| context.values.to_vec())
+    let (values, emitter) = dispatch_context
+        .map(|context| (context.values.to_vec(), context.emitter))
         .unwrap_or_default();
-    let previous_context = script_ctx
-        .system_commands
-        .replace_fire_context(postretro_entities::SystemCommandFireContext { source, values });
+    let previous_context = script_ctx.system_commands.replace_fire_context(
+        postretro_entities::SystemCommandFireContext {
+            source,
+            values,
+            emitter,
+        },
+    );
     let mut chained = Vec::new();
     // Ordinal of this body among same-named matches. It is the second component
     // of a scheduler instance key and cannot be reconstructed downstream — the
@@ -212,6 +216,9 @@ pub fn fire_named_event_with_sequences(
 pub struct NamedEventDispatchContext<'a> {
     pub source: String,
     pub values: &'a [(String, IrValue)],
+    /// Where a named gameplay event happened; `playSound`'s `at: on.emitter`
+    /// resolves against it (`scripting.md` §12).
+    pub emitter: Option<postretro_entities::Emitter>,
 }
 
 /// One ordered item in a trigger residual. A descriptor is already resolved and
@@ -1591,7 +1598,11 @@ mod tests {
                 .get("bus")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            queue.push(SystemReactionCommand::PlaySound { sound, bus });
+            queue.push(SystemReactionCommand::PlaySound {
+                sound,
+                bus,
+                at: None,
+            });
             Ok(())
         });
 
@@ -1611,6 +1622,7 @@ mod tests {
             vec![SystemReactionCommand::PlaySound {
                 sound: "alarm".to_string(),
                 bus: Some("sfx".to_string()),
+                at: None,
             }]
         );
     }
@@ -1832,7 +1844,11 @@ mod tests {
                 .get("bus")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            queue.push(SystemReactionCommand::PlaySound { sound, bus });
+            queue.push(SystemReactionCommand::PlaySound {
+                sound,
+                bus,
+                at: None,
+            });
             Ok(())
         });
 
@@ -1851,6 +1867,7 @@ mod tests {
             vec![SystemReactionCommand::PlaySound {
                 sound: "beep".to_string(),
                 bus: Some("sfx".to_string()),
+                at: None,
             }],
             "the sentinel-target primitive is skipped; only the sentinel-free command runs",
         );

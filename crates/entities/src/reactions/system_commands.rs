@@ -6,6 +6,8 @@ use std::rc::Rc;
 
 use postretro_foundation::{Seat, ir::IrValue};
 
+use super::emitter::Emitter;
+
 /// A single deferred system-reaction effect. Variants carry their full args so
 /// the drain seam is typed end to end.
 #[derive(Debug, Clone, PartialEq)]
@@ -13,6 +15,10 @@ pub enum SystemReactionCommand {
     PlaySound {
         sound: String,
         bus: Option<String>,
+        /// Where the sound plays from, resolved from the firing source's
+        /// emitter when the reaction authored `at: on.emitter`. `None` plays
+        /// it unpositioned.
+        at: Option<Emitter>,
     },
     Rumble {
         strong: f32,
@@ -104,6 +110,10 @@ pub struct SystemCommandQueue {
 pub struct SystemCommandFireContext {
     pub source: String,
     pub values: Vec<(String, IrValue)>,
+    /// The emitter a named gameplay source published, if any. Sources without
+    /// one (level load, crossings, triggers, deaths, follow-ups) leave it
+    /// `None`, and a reaction reading `on.emitter` there is skipped.
+    pub emitter: Option<Emitter>,
 }
 
 impl SystemCommandQueue {

@@ -289,6 +289,7 @@ mod tests {
 
     fn descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,

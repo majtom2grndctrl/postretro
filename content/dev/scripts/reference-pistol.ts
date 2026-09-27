@@ -35,6 +35,13 @@ export const referencePistolEntity = defineEntity({
         reloadMs: 500,
         reloadStyle: "magazine",
       },
+      // Curated from Snake's Authentic Gun Sounds packs (sounds/weapons/CREDITS.txt).
+      sounds: {
+        fire: "weapons/pistol_fire",
+        dryFire: "weapons/dry_fire",
+        reloadStart: "weapons/pistol_reload",
+        reloadComplete: "weapons/pistol_slide_release",
+      },
     },
     // The dev pistol doubles as a visible world item for the E16 fixture and
     // gives the default player loadout a recoverable drop path.

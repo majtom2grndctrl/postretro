@@ -5,7 +5,7 @@
 // See: context/lib/scripting.md §12
 
 import type { RuntimeValue } from "postretro";
-import type { CrossingParams, Reaction } from "../data_script";
+import type { CrossingParams, EmitterTarget, Reaction } from "../data_script";
 
 import type { ComputedRef, Ref } from "./widgets";
 
@@ -142,7 +142,7 @@ export function onStateCrossing(
       fire: crossingFireNames(conditionOrFire),
     };
     const options = fireOrOptions as CrossingOptions | undefined;
-    if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
+    if (options != null && (typeof options !== "object" || Array.isArray(options))) {
       throw new Error("onStateCrossing: predicate options must be an object when provided");
     }
     if (options !== undefined && Object.prototype.hasOwnProperty.call(options, "edge")) {
@@ -169,19 +169,42 @@ export function onStateCrossing(
   return descriptor;
 }
 
+/** Options for `playSound`. */
+export type PlaySoundOptions = {
+  /** Mixer bus (`"sfx"`, `"music"`, `"ui"`). Omitted routes to SFX. */
+  bus?: string;
+  /**
+   * Where the sound plays from: `on.emitter` in a reaction a named gameplay
+   * event fires. The sound is positioned there, on the SFX bus. A source that
+   * publishes no emitter skips the reaction with a warning.
+   */
+  at?: EmitterTarget;
+};
+
 /**
- * Play a sound through the M12 audio module. Pure — returns a primitive
- * reaction body, no engine side effect. Pass the result as the descriptor of
- * `defineReaction("name", playSound(...))`. `sound` is an audio asset id; the
- * optional `bus` routes to a named mixer bus (omitted when undefined, falling
- * back to the engine's default bus).
+ * Play a sound through the audio module. Pure — returns a primitive reaction
+ * body, no engine side effect. Pass the result as the descriptor of
+ * `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
+ * Without `at` the sound plays unpositioned.
  */
 export function playSound(
   sound: string,
-  bus?: string,
+  options?: PlaySoundOptions,
 ): import("../data_script").PrimitiveReactionDescriptor {
-  const args: { sound: string; bus?: string } = { sound };
-  if (bus !== undefined) args.bus = bus;
+  // Guard the shape before reading fields: a primitive inherits properties
+  // from its prototype, so the pre-options `playSound(sound, "sfx")` form
+  // would read `String.prototype.at` as an authored `at` and drop its bus.
+  if (options != null && (typeof options !== "object" || Array.isArray(options))) {
+    throw new Error("playSound: options must be an object `{ bus?, at? }` when provided");
+  }
+  const args: { sound: string; bus?: string; at?: string } = { sound };
+  if (options?.bus !== undefined) args.bus = options.bus;
+  if (options?.at !== undefined && options.at !== null) {
+    // The emitter token carries its wire spelling; anything else is rejected
+    // by the engine when the reaction fires.
+    const wire = (options.at as unknown as { __wire?: unknown }).__wire;
+    args.at = wire === "@emitter" ? "@emitter" : "@invalid";
+  }
   return { primitive: "playSound", args };
 }
 

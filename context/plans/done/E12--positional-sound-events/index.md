@@ -31,6 +31,7 @@ A requested capability, raised by the developer, whose basis is a false premise 
 - **A connected client hears its own actions.**
   - Fire prediction is gated on the replicated ammo slot, so an empty magazine predicts a dry fire, not a fire and muzzle flash.
   - Hitscan prediction keeps world-geometry hits and every hit's normal, so predicted impacts match the host's contact data.
+  - Hit declarations carry every contact's normal, and hitscan declarations also carry world contacts under the presentation-contact sentinel that projectile declarations already use. So the host holds full contact data for a remote client's shots. This is a wire version bump; the host validates a presentation-only contact without applying damage. (Owner, resolving the plan's AC 15 block: build the long-term shape, not parity.)
   - Reload edges derive from the replicated owner-private reload and ammo slots. Start is the reload flag rising. A shell is ammo rising while reloading. Complete is the flag falling after ammo rose. A cancel plays nothing. Own reload sounds lag by one round trip, and shells that arrive in one snapshot sound once.
   - Landing and jumping come from predicted movement.
   - Remote peers' and world sounds wait for the peer-audio step, which reuses this derive-from-replicated-state pattern for door edges.

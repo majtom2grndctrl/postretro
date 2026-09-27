@@ -9,7 +9,6 @@
 // printed once).
 // See: context/lib/boot_sequence.md §3, context/plans/done/agentic-observability
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -315,7 +314,11 @@ fn run_headless_inner(
         // for `dump.events == false`, so buffering it per tick is pure wasted
         // allocation (and an OOM vector on a large `ticks` with `events: false`).
         if runspec.dump.events {
-            let mut weapon_events = to_owned_strings(&tick_events.weapon);
+            let mut weapon_events: Vec<String> = tick_events
+                .weapon
+                .iter()
+                .map(|emission| emission.address.to_string())
+                .collect();
             weapon_events.extend(
                 tick_events
                     .reload_deliveries
@@ -324,8 +327,18 @@ fn run_headless_inner(
             );
             events.push(TickEventRecord {
                 tick,
-                movement: to_owned_strings(&tick_events.movement),
-                ai: to_owned_cow_strings(&tick_events.ai),
+                movement: tick_events
+                    .movement
+                    .iter()
+                    .map(|emission| emission.address.to_string())
+                    .collect(),
+                // An entry with no authored `onEnter` fires nothing, so it has
+                // no event name to record.
+                ai: tick_events
+                    .ai
+                    .iter()
+                    .filter_map(|emission| emission.address.as_deref().map(str::to_string))
+                    .collect(),
                 weapon: weapon_events,
                 death: death_events_for_tick,
             });
@@ -444,16 +457,6 @@ fn warn_unreachable_commands(commands: &[CommandEntry], ticks: u32) {
             "[Headless] command tick(s) {unreachable:?} are >= ticks ({ticks}); these commands never activate"
         );
     }
-}
-
-fn to_owned_strings(events: &[&'static str]) -> Vec<String> {
-    events.iter().map(|event| (*event).to_string()).collect()
-}
-
-/// The AI tick reports `Cow` so an authored `onEnter` address rides alongside
-/// the static attack event without cloning the latter every attack tick.
-fn to_owned_cow_strings(events: &[Cow<'static, str>]) -> Vec<String> {
-    events.iter().map(|event| event.to_string()).collect()
 }
 
 #[cfg(test)]

@@ -1105,12 +1105,11 @@ impl App {
         // async `SystemReactionCommand` drained a frame later, after install
         // completes, so no reaction observes unloaded sounds.
         let content_root = self.content_root.clone();
-        if let Some(audio) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.audio.as_mut())
-        {
-            audio.load_level_sounds(&content_root);
+        if let Some(session) = self.session.as_mut() {
+            if let Some(audio) = session.audio.as_mut() {
+                audio.load_level_sounds(&content_root);
+            }
+            session.refresh_descriptor_sounds();
         }
         self.level_timings.record("audio_load");
 
@@ -1684,6 +1683,7 @@ mod tests {
                     command_diagnostics: Default::default(),
                     auto_close_timers: Default::default(),
                     mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
+                    descriptor_sounds: Default::default(),
                     spawn_context: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),
@@ -1783,6 +1783,7 @@ mod tests {
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
+            client_reload_edges: Default::default(),
             boot_state: BootState::Running,
             splash_frame: 0,
             pending_level_log: false,
@@ -2182,6 +2183,10 @@ mod tests {
                     close_event: None,
                     blocked_event: None,
                     crush_event: None,
+                    open_sound: None,
+                    close_sound: None,
+                    blocked_sound: None,
+                    crush_sound: None,
                     sealed_portal_ids: Vec::new(),
                     carried_lights: vec![LoadedMemberLight {
                         alpha_light_index: 0,
@@ -3173,6 +3178,7 @@ mod tests {
                 version: "1".to_string(),
                 render: Default::default(),
                 movers: Default::default(),
+                audio: Default::default(),
                 switching: Default::default(),
                 default_weapon_placement: None,
                 entities: Vec::new(),

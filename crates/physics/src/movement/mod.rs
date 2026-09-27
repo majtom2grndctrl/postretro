@@ -342,6 +342,7 @@ mod tests {
     /// Canonical player descriptor mirroring `content/dev/scripts/player.ts`.
     fn canonical_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,

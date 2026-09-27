@@ -12,7 +12,7 @@ pub(super) use commands::{
     refuse_local_switch, run_local_weapon_command, run_local_weapon_command_with_content,
     run_remote_weapon_commands, weapon_fire_command,
 };
-pub use commands::{projectile_model_body_rotation, spawn_projectile};
+pub use commands::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
 pub use impact::apply_authorized_weapon_impact_damage;
 pub(crate) use state::transition_to_idle;
 
@@ -200,6 +200,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
@@ -261,6 +262,7 @@ mod tests {
 
     fn refreshed_ammo_descriptor(reload_style: ReloadStyle) -> WeaponDescriptor {
         WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,
@@ -1908,7 +1910,10 @@ mod tests {
             events.rejected_remote_projectile_fires.is_empty(),
             "accepted hitscan/pellet FIRE keeps its existing declaration-time verdict path"
         );
-        assert_eq!(events.weapon, vec!["activate"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&events.weapon),
+            vec!["activate"]
+        );
         let registry = registry.borrow();
         let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert!((weapon_state.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
@@ -1977,7 +1982,10 @@ mod tests {
             &mut ignore_impact,
         );
 
-        assert_eq!(result.weapon_events, vec!["activate", "spawned"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&result.weapon_events),
+            vec!["activate", "spawned"]
+        );
         let [projectile] = result.projectile_spawns.as_slice() else {
             panic!("accepted projectile fire must produce exactly one projectile");
         };
@@ -2250,7 +2258,10 @@ mod tests {
         );
 
         assert_eq!(events.authorized_shots.len(), 2);
-        assert_eq!(events.weapon, vec!["activate", "activate"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&events.weapon),
+            vec!["activate", "activate"]
+        );
         assert_eq!(events.authorized_shots[0].shot.pawn, pawn_a);
         assert_eq!(events.authorized_shots[1].shot.pawn, pawn_b);
         assert_ne!(
@@ -2293,7 +2304,10 @@ mod tests {
             ],
         );
 
-        assert_eq!(events.weapon, vec!["dry_fire", "dry_fire"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&events.weapon),
+            vec!["dry_fire", "dry_fire"]
+        );
         assert!(events.authorized_shots.is_empty());
         let registry = registry.borrow();
         for weapon in [weapon_a, weapon_b] {
@@ -2328,7 +2342,10 @@ mod tests {
             registry.clone(),
             &[remote_command(pawn, Some(weapon), 42, 1, true, false)],
         );
-        assert_eq!(first.weapon, vec!["dry_fire"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&first.weapon),
+            vec!["dry_fire"]
+        );
         assert!(first.authorized_shots.is_empty());
 
         for client_tick in [2, 3] {
@@ -2351,7 +2368,10 @@ mod tests {
             registry.clone(),
             &[remote_command(pawn, Some(weapon), 42, 4, true, false)],
         );
-        assert_eq!(ready.weapon, vec!["dry_fire"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&ready.weapon),
+            vec!["dry_fire"]
+        );
         assert!(ready.authorized_shots.is_empty());
         let component = registry
             .borrow()
@@ -3789,7 +3809,10 @@ mod tests {
                 outcome: ReloadOutcome::Completed { transferred: 8 },
             }]
         );
-        assert_eq!(completed_and_fired.weapon, vec!["activate"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&completed_and_fired.weapon),
+            vec!["activate"]
+        );
         let registry = registry.borrow();
         let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
         assert_eq!(component.state_remaining_ms, 0);
@@ -3801,6 +3824,53 @@ mod tests {
                 .available("bullets.light"),
             0
         );
+    }
+
+    // Regression: the frame drain resolved a reload's pawn and weapon when it
+    // ran, so a pawn gone by then sounded at the world origin and a dropped
+    // weapon lost its sound.
+    #[test]
+    fn reload_emission_is_stamped_at_the_tick_with_its_pawn_and_weapon() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            registry
+                .set_component(weapon, weapon_provenance("reload_rifle"))
+                .unwrap();
+            (pawn, weapon)
+        };
+
+        let started =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(false, true), 0.04);
+        let origin = registry
+            .borrow()
+            .get_component::<Transform>(pawn)
+            .unwrap()
+            .position;
+        {
+            let mut registry = registry.borrow_mut();
+            registry.despawn(weapon).unwrap();
+            registry.despawn(pawn).unwrap();
+            assert_eq!(
+                crate::emission::descriptor_name(&registry, weapon),
+                None,
+                "a drain-time lookup would have lost the weapon",
+            );
+        }
+
+        assert_eq!(
+            started.reload,
+            vec![crate::emission::WeaponEmission {
+                address: "reload_started",
+                emitter: crate::emission::Emitter::Entity { id: pawn, origin },
+                weapon: Some("reload_rifle".to_string()),
+            }],
+            "the tick carries the reload's anchor and weapon, one per delivery",
+        );
+        assert_eq!(started.reload_deliveries.len(), started.reload.len());
     }
 
     #[test]
@@ -3864,7 +3934,10 @@ mod tests {
 
         let cancelled =
             run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.0);
-        assert_eq!(cancelled.weapon, vec!["activate"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&cancelled.weapon),
+            vec!["activate"]
+        );
         assert_eq!(
             cancelled.reload_deliveries,
             vec![ReloadDelivery {
@@ -3908,7 +3981,10 @@ mod tests {
             &[remote_command(pawn, Some(weapon), 42, 2, true, false)],
         );
         assert_eq!(cancelled.authorized_shots.len(), 1);
-        assert_eq!(cancelled.weapon, vec!["activate"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&cancelled.weapon),
+            vec!["activate"]
+        );
         assert_eq!(
             cancelled.reload_deliveries,
             vec![ReloadDelivery {
@@ -4207,7 +4283,10 @@ mod tests {
             &mut policy,
         );
 
-        assert_eq!(result.weapon_events, vec!["activate", "impact"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&result.weapon_events),
+            vec!["activate", "impact"]
+        );
         assert_eq!(
             result.weapon_impact_points.len(),
             8,
@@ -4248,7 +4327,10 @@ mod tests {
             &mut policy,
         );
 
-        assert_eq!(result.weapon_events, vec!["activate", "impact"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&result.weapon_events),
+            vec!["activate", "impact"]
+        );
         assert_eq!(result.weapon_impact_points.len(), 8);
         assert_eq!(policy_fires, 1);
         let registry = registry.borrow();
@@ -4331,7 +4413,10 @@ mod tests {
             &mut policy,
         );
 
-        assert_eq!(result.weapon_events, vec!["activate", "impact"]);
+        assert_eq!(
+            crate::emission::weapon_addresses(&result.weapon_events),
+            vec!["activate", "impact"]
+        );
         assert_eq!(result.weapon_impact_points.len(), 8);
         assert_eq!(
             policy_fires, 8,

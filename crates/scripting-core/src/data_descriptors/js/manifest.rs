@@ -287,6 +287,77 @@ pub fn drain_mover_defaults_js<'js>(
     }
 }
 
+/// Drain the optional mod-wide audio profile. Like the render profile, a
+/// malformed value warns naming its path and falls back to the engine seed;
+/// it never rejects an otherwise valid manifest.
+pub fn drain_audio_profile_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<ModAudioProfile, DescriptorError> {
+    if !obj.contains_key("audio").map_err(js_err)? {
+        return Ok(ModAudioProfile::default());
+    }
+    let raw_audio: JsValue = obj.get("audio").map_err(js_err)?;
+    if raw_audio.is_null() || raw_audio.is_undefined() {
+        return Ok(ModAudioProfile::default());
+    }
+    if !raw_audio.is_object() || raw_audio.is_array() {
+        log::warn!(
+            "[Scripting] {scope}: `audio` must be an object; using the default audio profile"
+        );
+        return Ok(ModAudioProfile::default());
+    }
+    let audio = raw_audio
+        .as_object()
+        .expect("object type was checked before borrowing");
+    if !audio.contains_key("attenuation").map_err(js_err)? {
+        return Ok(ModAudioProfile::default());
+    }
+    let raw_attenuation: JsValue = audio.get("attenuation").map_err(js_err)?;
+    if raw_attenuation.is_null() || raw_attenuation.is_undefined() {
+        return Ok(ModAudioProfile::default());
+    }
+    if !raw_attenuation.is_object() || raw_attenuation.is_array() {
+        log::warn!(
+            "[Scripting] {scope}: `audio.attenuation` must be an object; using the default attenuation"
+        );
+        return Ok(ModAudioProfile::default());
+    }
+    let attenuation = raw_attenuation
+        .as_object()
+        .expect("object type was checked before borrowing");
+    Ok(ModAudioProfile {
+        attenuation: resolve_authored_attenuation(
+            scope,
+            attenuation_field_js(attenuation, "minDistance")?,
+            attenuation_field_js(attenuation, "maxDistance")?,
+            attenuation_field_js(attenuation, "curve")?,
+        ),
+    })
+}
+
+fn attenuation_field_js<'js>(
+    attenuation: &Object<'js>,
+    key: &str,
+) -> Result<AuthoredAttenuationField, DescriptorError> {
+    if !attenuation.contains_key(key).map_err(js_err)? {
+        return Ok(AuthoredAttenuationField::Absent);
+    }
+    let raw: JsValue = attenuation.get(key).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(AuthoredAttenuationField::Absent);
+    }
+    if let Some(value) = raw.as_int().map(f64::from).or_else(|| raw.as_float()) {
+        return Ok(AuthoredAttenuationField::Number(value));
+    }
+    Ok(
+        match raw.as_string().and_then(|value| value.to_string().ok()) {
+            Some(value) => AuthoredAttenuationField::String(value),
+            None => AuthoredAttenuationField::Other,
+        },
+    )
+}
+
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. Parsing stops at
 /// the descriptor boundary: Task 5 owns policy validation, author-id merging,
 /// and effect evaluation.

@@ -152,6 +152,7 @@ fn spawn_owned_health(
 fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (EntityId, EntityId) {
     let weapon = |ammo_type: &str| {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,
@@ -566,6 +567,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
             None,
         ),
         None,
+        crate::sim::ProjectileSource::default(),
     )
     .expect("host enemy projectile has capacity to spawn");
     assert_eq!(
@@ -714,6 +716,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
             }),
         ),
         None,
+        crate::sim::ProjectileSource::default(),
     )
     .expect("host enemy splash projectile has capacity to spawn");
 

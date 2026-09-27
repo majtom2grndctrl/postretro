@@ -452,6 +452,7 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
                         action: None,

@@ -1216,6 +1216,9 @@
 "start_on_spawn" "0"
 "block_policy" "reverse"
 "auto_close_ms" "2500"
+"open_sound" "movers/door_open"
+"close_sound" "movers/door_close"
+"blocked_sound" "movers/door_blocked"
 "_tags" "campaign_e17 campaign_bridge_west_door"
 // brush 0
 {
@@ -1295,6 +1298,9 @@
 "start_on_spawn" "0"
 "block_policy" "reverse"
 "auto_close_ms" "2500"
+"open_sound" "movers/door_open"
+"close_sound" "movers/door_close"
+"blocked_sound" "movers/door_blocked"
 "_tags" "campaign_e17 campaign_bridge_east_door"
 // brush 0
 {
@@ -5633,6 +5639,7 @@
 "block_policy" "crush"
 "crush_damage" "15"
 "crush_interval_ms" "500"
+"crush_sound" "movers/crusher_crush"
 "_tags" "campaign_e17 campaign_plus_bridge_crusher"
 "_tb_group" "6"
 // brush 0

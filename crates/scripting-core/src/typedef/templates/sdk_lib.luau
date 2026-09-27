@@ -417,6 +417,16 @@ export type TickParams = { dt: RuntimeRead }
 export type ActivatorsTarget = { __triggerActivatorsTarget: true }
 export type TriggerTarget = { __firedTriggerTarget: true }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
+--- Opaque anchor for where the current named gameplay event happened. Legal
+--- only as `playSound`'s `at`.
+export type EmitterTarget = { __emitterTarget: true }
+--- Dispatch values published by a named gameplay event: weapon, reload,
+--- impact, enemy, movement and mover events.
+export type EmitterParams = { emitter: EmitterTarget }
+--- `playSound` options: `bus` routes to a mixer bus (SFX when omitted); `at =
+--- on.emitter` positions the sound where the named gameplay event happened,
+--- on the SFX bus.
+export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Impact-policy IR skin. These refs lower to the existing closed runtime IR;
@@ -615,6 +625,8 @@ declare defineReaction: (
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
+  & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
+  & ((name: string, tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
 )
 
 --- Define a pure impact-policy descriptor. Register it only by returning it
@@ -712,11 +724,10 @@ declare onStateCrossing: (
   & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
 )
 
---- System-reaction body: play `sound` through the M12 audio module on the
---- optional named `bus` (omitted when nil -> engine default bus). Pure:
---- returns a `PrimitiveReactionDescriptor`, no FFI. Pass to
+--- System-reaction body: play `sound` through the audio module. Pure: returns
+--- a `PrimitiveReactionDescriptor`, no FFI. Pass to
 --- `defineReaction("name", playSound(...))`.
-declare function playSound(sound: string, bus: string?): PrimitiveReactionDescriptor
+declare function playSound(sound: string, options: PlaySoundOptions?): PrimitiveReactionDescriptor
 
 --- System-reaction body: drive gilrs gamepad force feedback. `strong` and the
 --- optional `weak` (omitted when nil) are 0-1 motor intensities; `durationMs`
@@ -905,6 +916,7 @@ export type ModManifestInput = {
   version: string,
   render: RenderProfile?,
   movers: MoverDefaults?,
+  audio: AudioProfile?,
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,

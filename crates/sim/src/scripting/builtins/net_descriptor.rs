@@ -634,6 +634,7 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
                         action: None,
@@ -812,6 +813,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
@@ -896,6 +898,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,

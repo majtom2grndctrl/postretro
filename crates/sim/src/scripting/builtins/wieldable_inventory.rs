@@ -343,6 +343,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 10.0,
                 pellet_count: 1,

@@ -2190,6 +2190,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 12.0,
                 pellet_count: 1,
@@ -2331,6 +2332,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,

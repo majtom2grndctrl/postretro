@@ -915,6 +915,10 @@ mod tests {
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
                 carried_lights: Vec::new(),
+                open_sound: None,
+                close_sound: None,
+                blocked_sound: None,
+                crush_sound: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

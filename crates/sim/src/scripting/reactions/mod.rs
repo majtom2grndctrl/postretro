@@ -60,6 +60,8 @@ pub fn dispatch_state_crossings_with_sequences(
             Some(NamedEventDispatchContext {
                 source: format!("crossing:{}", fire.source_id),
                 values: &dispatch_values,
+                // Crossings publish no emitter.
+                emitter: None,
             }),
         ));
     }

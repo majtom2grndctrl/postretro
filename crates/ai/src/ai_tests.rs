@@ -197,6 +197,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -269,6 +270,7 @@ fn enemy_mesh() -> MeshComponent {
 /// targets for the player POSITION lookup.
 fn player_movement_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        sounds: None,
         knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
@@ -2178,6 +2180,8 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 flipbook_active: false,
                 impact_light: None,
                 splash: None,
+                source_weapon: Some("enemy.rifle".to_string()),
+                activation: None,
             },
         )
         .expect("active crossfire projectile attaches");
@@ -2245,6 +2249,27 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
 
     assert_eq!(events.local_projectile_contacts.len(), 1);
     assert_eq!(events.local_projectile_contacts[0].projectile, projectile);
+    // The enemy projectile's contact fires `impact` once, sounding like the
+    // weapon it was fired from rather than like the enemy that fired it.
+    let impacts: Vec<_> = events
+        .weapon
+        .iter()
+        .filter(|emission| emission.address == "impact")
+        .collect();
+    let [impact] = impacts.as_slice() else {
+        panic!("one impact emission, got {:?}", events.weapon);
+    };
+    assert_eq!(impact.weapon.as_deref(), Some("enemy.rifle"));
+    let postretro_entities::Emitter::Contacts(contacts) = &impact.emitter else {
+        panic!("impact carries contacts, got {:?}", impact.emitter);
+    };
+    assert_eq!(
+        contacts
+            .iter()
+            .map(|contact| contact.hit)
+            .collect::<Vec<_>>(),
+        [postretro_entities::ContactHit::Entity(victim)],
+    );
     let registry = registry.borrow();
     assert!(
         !registry.exists(projectile),
@@ -2466,6 +2491,8 @@ impl FactionSentimentHarness {
                     flipbook_active: false,
                     impact_light: None,
                     splash: None,
+                    source_weapon: None,
+                    activation: None,
                 },
             )
             .expect("fixture projectile attaches");
@@ -2912,7 +2939,7 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
     );
 
     assert_eq!(
-        result.events,
+        event_addresses(&result.events),
         vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)],
         "only the first actor's contact attack raises an event",
     );
@@ -2977,7 +3004,10 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
         |_| {},
     );
 
-    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        event_addresses(&result.events),
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]
+    );
     assert_eq!(player_hp(&registry, target), 0.0);
     assert_eq!(
         registry
@@ -3046,7 +3076,10 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
         |_| {},
     );
 
-    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        event_addresses(&result.events),
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]
+    );
     assert_eq!(player_hp(&registry, target), 0.0);
     assert!(result.projectile_spawns.is_empty());
     assert!(projectile_ids(&registry).is_empty());
@@ -3120,7 +3153,10 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
         },
     );
 
-    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        event_addresses(&result.events),
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]
+    );
     assert_eq!(policy_fires, 1);
     assert_eq!(player_hp(&registry, target), 92.0);
     assert!(
@@ -3196,7 +3232,10 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
         },
     );
 
-    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        event_addresses(&result.events),
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]
+    );
     assert_eq!(policy_fires, 1);
     assert_eq!(player_hp(&registry, target), 92.0);
     assert!(result.projectile_spawns.is_empty());
@@ -3290,7 +3329,10 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
         |registry| policies.evaluate_pending_in_registry(registry),
     );
 
-    assert_eq!(first_tick.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        event_addresses(&first_tick.events),
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]
+    );
     assert!(first_tick.projectile_spawns.is_empty());
     assert!(projectile_ids(&registry).is_empty());
     let health = registry
@@ -3327,7 +3369,10 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
         |registry| policies.evaluate_pending_in_registry(registry),
     );
 
-    assert_eq!(next_tick.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        event_addresses(&next_tick.events),
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]
+    );
     assert_eq!(next_tick.projectile_spawns.len(), 1);
     assert_eq!(
         registry
@@ -3389,7 +3434,10 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
                 .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
         },
     )
-    .events;
+    .events
+    .into_iter()
+    .filter_map(|emission| emission.address)
+    .collect::<Vec<_>>();
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT, ENEMY_ATTACK_EVENT]);
     assert_eq!(enemy_state_name(&registry, first), TEST_ATTACK_STATE);
     assert_eq!(enemy_state_name(&registry, second), TEST_ATTACK_STATE);
@@ -4160,6 +4208,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -6641,6 +6690,7 @@ fn authored_state(
     action: Option<ActionVerb>,
 ) -> BehaviorActivityDescriptor {
     BehaviorActivityDescriptor {
+        sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
         action,
@@ -7141,6 +7191,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -7589,6 +7640,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
     attacker_graph.attacks.insert(
         "attack".to_string(),
         AttackParams {
+            sound: None,
             weapon: None,
             damage: Some(100.0),
             max_range: Some(2.0),
@@ -7641,6 +7693,61 @@ fn enemy_time_in_activity(reg: &EntityRegistry, enemy: EntityId) -> f32 {
         .unwrap()
         .activity_timer(0)
         .unwrap()
+}
+
+// An entered activity is an emission even with no `onEnter`: it fires no
+// reaction, but its path names the activity whose entry sound plays.
+#[test]
+fn entering_an_activity_without_on_enter_emits_its_path_and_no_address() {
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut graph = pursuit_graph();
+    graph
+        .envelope
+        .activities
+        .get_mut("strike")
+        .expect("strike is declared")
+        .on_enter = None;
+    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let tick = |reg: &mut EntityRegistry, runtime: &mut AiRuntime| {
+        run_ai_tick_with_navigation_and_impact(
+            reg,
+            runtime,
+            0.016,
+            AiTickInputs {
+                nav_graph: None,
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &FactionRegistry::default(),
+                faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            },
+            |_| {},
+        )
+    };
+
+    tick(&mut reg, &mut runtime); // initial seating, then charge
+    let entered = tick(&mut reg, &mut runtime);
+    assert_eq!(enemy_state_name(&reg, enemy), "strike");
+    let entry = entered
+        .events
+        .iter()
+        .find(|emission| matches!(emission.cue, postretro_entities::AiCue::Entered { .. }))
+        .expect("entering strike is an emission");
+    assert_eq!(entry.address, None, "no onEnter, so no reaction fires");
+    let postretro_entities::AiCue::Entered { graph, path } = &entry.cue else {
+        unreachable!();
+    };
+    let (name, _) = postretro_entities::components::brain::activity_at_path(graph, path)
+        .expect("the path resolves in the emitted graph");
+    assert_eq!(name, "strike");
+    assert_eq!(event_addresses(&entered.events), vec![ENEMY_ATTACK_EVENT]);
 }
 
 #[test]
@@ -7734,6 +7841,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             (
                 "first".to_string(),
                 BehaviorActivityDescriptor {
+                    sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
                     action: None,
@@ -7744,6 +7852,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             (
                 "second".to_string(),
                 BehaviorActivityDescriptor {
+                    sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
                     action: None,
@@ -7773,6 +7882,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         activities: BTreeMap::from([(
             "engage".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("idle".to_string()),
                 motion: None,
                 action: None,
@@ -7790,6 +7900,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -8490,6 +8601,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(JAB_RANGE),
@@ -8501,6 +8613,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(14.0),
                     max_range: Some(SLAM_RANGE),
@@ -8551,6 +8664,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const SLAM_RECOVER_MS: f32 = 1450.0;
 
     let leaf = |animation: &str, action: Option<ActionVerb>| BehaviorActivityDescriptor {
+        sound: None,
         animation: Some(animation.to_string()),
         motion: None,
         action,
@@ -8655,6 +8769,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "engage".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("walk".to_string()),
                         motion: None,
                         action: None,
@@ -8833,6 +8948,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(JAB_RANGE),
@@ -8844,6 +8960,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(14.0),
                     max_range: Some(SLAM_RANGE),
@@ -9690,6 +9807,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "jab".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(2.0),
@@ -9701,6 +9819,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "slam".to_string(),
                 AttackParams {
+                    sound: None,
                     weapon: None,
                     damage: Some(14.0),
                     max_range: Some(3.5),
@@ -10153,6 +10272,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(8.0),
                 max_range: Some(2.0),
@@ -10171,6 +10291,7 @@ fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescripto
     graph.attacks.insert(
         "attack".to_string(),
         AttackParams {
+            sound: None,
             weapon: Some(weapon_name.to_string()),
             damage: None,
             max_range: None,
@@ -10197,6 +10318,7 @@ fn projectile_weapon_descriptor(
         emitter: None,
         movement: None,
         weapon: Some(WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage,
             pellet_count: 1,
@@ -10309,6 +10431,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         activities: BTreeMap::from([(
             "engage".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("idle_aiming".to_string()),
                 motion: None,
                 action: None,
@@ -10338,6 +10461,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "shoot".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(5.0),
@@ -10448,7 +10572,10 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         },
         |_| {},
     )
-    .events;
+    .events
+    .into_iter()
+    .filter_map(|emission| emission.address)
+    .collect::<Vec<_>>();
     assert!(
         events.is_empty(),
         "the resolved weapon range gates the fire"
@@ -10478,7 +10605,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         },
         |_| {},
     );
-    assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(event_addresses(&result.events), vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(
         player_hp(&registry, pawn),
         100.0,
@@ -10601,7 +10728,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
         Level::Warn,
         "[Weapon] entity registry exhausted; dropping projectile launch",
     );
-    assert!(result.events.is_empty());
+    assert!(event_addresses(&result.events).is_empty());
     assert!(result.projectile_spawns.is_empty());
     assert!(projectile_ids(&registry).is_empty());
     let brain = registry
@@ -10647,7 +10774,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         },
         |_| {},
     );
-    assert_eq!(first.events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(event_addresses(&first.events), vec![ENEMY_ATTACK_EVENT]);
     reset_enemy_fire_latch(&mut registry, enemy);
 
     let mut reloaded = projectile_weapon_descriptor("enemy.rifle", 12.0, 19.0, 125.0);
@@ -10688,7 +10815,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         },
         |_| {},
     );
-    assert_eq!(refreshed.events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(event_addresses(&refreshed.events), vec![ENEMY_ATTACK_EVENT]);
     let refreshed_projectile = refreshed
         .projectile_spawns
         .first()
@@ -10763,7 +10890,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         },
         |_| {},
     );
-    assert!(disabled_nonprojectile.events.is_empty());
+    assert!(event_addresses(&disabled_nonprojectile.events).is_empty());
     assert_eq!(projectile_ids(&registry).len(), projectile_count);
     assert_eq!(
         registry
@@ -10789,7 +10916,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
         },
         |_| {},
     );
-    assert!(disabled_missing.events.is_empty());
+    assert!(event_addresses(&disabled_missing.events).is_empty());
     assert_eq!(projectile_ids(&registry).len(), projectile_count);
     assert!(
         registry
@@ -10838,7 +10965,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
         |_| {},
     );
 
-    assert!(result.events.is_empty());
+    assert!(event_addresses(&result.events).is_empty());
     assert!(result.projectile_spawns.is_empty());
     assert!(projectile_ids(&registry).is_empty());
     let brain = registry
@@ -10884,7 +11011,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
         |_| {},
     );
 
-    assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(event_addresses(&result.events), vec![ENEMY_ATTACK_EVENT]);
     let projectile = result
         .projectile_spawns
         .first()
@@ -10896,6 +11023,78 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
         )
         .expect("vertical shot carries projectile state");
     assert!((Vec3::from_array(component.direction) - Vec3::Y).length() <= EPS);
+}
+
+// An enemy attack carries the attack it fired and the graph it came from, and
+// its projectile records the weapon, so every sound resolves by descriptor.
+#[test]
+fn enemy_projectile_attack_emits_its_attack_cue_and_records_its_weapon() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut registry, Vec3::new(0.0, 0.5, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+        },
+        |_| {},
+    );
+
+    let attacks: Vec<_> = result
+        .events
+        .iter()
+        .filter(|emission| matches!(emission.cue, postretro_entities::AiCue::Attack { .. }))
+        .collect();
+    let [attack] = attacks.as_slice() else {
+        panic!("one attack emission, got {:?}", result.events);
+    };
+    assert_eq!(attack.address.as_deref(), Some(ENEMY_ATTACK_EVENT));
+    assert!(
+        matches!(attack.emitter, postretro_entities::Emitter::Entity { id, .. } if id == enemy),
+        "an enemy attack sounds from the enemy",
+    );
+    let postretro_entities::AiCue::Attack {
+        graph: fired_from,
+        attack: name,
+    } = &attack.cue
+    else {
+        panic!("attack cue, got {:?}", attack.cue);
+    };
+    assert_eq!(name, "attack");
+    assert_eq!(
+        fired_from.attacks[name].weapon.as_deref(),
+        Some("enemy.rifle"),
+        "the cue's graph resolves the attack's weapon",
+    );
+
+    let projectile = result.projectile_spawns[0].projectile;
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            projectile,
+        )
+        .expect("the attack spawned a projectile");
+    assert_eq!(component.source_weapon.as_deref(), Some("enemy.rifle"));
 }
 
 #[test]
@@ -10942,7 +11141,10 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
         },
         |_| {},
     )
-    .events;
+    .events
+    .into_iter()
+    .filter_map(|emission| emission.address)
+    .collect::<Vec<_>>();
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     let projectiles = projectile_ids(&registry);
     let [projectile] = projectiles.as_slice() else {
@@ -11150,6 +11352,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -11616,6 +11819,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(ATTACK_RANGE),
@@ -11724,6 +11928,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         graph.attacks.insert(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -11764,6 +11969,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         activities: BTreeMap::from([(
             "composite".to_string(),
             BehaviorActivityDescriptor {
+                sound: None,
                 animation: Some("locomotion".to_string()),
                 motion: None,
                 action: None,
@@ -11795,6 +12001,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
+                sound: None,
                 weapon: None,
                 damage: Some(TEST_ATTACK_DAMAGE),
                 max_range: Some(TEST_ATTACK_RANGE),
@@ -12292,4 +12499,13 @@ fn an_arrival_guard_below_the_engine_epsilon_leaves_a_position_goal_wedged() {
 
     assert_eq!(enemy_state_name(&registry, enemy), "position");
     assert_eq!(enemy_destination(&registry, enemy), None);
+}
+
+/// The addresses a tick's enemy emissions fire, in order. Entry emissions for
+/// activities that author no `on_enter` fire nothing and are skipped.
+fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static, str>> {
+    events
+        .iter()
+        .filter_map(|emission| emission.address.clone())
+        .collect()
 }

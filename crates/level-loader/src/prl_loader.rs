@@ -3047,7 +3047,7 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
         KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
-        KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
+        KINEMATIC_GEOMETRY_VERSION_V6, KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
     };
     use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
     use postretro_test_log_capture::LogCapture;
@@ -4024,6 +4024,10 @@ mod tests {
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
                 carried_lights: Vec::new(),
+                open_sound: None,
+                close_sound: None,
+                blocked_sound: None,
+                crush_sound: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -4092,6 +4096,36 @@ mod tests {
 
         assert_eq!(geometry.movers[0].sealed_portal_ids, vec![1]);
         assert!(geometry.movers[0].carried_lights.is_empty());
+    }
+
+    #[test]
+    fn kinematic_geometry_v7_loads_mover_sounds_and_v6_loads_none() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].open_sound = Some("sfx/door_open".to_string());
+        section.movers[0].blocked_sound = Some("sfx/door_blocked".to_string());
+
+        let v7 = convert_kinematic_geometry_section(
+            KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect("v7 section bytes must be readable"),
+        )
+        .expect("v7 section must be runtime-loadable");
+        let mover = &v7.movers[0];
+        assert_eq!(mover.open_sound.as_deref(), Some("sfx/door_open"));
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound.as_deref(), Some("sfx/door_blocked"));
+        assert_eq!(mover.crush_sound, None);
+
+        section.version = KINEMATIC_GEOMETRY_VERSION_V6;
+        let v6 = convert_kinematic_geometry_section(
+            KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect("v6 section bytes must remain readable"),
+        )
+        .expect("v6 section must remain runtime-loadable");
+        let mover = &v6.movers[0];
+        assert_eq!(mover.open_sound, None);
+        assert_eq!(mover.close_sound, None);
+        assert_eq!(mover.blocked_sound, None);
+        assert_eq!(mover.crush_sound, None);
     }
 
     #[test]

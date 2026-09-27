@@ -17,6 +17,18 @@ pub struct ReloadDelivery {
     pub outcome: ReloadOutcome,
 }
 
+impl ReloadDelivery {
+    /// The pawn whose weapon reloaded: the event's emitter.
+    pub fn pawn(&self) -> EntityId {
+        self.pawn
+    }
+
+    /// The weapon instance that reloaded; its descriptor supplies the sounds.
+    pub fn weapon(&self) -> EntityId {
+        self.weapon
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReloadOutcome {
     Started,
@@ -132,6 +144,7 @@ mod tests {
     fn exact_f32_tick_durations_reach_integer_millisecond_boundaries() {
         for (remaining_ms, tick_dt) in [(10, 0.01), (20, 0.02)] {
             let mut component = WeaponComponent::from_descriptor(&WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 0.0,
                 pellet_count: 1,

@@ -4,6 +4,7 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 
 use crate::collision::CollisionWorld;
+use crate::emission::{WeaponEmission, descriptor_name, entity_emitter, reload_emission};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sprite_collection::derive_collection_id;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
@@ -39,7 +40,9 @@ use super::state::{
 #[derive(Debug, Default)]
 pub(in crate::sim) struct LocalWeaponCommandResult {
     pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
-    pub(in crate::sim) weapon_events: Vec<&'static str>,
+    /// `reload_deliveries` stamped for presentation at this tick, in order.
+    pub(in crate::sim) reload_emissions: Vec<WeaponEmission>,
+    pub(in crate::sim) weapon_events: Vec<WeaponEmission>,
     pub(in crate::sim) repointed_pawn: Option<EntityId>,
     pub(in crate::sim) projectile_spawns: Vec<EntityId>,
     #[cfg(test)]
@@ -52,7 +55,9 @@ pub(in crate::sim) struct RemoteWeaponCommandResult {
     pub(in crate::sim) projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
     pub(in crate::sim) rejected_projectile_fires: Vec<RemoteProjectileFireRejection>,
     pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
-    pub(in crate::sim) weapon_events: Vec<&'static str>,
+    /// `reload_deliveries` stamped for presentation at this tick, in order.
+    pub(in crate::sim) reload_emissions: Vec<WeaponEmission>,
+    pub(in crate::sim) weapon_events: Vec<WeaponEmission>,
 }
 
 pub(in crate::sim) fn weapon_fire_command(
@@ -108,6 +113,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     let mut projectile_presentations = Vec::new();
     let mut rejected_projectile_fires = Vec::new();
     let mut reload_deliveries = Vec::new();
+    let mut reload_emissions = Vec::new();
     let mut weapon_events = Vec::new();
 
     for remote in remote_pawn_commands {
@@ -149,6 +155,12 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             false,
             tick_dt,
         );
+        reload_emissions.extend(
+            machine
+                .deliveries
+                .iter()
+                .map(|delivery| reload_emission(&registry, delivery)),
+        );
         reload_deliveries.extend(machine.deliveries);
         let effective = weapon_component.effective();
         let damage = effective.damage;
@@ -163,10 +175,16 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         // which is the host-spawned source for authored muzzle content.
         let muzzle_offset = weapon_component.muzzle_offset;
         let _ = registry.set_component(weapon, weapon_component);
+        // A remote pawn's shot sounds from that pawn, with its weapon's sounds.
+        let remote_emission = |address| WeaponEmission {
+            address,
+            emitter: entity_emitter(&registry, remote.pawn),
+            weapon: descriptor_name(&registry, weapon),
+        };
         match machine.authorization {
-            WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
+            WeaponFireAuthorization::Accepted => weapon_events.push(remote_emission("activate")),
             WeaponFireAuthorization::Empty => {
-                weapon_events.push("dry_fire");
+                weapon_events.push(remote_emission("dry_fire"));
                 if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
                     rejected_projectile_fires.push(RemoteProjectileFireRejection {
                         owner_client_id: remote.owner_client_id,
@@ -326,6 +344,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         projectile_presentation_launches: projectile_presentations,
         rejected_projectile_fires,
         reload_deliveries,
+        reload_emissions,
         weapon_events,
     }
 }
@@ -555,12 +574,27 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         }
     }
     let _ = registry.set_component(weapon_id, weapon_component);
+    // Fire, dry fire and spawn sound from the firing pawn (the weapon itself
+    // when no pawn holds it); impacts carry their contacts instead.
+    let shooter = entity_emitter(&registry, pawn.unwrap_or(weapon_id));
+    let weapon_name = descriptor_name(&registry, weapon_id);
+    let reload_emissions = machine
+        .deliveries
+        .iter()
+        .map(|delivery| reload_emission(&registry, delivery))
+        .collect();
     let mut projectile_spawns = Vec::new();
     if let Some(pawn) = pawn {
+        let mut activation = None;
         for launch in std::mem::take(&mut events.projectile_launches) {
+            let source = ProjectileSource {
+                weapon: weapon_name.clone(),
+                activation,
+            };
             if let Some(projectile_id) =
-                spawn_projectile(&mut registry, pawn, weapon_id, launch, None)
+                spawn_projectile(&mut registry, pawn, weapon_id, launch, None, source)
             {
+                activation.get_or_insert(projectile_id);
                 events
                     .spawned
                     .push(weapon::ActivationOutcome::Spawned(projectile_id));
@@ -602,12 +636,22 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     }
     LocalWeaponCommandResult {
         reload_deliveries: machine.deliveries,
-        weapon_events: events.event_names(),
+        reload_emissions,
+        weapon_events: events.emissions(&shooter, weapon_name),
         repointed_pawn,
         projectile_spawns,
         #[cfg(test)]
         weapon_impact_points,
     }
+}
+
+/// Where a projectile came from, recorded at spawn for its contact
+/// presentation: the weapon descriptor it was fired from, and the first
+/// projectile of its activation (`None` for the first, or a lone projectile).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProjectileSource {
+    pub weapon: Option<String>,
+    pub activation: Option<EntityId>,
 }
 
 pub fn spawn_projectile(
@@ -616,6 +660,7 @@ pub fn spawn_projectile(
     owner_weapon: EntityId,
     launch: weapon::ProjectileLaunch,
     predicted_shot_id: Option<u64>,
+    source: ProjectileSource,
 ) -> Option<EntityId> {
     // Resolve every hit-time visual before moving the body out of the descriptor
     // below. Impact resolution must not consult the owner weapon, which can be
@@ -659,6 +704,8 @@ pub fn spawn_projectile(
         ),
         impact_light,
         splash: launch.splash,
+        source_weapon: source.weapon,
+        activation: source.activation,
     };
     let _ = registry.set_component(projectile_id, component);
 
@@ -957,8 +1004,15 @@ mod projectile_spawn_tests {
             impact_light: None,
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
-            .expect("projectile spawns");
+        let projectile = spawn_projectile(
+            &mut registry,
+            pawn,
+            weapon,
+            launch(visual),
+            None,
+            ProjectileSource::default(),
+        )
+        .expect("projectile spawns");
         assert!(
             registry
                 .get_component::<ProjectileComponent>(projectile)
@@ -999,8 +1053,15 @@ mod projectile_spawn_tests {
         let mut launch = launch(visual);
         launch.direction = Vec3::new(3.0, 2.0, -4.0).normalize();
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch.clone(), None)
-            .expect("projectile spawns");
+        let projectile = spawn_projectile(
+            &mut registry,
+            pawn,
+            weapon,
+            launch.clone(),
+            None,
+            ProjectileSource::default(),
+        )
+        .expect("projectile spawns");
         let mesh = registry
             .get_component::<MeshComponent>(projectile)
             .expect("rigid mesh body attaches");
@@ -1041,8 +1102,15 @@ mod projectile_spawn_tests {
             impact_light: None,
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
-            .expect("projectile spawns");
+        let projectile = spawn_projectile(
+            &mut registry,
+            pawn,
+            weapon,
+            launch(visual),
+            None,
+            ProjectileSource::default(),
+        )
+        .expect("projectile spawns");
         let light = registry
             .get_component::<LightComponent>(projectile)
             .expect("descriptor light materializes with its projectile");
@@ -1088,8 +1156,15 @@ mod projectile_spawn_tests {
         };
         let mut resolved_launch = launch(visual);
         resolved_launch.splash = Some(splash.clone());
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, resolved_launch, None)
-            .expect("projectile spawns");
+        let projectile = spawn_projectile(
+            &mut registry,
+            pawn,
+            weapon,
+            resolved_launch,
+            None,
+            ProjectileSource::default(),
+        )
+        .expect("projectile spawns");
         let component = registry
             .get_component::<ProjectileComponent>(projectile)
             .expect("projectile state survives body materialization");

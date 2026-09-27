@@ -249,7 +249,7 @@ fn hash_strings(hasher: &mut blake3::Hasher, values: &[String]) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::fmt::Write as _;
     use std::fs;
@@ -349,6 +349,7 @@ mod tests {
             version: "1.0.0".to_string(),
             render: ModRenderProfile::default(),
             movers: Default::default(),
+            audio: Default::default(),
             switching: Default::default(),
             default_weapon_placement: None,
             entities: vec![entity_descriptor()],
@@ -405,8 +406,10 @@ mod tests {
         }
     }
 
-    fn movement_descriptor() -> PlayerMovementDescriptor {
+    /// A complete player movement descriptor; shared with the sound tests.
+    pub(crate) fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -453,6 +456,7 @@ mod tests {
                 activities: BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
                         action: None,
@@ -477,6 +481,7 @@ mod tests {
 
         let mut weapon = entity_descriptor();
         weapon.weapon = Some(WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,

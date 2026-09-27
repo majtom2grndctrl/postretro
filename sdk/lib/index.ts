@@ -69,6 +69,8 @@ export type {
   CrossingParams,
   TickParams,
   TriggerEventParams,
+  EmitterParams,
+  EmitterTarget,
   TriggerEventDescriptor,
   TriggerEventOptions,
   TriggerPoolDescriptor,

@@ -314,6 +314,7 @@ mod tests {
             .set_component(
                 id,
                 PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+                    sounds: None,
                     knockback: Default::default(),
                     capsule: CapsuleParams {
                         radius: 0.4,

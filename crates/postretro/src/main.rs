@@ -5,8 +5,8 @@
 // separation, built on the `agent` harness and `nav::find_path`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
-mod audio;
 mod camera;
+mod frame_eye;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -73,6 +73,7 @@ mod session;
 // App-side session policy for streamed SH targets, bounded loader batches, and
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
+mod sound_events;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;
@@ -177,36 +178,16 @@ use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 /// the remainder spent decaying back to rest. See `dispatch_system_commands`.
 const VIGNETTE_RISE_FRACTION: f32 = 0.2;
 
-#[derive(Debug, Clone, Copy)]
-enum PendingWeaponScriptEvent {
-    Weapon(&'static str),
-    Reload(sim::ReloadDelivery),
-}
-
-impl PendingWeaponScriptEvent {
-    const fn event_name(self) -> &'static str {
-        match self {
-            Self::Weapon(event_name) => event_name,
-            Self::Reload(delivery) => delivery.outcome.event_name(),
-        }
-    }
-}
-
+/// Queue one tick's weapon events for the frame drain: fire, dry fire, impact
+/// and spawn first, then that tick's reload outcomes. Each was stamped at its
+/// tick with its emitter and weapon, so the drain never re-resolves either.
 fn append_tick_weapon_script_events(
-    pending: &mut Vec<PendingWeaponScriptEvent>,
-    weapon_events: Vec<&'static str>,
-    reload_deliveries: Vec<sim::ReloadDelivery>,
+    pending: &mut Vec<postretro_sim::emission::WeaponEmission>,
+    weapon_events: Vec<postretro_sim::emission::WeaponEmission>,
+    reload_events: Vec<postretro_sim::emission::WeaponEmission>,
 ) {
-    pending.extend(
-        weapon_events
-            .into_iter()
-            .map(PendingWeaponScriptEvent::Weapon),
-    );
-    pending.extend(
-        reload_deliveries
-            .into_iter()
-            .map(PendingWeaponScriptEvent::Reload),
-    );
+    pending.extend(weapon_events);
+    pending.extend(reload_events);
 }
 
 /// Route client Control messages through App-owned composition. Netcode owns
@@ -369,31 +350,6 @@ fn apply_client_switch_resolution(
         .reset_to_active_with_last(active_slot, last_weapon_slot);
 }
 
-/// Resolve host-local mover transition edges to the authored named-reaction
-/// addresses on their source movers. Missing movers and absent event KVPs are
-/// ordinary no-ops.
-fn mover_event_dispatch_addresses(
-    events: &[(kinematic_mover::MoverEventKind, u32)],
-    registry: &postretro_entities::EntityRegistry,
-) -> Vec<String> {
-    events
-        .iter()
-        .filter_map(|(kind, mover_id)| {
-            registry
-                .iter_with_kind(ComponentKind::KinematicMover)
-                .filter_map(|(_, value)| {
-                    let ComponentValue::KinematicMover(mover) = value else {
-                        return None;
-                    };
-                    Some(mover)
-                })
-                .find(|mover| mover.mover_id == *mover_id)
-                .and_then(|mover| kind.dispatch_address(mover))
-                .map(str::to_owned)
-        })
-        .collect()
-}
-
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
 /// phase. It is intentionally cleared before every refill so a prior map or
 /// phase can never leave a portal latched closed.
@@ -425,9 +381,11 @@ fn rebuild_blocked_portals(
 
 /// Execute a batch of post-tick named events through the sequence-aware path.
 /// Plain `fire_named_event` only collects primitive `on_complete` names; it does
-/// not execute primitive or sequence bodies.
+/// not execute primitive or sequence bodies. An event carrying an emitter
+/// publishes it, so a reaction's `playSound` can play `at: on.emitter`; an
+/// event without one (deaths, follow-ups) publishes none.
 fn drain_named_events_with_sequences<I, S>(
-    event_names: I,
+    events: I,
     data_registry: &postretro_entities::DataRegistry,
     sequence_registry: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
@@ -435,19 +393,27 @@ fn drain_named_events_with_sequences<I, S>(
     script_ctx: &postretro_entities::ScriptCtx,
 ) -> Vec<String>
 where
-    I: IntoIterator<Item = S>,
+    I: IntoIterator<Item = (S, Option<postretro_entities::Emitter>)>,
     S: AsRef<str>,
 {
     let mut chained = Vec::new();
-    for event_name in event_names {
+    for (event_name, emitter) in events {
+        let event_name = event_name.as_ref();
+        let context = emitter.map(|emitter| {
+            postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext {
+                source: format!("named:{event_name}"),
+                values: &[],
+                emitter: Some(emitter),
+            }
+        });
         chained.extend(fire_named_event_with_sequences(
-            event_name.as_ref(),
+            event_name,
             data_registry,
             sequence_registry,
             reaction_registry,
             system_registry,
             script_ctx,
-            None,
+            context,
         ));
     }
     chained
@@ -868,6 +834,8 @@ pub(crate) struct App {
 
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
+    /// Connected-client reload edges derived from replicated slots.
+    client_reload_edges: sound_events::ClientReloadEdges,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
     /// Subsumes the previous `level_load_fired` one-shot flag.
@@ -2674,10 +2642,13 @@ impl ApplicationHandler for App {
                 // consequential work instead executes and rechecks inside each fixed tick.
                 // Weapon and reload events share one stream so catch-up ticks stay ordered.
                 // See: context/lib/entity_model.md §5
-                let mut pending_movement_events: Vec<&'static str> = Vec::new();
+                let mut pending_movement_events: Vec<postretro_sim::emission::MovementEmission> =
+                    Vec::new();
                 let mut pending_movement_edges: Vec<view_feel::TimedMovementEdge> = Vec::new();
-                let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
+                let mut pending_ai_events: Vec<postretro_sim::emission::AiEmission> = Vec::new();
                 let mut pending_weapon_script_events = Vec::new();
+                // Connected-client sounds derived outside the event drains (reload edges).
+                let mut client_sounds: Vec<postretro_audio::SoundRequest> = Vec::new();
                 // These edges are populated only by the authoritative simulation
                 // branch below. Connected clients run the shared mover driver but
                 // never enqueue host-local mover audio.
@@ -2888,9 +2859,24 @@ impl ApplicationHandler for App {
                             if let Some(prediction_tick) =
                                 self.client_predict_movement_tick(&command, tick_dt)
                             {
+                                let mut addresses = Vec::new();
                                 prediction_tick
                                     .movement_events
-                                    .append_named_events(&mut pending_movement_events);
+                                    .append_named_events(&mut addresses);
+                                // Predicted movement sounds from the local pawn.
+                                if let Some(emitter) = self.session.as_ref().and_then(|session| {
+                                    let registry = session.scripting.script_ctx.registry.borrow();
+                                    registry.local_player_movement_pawn().map(|pawn| {
+                                        postretro_sim::emission::entity_emitter(&registry, pawn)
+                                    })
+                                }) {
+                                    pending_movement_events.extend(addresses.into_iter().map(
+                                        |address| postretro_sim::emission::MovementEmission {
+                                            address,
+                                            emitter: emitter.clone(),
+                                        },
+                                    ));
+                                }
                                 pending_movement_edges.extend(
                                     prediction_tick
                                         .movement_events
@@ -2966,6 +2952,9 @@ impl ApplicationHandler for App {
                         // AI; declarations waiting on this tick's FIRE stay in
                         // the pending queue for the existing post-sim drain.
                         let mut ready_hit_declarations = self.host_take_ready_hit_declarations();
+                        // Remote clients' validated shots, each one `impact`.
+                        let mut remote_impacts: Vec<postretro_sim::emission::WeaponEmission> =
+                            Vec::new();
 
                         // Host: resolve remote (owned) pawn inputs up front, then the
                         // shared `simulate_tick` runs loaded movers and every player
@@ -3095,6 +3084,7 @@ impl ApplicationHandler for App {
                                     |shot_id, point| {
                                         projectile_presentations.note_contact(shot_id, point)
                                     },
+                                    |impact| remote_impacts.push(impact),
                                 );
                             },
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
@@ -3149,7 +3139,10 @@ impl ApplicationHandler for App {
                         self.host_note_local_projectile_contacts(
                             &tick_events.local_projectile_contacts,
                         );
-                        if self.host_flush_pending_hit_declarations(frame_anim_time) {
+                        if self.host_flush_pending_hit_declarations(
+                            frame_anim_time,
+                            &mut remote_impacts,
+                        ) {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
                         }
                         self.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
@@ -3164,8 +3157,9 @@ impl ApplicationHandler for App {
                         append_tick_weapon_script_events(
                             &mut pending_weapon_script_events,
                             tick_events.weapon,
-                            tick_events.reload_deliveries,
+                            tick_events.reload,
                         );
+                        pending_weapon_script_events.append(&mut remote_impacts);
                         pending_mover_events.extend(tick_events.mover);
                         repointed_pawns.extend(tick_events.repointed_pawns);
                         pending_death_events.extend(tick_events.death);
@@ -3218,6 +3212,9 @@ impl ApplicationHandler for App {
                     frame_anim_time,
                     &mut pending_weapon_script_events,
                 );
+                if self.is_connected_client() {
+                    self.observe_client_reload_edges(&mut client_sounds);
+                }
 
                 // Status overlays are host/single-player presentation facts.
                 // This runs once after every fixed tick (including zero-tick
@@ -3290,10 +3287,63 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let pending_mover_event_names = {
+                // Descriptor sounds for this frame's events, placed at fire time.
+                // They play alongside any reaction addressed to the same event.
+                // The listener's pawn is named here, before any play this frame,
+                // with the key the audio step's listener carries: own-pawn
+                // treatment is decided at `play`, ahead of `audio.update`.
+                let (pending_mover_edges, descriptor_sounds, listener_attached) = {
                     let registry = script_ctx.registry.borrow();
-                    mover_event_dispatch_addresses(&pending_mover_events, &registry)
+                    let listener_attached = sound_events::listener_attached_key(&registry);
+                    let mut scene = sound_events::AnchorScene {
+                        registry: &registry,
+                        world: self.level.as_ref(),
+                        movers: &mut self.kinematic_mover_render,
+                    };
+                    let edges =
+                        sound_events::resolve_mover_edges(&pending_mover_events, &mut scene);
+                    let mut requests: Vec<postretro_audio::SoundRequest> = edges
+                        .iter()
+                        .filter_map(sound_events::MoverEdge::sound_request)
+                        .collect();
+                    if let Some(session) = self.session.as_ref() {
+                        let table = &session.scripting.descriptor_sounds;
+                        requests.extend(pending_movement_events.iter().filter_map(|emission| {
+                            sound_events::movement_sound(emission, &mut scene)
+                        }));
+                        for emission in &pending_ai_events {
+                            requests.extend(sound_events::ai_sounds(table, emission, &mut scene));
+                        }
+                        requests.extend(pending_weapon_script_events.iter().filter_map(
+                            |emission| {
+                                sound_events::weapon_emission_sound(table, emission, &mut scene)
+                            },
+                        ));
+                    }
+                    requests.append(&mut client_sounds);
+                    (edges, requests, listener_attached)
                 };
+                if let Some(audio) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
+                    audio.set_listener_attached(listener_attached);
+                    for request in descriptor_sounds {
+                        audio.play(request);
+                    }
+                }
+                // A mover edge's reactions may play `at: on.emitter`: the mover.
+                // An edge with no point publishes no emitter, so such a reaction
+                // is skipped, as the edge's own descriptor sound is dropped.
+                let pending_mover_event_names: Vec<(String, Option<postretro_entities::Emitter>)> =
+                    pending_mover_edges
+                        .into_iter()
+                        .filter_map(|edge| {
+                            let emitter = edge.reaction_emitter();
+                            edge.address.map(|address| (address, emitter))
+                        })
+                        .collect();
                 if let Some(session) = self.session.as_ref() {
                     let mut pending_trigger_follow_ups = Vec::new();
                     // Every post-tick named source uses the executing path, then
@@ -3302,7 +3352,9 @@ impl ApplicationHandler for App {
                     // semantically aligned and lets waits enroll through the common
                     // sequence control arm.
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_movement_events.iter().copied(),
+                        pending_movement_events
+                            .iter()
+                            .map(|emission| (emission.address, Some(emission.emitter.clone()))),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3310,7 +3362,12 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_ai_events.iter().map(|event| event.as_ref()),
+                        pending_ai_events.iter().filter_map(|emission| {
+                            emission
+                                .address
+                                .as_deref()
+                                .map(|address| (address, Some(emission.emitter.clone())))
+                        }),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3320,7 +3377,7 @@ impl ApplicationHandler for App {
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
                         pending_weapon_script_events
                             .iter()
-                            .map(|event| event.event_name()),
+                            .map(|emission| (emission.address, Some(emission.emitter.clone()))),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3328,7 +3385,7 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_mover_event_names.iter(),
+                        pending_mover_event_names,
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3336,7 +3393,7 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_death_events.iter(),
+                        pending_death_events.iter().map(|name| (name, None)),
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -3564,27 +3621,110 @@ impl ApplicationHandler for App {
                 self.reconcile_ui_focus();
                 self.apply_frontend_menu_camera_pose_if_present();
 
+                // Position interpolated from tick-state slots; yaw/pitch from
+                // `self.camera` directly so zero-tick frames still see this
+                // frame's look rotation.
+                let interp = self.frame_timing.interpolated_state();
+
+                // M15 Phase 3 Task 5: the connected client's local-pawn presentation
+                // offset is already baked into the camera pose `frame_timing` carries
+                // (folded in at the tick-rate camera-follow seam above, where the offset
+                // also decays once per tick). So the interpolated eye IS the presented
+                // eye — re-adding the offset here would double-count it and re-introduce
+                // the ∝-velocity oscillation it was moved to fix. `frame_timing`
+                // interpolates between consecutive PRESENTED poses, so the smoothed
+                // correction reaches the view matrix, camera uniforms, cell locator,
+                // and portal apex continuously across each reconcile snap.
+                // Single-player and the host carry a ZERO offset, so this is the bare
+                // interpolated eye for them, unchanged.
+                let presented_eye = interp.position;
+
+                // View-feel assembly (movement.md D1/D5/D6) runs once per frame,
+                // here, ahead of the audio step: render and the audio listener
+                // read this one evaluated eye (`audio.md` §3). View feel only runs
+                // when the camera-following pawn carries `view_feel`; another
+                // pawn's preset must not leak onto the selected camera.
+                let view_feel_driver = {
+                    let registry = script_ctx.registry.borrow();
+                    followed_player_pawn(&registry).and_then(|pawn| {
+                        registry
+                            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                            .ok()
+                            .and_then(|component| {
+                                component.view_feel.as_ref().map(|params| {
+                                    frame_eye::ViewFeelDriver {
+                                        pawn,
+                                        params: params.clone(),
+                                        velocity: component.velocity,
+                                        is_grounded: component.is_grounded(),
+                                    }
+                                })
+                            })
+                    })
+                };
+                let view_feel_scale = self
+                    .session
+                    .as_ref()
+                    .map(|session| session.player_options.view_feel_scale)
+                    .unwrap_or(1.0);
+                let eye = frame_eye::assemble_frame_eye(
+                    frame_eye::FrameEyeInputs {
+                        presented_eye,
+                        aspect: self.camera.aspect(),
+                        render_yaw: render_camera_yaw,
+                        pitch: self.camera.pitch,
+                        driver: view_feel_driver,
+                        movement_edges: &pending_movement_edges,
+                        frame_dt,
+                        view_feel_scale,
+                    },
+                    frame_eye::ViewFeelTracking {
+                        state: &mut self.view_feel_state,
+                        followed_pawn: &mut self.view_feel_followed_pawn,
+                        descriptor: &mut self.view_feel_descriptor,
+                    },
+                );
+                let render_camera = eye.camera;
+                let view_proj = render_camera.view_projection;
+                // The render eye and matrix are assembled together.
+                // Portal traversal, camera uniforms, and every render-stage
+                // distance/cell query must use the same point. Using the
+                // unbobbed interpolated position here can put the visibility
+                // apex in a different cell or on the opposite side of a
+                // portal plane, causing one-frame clear-color holes.
+                let render_eye_position = render_camera.eye_position;
+
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
-                // game logic settles every entity and before render. Convert the
-                // glam-typed camera to the primitive `ListenerState` here at the
-                // call site (the boundary carries no glam); `forward` uses the
-                // aim ray's direction so it includes pitch, unlike yaw-only
-                // `forward()`, and `up` is world up per the `ListenerState`
-                // contract. Guarded for the silent (init-failed) case.
-                // Audio is session-owned; build the primitive listener from the
-                // disjoint `self.camera` field first, then borrow the subsystem.
-                let listener = audio::ListenerState {
-                    position: self.camera.position.to_array(),
-                    forward: self.camera.aim_ray().1.to_array(),
-                    up: [0.0, 1.0, 0.0],
-                };
-                if let Some(audio) = self
+                // game logic settles every entity and before render. The listener
+                // is the rendered eye assembled above, converted to the primitive
+                // `ListenerState` at this call site (the boundary carries no glam).
+                // Guarded for the silent (init-failed) case. The anchor resolver
+                // places each positional voice at its emitter's
+                // render-interpolated pose this frame.
+                let listener_registry = self
                     .session
-                    .as_mut()
-                    .and_then(|session| session.audio.as_mut())
-                {
-                    audio.update(listener, frame_dt);
+                    .as_ref()
+                    .map(|session| session.scripting.script_ctx.registry.clone());
+                if let (Some(registry), Some(audio)) = (
+                    listener_registry,
+                    self.session
+                        .as_mut()
+                        .and_then(|session| session.audio.as_mut()),
+                ) {
+                    let registry = registry.borrow();
+                    let listener = frame_eye::listener_for(
+                        &render_camera,
+                        sound_events::listener_attached_key(&registry),
+                    );
+                    let mut scene = sound_events::AnchorScene {
+                        registry: &registry,
+                        world: self.level.as_ref(),
+                        movers: &mut self.kinematic_mover_render,
+                    };
+                    audio.update(listener, frame_dt, |key| {
+                        scene.presented_point(key, frame_result.alpha)
+                    });
                 }
 
                 // Level-relative monotonic clock consumed by light_bridge.update,
@@ -3609,130 +3749,6 @@ impl ApplicationHandler for App {
                     // scale 0 holds every clip and fade. See scripting.md §10.3.
                     self.anim_time = frame_anim_time;
                 }
-
-                // Position interpolated from tick-state slots; yaw/pitch from
-                // `self.camera` directly so zero-tick frames still see this
-                // frame's look rotation.
-                let interp = self.frame_timing.interpolated_state();
-
-                // M15 Phase 3 Task 5: the connected client's local-pawn presentation
-                // offset is already baked into the camera pose `frame_timing` carries
-                // (folded in at the tick-rate camera-follow seam above, where the offset
-                // also decays once per tick). So the interpolated eye IS the presented
-                // eye — re-adding the offset here would double-count it and re-introduce
-                // the ∝-velocity oscillation it was moved to fix. `frame_timing`
-                // interpolates between consecutive PRESENTED poses, so the smoothed
-                // correction reaches the view matrix, camera uniforms, cell locator,
-                // and portal apex continuously across each reconcile snap.
-                // Single-player and the host carry a ZERO offset, so this is the bare
-                // interpolated eye for them, unchanged.
-                let presented_eye = interp.position;
-
-                // View-feel assembly (movement.md D1/D5/D6): a render-only,
-                // pawn-driven camera effect. When the camera-driving pawn carries
-                // `view_feel`, run the render-rate evaluator and fold its output
-                // into the look angles, roll, and eye offset. When no pawn drives
-                // the camera, or it carries no `view_feel`, take the pass-through
-                // path with `roll = 0` / `eye_offset = ZERO` and no angle offsets
-                // so the matrix is bit-identical to the no-view-feel render.
-                //
-                // The evaluator owns the integrator state (`self.view_feel_state`)
-                // and never sees the camera basis; we derive its two velocity-space
-                // inputs from the pawn velocity and the camera RIGHT vector here,
-                // then map its scalar output back onto that basis. The same
-                // carry-yaw-adjusted render angle that enters `RenderCamera` below
-                // supplies the yaw-derived, Y-free, unit-length right vector that
-                // `view_feel_inputs`/`map_output_to_camera` expect, so view feel and
-                // the view matrix do not disagree during a sub-tick turntable rotation.
-                let camera_right = camera_right_for_yaw(render_camera_yaw);
-                // Match the camera-follow resolver above: marked local pawn
-                // first, then the legacy first PlayerMovement+Transform
-                // fallback. View feel only runs when that driving pawn carries
-                // `view_feel`; another pawn's preset must not leak onto the
-                // selected camera.
-                let view_feel_inputs = {
-                    let registry = script_ctx.registry.borrow();
-                    followed_player_pawn(&registry).and_then(|id| {
-                        registry
-                            .get_component::<postretro_foundation::PlayerMovementComponent>(id)
-                            .ok()
-                            .and_then(|component| {
-                                component.view_feel.as_ref().map(|params| {
-                                    (
-                                        id,
-                                        params.clone(),
-                                        component.velocity,
-                                        component.is_grounded(),
-                                    )
-                                })
-                            })
-                    })
-                };
-                // `player_options` is session-owned; copy the accessibility scale
-                // out before the `&mut self.view_feel_state` borrow below.
-                let view_feel_scale = self
-                    .session
-                    .as_ref()
-                    .map(|session| session.player_options.view_feel_scale)
-                    .unwrap_or(1.0);
-                let (vf_fov_offset, vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
-                    if let Some((pawn, params, velocity, is_grounded)) = view_feel_inputs {
-                        sync_view_feel_driver(
-                            &mut self.view_feel_state,
-                            &mut self.view_feel_followed_pawn,
-                            &mut self.view_feel_descriptor,
-                            Some((pawn, &params)),
-                        );
-                        let (horizontal_speed, lateral_velocity) =
-                            view_feel::view_feel_inputs(velocity, camera_right);
-                        let output = view_feel::evaluate_with_edges(
-                            &params,
-                            horizontal_speed,
-                            lateral_velocity,
-                            is_grounded,
-                            &pending_movement_edges,
-                            &mut self.view_feel_state,
-                            // Zero-frame_dt guard: the evaluator leaves the
-                            // integrator untouched at `frame_dt == 0` (Task 2
-                            // contract), so passing it through is safe — we do
-                            // not introduce a separate advance step here.
-                            frame_dt,
-                            // Accessibility scale (D6): owned/clamped by the
-                            // options module; passed verbatim, not re-clamped.
-                            view_feel_scale,
-                        );
-                        let (roll, yaw, pitch, eye) =
-                            view_feel::map_output_to_camera(&output, camera_right);
-                        (output.impulse_fov, roll, yaw, pitch, eye)
-                    } else {
-                        sync_view_feel_driver(
-                            &mut self.view_feel_state,
-                            &mut self.view_feel_followed_pawn,
-                            &mut self.view_feel_descriptor,
-                            None,
-                        );
-                        // Pass-through: no driving pawn, or it carries no
-                        // `view_feel`. Identical-to-today render path.
-                        (0.0, 0.0, 0.0, 0.0, Vec3::ZERO)
-                    };
-
-                let render_camera = camera::RenderCamera::new(
-                    presented_eye,
-                    self.camera.aspect(),
-                    render_camera_yaw + vf_yaw_offset,
-                    self.camera.pitch + vf_pitch_offset,
-                    vf_roll,
-                    vf_eye_offset,
-                    vf_fov_offset,
-                );
-                let view_proj = render_camera.view_projection;
-                // The render eye and matrix are assembled together.
-                // Portal traversal, camera uniforms, and every render-stage
-                // distance/cell query must use the same point. Using the
-                // unbobbed interpolated position here can put the visibility
-                // apex in a different cell or on the opposite side of a
-                // portal plane, causing one-frame clear-color holes.
-                let render_eye_position = render_camera.eye_position;
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
@@ -4110,11 +4126,11 @@ impl ApplicationHandler for App {
                                     model,
                                     viewmodel_world_transform(
                                         render_camera.view_matrix,
-                                        camera_right,
-                                        vf_eye_offset,
-                                        vf_roll,
-                                        vf_yaw_offset,
-                                        vf_pitch_offset,
+                                        eye.camera_right,
+                                        eye.eye_offset,
+                                        eye.roll,
+                                        eye.yaw_offset,
+                                        eye.pitch_offset,
                                         &placement,
                                     ),
                                     weapon_seed,
@@ -6068,22 +6084,46 @@ impl App {
         };
         for command in script_ctx.system_commands.take() {
             match command {
-                SystemReactionCommand::PlaySound { sound, bus } => {
+                SystemReactionCommand::PlaySound { sound, bus, at } => {
+                    // Place an `at: on.emitter` anchor now, at fire time, so an
+                    // emitter removed before the audio step still has a position.
+                    // Name the listener's pawn with it: own-pawn treatment is
+                    // decided at `play`, ahead of this frame's audio step.
+                    let anchor = at.map(|emitter| {
+                        let registry = script_ctx.registry.borrow();
+                        let mut scene = sound_events::AnchorScene {
+                            registry: &registry,
+                            world: self.level.as_ref(),
+                            movers: &mut self.kinematic_mover_render,
+                        };
+                        (
+                            scene.sound_anchor(&emitter),
+                            sound_events::listener_attached_key(&registry),
+                        )
+                    });
                     if let Some(audio) = self
                         .session
                         .as_mut()
                         .and_then(|session| session.audio.as_mut())
                     {
+                        let anchor = match anchor {
+                            Some((anchor, listener_attached)) => {
+                                audio.set_listener_attached(listener_attached);
+                                Some(anchor)
+                            }
+                            None => None,
+                        };
                         // The reaction surface has no per-voice volume or looping
                         // yet (deferred); a one-shot on the named bus is the whole
                         // contract. Default to the SFX bus when none is named.
                         let bus = bus.unwrap_or_else(|| "sfx".to_string());
                         // `play` warns-and-drops on an unknown bus or sound, so an
                         // unregistered sound name never panics.
-                        let _ = audio.play(audio::SoundRequest {
+                        let _ = audio.play(postretro_audio::SoundRequest {
                             bus,
                             sound,
                             looping: false,
+                            anchor,
                         });
                     }
                     // Audio init failed ⇒ silent (the game runs without sound).
@@ -6980,12 +7020,12 @@ impl App {
                     &mut self.kinematic_mover_tick_states,
                     &apply_outcome.mover_corrections,
                 );
-                if apply_outcome.owner_private_weapon_cooldown_slot.is_some() {
+                if let Some(cooldown) = apply_outcome.owner_private_weapon.cooldown {
                     let _ = reconcile_client_weapon_cooldown_from_slot_table(
                         &mut self.client_predicted_shots,
                         &mut registry,
                         &slot_table,
-                        apply_outcome.owner_private_weapon_cooldown_slot,
+                        Some(cooldown.slot),
                     );
                 }
                 if apply_outcome.materialized_remote_entity_presentation {
@@ -7019,7 +7059,7 @@ impl App {
         sent_fire_commands: &[ClientFrameFireCommand],
         frame_dt: f32,
         frame_anim_time: f64,
-        pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
+        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
     ) {
         self.client_fire_resolutions.clear();
         if !self.is_connected_client() {
@@ -7036,7 +7076,11 @@ impl App {
         // Connected clients never enter the host simulation seam. Advance their
         // locally predicted projectiles once here, after interpolation wrote the
         // rendered poses, so they cannot double-advance in a catch-up tick.
-        self.advance_client_predicted_projectiles(frame_dt, frame_anim_time);
+        self.advance_client_predicted_projectiles(
+            frame_dt,
+            frame_anim_time,
+            pending_weapon_script_events,
+        );
     }
 
     fn run_client_fire_path_post_loop_inner(
@@ -7046,7 +7090,7 @@ impl App {
         sent_fire_commands: &[ClientFrameFireCommand],
         frame_dt: f32,
         frame_anim_time: f64,
-        pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
+        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
     ) {
         let Some(snapshot) = client_fire_snapshot_for_post_loop(snapshot, zero_tick_snapshot)
         else {
@@ -7169,6 +7213,15 @@ impl App {
             }
             return;
         };
+        // Every pull the fire gate passes is predicted and declared below, so
+        // the host applies damage whenever it fires. The replicated magazine
+        // and reload state only choose what the pull presents, and only while
+        // each value describes this client's own active slot.
+        let presentation = weapon::client_pull_presentation(
+            &component,
+            active_slot,
+            &netcode::client_weapon_projection(session.net_endpoint.as_ref()),
+        );
         let selected_shot_elapsed_ms = selected_fire_commands
             .iter()
             .map(|command| command.elapsed_ms)
@@ -7227,32 +7280,77 @@ impl App {
                 &resolution,
                 cooldown_before_ms,
                 cooldown_after_ms,
+                presentation,
             );
-            // Predict the muzzle FX on a gated local fire, mirroring the host/
-            // single-player weapon-activation ("activate") event. It drains with the
-            // shared sequence-aware named-event batch; a host reject rolls this shot's
-            // `muzzle_fx_visible` state back in reconcile.
-            pending_weapon_script_events.push(PendingWeaponScriptEvent::Weapon("activate"));
-            let projectile_spawned = projectile_launch.is_some_and(|launch| {
-                sim::spawn_projectile(
-                    &mut script_ctx.registry.borrow_mut(),
-                    local_pawn,
-                    weapon_id,
-                    launch,
-                    Some(shot_id),
+            let (shooter, weapon_name) = {
+                let registry = script_ctx.registry.borrow();
+                (
+                    postretro_sim::emission::entity_emitter(&registry, local_pawn),
+                    postretro_sim::emission::descriptor_name(&registry, weapon_id),
                 )
-                .is_some()
-            });
-            if !projectile_spawned {
-                // Hitscan resolves now. A projectile that could not materialize
-                // cannot declare later, so promptly retire its authorized shot
-                // with the same valid empty declaration used on normal expiry.
+            };
+            // The presentation picks the emissions and whether a predicted
+            // projectile is shown; every presentation still declares the shot.
+            // Emissions drain with the shared sequence-aware named-event batch;
+            // a host reject rolls this shot's presentation state back in
+            // reconcile.
+            let contacts = resolution.impact_contacts();
+            let effects = weapon::client_pull_effects(
+                presentation,
+                projectile_launch.is_some(),
+                !contacts.is_empty(),
+            );
+            let mut contacts = Some(contacts);
+            for address in effects.addresses {
+                let emitter = if address == "impact" {
+                    // A predicted hitscan shot's contacts, wall hits included,
+                    // are its one `impact`, heard now at the contact nearest
+                    // the listener.
+                    postretro_sim::emission::Emitter::Contacts(contacts.take().unwrap_or_default())
+                } else {
+                    shooter.clone()
+                };
+                pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
+                    address,
+                    emitter,
+                    weapon: weapon_name.clone(),
+                });
+            }
+            let projectile_spawned = effects.spawn_projectile
+                && projectile_launch.is_some_and(|launch| {
+                    sim::spawn_projectile(
+                        &mut script_ctx.registry.borrow_mut(),
+                        local_pawn,
+                        weapon_id,
+                        launch,
+                        Some(shot_id),
+                        sim::ProjectileSource {
+                            weapon: weapon_name,
+                            activation: None,
+                        },
+                    )
+                    .is_some()
+                });
+            let declared = match effects.declaration {
+                weapon::ClientShotDeclaration::ResolvedNow => Some((
+                    resolution.hits.as_slice(),
+                    resolution.world_contacts.as_slice(),
+                )),
+                // A projectile that could not materialize cannot declare later,
+                // so it retires its authorized shot now with the same valid
+                // empty declaration used on normal expiry.
+                weapon::ClientShotDeclaration::OnProjectileResolution if projectile_spawned => None,
+                weapon::ClientShotDeclaration::OnProjectileResolution
+                | weapon::ClientShotDeclaration::EmptyNow => Some((&[][..], &[][..])),
+            };
+            if let Some((hits, world_contacts)) = declared {
                 let _ = netcode::client_send_hit_declaration(
                     self.session
                         .as_mut()
                         .and_then(|session| session.net_endpoint.as_mut()),
                     shot_id,
-                    &resolution.hits,
+                    hits,
+                    world_contacts,
                 );
             }
             // Only the first tick casts a ray (once per frame, at the rendered pose);
@@ -7267,6 +7365,7 @@ impl App {
                         .and_then(|session| session.net_endpoint.as_mut()),
                     shot_id,
                     &[],
+                    &[],
                 );
             }
             self.client_fire_resolutions.push(resolution);
@@ -7277,7 +7376,75 @@ impl App {
         }
     }
 
-    fn advance_client_predicted_projectiles(&mut self, frame_dt: f32, frame_anim_time: f64) {
+    /// Derive the local pawn's reload edges from its replicated owner-private
+    /// reload and ammo slots, and queue the sounds its weapon names. A
+    /// connected client runs no host weapon machine, so this is how it hears
+    /// its own reloads, one round trip late (`audio.md` §4). Each value names
+    /// the host wieldable slot it describes, so edges and sounds follow the
+    /// weapon the host projects rather than a local switch the host has not
+    /// yet performed.
+    fn observe_client_reload_edges(
+        &mut self,
+        client_sounds: &mut Vec<postretro_audio::SoundRequest>,
+    ) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let script_ctx = &session.scripting.script_ctx;
+        let registry = script_ctx.registry.borrow();
+        let projection = netcode::client_weapon_projection(session.net_endpoint.as_ref());
+        let reading = sound_events::ReloadReading::from_projection(&projection, |slot| {
+            let pawn = registry.local_player_movement_pawn()?;
+            let inventory = registry.get_component::<Inventory>(pawn).ok()?;
+            let weapon = inventory.wieldables.get(slot).copied().flatten()?;
+            let component = registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+                .ok()?;
+            let ammo_stats = component.effective().ammo?;
+            Some(sound_events::ProjectedWeapon {
+                weapon,
+                wielded: inventory.active_slot == slot && inventory.switch_target.is_none(),
+                style: ammo_stats.reload_style,
+                capacity: ammo_stats.capacity,
+            })
+        });
+        let weapon = match reading {
+            sound_events::ReloadReading::Sample(sample) => Some(sample.weapon),
+            _ => None,
+        };
+        let addresses = self.client_reload_edges.observe_reading(reading);
+        if addresses.is_empty() {
+            return;
+        }
+        let (Some(weapon), Some(pawn)) = (weapon, registry.local_player_movement_pawn()) else {
+            return;
+        };
+        let emitter = postretro_sim::emission::entity_emitter(&registry, pawn);
+        let weapon_name = postretro_sim::emission::descriptor_name(&registry, weapon);
+        let mut scene = sound_events::AnchorScene {
+            registry: &registry,
+            world: self.level.as_ref(),
+            movers: &mut self.kinematic_mover_render,
+        };
+        for address in addresses {
+            if let Some(request) = sound_events::weapon_sound(
+                &session.scripting.descriptor_sounds,
+                address,
+                weapon_name.as_deref(),
+                &emitter,
+                &mut scene,
+            ) {
+                client_sounds.push(request);
+            }
+        }
+    }
+
+    fn advance_client_predicted_projectiles(
+        &mut self,
+        frame_dt: f32,
+        frame_anim_time: f64,
+        pending_weapon_script_events: &mut Vec<postretro_sim::emission::WeaponEmission>,
+    ) {
         let mut declarations = Vec::new();
         {
             let Some(session) = self.session.as_ref() else {
@@ -7290,7 +7457,25 @@ impl App {
                 frame_anim_time,
                 frame_dt,
                 &mut |resolution| match resolution {
-                    sim::PredictedProjectileResolution::Impact { shot_id, impact } => {
+                    sim::PredictedProjectileResolution::Impact {
+                        shot_id,
+                        impact,
+                        source_weapon,
+                    } => {
+                        // The client hears its own predicted projectile land.
+                        pending_weapon_script_events.push(
+                            postretro_sim::emission::WeaponEmission {
+                                address: "impact",
+                                emitter: postretro_sim::emission::Emitter::Contacts(vec![
+                                    postretro_sim::emission::ImpactContact::new(
+                                        impact.point,
+                                        impact.normal,
+                                        impact.target,
+                                    ),
+                                ]),
+                                weapon: source_weapon,
+                            },
+                        );
                         declarations.push((shot_id, Some(impact)));
                     }
                     sim::PredictedProjectileResolution::Expired { shot_id } => {
@@ -7910,7 +8095,11 @@ impl App {
         }
     }
 
-    fn host_flush_pending_hit_declarations(&mut self, anim_time: f64) -> bool {
+    fn host_flush_pending_hit_declarations(
+        &mut self,
+        anim_time: f64,
+        remote_impacts: &mut Vec<postretro_sim::emission::WeaponEmission>,
+    ) -> bool {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -7953,6 +8142,7 @@ impl App {
             anim_time,
             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
+            |impact| remote_impacts.push(impact),
         )
     }
 
@@ -8516,10 +8706,11 @@ impl App {
                     .as_mut()
                     .and_then(|session| session.audio.as_mut())
                 {
-                    audio.play(audio::SoundRequest {
+                    audio.play(postretro_audio::SoundRequest {
                         bus: "sfx".to_string(),
                         sound: "sfx/test_tone".to_string(),
                         looping: false,
+                        anchor: None,
                     });
                     log::info!("[Audio] smoke check: played sfx/test_tone on SFX bus");
                 }
@@ -9205,6 +9396,10 @@ mod tests {
                 close_event: None,
                 blocked_event: None,
                 crush_event: None,
+                open_sound: None,
+                close_sound: None,
+                blocked_sound: None,
+                crush_sound: None,
                 sealed_portal_ids: vec![0],
                 carried_lights: Vec::new(),
             }],
@@ -9793,6 +9988,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(postretro_foundation::WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage: 1.0,
                 pellet_count: 1,
@@ -10359,12 +10555,14 @@ mod tests {
             7,
             weapon_a,
             &weapon::ClientFireResolution {
+                world_contacts: Vec::new(),
                 client_tick: 3,
                 hits: Vec::new(),
                 projectile_launch: None,
             },
             0.0,
             80.0,
+            weapon::ClientPullPresentation::Fire,
         );
 
         assert!(reconcile_client_weapon_cooldown_from_slot_table(
@@ -10805,6 +11003,7 @@ mod tests {
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -11246,32 +11445,31 @@ mod tests {
     #[test]
     fn catch_up_weapon_script_events_preserve_tick_order_and_same_tick_fire_order() {
         let pawn = postretro_entities::EntityId::from_raw(1);
-        let weapon = postretro_entities::EntityId::from_raw(2);
+        let from_pawn = |address| postretro_sim::emission::WeaponEmission {
+            address,
+            emitter: postretro_sim::emission::Emitter::Entity {
+                id: pawn,
+                origin: Vec3::ZERO,
+            },
+            weapon: None,
+        };
         let mut pending = Vec::new();
 
         append_tick_weapon_script_events(
             &mut pending,
             Vec::new(),
-            vec![sim::ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: sim::ReloadOutcome::Started,
-            }],
+            vec![from_pawn("reload_started")],
         );
         append_tick_weapon_script_events(
             &mut pending,
-            vec!["activate"],
-            vec![sim::ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: sim::ReloadOutcome::Cancelled { transferred: 0 },
-            }],
+            vec![from_pawn("activate")],
+            vec![from_pawn("reload_cancelled")],
         );
 
         assert_eq!(
             pending
                 .iter()
-                .map(|event| event.event_name())
+                .map(|emission| emission.address)
                 .collect::<Vec<_>>(),
             vec!["reload_started", "activate", "reload_cancelled"],
         );
@@ -11311,13 +11509,22 @@ mod tests {
             .set_component(mover_entity, mover)
             .expect("mover fixture attaches");
 
-        let event_names = mover_event_dispatch_addresses(
+        let mut movers = runtime_movers::KinematicMoverRenderCollector::new();
+        let mut scene = sound_events::AnchorScene {
+            registry: &registry,
+            world: None,
+            movers: &mut movers,
+        };
+        let event_names: Vec<String> = sound_events::resolve_mover_edges(
             &[
                 (kinematic_mover::MoverEventKind::Opened, 17),
                 (kinematic_mover::MoverEventKind::Closed, 17),
             ],
-            &registry,
-        );
+            &mut scene,
+        )
+        .into_iter()
+        .filter_map(|edge| edge.address)
+        .collect();
         assert_eq!(event_names, vec!["door.open"]);
 
         let script_ctx = ScriptCtx::new();
@@ -11347,7 +11554,7 @@ mod tests {
         assert!(script_ctx.system_commands.take().is_empty());
 
         drain_named_events_with_sequences(
-            event_names.iter(),
+            event_names.iter().map(|name| (name, None)),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -11359,8 +11566,289 @@ mod tests {
             vec![SystemReactionCommand::PlaySound {
                 sound: "door_open".to_string(),
                 bus: Some("sfx".to_string()),
+                at: None,
             }],
             "mover events must use the executing dispatch path so the audio drain receives playSound"
+        );
+    }
+
+    // The post-tick drain publishes each event's emitter, so an anchored
+    // reaction plays there; the same address fired with no emitter plays nothing.
+    #[test]
+    fn named_event_drain_publishes_emitters_to_anchored_reactions() {
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "activate".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({
+                        "sound": "sfx/shot",
+                        "at": postretro_entities::EMITTER_AT_TOKEN,
+                    }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        let emitter = postretro_entities::Emitter::Entity {
+            id: postretro_entities::EntityId::from_raw(9),
+            origin: Vec3::new(0.0, 1.5, 0.0),
+        };
+
+        drain_named_events_with_sequences(
+            [("activate", Some(emitter.clone())), ("activate", None)],
+            &data_registry,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "sfx/shot".to_string(),
+                bus: None,
+                at: Some(emitter),
+            }],
+            "only the emitter-bearing fire plays",
+        );
+    }
+
+    // Row 27: the fixture's `door.open` (`playSound("fixtures/door_open", { at:
+    // on.emitter })`, lowered as its scripting-core test pins) hands audio one
+    // request, anchored at the door's bounds center.
+    #[test]
+    fn door_open_fixture_hands_audio_one_request_at_the_bounds_center() {
+        use crate::runtime_movers::tests::{mover, single_cell_world};
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+            NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_level_loader::KinematicGeometry;
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let door = {
+            let mut registry = script_ctx.registry.borrow_mut();
+            let door = registry.spawn(Transform {
+                position: Vec3::new(10.0, 0.0, 0.0),
+                ..Transform::default()
+            });
+            let mut component = KinematicMoverComponent::new(
+                7,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::X],
+                    waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                    speed_mps: 1.0,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::PingPong,
+                    started: true,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            );
+            component.open_event = Some("door.open".to_string());
+            registry.set_component(door, component).unwrap();
+            door
+        };
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "door.open".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        let world = single_cell_world(KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        });
+        let mut movers = runtime_movers::KinematicMoverRenderCollector::new();
+
+        // The frame resolves the door edge to its address and emitter.
+        let edges = {
+            let registry = script_ctx.registry.borrow();
+            let mut scene = sound_events::AnchorScene {
+                registry: &registry,
+                world: Some(&world),
+                movers: &mut movers,
+            };
+            sound_events::resolve_mover_edges(
+                &[(kinematic_mover::MoverEventKind::Opened, 7)],
+                &mut scene,
+            )
+        };
+        let [edge] = edges.as_slice() else {
+            panic!("one door edge, got {edges:?}");
+        };
+        drain_named_events_with_sequences(
+            [(
+                edge.address.clone().unwrap(),
+                Some(postretro_entities::Emitter::Entity {
+                    id: edge.emitter,
+                    origin: edge.point.unwrap_or_default(),
+                }),
+            )],
+            &data_registry,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+        );
+        let commands = script_ctx.system_commands.take();
+        let [
+            SystemReactionCommand::PlaySound {
+                sound,
+                bus,
+                at: Some(emitter),
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("one anchored playSound, got {commands:?}");
+        };
+        assert_eq!(
+            (sound.as_str(), bus.as_deref()),
+            ("fixtures/door_open", None)
+        );
+
+        // The drain places the anchor as `dispatch_system_commands` does.
+        let registry = script_ctx.registry.borrow();
+        let mut scene = sound_events::AnchorScene {
+            registry: &registry,
+            world: Some(&world),
+            movers: &mut movers,
+        };
+        assert_eq!(
+            scene.sound_anchor(emitter),
+            postretro_audio::SoundAnchor::Entity {
+                key: u64::from(door.to_raw()),
+                point: [10.5, 0.5, 0.0],
+            },
+            "anchored at the door's world bounds center",
+        );
+    }
+
+    // A descriptor sound and a reaction addressed to the same event both play;
+    // neither suppresses the other.
+    #[test]
+    fn descriptor_sound_and_reaction_both_play_for_one_event() {
+        use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
+        use postretro_entities::{
+            DataRegistry, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        };
+        use postretro_scripting_core::reaction_registry::{
+            ReactionPrimitiveRegistry, SystemReactionRegistry,
+        };
+        use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+        let script_ctx = ScriptCtx::new();
+        let pawn = script_ctx.registry.borrow_mut().spawn(Transform::default());
+        let weapon: postretro_foundation::WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 5.0, "range": 50.0, "fireRateMs": 100.0, "fireMode": "semi", "resolution": "hitscan",
+            "sounds": { "fire": "sfx/pistol_fire" }
+        }))
+        .expect("weapon parses");
+        let table = sound_events::DescriptorSoundTable::build(&[
+            postretro_entities::EntityTypeDescriptor {
+                faction: None,
+                tolerance: None,
+                canonical_name: Some("pistol".to_string()),
+                inventory: None,
+                light: None,
+                emitter: None,
+                movement: None,
+                weapon: Some(weapon),
+                touchable: None,
+                mesh: None,
+                health: None,
+                behavior: None,
+            },
+        ]);
+        let emission = postretro_sim::emission::WeaponEmission {
+            address: "activate",
+            emitter: postretro_sim::emission::entity_emitter(&script_ctx.registry.borrow(), pawn),
+            weapon: Some("pistol".to_string()),
+        };
+
+        let descriptor_sound = {
+            let registry = script_ctx.registry.borrow();
+            let mut movers = runtime_movers::KinematicMoverRenderCollector::new();
+            let mut scene = sound_events::AnchorScene {
+                registry: &registry,
+                world: None,
+                movers: &mut movers,
+            };
+            sound_events::weapon_emission_sound(&table, &emission, &mut scene)
+        };
+        assert_eq!(
+            descriptor_sound.map(|request| request.sound).as_deref(),
+            Some("sfx/pistol_fire"),
+        );
+
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "activate".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "sfx/brass" }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        drain_named_events_with_sequences(
+            [(emission.address, Some(emission.emitter.clone()))],
+            &data_registry,
+            &SequencedPrimitiveRegistry::new(),
+            &ReactionPrimitiveRegistry::new(),
+            &system_registry,
+            &script_ctx,
+        );
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "sfx/brass".to_string(),
+                bus: None,
+                at: None,
+            }],
+            "the reaction plays as well",
         );
     }
 
@@ -11426,7 +11914,7 @@ mod tests {
         data_registry.populate_level(reactions, Vec::new(), &[]);
 
         let chained = drain_named_events_with_sequences(
-            ["movementEvent", "aiEvent", "weaponEvent"],
+            ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -11462,14 +11950,17 @@ mod tests {
                 SystemReactionCommand::PlaySound {
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
+                    at: None,
                 },
                 SystemReactionCommand::PlaySound {
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
+                    at: None,
                 },
                 SystemReactionCommand::PlaySound {
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
+                    at: None,
                 },
             ],
             "the existing deferred dispatcher executes every chained target"
@@ -12861,6 +13352,7 @@ mod tests {
                     version: "1".to_string(),
                     render: Default::default(),
                     movers: Default::default(),
+                    audio: Default::default(),
                     switching: Default::default(),
                     default_weapon_placement: None,
                     entities: Vec::new(),

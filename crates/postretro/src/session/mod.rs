@@ -39,7 +39,7 @@ use crate::scripting::reactions::system_commands::{
 use crate::scripting::state_persistence::{PerOwnerSaveTimer, PersistedState, StateStoreLifecycle};
 use crate::scripting_systems;
 use crate::startup::StartupTimings;
-use crate::{audio, netcode, options};
+use crate::{netcode, options};
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::reaction_dispatch::{
     ProgressTracker, validate_scoped_sequence_primitives,
@@ -239,7 +239,7 @@ pub(crate) struct Session {
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
     /// See: context/lib/audio.md §1.
-    pub(crate) audio: Option<audio::Audio>,
+    pub(crate) audio: Option<postretro_audio::Audio>,
 
     /// CPU-side egui debug-UI state (dev-tools only). Inner `Option` is a genuine
     /// runtime/lazy state, NOT "session not yet installed": the constructor needs
@@ -267,6 +267,10 @@ pub(crate) struct ScriptingCore {
     /// Committed mod-wide auto-close default applied when the next level's
     /// static mover components are seeded.
     pub(crate) mover_auto_close_ms: f32,
+
+    /// Weapon sound keys by canonical name, built at level install and rebuilt
+    /// on each committed hot reload (`audio.md` §4).
+    pub(crate) descriptor_sounds: crate::sound_events::DescriptorSoundTable,
 
     /// Per-level resolved enemy descriptors and nav-agent bake for the
     /// VM-free fixed-tick spawner executor.
@@ -351,6 +355,19 @@ pub(crate) fn evaluate_pending_in_tick_impacts(
 }
 
 impl Session {
+    /// Rebuild the weapon sound table from the live descriptors and warn once
+    /// per unknown sound key named anywhere. Runs when a level installs (after
+    /// its sounds load) and on each committed hot reload.
+    pub(crate) fn refresh_descriptor_sounds(&mut self) {
+        let script_ctx = &self.scripting.script_ctx;
+        self.scripting.descriptor_sounds = crate::sound_events::DescriptorSoundTable::build(
+            &script_ctx.data_registry.borrow().entities,
+        );
+        if let Some(audio) = self.audio.as_ref() {
+            crate::sound_events::warn_unknown_sound_keys(script_ctx, |key| audio.has_sound(key));
+        }
+    }
+
     /// Build ALL session-lifetime state AFTER the first visible frame,
     /// synchronously and whole-or-nothing. Runs entirely within the single
     /// install redraw — no `await`, no yield. This is the sole session
@@ -396,7 +413,7 @@ impl Session {
         //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
         //    recorded before the scripting bootstrap so the boot order keeps
         //    audio ahead of `script_runtime_ctor`. See: context/lib/audio.md §1.
-        let audio = match audio::Audio::new() {
+        let audio = match postretro_audio::Audio::new() {
             Ok(audio) => {
                 log::info!("[Audio] Initialized");
                 Some(audio)
@@ -844,6 +861,7 @@ fn build_scripting_core(
         command_diagnostics,
         auto_close_timers,
         mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
+        descriptor_sounds: Default::default(),
         spawn_context,
         script_runtime,
         impact_policy_runtime: ImpactPolicyRuntime::new(script_ctx.clone()),

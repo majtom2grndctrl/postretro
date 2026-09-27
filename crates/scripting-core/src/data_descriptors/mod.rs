@@ -18,8 +18,8 @@ pub use super::components::mesh::{AnimationState, InterruptPolicy};
 pub use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub use super::registry::EntityId;
 pub use super::runtime::{
-    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModMapEntry, ModMoverDefaults,
-    ModRenderProfile,
+    Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
+    ModBloomResolution, ModMapEntry, ModMoverDefaults, ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -45,7 +45,9 @@ const MAX_IMPACT_EVENT_CONTAINER_ENTRIES: usize = 4_096;
 pub use super::components::mesh::DEFAULT_CROSSFADE_MS;
 pub use super::conv;
 
+mod audio_profile;
 mod error;
+mod movement_sounds;
 mod runtime_manifest;
 mod validate;
 mod vm_adapters;
@@ -73,7 +75,9 @@ mod lua {
 // Re-export every submodule item so external references to
 // `data_descriptors::Item` keep resolving and submodules can reach each other
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
+pub(crate) use audio_profile::*;
 pub use error::*;
+pub(crate) use movement_sounds::*;
 pub use runtime_manifest::*;
 pub use validate::*;
 pub use vm_adapters::*;

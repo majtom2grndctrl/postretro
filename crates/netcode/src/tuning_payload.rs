@@ -57,6 +57,7 @@ pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, Tuning
     let mut payload: TuningPayload = serde_json::from_slice(data).map_err(payload_json_error)?;
     if let Some(descriptor) = payload.movement.as_mut() {
         descriptor.view_feel = None;
+        descriptor.sounds = None;
     }
     Ok(payload)
 }
@@ -81,6 +82,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -207,12 +209,18 @@ mod tests {
             min_duration_ms: 120.0,
         });
         assert!(descriptor.view_feel.is_some());
+        descriptor.sounds = Some(postretro_foundation::MovementSounds {
+            land: Some("sfx/land".to_string()),
+            jump: Some("sfx/jump".to_string()),
+        });
         let payload =
             TuningPayload::new_for_test_preserving_view_feel(Some(descriptor), weapon_slots());
 
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(json["movement"]["view_feel"].is_null());
+        // No sound key crosses the wire (`audio.md` §4).
+        assert!(json["movement"]["sounds"].is_null());
         assert_eq!(json["movement"]["slide"]["min_speed"], 8.0);
         let wieldables = json["wieldables"].as_array().unwrap();
         assert_eq!(wieldables.len(), WIELDABLE_SLOT_CAPACITY);

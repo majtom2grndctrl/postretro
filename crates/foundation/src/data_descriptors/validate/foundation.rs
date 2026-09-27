@@ -209,6 +209,21 @@ pub fn is_portable_content_relative_asset_path(path: &str) -> bool {
     })
 }
 
+/// A descriptor sound key names a registry entry: the content-relative path
+/// under `sounds/` without its extension (`sfx/door_open`). Whether the key is
+/// actually loaded is checked after the sound registry loads, as a warning.
+pub fn validate_sound_key(field_path: &str, key: &str) -> Result<(), DescriptorError> {
+    if is_portable_content_relative_asset_path(key) {
+        Ok(())
+    } else {
+        Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field_path}` must be a non-empty sound key using forward slashes with no parent traversal, got `{key}`"
+            ),
+        })
+    }
+}
+
 pub fn validate_finite_f32(value: f32, field: &str) -> Result<f32, DescriptorError> {
     if value.is_finite() {
         Ok(value)

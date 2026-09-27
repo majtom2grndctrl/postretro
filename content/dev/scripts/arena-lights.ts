@@ -186,7 +186,7 @@ export function setupLevel(_ctx: unknown) {
     defineReaction("lowHealthFlash", flashScreen([1.0, 0.0, 0.0, 0.5], 250)),
     defineReaction("lowHealthVignette", vignette(0.7, 400, [0.6, 0.0, 0.0])),
     defineReaction("lowHealthShake", screenShake(12, 300)),
-    defineReaction("lowHealthAlert", playSound("sfx/test_tone", "sfx")),
+    defineReaction("lowHealthAlert", playSound("sfx/test_tone", { bus: "sfx" })),
   );
 
   // Per-key named reactions the on-screen keyboard's letter/digit/space buttons

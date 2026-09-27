@@ -1104,14 +1104,18 @@ pub struct InputCommand {
 }
 
 /// One client-declared hit record for a host-authorized shot. `target` is normally
-/// a `NetworkId` (`u32`) because the net crate is registry-blind. Projectile
-/// declarations reserve `u32::MAX` as a presentation-only contact marker when a
-/// world contact (or no-longer-nameable entity contact) has no damage target.
+/// a `NetworkId` (`u32`) because the net crate is registry-blind. `u32::MAX` is a
+/// presentation-only contact marker for a world contact with no damage target.
+/// Hitscan drops an entity hit it cannot name on the wire rather than declaring
+/// it; projectile resolution instead falls back to the world-contact sentinel
+/// when its target is no longer nameable. `normal` is the surface normal at
+/// `point`, carried so the host holds the same contact data the client resolved.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct HitRecord {
     pub target: u32,
     pub point: [f32; 3],
     pub zone: Option<String>,
+    pub normal: [f32; 3],
 }
 
 /// Standalone client -> server hit declaration. It intentionally does not ride
@@ -1618,11 +1622,13 @@ mod tests {
             shot_id: 0xABCD_EF01_2345_6789,
             records: vec![
                 HitRecord {
+                    normal: [0.0, 1.0, 0.0],
                     target: 17,
                     point: [1.0, 2.5, -3.0],
                     zone: Some("head".to_string()),
                 },
                 HitRecord {
+                    normal: [0.0, 1.0, 0.0],
                     target: 22,
                     point: [0.0, 0.0, 0.0],
                     zone: None,
@@ -1744,6 +1750,7 @@ mod tests {
             ClientMessage::HitDeclaration(HitDeclaration {
                 shot_id: 99,
                 records: vec![HitRecord {
+                    normal: [0.0, 1.0, 0.0],
                     target: 4,
                     point: [1.0, 2.0, 3.0],
                     zone: Some("torso".to_string()),

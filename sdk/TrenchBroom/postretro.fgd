@@ -378,6 +378,10 @@
     close_event(string) : "Named event when the mover reaches its closed terminus" : ""
     blocked_event(string) : "Named event when a blocking mover reacts to contact" : ""
     crush_event(string) : "Named event when a crusher deals damage" : ""
+    open_sound(string) : "Sound key played when the mover reaches its open terminus" : ""
+    close_sound(string) : "Sound key played when the mover reaches its closed terminus" : ""
+    blocked_sound(string) : "Sound key played when a blocking mover reacts to contact" : ""
+    crush_sound(string) : "Sound key played when a crusher deals damage" : ""
     move_mode(choices) : "Move mode" : "once" =
     [
         "once" : "Once"

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::data_descriptors::types::light::FalloffKind;
 use crate::data_descriptors::{
     DescriptorError, KnockbackDescriptor, SplashKnockbackDescriptor,
-    is_portable_content_relative_asset_path, validate_ascii_identifier,
+    is_portable_content_relative_asset_path, validate_ascii_identifier, validate_sound_key,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,6 +430,10 @@ pub struct WeaponDescriptor {
     /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default)]
     pub viewmodel: Option<String>,
+    /// Optional presentation-only sound keys, played on this weapon's events
+    /// whoever wields it (`audio.md` §4). Never replicated.
+    #[serde(default)]
+    pub sounds: Option<WeaponSounds>,
     /// Optional per-weapon first-person placement. Whole-value resolution is
     /// per-instance (future), per-weapon, character (future), mod default, then
     /// the legacy `BASE_OFFSET` with zero rotation. v1 supplies `None` for the
@@ -450,6 +454,45 @@ pub struct WeaponDescriptor {
     /// belongs to the commit gate, so the component retains this unresolved.
     #[serde(default, rename = "blockDuringReload")]
     pub block_during_reload: Option<bool>,
+}
+
+/// Sound keys for a weapon's events. Every field is optional; an absent one
+/// plays nothing. Unknown keys are rejected so a misspelled event is loud.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WeaponSounds {
+    /// Played at the firing pawn on `activate`.
+    #[serde(default)]
+    pub fire: Option<String>,
+    /// Played at the firing pawn on `dry_fire`.
+    #[serde(default)]
+    pub dry_fire: Option<String>,
+    /// Played once per activation per tick, at the contact nearest the listener.
+    #[serde(default)]
+    pub impact: Option<String>,
+    #[serde(default)]
+    pub reload_start: Option<String>,
+    /// Played per shell of a per-shell reload.
+    #[serde(default)]
+    pub reload_shell: Option<String>,
+    #[serde(default)]
+    pub reload_complete: Option<String>,
+}
+
+impl WeaponSounds {
+    /// Every key named, with its authored field name.
+    pub fn keys(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [
+            ("fire", self.fire.as_deref()),
+            ("dryFire", self.dry_fire.as_deref()),
+            ("impact", self.impact.as_deref()),
+            ("reloadStart", self.reload_start.as_deref()),
+            ("reloadShell", self.reload_shell.as_deref()),
+            ("reloadComplete", self.reload_complete.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(field, key)| key.map(|key| (field, key)))
+    }
 }
 
 impl WeaponDescriptor {
@@ -597,6 +640,11 @@ impl WeaponDescriptor {
                         "`components.weapon.{field}` must be a non-empty, content-relative model path using forward slashes with no parent traversal"
                     ),
                 });
+            }
+        }
+        if let Some(sounds) = self.sounds.as_ref() {
+            for (field, key) in sounds.keys() {
+                validate_sound_key(&format!("components.weapon.sounds.{field}"), key)?;
             }
         }
         if let Some(WeaponResource::Ammo(ammo)) = self.resource.as_ref() {
@@ -1038,6 +1086,7 @@ mod tests {
 
     fn weapon_descriptor(credit_source: Option<&str>) -> WeaponDescriptor {
         WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,

@@ -1917,7 +1917,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 
 | Helper | Emitted body | Notes |
 |--------|--------------|-------|
-| `playSound(sound, bus?)` | `{ primitive: "playSound", args: { sound, bus? } }` | Routes to the M12 audio module on the optional named mixer `bus` (engine default bus when omitted). |
+| `playSound(sound, { bus?, at? }?)` | `{ primitive: "playSound", args: { sound, bus?, at? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. `at` with a non-SFX bus is rejected when the level installs. |
 | `rumble(strong, durationMs, weak?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
 | `flashScreen(color, durationMs)` | `{ primitive: "flashScreen", args: { color, durationMs } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
 | `vignette(strength, durationMs, color?)` | `{ primitive: "vignette", args: { color?, strength, durationMs } }` | Writes the engine-owned `screen.vignette` slot, which rises to peak then decays back to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted → black, a pure strength-only edge-darken). |
@@ -2290,7 +2290,7 @@ export function setupLevel(): LevelManifest {
       // The button that opens the keyboard, carrying a commit reaction.
       defineReaction("openName", openTextEntry("onNameEntered")),
       // The observable confirmation fired on commit (done / Enter), not on cancel.
-      defineReaction("onNameEntered", playSound("sfx/confirm", "sfx")),
+      defineReaction("onNameEntered", playSound("sfx/confirm", { bus: "sfx" })),
     ],
   };
 }

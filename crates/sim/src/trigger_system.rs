@@ -725,6 +725,7 @@ mod tests {
 
     fn movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
@@ -1601,6 +1602,7 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
                         action: None,

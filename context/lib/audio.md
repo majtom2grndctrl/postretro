@@ -1,21 +1,27 @@
 # Audio
 
-> **Read this when:** working on the audio subsystem, adding or positioning sound events, authoring sound fields, integrating reverb zones, or working on volume/mono options, captions, subtitles, or sound-direction cues.
-> **Key invariant:** audio subsystem never touches wgpu or renderer types. It receives listener state and sound event requests; it produces audio output internally via kira.
-> **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md) · [Player Options](./player_options.md) §5 (accessibility preferences)
+> **Read this when:** working on sound playback, sound events and their placement, authored sound fields, reverb zones, or audio accessibility — volume and mono options, captions, subtitles, sound-direction cues.
+> **Key invariant:** audio never touches wgpu or renderer types. It takes listener state and sound requests; kira produces output inside the audio crate. Gameplay sounds are presentation: host-local, resolved after the tick loop, never on the wire.
+> **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md) · [Scripting](./scripting.md) §12 · [Networking](./networking.md) §Combat authority · [Player Options](./player_options.md) §5
 
 ---
 
 ## 1. Subsystem Boundary
 
-Audio is a self-contained subsystem. It does not depend on the renderer or wgpu.
+Audio is a self-contained subsystem in its own crate, `postretro-audio` (`crates/audio/`), the only crate that names kira. It depends on no other workspace crate, and only the binary depends on it (`layering_invariants_hold` pins that no sim-side crate does).
 
 | Direction | Data |
 |-----------|------|
-| **Receives** | Listener position and orientation, sound event requests |
+| **Receives** | Listener pose and the pawn it is attached to, sound requests, a per-frame entity-position resolver, the mod's attenuation |
 | **Produces** | Audio output (mixed and delivered to the OS by kira internally) |
 
-The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module. A runtime cell id is not yet part of the boundary; it will be added when reverb zone lookup is implemented. Decided, not yet built: a request carries an optional anchor, which is an entity, a world point, or an impact's contact set. The sim supplies emitter identity and contact data only and never names an audio type.
+The boundary carries primitive types only: no glam, no kira, no engine ids.
+
+- `ListenerState`: position and forward/up as `[f32; 3]` (world up is `[0, 1, 0]`), plus the opaque key of the pawn the listener is attached to.
+- `SoundRequest`: target bus, sound key, looping flag, and an optional `SoundAnchor`.
+- `SoundAnchor`: an entity (opaque key plus fire-time point), a fixed world point, or an impact's contact points. Every variant carries a point, so an emitter gone before the audio step still has a position.
+
+Entity keys are opaque to audio. The app encodes an entity id with its generation, so a key never resolves to a later entity reusing the slot. Conversion from glam and entity types happens app-side (`crates/postretro/src/sound_events/`), never inside the crate. The sim supplies emitter identity and contact data only and never names an audio type. A runtime cell id is not yet part of the boundary; reverb zone lookup will add it.
 
 Init is fault-tolerant: if the device or kira backend fails to start, the subsystem holds `None` and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
 
@@ -23,7 +29,9 @@ Sound assets load at level install time from `content/<mod>/sounds/<collection>/
 
 ### Mixer bus tree
 
-kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's provisioned budget so play commands accepted by the voice counter always find a kira slot. Decided, not yet built: kira frees a finished sound's slot on its own audio thread, after the engine reclaims the voice. SFX admission therefore also checks kira's live slot occupancy, and a slot kira still holds counts as occupied. The counter never disagrees with the mixer. Over the cap a request is refused, never queued.
+kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency.
+
+**The voice counter never disagrees with kira.** A request is admitted only when both the engine's voice counter and kira's live slot occupancy on that bus have room. kira frees a finished sound's slot on its own audio thread, after the engine reclaims the voice, so a slot kira still holds counts as occupied. Positional voices admitted but not yet started count too. Each bus's kira pools — sounds, and for SFX the spatial child tracks — are sized to twice its voice cap, so a full cap of new requests finds slots while kira releases the previous cap's. Over the cap a request is refused with a warning, never queued. A request the counter admits never fails for want of a kira slot.
 
 Decided, not yet built: Master, SFX, Music, and UI volumes are player options (`player_options.md` §5) — Master scales the main track, each other scales its own bus. A mono option folds left and right on the main track, after spatialization, so a hard-panned source reaches both ears; toggling it crossfades rather than stepping.
 
@@ -31,7 +39,7 @@ Decided, not yet built: Master, SFX, Music, and UI volumes are player options (`
 
 ## 2. Playback Crate
 
-kira 0.12 handles playback and mixing. Engine code configures tracks and spatial parameters through kira's API. kira pulls glam 0.32 transitively; its math types do not cross into engine code. The audio subsystem boundary uses primitive types (f32 arrays) — no glam types in the public API.
+kira 0.12 handles playback, mixing, and spatialization. Engine code configures tracks and spatial parameters through kira's API, only inside `postretro-audio`. kira pulls glam 0.32 transitively; its math types do not cross into engine code.
 
 ---
 
@@ -39,61 +47,83 @@ kira 0.12 handles playback and mixing. Engine code configures tracks and spatial
 
 Audio runs third in frame order: Input → Game logic → **Audio** → Render → Present.
 
-Each frame, the audio step:
-1. Updates listener position and orientation from camera/player state.
-2. Reclaims finished non-looping voices so bus capacity is not leaked.
+After the tick loop, the app drain turns the frame's gameplay events into sound requests (§4). Before playing them it names this frame's listener pawn (`set_listener_attached`). Own-pawn treatment is decided when a sound is admitted, which precedes the audio step, so without this the first sounds after a level load or respawn would be judged against the previous pawn.
 
-Decided, not yet built: the listener is the rendered eye — the interpolated eye including the view-feel offset, evaluated once per frame and shared by audio and render. Moving that evaluation ahead of the audio step keeps Audio → Render order. The step also repositions live anchored voices, and resolves an impact's contact set to the contact nearest this frame's listener.
+**The listener is the rendered eye.** The frame eye — the interpolated eye plus the view-feel offset — is evaluated once per frame, ahead of the audio step, and render and the listener both read that one result (`crates/postretro/src/frame_eye.rs`). View feel therefore advances once per frame. Audio → Render order is unchanged.
 
-The step is control-plane only — it never decodes or touches disk. kira manages its own audio thread; per-frame work is listener updates and voice reclamation. The `dt` parameter (frame delta in seconds) is part of the per-frame contract but is currently unused — it will drive spatialization tweening once that is implemented.
+The audio step then runs, in order:
+1. Re-anchors the listener to the rendered eye and records its pawn. A non-finite position or orientation keeps the last finite one.
+2. Reclaims finished voices. A voice that finished frees its slot here, not earlier in the frame, so a request made earlier in the frame is still refused at the cap.
+3. Moves each tracked positional voice to its entity's presented position (§5).
+4. Starts the positional voices admitted since the last step, against this frame's listener.
+
+The step is control-plane only — it never decodes or touches disk. kira manages its own audio thread. The frame delta paces each reposition tween, capped so a long hitch snaps a source rather than sliding it across the gap.
 
 ---
 
 ## 4. Sound Triggering
 
-Callers emit `SoundRequest` values targeting a named bus. `Audio::play` resolves the bus and sound key, routes to the bus's kira sub-track, and returns an opaque `SoundHandle`. `Audio::stop` stops the sound and releases its voice slot. Looping sounds repeat until stopped; one-shot sounds release their voice automatically once kira reports them finished.
+Callers emit `SoundRequest` values targeting a named bus. `Audio::play` resolves the bus and sound key, admits the request against the voice budget, and returns an opaque `SoundHandle`. `Audio::stop` stops the sound and releases its voice slot. Looping sounds repeat until stopped; one-shot sounds release their voice once kira reports them finished.
 
-Surface-material-aware routing (varying impact sounds by surface) and a material enum shared with the renderer's decal system are later goals. Footsteps have no source event yet. Decided, not yet built: impact events carry each contact's normal and what it hit (an entity or world geometry), so surface routing needs no new plumbing.
+An unanchored request starts at once on its bus. An anchored request must be a one-shot on SFX, or it is dropped with a warning. It is admitted at `play` and starts at the next audio step (§5).
 
-### Sound sources (decided, not yet built)
+Surface-material-aware routing (varying impact sounds by surface) and a material enum shared with the renderer's decal system are later goals. Footsteps have no source event yet. Impact contacts already carry each contact's normal and what it hit (an entity or world geometry), so surface routing needs no new plumbing.
 
-Gameplay sounds are presentation. They resolve on the app drain after the tick loop and stay host-local: no sound key or sound request enters the wire or the replicated snapshot. There are two authoring paths, and both play when they name the same event.
+### Sound sources
+
+Gameplay sounds are presentation. They resolve on the app drain after the tick loop (`crates/postretro/src/sound_events/`) and stay host-local: no sound key or sound request enters the wire, the replicated snapshot, or the movement tuning payload. The sim hands the drain **emissions**: each named event paired with its emitter and the descriptor identity its sound resolves from. An emitter is an entity plus its origin at the tick, or an impact's contact set. The emission types live in `postretro-entities`, so the sim/AI seam shares one definition.
+
+There are two authoring paths. When both name the same event, both play; neither suppresses the other.
 
 | Path | Surface | Use |
 |------|---------|-----|
-| Descriptor sounds | Sound fields on weapons, player movement, enemy attacks and behavior states; `*_sound` KVPs on movers | Common path; no script. The only per-instance path for engine-owned event names (weapon fire, impact, enemy attack), where a reaction is global. |
+| Descriptor sounds | Sound fields on weapons, player movement, enemy attacks and behavior activities; `*_sound` KVPs on movers | Common path; no script. The only per-instance path for engine-owned event names (weapon fire, impact, enemy attack), where a reaction is global. |
 | Positional reaction | `playSound(key, { at: on.emitter })` | Scripted cases. Emitter token and scope rules: `scripting.md` §12. |
 
-- **Weapon sounds follow the weapon, whoever wields it.** An enemy attack that names a weapon plays that weapon's sounds. A projectile records at spawn the weapon it was fired from, so its contact resolves sounds from the projectile, not from the shooter.
-- **An impact is one event per activation per tick**, carrying every contact of that tick. A multi-pellet hitscan shot yields one impact sound; each projectile contact yields its own. Projectile and hitscan contacts both fire `impact` reactions, whoever fired them.
+| Kind | Descriptor field | Plays on |
+|------|------------------|----------|
+| Weapon | `sounds` { `fire`, `dryFire`, `impact`, `reloadStart`, `reloadShell`, `reloadComplete` } | Fire, dry fire, impact, reload start / shell loaded / completed |
+| Player movement | `movement.sounds` { `land`, `jump` } | Landing, jumping |
+| Enemy attack | the attack's `sound` | That attack's `enemyAttack` |
+| Behavior activity | the activity's `sound` | Entry, whether or not `onEnter` is authored |
+| Mover | FGD `open_sound`, `close_sound`, `blocked_sound`, `crush_sound` (PRL KinematicGeometry v7, `build_pipeline.md`) | The matching mover edge; crush once per victim |
+
+Every field is optional; an unknown key inside `sounds` is rejected. An event whose descriptor names no sound plays nothing and warns nothing. Weapon sounds resolve by the weapon's canonical name through a table built at level install and rebuilt on each committed hot reload, so the next event plays the reloaded key. Enemy sounds resolve from the behavior graph the brain held when the event fired. Mover keys ride the mover component, as its `*_event` addresses do.
+
+- **Weapon sounds follow the weapon, whoever wields it.** An enemy attack that names a weapon plays that weapon's fire sound at the enemy, plus the attack's own `sound` when authored. A projectile records at spawn the weapon it was fired from and its activation, so its contact resolves sounds from the projectile, not from the shooter.
+- **An impact is one event per activation per tick**, carrying every contact of that tick. A multi-pellet hitscan shot yields one impact sound; projectile contacts sharing an activation on one tick yield one; a shot with no contact yields none. Splash is not a contact. Projectile and hitscan contacts both fire `impact` reactions, whoever fired them, enemy projectiles included. On the host, a remote client's shot yields one impact carrying every validated contact (`networking.md` §Combat authority).
 - **Anchors:**
   - Fire, dry fire and reload anchor at the firing pawn.
-  - Enemy attack and state entry anchor at the enemy.
+  - Enemy attack and activity entry anchor at the enemy.
   - Movement events anchor at the local pawn.
+  - An impact anchors at its contact set.
   - A mover anchors at the center of its current world bounds, because mover transforms are origin-relative.
-  - Every anchor captures a point at fire time, so an emitter despawned the same tick still has a position.
-- **Unknown sound keys** are checked after the registry loads, at install and at each hot-reload commit. An unknown key warns once, and the level still loads. The play-time drop remains as a backstop.
-- **A connected client hears its own actions.** Fire, dry fire and impacts come from its fire prediction. Reload edges derive from its replicated reload and ammo state (`networking.md` §Combat authority). Landing and jumping come from its predicted movement. Remote peers' and world sounds are host-local until peer audio lands.
+  - A player pawn places at its eye; any other entity at its transform origin.
+  - An anchor's point is captured at fire time from the emitter's current pose, falling back to the origin stamped at the tick, so an emitter despawned the same tick still has a position.
+- **Unknown sound keys** are checked after the registry loads, at level install and at each committed hot reload. The check covers descriptor fields, mover keys, and `playSound` reactions. An unknown key warns once, and the level still loads. The play-time drop remains as a backstop.
+- **A connected client hears its own actions.**
+  - Fire, dry fire and impacts come from its fire prediction. Every pull the fire gate passes is predicted and declared as a fire; the replicated magazine and reload state choose only its presentation, and only while each value names the client's own active slot. An idle, empty magazine presents a dry fire (the dry-fire sound alone); a pull a running reload refuses presents nothing; otherwise the fire sound, muzzle FX and impact play. Predicted hitscan keeps world contacts and every contact's normal; predicted projectiles supply their own contacts, and a dry or silent pull shows none (`networking.md` §Combat authority).
+  - Reload edges derive from the replicated owner-private reload and ammo slots, attributed to the weapon the client holds in the host wieldable slot the reload flag names (every value read must name that slot; a frame mixing slots is held), plus that weapon's reload style and capacity, one round trip late. Start is the reload flag rising, unless the rise shows full progress — a replayed completion endpoint. A shell is ammo rising during a per-shell reload; shells that arrive in one snapshot sound once. Complete is the flag falling after the last sample held while reloading showed completion — magazine full, reserve empty, or a magazine reload at full progress — or a fall in which ammo rose by exactly what the reserve fell while the client wields that weapon. Any other fall — a cancel, a switch the host performs — plays nothing; a switch the host refuses keeps the reload tracked. Only a reload whose start the client saw on the projected weapon yields shells or a complete.
+  - Landing and jumping come from its predicted movement. Movement sounds never ride the tuning payload, so the client resolves them from its local descriptor.
+  - Remote peers', enemies' and movers' sounds play nothing on a client: those events are host-only until peer audio lands.
 
 ---
 
 ## 5. Spatial Positioning
 
-The listener anchor and orientation are established and updated each frame (position + forward/up via `update`). Today no spatialization is applied, and all sounds play dry.
-
-Decided, not yet built:
+**One spatial pipeline.** Every positional play goes through one chokepoint, `crates/audio/src/spatial.rs`. It owns every positional voice — its spatial track, its sound, its anchor and its last position — and is the only code that creates kira spatial tracks or updates their parameters. Later features extend it in place: front/back filtering, distance-based stereo spread, occlusion. No second pipeline, no per-hardware renderer tier.
 
 | Parameter | Behavior |
 |-----------|----------|
-| Placement | Each positional sound plays on its own kira spatial track under the SFX bus, so the SFX volume control governs it. |
-| Distance attenuation | Falls off between a minimum and maximum distance along a curve. These are set mod-wide in the manifest's `audio.attenuation` block, with an engine-seeded default. A malformed value warns naming the field and falls back to the default, like other manifest profiles. Attenuation applies when a sound starts; live sounds keep theirs. |
-| Stereo panning | Left/right balance from the sound's direction relative to listener facing. Distance gain plus two-ear panning; no Doppler, no HRTF. |
-| Position tracking | An entity anchor follows the entity's render-interpolated pose each frame. Once the entity is gone, the sound freezes at its last position and plays out; a tail is never cut. |
-| Own pawn | A sound anchored on the pawn the listener is attached to plays non-spatial on SFX. A sound keeps the treatment it started with. |
+| Placement | Each positional sound plays alone on its own kira spatial track under the SFX bus, so the SFX volume control governs it. The track persists until its sound finishes, so reclaiming a voice never cuts a tail. |
+| Start | A positional voice starts at the audio step after admission, against that frame's listener. An entity anchor starts at its presented position, or frozen at its fire-time point if the entity is already gone. A contact set resolves to the finite contact nearest that listener; an empty set is an ordinary miss and plays nothing. |
+| Distance attenuation | Falls off between a minimum and maximum distance along a curve, set mod-wide in the manifest's `audio.attenuation` block (`minDistance`, `maxDistance`, `curve`). Engine-seeded default: 2 m, 60 m, `linear`. kira interpolates level in decibels: `linear` is a straight ramp; `quadratic` holds level near the minimum, then falls faster toward the maximum. A malformed field — non-numeric, negative or non-finite distance, unknown curve — or a minimum not below the maximum warns naming the field, and the whole default applies, never a mix of authored and seeded halves. The mod still loads. The profile applies at mod init and on each committed manifest reload. A voice captures attenuation at admission; live voices keep theirs. |
+| Stereo panning | Left/right balance from the sound's direction relative to listener facing; the far ear keeps a fraction of the signal. Distance gain plus two-ear panning; no Doppler, no HRTF. |
+| Position tracking | An entity anchor follows the entity's render-interpolated pose each frame. Once the entity is gone, or its pose goes non-finite, the sound freezes at its last finite position and plays out; a tail is never cut. |
+| Own pawn | A sound anchored on the pawn the listener is attached to plays unpositioned on SFX, at full level, avoiding panning at near-zero distance. The treatment is fixed at admission for the voice's life: a listener pawn change never re-treats a live sound. Every other pawn's sounds spatialize, including a remote co-op player's fire heard on the host. |
+| Non-finite guard | No non-finite position reaches kira. The listener keeps its last finite pose, a contact set skips non-finite contacts, and an anchor with no finite point is dropped with a warning and its slot released. |
 
-**One spatial pipeline (decided, not yet built).** Every positional play goes through one chokepoint in the audio module. The chokepoint owns each voice's anchor and computes its direction and distance from the listener each frame. It is the only code that touches kira's spatial tracks. Later features extend it in place: front/back filtering, distance-based stereo spread, occlusion. No second pipeline, no per-hardware renderer tier.
-
-**Level lifetime (decided, not yet built).** Unload, restart and return-to-frontend stop every positional voice with a short fade. No sound outlives its world or follows an entity into the next level.
+**Level lifetime.** Unload, restart and return-to-frontend all pass through level unload, which fades every world-anchored sound — positional and own-pawn alike — over 150 ms and releases its slot, before the level's sounds are released. No sound outlives its world or follows an entity key into the next level. Unanchored sounds (music, UI) are untouched.
 
 ### Captions and direction cues (decided, not yet built)
 

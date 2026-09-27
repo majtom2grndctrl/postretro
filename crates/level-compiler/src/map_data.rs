@@ -188,6 +188,11 @@ pub struct MapKinematicMover {
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,
     pub crush_event: Option<String>,
+    /// Presentation-only sound keys; outside the multiplayer content hash.
+    pub open_sound: Option<String>,
+    pub close_sound: Option<String>,
+    pub blocked_sound: Option<String>,
+    pub crush_sound: Option<String>,
     pub move_mode: KinematicMoveMode,
     pub start_on_spawn: bool,
     pub brush_volumes: Vec<BrushVolume>,

@@ -21,6 +21,7 @@ use crate::{HostCommandQueues, MovementOwners, NetworkIdAllocator, ReplicableSet
 
 fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        sounds: None,
         knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,

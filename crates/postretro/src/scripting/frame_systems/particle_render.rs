@@ -519,6 +519,8 @@ mod tests {
                     flipbook_active: false,
                     impact_light: None,
                     splash: None,
+                    source_weapon: None,
+                    activation: None,
                 },
             )
             .unwrap();

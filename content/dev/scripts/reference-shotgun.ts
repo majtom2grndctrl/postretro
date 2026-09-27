@@ -30,6 +30,14 @@ export const referenceShotgunEntity = defineEntity({
         reloadMs: 450,
         reloadStyle: "perShell",
       },
+      // Curated from Snake's Authentic Gun Sounds packs (sounds/weapons/CREDITS.txt).
+      sounds: {
+        fire: "weapons/shotgun_fire",
+        dryFire: "weapons/dry_fire",
+        reloadStart: "weapons/shotgun_pump_back",
+        reloadShell: "weapons/shotgun_shell_load",
+        reloadComplete: "weapons/shotgun_pump_forward",
+      },
     },
     // A press-mode drop makes the fixture exercise deliberate re-acquisition
     // as well as the pistol's automatic enter-edge path.

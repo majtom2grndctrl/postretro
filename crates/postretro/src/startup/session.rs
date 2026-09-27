@@ -305,6 +305,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
         client_fire_resolutions: Vec::new(),
         client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
+        client_reload_edges: Default::default(),
         host_spawn_points: Vec::new(),
         script_time: 0.0,
         anim_time: 0.0,

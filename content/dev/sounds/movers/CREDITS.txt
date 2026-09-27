@@ -1,0 +1,12 @@
+Mover sounds — copied unmodified (already mono Ogg Vorbis).
+
+Source: Sci-Fi Sounds (1.0) by Kenney — https://kenney.nl/assets/sci-fi-sounds
+License: CC0 1.0 Universal (public domain dedication),
+https://creativecommons.org/publicdomain/zero/1.0/ — no requirements; credit
+to Kenney (www.kenney.nl) is appreciated and given here.
+
+File               Source clip
+door_open.ogg      doorOpen_000.ogg
+door_close.ogg     doorClose_000.ogg
+door_blocked.ogg   impactMetal_002.ogg
+crusher_crush.ogg  explosionCrunch_000.ogg

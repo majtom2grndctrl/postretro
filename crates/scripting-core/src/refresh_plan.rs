@@ -818,6 +818,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                sounds: None,
                 knockback: None,
                 damage,
                 pellet_count: 1,
@@ -927,6 +928,7 @@ mod tests {
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
+                sounds: None,
                 knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius,

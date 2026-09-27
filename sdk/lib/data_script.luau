@@ -235,6 +235,12 @@ export type TriggerEventParams = {
   trigger: TriggerTarget,
   occupancy: RuntimeRead,
 }
+--- Opaque anchor for where the current named gameplay event happened. Legal
+--- only as `playSound`'s `at`.
+export type EmitterTarget = { __emitterTarget: true }
+--- Dispatch values published by a named gameplay event: weapon, reload,
+--- impact, enemy, movement and mover events.
+export type EmitterParams = { emitter: EmitterTarget }
 export type Reaction<S> = NamedReactionDescriptor
 
 export type NumberValue = number | NumberRef | RuntimeValue
@@ -406,6 +412,9 @@ local storeDeclarations = setmetatable({}, { __mode = "k" })
 -- validation. The empty tables never enter returned descriptors.
 local ACTIVATORS_TARGET = table.freeze({})
 local TRIGGER_TARGET = table.freeze({})
+-- The emitter token carries its own wire spelling, so `playSound` (a separate
+-- prelude chunk) lowers it without seeing this chunk's private tokens.
+local EMITTER_TARGET = table.freeze({ __wire = "@emitter" })
 
 -- One SDK-internal merged params table is shared by every author-time tracer.
 -- Its value shape includes sibling opaque target tokens (activators, trigger)
@@ -416,6 +425,7 @@ local DISPATCH_PARAMS = table.freeze({
   activators = ACTIVATORS_TARGET,
   trigger = TRIGGER_TARGET,
   occupancy = table.freeze({ op = "input", name = "@occupancy" }),
+  emitter = EMITTER_TARGET,
 })
 
 export type TriggerEventDescriptor = {

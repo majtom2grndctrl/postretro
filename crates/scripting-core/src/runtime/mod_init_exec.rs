@@ -7,7 +7,8 @@ use std::path::Path;
 use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value as JsValue};
 
 use crate::data_descriptors::{
-    EntityTypeDescriptor, drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    EntityTypeDescriptor, drain_audio_profile_js, drain_audio_profile_lua,
+    drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
     drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
@@ -379,6 +380,17 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let audio = match drain_audio_profile_js(&obj, "default mod manifest export") {
+            Ok(profile) => profile,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `audio` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let switching = match drain_switching_js(&obj, "default mod manifest export") {
             Ok(switching) => switching,
             Err(e) => {
@@ -488,6 +500,7 @@ pub(super) fn run_mod_init_quickjs(
             version,
             render,
             movers,
+            audio,
             switching,
             default_weapon_placement,
             entities,
@@ -733,6 +746,11 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let audio = drain_audio_profile_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `audio` invalid: {e}"),
+        }
+    })?;
     let switching = drain_switching_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -811,6 +829,7 @@ pub(super) fn run_mod_init_luau(
         version,
         render,
         movers,
+        audio,
         switching,
         default_weapon_placement,
         entities,
@@ -948,6 +967,58 @@ mod tests {
         .expect("malformed optional Luau mover defaults should degrade");
         assert_eq!(malformed_js.movers.auto_close_ms, 0.0);
         assert_eq!(malformed_luau.movers, malformed_js.movers);
+    }
+
+    #[test]
+    fn mod_init_audio_attenuation_matches_in_both_runtimes_and_degrades_without_rejecting() {
+        use crate::runtime::{ModAttenuation, ModAttenuationCurve, ModAudioProfile};
+
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let cold = |js_audio: &str, luau_audio: &str| {
+            let js = run_mod_init_quickjs(
+                &quickjs,
+                &format!(
+                    "globalThis.__postretroModManifest = {{ name: 'Audio', id: 'audio', version: '1'{js_audio} }};"
+                ),
+                "audio.js",
+            )
+            .expect("an optional QuickJS audio block must not reject the manifest");
+            let luau = run_mod_init_luau(
+                &[],
+                &format!("return {{ name = 'Audio', id = 'audio', version = '1'{luau_audio} }}"),
+                "audio.luau",
+                Path::new("."),
+            )
+            .expect("an optional Luau audio block must not reject the manifest");
+            (js.audio, luau.audio)
+        };
+
+        let authored = cold(
+            ", audio: { attenuation: { minDistance: 3, maxDistance: 45, curve: 'quadratic' } }",
+            ", audio = { attenuation = { minDistance = 3, maxDistance = 45, curve = 'quadratic' } }",
+        );
+        let expected = ModAudioProfile {
+            attenuation: ModAttenuation {
+                min_distance: 3.0,
+                max_distance: 45.0,
+                curve: ModAttenuationCurve::Quadratic,
+            },
+        };
+        assert_eq!(authored, (expected, expected));
+
+        assert_eq!(
+            cold("", ""),
+            (ModAudioProfile::default(), ModAudioProfile::default())
+        );
+        assert_eq!(
+            cold(
+                ", audio: { attenuation: { minDistance: 50, maxDistance: 5 } }",
+                ", audio = { attenuation = { minDistance = 50, maxDistance = 5 } }",
+            ),
+            (ModAudioProfile::default(), ModAudioProfile::default())
+        );
     }
 
     #[test]

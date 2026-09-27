@@ -777,6 +777,7 @@ mod tests {
 
     fn weapon(magazine: u32) -> WeaponComponent {
         let mut weapon = WeaponComponent::from_descriptor(&WeaponDescriptor {
+            sounds: None,
             knockback: None,
             damage: 10.0,
             pellet_count: 1,

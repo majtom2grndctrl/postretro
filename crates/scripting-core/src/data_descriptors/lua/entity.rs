@@ -116,6 +116,7 @@ pub fn entity_descriptor_from_lua(
                         validate_optional_weapon_model_paths_lua(weapon_table)?;
                         validate_optional_weapon_placement_shape_lua(weapon_table)?;
                         validate_optional_projectile_shapes_lua(weapon_table)?;
+                        validate_optional_weapon_sound_keys_lua(weapon_table)?;
                     }
                     let json = conv::lua_to_json(raw).map_err(lua_err)?;
                     validate_optional_knockback_object(&json, "components.weapon.knockback")?;
@@ -176,6 +177,9 @@ pub fn entity_descriptor_from_lua(
             if components_table.contains_key("behavior").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("behavior").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
+                    if let LuaValue::Table(behavior_table) = &raw {
+                        validate_optional_behavior_sound_keys_lua(behavior_table)?;
+                    }
                     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
                     normalize_behavior_selectors(&mut json)?;
                     validate_optional_knockback_object(&json, "components.behavior.knockback")?;
@@ -318,6 +322,122 @@ fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), Descri
         });
     }
     Ok(())
+}
+
+/// Reject a supplied unsupported VM value (function, userdata, thread) for an
+/// optional presentation-only string field before Luau's generic JSON bridge
+/// can coerce it to `null` and serde mistakes it for an omitted key. Shared by
+/// the weapon-sound, attack-sound, and behavior-activity-sound guards below.
+fn validate_optional_string_field_lua(
+    table: &Table,
+    field: &str,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    if matches!(&raw, LuaValue::Nil | LuaValue::String(_)) {
+        return Ok(());
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!(
+            "`{path}` must be a string when supplied, got {}",
+            raw.type_name()
+        ),
+    })
+}
+
+/// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.
+/// Reject those values for the weapon's presentation-only sound keys before
+/// serde can mistake malformed supplied input for omission. Mirrors
+/// `validate_optional_weapon_model_paths_lua`.
+fn validate_optional_weapon_sound_keys_lua(weapon: &Table) -> Result<(), DescriptorError> {
+    let Some(sounds) =
+        optional_table_field_lua(weapon, "sounds", "components.weapon.sounds", true)?
+    else {
+        return Ok(());
+    };
+    for field in [
+        "fire",
+        "dryFire",
+        "impact",
+        "reloadStart",
+        "reloadShell",
+        "reloadComplete",
+    ] {
+        validate_optional_string_field_lua(
+            &sounds,
+            field,
+            &format!("components.weapon.sounds.{field}"),
+        )?;
+    }
+    Ok(())
+}
+
+/// Mirrors [`validate_optional_weapon_sound_keys_lua`] for the behavior
+/// graph's presentation-only sound keys: `AttackParams.sound` (root-only) and
+/// `BehaviorActivityDescriptor.sound` (every envelope, root and nested
+/// layers). Walks the raw Luau tables directly, before the JSON bridge can
+/// launder a function/userdata/thread value into `null`.
+fn validate_optional_behavior_sound_keys_lua(behavior: &Table) -> Result<(), DescriptorError> {
+    if let LuaValue::Table(attacks) = behavior.get::<LuaValue>("attacks").map_err(lua_err)? {
+        for pair in attacks.pairs::<LuaValue, LuaValue>() {
+            let (name, entry) = pair.map_err(lua_err)?;
+            let LuaValue::Table(entry) = entry else {
+                continue;
+            };
+            validate_optional_string_field_lua(
+                &entry,
+                "sound",
+                &format!(
+                    "components.behavior.attacks.{}.sound",
+                    lua_key_to_string(&name)
+                ),
+            )?;
+        }
+    }
+    validate_activity_sound_keys_lua(behavior, "components.behavior")
+}
+
+/// Recurses through one behavior envelope's `activities` map, then into every
+/// nested `layers` envelope, checking each activity's `sound` field.
+fn validate_activity_sound_keys_lua(envelope: &Table, path: &str) -> Result<(), DescriptorError> {
+    let LuaValue::Table(activities) = envelope.get::<LuaValue>("activities").map_err(lua_err)?
+    else {
+        return Ok(());
+    };
+    for pair in activities.pairs::<LuaValue, LuaValue>() {
+        let (name, activity) = pair.map_err(lua_err)?;
+        let LuaValue::Table(activity) = activity else {
+            continue;
+        };
+        let activity_path = format!("{path}.activities.{}", lua_key_to_string(&name));
+        validate_optional_string_field_lua(&activity, "sound", &format!("{activity_path}.sound"))?;
+        if let LuaValue::Table(layers) = activity.get::<LuaValue>("layers").map_err(lua_err)? {
+            for pair in layers.pairs::<LuaValue, LuaValue>() {
+                let (layer_name, layer) = pair.map_err(lua_err)?;
+                let LuaValue::Table(layer) = layer else {
+                    continue;
+                };
+                validate_activity_sound_keys_lua(
+                    &layer,
+                    &format!("{activity_path}.layers.{}", lua_key_to_string(&layer_name)),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort display form of a Luau table key for an error path. Authored
+/// `attacks`/`activities`/`layers` maps are always string-keyed; a non-string
+/// key is itself malformed data serde will reject downstream, so this only
+/// needs to name the offending entry, not validate the key.
+fn lua_key_to_string(key: &LuaValue) -> String {
+    match key {
+        LuaValue::String(s) => s.to_str().map(|s| s.to_string()).unwrap_or_default(),
+        LuaValue::Integer(i) => i.to_string(),
+        LuaValue::Number(f) => f.to_string(),
+        other => format!("<{}>", other.type_name()),
+    }
 }
 
 /// Placement is authored presentation data. Reject a supplied unsupported VM

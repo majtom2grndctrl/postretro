@@ -1,8 +1,8 @@
 # Audio
 
-> **Read this when:** working on the audio subsystem, adding or positioning sound events, authoring sound fields, or integrating reverb zones.
+> **Read this when:** working on the audio subsystem, adding or positioning sound events, authoring sound fields, integrating reverb zones, or working on volume/mono options, captions, subtitles, or sound-direction cues.
 > **Key invariant:** audio subsystem never touches wgpu or renderer types. It receives listener state and sound event requests; it produces audio output internally via kira.
-> **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md)
+> **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md) · [Player Options](./player_options.md) §5 (accessibility preferences)
 
 ---
 
@@ -24,6 +24,8 @@ Sound assets load at level install time from `content/<mod>/sounds/<collection>/
 ### Mixer bus tree
 
 kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's provisioned budget so play commands accepted by the voice counter always find a kira slot. Decided, not yet built: kira frees a finished sound's slot on its own audio thread, after the engine reclaims the voice. SFX admission therefore also checks kira's live slot occupancy, and a slot kira still holds counts as occupied. The counter never disagrees with the mixer. Over the cap a request is refused, never queued.
+
+Decided, not yet built: Master, SFX, Music, and UI volumes are player options (`player_options.md` §5) — Master scales the main track, each other scales its own bus. A mono option folds left and right on the main track, after spatialization, so a hard-panned source reaches both ears; toggling it crossfades rather than stepping.
 
 ---
 
@@ -92,6 +94,15 @@ Decided, not yet built:
 **One spatial pipeline (decided, not yet built).** Every positional play goes through one chokepoint in the audio module. The chokepoint owns each voice's anchor and computes its direction and distance from the listener each frame. It is the only code that touches kira's spatial tracks. Later features extend it in place: front/back filtering, distance-based stereo spread, occlusion. No second pipeline, no per-hardware renderer tier.
 
 **Level lifetime (decided, not yet built).** Unload, restart and return-to-frontend stop every positional voice with a short fade. No sound outlives its world or follows an entity into the next level.
+
+### Captions and direction cues (decided, not yet built)
+
+Audio information is made visible for players who cannot hear it.
+
+- **Authoring.** Captions are keyed per sound asset, so every play path — `playSound` and descriptor sounds — captions without reshaping. A scripted subtitle primitive carries a speaker.
+- **Display.** Captions and cues draw in an engine-owned UI layer above the mod HUD, resolving theme tokens and the selected variant (`ui.md` §2), sized by text scale. A caption holds at least a minimum time after its sound starts; repeat plays within the hold refresh one entry; enabling captions mid-sound captions the rest of that sound. Caption background opacity is a player option.
+- **Direction.** A positional sound's caption carries a direction arrow computed at the spatial chokepoint and updated as the listener turns. Sound-direction cues mark off-screen positional sounds on their side and hold at least as long as a caption. 2D, UI, and music sounds get neither.
+- **Client-local.** Captions derive client-side from sounds the client plays locally. No caption or sound key ever goes on the wire.
 
 ---
 

@@ -46,7 +46,7 @@ pub struct FocusNeighbors {
 }
 
 /// One focusable/interactive node in the exported hit-test/focus rect list: its
-/// stable id (authored or auto-generated from tree position), device-pixel rect
+/// authored id (stable across structural rebuilds), device-pixel rect
 /// `[x, y, w, h]`, painter z (tree order — later = higher), the index of the
 /// focus group that governs its directional traversal (if any), and its neighbor
 /// overrides. The app-side focus engine consumes this the FOLLOWING frame (the
@@ -61,8 +61,9 @@ pub struct FocusRect {
     pub group: Option<usize>,
     pub neighbors: FocusNeighbors,
     /// Interaction metadata for an interactive widget: a
-    /// `button`'s activation reaction or a `slider`'s value-step parameters. `None`
-    /// for passive focusables (an id-bearing text/panel/image). The app reads this
+    /// `button`'s activation reaction or a `slider`'s value-step parameters. The
+    /// export emits only interactive widgets, so an exported rect always carries
+    /// `Some`; hand-built lists (engine tests) may leave it `None`. The app reads this
     /// off the focused node to fire activation (button `on_press`) or to apply a
     /// captured nav step (slider), keeping the focus engine widget-agnostic.
     pub interaction: Option<NodeInteraction>,
@@ -120,8 +121,9 @@ pub enum NodeInteraction {
 
 /// A focus group exported from a container that declares a `focus` policy: its
 /// traversal kind, wrap flag, optional repeat cadence, and the indices (into
-/// `FocusRectList::rects`) of its directly-governed focusable members in tree
-/// order. The focus engine moves focus within a group by its policy.
+/// `FocusRectList::rects`) of the interactive widgets whose nearest focus-policy
+/// ancestor is this container (through any passive containers), in tree order.
+/// The focus engine moves focus within a group by its policy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusGroup {
     pub kind: FocusKind,
@@ -137,9 +139,9 @@ pub struct FocusGroup {
 /// app→renderer `UiReadSnapshot`); the focus engine reads it the next frame to
 /// move focus, resolve pointer hits (topmost z), and drive the repeat timer.
 ///
-/// "Focusable" today means a node that carries an authored `id` or sits under a
-/// container that declares a focus policy (interactive widgets plug their
-/// markers into this seam).
+/// "Focusable" means an interactive widget (`button`, `slider`). Passive nodes —
+/// text, images, layout containers — never export, whether they carry an authored
+/// `id` or sit inside a focus group.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct FocusRectList {
     pub rects: Vec<FocusRect>,

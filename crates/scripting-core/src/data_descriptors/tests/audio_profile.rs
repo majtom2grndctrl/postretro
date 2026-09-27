@@ -258,6 +258,48 @@ fn audio_profile_non_object_blocks_warn_naming_the_path_and_use_default() {
 }
 
 #[test]
+fn audio_profile_sequence_style_table_warns_the_same_as_a_js_array_and_uses_default() {
+    // Regression: Luau has no array/object distinction, so `audio = { 1, 2 }`
+    // (a sequence-style table, the Luau analog of a JS array) matched the
+    // generic `LuaValue::Table` arm and applied the seed with no warning,
+    // unlike QuickJS's `Array.isArray` rejection of `audio: []`.
+    for (js, luau) in [
+        ("{ audio: [1, 2, 3] }", "{ audio = { 1, 2, 3 } }"),
+        ("{ audio: [1] }", "{ audio = { 1 } }"),
+    ] {
+        assert_twins_warn_and_default(
+            js,
+            luau,
+            "`audio` must be an object; using the default audio profile",
+            "`audio` must be a table; using the default audio profile",
+        );
+    }
+    for (js, luau) in [
+        (
+            "{ audio: { attenuation: [2, 60] } }",
+            "{ audio = { attenuation = { 2, 60 } } }",
+        ),
+        (
+            "{ audio: { attenuation: [1] } }",
+            "{ audio = { attenuation = { 1 } } }",
+        ),
+    ] {
+        assert_twins_warn_and_default(
+            js,
+            luau,
+            "`audio.attenuation` must be an object; using the default attenuation",
+            "`audio.attenuation` must be a table; using the default attenuation",
+        );
+    }
+    // A manifest with a sequence-style `audio` block still falls back to the
+    // seeded default and loads, never rejecting the mod.
+    assert_eq!(
+        drain_lua("{ audio = { 1, 2 } }"),
+        ModAudioProfile::default()
+    );
+}
+
+#[test]
 fn audio_profile_several_malformed_fields_each_warn_once_and_use_default() {
     let capture = LogCapture::start();
     let js = "{ audio: { attenuation: { minDistance: -1, maxDistance: 'far', curve: 'cubic' } } }";

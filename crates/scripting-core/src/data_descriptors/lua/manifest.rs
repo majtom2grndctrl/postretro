@@ -277,7 +277,12 @@ pub fn drain_audio_profile_lua(
     let raw_audio: LuaValue = table.get("audio").map_err(lua_err)?;
     let audio = match raw_audio {
         LuaValue::Nil => return Ok(ModAudioProfile::default()),
-        LuaValue::Table(audio) => audio,
+        // Luau has no array/object distinction at the type level, so a
+        // sequence-style table (`audio = {}` with integer keys, e.g. `{1, 2}`)
+        // must be caught explicitly here to match QuickJS's `Array.isArray`
+        // rejection — otherwise it silently passes as a valid, field-less
+        // table and the seeded default applies with no warning.
+        LuaValue::Table(audio) if audio.raw_len() == 0 => audio,
         _ => {
             log::warn!(
                 "[Scripting] {scope}: `audio` must be a table; using the default audio profile"
@@ -288,7 +293,8 @@ pub fn drain_audio_profile_lua(
     let raw_attenuation: LuaValue = audio.get("attenuation").map_err(lua_err)?;
     let attenuation = match raw_attenuation {
         LuaValue::Nil => return Ok(ModAudioProfile::default()),
-        LuaValue::Table(attenuation) => attenuation,
+        // Same sequence-style rejection as `audio` above, for the twin field.
+        LuaValue::Table(attenuation) if attenuation.raw_len() == 0 => attenuation,
         _ => {
             log::warn!(
                 "[Scripting] {scope}: `audio.attenuation` must be a table; using the default attenuation"

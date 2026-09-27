@@ -193,7 +193,7 @@ export function playSound(
 ): import("../data_script").PrimitiveReactionDescriptor {
   const args: { sound: string; bus?: string; at?: string } = { sound };
   if (options?.bus !== undefined) args.bus = options.bus;
-  if (options?.at !== undefined) {
+  if (options?.at !== undefined && options.at !== null) {
     // The emitter token carries its wire spelling; anything else is rejected
     // by the engine when the reaction fires.
     const wire = (options.at as unknown as { __wire?: unknown }).__wire;

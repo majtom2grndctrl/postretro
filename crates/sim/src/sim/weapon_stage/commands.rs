@@ -4,7 +4,7 @@ use std::rc::Rc;
 use glam::{Quat, Vec3};
 
 use crate::collision::CollisionWorld;
-use crate::emission::{WeaponEmission, descriptor_name, entity_emitter};
+use crate::emission::{WeaponEmission, descriptor_name, entity_emitter, reload_emission};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sprite_collection::derive_collection_id;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
@@ -40,6 +40,8 @@ use super::state::{
 #[derive(Debug, Default)]
 pub(in crate::sim) struct LocalWeaponCommandResult {
     pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
+    /// `reload_deliveries` stamped for presentation at this tick, in order.
+    pub(in crate::sim) reload_emissions: Vec<WeaponEmission>,
     pub(in crate::sim) weapon_events: Vec<WeaponEmission>,
     pub(in crate::sim) repointed_pawn: Option<EntityId>,
     pub(in crate::sim) projectile_spawns: Vec<EntityId>,
@@ -53,6 +55,8 @@ pub(in crate::sim) struct RemoteWeaponCommandResult {
     pub(in crate::sim) projectile_presentation_launches: Vec<RemoteProjectilePresentationLaunch>,
     pub(in crate::sim) rejected_projectile_fires: Vec<RemoteProjectileFireRejection>,
     pub(in crate::sim) reload_deliveries: Vec<ReloadDelivery>,
+    /// `reload_deliveries` stamped for presentation at this tick, in order.
+    pub(in crate::sim) reload_emissions: Vec<WeaponEmission>,
     pub(in crate::sim) weapon_events: Vec<WeaponEmission>,
 }
 
@@ -109,6 +113,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     let mut projectile_presentations = Vec::new();
     let mut rejected_projectile_fires = Vec::new();
     let mut reload_deliveries = Vec::new();
+    let mut reload_emissions = Vec::new();
     let mut weapon_events = Vec::new();
 
     for remote in remote_pawn_commands {
@@ -149,6 +154,12 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             &command,
             false,
             tick_dt,
+        );
+        reload_emissions.extend(
+            machine
+                .deliveries
+                .iter()
+                .map(|delivery| reload_emission(&registry, delivery)),
         );
         reload_deliveries.extend(machine.deliveries);
         let effective = weapon_component.effective();
@@ -333,6 +344,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         projectile_presentation_launches: projectile_presentations,
         rejected_projectile_fires,
         reload_deliveries,
+        reload_emissions,
         weapon_events,
     }
 }
@@ -566,6 +578,11 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     // when no pawn holds it); impacts carry their contacts instead.
     let shooter = entity_emitter(&registry, pawn.unwrap_or(weapon_id));
     let weapon_name = descriptor_name(&registry, weapon_id);
+    let reload_emissions = machine
+        .deliveries
+        .iter()
+        .map(|delivery| reload_emission(&registry, delivery))
+        .collect();
     let mut projectile_spawns = Vec::new();
     if let Some(pawn) = pawn {
         let mut activation = None;
@@ -619,6 +636,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     }
     LocalWeaponCommandResult {
         reload_deliveries: machine.deliveries,
+        reload_emissions,
         weapon_events: events.emissions(&shooter, weapon_name),
         repointed_pawn,
         projectile_spawns,

@@ -3826,6 +3826,53 @@ mod tests {
         );
     }
 
+    // Regression: the frame drain resolved a reload's pawn and weapon when it
+    // ran, so a pawn gone by then sounded at the world origin and a dropped
+    // weapon lost its sound.
+    #[test]
+    fn reload_emission_is_stamped_at_the_tick_with_its_pawn_and_weapon() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            registry
+                .set_component(weapon, weapon_provenance("reload_rifle"))
+                .unwrap();
+            (pawn, weapon)
+        };
+
+        let started =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(false, true), 0.04);
+        let origin = registry
+            .borrow()
+            .get_component::<Transform>(pawn)
+            .unwrap()
+            .position;
+        {
+            let mut registry = registry.borrow_mut();
+            registry.despawn(weapon).unwrap();
+            registry.despawn(pawn).unwrap();
+            assert_eq!(
+                crate::emission::descriptor_name(&registry, weapon),
+                None,
+                "a drain-time lookup would have lost the weapon",
+            );
+        }
+
+        assert_eq!(
+            started.reload,
+            vec![crate::emission::WeaponEmission {
+                address: "reload_started",
+                emitter: crate::emission::Emitter::Entity { id: pawn, origin },
+                weapon: Some("reload_rifle".to_string()),
+            }],
+            "the tick carries the reload's anchor and weapon, one per delivery",
+        );
+        assert_eq!(started.reload_deliveries.len(), started.reload.len());
+    }
+
     #[test]
     fn immediate_remote_reload_still_blocks_fire_for_start_tick() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));

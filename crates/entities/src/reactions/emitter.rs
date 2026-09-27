@@ -63,8 +63,9 @@ pub struct MovementEmission {
     pub emitter: Emitter,
 }
 
-/// A weapon event: fire, dry fire, spawn, or impact. `weapon` is the canonical
-/// name of the weapon descriptor the event came from, whoever wielded it.
+/// A weapon event: fire, dry fire, spawn, impact, or a reload outcome. `weapon`
+/// is the canonical name of the weapon descriptor the event came from, whoever
+/// wielded it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponEmission {
     pub address: &'static str,

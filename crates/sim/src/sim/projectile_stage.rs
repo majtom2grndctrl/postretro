@@ -51,7 +51,8 @@ pub enum PredictedProjectileResolution {
     Impact {
         shot_id: u64,
         impact: WeaponImpact,
-        /// Weapon descriptor the projectile was fired from; its impact sound.
+        /// Weapon descriptor the projectile was fired from, which names its
+        /// impact sound.
         source_weapon: Option<String>,
     },
     Expired {

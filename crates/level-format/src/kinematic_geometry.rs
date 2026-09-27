@@ -1,6 +1,6 @@
 // KinematicGeometry PRL section (ID 43): origin-relative brush mover geometry
 // plus waypoint path records.
-// See: context/lib/build_pipeline.md §PRL KinematicGeometrySection.
+// See: context/lib/build_pipeline.md §PRL section IDs (KinematicGeometry, id 43).
 
 use std::collections::HashSet;
 
@@ -8,7 +8,7 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 7;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = KINEMATIC_GEOMETRY_VERSION_V7;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
@@ -17,6 +17,8 @@ pub const KINEMATIC_GEOMETRY_VERSION_V4: u16 = 4;
 pub const KINEMATIC_GEOMETRY_VERSION_V5: u16 = 5;
 /// Version 6 appended per-mover carried dynamic-light links.
 pub const KINEMATIC_GEOMETRY_VERSION_V6: u16 = 6;
+/// Version 7 appended presentation-only mover transition sound keys.
+pub const KINEMATIC_GEOMETRY_VERSION_V7: u16 = 7;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -139,7 +141,7 @@ impl KinematicGeometrySection {
                 | KINEMATIC_GEOMETRY_VERSION_V4
                 | KINEMATIC_GEOMETRY_VERSION_V5
                 | KINEMATIC_GEOMETRY_VERSION_V6
-                | KINEMATIC_GEOMETRY_VERSION
+                | KINEMATIC_GEOMETRY_VERSION_V7
         ) {
             return invalid_data(format!(
                 "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, 5, 6, or {KINEMATIC_GEOMETRY_VERSION})"
@@ -241,7 +243,7 @@ fn mover_byte_len(mover: &KinematicMoverRecord, version: u16) -> usize {
     if version >= KINEMATIC_GEOMETRY_VERSION_V6 {
         len += 4 + mover.carried_lights.len() * 16;
     }
-    if version >= KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V7 {
         len += optional_string_len(mover.open_sound.as_ref());
         len += optional_string_len(mover.close_sound.as_ref());
         len += optional_string_len(mover.blocked_sound.as_ref());
@@ -326,7 +328,7 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
             write_vec3(buf, member.local_offset);
         }
     }
-    if version >= KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V7 {
         write_optional_string(buf, mover.open_sound.as_deref());
         write_optional_string(buf, mover.close_sound.as_deref());
         write_optional_string(buf, mover.blocked_sound.as_deref());
@@ -577,7 +579,7 @@ fn read_mover(
     };
 
     let (open_sound, close_sound, blocked_sound, crush_sound) =
-        if version >= KINEMATIC_GEOMETRY_VERSION {
+        if version >= KINEMATIC_GEOMETRY_VERSION_V7 {
             (
                 read_optional_string(data, offset, &format!("mover {mover_idx} open_sound"))?,
                 read_optional_string(data, offset, &format!("mover {mover_idx} close_sound"))?,
@@ -1094,7 +1096,7 @@ mod tests {
     #[test]
     fn v7_appends_mover_sounds_after_the_v6_carried_light_tail() {
         let mut v7 = v1_fixture_section();
-        v7.version = KINEMATIC_GEOMETRY_VERSION;
+        v7.version = KINEMATIC_GEOMETRY_VERSION_V7;
         v7.movers[0].open_sound = Some("open_snd".to_string());
         v7.movers[0].crush_sound = Some("crush_snd".to_string());
         let mut v6 = v7.clone();
@@ -1154,7 +1156,7 @@ mod tests {
     #[test]
     fn rejects_invalid_v7_mover_sound_presence_byte() {
         let mut section = v1_fixture_section();
-        section.version = KINEMATIC_GEOMETRY_VERSION;
+        section.version = KINEMATIC_GEOMETRY_VERSION_V7;
         let mut bytes = section.to_bytes();
         let open_sound_presence = bytes.len() - 4 - 4; // four absent sounds, then waypoint count
         bytes[open_sound_presence] = 2;
@@ -1166,8 +1168,15 @@ mod tests {
     }
 
     #[test]
-    fn byte_len_matches_v1_v5_and_v7_kinematic_payloads() {
-        for section in [sample_section(), v5_fixture_section(), v1_fixture_section()] {
+    fn byte_len_matches_v1_v5_v6_and_v7_kinematic_payloads() {
+        let mut v6 = v5_fixture_section();
+        v6.version = KINEMATIC_GEOMETRY_VERSION_V6;
+        for section in [
+            sample_section(),
+            v5_fixture_section(),
+            v6,
+            v1_fixture_section(),
+        ] {
             assert_eq!(section.byte_len(), section.to_bytes().len());
         }
     }

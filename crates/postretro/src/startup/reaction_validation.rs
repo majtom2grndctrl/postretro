@@ -61,7 +61,18 @@ fn emitter_on_non_sfx_bus(args: &serde_json::Value) -> Option<&str> {
         .filter(|bus| !bus.eq_ignore_ascii_case("sfx"))
 }
 
-/// Pass A — body-only validation (V1, V4a, V6, and the emitter-bus rule). Reads and mutates the
+/// A present `at` value that is not exactly the emitter token
+/// (`postretro_entities::EMITTER_AT_TOKEN`). `at` accepts only that opaque
+/// token (`scripting.md` §12); both SDKs lower any other authored value to
+/// `"@invalid"`, and a raw/Luau descriptor can author anything else. Either
+/// way the value never installs.
+fn invalid_at_value(args: &serde_json::Value) -> Option<&str> {
+    args.get("at")
+        .and_then(serde_json::Value::as_str)
+        .filter(|at| *at != postretro_entities::EMITTER_AT_TOKEN)
+}
+
+/// Pass A — body-only validation (V1, V4a, V6, and the emitter-token/bus rules). Reads and mutates the
 /// `DataRegistry` alone. Must run before `build_trigger_bindings`, or the binder
 /// binds a body this pass rejects.
 pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
@@ -77,6 +88,26 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
         .collect();
 
     for index in 0..data_registry.reactions.len() {
+        // `at`, when present, names only the opaque emitter token; any other
+        // value — including the SDKs' lowered `"@invalid"` sentinel — never
+        // installs. Checked before the bus and sequence-only rows below.
+        let at_violation = match &data_registry.reactions[index].descriptor {
+            ReactionDescriptor::Primitive(primitive) => invalid_at_value(&primitive.args)
+                .map(|at| (primitive.primitive.clone(), at.to_string())),
+            ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
+                invalid_at_value(&step.args).map(|at| (step.primitive.clone(), at.to_string()))
+            }),
+            ReactionDescriptor::Progress(_) => None,
+        };
+        if let Some((primitive, at)) = at_violation {
+            let name = &data_registry.reactions[index].name;
+            log::error!(
+                "[Scripting] reaction `{name}`: `{primitive}` plays `at: {at}`; `at` accepts only the emitter token (`on.emitter`). Dropping the reaction"
+            );
+            data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
+            continue;
+        }
+
         // `at: on.emitter` pairs only with the SFX bus. Checked on every body
         // shape before the sequence-only rows below.
         let bus_violation = match &data_registry.reactions[index].descriptor {
@@ -118,6 +149,10 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
 
         // V4a: any step AFTER a `wait` carrying an `@activators`/`@trigger`
         // sentinel reads fire context that no `wait` survives. Drop the reaction.
+        // `args_read_emitter` here guards a sequenced step's raw args, not a
+        // live `playSound` step: `playSound` registers only as a system
+        // primitive, so `validate_sequence_primitives` (`setupLevel`) drops
+        // any sequence naming it before this pass ever runs.
         if let Some(wait_pos) = steps
             .iter()
             .position(|step| matches!(step.id, SequenceTarget::Wait))
@@ -130,7 +165,7 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             }) {
                 let step_index = wait_pos + 1 + offset;
                 log::error!(
-                    "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (@activators/@trigger/on.emitter) that no `wait` survives; dropping the reaction (V4a)"
+                    "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (`@activators`/`@trigger`, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
                 );
                 data_registry.reactions[index].descriptor =
                     ReactionDescriptor::Sequence(Vec::new());
@@ -266,6 +301,11 @@ fn scoped_fire_targets(
                         SequenceTarget::FiredTrigger => Some(format!(
                             "sequence step {step_index} target sentinel `@trigger`"
                         )),
+                        // Guards a sequenced step's raw args, not a live
+                        // `playSound` step: `playSound` is a system-only
+                        // primitive, so no sequence naming it survives
+                        // `validate_sequence_primitives` (`setupLevel`) to
+                        // reach V4b.
                         SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire => {
                             args_read_emitter(&step.args)
                                 .then(|| format!("sequence step {step_index} `at` `on.emitter`"))
@@ -540,6 +580,21 @@ mod tests {
         }
     }
 
+    /// A `playSound` primitive reaction whose `at` is an arbitrary raw
+    /// string, not necessarily the emitter token.
+    fn play_sound_at(name: &str, at: &str) -> NamedReaction {
+        NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "playSound".to_string(),
+                target: None,
+                tag: None,
+                on_complete: None,
+                args: json!({ "sound": "sfx/test_tone", "at": at }),
+            }),
+        }
+    }
+
     /// A raw sequence step reading the emitter token.
     fn emitter_step() -> SequenceStep {
         SequenceStep {
@@ -773,6 +828,35 @@ mod tests {
         capture.assert_logged_once(log::Level::Error, "reaction `late` step 1");
         assert!(is_dropped(&ctx, "late"));
         assert!(!is_dropped(&ctx, "early"));
+    }
+
+    // `at`, when present, names only the opaque emitter token. Any other raw
+    // value — including the SDKs' lowered `"@invalid"` sentinel — drops the
+    // reaction at install; a sibling with a valid `at` or none at all installs.
+    #[test]
+    fn play_sound_rejects_an_at_value_other_than_the_emitter_token() {
+        let ctx = ctx_with_reactions(vec![
+            play_sound_at("invalidToken", "@invalid"),
+            play_sound_at("otherSentinel", "@activators"),
+            play_sound("anchored", None, true),
+            play_sound("unanchored", None, false),
+        ]);
+        let capture = LogCapture::start();
+        validate_reaction_bodies_pass_a(&ctx);
+        capture.assert_logged_once(
+            log::Level::Error,
+            "reaction `invalidToken`: `playSound` plays `at: @invalid`",
+        );
+        capture.assert_logged_once(
+            log::Level::Error,
+            "reaction `otherSentinel`: `playSound` plays `at: @activators`",
+        );
+        for dropped in ["invalidToken", "otherSentinel"] {
+            assert!(is_dropped(&ctx, dropped), "{dropped} is dropped");
+        }
+        for kept in ["anchored", "unanchored"] {
+            assert!(!is_dropped(&ctx, kept), "{kept} installs");
+        }
     }
 
     // `at: on.emitter` plays positioned, and positioned sounds play only on SFX.

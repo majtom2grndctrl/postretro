@@ -61,7 +61,8 @@ pub struct ProjectileComponent {
     #[serde(default)]
     pub source_weapon: Option<String>,
     /// The first projectile of this one's activation. Contacts that share it on
-    /// one tick are one impact; `None` groups the projectile alone.
+    /// one tick are one impact; `None` makes this projectile its own
+    /// activation's key, so its impacts group by its own id.
     #[serde(default)]
     pub activation: Option<EntityId>,
 }

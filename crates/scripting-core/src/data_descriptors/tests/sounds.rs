@@ -88,6 +88,36 @@ fn a_malformed_weapon_sound_key_names_its_field() {
     assert!(js.contains("components.weapon.sounds.impact"), "{js}");
 }
 
+#[test]
+fn a_function_valued_weapon_sound_key_is_rejected_in_luau() {
+    // Regression: Luau's generic JSON bridge maps a function/userdata/thread
+    // to JSON null, so `sounds.fire = function() end` silently read as an
+    // absent key instead of an authoring error, unlike QuickJS.
+    let lua = eval_lua(
+        &lua_weapon(r#", sounds = { fire = function() end }"#),
+        entity_descriptor_from_lua,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(lua.contains("components.weapon.sounds.fire"), "{lua}");
+    assert!(lua.contains("must be a string"), "{lua}");
+}
+
+#[test]
+fn a_function_valued_weapon_sounds_table_is_rejected_in_luau() {
+    // Regression: the whole `sounds` field, not just one of its keys, can
+    // also be handed a function; it must be rejected rather than silently
+    // read as an absent sound table.
+    let lua = eval_lua(
+        &lua_weapon(r#", sounds = function() end"#),
+        entity_descriptor_from_lua,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(lua.contains("components.weapon.sounds"), "{lua}");
+    assert!(lua.contains("must be an object"), "{lua}");
+}
+
 const JS_MOVEMENT: &str = r#"capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
     ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
@@ -192,6 +222,42 @@ fn attack_and_activity_sounds_parse_identically_in_both_runtimes() {
         lua.envelope.activities["alerted"].sound
     );
     assert_eq!(js.envelope.activities["idle"].sound, None);
+}
+
+#[test]
+fn a_function_valued_attack_sound_is_rejected_in_luau() {
+    // Regression: `attacks.bite.sound = function() end` degraded to JSON
+    // null through Luau's generic bridge and read as an absent attack sound
+    // instead of an authoring error, unlike QuickJS.
+    let lua = eval_lua(
+        &lua_graph(r#", sound = function() end"#, ""),
+        entity_descriptor_from_lua,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        lua.contains("components.behavior.attacks.bite.sound"),
+        "{lua}"
+    );
+    assert!(lua.contains("must be a string"), "{lua}");
+}
+
+#[test]
+fn a_function_valued_activity_sound_is_rejected_in_luau() {
+    // Regression: `activities.alerted.sound = function() end` degraded to
+    // JSON null and read as an absent activity sound instead of an
+    // authoring error, unlike QuickJS.
+    let lua = eval_lua(
+        &lua_graph("", r#", sound = function() end"#),
+        entity_descriptor_from_lua,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        lua.contains("components.behavior.activities.alerted.sound"),
+        "{lua}"
+    );
+    assert!(lua.contains("must be a string"), "{lua}");
 }
 
 const FIXTURE_TS_SRC: &str = include_str!("../../../../../content/dev/scripts/positional-sound.ts");

@@ -3,7 +3,7 @@
 // See: context/lib/audio.md §4 · context/lib/entity_model.md §7
 
 use glam::Vec3;
-use postretro_entities::{EntityId, KinematicMoverComponent};
+use postretro_entities::{Emitter, EntityId, KinematicMoverComponent};
 use postretro_physics::kinematic_mover::MoverEventKind;
 
 use super::anchors::{AnchorScene, entity_key, mover_entity};
@@ -19,11 +19,22 @@ pub(crate) struct MoverEdge {
     /// The mover entity the sound follows.
     pub(crate) emitter: EntityId,
     /// Center of the mover's world bounds when the edge fired; `None` only for
-    /// a mover with no transform, which fires its address but plays nothing.
+    /// a mover with no transform, which fires its address with no emitter and
+    /// plays nothing.
     pub(crate) point: Option<Vec3>,
 }
 
 impl MoverEdge {
+    /// The emitter this edge's reactions resolve `at: on.emitter` against. An
+    /// edge with no point publishes none, so such a reaction is skipped (with
+    /// the dispatch's warn-once), just as the edge's own sound is dropped.
+    pub(crate) fn reaction_emitter(&self) -> Option<Emitter> {
+        self.point.map(|origin| Emitter::Entity {
+            id: self.emitter,
+            origin,
+        })
+    }
+
     /// The anchored SFX request for this edge's sound, if it names one.
     pub(crate) fn sound_request(&self) -> Option<postretro_audio::SoundRequest> {
         let sound = self.sound.clone()?;
@@ -204,6 +215,30 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].address.as_deref(), Some("door.close"));
         assert_eq!(edges[0].sound_request(), None);
+    }
+
+    #[test]
+    fn edge_with_no_point_publishes_no_emitter_and_plays_nothing() {
+        let edge = MoverEdge {
+            address: Some("door.open".to_string()),
+            sound: Some("sfx/door_open".to_string()),
+            emitter: EntityId::from_raw(3),
+            point: None,
+        };
+        assert_eq!(edge.reaction_emitter(), None, "no emitter at the origin");
+        assert_eq!(edge.sound_request(), None);
+
+        let placed = MoverEdge {
+            point: Some(Vec3::new(10.5, 0.5, 0.0)),
+            ..edge
+        };
+        assert_eq!(
+            placed.reaction_emitter(),
+            Some(Emitter::Entity {
+                id: EntityId::from_raw(3),
+                origin: Vec3::new(10.5, 0.5, 0.0),
+            }),
+        );
     }
 
     #[test]

@@ -348,6 +348,11 @@ pub struct TickEvents {
     /// Locally simulated projectile contacts that retire listen-host mirror flights.
     pub local_projectile_contacts: Vec<ProjectileContactEvent>,
     pub reload_deliveries: Vec<ReloadDelivery>,
+    /// `reload_deliveries` stamped for presentation when they fired, in the
+    /// same order: each anchored at its reloading pawn and naming its weapon's
+    /// descriptor, as `weapon` emissions are. The frame drain reads these, so a
+    /// pawn or weapon gone by then still sounds its reload.
+    pub reload: Vec<crate::emission::WeaponEmission>,
     /// Pawns whose active inventory slot repointed this tick. Presentation drains
     /// this after simulation so the hand socket follows committed ownership, never
     /// a pending selection.
@@ -825,6 +830,8 @@ where
         );
     let mut reload_deliveries = remote_weapon_result.reload_deliveries;
     reload_deliveries.extend(local_result.reload_deliveries);
+    let mut reload = remote_weapon_result.reload_emissions;
+    reload.extend(local_result.reload_emissions);
     let mut weapon = local_result.weapon_events;
     let repointed_pawn = local_result.repointed_pawn;
     #[cfg(test)]
@@ -871,6 +878,7 @@ where
         enemy_projectile_spawns,
         local_projectile_contacts,
         reload_deliveries,
+        reload,
         repointed_pawns,
         dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,

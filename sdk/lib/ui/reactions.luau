@@ -166,11 +166,16 @@ function UiReactionsSdk.onStateCrossing(
   return descriptor
 end
 
+--- Opaque anchor for where the current named gameplay event happened. Mirrors
+--- `data_script.luau`'s `EmitterTarget`; redeclared here to keep this module
+--- self-contained (the Luau prelude has no module loader).
+export type EmitterTarget = { __emitterTarget: true }
+
 --- Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted);
 --- `at = on.emitter` positions the sound where the named gameplay event
 --- happened, on the SFX bus. A source that publishes no emitter skips the
 --- reaction with a warning.
-export type PlaySoundOptions = { bus: string?, at: any? }
+export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
 
 --- Play a sound through the audio module. Pure: returns a primitive reaction
 --- body, no engine side effect. Pass the result as the descriptor of

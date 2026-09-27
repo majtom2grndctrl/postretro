@@ -97,12 +97,13 @@ impl SpatialVoices {
                 continue;
             };
             match resolve(key) {
-                Some(position) => {
+                Some(position) if is_finite_point(position) => {
                     voice.position = position;
                     voice.track.set_position(position, tween);
                 }
-                // The entity is gone: hold the last position and play out.
-                None => voice.tracking = None,
+                // The entity is gone, or its pose went non-finite: hold the
+                // last finite position and play out.
+                _ => voice.tracking = None,
             }
         }
 
@@ -111,6 +112,11 @@ impl SpatialVoices {
             let Some((position, tracking)) =
                 start_position(&pending.anchor, listener_position, resolve)
             else {
+                // An empty contact set is an ordinary miss; any other anchor
+                // with no finite point is an upstream bug worth a warning.
+                if !matches!(&pending.anchor, SoundAnchor::Contacts(points) if points.is_empty()) {
+                    log::warn!("[Audio] positional sound has no finite position — dropped");
+                }
                 failed += 1;
                 continue;
             };
@@ -197,27 +203,36 @@ pub(crate) struct SpatialProbe {
 }
 
 /// Where a pending voice starts, and the entity key it keeps following. An
-/// entity that no longer resolves starts frozen at its fire-time point. An
-/// empty contact set has nowhere to play.
+/// entity that no longer resolves to a finite pose starts frozen at its
+/// fire-time point. Non-finite points never reach kira: a contact set picks its
+/// nearest finite contact, and an anchor with no finite point has nowhere to
+/// play.
 fn start_position(
     anchor: &SoundAnchor,
     listener: [f32; 3],
     resolve: &mut dyn FnMut(u64) -> Option<[f32; 3]>,
 ) -> Option<([f32; 3], Option<u64>)> {
     match anchor {
-        SoundAnchor::Entity { key, point } => Some(match resolve(*key) {
-            Some(position) => (position, Some(*key)),
-            None => (*point, None),
-        }),
-        SoundAnchor::Point(point) => Some((*point, None)),
+        SoundAnchor::Entity { key, point } => match resolve(*key) {
+            Some(position) if is_finite_point(position) => Some((position, Some(*key))),
+            _ => is_finite_point(*point).then_some((*point, None)),
+        },
+        SoundAnchor::Point(point) => is_finite_point(*point).then_some((*point, None)),
         SoundAnchor::Contacts(points) => points
             .iter()
             .copied()
+            .filter(|point| is_finite_point(*point))
             .min_by(|a, b| {
                 distance_squared(*a, listener).total_cmp(&distance_squared(*b, listener))
             })
             .map(|point| (point, None)),
     }
+}
+
+/// Whether every coordinate of `point` is finite. The chokepoint's guard: a
+/// NaN or infinite position fed to kira poisons its gain and panning math.
+pub(crate) fn is_finite_point(point: [f32; 3]) -> bool {
+    point.iter().all(|coordinate| coordinate.is_finite())
 }
 
 fn start_voice(
@@ -252,13 +267,15 @@ fn start_voice(
     Ok((sound, track))
 }
 
-/// kira applies the curve to `1 - relative distance` and interpolates the
-/// result in decibels, so `Linear` is a straight dB ramp and `Quadratic` falls
-/// away faster at range.
+/// kira's relative volume is `curve(1 - relative distance)`, interpolated in
+/// decibels, so `Linear` is a straight dB ramp. `Quadratic` is `OutPowi(2)`,
+/// which evaluates to `1 - relative distance²`: it holds level near the
+/// minimum distance, then falls off faster toward the maximum. (`InPowi(2)`
+/// would give `(1 - relative distance)²`, the opposite shape.)
 fn easing(curve: AttenuationCurve) -> Easing {
     match curve {
         AttenuationCurve::Linear => Easing::Linear,
-        AttenuationCurve::Quadratic => Easing::InPowi(2),
+        AttenuationCurve::Quadratic => Easing::OutPowi(2),
     }
 }
 

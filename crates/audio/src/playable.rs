@@ -18,8 +18,9 @@ pub(crate) enum Playable {
 
 impl Playable {
     /// Resolve `key` out of the registry, warning and returning `None` when it
-    /// is unknown or a streaming asset cannot be reopened. Resolution runs
-    /// before any voice budget is touched, so a missing sound never holds a slot.
+    /// is unknown or a streaming asset cannot be reopened. Callers resolve only
+    /// after admission, so a refused request never reopens a streaming file,
+    /// and release the reserved slot when this returns `None`.
     pub(crate) fn resolve(registry: &SoundRegistry, key: &str) -> Option<Self> {
         match registry.get(key) {
             Some(LoadedSound::Static(data)) => Some(Self::Static(data.as_ref().clone())),

@@ -162,7 +162,6 @@ impl BusTree {
     /// attenuates, positive boosts. The control-plane command is issued
     /// immediately; kira applies its default ~10 ms tween, so the level change
     /// fades rather than cuts.
-    #[allow(dead_code)]
     pub(crate) fn set_volume(&mut self, bus: BusId, decibels: f32) {
         self.tracks[bus.index()].set_volume(decibels, Tween::default());
     }

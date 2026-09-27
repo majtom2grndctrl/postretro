@@ -1104,11 +1104,12 @@ pub struct InputCommand {
 }
 
 /// One client-declared hit record for a host-authorized shot. `target` is normally
-/// a `NetworkId` (`u32`) because the net crate is registry-blind. Hitscan and
-/// projectile declarations reserve `u32::MAX` as a presentation-only contact
-/// marker for a world contact (or a no-longer-nameable entity contact) with no
-/// damage target. `normal` is the surface normal at `point`, carried so the host
-/// holds the same contact data the client resolved.
+/// a `NetworkId` (`u32`) because the net crate is registry-blind. `u32::MAX` is a
+/// presentation-only contact marker for a world contact with no damage target.
+/// Hitscan drops an entity hit it cannot name on the wire rather than declaring
+/// it; projectile resolution instead falls back to the world-contact sentinel
+/// when its target is no longer nameable. `normal` is the surface normal at
+/// `point`, carried so the host holds the same contact data the client resolved.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct HitRecord {
     pub target: u32,

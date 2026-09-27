@@ -28,6 +28,22 @@ pub fn descriptor_name(registry: &EntityRegistry, id: EntityId) -> Option<String
         .map(|provenance| provenance.canonical_name.clone())
 }
 
+/// A reload outcome stamped for presentation where the weapon stage produced
+/// it: anchored at the reloading pawn, naming the reloading weapon's
+/// descriptor. Stamped at the tick like every other emission, so a pawn gone or
+/// a weapon dropped before the frame drain still sounds where, and as, it
+/// reloaded.
+pub(crate) fn reload_emission(
+    registry: &EntityRegistry,
+    delivery: &crate::sim::ReloadDelivery,
+) -> WeaponEmission {
+    WeaponEmission {
+        address: delivery.outcome.event_name(),
+        emitter: entity_emitter(registry, delivery.pawn()),
+        weapon: descriptor_name(registry, delivery.weapon()),
+    }
+}
+
 /// The addresses a batch of weapon emissions fires, in order.
 #[cfg(test)]
 pub(crate) fn weapon_addresses(emissions: &[WeaponEmission]) -> Vec<&'static str> {

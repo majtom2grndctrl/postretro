@@ -18,6 +18,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// to 20 so transport rejects pre-slide peers before snapshot decode. The
 /// faction-sentiment sparse snapshot record advances it to 21.
 /// Protected knockback velocity in player movement advances it to 22.
+/// Hit records carrying their contact normal advance it to 23.
 /// The tuning-payload epoch remains independent.
 pub const WIRE_VERSION: u32 = 23;
 

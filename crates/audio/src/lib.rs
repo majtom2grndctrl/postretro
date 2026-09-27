@@ -28,7 +28,7 @@ use assets::SoundRegistry;
 use boundary::parse_bus;
 use orientation::orientation_from_forward_up;
 use playable::Playable;
-use spatial::SpatialVoices;
+use spatial::{SpatialVoices, is_finite_point};
 use voices::VoiceTable;
 
 /// Fade applied to every positional voice when its world goes away (unload,
@@ -63,9 +63,14 @@ pub struct Audio<B: kira::backend::Backend = DefaultBackend> {
     spatial: SpatialVoices,
     /// Attenuation captured by each positional sound as it is admitted.
     attenuation: Attenuation,
-    /// The listener's pawn as of the last `update`. A sound anchored on it plays
-    /// unpositioned and keeps that treatment for its whole life.
+    /// The pawn the listener is attached to, as of the last
+    /// [`set_listener_attached`](Audio::set_listener_attached) or `update`. A
+    /// sound anchored on it plays unpositioned and keeps that treatment for its
+    /// whole life.
     attached: Option<u64>,
+    /// The last finite listener position. A contact set resolves its nearest
+    /// contact against it; a non-finite listener update leaves it unchanged.
+    listener_position: [f32; 3],
 }
 
 impl Audio {
@@ -129,7 +134,18 @@ impl<B: kira::backend::Backend> Audio<B> {
             spatial: SpatialVoices::default(),
             attenuation: Attenuation::DEFAULT,
             attached: None,
+            listener_position: [0.0; 3],
         }
+    }
+
+    /// Name the pawn the listener is attached to for the plays that follow.
+    /// `play` decides own-pawn treatment when it admits a sound, which is
+    /// before this frame's [`update`](Self::update), so the frame loop names
+    /// this frame's pawn here first; otherwise the first sounds after a level
+    /// load or respawn would be judged against the previous pawn. `update`
+    /// sets it again from its [`ListenerState`].
+    pub fn set_listener_attached(&mut self, attached: Option<u64>) {
+        self.attached = attached;
     }
 
     /// Set the attenuation positional sounds admitted from now on start with.
@@ -217,16 +233,17 @@ impl<B: kira::backend::Backend> Audio<B> {
     ///
     /// - the bus name is unrecognized, or a positioned request names a bus other
     ///   than SFX or asks to loop (warns),
-    /// - the sound key isn't in the registry (warns),
     /// - the bus is at its voice cap, or kira still holds every slot the request
     ///   would need (warns; refused, never queued),
+    /// - the sound key isn't in the registry (warns, and the voice is released),
     /// - or kira refuses the play (warns, and the voice is released).
     ///
     /// An unanchored request starts now on its bus. An anchored request is
     /// admitted now and starts at the next [`update`](Self::update), against
-    /// that frame's listener; one anchored on the listener's own pawn instead
-    /// starts now, unpositioned. A `looping` request applies a whole-clip loop
-    /// region and holds its voice until `stop`.
+    /// that frame's listener; one anchored on the listener's own pawn (as last
+    /// named by [`set_listener_attached`](Self::set_listener_attached) or
+    /// `update`) instead starts now, unpositioned. A `looping` request applies
+    /// a whole-clip loop region and holds its voice until `stop`.
     pub fn play(&mut self, req: SoundRequest) -> Option<SoundHandle> {
         let bus = match parse_bus(&req.bus) {
             Some(bus) => bus,
@@ -247,21 +264,22 @@ impl<B: kira::backend::Backend> Audio<B> {
             return None;
         }
 
-        // Resolve the asset before touching the voice budget so a missing sound
-        // never consumes a slot.
-        let playable = Playable::resolve(&self.registry, &req.sound)?;
-        let playable = if req.looping {
-            playable.looped()
-        } else {
-            playable
-        };
-
         match req.anchor {
-            Some(anchor) if !self.is_attached(&anchor) => {
-                self.admit_positional(&req.sound, playable, anchor)
-            }
-            anchor => self.play_unpositioned(bus, &req.sound, playable, anchor.is_some()),
+            Some(anchor) if !self.is_attached(&anchor) => self.admit_positional(&req.sound, anchor),
+            anchor => self.play_unpositioned(bus, &req.sound, req.looping, anchor.is_some()),
         }
+    }
+
+    /// Resolve `sound` for a request that already holds a voice on `bus`,
+    /// releasing that voice when the sound cannot be resolved. Resolution runs
+    /// after admission because a streaming asset reopens its file here: a
+    /// refused request never pays for the open.
+    fn resolve_admitted(&mut self, bus: BusId, sound: &str, looping: bool) -> Option<Playable> {
+        let Some(playable) = Playable::resolve(&self.registry, sound) else {
+            self.buses.release_voice(bus);
+            return None;
+        };
+        Some(if looping { playable.looped() } else { playable })
     }
 
     fn is_attached(&self, anchor: &SoundAnchor) -> bool {
@@ -272,7 +290,7 @@ impl<B: kira::backend::Backend> Audio<B> {
         &mut self,
         bus: BusId,
         sound: &str,
-        playable: Playable,
+        looping: bool,
         anchored: bool,
     ) -> Option<SoundHandle> {
         // kira frees a finished sound's slot on its own thread, after the engine
@@ -285,6 +303,7 @@ impl<B: kira::backend::Backend> Audio<B> {
         if !self.buses.try_acquire_voice(bus) {
             return None;
         }
+        let playable = self.resolve_admitted(bus, sound, looping)?;
         match playable.start_on(self.buses.track_mut(bus)) {
             Ok(voice) => Some(self.voices.insert(voice, bus, anchored)),
             Err(err) => {
@@ -295,12 +314,7 @@ impl<B: kira::backend::Backend> Audio<B> {
         }
     }
 
-    fn admit_positional(
-        &mut self,
-        sound: &str,
-        playable: Playable,
-        anchor: SoundAnchor,
-    ) -> Option<SoundHandle> {
+    fn admit_positional(&mut self, sound: &str, anchor: SoundAnchor) -> Option<SoundHandle> {
         if !self.spatial.has_room(self.buses.track(BusId::Sfx)) {
             log::warn!("[Audio] sfx has no free kira track slot — '{sound}' dropped");
             return None;
@@ -308,6 +322,7 @@ impl<B: kira::backend::Backend> Audio<B> {
         if !self.buses.try_acquire_voice(BusId::Sfx) {
             return None;
         }
+        let playable = self.resolve_admitted(BusId::Sfx, sound, false)?;
         let handle = self.voices.mint();
         self.spatial
             .admit(handle, playable, anchor, self.attenuation);
@@ -348,12 +363,15 @@ impl<B: kira::backend::Backend> Audio<B> {
     /// touches disk, so it never blocks the frame.
     ///
     /// In order, it:
-    /// 1. re-anchors the kira listener to `listener` and records its pawn;
+    /// 1. re-anchors the kira listener to `listener` (a non-finite position or
+    ///    orientation keeps the last finite one) and records its pawn;
     /// 2. reclaims finished one-shots, so a voice that ended frees its slot here
     ///    and not earlier in the frame;
     /// 3. moves each tracked positional voice to where `resolve` now places its
-    ///    entity, freezing it once `resolve` returns `None`;
-    /// 4. starts the positional voices admitted since the last step.
+    ///    entity, freezing it at its last finite position once `resolve`
+    ///    returns `None` or a non-finite point;
+    /// 4. starts the positional voices admitted since the last step, releasing
+    ///    the slot of any whose anchor has no finite point.
     ///
     /// `resolve` maps an anchor's entity key to its presented world position.
     /// `dt` (seconds) paces the reposition tween.
@@ -363,10 +381,17 @@ impl<B: kira::backend::Backend> Audio<B> {
         dt: f32,
         mut resolve: impl FnMut(u64) -> Option<[f32; 3]>,
     ) {
-        self.listener
-            .set_position(listener.position, Tween::default());
+        // A non-finite pose would reach kira's panning and attenuation math and
+        // poison the mix; the listener keeps its last finite pose instead.
+        if is_finite_point(listener.position) {
+            self.listener_position = listener.position;
+            self.listener
+                .set_position(listener.position, Tween::default());
+        }
         let orientation = orientation_from_forward_up(listener.forward, listener.up);
-        self.listener.set_orientation(orientation, Tween::default());
+        if orientation.iter().all(|component| component.is_finite()) {
+            self.listener.set_orientation(orientation, Tween::default());
+        }
         self.attached = listener.attached;
 
         for bus in self.voices.reclaim_finished() {
@@ -379,7 +404,7 @@ impl<B: kira::backend::Backend> Audio<B> {
         let failed = self.spatial.update(
             self.buses.track_mut(BusId::Sfx),
             self.listener.id(),
-            listener.position,
+            self.listener_position,
             dt,
             &mut resolve,
         );

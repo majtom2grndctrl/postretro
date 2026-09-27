@@ -424,6 +424,7 @@ impl ClientFireResolution {
 }
 
 impl WeaponFireEvents {
+    #[cfg(test)]
     pub fn event_names(&self) -> Vec<&'static str> {
         self.emissions(&Emitter::Contacts(Vec::new()), None)
             .into_iter()
@@ -982,13 +983,21 @@ fn advance_client_fire_gate(
     true
 }
 
-/// Whether the replicated magazine count leaves an ammo-fed weapon unable to
-/// pay for a shot. A weapon without ammo never runs dry, and a client with no
-/// replicated count yet predicts an ordinary fire.
-pub fn client_magazine_is_empty(
+/// Whether a connected client predicts this trigger pull as a dry fire: the
+/// replicated magazine cannot pay for a shot and no reload is running. The
+/// host dry fires only from an idle weapon, and while a reload runs it may yet
+/// fire (fire cancels a per-shell reload once shells are loaded), so a reload
+/// predicts an ordinary fire that reconcile rolls back if the host rejects it.
+/// A weapon without ammo never runs dry, and a client with no replicated count
+/// yet predicts an ordinary fire.
+pub fn client_predicts_dry_fire(
     weapon: &WeaponComponent,
     replicated_magazine: Option<f32>,
+    replicated_reload_active: bool,
 ) -> bool {
+    if replicated_reload_active {
+        return false;
+    }
     let cost = weapon
         .effective()
         .ammo
@@ -998,15 +1007,17 @@ pub fn client_magazine_is_empty(
 }
 
 /// Predict an empty-magazine trigger pull the way the host authorizes it
-/// (`WeaponFireAuthorization::Empty`): the fire gate advances, and a pull that
-/// passes it sets the cooldown and dry fires. No shot is authorized, so the
-/// caller predicts no hit and declares nothing. Returns whether it dry fired.
+/// (`WeaponFireAuthorization::Empty`): bloom decays as on any frame without a
+/// shot, the fire gate advances, and a pull that passes it sets the cooldown
+/// and dry fires. No shot is authorized, so the caller predicts no hit.
+/// Returns whether it dry fired.
 pub fn resolve_client_dry_fire(
     weapon: &mut WeaponComponent,
     button: FireButtonState,
     frame_dt: f32,
+    logical_tick_elapsed_ms: &[f32],
 ) -> bool {
-    if !advance_client_fire_gate(weapon, button, frame_dt.max(0.0) * 1000.0) {
+    if !advance_client_fire_state(weapon, button, frame_dt, logical_tick_elapsed_ms) {
         return false;
     }
     weapon.cooldown_remaining_ms = weapon.effective().cooldown_ms;
@@ -2277,26 +2288,81 @@ pub(crate) mod tests {
             pressed: true,
             active: true,
         };
-        assert!(client_magazine_is_empty(&weapon, Some(0.0)));
+        assert!(client_predicts_dry_fire(&weapon, Some(0.0), false));
         assert!(
-            !client_magazine_is_empty(&weapon, Some(1.0)),
+            !client_predicts_dry_fire(&weapon, Some(1.0), false),
             "with ammo it fires"
         );
         assert!(
-            !client_magazine_is_empty(&weapon, None),
+            !client_predicts_dry_fire(&weapon, None, false),
             "no count yet: predict a fire"
+        );
+        assert!(
+            !client_predicts_dry_fire(&weapon, Some(0.0), true),
+            "a running reload may yet fire on the host: predict a fire"
         );
         let unlimited = weapon_component(FireMode::Semi, 100.0);
         assert!(
-            !client_magazine_is_empty(&unlimited, Some(0.0)),
+            !client_predicts_dry_fire(&unlimited, Some(0.0), false),
             "no ammo, never dry"
         );
 
-        assert!(resolve_client_dry_fire(&mut weapon, pressed, 1.0 / 60.0));
+        assert!(resolve_client_dry_fire(
+            &mut weapon,
+            pressed,
+            1.0 / 60.0,
+            &[]
+        ));
         assert!((weapon.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
         assert!(
-            !resolve_client_dry_fire(&mut weapon, pressed, 1.0 / 60.0),
+            !resolve_client_dry_fire(&mut weapon, pressed, 1.0 / 60.0, &[]),
             "a held semi trigger dry fires once, as the host does",
+        );
+    }
+
+    // Regression: a dry pull skipped the bloom decay every other client frame applies.
+    #[test]
+    fn client_dry_fire_decays_bloom_like_a_frame_without_a_shot() {
+        let mut dry = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
+        dry.bloom_per_shot_degrees = 3.0;
+        dry.bloom_max_degrees = 12.0;
+        dry.bloom_decay_degrees_per_second = 60.0;
+        dry.bloom_decay_delay_ms = 10.0;
+        dry.bloom_accumulator_degrees = 6.0;
+        dry.bloom_idle_ms = 0.0;
+        let mut idle = dry.clone();
+        let logical_ticks = [16.0, 32.0];
+
+        assert!(resolve_client_dry_fire(
+            &mut dry,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            0.04,
+            &logical_ticks,
+        ));
+        let _ = advance_client_fire_state(
+            &mut idle,
+            FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            0.04,
+            &logical_ticks,
+        );
+
+        assert!(
+            dry.bloom_accumulator_degrees < 6.0,
+            "the dry pull decays bloom past the decay delay"
+        );
+        assert!(
+            (dry.bloom_accumulator_degrees - idle.bloom_accumulator_degrees).abs() < 1.0e-5,
+            "a dry pull decays exactly as a frame without a shot"
+        );
+        assert!(
+            (dry.bloom_idle_ms - idle.bloom_idle_ms).abs() < 1.0e-5,
+            "a dry pull adds no bloom shot, so the idle clock keeps running"
         );
     }
 

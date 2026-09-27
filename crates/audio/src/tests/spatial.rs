@@ -324,6 +324,40 @@ fn own_pawn_sound_plays_unpositioned_and_another_pawn_plays_spatial() {
     assert_eq!(audio.active_voices(BusId::Sfx), 2);
 }
 
+// Regression: own-pawn treatment was judged against the previous frame's
+// listener pawn, so the first own-pawn sound after a level load or respawn
+// played positional at the eye.
+#[test]
+fn own_pawn_named_before_its_first_audio_step_plays_unpositioned() {
+    let mut audio = mock_audio();
+    // The previous frame's listener followed no pawn.
+    audio.update(forward_listener(), 1.0 / 60.0, |_| None);
+
+    audio.set_listener_attached(Some(1));
+    let own = audio
+        .play(positioned(SoundAnchor::Entity {
+            key: 1,
+            point: [0.0; 3],
+        }))
+        .expect("own pawn plays");
+    assert!(
+        !audio.spatial.is_pending(own),
+        "the pawn named this frame is own, before any update names it",
+    );
+
+    let attached = ListenerState {
+        attached: Some(1),
+        ..forward_listener()
+    };
+    audio.update(attached, 1.0 / 60.0, |_| Some([0.0; 3]));
+    assert!(
+        audio.spatial.probe(own).is_none(),
+        "own pawn never gets a spatial track"
+    );
+    assert_eq!(sfx_sub_tracks(&audio), 0);
+    assert_eq!(audio.active_voices(BusId::Sfx), 1);
+}
+
 // Pin P12: the listener changes pawn while both sounds play.
 #[test]
 fn sounds_keep_their_treatment_when_the_listener_changes_pawn() {
@@ -432,6 +466,31 @@ fn attenuation_change_applies_to_later_sounds_and_live_sounds_keep_theirs() {
     );
 }
 
+// Regression: `Quadratic` mapped to `InPowi(2)`, which drops fastest just past
+// the minimum distance instead of holding level there.
+#[test]
+fn quadratic_curve_holds_level_near_the_minimum_distance() {
+    let listener = forward_listener();
+    // 12 m between a 2 m minimum and a 42 m maximum: a quarter of the range.
+    let at_a_quarter = |curve| {
+        total(channel_rms_of(listener, at([0.0, 0.0, -12.0]), |audio| {
+            audio.set_attenuation(Attenuation {
+                min_distance: 2.0,
+                max_distance: 42.0,
+                curve,
+            });
+        }))
+    };
+    let linear = at_a_quarter(AttenuationCurve::Linear);
+    let quadratic = at_a_quarter(AttenuationCurve::Quadratic);
+    // Relative volume 1 - 0.25² = 0.94 (about -4 dB) against linear's 0.75
+    // (-15 dB); the inverted curve's 0.56 (-26 dB) is quieter than linear.
+    assert!(
+        quadratic > linear * 2.0,
+        "quadratic holds level near the minimum distance (linear {linear}, quadratic {quadratic})",
+    );
+}
+
 #[test]
 fn invalid_attenuation_falls_back_to_the_default() {
     let mut audio = mock_audio();
@@ -510,4 +569,91 @@ fn positioned_request_on_a_non_sfx_bus_or_looping_is_dropped() {
     for bus in BusId::ALL {
         assert_eq!(audio.active_voices(bus), 0);
     }
+}
+
+#[test]
+fn non_finite_points_never_reach_kira() {
+    let mut audio = mock_audio();
+    // A negative NaN sorts below every distance under `total_cmp`, so an
+    // unguarded nearest-contact pick would choose it.
+    let nan = [-f32::NAN, 0.0, 0.0];
+    let contacts = audio
+        .play(positioned(SoundAnchor::Contacts(vec![
+            nan,
+            [0.0, 0.0, -30.0],
+        ])))
+        .expect("admitted");
+    audio.play(at(nan)).expect("admitted");
+    audio
+        .play(positioned(SoundAnchor::Entity { key: 9, point: nan }))
+        .expect("admitted");
+    let tracked = audio
+        .play(positioned(SoundAnchor::Entity {
+            key: 7,
+            point: [0.0, 0.0, -1.0],
+        }))
+        .expect("admitted");
+
+    audio.update(forward_listener(), 1.0 / 60.0, |key| match key {
+        7 => Some([1.0, 0.0, -2.0]),
+        9 => Some(nan),
+        _ => None,
+    });
+    assert_eq!(
+        audio.spatial.probe(contacts).expect("started").position,
+        [0.0, 0.0, -30.0],
+        "a contact set starts at its nearest finite contact",
+    );
+    assert_eq!(
+        audio.active_voices(BusId::Sfx),
+        2,
+        "anchors with no finite point are refused and release their slots",
+    );
+    assert_eq!(sfx_sub_tracks(&audio), 2);
+
+    // The tracked entity's pose goes non-finite: it freezes where it last was.
+    audio.update(forward_listener(), 1.0 / 60.0, |_| Some(nan));
+    let probe = audio.spatial.probe(tracked).expect("still playing");
+    assert_eq!(probe.position, [1.0, 0.0, -2.0]);
+    assert!(!probe.tracking);
+}
+
+#[test]
+fn non_finite_listener_update_keeps_the_last_listener() {
+    let mut audio = mock_audio();
+    audio.update(
+        listener_at([19.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        1.0 / 60.0,
+        |_| None,
+    );
+    let handle = audio
+        .play(positioned(SoundAnchor::Contacts(vec![
+            [1.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+        ])))
+        .expect("admitted");
+    audio.update(
+        listener_at([f32::NAN, 0.0, 0.0], [f32::NAN, 0.0, -1.0]),
+        1.0 / 60.0,
+        |_| None,
+    );
+    assert_eq!(audio.listener_position, [19.0, 0.0, 0.0]);
+    assert_eq!(
+        audio.spatial.probe(handle).expect("started").position,
+        [20.0, 0.0, 0.0],
+        "the contact resolves against the last finite listener",
+    );
+}
+
+#[test]
+fn unknown_positional_sound_releases_its_reserved_slot() {
+    let mut audio = mock_audio();
+    let request = SoundRequest {
+        sound: "sfx/does_not_exist".to_string(),
+        ..at([0.0, 0.0, -3.0])
+    };
+    assert!(audio.play(request).is_none());
+    assert_eq!(audio.active_voices(BusId::Sfx), 0);
+    audio.update(forward_listener(), 1.0 / 60.0, |_| None);
+    assert_eq!(sfx_sub_tracks(&audio), 0);
 }

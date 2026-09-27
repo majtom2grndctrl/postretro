@@ -1541,12 +1541,19 @@ pub(crate) fn load_prl_from_container(
                 }
                 .into());
             }
-            let data = read_section(SectionId::ClusterDirectory)?.ok_or_else(|| {
-                ClusterDirectoryError::InvalidData(
-                    "section 49 table entry could not be read".into(),
-                )
-            })?;
-            Some(ClusterDirectorySection::from_bytes(&data)?)
+            // A streaming manifest was built from this same file and table, so
+            // it already holds this id 49 parsed and structurally validated;
+            // the streaming branch below validates semantics on that copy.
+            if streaming.is_some() {
+                None
+            } else {
+                let data = read_section(SectionId::ClusterDirectory)?.ok_or_else(|| {
+                    ClusterDirectoryError::InvalidData(
+                        "section 49 table entry could not be read".into(),
+                    )
+                })?;
+                Some(ClusterDirectorySection::from_bytes(&data)?)
+            }
         }
         None => None,
     };

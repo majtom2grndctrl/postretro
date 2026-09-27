@@ -312,3 +312,20 @@ Each doorway, corridor shell, and vertical shaft fragments the empty space into 
 - A large global BVH and a dense portal graph — all walked per frame today.
 - Real portal traversal across a connected, multi-layer complex (doorways +
   vertical shafts), so visibility culling has meaningful work to cull.
+
+## CPU timing walk-reach probe
+
+The portal-walk parallelization gate (`POSTRETRO_CPU_TIMING`, see
+`context/lib/rendering_pipeline.md` §12) measures the walk at a pose chosen for
+walk cost, not at the spawn. `walk_reach_probe_search` in
+`crates/postretro/src/candidate_cull_probes.rs` sweeps every open drawable cell
+at pawn height with eight headings; its top pose on the current map:
+
+| Pose (`--start-pose x,y,z,yaw_deg,pitch_deg`, engine meters) | Portals considered | Walk reach (drawable cells) |
+|---|---|---|
+| `-58.93,2.43,1.63,225,0` | 257 | 19 |
+
+Launch a timing run there with
+`POSTRETRO_CPU_TIMING=1 RUST_LOG=info cargo run -p xtask -- run --release -- content/dev/maps/stress-warren.prl --start-pose=-58.93,2.43,1.63,225,0`
+(the `=` form keeps the leading minus sign from reading as a flag). Re-run the
+search after regenerating the map.

@@ -598,6 +598,50 @@ mod tests {
         assert_eq!(cand.bucket_ranges[1].leaf_count, 2);
     }
 
+    // Regression: the portal step-limit fallback ran the single-invocation
+    // tree walk. It now drives the candidate cull with its frustum-culled
+    // visible set, which includes cells the exact portal walk would have
+    // occluded. The candidate path must submit every leaf the tree walk submits
+    // for that set, so the wider set can only over-draw.
+    #[test]
+    fn step_limit_fallback_superset_candidate_matches_tree_walk_without_under_draw() {
+        assert!(postretro_renderer::visibility_path_uses_candidate_cull(
+            postretro_visibility::VisibilityPath::PortalStepLimitFallback {
+                considered: 20_000,
+                accepted: 19_000,
+            }
+        ));
+
+        let (front_min, front_max) = in_front(-60.0, -40.0);
+        let leaves = vec![
+            // cell 0: camera cell.
+            leaf(0, 0, front_min, front_max, 0, 6),
+            // cell 1: portal-visible; one leaf in front, one behind the camera.
+            leaf(1, 0, front_min, front_max, 6, 6),
+            leaf(1, 0, [-10.0, -10.0, 40.0], [10.0, 10.0, 60.0], 12, 6),
+            // cell 2: in frustum but occluded from the portal walk.
+            leaf(2, 0, front_min, front_max, 18, 6),
+        ];
+        let world = synthetic_world(leaves, 3, vec![true, true, true]);
+        let vp = forward_view_proj();
+        let exact = VisibleCells::Culled(vec![0, 1]);
+        let fallback = VisibleCells::Culled(vec![0, 1, 2]);
+
+        let tree = tree_walk_mirror(&world, &fallback, &vp);
+        let cand = candidate_mirror(&world, &fallback, &vp).expect("candidate path runs");
+        cand.assert_matches(&tree);
+        // Every in-frustum leaf of every fallback-visible cell submits.
+        assert_eq!(cand.submitted, vec![0, 1, 3]);
+
+        let exact_cand = candidate_mirror(&world, &exact, &vp).expect("candidate path runs");
+        for leaf_idx in &exact_cand.submitted {
+            assert!(
+                cand.submitted.contains(leaf_idx),
+                "fallback candidate cull dropped exact-set leaf {leaf_idx}"
+            );
+        }
+    }
+
     /// `DrawAll` routes to the tree walk; the candidate path declines (returns
     /// `None`) so the fallback output is preserved.
     #[test]

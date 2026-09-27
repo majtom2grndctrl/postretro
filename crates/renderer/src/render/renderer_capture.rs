@@ -224,13 +224,15 @@ impl Renderer {
 
 fn capture_timing_window(snapshot: frame_timing::FrameTimingSnapshot) -> CaptureGpuTimingWindow {
     CaptureGpuTimingWindow {
+        readbacks: snapshot.readbacks,
         passes: snapshot
             .passes
             .into_iter()
-            .map(|(label, average_ms, skipped_frames)| CaptureGpuTimingPass {
-                label,
-                average_ms,
-                skipped_frames,
+            .map(|pass| CaptureGpuTimingPass {
+                label: pass.label,
+                average_ms: pass.average_ms,
+                sampled_readbacks: pass.sampled_readbacks,
+                malformed_readbacks: pass.malformed_readbacks,
             })
             .collect(),
     }

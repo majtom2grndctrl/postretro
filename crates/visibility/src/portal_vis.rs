@@ -22,7 +22,7 @@ const MAX_PORTAL_CHAIN_DEPTH: usize = 256;
 // the number of distinct portal chains is far larger than the number of cells.
 // Keep the per-frame CPU walk bounded; the visibility layer falls back to
 // per-cell AABB frustum culling when this trips.
-const MAX_PORTAL_WALK_STEPS: u32 = 20_000;
+pub(crate) const MAX_PORTAL_WALK_STEPS: u32 = 20_000;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PortalTraversalStats {
@@ -99,7 +99,7 @@ pub(crate) fn portal_traverse_detailed(
     )
 }
 
-fn portal_traverse_with_step_limit(
+pub(crate) fn portal_traverse_with_step_limit(
     camera_position: Vec3,
     camera_cell: usize,
     frustum: &Frustum,

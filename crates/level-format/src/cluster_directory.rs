@@ -23,6 +23,9 @@ use crate::{
     sh_volume::OctahedralShVolumeSection,
 };
 
+#[cfg(test)]
+#[path = "cluster_directory/affinity_ownership_tests.rs"]
+mod affinity_ownership_tests;
 #[path = "cluster_directory/canonical_partition.rs"]
 mod canonical_partition;
 #[path = "cluster_directory/wire.rs"]
@@ -336,6 +339,13 @@ pub fn populate_canonical_resource_ranges(
 
 impl ClusterDirectorySection {
     pub fn validate_structure(&self) -> Result<(), ClusterDirectoryError> {
+        self.validate_tables()?;
+        validate_affinity_ownership(self)
+    }
+
+    /// Every structural check except cross-cluster affinity ownership. The
+    /// ownership sweep relies on the per-cluster range invariants proven here.
+    fn validate_tables(&self) -> Result<(), ClusterDirectoryError> {
         if self.primitive_limit == 0 || self.cell_limit == 0 {
             return invalid("primitive_limit and cell_limit must be positive");
         }
@@ -591,7 +601,7 @@ impl ClusterDirectorySection {
                 previous = Some(range);
             }
         }
-        validate_affinity_ownership(self)
+        Ok(())
     }
 
     pub fn validate_semantics(
@@ -1351,69 +1361,137 @@ fn sparse_offsets(inventory: ClusterDirectoryShInventory<'_>) -> Vec<&[u32]> {
     result
 }
 
+/// Every affinity cell referenced by any cluster must have one agreed owner,
+/// and that owner cluster must reference it exactly once as `Owned`.
+///
+/// Requires [`ClusterDirectorySection::validate_tables`] to have already
+/// passed: every range has a positive `count`; `start + count` fits within
+/// the resource's extent (no overflow); every affinity range's
+/// `owner_cluster_id` indexes `clusters`; and one cluster's ranges for one
+/// resource are sorted and non-overlapping. Given those, a cluster
+/// contributes at most one covering range to any interval, and the endpoint
+/// sweep below is exhaustive. This function does not re-check those
+/// invariants and is not safe to call on unvalidated input.
+///
+/// Collection is O(affinity resources × total ranges): every resource walks
+/// every cluster's range slice once. The sort and sweep are O(n log n) per
+/// resource, in that resource's own range count, instead of scanning every
+/// cluster once per elementary interval. Between consecutive endpoints the
+/// covering set is constant, so checking once per interval start is
+/// exhaustive. Errors name the first failing interval start, in resource
+/// order.
 fn validate_affinity_ownership(
     directory: &ClusterDirectorySection,
 ) -> Result<(), ClusterDirectoryError> {
+    struct Span {
+        start: u32,
+        end: u32,
+        owner: u32,
+        // Covering a cell as its own owner. Once every covering span agrees on
+        // one owner, these are exactly that owner's `Owned` references.
+        self_owned: bool,
+    }
+
+    let mut owner_counts = vec![0u32; directory.clusters.len()];
+    let mut spans: Vec<Span> = Vec::new();
+    let mut by_end: Vec<usize> = Vec::new();
     for (resource_index, resource) in directory.resources.iter().enumerate() {
         if resource.domain != ClusterResourceDomain::AffinityCell {
             continue;
         }
-        let mut boundaries = BTreeSet::new();
-        for cluster in &directory.clusters {
+        spans.clear();
+        for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
             let begin = cluster.range_start as usize;
             let end = begin + cluster.range_count as usize;
             for range in directory.ranges[begin..end]
                 .iter()
                 .filter(|range| range.resource_index as usize == resource_index)
             {
-                boundaries.insert(range.start);
-                boundaries.insert(range.start + range.count);
+                debug_assert!(
+                    range.count > 0,
+                    "validate_tables guarantees every range has a positive count"
+                );
+                debug_assert!(
+                    range.start.checked_add(range.count).is_some(),
+                    "validate_tables guarantees start + count does not overflow"
+                );
+                spans.push(Span {
+                    start: range.start,
+                    end: range.start + range.count,
+                    owner: range.owner_cluster_id,
+                    self_owned: range.role == ClusterRangeRole::Owned
+                        && range.owner_cluster_id == cluster_id as u32,
+                });
             }
         }
-        let boundaries: Vec<u32> = boundaries.into_iter().collect();
-        for pair in boundaries.windows(2) {
-            let start = pair[0];
-            if start == pair[1] {
-                continue;
-            }
-            let mut references = Vec::new();
-            for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
-                let begin = cluster.range_start as usize;
-                let end = begin + cluster.range_count as usize;
-                if let Some(range) = directory.ranges[begin..end].iter().find(|range| {
-                    range.resource_index as usize == resource_index
-                        && range.start <= start
-                        && start < range.start + range.count
-                }) {
-                    references.push((cluster_id as u32, range));
+        spans.sort_unstable_by_key(|span| span.start);
+        by_end.clear();
+        by_end.extend(0..spans.len());
+        by_end.sort_unstable_by_key(|&index| spans[index].end);
+
+        let mut active = 0usize;
+        let mut distinct_owners = 0usize;
+        let mut self_owned = 0usize;
+        let (mut next_start, mut next_end) = (0usize, 0usize);
+        loop {
+            let pending_start = spans.get(next_start).map(|span| span.start);
+            let pending_end = by_end.get(next_end).map(|&index| spans[index].end);
+            let Some(position) = pending_start.into_iter().chain(pending_end).min() else {
+                break;
+            };
+            while let Some(&index) = by_end.get(next_end) {
+                let span = &spans[index];
+                if span.end != position {
+                    break;
                 }
+                let count = owner_slot(&mut owner_counts, span.owner);
+                *count -= 1;
+                if *count == 0 {
+                    distinct_owners -= 1;
+                }
+                active -= 1;
+                self_owned -= usize::from(span.self_owned);
+                next_end += 1;
             }
-            if references.is_empty() {
+            while let Some(span) = spans.get(next_start) {
+                if span.start != position {
+                    break;
+                }
+                let count = owner_slot(&mut owner_counts, span.owner);
+                if *count == 0 {
+                    distinct_owners += 1;
+                }
+                *count += 1;
+                active += 1;
+                self_owned += usize::from(span.self_owned);
+                next_start += 1;
+            }
+            // No covering span: a gap between ranges, or the final endpoint.
+            if active == 0 {
                 continue;
             }
-            let owner = references[0].1.owner_cluster_id;
-            if references
-                .iter()
-                .any(|(_, range)| range.owner_cluster_id != owner)
-            {
+            if distinct_owners != 1 {
                 return invalid(format!(
-                    "resource {resource_index} affinity cell {start} has disagreeing owners"
+                    "resource {resource_index} affinity cell {position} has disagreeing owners"
                 ));
             }
-            let owner_references = references
-                .iter()
-                .filter(|(cluster, range)| {
-                    *cluster == owner && range.role == ClusterRangeRole::Owned
-                })
-                .count();
-            if owner_references != 1 {
+            if self_owned != 1 {
                 return invalid(format!(
-                    "resource {resource_index} affinity cell {start} does not have exactly one covering owner"
+                    "resource {resource_index} affinity cell {position} does not have exactly one covering owner"
                 ));
             }
         }
     }
     Ok(())
+}
+
+// `validate_tables` bounds every affinity range's `owner_cluster_id` by the cluster count (see `validate_affinity_ownership`'s precondition doc).
+fn owner_slot(owner_counts: &mut [u32], owner: u32) -> &mut u32 {
+    debug_assert!(
+        (owner as usize) < owner_counts.len(),
+        "affinity owner {owner} outside the cluster table"
+    );
+    &mut owner_counts[owner as usize]
 }
 
 fn locate_cell(

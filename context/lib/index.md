@@ -90,7 +90,7 @@
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Spatial data and indirect lighting are baked offline; portal traversal normally computes visibility per frame from baked portal geometry. Defined fallback cases use per-cell AABB frustum culling. Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
+| **Baked over computed** | Spatial data and indirect lighting are baked offline; portal traversal normally computes visibility per frame from baked portal geometry. Defined fallback cases use per-cell AABB frustum culling; an over-budget walk falls back too, bounded to frustum-culled sets that drive drawing and fog reach. Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |
@@ -102,7 +102,7 @@
 
 Single authoring pipeline today: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the sole runtime map format. One input format is a content decision, not an architectural one — the compiler's `format/` adapter translates source vocabulary to canonical engine terms so a second front end can target PRL without touching a shared stage. See `build_pipeline.md` §Source-format neutrality.
 
-prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells, a cell locator, portals, and BVH arrays; it does not load or walk BSP nodes for rendering or visibility. Portal traversal normally computes visibility; solid-cell, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
+prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells, a cell locator, portals, and BVH arrays; it does not load or walk BSP nodes for rendering or visibility. Portal traversal normally computes visibility; solid-cell, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling, as does an over-budget walk — bounded frustum-culled sets, one for drawing and one for fog reach. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
 
 ### PRL baked data
 

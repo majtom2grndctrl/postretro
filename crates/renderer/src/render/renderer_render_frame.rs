@@ -140,6 +140,12 @@ impl Renderer {
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
 
+        // Before any pass requests timestamps: the frame's resolve reads
+        // every query slot, so every slot must be written in this encoder.
+        if let Some(timing) = self.full_mut().frame_timing.as_mut() {
+            timing.begin_frame(encoder);
+        }
+
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let frame_light_term_mask = self.frame_light_term_mask();
         let mut compose_succeeded = true;
@@ -1046,6 +1052,43 @@ mod tests {
             drain < acquire && acquire < scene,
             "draining must precede surface acquisition and scene composition"
         );
+    }
+
+    // Regression: resolving timestamp queries no pass wrote that frame
+    // device-lost NVIDIA/Vulkan under POSTRETRO_GPU_TIMING=1.
+    #[test]
+    fn scene_recording_prefills_timing_queries_before_any_pass_or_resolve() {
+        let source = include_str!("renderer_render_frame.rs");
+        let entry = source
+            .find("pub(super) fn record_scene_passes(")
+            .expect("scene recording helper must remain present");
+        // Production code only, so a call removed from the helper cannot be
+        // found in this test's own string literals instead.
+        let tests = source
+            .find("#[cfg(test)]")
+            .expect("test module must remain present");
+        let body = &source[entry..tests];
+        let prefill = body
+            .find("timing.begin_frame(encoder)")
+            .expect("scene recording must prefill the timing query set");
+        for pass in [
+            "self.record_pre_scene_compute(",
+            "self.record_direct_sh_pre_scene_compute(",
+            "self.record_spot_shadow_depth(",
+            "self.record_cube_shadow_depth(",
+            "self.record_depth_and_sdf_passes(",
+            "render_pass_writes(",
+            "write_encoder_start(",
+            "timing.encode_resolve(encoder)",
+        ] {
+            let at = body
+                .find(pass)
+                .unwrap_or_else(|| panic!("scene recording must still call `{pass}`"));
+            assert!(
+                prefill < at,
+                "the timing prefill must precede `{pass}`: every timestamped pass and the resolve"
+            );
+        }
     }
 
     #[test]

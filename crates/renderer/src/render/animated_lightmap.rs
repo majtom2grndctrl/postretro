@@ -648,8 +648,8 @@ impl AnimatedLightmapResources {
     /// reads `uniforms.time` to drive animation curves.
     ///
     /// When the dispatch is skipped, `timestamp_writes` goes
-    /// marked-but-unwritten. The timing window averages over a rolling buffer
-    /// and tolerates missing samples.
+    /// marked-but-unwritten; the frame's timing prefill makes that pair decode
+    /// as absent.
     pub fn dispatch(
         &mut self,
         queue: &wgpu::Queue,

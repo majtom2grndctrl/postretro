@@ -444,7 +444,7 @@ Meet the Game Accessibility Guidelines basic tier and the common FPS accessibili
 
 **Prerequisite:** Epic 13 G2 (accessibility metadata) ✓. U5's caption and cue part waits on Epic 12 step 1 (Positional sound events).
 
-Epic hub + research: `context/plans/drafts/E23--accessibility/`. Five units, each with its own brief drafted when the unit comes up:
+Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each with its own brief drafted when the unit comes up:
 
 - [ ] **U1 — Preferences and comfort floor** — accessibility preference substrate with OS seeding and tolerant per-field storage; flash limiter (on by default); reduce motion; per-bus volume and mono audio. No dependency; concurrent with U3.
 - [ ] **U2 — Visual accessibility** — theme variants (engine high-contrast fallback), tokenized engine visuals, authored focus visuals, contrast diagnostic, text scale. After U1 (its fields sit on U1's substrate). Absorbs the retired `ui-focus-accessibility-visuals` draft's visual track.

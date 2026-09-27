@@ -1,6 +1,6 @@
 # Epic 23 — Accessibility (Epic hub)
 
-> **Status:** draft — epic index. Records cross-cutting decisions and each unit's contract; no task decomposition. Each unit gets its own brief in a sibling `E23--<unit-slug>/` folder, drafted when the unit comes up.
+> **Status:** ready — epic index. Records cross-cutting decisions and each unit's contract; no task decomposition. Each unit gets its own brief in a sibling `E23--<unit-slug>/` folder, drafted when the unit comes up.
 > **Research:** `research.md` — standards thresholds, OS-preference reach, dependency costs, source findings.
 > **Related:** `context/lib/ui.md` §1.1, §2, §4, §5, §6 · `context/lib/player_options.md` · `context/lib/input.md` · `context/lib/rendering_pipeline.md` §7.8 · `context/lib/audio.md` · `context/lib/networking.md` · `context/lib/entity_model.md` · `context/lib/boot_sequence.md` §1 · `context/research/ui-layer.md` §15, §19 · `context/research/combat-events.md` §2 · roadmap Epic 12, Epic 13, Epic 16 §Weapon Feel.
 

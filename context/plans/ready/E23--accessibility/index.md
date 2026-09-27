@@ -297,7 +297,7 @@ Unit tag in brackets. "Manual" clauses are verified by a person on real hardware
 
 ## Sequencing
 
-**Phase 1 (concurrent):** U1, U3, U4, U5 damage-bearing stage — each builds on existing substrate or the pre-epic focus baseline. U1 and U3 share settings storage, the `accessibility.*` projection, and the panel's global input (U1 routes it; U3 remaps and guards it); U3 and U4 share snapshot coverage, and U1 and U4 the panel's screen-reader pass. Concurrent landing holds the rules.
+**Phase 1 (concurrent):** U1, U3, U4, U5 damage-bearing stage — each builds on existing substrate or the pre-epic focus baseline. Independent of the units and alongside them: `drafts/coop-trigger-screen-effects`. Trigger-fired screen effects run host-only and never reach a co-op client; that brief routes them to the affected player's screen, where that machine's U1 accommodations apply. U1 and U3 share settings storage, the `accessibility.*` projection, and the panel's global input (U1 routes it; U3 remaps and guards it); U3 and U4 share snapshot coverage, and U1 and U4 the panel's screen-reader pass. Concurrent landing holds the rules.
 **Phase 2:** U2 after U1 — its fields, `accessibility.*` slots, and OS seeding sit on U1's substrate.
 **Phase 3:** U5 caption and cue stage after E12 step 1 lands its spatial chokepoint — the arrow needs the emitter point — and after U2 — caption size follows text scale.
 

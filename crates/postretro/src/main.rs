@@ -7036,7 +7036,11 @@ impl App {
                     &mut self.kinematic_mover_tick_states,
                     &apply_outcome.mover_corrections,
                 );
-                if apply_outcome.owner_private_weapon_cooldown_slot.is_some() {
+                if let Some(slot) = apply_outcome.owner_private_weapon_cooldown_slot {
+                    // The host projects its magazine and reload slots from the
+                    // same active weapon this correlated sample names; fire
+                    // prediction and reload edges trust them only for it.
+                    self.client_predicted_shots.observe_projection_slot(slot);
                     let _ = reconcile_client_weapon_cooldown_from_slot_table(
                         &mut self.client_predicted_shots,
                         &mut registry,
@@ -7229,26 +7233,37 @@ impl App {
             }
             return;
         };
-        // An empty magazine with no reload running predicts a dry fire, as the
-        // host authorizes it: the trigger pull sets the cooldown and raises
-        // `dry_fire`, and nothing is predicted and no muzzle flash plays.
-        if weapon::client_predicts_dry_fire(
-            &component,
+        // Predict the pull from the replicated magazine and reload flag, read
+        // only while the host projects this client's own active weapon. A dry
+        // fire sets the cooldown and raises `dry_fire`; a pull a running reload
+        // refuses raises nothing. Neither predicts a shot or a muzzle flash.
+        let replicated = weapon::ReplicatedMagazine::for_active_slot(
+            self.client_predicted_shots.projection_slot(),
+            active_slot,
             client_slot_number(&script_ctx, "player.ammo"),
             client_slot_bool(&script_ctx, "player.reloadActive").unwrap_or(false),
-        ) {
-            let dry_fired = weapon::resolve_client_dry_fire(
+        );
+        let prediction = weapon::client_pull_prediction(&component, replicated);
+        if prediction != weapon::ClientPullPrediction::Fire {
+            let selected_ticks = selected_fire_commands
+                .iter()
+                .map(|command| command.client_tick)
+                .collect::<Vec<_>>();
+            let pull = weapon::resolve_client_unfired_pull(
                 &mut component,
+                prediction,
                 button,
                 frame_dt,
                 &logical_tick_elapsed_ms,
+                &selected_ticks,
+                zero_tick_fire_command.is_some(),
             );
             {
                 let mut registry = script_ctx.registry.borrow_mut();
                 let _ = registry.set_component(weapon_id, component);
             }
             if let Some(command) = zero_tick_fire_command.as_ref() {
-                if dry_fired {
+                if pull.send_zero_tick_command {
                     let aim_pitch = self.camera.pitch;
                     let sent_tick = netcode::client_send_input_command(
                         self.session
@@ -7264,16 +7279,9 @@ impl App {
                 if let Some(session) = self.session.as_mut() {
                     session.gameplay_input_latch.clear_pressed(Action::Shoot);
                 }
-                if !dry_fired {
-                    return;
-                }
             }
-            // The replicated magazine lags the host by a round trip, so the host
-            // may have authorized a shot this frame predicted dry. An empty
-            // declaration retires it at once instead of leaving it to time out;
-            // for a shot the host never opened it is a no-op.
-            for command in &selected_fire_commands {
-                let shot_id = netcode::shot_id_raw(local_pawn_network_id, command.client_tick);
+            for client_tick in pull.empty_declarations {
+                let shot_id = netcode::shot_id_raw(local_pawn_network_id, client_tick);
                 let _ = netcode::client_send_hit_declaration(
                     self.session
                         .as_mut()
@@ -7283,7 +7291,7 @@ impl App {
                     &[],
                 );
             }
-            if dry_fired {
+            if pull.dry_fire {
                 let registry = script_ctx.registry.borrow();
                 pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
                     address: "dry_fire",
@@ -7431,7 +7439,10 @@ impl App {
     /// Derive the local pawn's reload edges from its replicated owner-private
     /// reload and ammo slots, and queue the sounds its weapon names. A
     /// connected client runs no host weapon machine, so this is how it hears
-    /// its own reloads, one round trip late (`audio.md` §4).
+    /// its own reloads, one round trip late (`audio.md` §4). The slots describe
+    /// the host's active weapon, named by the projection slot, so edges and
+    /// sounds follow that weapon rather than a local switch the host has not
+    /// yet performed.
     fn observe_client_reload_edges(
         &mut self,
         client_sounds: &mut Vec<postretro_audio::SoundRequest>,
@@ -7441,22 +7452,35 @@ impl App {
         };
         let script_ctx = &session.scripting.script_ctx;
         let registry = script_ctx.registry.borrow();
-        let weapon = local_active_wieldable(&registry).map(|(_, weapon)| weapon);
-        let sample = weapon.and_then(|weapon| {
-            let component = registry
-                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-                .ok()?;
-            let ammo_stats = component.effective().ammo?;
-            Some(sound_events::ReloadSample {
-                weapon,
-                style: ammo_stats.reload_style,
-                capacity: ammo_stats.capacity,
-                active: client_slot_bool(script_ctx, "player.reloadActive").unwrap_or(false),
-                progress: client_slot_number(script_ctx, "player.reloadProgress").unwrap_or(0.0),
-                ammo: client_slot_number(script_ctx, "player.ammo")?,
-                reserve: client_slot_number(script_ctx, "player.ammoReserve"),
-            })
-        });
+        let sample = self
+            .client_predicted_shots
+            .projection_slot()
+            .and_then(|slot| {
+                let pawn = registry.local_player_movement_pawn()?;
+                let inventory = registry.get_component::<Inventory>(pawn).ok()?;
+                let weapon = inventory.wieldables.get(slot).copied().flatten()?;
+                // The client holds the projected weapon, with no local switch
+                // away from it lowering or already repointed.
+                let wielded = inventory.active_slot == slot && inventory.switch_target.is_none();
+                let component = registry
+                    .get_component::<postretro_entities::components::weapon::WeaponComponent>(
+                        weapon,
+                    )
+                    .ok()?;
+                let ammo_stats = component.effective().ammo?;
+                Some(sound_events::ReloadSample {
+                    weapon,
+                    wielded,
+                    style: ammo_stats.reload_style,
+                    capacity: ammo_stats.capacity,
+                    active: client_slot_bool(script_ctx, "player.reloadActive").unwrap_or(false),
+                    progress: client_slot_number(script_ctx, "player.reloadProgress")
+                        .unwrap_or(0.0),
+                    ammo: client_slot_number(script_ctx, "player.ammo")?,
+                    reserve: client_slot_number(script_ctx, "player.ammoReserve"),
+                })
+            });
+        let weapon = sample.map(|sample| sample.weapon);
         let addresses = self.client_reload_edges.observe(sample);
         if addresses.is_empty() {
             return;

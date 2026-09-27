@@ -145,7 +145,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — at the participation transition the host resolves that slot's pawn tuning and the client installs it instead of reading its own registry.
 
-The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. Pure render feel stays local, so a player's own view-feel settings survive a join.
+The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. Pure presentation stays local: view feel and movement sounds are stripped from the payload, so a player's own view-feel settings survive a join and each peer resolves its own pawn's sounds from its local descriptor.
 
 What stays hashed is what replication cannot reach: a *computation* both peers run independently over the same replicated state, and content too large to send. Reaching for a hash on a value the host could have sent produces a false refusal — the mistake a later widening is most likely to make.
 
@@ -492,12 +492,35 @@ against an owner-private cooldown fact, the same pattern movement prediction use
 Client-side ammo and reload prediction/reconciliation remain out of scope. Owner-private
 state-slot projection supplies each owner with the host's authoritative magazine,
 reserve, reload progress, and reload-active state.
-Decided, not yet built: fire prediction reads that projected magazine, so an empty
-magazine predicts a dry fire, not a shot and muzzle flash. Hitscan prediction keeps world
-hits and each hit's normal, so predicted impact presentation matches the host's contact
-data. Reload presentation edges (start, shell, complete) derive from changes in the
-projected reload-active and ammo state. A reload flag that falls without an ammo rise is a
-cancel and presents nothing. Presentation only; ammo stays unpredicted.
+
+Fire prediction reads that projection only while it describes the client's own active
+weapon. The host projects its active weapon, which lags a local switch by a round trip; the
+slot-correlated cooldown sample names the host wieldable slot the projection came from, and
+the client trusts the magazine and reload flag only when that slot is its own active slot,
+otherwise predicting an ordinary fire. **Pull prediction:** an idle weapon whose projected
+magazine cannot pay the shot cost predicts a dry fire — it sets the cooldown and raises the
+dry-fire event. A magazine reload in progress predicts nothing, since the host refuses every
+pull silently; a per-shell reload predicts a fire only when the magazine covers the cost (the
+shot cancels the reload), else nothing. Neither a dry nor a refused pull predicts a shot,
+hit, or muzzle flash. The host may still have authorized a shot the client predicted as
+none, so every such pull sends an empty hit declaration for each selected fire command (a
+zero-tick pull once its command is sent), retiring it at once instead of leaving it to time
+out. Accepted residuals, each losing that one shot's damage: a per-shell reload's first
+shell loaded within one round trip of the reload press; a magazine reload completed within
+one round trip of a pull; and, because state-slot records are not atomic across a snapshot,
+a snapshot or two after a switch in which the cooldown sample already names the new slot
+while the magazine still shows the old weapon's count. Hitscan prediction keeps world
+contacts and each contact's normal, so predicted impact presentation matches the host's
+contact data.
+Reload presentation edges (start, shell, complete) derive from the projected reload-active,
+reload-progress, magazine, and reserve state, attributed to the weapon the projection slot
+names, one round trip late. Complete is the flag falling after the last held sample showed
+completion (magazine full, reserve empty, or a magazine reload at full progress), or a fall
+in which ammo rose by exactly what the reserve fell while the client wields that weapon. A
+rise that projects full progress replays a completion endpoint and is no start. A local
+switch the host refuses keeps the reload tracked; one it performs repoints the projection
+and presents nothing. Any other fall is a cancel and presents nothing (`audio.md` §4).
+Presentation only; ammo stays unpredicted.
 
 Projectile launch prediction is not rewind-synchronized. The firing client launches from
 its rendered local camera and rendered target state; the host later reconstructs from the
@@ -558,14 +581,24 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
 - **`HitDeclaration`** (client -> server, reliable Input channel): a `shot_id` plus 0..N
   hit records. Standalone rather than folded into the input command, because a hit can
   arrive on a later tick than its fire (projectile-ready). An empty record list is valid —
-  it declares a shot that hit nothing.
-- **Projectile contact marker:** projectile declarations use the existing hit-record
-  shape and reserve target `u32::MAX` when a world contact or no-longer-nameable entity
-  contact has no damage target. For direct projectiles, the finite in-range point may
+  it declares a shot that hit nothing. Each record carries a target, point, optional hit
+  zone, and the contact's surface normal.
+- **Presentation-contact marker:** target `u32::MAX` marks a record with no damage
+  target — a world contact, or an entity contact no longer nameable. Projectile and
+  hitscan declarations share it. For direct projectiles, the finite in-range point may
   retire presentation even when entity lookup or damage validation fails. For splash,
   the marker only reports contact; the host-replayed first contact supplies damage,
   occlusion, and presentation position. Empty projectile declarations remain normal
-  travel/range expiry. This changes no wire layout or version constant.
+  travel/range expiry. Hitscan declarations carry every world contact under the marker,
+  so the host holds a remote shot's full contact set. The host validates a hitscan world
+  contact with the checks an entity hit gets — range from the live eye, and eye line of
+  sight to a point pulled 1 cm back from the contact, so the struck surface never blocks
+  its own validation. It applies no damage from one.
+- **Declared normals are contact data only.** A non-finite or non-unit normal drops that
+  record's contact data and never affects damage validation. Validated normals reach the
+  host's impact presentation; a splash impact keeps its host-resolved normal. The host
+  raises one `impact` per remote activation carrying every validated contact, as a local
+  activation does (`audio.md` §4).
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
   scoped to the declaring client only and never broadcast. Owner-private state slots
   carry the firing pawn's cooldown, magazine, reserve, reload progress, and reload-active
@@ -592,7 +625,8 @@ unreliable Presentation channel and `ServerPresentationMessage` family advance i
 19. Slide advances it to 20. The sparse faction-sentiment snapshot record advances
 `SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
 `ClientMessage` or `ServerMessage` variant. Protected player knockback velocity
-advances `SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. `WIRE_VERSION` 22 refuses
+advances `SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. The hit record's contact
+normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. `WIRE_VERSION` 23 refuses
 incompatible peers during the handshake; `SNAPSHOT_VERSION` 16 independently rejects
 incompatible snapshot envelopes during decode. The host movement descriptor's
 knockback response advances the independent tuning payload epoch to 9.

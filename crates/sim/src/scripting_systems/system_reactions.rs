@@ -381,10 +381,10 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
                             .borrow_mut()
                             .insert((context.source.clone(), parsed.sound.clone()))
                         {
-                            // A contextless drain (trigger residual, death,
-                            // follow-up) fires with `SystemCommandFireContext::default()`,
-                            // whose `source` is empty; the dedup key above is
-                            // unaffected, only this display text.
+                            // A trigger residual fires with
+                            // `SystemCommandFireContext::default()`, whose `source`
+                            // is empty; the dedup key above is unaffected, only
+                            // this display text.
                             let source = if context.source.is_empty() {
                                 "an unnamed source".to_string()
                             } else {

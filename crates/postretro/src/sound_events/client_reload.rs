@@ -6,11 +6,16 @@
 use postretro_entities::EntityId;
 use postretro_foundation::ReloadStyle;
 
-/// One frame's replicated reload state for the local pawn's active weapon,
-/// beside that weapon's authored reload shape.
+/// One frame's replicated reload state, beside the authored reload shape of
+/// the weapon it describes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ReloadSample {
+    /// The weapon the replicated slots describe: the host's active weapon, as
+    /// its slot-correlated cooldown sample names it. It lags a local switch by
+    /// a round trip.
     pub(crate) weapon: EntityId,
+    /// Whether the client's own active weapon is that weapon.
+    pub(crate) wielded: bool,
     pub(crate) style: ReloadStyle,
     pub(crate) capacity: u32,
     /// `player.reloadActive`.
@@ -34,18 +39,45 @@ impl ReloadSample {
             || self.reserve.is_some_and(|reserve| reserve <= 0.0)
             || (self.style == ReloadStyle::Magazine && self.progress >= 1.0)
     }
+
+    /// Whether this sample, taken as the flag fell, shows the final transfer
+    /// of the reload `held` belonged to: ammo rose by exactly what the reserve
+    /// fell. This survives a lost completion endpoint. A fire cancel spends
+    /// ammo, and a repoint to another weapon replaces both counts, so neither
+    /// conserves; a switch the client itself made is excluded by `wielded`.
+    fn conserves_transfer_from(&self, held: &ReloadSample) -> bool {
+        let (Some(held_reserve), Some(reserve)) = (held.reserve, self.reserve) else {
+            return false;
+        };
+        let gained = self.ammo - held.ammo;
+        // Counts are whole rounds; the tolerance only absorbs float storage.
+        self.wielded && gained > 0.0 && (gained - (held_reserve - reserve)).abs() < 0.5
+    }
+
+    /// Whether a rising flag is a replayed completion endpoint rather than a
+    /// start. A start projects its Started endpoint (no progress) or low live
+    /// progress. The endpoint stream separates two equal queued endpoints with
+    /// one live sample; once the reload is over that sample reads idle, and
+    /// the queued completion then reads as full progress with the flag up.
+    fn is_echoed_completion(&self) -> bool {
+        self.progress >= 1.0
+    }
 }
 
 /// Turns successive replicated reload samples into the reload events the host
 /// raised for them:
-/// - start is the flag rising;
+/// - start is the flag rising, unless the rise replays a completion endpoint;
 /// - a shell is ammo rising on a per-shell reload, the start sample included;
 ///   shells that arrive in one snapshot sound once;
-/// - complete is the flag falling after a held sample that showed completion.
+/// - complete is the flag falling after a held sample that showed completion,
+///   or on a fall that shows the final transfer (`conserves_transfer_from`).
 ///
-/// Any other fall is a cancel or a switch and plays nothing. Only a reload
-/// whose start this tracker saw on the current weapon produces shells or a
-/// complete, so the samples a switch leaves behind play nothing.
+/// Any other fall is a cancel or a switch and plays nothing. Samples follow
+/// the weapon the host projects, not the client's own active weapon: a local
+/// switch the host refuses leaves a reload in progress tracked, while a switch
+/// the host performs repoints the projection, which ends the reload with no
+/// edge. Only a reload whose start this tracker saw on the projected weapon
+/// produces shells or a complete.
 #[derive(Debug, Default)]
 pub(crate) struct ClientReloadEdges {
     previous: Option<ReloadSample>,
@@ -55,8 +87,8 @@ pub(crate) struct ClientReloadEdges {
 
 impl ClientReloadEdges {
     /// Observe this frame's replicated state and return the reload events it
-    /// completes, in host order. A missing sample or a weapon change resets
-    /// the baseline without an edge.
+    /// completes, in host order. A missing sample or a change of projected
+    /// weapon resets the baseline without an edge.
     pub(crate) fn observe(&mut self, sample: Option<ReloadSample>) -> Vec<&'static str> {
         let Some(current) = sample else {
             self.previous = None;
@@ -75,11 +107,13 @@ impl ClientReloadEdges {
         let mut edges = Vec::new();
         match (previous.active, current.active) {
             (false, true) => {
-                edges.push("reload_started");
-                if shell {
-                    edges.push("reload_shell_loaded");
+                if !current.is_echoed_completion() {
+                    edges.push("reload_started");
+                    if shell {
+                        edges.push("reload_shell_loaded");
+                    }
+                    self.held = Some(current);
                 }
-                self.held = Some(current);
             }
             (true, true) => {
                 if let Some(held) = self.held.as_mut() {
@@ -90,8 +124,15 @@ impl ClientReloadEdges {
                 }
             }
             (true, false) => {
-                if self.held.take().is_some_and(|held| held.shows_completion()) {
-                    edges.push("reload_completed");
+                if let Some(held) = self.held.take() {
+                    if held.shows_completion() {
+                        edges.push("reload_completed");
+                    } else if current.conserves_transfer_from(&held) {
+                        if shell {
+                            edges.push("reload_shell_loaded");
+                        }
+                        edges.push("reload_completed");
+                    }
                 }
             }
             (false, false) => {}
@@ -139,9 +180,11 @@ mod tests {
         }
     }
 
+    /// A sample of `weapon` while the client wields it.
     fn sample(weapon: EntityId, style: ReloadStyle, capacity: u32, slots: Slots) -> ReloadSample {
         ReloadSample {
             weapon,
+            wielded: true,
             style,
             capacity,
             active: slots.active,
@@ -318,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn a_local_weapon_switch_mid_reload_plays_nothing_after_the_switch() {
+    fn a_host_performed_switch_mid_reload_plays_nothing_after_the_repoint() {
         let mut edges = ClientReloadEdges::default();
         let magazine = |weapon, slots| Some(sample(weapon, ReloadStyle::Magazine, 8, slots));
         assert!(edges.observe(magazine(rifle(), idle(0.0, 24.0))).is_empty());
@@ -326,16 +369,172 @@ mod tests {
             edges.observe(magazine(rifle(), held(0.0, 0.0, 24.0))),
             ["reload_started"]
         );
-        // The client's own switch changes the weapon before the host's
-        // projection repoints; the stale reload it leaves plays nothing.
-        for slots in [
-            held(0.5, 0.0, 24.0),
-            held(1.0, 8.0, 16.0),
-            idle(8.0, 16.0),
-            idle(12.0, 50.0),
+        // The host lowers the reloading rifle and the projection repoints to
+        // the pistol; the reload it ended plays nothing, nor does a return.
+        for (weapon, slots) in [
+            (pistol(), idle(12.0, 50.0)),
+            (pistol(), idle(12.0, 50.0)),
+            (rifle(), idle(0.0, 24.0)),
+            (rifle(), idle(0.0, 24.0)),
         ] {
-            assert!(edges.observe(magazine(pistol(), slots)).is_empty());
+            assert!(edges.observe(magazine(weapon, slots)).is_empty());
         }
+    }
+
+    // Regression: a local switch reset the tracker, so a switch the host
+    // refused mid-reload (blockDuringReload) lost the reload's complete.
+    #[test]
+    fn a_refused_local_switch_mid_reload_still_plays_the_complete() {
+        for completes_during_the_detour in [false, true] {
+            let mut edges = ClientReloadEdges::default();
+            let mut observed = Vec::new();
+            let mut observe = |wielded, slots| {
+                observed.extend(edges.observe(Some(ReloadSample {
+                    wielded,
+                    ..sample(rifle(), ReloadStyle::Magazine, 8, slots)
+                })));
+            };
+            observe(true, idle(2.0, 24.0));
+            observe(true, held(0.0, 2.0, 24.0));
+            // The client lowers toward the pistol; the host keeps projecting
+            // the reloading rifle and refuses the switch.
+            observe(false, held(0.4, 2.0, 24.0));
+            if completes_during_the_detour {
+                observe(false, held(1.0, 8.0, 18.0));
+                observe(false, idle(8.0, 18.0));
+                observe(true, idle(8.0, 18.0));
+            } else {
+                // The refusal rolls the client back while the flag holds.
+                observe(true, held(0.7, 2.0, 24.0));
+                observe(true, held(1.0, 8.0, 18.0));
+                observe(true, idle(8.0, 18.0));
+            }
+            assert_eq!(
+                observed,
+                ["reload_started", "reload_completed"],
+                "completes during the detour: {completes_during_the_detour}",
+            );
+        }
+    }
+
+    // Regression: the endpoint stream's live separator between two equal
+    // queued completions read idle once the reload ended, and the queued
+    // completion then read as a new start.
+    #[test]
+    fn an_echoed_completion_after_the_reload_ends_plays_nothing_more() {
+        assert_eq!(
+            run(
+                ReloadStyle::PerShell,
+                8,
+                &[
+                    idle(0.0, 10.0),
+                    held(0.0, 0.0, 10.0), // Started endpoint
+                    held(1.0, 1.0, 9.0),  // first shell's endpoint
+                    idle(2.0, 8.0),       // separator: the final shell already landed
+                    held(1.0, 2.0, 8.0),  // the queued final completion, echoed
+                    idle(2.0, 8.0),
+                ],
+            ),
+            [
+                "reload_started",
+                "reload_shell_loaded",
+                "reload_shell_loaded",
+                "reload_completed",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_start_first_seen_mid_progress_still_plays_start() {
+        // A lost Started endpoint leaves live progress as the first held sample.
+        assert_eq!(
+            run(
+                ReloadStyle::Magazine,
+                8,
+                &[
+                    idle(2.0, 24.0),
+                    held(0.4, 2.0, 24.0),
+                    held(1.0, 8.0, 18.0),
+                    idle(8.0, 18.0),
+                ],
+            ),
+            ["reload_started", "reload_completed"],
+        );
+    }
+
+    // Regression: a single lost snapshot dropped the only held sample that
+    // showed completion, the owner projection's Completed endpoint.
+    #[test]
+    fn a_lost_completion_endpoint_still_plays_complete_when_ammo_is_conserved() {
+        assert_eq!(
+            run(
+                ReloadStyle::Magazine,
+                8,
+                &[
+                    idle(2.0, 24.0),
+                    held(0.0, 2.0, 24.0),
+                    held(0.5, 2.0, 24.0),
+                    idle(8.0, 18.0), // the Completed endpoint's snapshot was lost
+                ],
+            ),
+            ["reload_started", "reload_completed"],
+        );
+        assert_eq!(
+            run(
+                ReloadStyle::PerShell,
+                8,
+                &[
+                    idle(0.0, 10.0),
+                    held(0.0, 0.0, 10.0),
+                    held(1.0, 1.0, 9.0),
+                    idle(3.0, 7.0), // the last shells and their completion were lost
+                ],
+            ),
+            [
+                "reload_started",
+                "reload_shell_loaded",
+                "reload_shell_loaded",
+                "reload_completed",
+            ],
+        );
+    }
+
+    #[test]
+    fn an_unconserved_or_unwielded_fall_plays_no_complete() {
+        // A shot after an unseen completion spends ammo: the residual this
+        // discriminator accepts.
+        assert_eq!(
+            run(
+                ReloadStyle::Magazine,
+                8,
+                &[
+                    idle(2.0, 24.0),
+                    held(0.0, 2.0, 24.0),
+                    held(0.5, 2.0, 24.0),
+                    idle(7.0, 18.0),
+                ],
+            ),
+            ["reload_started"],
+        );
+        // A conserving fall while the client is switching away is not trusted.
+        let mut edges = ClientReloadEdges::default();
+        let magazine = |wielded, slots| {
+            Some(ReloadSample {
+                wielded,
+                ..sample(rifle(), ReloadStyle::Magazine, 8, slots)
+            })
+        };
+        assert!(edges.observe(magazine(true, idle(2.0, 24.0))).is_empty());
+        assert_eq!(
+            edges.observe(magazine(true, held(0.0, 2.0, 24.0))),
+            ["reload_started"]
+        );
+        assert!(
+            edges
+                .observe(magazine(false, held(0.5, 2.0, 24.0)))
+                .is_empty()
+        );
+        assert!(edges.observe(magazine(false, idle(8.0, 18.0))).is_empty());
     }
 
     #[test]

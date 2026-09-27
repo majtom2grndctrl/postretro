@@ -89,7 +89,11 @@ impl SpatialVoices {
         resolve: &mut dyn FnMut(u64) -> Option<[f32; 3]>,
     ) -> usize {
         let tween = Tween {
-            duration: Duration::from_secs_f32(dt.clamp(0.0, MAX_REPOSITION_TWEEN_SECONDS)),
+            duration: Duration::from_secs_f32(if dt.is_finite() {
+                dt.clamp(0.0, MAX_REPOSITION_TWEEN_SECONDS)
+            } else {
+                0.0
+            }),
             ..Tween::default()
         };
         for voice in self.live.values_mut() {

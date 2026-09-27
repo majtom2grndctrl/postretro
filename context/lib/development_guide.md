@@ -378,3 +378,8 @@ When you find a misleading, stale, or code-restating comment in a file you're al
 - **Trace the whole data path before concluding.** Enumerate every pipeline stage; assign each a clean/suspect verdict before ranking causes. The first plausible cause is rarely the real one.
 - **Confirm with a cheap experiment before fixing.** Devise a discriminating test that pins or bypasses the suspect stage and predicts outcomes under each hypothesis. Implement the fix only once the experiment has narrowed it down.
 - **Prefer live, reusable debug toggles** (debug-UI checkboxes, env flags) over throwaway instrumentation.
+
+### 6.4 Diagnostic gating
+
+- **Runtime instrumentation compiles into every build**, toggled by a `POSTRETRO_*` environment variable (`POSTRETRO_GPU_TIMING`; `POSTRETRO_CPU_TIMING`, not built yet). A diagnostic present only in some builds is worse for modders than one uniformly available.
+- **Diagnostic surfaces sit behind cargo features.** `observability`, `observe-live` and `capture` add no dependencies. `dev-tools` carries egui. An external profiler bridge (Tracy, not built yet) is its own feature. Release and dist builds enable none of them.

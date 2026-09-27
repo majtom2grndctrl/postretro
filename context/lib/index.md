@@ -68,6 +68,7 @@
 - **Multi-threaded AI pathfinding readiness / scheduling blocker** → `ai_pathfinding_mt_readiness.md`
 - **Player movement / movement states / FPS feel** → `movement.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
+- **CPU profiling / per-stage CPU timing / Tracy / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).

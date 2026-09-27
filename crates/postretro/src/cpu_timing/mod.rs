@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §12
 
 mod frame_timer;
+mod report;
 
 #[cfg(test)]
 mod tests;
@@ -9,6 +10,10 @@ mod tests;
 pub(crate) use frame_timer::{CpuFrameTimer, WaitSource};
 pub(crate) use postretro_stage_timing::TimingGate;
 use postretro_stage_timing::{StageKind, StageSet};
+#[cfg_attr(not(feature = "capture"), allow(unused_imports))]
+pub(crate) use report::{CpuStagesReport, capture_stages_report};
+#[cfg_attr(not(feature = "observe-live"), allow(unused_imports))]
+pub(crate) use report::{CpuTimingLiveReport, live_report};
 
 /// Environment variable that turns CPU stage timing on (`1`).
 pub(crate) const CPU_TIMING_ENV: &str = "POSTRETRO_CPU_TIMING";

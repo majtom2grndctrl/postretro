@@ -186,8 +186,8 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
-    AgentDiagnosticsRow, DebugUi, DoorOccluderDiagnosticsRow, TriggerDiagnosticsRow,
-    draw_diagnostics_panel,
+    AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow,
+    TriggerDiagnosticsRow, draw_diagnostics_panel,
 };
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;

@@ -36,6 +36,10 @@ pub(crate) struct OutputDocument {
     /// Baked cell-to-cell visibility relation, when requested by the dump.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_visibility: Option<CellVisibilityDump>,
+    /// Live-only CPU stage timing, when an observe-live dump requests it.
+    /// Never set by batch runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_timing: Option<crate::cpu_timing::CpuTimingLiveReport>,
     /// State absent from this output, split into two categories.
     pub out_of_frame: OutOfFrame,
 }
@@ -228,6 +232,7 @@ pub(crate) fn build_output_document(
         cell_visibility: dump
             .cell_visibility
             .then(|| build_cell_visibility_dump(world)),
+        cpu_timing: None,
         out_of_frame: OutOfFrame::headless(),
     })
 }

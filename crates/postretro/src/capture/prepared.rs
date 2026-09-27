@@ -99,6 +99,7 @@ impl PreparedCapture {
         let mut renderer = Renderer::new_offscreen(width, height)
             .context("failed to initialize offscreen frame capture renderer")?;
         renderer.set_force_full_resident_sh_compose(scene.force_full_resident_sh_compose);
+        renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
         let content_root = content_root_from_map(Some(&scene.map));
@@ -310,6 +311,13 @@ impl PreparedCapture {
     }
 
     /// Submit and complete one prepared static sample without PNG readback.
+    /// Renderer recording stages for the frame just captured.
+    pub(super) fn cpu_stages(
+        &self,
+    ) -> &postretro_stage_timing::StageFrame<postretro_renderer::cpu_stages::RenderStage> {
+        self.renderer.cpu_stages()
+    }
+
     pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
         let animation_time_seconds = self.measurement_animation.advance_frame();
         self.submit_frame_without_readback(true, animation_time_seconds)

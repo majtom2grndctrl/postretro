@@ -475,6 +475,7 @@ mod tests {
 
     fn test_movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
@@ -730,11 +731,8 @@ mod tests {
         let mut progress_tracker = ProgressTracker::new();
         progress_tracker.initialize(&data, &registry.borrow());
 
-        assert_eq!(
-            crate::scripting_systems::health::sweep_deaths(&mut registry.borrow_mut()),
-            crate::scripting_systems::health::DeathReport::default(),
-            "the zero-HP sweep itself must not queue kill progress",
-        );
+        // The zero-HP sweep itself must not queue kill progress.
+        postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry.borrow_mut());
         crate::impact_effects::despawn(&mut registry.borrow_mut(), target, None);
 
         let mut next_tick_death_events = Vec::new();

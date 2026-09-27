@@ -3,7 +3,9 @@
 
 #[cfg(test)]
 use postretro_renderer::ShStreamingAllocationSummary;
-use serde::Serialize;
+use std::borrow::Cow;
+
+use serde::{Deserialize, Serialize};
 
 use super::prepared::measurement_animation_time_seconds;
 use super::scene::{CameraPose, CaptureScene};
@@ -13,11 +15,11 @@ use crate::render::{
     ShStreamingLifecycleSummary,
 };
 
-const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v2";
+const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v3";
 const CPU_COMPLETION_STRATEGY: &str = "device-poll-wait-after-submit";
 const CPU_COMPLETION_CADENCE: &str = "once-per-sample-frame";
 
-/// Build the schema-v1 report only after all sample frames have completed.
+/// Build the schema-v3 report only after all sample frames have completed.
 /// The caller owns staging and publication so a previous successful report is
 /// never replaced until the final PNG is visible.
 pub(super) fn measurement_report(
@@ -30,6 +32,7 @@ pub(super) fn measurement_report(
     timing_state: CaptureGpuTimingState,
     gpu_partial_frames: u32,
     gpu_windows: Vec<CaptureGpuTimingWindow>,
+    cpu_stages: crate::cpu_timing::CpuStagesReport,
 ) -> MeasurementReport {
     let measurement = scene
         .measurement
@@ -43,7 +46,7 @@ pub(super) fn measurement_report(
         .expect("validated measurement always has at least one CPU sample");
 
     MeasurementReport {
-        schema: MEASUREMENT_SCHEMA,
+        schema: MEASUREMENT_SCHEMA.into(),
         revision,
         map: MapReport {
             path: scene.map.clone(),
@@ -65,9 +68,9 @@ pub(super) fn measurement_report(
         adapter: AdapterReport::from(adapter),
         renderer_accounted_sh: sh_residency.map(ShResidencyReportJson::from),
         cpu_completion: CpuCompletionReport {
-            unit: "milliseconds",
-            strategy: CPU_COMPLETION_STRATEGY,
-            cadence: CPU_COMPLETION_CADENCE,
+            unit: "milliseconds".into(),
+            strategy: CPU_COMPLETION_STRATEGY.into(),
+            cadence: CPU_COMPLETION_CADENCE.into(),
             samples_ms: cpu_samples_ms,
             median_ms,
             p95_ms,
@@ -78,6 +81,7 @@ pub(super) fn measurement_report(
             windows: gpu_timing.windows,
             partial_frames,
         },
+        cpu_stages,
     }
 }
 
@@ -142,9 +146,9 @@ fn gpu_timing_report(
     (timing, partial_frames)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct MeasurementReport {
-    schema: &'static str,
+    schema: Cow<'static, str>,
     revision: Option<String>,
     map: MapReport,
     capture: CaptureReport,
@@ -154,15 +158,18 @@ pub(super) struct MeasurementReport {
     renderer_accounted_sh: Option<ShResidencyReportJson>,
     cpu_completion: CpuCompletionReport,
     gpu_timing: GpuTimingReport,
+    /// Renderer recording stages over complete post-warmup windows. Capture
+    /// runs no tick or walk per sample, so only recording stages appear.
+    cpu_stages: crate::cpu_timing::CpuStagesReport,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct MapReport {
     path: String,
     bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct CaptureReport {
     output: String,
     resolution: [u32; 2],
@@ -171,7 +178,7 @@ struct CaptureReport {
     animation_time_seconds: f32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct CameraReport {
     position: [f32; 3],
     yaw_deg: f32,
@@ -190,13 +197,13 @@ impl From<&CameraPose> for CameraReport {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct WorkloadReport {
     warmup_frames: u32,
     sample_frames: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct AdapterReport {
     name: String,
     backend: String,
@@ -213,17 +220,17 @@ impl From<CaptureAdapterIdentity> for AdapterReport {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct CpuCompletionReport {
-    unit: &'static str,
-    strategy: &'static str,
-    cadence: &'static str,
+    unit: Cow<'static, str>,
+    strategy: Cow<'static, str>,
+    cadence: Cow<'static, str>,
     samples_ms: Vec<f64>,
     median_ms: f64,
     p95_ms: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct GpuTimingReport {
     availability: GpuTimingAvailability,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -241,7 +248,7 @@ struct GpuTimingReportInner {
     windows: Option<Vec<GpuTimingWindowReport>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum GpuTimingAvailability {
     Available,
@@ -251,7 +258,7 @@ enum GpuTimingAvailability {
     NotYetWindowed,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum GpuTimingReason {
     EnvDisabled,
@@ -260,7 +267,7 @@ enum GpuTimingReason {
     WindowNotComplete,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct GpuTimingWindowReport {
     /// Readbacks in the window; bounds every pass's `sampled_readbacks`.
     readbacks: u32,
@@ -275,7 +282,7 @@ impl From<CaptureGpuTimingWindow> for GpuTimingWindowReport {
                 .passes
                 .into_iter()
                 .map(|pass| GpuTimingPassReport {
-                    label: pass.label,
+                    label: pass.label.into(),
                     average_ms: pass.average_ms,
                     sampled_readbacks: pass.sampled_readbacks,
                     malformed_readbacks: pass.malformed_readbacks,
@@ -288,15 +295,15 @@ impl From<CaptureGpuTimingWindow> for GpuTimingWindowReport {
 /// `average_ms` is the mean over `sampled_readbacks`, not over the window, so
 /// summing passes over-counts conditional ones. It serializes as `null` when
 /// the pass was not sampled, never as a zero-cost pass.
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct GpuTimingPassReport {
-    label: &'static str,
+    label: Cow<'static, str>,
     average_ms: Option<f32>,
     sampled_readbacks: u32,
     malformed_readbacks: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShResidencyReportJson {
     rows: Vec<ShResidencyAllocationJson>,
     total_bytes: u64,
@@ -335,7 +342,7 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
 
 /// Streaming values remain outside descriptor rows because logical occupancy
 /// and replacement peak are accounting views, not new wgpu allocations.
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShStreamingAllocationSummaryJson {
     fixed_metadata_bytes: u64,
     whole_resident_scatter_bytes: u64,
@@ -345,7 +352,7 @@ struct ShStreamingAllocationSummaryJson {
     replacement_peak_bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShStreamingLifecycleSummaryJson {
     non_evictable_overshoot_bytes: u64,
     encoded_current_bytes: u64,
@@ -395,7 +402,7 @@ struct ShStreamingLifecycleSummaryJson {
     compose_planning_cpu_micros: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShComposePassDiagnosticsJson {
     rows_composed: u64,
     dispatches: u64,
@@ -467,9 +474,9 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShResidencyAllocationJson {
-    name: &'static str,
+    name: Cow<'static, str>,
     sources: Vec<ShResidencySourceJson>,
     bytes: u64,
     state: ShResidencyStateJson,
@@ -479,7 +486,7 @@ struct ShResidencyAllocationJson {
 impl From<ShResidencyAllocation> for ShResidencyAllocationJson {
     fn from(row: ShResidencyAllocation) -> Self {
         Self {
-            name: row.name,
+            name: row.name.into(),
             sources: row
                 .sources
                 .into_iter()
@@ -492,7 +499,7 @@ impl From<ShResidencyAllocation> for ShResidencyAllocationJson {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ShResidencySourceJson {
     Section { id: u16 },
@@ -508,7 +515,7 @@ impl From<ShResidencySource> for ShResidencySourceJson {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ShResidencyStateJson {
     Data,
@@ -526,12 +533,12 @@ impl From<ShResidencyAllocationState> for ShResidencyStateJson {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ShResidencyShapeJson {
     Texture {
-        format: &'static str,
-        dimension: &'static str,
+        format: Cow<'static, str>,
+        dimension: Cow<'static, str>,
         extent: [u32; 3],
     },
     Buffer {
@@ -547,8 +554,8 @@ impl From<ShResidencyAllocationShape> for ShResidencyShapeJson {
                 dimension,
                 extent,
             } => Self::Texture {
-                format,
-                dimension,
+                format: format.into(),
+                dimension: dimension.into(),
                 extent,
             },
             ShResidencyAllocationShape::Buffer { binding_bytes } => Self::Buffer { binding_bytes },
@@ -619,6 +626,11 @@ mod tests {
             CaptureGpuTimingState::NotRequested,
             0,
             Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
 
         assert_eq!(json["schema"], MEASUREMENT_SCHEMA);
@@ -642,6 +654,11 @@ mod tests {
             CaptureGpuTimingState::NotRequested,
             0,
             Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
 
         assert_eq!(json["capture"]["force_full_resident_sh_compose"], true);
@@ -676,6 +693,11 @@ mod tests {
             CaptureGpuTimingState::PlainBuildUnavailable,
             0,
             Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
 
         assert_eq!(
@@ -722,6 +744,11 @@ mod tests {
             CaptureGpuTimingState::PlainBuildUnavailable,
             0,
             Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
         let streaming = &json["renderer_accounted_sh"]["streaming"];
         assert_eq!(streaming["fixed_metadata_bytes"], 11);
@@ -801,6 +828,11 @@ mod tests {
             CaptureGpuTimingState::PlainBuildUnavailable,
             0,
             Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
         let lifecycle = &json["renderer_accounted_sh"]["streaming_lifecycle"];
         assert_eq!(lifecycle["non_evictable_overshoot_bytes"], 5);
@@ -866,6 +898,11 @@ mod tests {
                 state,
                 0,
                 Vec::new(),
+                crate::cpu_timing::capture_stages_report(
+                    postretro_stage_timing::TimingGate::OFF,
+                    &[],
+                    0,
+                ),
             ));
             assert_eq!(json["gpu_timing"]["availability"], availability);
             assert_eq!(json["gpu_timing"]["reason"], reason);
@@ -892,6 +929,11 @@ mod tests {
                     malformed_readbacks: 3,
                 }],
             }],
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
 
         assert_eq!(json["gpu_timing"]["availability"], "available");
@@ -928,6 +970,11 @@ mod tests {
                     },
                 ],
             }],
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
 
         let window = &json["gpu_timing"]["windows"][0];
@@ -962,8 +1009,40 @@ mod tests {
                 readbacks: 120,
                 passes: Vec::new(),
             }],
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
         ));
         assert_eq!(json["workload"]["sample_frames"], 121);
         assert!(json["gpu_timing"].get("partial_frames").is_none());
+    }
+
+    #[test]
+    fn measurement_report_round_trips_with_cpu_stages() {
+        let report = measurement_report(
+            &scene_with_measurement(),
+            99,
+            Some("abc123".to_string()),
+            adapter(),
+            None,
+            vec![1.0, 2.0],
+            CaptureGpuTimingState::NotRequested,
+            0,
+            Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::ON,
+                &[],
+                12,
+            ),
+        );
+        let text = serde_json::to_string_pretty(&report).expect("serialize report");
+        let back: MeasurementReport = serde_json::from_str(&text).expect("parse report");
+        assert_eq!(back, report);
+        let json = as_json(report);
+        assert_eq!(json["schema"], "postretro.capture.measurement.v3");
+        assert_eq!(json["cpu_stages"]["availability"], "not-yet-windowed");
+        assert_eq!(json["cpu_stages"]["partial_frames"], 12);
     }
 }

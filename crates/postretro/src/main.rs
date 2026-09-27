@@ -4362,6 +4362,13 @@ impl ApplicationHandler for App {
                                 let window = &ws.window;
                                 let raw_input = debug_ui.winit_state.take_egui_input(window);
                                 let timing_snapshot = renderer.frame_timing_snapshot().cloned();
+                                let cpu_timing_panel = if !self.cpu_timer.gate().is_enabled() {
+                                    render::debug_ui::CpuTimingPanel::Off
+                                } else if let Some(window) = self.cpu_timer.last_window() {
+                                    render::debug_ui::CpuTimingPanel::Window(window)
+                                } else {
+                                    render::debug_ui::CpuTimingPanel::NotYetWindowed
+                                };
                                 let panel_state = &mut debug_ui.panel_state;
                                 let sh_state = &mut debug_ui.sh_diagnostics_state;
                                 let sh_streaming_live = session
@@ -4388,6 +4395,7 @@ impl ApplicationHandler for App {
                                             sh_state,
                                             renderer,
                                             timing_snapshot.as_ref(),
+                                            cpu_timing_panel,
                                             &agent_rows,
                                             &trigger_rows,
                                             &door_occluder_diagnostics.mover_rows,
@@ -4945,6 +4953,10 @@ impl App {
                 registry.as_deref(),
                 world,
                 self.camera.yaw,
+                observe_live::LiveCpuTiming {
+                    gate: self.cpu_timer.gate(),
+                    last_window: self.cpu_timer.last_window(),
+                },
             )
         });
     }

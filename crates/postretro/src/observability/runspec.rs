@@ -146,6 +146,10 @@ pub(crate) struct DumpSpec {
     pub events: bool,
     /// Whether the output includes the baked cell-visibility relation.
     pub cell_visibility: bool,
+    /// Live-only: the latest closed CPU stage timing window. Wall-clock timing
+    /// has no batch meaning and would break batch byte-identity, so a batch
+    /// runspec that requests it is rejected.
+    pub cpu_timing: bool,
 }
 
 impl Default for DumpSpec {
@@ -157,6 +161,7 @@ impl Default for DumpSpec {
             cap: DEFAULT_DUMP_CAP,
             events: true,
             cell_visibility: false,
+            cpu_timing: false,
         }
     }
 }
@@ -230,6 +235,12 @@ pub(crate) enum RunSpecError {
     /// fails loudly instead of hanging or exhausting memory.
     #[error("invalid runspec: ticks {ticks} exceeds the cap of {cap}")]
     TicksExceedCap { ticks: u32, cap: u32 },
+    /// A live-only dump section has no batch meaning (wall-clock CPU timing
+    /// over rendered frames), and batch output must stay byte-identical.
+    #[error(
+        "invalid runspec: {field} is a live-only dump section (observe-live); batch runs cannot request it"
+    )]
+    LiveOnlySection { field: &'static str },
 }
 
 /// Parse a runspec from JSON text. Malformed JSON, unknown fields, out-of-order
@@ -239,6 +250,11 @@ pub(crate) enum RunSpecError {
 #[cfg(feature = "observability")]
 pub(crate) fn parse_runspec(json: &str) -> Result<RunSpec, RunSpecError> {
     let spec: RunSpec = serde_json::from_str(json)?;
+    if spec.dump.cpu_timing {
+        return Err(RunSpecError::LiveOnlySection {
+            field: "dump.cpu_timing",
+        });
+    }
     if spec.ticks > MAX_TICKS {
         return Err(RunSpecError::TicksExceedCap {
             ticks: spec.ticks,
@@ -324,6 +340,7 @@ mod tests {
                 },
             ],
             dump: DumpSpec {
+                cpu_timing: false,
                 component: Some("health".to_string()),
                 tag: None,
                 entities: None,
@@ -608,5 +625,19 @@ mod tests {
         let json = r#"{ "map": "m.prl", "ticks": 72000 }"#;
         let spec = parse_runspec(json).unwrap();
         assert_eq!(spec.ticks, MAX_TICKS);
+    }
+
+    #[test]
+    fn batch_runspec_rejects_the_live_only_cpu_timing_section_by_name() {
+        let err =
+            parse_runspec(r#"{ "map": "maps/x.prl", "ticks": 1, "dump": { "cpu_timing": true } }"#)
+                .expect_err("cpu_timing is live-only");
+        assert!(matches!(
+            err,
+            RunSpecError::LiveOnlySection {
+                field: "dump.cpu_timing"
+            }
+        ));
+        assert!(err.to_string().contains("dump.cpu_timing"));
     }
 }

@@ -20,7 +20,10 @@ use super::WorldWireframeMode;
 use super::frame_timing::{FrameTimingSnapshot, PassTiming};
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 
+mod cpu_timing_block;
 mod streaming_tab;
+
+pub use cpu_timing_block::CpuTimingPanel;
 
 /// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
 /// lazily on first panel open via `Renderer::ensure_debug_ui_gpu`. The CPU
@@ -277,6 +280,7 @@ pub fn draw_diagnostics_panel(
     sh_state: &mut ShDiagnosticsState,
     renderer: &mut Renderer,
     frame_timing: Option<&FrameTimingSnapshot>,
+    cpu_timing: CpuTimingPanel<'_>,
     agent_rows: &[AgentDiagnosticsRow],
     trigger_rows: &[TriggerDiagnosticsRow],
     door_occluder_rows: &[DoorOccluderDiagnosticsRow],
@@ -328,7 +332,7 @@ pub fn draw_diagnostics_panel(
         match state.selected_tab {
             DiagnosticsTab::Lighting => draw_lighting_tab(ui, state, renderer),
             DiagnosticsTab::Volumes => draw_volumes_tab(ui, state, sh_state, renderer),
-            DiagnosticsTab::Performance => draw_performance_tab(ui, frame_timing),
+            DiagnosticsTab::Performance => draw_performance_tab(ui, frame_timing, cpu_timing),
             DiagnosticsTab::Spatial => draw_spatial_tab(ui, state, renderer),
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
             DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
@@ -705,7 +709,14 @@ fn draw_volumes_tab(
         });
 }
 
-fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnapshot>) {
+/// GPU and CPU windows sit side by side but never align: the GPU window counts
+/// completed readbacks, the CPU window counted in-level frames.
+fn draw_performance_tab(
+    ui: &mut egui::Ui,
+    frame_timing: Option<&FrameTimingSnapshot>,
+    cpu_timing: CpuTimingPanel<'_>,
+) {
+    cpu_timing_block::draw_cpu_timing(ui, cpu_timing);
     egui::CollapsingHeader::new("GPU Timing")
         .default_open(true)
         .show(ui, |ui| match frame_timing {

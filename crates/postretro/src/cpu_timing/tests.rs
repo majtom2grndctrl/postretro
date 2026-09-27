@@ -350,3 +350,75 @@ fn zero_tick_frame_has_no_sim_rows_and_sim_averages_skip_it() {
     assert!((movement.average - 3_000.0).abs() < 1e-9);
     assert_eq!(window.row("ticks").unwrap().frames, WINDOW_FRAMES);
 }
+
+/// A stage set that exists only in this test. Nothing in the binary names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeStage {
+    Outer,
+    Inner,
+}
+
+impl StageSet for ProbeStage {
+    const ALL: &'static [Self] = &[Self::Outer, Self::Inner];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Outer => "probe_outer",
+            Self::Inner => "probe_inner",
+        }
+    }
+
+    fn parent(self) -> Option<Self> {
+        match self {
+            Self::Outer => None,
+            Self::Inner => Some(Self::Outer),
+        }
+    }
+}
+
+#[test]
+fn test_only_stage_set_reaches_window_log_line_and_capture_report() {
+    use postretro_stage_timing::StageFrame;
+
+    let capture = LogCapture::start();
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    for _ in 0..WINDOW_FRAMES {
+        let start = Instant::now();
+        timer.begin_frame(start);
+        timer.stages().add_nanos(FrameStage::Render, 3 * MS);
+        let probe = StageFrame::<ProbeStage>::new(timer.gate());
+        probe.add_nanos(ProbeStage::Outer, 2 * MS);
+        probe.add_nanos(ProbeStage::Inner, MS);
+        timer
+            .nested_mut()
+            .extend_from(&probe, Some(FrameStage::Render.label()));
+        timer.finish_frame(start + Duration::from_nanos(4 * MS));
+    }
+
+    let window = timer.last_window().expect("window closed");
+    assert_eq!(window.row("probe_outer").unwrap().parent, Some("render"));
+    assert_eq!(
+        window.row("probe_inner").unwrap().parent,
+        Some("probe_outer")
+    );
+    capture.assert_logged_once(log::Level::Info, "probe_inner=1.000/1.000ms");
+
+    let report = serde_json::to_value(super::capture_stages_report(
+        TimingGate::ON,
+        std::slice::from_ref(window),
+        0,
+    ))
+    .unwrap();
+    let labels: Vec<_> = report["windows"][0]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stage| stage["label"].as_str().unwrap().to_string())
+        .collect();
+    assert!(labels.contains(&"probe_outer".to_string()));
+    assert!(labels.contains(&"probe_inner".to_string()));
+}

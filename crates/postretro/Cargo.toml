@@ -166,3 +166,8 @@ required-features = ["capture"]
 name = "capture_shadowmask_groups"
 path = "tests/capture_shadowmask_groups.rs"
 required-features = ["capture"]
+
+[[test]]
+name = "headless_byte_identity"
+path = "tests/headless_byte_identity.rs"
+required-features = ["observability"]

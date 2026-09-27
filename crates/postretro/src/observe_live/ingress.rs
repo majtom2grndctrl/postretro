@@ -80,6 +80,7 @@ pub(crate) fn service_observe_request(
     registry: Option<&EntityRegistry>,
     world: Option<&LevelWorld>,
     facing_yaw: f32,
+    cpu_timing: LiveCpuTiming<'_>,
 ) -> Vec<u8> {
     service_payload(
         payload,
@@ -89,8 +90,26 @@ pub(crate) fn service_observe_request(
             registry,
             world,
             facing_yaw,
+            cpu_timing,
         },
     )
+}
+
+/// The CPU timer's state at the frame boundary, for the live-only
+/// `cpu_timing` section. Reading it consumes nothing: the log line and debug
+/// UI still show the same window.
+#[derive(Clone, Copy)]
+pub(crate) struct LiveCpuTiming<'a> {
+    pub(crate) gate: postretro_stage_timing::TimingGate,
+    pub(crate) last_window: Option<&'a postretro_stage_timing::WindowSnapshot>,
+}
+
+impl LiveCpuTiming<'_> {
+    #[cfg(test)]
+    pub(crate) const OFF: LiveCpuTiming<'static> = LiveCpuTiming {
+        gate: postretro_stage_timing::TimingGate::OFF,
+        last_window: None,
+    };
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +119,7 @@ struct IngressContext<'a> {
     registry: Option<&'a EntityRegistry>,
     world: Option<&'a LevelWorld>,
     facing_yaw: f32,
+    cpu_timing: LiveCpuTiming<'a>,
 }
 
 fn service_payload(payload: &[u8], context: IngressContext<'_>) -> Vec<u8> {
@@ -149,6 +169,12 @@ fn build_live_document(
         .out_of_frame
         .present_not_dumped
         .push("events".to_string());
+    if spec.cpu_timing {
+        output.cpu_timing = Some(crate::cpu_timing::live_report(
+            context.cpu_timing.gate,
+            context.cpu_timing.last_window,
+        ));
+    }
     Ok(output)
 }
 
@@ -163,6 +189,7 @@ fn no_world_document() -> OutputDocument {
         events: Vec::new(),
         player: None,
         cell_visibility: None,
+        cpu_timing: None,
         out_of_frame,
     }
 }
@@ -245,7 +272,15 @@ mod tests {
         registry: &EntityRegistry,
         world: &LevelWorld,
     ) -> Vec<u8> {
-        service_observe_request(payload, true, MAP, Some(registry), Some(world), FACING_YAW)
+        service_observe_request(
+            payload,
+            true,
+            MAP,
+            Some(registry),
+            Some(world),
+            FACING_YAW,
+            LiveCpuTiming::OFF,
+        )
     }
 
     #[test]
@@ -325,7 +360,15 @@ mod tests {
 
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, false, MAP, None, None, FACING_YAW)
+                service_observe_request(
+                    payload,
+                    false,
+                    MAP,
+                    None,
+                    None,
+                    FACING_YAW,
+                    LiveCpuTiming::OFF,
+                )
             }),
             1
         );
@@ -359,6 +402,7 @@ mod tests {
             Some(&registry),
             Some(&world),
             FACING_YAW,
+            LiveCpuTiming::OFF,
         );
 
         let ObserveResponse::Ok { dump } = decode_response(&response) else {
@@ -380,6 +424,7 @@ mod tests {
             None,
             None,
             FACING_YAW,
+            LiveCpuTiming::OFF,
         );
 
         let ObserveResponse::Error { message } = decode_response(&response) else {
@@ -490,7 +535,15 @@ mod tests {
         let response = queue_request(&requests, br#"{"verb":"unknown"}"#.to_vec());
 
         let _ = run_observe_ingress_stage(&receiver, |payload| {
-            service_observe_request(payload, false, MAP, None, None, FACING_YAW)
+            service_observe_request(
+                payload,
+                false,
+                MAP,
+                None,
+                None,
+                FACING_YAW,
+                LiveCpuTiming::OFF,
+            )
         });
         assert!(matches!(
             decode_response(&response.recv().expect("receive malformed-request response")),
@@ -518,5 +571,138 @@ mod tests {
             decode_response(&response.recv().expect("receive dump-failure response")),
             ObserveResponse::Error { .. }
         ));
+    }
+
+    // --- Live-only CPU timing section ---
+
+    fn timing_dump(cpu_timing: LiveCpuTiming<'_>, has_installed_level: bool) -> serde_json::Value {
+        let registry = fixture_registry();
+        let world = test_world();
+        let payload = dump_payload(DumpSpec {
+            cpu_timing: true,
+            ..DumpSpec::default()
+        });
+        let bytes = if has_installed_level {
+            service_observe_request(
+                &payload,
+                true,
+                MAP,
+                Some(&registry),
+                Some(&world),
+                FACING_YAW,
+                cpu_timing,
+            )
+        } else {
+            service_observe_request(&payload, false, MAP, None, None, FACING_YAW, cpu_timing)
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("response json");
+        assert_eq!(value["status"], "ok", "{value}");
+        value["dump"].clone()
+    }
+
+    fn closed_window() -> postretro_stage_timing::WindowSnapshot {
+        let mut window = postretro_stage_timing::StageWindow::new();
+        for index in 0..postretro_stage_timing::WINDOW_FRAMES {
+            let mut record = postretro_stage_timing::FrameRecord::new();
+            record.push_time("render", None, 2_000_000);
+            if index % 2 == 0 {
+                record.push_time("portal_walk", Some("visibility"), 500_000);
+            }
+            window.fold(&record);
+        }
+        window.last_window().expect("window closed").clone()
+    }
+
+    #[test]
+    fn live_timing_returns_the_latest_window_with_absent_stages_omitted() {
+        let window = closed_window();
+        let dump = timing_dump(
+            LiveCpuTiming {
+                gate: postretro_stage_timing::TimingGate::ON,
+                last_window: Some(&window),
+            },
+            true,
+        );
+        let section = &dump["cpu_timing"];
+        assert_eq!(section["availability"], "available");
+        assert_eq!(section["window"]["frames"], 120);
+        let stages = section["window"]["stages"].as_array().unwrap();
+        let walk = stages
+            .iter()
+            .find(|stage| stage["label"] == "portal_walk")
+            .unwrap();
+        assert_eq!(walk["frames"], 60);
+        assert!(
+            stages.iter().all(|stage| stage["label"] != "sim_tick"),
+            "a stage that never ran is absent, not zero"
+        );
+    }
+
+    #[test]
+    fn live_timing_off_reports_unavailable_with_a_reason() {
+        let dump = timing_dump(LiveCpuTiming::OFF, true);
+        assert_eq!(dump["cpu_timing"]["availability"], "not-requested");
+        assert_eq!(dump["cpu_timing"]["reason"], "env-disabled");
+        assert!(dump["cpu_timing"].get("window").is_none());
+    }
+
+    #[test]
+    fn live_timing_before_the_first_window_reports_not_yet_windowed() {
+        let dump = timing_dump(
+            LiveCpuTiming {
+                gate: postretro_stage_timing::TimingGate::ON,
+                last_window: None,
+            },
+            true,
+        );
+        assert_eq!(dump["cpu_timing"]["availability"], "not-yet-windowed");
+        assert_eq!(dump["cpu_timing"]["reason"], "window-not-complete");
+        assert!(dump["cpu_timing"].get("window").is_none());
+    }
+
+    #[test]
+    fn repeated_live_timing_reads_return_the_same_window() {
+        let window = closed_window();
+        let timing = LiveCpuTiming {
+            gate: postretro_stage_timing::TimingGate::ON,
+            last_window: Some(&window),
+        };
+        assert_eq!(timing_dump(timing, true), timing_dump(timing, true));
+    }
+
+    #[test]
+    fn live_timing_without_an_installed_level_returns_the_no_world_reply() {
+        // P-live-nolevel: never a window measured in an earlier level.
+        let window = closed_window();
+        let dump = timing_dump(
+            LiveCpuTiming {
+                gate: postretro_stage_timing::TimingGate::ON,
+                last_window: Some(&window),
+            },
+            false,
+        );
+        assert_eq!(dump["map"], "");
+        assert!(dump.get("cpu_timing").is_none());
+    }
+
+    #[test]
+    fn dump_without_the_flag_carries_no_timing_section() {
+        let registry = fixture_registry();
+        let world = test_world();
+        let window = closed_window();
+        let bytes = service_observe_request(
+            &dump_payload(DumpSpec::default()),
+            true,
+            MAP,
+            Some(&registry),
+            Some(&world),
+            FACING_YAW,
+            LiveCpuTiming {
+                gate: postretro_stage_timing::TimingGate::ON,
+                last_window: Some(&window),
+            },
+        );
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value["dump"].get("cpu_timing").is_none());
     }
 }

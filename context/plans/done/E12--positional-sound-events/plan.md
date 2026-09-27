@@ -88,11 +88,11 @@ read at: b99101534
 | 41 typedef fixtures match | `committed_sdk_types_match_current_registry` and snapshot tests | achievable as stated | pass |
 | 42 grep gate: kira spatial calls only in chokepoint module | preflight grep (`add_spatial_sub_track`, `SpatialTrackBuilder`, spatial `set_position`) | achievable as stated | pass |
 | 43 grep gate: sim names no audio types; IR types Number and Bool; no sound key on wire | preflight grep over `crates/sim`, `crates/ai`, `crates/physics`, `crates/net` plus `IrType` read | achievable as stated | pass |
-| 44 own actions heard centered, full level | owner, in-engine | manual | outstanding — owner, in-engine |
-| 45 enemy attack from its direction, quieter moving away | owner, in-engine | manual | outstanding — owner, in-engine |
-| 46 door pans to its side; re-pans smoothly on head turn | owner, in-engine | manual | outstanding — owner, in-engine |
-| 47 killed enemy's attack sound plays out where it died | owner, in-engine | manual | outstanding — owner, in-engine |
-| 48 SFX volume scales positional sounds | owner, in-engine | manual | outstanding — owner, in-engine |
+| 44 own actions heard centered, full level | owner, in-engine | manual | pass (owner, in-engine, 2026-09-27) |
+| 45 enemy attack from its direction, quieter moving away | owner, in-engine | manual | pass (owner, in-engine, 2026-09-27) |
+| 46 door pans to its side; re-pans smoothly on head turn | owner, in-engine | manual | pass (owner, in-engine, 2026-09-27) |
+| 47 killed enemy's attack sound plays out where it died | owner, in-engine | manual | pass (owner, in-engine, 2026-09-27) |
+| 48 SFX volume scales positional sounds | owner, in-engine | manual | pass (owner, in-engine, 2026-09-27) |
 
 ## Tasks
 
@@ -119,3 +119,4 @@ read at: b99101534
 - Not acted on, recorded:
   - The client adds bloom and advances `shells_fired` on a dry or silent pull, as before E12. The reticle ring kicks on a dry click. This follows the owner's "exactly as before E12"; a later presentation pass could decide otherwise.
   - Untracked raw sound packs sit in `content/dev/sounds/sfx/`. They are the owner's files, outside the commit.
+- Owner in-engine pass (2026-09-27): rows 44–48 pass on campaign-test with the curated gun sounds (Snake's Authentic Gun Sounds) and the bridge door and crusher sounds (Kenney CC0).

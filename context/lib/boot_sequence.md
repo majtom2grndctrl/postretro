@@ -35,16 +35,16 @@ The boot splash is a **renderer-owned** path — a direct boot splash pass that 
 
 The two-frame delay is causal: pixels reach the user before any deferred session, audio, net, mod-supplied, or level-load CPU work runs.
 
-**OS preference wait (decided, not yet built).** The OS preference reader starts at session build. The splash clears only after its first reply or a bounded wait, so the first frames and the first-launch panel show OS-seeded values; a later reply applies as a live change (`player_options.md` §5).
+**OS preference wait (decided, not yet built).** The OS preference reader starts at session build, after the first splash frame has presented, and never blocks a frame: splash frames keep presenting while it is pending. Whatever follows mod init — the splash clear to the frontend or the first-launch panel, or the CLI boot-map enqueue — waits for its first reply up to 150 ms, counted from the end of mod init, so a slow mod init still gets the full wait. A reply already in when mod init finishes adds no frames; a later reply applies as a live change (`player_options.md` §5).
 
 ### First-launch hold (decided, not yet built)
 
-With no stored record that the accessibility panel was shown, boot shows the panel (`ui.md` §4.1) once mod init completes and the splash clears — before any frontend backdrop, CLI boot-map, or host-named level load starts. On the CLI path the splash clears to a world-less panel frame; Loading repaints after the panel closes. No level runs and no sound plays until the player closes it; boot then presents the frontend or loads the boot map as on any launch.
+With no stored record that the accessibility panel was shown, boot shows the panel (`ui.md` §4.1) once mod init completes and the splash clears — before any frontend backdrop, CLI boot-map, or host-named level load starts. On the CLI path the splash clears to a world-less panel frame; Loading repaints after the panel closes. No level runs and no sound plays until the player closes it; boot then presents the frontend or loads the boot map as on any launch. The hold is its own boot state: it drains no level requests, keeps the world-less transport alive, and runs the options bridge's settled save, so a panel change made at the hold persists before the panel closes.
 
 Opening the panel first is not enough, because a capturing modal pauses neither simulation nor audio (`ui.md` §4): a panel over a loading level would expose the player to what the panel exists to prevent.
 
 - **Record.** Written when the player closes the panel by any close path. A launch that quits or crashes with the panel open shows it again. A settings file that cannot be replaced (unreadable, or not valid TOML) cannot take the record, so the panel shows each launch until it can — the fail-safe. Later launches boot normally.
-- **`--connect` client.** Stays admitted, not participating, through the hold (`networking.md` §Admission and content parity). A map its host names during the hold — or during the splash's OS-preference wait on any launch — is the level it loads when the hold ends or the splash clears; the frontend backdrop never displaces it.
+- **`--connect` client.** Stays admitted, not participating, through the hold (`networking.md` §Admission and content parity). A map its host names during the hold — or during the splash's OS-preference wait on any launch — is the level it loads when the hold ends or the splash clears; neither the frontend backdrop nor a CLI boot map displaces it.
 
 ### Window visibility (Windows white-flash)
 

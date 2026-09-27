@@ -21,18 +21,20 @@ Inspect `context/plans/ready/` and `context/plans/in-progress/`.
 | State | Action |
 |---|---|
 | Brief in `ready/` | Start at **Take the brief**. |
+| Brief in `in-progress/`, no `plan.md` | Claimed, not planned. Create the feature branch if missing. Resume at the reading list in **Take the brief**. |
 | Compact `plan.md` says `active` | Resume the first unfinished task. |
 | Resumable `plan.md` says `proposed` | Report the plan and wait for owner approval. |
 | Resumable `plan.md` says `approved` | Resume the first unfinished task. |
 | `plan.md` says `test-ready` | Report the external runbook and wait for the blocking result. |
 | All tasks done | Resume at **Review and final preflight**. |
+| AC-to-proof table has results | Report them and wait for "land the plane." |
 | `plan.md` says `blocked` | Report the block and wait for the owner. |
 
 When the owner resolves a block, apply only the authorized wording or decision. Return to the step that raised it and re-run that check. Set the mode's normal status only after the block clears.
 
 ## Take the brief
 
-Start from clean, current `main`. Create the feature branch and move the brief from `ready/` to `in-progress/`. Do not commit the move yet.
+Start from clean, current `main`. Move the brief from `ready/` to `in-progress/`. Commit the move alone and push it to `main`. The push claims the brief so no other session takes it. If the push is rejected, rebase on `origin/main` and push again. Then create the feature branch from that commit.
 
 Read, in order:
 
@@ -49,7 +51,7 @@ Resumable mode re-reads every source symbol cited by Decisions and Path.
 Compact mode inspects source changes since the brief's `read at` commit. If no source changed, reuse the grounded Decision reads. Otherwise re-open affected cited symbols and their boundary consumers. Conversation continuity is not proof of unchanged source.
 
 - **Stale Path:** record current source and adjusted approach under *Corrections*. Continue.
-- **False Decision premise:** create a minimal `plan.md` with `status: blocked` and the evidence. Commit it with the move to `in-progress/`, then stop. The owner decides whether the Decision survives.
+- **False Decision premise:** create a minimal `plan.md` with `status: blocked` and the evidence. Commit it, then stop. The owner decides whether the Decision survives.
 
 Decisions and Acceptance belong to the owner. Stop for a material change to either. Record a clarification under *Corrections* and continue when both keep the same meaning.
 
@@ -86,11 +88,11 @@ read at: <short sha>
 
 Include every Acceptance row. Assign automated proof, manual proof, or `needs restatement` with exact proposed wording. First task tests the riskiest assumption through the thinnest useful slice.
 
-If any row needs restatement, set `status: blocked`, commit the plan with the move, and stop. This applies to both modes.
+If any row needs restatement, set `status: blocked`, commit the plan, and stop. This applies to both modes.
 
-For compact mode, set `status: active`. Commit the move and plan together, then continue. Promotion and `/build-brief` invocation are approval.
+For compact mode, set `status: active`. Commit the plan, then continue. Promotion and `/build-brief` invocation are approval.
 
-For resumable mode, set `status: proposed`. Commit the move and plan together. Report corrections, ownership, and task order. Stop for the owner's skim. On approval, set `status: approved` and commit before implementation so a new session can recover the approval.
+For resumable mode, set `status: proposed`. Commit the plan. Report corrections, ownership, and task order. Stop for the owner's skim. On approval, set `status: approved` and commit before implementation so a new session can recover the approval.
 
 ## Build
 
@@ -135,7 +137,7 @@ Apply mechanical fixes. Send findings that change a Decision or Acceptance row t
 
 After focused retests pass, run `/preflight` once as the final gate. Never run the full workspace suite earlier. Add or select a focused integration test when a seam needs broader proof.
 
-## Land
+## Report results
 
 Add a result column to the AC-to-proof table. Record pass, fail, or outstanding manual proof for every row. No silent gaps.
 
@@ -143,8 +145,6 @@ External manual proof never becomes an inferred pass.
 
 - If the brief permits landing first, set `status: landed-with-gaps`. Record the test runbook and each outstanding row.
 - If the proof blocks landing, set `status: test-ready`. Leave the brief in `in-progress/` until the result arrives.
-
-When landing, update durable `context/lib/` contracts. Move the brief to `context/plans/done/`. Commit the move, plan, and context updates together. A `test-ready` brief stops before this step.
 
 Add trial notes only when the owner is evaluating the process:
 
@@ -158,7 +158,35 @@ Add trial notes only when the owner is evaluating the process:
 - Path claims corrected: N
 ```
 
-Report the branch, landing table, review loop, and outstanding manual checks.
+Commit the plan. Report the branch, landing table, review loop, and outstanding manual checks. Wait for the owner to say "land the plane."
+
+## Land the plane
+
+When the owner says "land the plane":
+
+1. Update durable `context/lib/` contracts.
+2. Move the brief to `context/plans/done/`. Mark it done in `context/plans/roadmap.md` when listed.
+3. Commit the move, plan, and context updates together.
+4. Remove session worktrees, their dedicated target dirs, and session-owned temporary files.
+5. Run `cargo clean -p <crate>` for crates with heavy session churn. Never run bare `cargo clean`.
+6. Push the feature branch.
+
+A `test-ready` brief lands only after the blocking result arrives.
+
+## Merged
+
+When the owner says "we're merged" or otherwise reports the branch merged into `main`:
+
+1. `git fetch origin`.
+2. Verify the merge: `git merge-base --is-ancestor <feature-branch> origin/main` succeeds, or `gh pr view <feature-branch>` reports `MERGED` after a squash merge. Confirm the brief sits in `context/plans/done/` on `origin/main`. Stop and report if either check fails.
+3. Switch to `main`. Fast-forward to `origin/main`.
+4. Delete the local feature branch. `-D` is safe once step 2 passes. Remove its worktrees, then `git worktree prune`.
+5. Clean every PostRetro crate from both target dirs:
+
+```bash
+cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | "-p", .name' | xargs cargo clean
+cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | "-p", .name' | xargs cargo clean --target-dir target/preflight-clippy
+```
 
 ## Invariants
 

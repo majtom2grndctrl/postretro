@@ -12,7 +12,7 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 
 ## Layers
 
-- **Layer 0 (leaves):** audio, foundation, level-format, net, render-data, test-log-capture, xtask
+- **Layer 0 (leaves):** audio, foundation, level-format, net, render-data, stage-timing, test-log-capture, xtask
 - **Layer 1:** entities, level-compiler, level-loader, model, script-compiler
 - **Layer 2:** combat-model, physics, scripting-core, tool, visibility
 - **Layer 3:** lighting, render-cpu, ui

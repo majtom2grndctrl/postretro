@@ -4053,6 +4053,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "postretro-stage-timing"
+version = "0.1.0"
+
+[[package]]
 name = "postretro-test-log-capture"
 version = "0.1.0"
 dependencies = [

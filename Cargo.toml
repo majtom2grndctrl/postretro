@@ -23,6 +23,7 @@ members = [
     "crates/script-compiler",
     "crates/net",
     "crates/test-log-capture",
+    "crates/stage-timing",
     "crates/tool",
     "crates/xtask",
 ]
@@ -191,6 +192,7 @@ postretro-ai = { path = "crates/ai" }
 postretro-sim = { path = "crates/sim" }
 postretro-netcode = { path = "crates/netcode" }
 postretro-test-log-capture = { path = "crates/test-log-capture" }
+postretro-stage-timing = { path = "crates/stage-timing" }
 
 [profile.release]
 opt-level = 3

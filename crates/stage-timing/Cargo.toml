@@ -1,0 +1,13 @@
+[package]
+name = "postretro-stage-timing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Per-stage CPU timing mechanism for Postretro: scope guard, frame record, window fold"
+license.workspace = true
+
+# Mechanism only: this crate names no engine stage and depends on no engine
+# crate, so a new stage recompiles its owning crate, not everything above it.
+# See: context/lib/rendering_pipeline.md §12
+
+[dependencies]

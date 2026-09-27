@@ -1,6 +1,9 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+pub mod cpu_stages;
+// Callers hand the CPU timing gate to the tick as a value.
+pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
 pub mod frame_timing;
 mod mesh_bindings;
@@ -310,6 +313,8 @@ pub struct TriggerTickContext<'a> {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct TickEvents {
+    /// CPU stage values for this tick; empty when timing is off.
+    pub cpu: postretro_stage_timing::StageFrame<cpu_stages::SimStage>,
     /// Local-pawn movement events, each on the pawn that raised it.
     pub movement: Vec<crate::emission::MovementEmission>,
     /// Ordered local-pawn state edges for render-rate view-feel presentation.
@@ -474,6 +479,7 @@ where
         trigger_context,
         |_, _| {},
         on_impact,
+        crate::sim::TimingGate::OFF,
     )
 }
 
@@ -509,10 +515,14 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     trigger_context: Option<TriggerTickContext<'_>>,
     mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
+    timing: postretro_stage_timing::TimingGate,
 ) -> TickEvents
 where
     AiResult: Into<AiTickResult>,
 {
+    use cpu_stages::SimStage;
+    let cpu = postretro_stage_timing::StageFrame::new(timing);
+    let tick_scope = cpu.scope(SimStage::Tick);
     registry.borrow_mut().snapshot_transforms();
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
@@ -527,6 +537,7 @@ where
     let auto_close_timers = trigger_context
         .as_ref()
         .and_then(|context| context.auto_close_timers.clone());
+    let stage = cpu.scope(SimStage::Movers);
     {
         let mut registry = registry.borrow_mut();
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
@@ -535,7 +546,9 @@ where
     if let Some(auto_close_timers) = auto_close_timers.as_ref() {
         auto_close_timers.arm_opened_termini(&mut registry.borrow_mut(), &mover_events);
     }
+    drop(stage);
 
+    let stage = cpu.scope(SimStage::Movement);
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
         .iter()
         .map(|remote| (remote.pawn, remote.command.movement.clone()))
@@ -571,6 +584,8 @@ where
         &command.movement,
         tick_dt,
     );
+    drop(stage);
+    let stage = cpu.scope(SimStage::Triggers);
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
         .iter()
         .map(|remote| AuthoritativePlayer {
@@ -711,6 +726,7 @@ where
             drop_pressed,
         )
     };
+    drop(stage);
     // Decay is the first writer in the impact phase. Its mutable overlay
     // borrow ends before ready-hit/projectile impacts and the AI's transient
     // immutable read view, so all same-tick writes remain borrow-safe and
@@ -720,6 +736,7 @@ where
     // land beside authoritative projectile impacts, after deferred-effect aging
     // but before AI snapshots combat perception. A declaration waiting on this
     // tick's FIRE authorization remains queued for App's post-sim drain.
+    let stage = cpu.scope(SimStage::Projectiles);
     {
         let mut registry = registry.borrow_mut();
         ingest_ready_remote_hits(&mut registry, &mut on_impact);
@@ -735,6 +752,8 @@ where
         tick_dt,
         &mut on_impact,
     );
+    drop(stage);
+    let stage = cpu.scope(SimStage::Ai);
     let ai_result = {
         let mut registry = registry.borrow_mut();
         let mut host = SimAiHost::new(&mut on_impact);
@@ -758,7 +777,10 @@ where
         projectile_spawns: enemy_projectile_spawns,
     } = ai_result;
 
+    drop(stage);
     let post_movement_command = post_movement(&registry);
+
+    let stage = cpu.scope(SimStage::Steering);
 
     {
         let mut registry = registry.borrow_mut();
@@ -797,6 +819,8 @@ where
         );
     }
 
+    drop(stage);
+    let stage = cpu.scope(SimStage::Weapons);
     let remote_weapon_result = weapon_stage::run_remote_weapon_commands(
         &registry,
         remote_pawn_commands,
@@ -852,6 +876,7 @@ where
             .map(|spawn| spawn.projectile)
             .chain(local_result.projectile_spawns.iter().copied()),
     );
+    drop(stage);
     let death = run_death_sweep(&registry);
 
     let mut repointed_pawns = touch_events.repointed_pawns;
@@ -860,8 +885,10 @@ where
     }
     repointed_pawns.sort_unstable();
     repointed_pawns.dedup();
+    drop(tick_scope);
 
     TickEvents {
+        cpu,
         movement: movement.emissions,
         movement_edges: movement.state_edges,
         ai,
@@ -2171,6 +2198,84 @@ mod tests {
         )
     }
 
+    fn timed_tick(timing: crate::sim::TimingGate) -> TickEvents {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+        }
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = TouchSystem::default();
+        let edges = HashMap::new();
+        simulate_tick_with_presentation_aim(
+            registry,
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            &mut touch_system,
+            &[],
+            0,
+            &FactionRegistry::default(),
+            &RefCell::new(FactionSentimentState::default()),
+            None,
+            &edges,
+            &edges,
+            None,
+            |_, _| {},
+            |_| {},
+            timing,
+        )
+    }
+
+    #[test]
+    fn timed_tick_reports_every_substage_inside_the_tick() {
+        use postretro_stage_timing::StageSet;
+        let events = timed_tick(crate::sim::TimingGate::ON);
+        let tick = events
+            .cpu
+            .value(cpu_stages::SimStage::Tick)
+            .expect("tick timed");
+        for &stage in &cpu_stages::SimStage::ALL[1..] {
+            let value = events
+                .cpu
+                .value(stage)
+                .unwrap_or_else(|| panic!("{stage:?} ran"));
+            assert!(value <= tick, "{stage:?} {value} ns exceeds tick {tick} ns");
+        }
+    }
+
+    #[test]
+    fn untimed_tick_reports_no_stage() {
+        use postretro_stage_timing::StageSet;
+        let events = timed_tick(crate::sim::TimingGate::OFF);
+        assert!(
+            cpu_stages::SimStage::ALL
+                .iter()
+                .all(|&stage| events.cpu.value(stage).is_none())
+        );
+    }
+
     #[test]
     fn touch_runs_without_a_trigger_context_before_ai() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -2252,6 +2357,7 @@ mod tests {
             None,
             |_, _| {},
             |_| {},
+            crate::sim::TimingGate::OFF,
         );
 
         assert_eq!(
@@ -2382,6 +2488,7 @@ mod tests {
             }),
             |_, _| {},
             |_| {},
+            crate::sim::TimingGate::OFF,
         );
 
         assert_eq!(

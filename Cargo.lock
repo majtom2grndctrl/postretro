@@ -4044,6 +4044,7 @@ dependencies = [
  "postretro-render-data",
  "postretro-script-compiler",
  "postretro-scripting-core",
+ "postretro-stage-timing",
  "postretro-test-log-capture",
  "postretro-ui",
  "proptest",

@@ -280,3 +280,73 @@ fn timing_on_steady_state_allocates_nothing_across_window_closes() {
     assert_eq!(probe.allocs_since(), 0);
     assert_eq!(timer.partial_frames(), 1, "two further windows closed");
 }
+
+/// One frame of the fixed-step fold as the redraw path runs it: each tick's
+/// sim stage frame summed into a frame-level one, nested under `fixed_step`.
+fn fixed_step_frame(timer: &mut CpuFrameTimer, tick_movement_nanos: &[u64]) {
+    use postretro_sim::sim::cpu_stages::SimStage;
+    use postretro_stage_timing::StageFrame;
+
+    let start = Instant::now();
+    timer.begin_frame(start);
+    let sim_cpu = StageFrame::<SimStage>::new(timer.gate());
+    let mut fixed_step = 0;
+    for &movement in tick_movement_nanos {
+        let tick = StageFrame::<SimStage>::new(timer.gate());
+        tick.add_nanos(SimStage::Tick, movement + 100);
+        tick.add_nanos(SimStage::Movement, movement);
+        sim_cpu.absorb(&tick);
+        fixed_step += movement + 150;
+    }
+    let stages = timer.stages();
+    stages.add_nanos(FrameStage::FixedStep, fixed_step);
+    stages.add_count(FrameStage::Ticks, tick_movement_nanos.len() as u64);
+    drop(stages);
+    timer
+        .nested_mut()
+        .extend_from(&sim_cpu, Some(FrameStage::FixedStep.label()));
+    timer.commit_frame(start + Duration::from_nanos(fixed_step + 1_000));
+}
+
+#[test]
+fn multi_tick_frame_sums_sim_substages_and_reports_the_tick_count() {
+    // P-many-tick
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    fixed_step_frame(&mut timer, &[1_000, 2_000, 4_000]);
+    let record = timer.last_record();
+    assert_eq!(record.value("sim_movement"), Some(7_000));
+    assert_eq!(record.value("sim_tick"), Some(7_300));
+    assert_eq!(record.value("ticks"), Some(3));
+    let movement = record
+        .samples()
+        .iter()
+        .find(|sample| sample.label == "sim_movement")
+        .unwrap();
+    assert_eq!(movement.parent, Some("sim_tick"));
+    let tick = record
+        .samples()
+        .iter()
+        .find(|sample| sample.label == "sim_tick")
+        .unwrap();
+    assert_eq!(tick.parent, Some("fixed_step"));
+    assert_eq!(record.substage_overruns().count(), 0);
+}
+
+#[test]
+fn zero_tick_frame_has_no_sim_rows_and_sim_averages_skip_it() {
+    // P-zero-tick
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    fixed_step_frame(&mut timer, &[]);
+    assert_eq!(timer.last_record().value("sim_tick"), None);
+    assert_eq!(timer.last_record().value("ticks"), Some(0));
+
+    for index in 1..WINDOW_FRAMES {
+        let ticks: &[u64] = if index % 2 == 0 { &[] } else { &[3_000] };
+        fixed_step_frame(&mut timer, ticks);
+    }
+    let window = timer.last_window().expect("window closed");
+    let movement = window.row("sim_movement").unwrap();
+    assert_eq!(movement.frames, WINDOW_FRAMES / 2);
+    assert!((movement.average - 3_000.0).abs() < 1e-9);
+    assert_eq!(window.row("ticks").unwrap().frames, WINDOW_FRAMES);
+}

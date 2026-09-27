@@ -2681,6 +2681,13 @@ impl ApplicationHandler for App {
                 // resolves. Frame-end removals append to the session buffer after
                 // this drain, so take that carryover now rather than running game
                 // logic during render.
+                // Per-tick stage values, summed over this frame's ticks.
+                let sim_cpu = postretro_stage_timing::StageFrame::<
+                    postretro_sim::sim::cpu_stages::SimStage,
+                >::new(self.cpu_timer.gate());
+                let prediction_cpu = postretro_stage_timing::StageFrame::<
+                    cpu_timing::PredictionStage,
+                >::new(self.cpu_timer.gate());
                 let mut pending_death_events = std::mem::take(
                     &mut self
                         .session
@@ -2828,6 +2835,8 @@ impl ApplicationHandler for App {
                                 let registry = script_ctx.registry.borrow();
                                 registry.local_player_movement_pawn()
                             };
+                            let predict_scope =
+                                prediction_cpu.scope(cpu_timing::PredictionStage::Wieldable);
                             let (switch_accepted, repointed) = {
                                 let hit_zone_store = &self
                                     .session
@@ -2847,6 +2856,7 @@ impl ApplicationHandler for App {
                                     tick_dt,
                                 )
                             };
+                            drop(predict_scope);
                             if let Some(pawn) = repointed {
                                 repointed_pawns.push(pawn);
                             }
@@ -2874,10 +2884,17 @@ impl ApplicationHandler for App {
                             if switch_accepted && let Some(slot) = command.select_slot {
                                 self.client_declare_switch(slot);
                             }
-                            self.client_predict_loaded_movers_tick(tick_dt);
-                            if let Some(prediction_tick) =
-                                self.client_predict_movement_tick(&command, tick_dt)
                             {
+                                let _scope =
+                                    prediction_cpu.scope(cpu_timing::PredictionStage::Movers);
+                                self.client_predict_loaded_movers_tick(tick_dt);
+                            }
+                            let prediction_tick = {
+                                let _scope =
+                                    prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
+                                self.client_predict_movement_tick(&command, tick_dt)
+                            };
+                            if let Some(prediction_tick) = prediction_tick {
                                 let mut addresses = Vec::new();
                                 prediction_tick
                                     .movement_events
@@ -3107,7 +3124,9 @@ impl ApplicationHandler for App {
                                 );
                             },
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+                            sim_cpu.gate(),
                         );
+                        sim_cpu.absorb(&tick_events.cpu);
                         // Advance timed-reaction countdowns for this tick. Position
                         // relative to `evaluate_slot_accumulators` is not
                         // behaviourally load-bearing: landings execute at the
@@ -3206,6 +3225,12 @@ impl ApplicationHandler for App {
                     0
                 };
                 cpu_stages.add_count(cpu_timing::FrameStage::Ticks, u64::from(ticks_run));
+                let fixed_step_label = Some(postretro_stage_timing::StageSet::label(
+                    cpu_timing::FrameStage::FixedStep,
+                ));
+                let nested_cpu = self.cpu_timer.nested_mut();
+                nested_cpu.extend_from(&sim_cpu, fixed_step_label);
+                nested_cpu.extend_from(&prediction_cpu, fixed_step_label);
                 drop(stage_scope);
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Presentation);
 

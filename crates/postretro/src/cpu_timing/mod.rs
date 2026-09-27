@@ -108,6 +108,31 @@ impl StageSet for FrameStage {
     }
 }
 
+/// Connected-client prediction inside the fixed-step loop. Its own labels,
+/// never the host's sim labels: a client runs none of the host tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PredictionStage {
+    Wieldable,
+    Movers,
+    Movement,
+}
+
+impl StageSet for PredictionStage {
+    const ALL: &'static [Self] = &[Self::Wieldable, Self::Movers, Self::Movement];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Wieldable => "predict_wieldable",
+            Self::Movers => "predict_movers",
+            Self::Movement => "predict_movement",
+        }
+    }
+}
+
 /// Labels of the frame split the binary derives at commit. `total` and `work`
 /// are aggregates; `wait` and `unattributed` sit beside the top-level stages
 /// and together with them sum to `total`.

@@ -123,6 +123,7 @@ impl HostSimulation {
             None,
             ingest,
             |_| {},
+            crate::sim::TimingGate::OFF,
         )
     }
 }

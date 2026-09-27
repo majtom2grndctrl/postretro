@@ -637,6 +637,21 @@ reports a trailing partial window only as a count. Disabled, unsupported, inacce
 and not-yet-windowed states remain distinct so missing GPU data cannot be mistaken for a
 zero-cost pass.
 
+### CPU Stage Timing
+
+_Decided, not built yet._ `POSTRETRO_CPU_TIMING=1` enables per-stage CPU timing in every build; unset, the timer accumulates, logs and allocates nothing. Stage labels are engine-closed and hierarchical: a substage's time sits inside its parent's. Each crate owns its stage set and returns its stats upward. A shared leaf crate holds only the mechanism (scope guard, window fold, optional Tracy bridge) and names no stage. The binary owns the top-level frame stages and every window, and folds stages by label, so a new stage in an existing crate's set needs no binary edit.
+
+| Rule | Contract |
+|---|---|
+| Frame split | Frame total = top-level stages + wait + unattributed. Wait is the vsync block: surface acquire (timed by the renderer, excluding surface reconfigure) plus present. Work CPU = total − wait. |
+| Windows | 120 counted in-level frames. Each stage's avg and max cover only the frames it ran in, and the stage reports that count. Unattributed, work CPU and tick count are per-frame values, then windowed. A stage entered twice in a frame sums. |
+| Excluded frames | Frontend frames, early-returned frames, and frames whose acquire yields no surface never count. |
+| Resets | A vsync toggle, level install, level unload or hot-reload commit discards the partial window; the triggering frame does not count. A new level clears the previous level's window from every surface. |
+| Portal walk | A step-limit trip is a walk frame. A portal-fallback frame adds only to a fallback count. |
+| Absent ≠ zero | A stage that did not run reports absent. Timing off reports unavailable with a reason. Capture reports only complete post-warmup windows, and a partial window only as a count. |
+
+CPU and GPU windows never align: the GPU window counts completed readbacks. Surfaces: a log line per window, the debug UI Performance tab (`dev-tools`), a live-only observe-live dump section (`networking.md` §Not netcode: the live introspection channel), and the capture measurement report. Tracy is an optional cargo feature. The feature alone drives it, and no release, dist or dependency-free diagnostic build enables it.
+
 ### Debug-Line Renderer
 
 `dev-tools` only. Immediate-mode API: per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a `LineList` vertex buffer and drawn after the fog composite pass and before egui. Depth-tested lines match the world render target sample count, test against opaque scene depth, and keep depth writes off. Overlay/x-ray lines are a separate always-on-top stream. Buffer cleared at the top of the diagnostic emit call each frame, before new segments are pushed — not inside the render path — so it stays bounded even when `render_frame_indirect` early-returns (surface Timeout/Occluded/Outdated). Capped at a fixed segment limit (overflow: log + truncate). Consumers include SH volume diagnostics, nav/path overlays, remote-entity markers, and Spatial BVH/cell/portal overlays.

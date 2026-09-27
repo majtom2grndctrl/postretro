@@ -1,0 +1,92 @@
+loaded in 2.9828ms
+cells=5671 solid=3178 exterior=411 drawable=2080 portals=5800 portal_refs=11600 locator_nodes=5670
+portal area m^2: p5=1.3005 p50=27.747 p95=211717.66 max=267022000.0; <0.01m^2=0 ; horizontal=1569 vertical=4231 oblique=0
+empty interior cell heights: n=2082 p5=0.610 p50=4.88 p95=13.00; thin(<0.5m)=44
+interior cell portal degree p50=4 p95=9 max=46
+interior extent Vec3(-97.536, 1.6256, -118.6688) .. Vec3(97.536, 47.1424, 118.6688)
+samples=3935 (skipped 0 located solid/exterior) views=24 walks=94440
+sweep in 1.0444341s on 6 threads
+steps(considered): p50=41 p90=416 p95=889 p99=6722 p99.9=20000 max=20000
+walk time us: p50=8 p95=171 p99=1184 max=44198
+visible drawable (non-trip): p50=7 p95=25 max=109
+  pitch    0: walks=31480 trips=23 p50=85 p99=6638
+  pitch   45: walks=31480 trips=41 p50=43 p99=6667
+  pitch  -45: walks=31480 trips=39 p50=23 p99=6783
+path multiplicity (accepted/reach x100, non-trip): p50=120 p95=560 p99=1176 max=3682
+step-limit trips: 103 of 94440 walks (0.109%)
+distinct camera cells with >=1 trip: 32
+  cell 3412 trips=8 sample=(-56.9,21.1,11.0) bounds=(-58.5,17.9,8.1)..(-55.3,24.4,13.8) deg=2 aabb_fallback_drawable=1159
+  cell 3392 trips=8 sample=(-27.6,21.1,31.3) bounds=(-29.3,17.9,28.4)..(-26.0,24.4,34.1) deg=2 aabb_fallback_drawable=1081
+  cell 3429 trips=8 sample=(-49.9,19.3,26.7) bounds=(-55.3,17.9,25.0)..(-44.6,20.7,28.5) deg=6 aabb_fallback_drawable=1095
+  cell 3384 trips=7 sample=(-32.1,24.4,31.3) bounds=(-35.0,17.9,28.4)..(-29.3,30.9,34.1) deg=8 aabb_fallback_drawable=1091
+  cell 3405 trips=5 sample=(-32.1,24.4,18.3) bounds=(-35.0,17.9,8.1)..(-29.3,30.9,28.4) deg=25 aabb_fallback_drawable=325
+  cell 3407 trips=5 sample=(-32.1,21.1,6.5) bounds=(-35.0,17.9,4.9)..(-29.3,24.4,8.1) deg=2 aabb_fallback_drawable=434
+  cell 3199 trips=4 sample=(-38.8,33.6,18.2) bounds=(-40.2,33.1,16.3)..(-37.4,34.1,20.1) deg=5 aabb_fallback_drawable=398
+  cell 3428 trips=4 sample=(-38.3,19.3,26.7) bounds=(-41.7,17.9,25.0)..(-35.0,20.7,28.5) deg=10 aabb_fallback_drawable=328
+  cell 3286 trips=4 sample=(-45.1,38.4,23.7) bounds=(-55.3,37.0,18.9)..(-35.0,39.8,28.4) deg=6 aabb_fallback_drawable=549
+  cell 3201 trips=3 sample=(-40.5,33.3,18.2) bounds=(-40.8,33.1,16.3)..(-40.2,33.5,20.1) deg=4 aabb_fallback_drawable=395
+  cell 3291 trips=3 sample=(-45.1,35.6,23.6) bounds=(-55.3,34.1,18.8)..(-35.0,37.0,28.4) deg=11 aabb_fallback_drawable=457
+  cell 3211 trips=3 sample=(-37.9,31.9,19.4) bounds=(-38.4,31.3,16.3)..(-37.4,32.5,22.6) deg=6 aabb_fallback_drawable=365
+  cell 3200 trips=3 sample=(-45.7,33.6,18.2) bounds=(-47.1,33.1,16.3)..(-44.3,34.1,20.1) deg=5 aabb_fallback_drawable=454
+  cell 3411 trips=3 sample=(-45.1,19.5,11.0) bounds=(-55.3,17.9,8.1)..(-35.0,30.9,13.8) deg=46 aabb_fallback_drawable=345
+  cell 3270 trips=3 sample=(-32.1,43.9,24.0) bounds=(-35.0,40.6,13.8)..(-29.3,47.1,34.1) deg=5 aabb_fallback_drawable=519
+  cell 3494 trips=3 sample=(-48.1,18.2,17.0) bounds=(-55.3,17.9,13.8)..(-40.8,18.5,20.1) deg=5 aabb_fallback_drawable=401
+  cell 3214 trips=3 sample=(-39.8,32.2,18.0) bounds=(-41.2,31.9,16.3)..(-38.4,32.5,19.7) deg=4 aabb_fallback_drawable=369
+  cell 3493 trips=3 sample=(-37.9,18.5,17.0) bounds=(-40.8,17.9,13.8)..(-35.0,19.1,20.1) deg=6 aabb_fallback_drawable=238
+  cell 3436 trips=2 sample=(-49.5,30.8,19.4) bounds=(-55.3,30.7,13.8)..(-43.7,30.9,25.0) deg=5 aabb_fallback_drawable=368
+  cell 3280 trips=2 sample=(-45.1,43.5,23.5) bounds=(-55.3,39.8,18.5)..(-35.0,47.1,28.4) deg=9 aabb_fallback_drawable=693
+  cell 3198 trips=2 sample=(-42.3,32.8,18.2) bounds=(-47.1,32.5,16.3)..(-37.4,33.1,20.1) deg=9 aabb_fallback_drawable=390
+  cell 3419 trips=2 sample=(-49.9,25.0,26.8) bounds=(-55.3,23.6,25.0)..(-44.5,26.4,28.6) deg=8 aabb_fallback_drawable=1119
+  cell 3495 trips=2 sample=(-49.5,18.8,17.0) bounds=(-55.3,18.5,13.8)..(-43.7,19.1,20.1) deg=5 aabb_fallback_drawable=377
+  cell 3487 trips=2 sample=(-39.1,19.7,18.2) bounds=(-43.3,19.1,13.8)..(-35.0,20.3,22.6) deg=10 aabb_fallback_drawable=214
+  cell 3204 trips=2 sample=(-44.0,33.3,18.2) bounds=(-44.3,33.1,16.3)..(-43.7,33.5,20.1) deg=4 aabb_fallback_drawable=394
+cross-check vs postretro_visibility::determine_visible_cells: 2010 walks, 0 mismatches
+deep reruns (cap 5000000) on 32 of 32 tripped camera cells:
+  cell 3119 pos=(-60.1,21.1,10.6) yaw=225 pitch=0: considered=23383 accepted=2162 tripped_again=false true_visible_drawable=82 aabb_fallback=839 time=3.6284ms cyc=2162 clip=19059 narrow=0
+  cell 3197 pos=(-42.3,33.3,22.6) yaw=0 pitch=-45: considered=21458 accepted=1622 tripped_again=false true_visible_drawable=67 aabb_fallback=393 time=2.6378ms cyc=1752 clip=18084 narrow=0
+  cell 3198 pos=(-42.3,32.8,18.2) yaw=0 pitch=-45: considered=28717 accepted=1193 tripped_again=false true_visible_drawable=58 aabb_fallback=390 time=3.438ms cyc=1193 clip=26331 narrow=0
+  cell 3199 pos=(-38.8,33.6,18.2) yaw=0 pitch=-45: considered=28536 accepted=1168 tripped_again=false true_visible_drawable=57 aabb_fallback=398 time=3.4928ms cyc=1168 clip=26200 narrow=0
+  cell 3200 pos=(-45.7,33.6,18.2) yaw=0 pitch=-45: considered=23950 accepted=956 tripped_again=false true_visible_drawable=55 aabb_fallback=390 time=2.8787ms cyc=956 clip=22038 narrow=0
+  cell 3201 pos=(-40.5,33.3,18.2) yaw=0 pitch=-45: considered=30128 accepted=1230 tripped_again=false true_visible_drawable=60 aabb_fallback=395 time=3.5304ms cyc=1230 clip=27668 narrow=0
+  cell 3204 pos=(-44.0,33.3,18.2) yaw=0 pitch=-45: considered=26827 accepted=1081 tripped_again=false true_visible_drawable=58 aabb_fallback=394 time=3.3054ms cyc=1081 clip=24665 narrow=0
+  cell 3211 pos=(-37.9,31.9,19.4) yaw=0 pitch=-45: considered=21228 accepted=828 tripped_again=false true_visible_drawable=54 aabb_fallback=365 time=2.6452ms cyc=828 clip=19572 narrow=0
+  cell 3214 pos=(-39.8,32.2,18.0) yaw=0 pitch=-45: considered=27065 accepted=1084 tripped_again=false true_visible_drawable=54 aabb_fallback=369 time=3.1193ms cyc=1084 clip=24897 narrow=0
+  cell 3270 pos=(-32.1,43.9,24.0) yaw=45 pitch=-45: considered=22461 accepted=1887 tripped_again=false true_visible_drawable=82 aabb_fallback=519 time=3.1588ms cyc=1887 clip=18687 narrow=0
+  cell 3280 pos=(-45.1,43.5,23.5) yaw=315 pitch=-45: considered=20376 accepted=1509 tripped_again=false true_visible_drawable=92 aabb_fallback=693 time=2.8939ms cyc=1509 clip=17358 narrow=0
+  cell 3286 pos=(-45.1,38.4,23.7) yaw=0 pitch=-45: considered=24162 accepted=1482 tripped_again=false true_visible_drawable=68 aabb_fallback=478 time=3.2722ms cyc=1482 clip=21198 narrow=0
+  cell 3291 pos=(-45.1,35.6,23.6) yaw=315 pitch=-45: considered=21243 accepted=1280 tripped_again=false true_visible_drawable=81 aabb_fallback=453 time=2.6956ms cyc=1280 clip=18683 narrow=0
+  cell 3384 pos=(-32.1,24.4,31.3) yaw=0 pitch=0: considered=26331 accepted=1663 tripped_again=false true_visible_drawable=92 aabb_fallback=1091 time=3.6576ms cyc=1663 clip=23005 narrow=0
+  cell 3392 pos=(-27.6,21.1,31.3) yaw=45 pitch=0: considered=31364 accepted=2348 tripped_again=false true_visible_drawable=95 aabb_fallback=679 time=4.2398ms cyc=2348 clip=26668 narrow=0
+  cell 3405 pos=(-32.1,24.4,18.3) yaw=90 pitch=0: considered=22526 accepted=1600 tripped_again=false true_visible_drawable=98 aabb_fallback=325 time=2.9631ms cyc=1600 clip=19326 narrow=0
+  cell 3407 pos=(-32.1,21.1,6.5) yaw=135 pitch=0: considered=24380 accepted=2939 tripped_again=false true_visible_drawable=85 aabb_fallback=434 time=4.0492ms cyc=2939 clip=18501 narrow=1
+  cell 3411 pos=(-45.1,19.5,11.0) yaw=180 pitch=45: considered=37139 accepted=4159 tripped_again=false true_visible_drawable=81 aabb_fallback=266 time=5.7788ms cyc=4159 clip=28820 narrow=1
+  cell 3412 pos=(-56.9,21.1,11.0) yaw=225 pitch=0: considered=28682 accepted=2779 tripped_again=false true_visible_drawable=91 aabb_fallback=815 time=4.2896ms cyc=2779 clip=23124 narrow=0
+  cell 3419 pos=(-49.9,25.0,26.8) yaw=315 pitch=0: considered=24147 accepted=1509 tripped_again=false true_visible_drawable=80 aabb_fallback=1119 time=3.1097ms cyc=1509 clip=21128 narrow=1
+  cell 3428 pos=(-38.3,19.3,26.7) yaw=0 pitch=45: considered=21368 accepted=1577 tripped_again=false true_visible_drawable=79 aabb_fallback=328 time=2.9672ms cyc=1577 clip=18214 narrow=0
+  cell 3429 pos=(-49.9,19.3,26.7) yaw=315 pitch=0: considered=23611 accepted=1312 tripped_again=false true_visible_drawable=59 aabb_fallback=1095 time=3.2968ms cyc=1312 clip=20987 narrow=0
+  cell 3435 pos=(-48.1,30.4,19.4) yaw=270 pitch=-45: considered=23672 accepted=1277 tripped_again=false true_visible_drawable=68 aabb_fallback=360 time=3.1912ms cyc=1277 clip=21118 narrow=0
+  cell 3436 pos=(-49.5,30.8,19.4) yaw=270 pitch=-45: considered=26221 accepted=1425 tripped_again=false true_visible_drawable=71 aabb_fallback=368 time=3.2967ms cyc=1425 clip=23371 narrow=0
+  cell 3442 pos=(-50.7,29.8,18.2) yaw=270 pitch=-45: considered=21808 accepted=1252 tripped_again=false true_visible_drawable=68 aabb_fallback=354 time=2.8196ms cyc=1252 clip=19304 narrow=0
+  cell 3446 pos=(-37.9,28.2,17.0) yaw=90 pitch=-45: considered=21701 accepted=1378 tripped_again=false true_visible_drawable=64 aabb_fallback=204 time=2.9468ms cyc=1378 clip=18945 narrow=0
+  cell 3487 pos=(-39.1,19.7,18.2) yaw=45 pitch=45: considered=20725 accepted=942 tripped_again=false true_visible_drawable=62 aabb_fallback=214 time=2.5225ms cyc=942 clip=18841 narrow=0
+  cell 3488 pos=(-49.3,19.4,18.2) yaw=270 pitch=45: considered=24794 accepted=1572 tripped_again=false true_visible_drawable=84 aabb_fallback=345 time=3.4428ms cyc=1572 clip=21650 narrow=0
+  cell 3489 pos=(-50.7,20.0,18.2) yaw=270 pitch=45: considered=22423 accepted=1456 tripped_again=false true_visible_drawable=83 aabb_fallback=329 time=3.0262ms cyc=1456 clip=19511 narrow=0
+  cell 3493 pos=(-37.9,18.5,17.0) yaw=45 pitch=45: considered=23614 accepted=1157 tripped_again=false true_visible_drawable=73 aabb_fallback=238 time=2.8735ms cyc=1157 clip=21300 narrow=0
+  cell 3494 pos=(-48.1,18.2,17.0) yaw=225 pitch=45: considered=22388 accepted=1701 tripped_again=false true_visible_drawable=95 aabb_fallback=321 time=3.242ms cyc=1701 clip=18986 narrow=0
+  cell 3495 pos=(-49.5,18.8,17.0) yaw=225 pitch=45: considered=21692 accepted=1567 tripped_again=false true_visible_drawable=89 aabb_fallback=296 time=3.104ms cyc=1567 clip=18558 narrow=0
+hot cells (entries per cell) for tripped walk cam_cell=3119 pos=Vec3(-60.1472, 21.1072, 10.566401):
+   cell 3405 entered 300x  bounds=(-34.95,17.88,8.13)..(-29.26,30.89,28.45) deg=25 drawable=true
+   cell 3440 entered 101x  bounds=(-43.28,28.85,13.82)..(-34.95,30.07,22.56) deg=10 drawable=true
+   cell 3434 entered 100x  bounds=(-40.84,30.07,13.82)..(-34.95,30.89,24.99) deg=8 drawable=true
+   cell 3446 entered 84x  bounds=(-40.84,27.64,13.82)..(-34.95,28.85,20.12) deg=8 drawable=true
+   cell 3452 entered 69x  bounds=(-38.40,26.42,13.82)..(-34.95,27.64,22.56) deg=8 drawable=true
+   cell 3212 entered 60x  bounds=(-47.14,31.29,16.26)..(-38.40,31.90,22.56) deg=7 drawable=true
+   cell 3435 entered 57x  bounds=(-55.27,30.07,13.82)..(-40.84,30.68,24.99) deg=10 drawable=true
+   cell 3216 entered 49x  bounds=(-40.84,30.89,16.26)..(-37.39,31.29,24.99) deg=6 drawable=true
+   cell 3268 entered 48x  bounds=(-34.95,34.14,13.82)..(-29.26,40.64,37.39) deg=10 drawable=true
+   cell 3198 entered 48x  bounds=(-47.14,32.51,16.26)..(-37.39,33.12,20.12) deg=9 drawable=true
+   cell 3457 entered 47x  bounds=(-40.84,25.20,13.82)..(-34.95,26.42,24.99) deg=10 drawable=true
+   cell 3291 entered 44x  bounds=(-55.27,34.14,18.80)..(-34.95,36.98,28.45) deg=11 drawable=true
+   cell 3455 entered 43x  bounds=(-41.25,27.03,13.82)..(-38.40,27.64,19.71) deg=6 drawable=true
+   cell 3453 entered 42x  bounds=(-55.27,26.42,13.82)..(-38.40,27.03,22.56) deg=8 drawable=true
+   cell 3211 entered 40x  bounds=(-38.40,31.29,16.26)..(-37.39,32.51,22.56) deg=6 drawable=true

@@ -1,0 +1,16 @@
+[package]
+name = "portalsweep"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+log = "0.4"
+postretro-level-loader = { path = "C:/Users/danhi/Projects/Personal/postretro/crates/level-loader" }
+postretro-level-format = { path = "C:/Users/danhi/Projects/Personal/postretro/crates/level-format" }
+postretro-visibility = { path = "C:/Users/danhi/Projects/Personal/postretro/crates/visibility" }
+
+[profile.release]
+debug = false

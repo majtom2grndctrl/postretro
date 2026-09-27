@@ -11630,7 +11630,7 @@ mod tests {
         );
     }
 
-    // Row 27: the fixture's `door.open` (`playSound("sfx/door_open", { at:
+    // Row 27: the fixture's `door.open` (`playSound("fixtures/door_open", { at:
     // on.emitter })`, lowered as its scripting-core test pins) hands audio one
     // request, anchored at the door's bounds center.
     #[test]
@@ -11682,7 +11682,7 @@ mod tests {
                     target: None,
                     tag: None,
                     on_complete: None,
-                    args: serde_json::json!({ "sound": "sfx/door_open", "at": "@emitter" }),
+                    args: serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
                 }),
             }],
             Vec::new(),
@@ -11737,7 +11737,7 @@ mod tests {
         else {
             panic!("one anchored playSound, got {commands:?}");
         };
-        assert_eq!((sound.as_str(), bus.as_deref()), ("sfx/door_open", None));
+        assert_eq!((sound.as_str(), bus.as_deref()), ("fixtures/door_open", None));
 
         // The drain places the anchor as `dispatch_system_commands` does.
         let registry = script_ctx.registry.borrow();

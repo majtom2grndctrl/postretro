@@ -369,7 +369,7 @@ fn the_positional_sound_fixture_is_identical_in_both_authorings() {
     assert_eq!(door["primitive"], "playSound");
     assert_eq!(
         door["args"],
-        serde_json::json!({ "sound": "sfx/door_open", "at": "@emitter" }),
+        serde_json::json!({ "sound": "fixtures/door_open", "at": "@emitter" }),
         "`at: on.emitter` lowers to the emitter token",
     );
 }

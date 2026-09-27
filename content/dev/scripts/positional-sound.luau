@@ -2,6 +2,8 @@
 -- DEV FIXTURE — Luau twin of `positional-sound.ts`: the positional sound
 -- events scripting surface of `audio.md` §4. The scripting-core twin test
 -- keeps both authorings' descriptors equal.
+-- Keys under `fixtures/` are generated placeholder tones kept for tests and
+-- dev play; weapon keys name curated clips.
 
 local UI = require("postretro/ui")
 
@@ -43,7 +45,7 @@ M.positionalSoundShotgunEntity = defineEntity({
 })
 
 -- Landing and jumping, adopted by the dev player's movement block.
-M.positionalSoundMovementSounds = { land = "sfx/land", jump = "sfx/jump" }
+M.positionalSoundMovementSounds = { land = "fixtures/land", jump = "fixtures/jump" }
 
 -- An attack that sounds as it fires, and a state that sounds on entry with no `onEnter`.
 M.positionalSoundGruntEntity = defineEntity({
@@ -53,14 +55,14 @@ M.positionalSoundGruntEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attacks = { bite = { damage = 10, maxRange = 2, cooldownMs = 800, sound = "sfx/bite" } },
+      attacks = { bite = { damage = 10, maxRange = 2, cooldownMs = 800, sound = "fixtures/bite" } },
       activities = {
         idle = { animation = "idle", motion = "hold" },
         alerted = {
           animation = "idle",
           motion = "chaseTarget",
           action = { attack = "bite" },
-          sound = "sfx/growl",
+          sound = "fixtures/growl",
         },
       },
       transitions = { idle = { { to = "alerted", when = brain.hasTarget } }, ["*"] = {} },
@@ -75,7 +77,7 @@ M.positionalSoundAttenuation = { minDistance = 2, maxDistance = 60, curve = "lin
 M.positionalSoundReactions = {
   -- A dev map door authoring `open_event` "door.open" plays this at its bounds center.
   defineReaction("door.open", function(on: EmitterParams)
-    return UI.playSound("sfx/door_open", { at = on.emitter })
+    return UI.playSound("fixtures/door_open", { at = on.emitter })
   end),
   -- Unanchored: plays unpositioned.
   defineReaction("positionalSoundAlert", UI.playSound("sfx/test_tone", { bus = "sfx" })),

@@ -2,6 +2,8 @@
 // `audio.md` §4, shipped so every sound key it names loads and plays in dev
 // maps. Hand-authored beside `positional-sound.luau`; the scripting-core twin
 // test keeps their descriptors equal.
+// Keys under `fixtures/` are generated placeholder tones kept for tests and
+// dev play; weapon keys name curated clips.
 
 import { brain, defineEntity, defineReaction } from "postretro";
 import type { EmitterParams } from "postretro";
@@ -43,7 +45,7 @@ export const positionalSoundShotgunEntity = defineEntity({
 });
 
 /** Landing and jumping, adopted by the dev player's movement block. */
-export const positionalSoundMovementSounds = { land: "sfx/land", jump: "sfx/jump" };
+export const positionalSoundMovementSounds = { land: "fixtures/land", jump: "fixtures/jump" };
 
 /** An attack that sounds as it fires, and a state that sounds on entry with no `onEnter`. */
 export const positionalSoundGruntEntity = defineEntity({
@@ -53,14 +55,14 @@ export const positionalSoundGruntEntity = defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attacks: { bite: { damage: 10, maxRange: 2, cooldownMs: 800, sound: "sfx/bite" } },
+      attacks: { bite: { damage: 10, maxRange: 2, cooldownMs: 800, sound: "fixtures/bite" } },
       activities: {
         idle: { animation: "idle", motion: "hold" },
         alerted: {
           animation: "idle",
           motion: "chaseTarget",
           action: { attack: "bite" },
-          sound: "sfx/growl",
+          sound: "fixtures/growl",
         },
       },
       transitions: { idle: [{ to: "alerted", when: brain.hasTarget }], "*": [] },
@@ -79,7 +81,7 @@ export const positionalSoundAttenuation = {
 export const positionalSoundReactions = [
   // A dev map door authoring `open_event` "door.open" plays this at its bounds center.
   defineReaction("door.open", (on: EmitterParams) =>
-    playSound("sfx/door_open", { at: on.emitter }),
+    playSound("fixtures/door_open", { at: on.emitter }),
   ),
   // Unanchored: plays unpositioned.
   defineReaction("positionalSoundAlert", playSound("sfx/test_tone", { bus: "sfx" })),

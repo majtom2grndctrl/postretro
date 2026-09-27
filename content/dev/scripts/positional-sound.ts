@@ -33,12 +33,12 @@ export const positionalSoundShotgunEntity = defineEntity({
         reloadStyle: "perShell",
       },
       sounds: {
-        fire: "sfx/shotgun_fire",
-        dryFire: "sfx/click",
-        impact: "sfx/pellet_hit",
-        reloadStart: "sfx/shotgun_open",
-        reloadShell: "sfx/shell_in", // perShell reload style
-        reloadComplete: "sfx/shotgun_pump",
+        fire: "weapons/shotgun_fire",
+        dryFire: "weapons/dry_fire",
+        impact: "fixtures/pellet_hit",
+        reloadStart: "weapons/shotgun_pump_back",
+        reloadShell: "weapons/shotgun_shell_load", // perShell reload style
+        reloadComplete: "weapons/shotgun_pump_forward",
       },
     },
   },

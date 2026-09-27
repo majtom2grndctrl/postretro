@@ -12,6 +12,8 @@ export const enemyRifleEntity = defineEntity({
       fireRateMs: 750,
       fireMode: "auto",
       resolution: "projectile",
+      // The limitator's shot, heard where it fires (sounds/weapons/CREDITS.txt).
+      sounds: { fire: "weapons/enemy_rifle_fire" },
       projectile: {
         speed: 20,
         radius: 0.15,

@@ -36,6 +36,13 @@ export const referenceRifleEntity = defineEntity({
         reloadMs: 1500,
         reloadStyle: "magazine",
       },
+      // Curated from Snake's Authentic Gun Sounds packs (sounds/weapons/CREDITS.txt).
+      sounds: {
+        fire: "weapons/rifle_fire",
+        dryFire: "weapons/dry_fire",
+        reloadStart: "weapons/rifle_mag_out",
+        reloadComplete: "weapons/rifle_bolt_release",
+      },
     },
     mesh: { model: "models/cyberpunk_weapons/rifle/model.gltf" },
     touchable: { mode: "auto", radius: 1.0 },

@@ -11737,7 +11737,10 @@ mod tests {
         else {
             panic!("one anchored playSound, got {commands:?}");
         };
-        assert_eq!((sound.as_str(), bus.as_deref()), ("fixtures/door_open", None));
+        assert_eq!(
+            (sound.as_str(), bus.as_deref()),
+            ("fixtures/door_open", None)
+        );
 
         // The drain places the anchor as `dispatch_system_commands` does.
         let registry = script_ctx.registry.borrow();

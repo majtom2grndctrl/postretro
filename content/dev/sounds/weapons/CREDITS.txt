@@ -1,0 +1,29 @@
+Weapon sounds — curated, downmixed to mono and encoded as Ogg Vorbis (q4).
+
+Sources, both by SnakeF8 / F8 Studios (https://f8studios.itch.io):
+* Snake's Authentic Gun Sounds
+  https://f8studios.itch.io/snakes-authentic-gun-sounds
+* Snake's SECOND Authentic Gun Sounds Pack
+  https://f8studios.itch.io/snakes-second-authentic-gun-sounds-pack
+
+License: the author states on both pack pages that "All sounds can be used
+commercially, and credit is not needed (I would appreciate it a lot
+though!)", and in the second pack's comments calls the sounds public
+domain. Credit is given here anyway.
+
+File                      Source clip
+shotgun_fire.ogg          SECOND pack, Isolated/20 Gauge/20 Gauge Single Isolated
+shotgun_pump_back.ogg     first pack, Reloads/Pump Reload Part 1
+shotgun_shell_load.ogg    SECOND pack, & More/Mag Pack/Single Shotgun Load
+shotgun_pump_forward.ogg  first pack, Reloads/Pump Reload Part 2
+rifle_fire.ogg            first pack, Isolated/5.56/556 Single Isolated
+rifle_mag_out.ogg         first pack, Reloads/AR Reload Part 1
+rifle_bolt_release.ogg    first pack, Reloads/AR Bolt Release
+pistol_fire.ogg           SECOND pack, Isolated/9mm/9mm Single Isolated
+pistol_reload.ogg         SECOND pack, & More/Pistol/9mm Pistol Reload 1
+pistol_slide_release.ogg  SECOND pack, & More/Pistol/9mm Pistol Slide Release
+dry_fire.ogg              SECOND pack, & More/Pistol/9mm Pistol Dry Fire
+enemy_rifle_fire.ogg      first pack, Isolated/7.62x39/762x39 Single Isolated
+
+Gunshots use the packs' "Isolated" (dry) takes so the engine's spatial
+mix and future reverb zones supply the room.

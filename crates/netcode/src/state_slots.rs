@@ -38,24 +38,35 @@ const SCOPE_TAG_OWNER_PRIVATE: u8 = 2;
 
 const WIRE_SHAPE_PLAIN: u8 = 0;
 const WIRE_SHAPE_WIELDABLE_SLOT_NUMBER: u8 = 1;
+const WIRE_SHAPE_WIELDABLE_SLOT_BOOLEAN: u8 = 2;
 const WEAPON_COOLDOWN_SLOT: &str = "player.weaponCooldownMs";
+const MAGAZINE_SLOT: &str = "player.ammo";
+const RESERVE_SLOT: &str = "player.ammoReserve";
+const RELOAD_PROGRESS_SLOT: &str = "player.reloadProgress";
+const RELOAD_ACTIVE_SLOT: &str = "player.reloadActive";
 
-/// Some engine slots need source identity to make their value meaningful. The
-/// script-facing slot keeps its ordinary type; only its replicated wire sample is
-/// widened. The schema fingerprint prevents a stale peer from interpreting the
-/// correlated sample as an ordinary number.
+/// Some engine slots need source identity to make their value meaningful: the
+/// owner-private weapon values describe the host's active weapon, which lags a
+/// local switch by a round trip, so each travels as `[host wieldable slot,
+/// value]`. The script-facing slot keeps its ordinary type; only its replicated
+/// wire sample is widened. The schema fingerprint prevents a stale peer from
+/// interpreting the correlated sample as an ordinary value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReplicatedWireShape {
     Plain,
     WieldableSlotNumber,
+    /// The boolean travels as `0.0` or `1.0` beside the slot.
+    WieldableSlotBoolean,
 }
 
 impl ReplicatedWireShape {
     fn for_name(name: &str) -> Self {
-        if name == WEAPON_COOLDOWN_SLOT {
-            Self::WieldableSlotNumber
-        } else {
-            Self::Plain
+        match name {
+            WEAPON_COOLDOWN_SLOT | MAGAZINE_SLOT | RESERVE_SLOT | RELOAD_PROGRESS_SLOT => {
+                Self::WieldableSlotNumber
+            }
+            RELOAD_ACTIVE_SLOT => Self::WieldableSlotBoolean,
+            _ => Self::Plain,
         }
     }
 
@@ -63,7 +74,60 @@ impl ReplicatedWireShape {
         match self {
             Self::Plain => WIRE_SHAPE_PLAIN,
             Self::WieldableSlotNumber => WIRE_SHAPE_WIELDABLE_SLOT_NUMBER,
+            Self::WieldableSlotBoolean => WIRE_SHAPE_WIELDABLE_SLOT_BOOLEAN,
         }
+    }
+}
+
+/// Lower one owner-private weapon value to its slot-correlated wire sample.
+fn wieldable_slot_sample(slot: usize, value: &SlotValue) -> Option<WireSlotValue> {
+    let value = match value {
+        SlotValue::Number(number) if number.is_finite() => *number,
+        SlotValue::Boolean(flag) => f32::from(u8::from(*flag)),
+        _ => return None,
+    };
+    Some(WireSlotValue::Array(vec![slot as f32, value]))
+}
+
+/// Record a committed slot-correlated value in the client's weapon projection.
+fn record_weapon_sample(
+    projection: &mut ReplicatedWeaponProjection,
+    name: &str,
+    slot: usize,
+    value: &SlotValue,
+) {
+    match (name, value) {
+        (WEAPON_COOLDOWN_SLOT, SlotValue::Number(value)) => {
+            projection.cooldown = Some(SlotSample {
+                slot,
+                value: *value,
+            });
+        }
+        (MAGAZINE_SLOT, SlotValue::Number(value)) => {
+            projection.magazine = Some(SlotSample {
+                slot,
+                value: *value,
+            });
+        }
+        (RESERVE_SLOT, SlotValue::Number(value)) => {
+            projection.reserve = Some(SlotSample {
+                slot,
+                value: *value,
+            });
+        }
+        (RELOAD_PROGRESS_SLOT, SlotValue::Number(value)) => {
+            projection.reload_progress = Some(SlotSample {
+                slot,
+                value: *value,
+            });
+        }
+        (RELOAD_ACTIVE_SLOT, SlotValue::Boolean(value)) => {
+            projection.reload_active = Some(SlotSample {
+                slot,
+                value: *value,
+            });
+        }
+        _ => {}
     }
 }
 
@@ -268,11 +332,15 @@ impl ReplicatedSlotSchemaEntry {
             slot_id: self.slot_id,
             value_type: match self.wire_shape {
                 ReplicatedWireShape::Plain => slot_type_to_wire(&self.slot_type),
-                ReplicatedWireShape::WieldableSlotNumber => SlotValueType::Array,
+                ReplicatedWireShape::WieldableSlotNumber
+                | ReplicatedWireShape::WieldableSlotBoolean => SlotValueType::Array,
             },
+            // A correlated sample's value keeps its range and type check at the
+            // store write, after the slot is split off.
             range: match self.wire_shape {
                 ReplicatedWireShape::Plain => self.range.map(numeric_range_to_wire),
-                ReplicatedWireShape::WieldableSlotNumber => None,
+                ReplicatedWireShape::WieldableSlotNumber
+                | ReplicatedWireShape::WieldableSlotBoolean => None,
             },
             scope: scope_to_wire(self.scope),
         }
@@ -395,6 +463,7 @@ use postretro_net::state_slots::{
 };
 
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
+use crate::weapon::{ReplicatedWeaponProjection, SlotSample};
 use postretro_entities::EntityId;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
@@ -839,8 +908,8 @@ fn owner_private_source_value(
     if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn) {
         return Some(value);
     }
-    if let Some(value) = ammo_projection.slot_value(name) {
-        return value.as_ref().and_then(slot_value_to_wire);
+    if let Some(value) = ammo_projection.wire_sample(name) {
+        return value;
     }
     if let Some(value) = per_owner_slot_value_for_pawn(slot_table, registry, name, pawn) {
         return value;
@@ -886,6 +955,10 @@ fn descriptor_ammo_for_pawn(
 
 struct AmmoSlotProjection {
     weapon: Option<EntityId>,
+    /// The host wieldable slot every value describes: the pawn's active slot,
+    /// whether or not it holds a weapon. `None` for a pawn with no inventory,
+    /// whose values are then never sent.
+    wieldable_slot: Option<usize>,
     magazine: Option<f32>,
     reserve: Option<f32>,
     reload_progress: f32,
@@ -894,12 +967,15 @@ struct AmmoSlotProjection {
 
 impl AmmoSlotProjection {
     fn for_pawn(registry: &EntityRegistry, pawn: EntityId) -> Self {
-        let weapon = if registry.exists(pawn) {
-            super::active_wieldable_for_pawn(registry, pawn)
+        let inventory = if registry.exists(pawn) {
+            registry.get_component::<Inventory>(pawn).ok()
         } else {
             None
-        }
-        .filter(|weapon| registry.get_component::<WeaponComponent>(*weapon).is_ok());
+        };
+        let wieldable_slot = inventory.map(|inventory| inventory.active_slot);
+        let weapon = inventory
+            .and_then(Inventory::active_wieldable)
+            .filter(|weapon| registry.get_component::<WeaponComponent>(*weapon).is_ok());
         let component =
             weapon.and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
         let (reload_progress, reload_active) = component
@@ -922,6 +998,7 @@ impl AmmoSlotProjection {
 
         Self {
             weapon,
+            wieldable_slot,
             magazine,
             reserve,
             reload_progress,
@@ -931,13 +1008,25 @@ impl AmmoSlotProjection {
 
     fn slot_value(&self, name: &str) -> Option<Option<SlotValue>> {
         let value = match name {
-            "player.ammo" => self.magazine.map(SlotValue::Number),
-            "player.ammoReserve" => self.reserve.map(SlotValue::Number),
-            "player.reloadProgress" => Some(SlotValue::Number(self.reload_progress)),
-            "player.reloadActive" => Some(SlotValue::Boolean(self.reload_active)),
+            MAGAZINE_SLOT => self.magazine.map(SlotValue::Number),
+            RESERVE_SLOT => self.reserve.map(SlotValue::Number),
+            RELOAD_PROGRESS_SLOT => Some(SlotValue::Number(self.reload_progress)),
+            RELOAD_ACTIVE_SLOT => Some(SlotValue::Boolean(self.reload_active)),
             _ => return None,
         };
         Some(value)
+    }
+
+    /// The slot-correlated wire sample for `name`, with the same outer and
+    /// inner options as [`Self::slot_value`]. A value with no wieldable slot
+    /// to name is not sent.
+    fn wire_sample(&self, name: &str) -> Option<Option<WireSlotValue>> {
+        let value = self.slot_value(name)?;
+        Some(
+            value
+                .zip(self.wieldable_slot)
+                .and_then(|(value, slot)| wieldable_slot_sample(slot, &value)),
+        )
     }
 }
 
@@ -983,10 +1072,10 @@ fn descriptor_weapon_cooldown_for_pawn(
     let inventory = registry.get_component::<Inventory>(pawn).ok()?;
     let weapon = inventory.active_wieldable()?;
     let component = registry.get_component::<WeaponComponent>(weapon).ok()?;
-    Some(WireSlotValue::Array(vec![
-        inventory.active_slot as f32,
-        component.cooldown_remaining_ms,
-    ]))
+    wieldable_slot_sample(
+        inventory.active_slot,
+        &SlotValue::Number(component.cooldown_remaining_ms),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,8 +1107,9 @@ pub(crate) struct StateApplyOutcome {
     pub(crate) faction_sentiment_baseline: Option<u32>,
     pub(crate) refresh_requests: Vec<StateBaselineRefreshRequest>,
     pub(crate) fresh_slots: Vec<String>,
-    /// Source slot carried atomically with a fresh owner-private cooldown sample.
-    pub(crate) fresh_weapon_cooldown_slot: Option<usize>,
+    /// Owner-private weapon values committed by this batch, each with the host
+    /// wieldable slot it describes. A value the batch did not carry is `None`.
+    pub(crate) fresh_weapon_projection: ReplicatedWeaponProjection,
 }
 
 struct PendingSlotWrite {
@@ -1044,6 +1134,10 @@ pub struct ClientStateApply {
     /// Complete sparse faction-sentiment baseline currently reflected by the local
     /// overlay. Its independent namespace prevents collision with static slot ids.
     held_faction_sentiment_baseline: Option<u32>,
+    /// The host wieldable slot each owner-private weapon value in the slot table
+    /// describes, committed with that value. A reset clears it, so a value kept
+    /// across the reset names no slot until its next baseline.
+    weapon_projection: ReplicatedWeaponProjection,
 }
 
 impl ClientStateApply {
@@ -1053,6 +1147,7 @@ impl ClientStateApply {
             net_schema: None,
             held_baselines: HashMap::new(),
             held_faction_sentiment_baseline: None,
+            weapon_projection: ReplicatedWeaponProjection::default(),
         }
     }
 
@@ -1062,6 +1157,7 @@ impl ClientStateApply {
         self.net_schema = None;
         self.held_baselines.clear();
         self.held_faction_sentiment_baseline = None;
+        self.weapon_projection = ReplicatedWeaponProjection::default();
     }
 
     #[cfg(test)]
@@ -1070,6 +1166,13 @@ impl ClientStateApply {
             && self.net_schema.is_none()
             && self.held_baselines.is_empty()
             && self.held_faction_sentiment_baseline.is_none()
+            && self.weapon_projection == ReplicatedWeaponProjection::default()
+    }
+
+    /// The owner-private weapon values as last committed, each with the host
+    /// wieldable slot it describes.
+    pub(crate) fn weapon_projection(&self) -> &ReplicatedWeaponProjection {
+        &self.weapon_projection
     }
 
     /// Validate and atomically replace the client overlay from one host sparse-set
@@ -1290,8 +1393,18 @@ impl ClientStateApply {
             outcome
                 .fresh_slots
                 .extend(writes.iter().map(|write| write.name.clone()));
-            outcome.fresh_weapon_cooldown_slot =
-                writes.iter().rev().find_map(|write| write.wieldable_slot);
+            for write in &writes {
+                if let Some(slot) = write.wieldable_slot {
+                    record_weapon_sample(
+                        &mut outcome.fresh_weapon_projection,
+                        &write.name,
+                        slot,
+                        &write.value,
+                    );
+                }
+            }
+            self.weapon_projection
+                .merge(&outcome.fresh_weapon_projection);
         }
 
         // Applied: advance held baselines and ack them.
@@ -1329,33 +1442,61 @@ impl ClientStateApply {
                 }))
             }
             ReplicatedWireShape::WieldableSlotNumber => {
-                let WireSlotValue::Array(sample) = value else {
-                    return Err(format!(
-                        "correlated cooldown slot {} did not carry an array",
-                        slot_id.0
-                    ));
-                };
-                let [slot, cooldown_ms] = sample.as_slice() else {
-                    return Err(format!(
-                        "correlated cooldown slot {} carried {} fields instead of 2",
-                        slot_id.0,
-                        sample.len()
-                    ));
-                };
-                if slot.fract() != 0.0 || *slot < 0.0 || *slot >= WIELDABLE_SLOT_CAPACITY as f32 {
-                    return Err(format!(
-                        "correlated cooldown slot {} carried invalid wieldable slot {slot}",
-                        slot_id.0
-                    ));
-                }
+                let (slot, number) = split_wieldable_slot_sample(slot_id, value)?;
                 Ok(Some(PendingSlotWrite {
                     name: entry.name,
-                    value: SlotValue::Number(*cooldown_ms),
-                    wieldable_slot: Some(*slot as usize),
+                    value: SlotValue::Number(number),
+                    wieldable_slot: Some(slot),
+                }))
+            }
+            ReplicatedWireShape::WieldableSlotBoolean => {
+                let (slot, flag) = split_wieldable_slot_sample(slot_id, value)?;
+                let flag = if flag == 0.0 {
+                    false
+                } else if flag == 1.0 {
+                    true
+                } else {
+                    return Err(format!(
+                        "correlated boolean slot {} carried {flag} instead of 0 or 1",
+                        slot_id.0
+                    ));
+                };
+                Ok(Some(PendingSlotWrite {
+                    name: entry.name,
+                    value: SlotValue::Boolean(flag),
+                    wieldable_slot: Some(slot),
                 }))
             }
         }
     }
+}
+
+/// Split a `[host wieldable slot, value]` sample. Any other shape, or a slot
+/// outside the inventory, rejects the batch.
+fn split_wieldable_slot_sample(
+    slot_id: StateSlotId,
+    value: &WireSlotValue,
+) -> Result<(usize, f32), String> {
+    let WireSlotValue::Array(sample) = value else {
+        return Err(format!(
+            "correlated slot {} did not carry an array",
+            slot_id.0
+        ));
+    };
+    let [slot, value] = sample.as_slice() else {
+        return Err(format!(
+            "correlated slot {} carried {} fields instead of 2",
+            slot_id.0,
+            sample.len()
+        ));
+    };
+    if slot.fract() != 0.0 || *slot < 0.0 || *slot >= WIELDABLE_SLOT_CAPACITY as f32 {
+        return Err(format!(
+            "correlated slot {} carried invalid wieldable slot {slot}",
+            slot_id.0
+        ));
+    }
+    Ok((*slot as usize, *value))
 }
 
 impl Default for ClientStateApply {
@@ -2281,7 +2422,7 @@ mod tests {
             assert_eq!(
                 table.get("player.reloadActive").unwrap().value,
                 Some(SlotValue::Boolean(active)),
-                "reloadActive remains Boolean on the wire/apply path"
+                "reloadActive stays Boolean in the store; the slot rides only the wire sample"
             );
         }
 
@@ -2478,6 +2619,249 @@ mod tests {
             descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &owners),
             Some(Some(SlotValue::Boolean(false)))
         );
+        // No inventory names a slot for these values, so none is sent.
+        let projection = AmmoSlotProjection::for_pawn(&registry, pawn);
+        for name in [
+            MAGAZINE_SLOT,
+            RESERVE_SLOT,
+            RELOAD_PROGRESS_SLOT,
+            RELOAD_ACTIVE_SLOT,
+        ] {
+            assert_eq!(projection.wire_sample(name), Some(None), "{name}");
+        }
+    }
+
+    #[test]
+    fn owner_weapon_slots_use_slot_correlated_wire_shapes() {
+        let table = owner_private_player_table();
+        let schema = build_test_schema(&table);
+        for (name, shape) in [
+            (
+                WEAPON_COOLDOWN_SLOT,
+                ReplicatedWireShape::WieldableSlotNumber,
+            ),
+            (MAGAZINE_SLOT, ReplicatedWireShape::WieldableSlotNumber),
+            (RESERVE_SLOT, ReplicatedWireShape::WieldableSlotNumber),
+            (
+                RELOAD_PROGRESS_SLOT,
+                ReplicatedWireShape::WieldableSlotNumber,
+            ),
+            (
+                RELOAD_ACTIVE_SLOT,
+                ReplicatedWireShape::WieldableSlotBoolean,
+            ),
+            ("player.health", ReplicatedWireShape::Plain),
+        ] {
+            let entry = schema
+                .entries()
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("{name} is replicated"));
+            assert_eq!(entry.wire_shape, shape, "{name}");
+            let descriptor = entry.to_net_descriptor();
+            if shape == ReplicatedWireShape::Plain {
+                continue;
+            }
+            assert_eq!(descriptor.value_type, SlotValueType::Array, "{name}");
+            assert_eq!(descriptor.range, None, "{name}");
+        }
+
+        // The shape is part of the schema fingerprint, so a peer that reads
+        // these slots as plain values refuses the batch rather than misreading it.
+        let mut plain = schema.entries().to_vec();
+        for entry in &mut plain {
+            entry.wire_shape = ReplicatedWireShape::Plain;
+        }
+        assert_ne!(compute_fingerprint(&plain), *schema.fingerprint());
+        let mut numeric_flag = schema.entries().to_vec();
+        for entry in &mut numeric_flag {
+            if entry.name == RELOAD_ACTIVE_SLOT {
+                entry.wire_shape = ReplicatedWireShape::WieldableSlotNumber;
+            }
+        }
+        assert_ne!(compute_fingerprint(&numeric_flag), *schema.fingerprint());
+    }
+
+    #[test]
+    fn owner_ammo_and_reload_values_carry_the_host_slot_they_describe() {
+        let host_table = owner_private_player_table();
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let (pawn, rifle) = add_owned_ammo_pawn(
+            &mut registry,
+            &mut owners,
+            &mut weapon_owners,
+            OwnedAmmoPawnSpec {
+                client: CLIENT_A,
+                ammo_type: "cells",
+                magazine: 3,
+                reserve: Some(11),
+                state_remaining_ms: 250,
+                state_total_ms: 500,
+            },
+        );
+        let schema = build_test_schema(&host_table);
+        let id = |name| schema.id_for(name).unwrap();
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table, &test_replication_identity());
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
+        let records = host.produce_for_client(CLIENT_A, 0).unwrap();
+        for (name, sample) in [
+            (MAGAZINE_SLOT, vec![0.0, 3.0]),
+            (RESERVE_SLOT, vec![0.0, 11.0]),
+            (RELOAD_PROGRESS_SLOT, vec![0.0, 0.5]),
+            (RELOAD_ACTIVE_SLOT, vec![0.0, 1.0]),
+        ] {
+            assert_eq!(
+                record_for_slot(&records, id(name)).value,
+                WireSlotValue::Array(sample),
+                "{name} travels as [host slot, value]",
+            );
+        }
+
+        let mut client_table = owner_private_player_table();
+        let mut client = ClientStateApply::new();
+        let outcome = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            0,
+            &fingerprint,
+            &records,
+        );
+        assert_eq!(outcome.slot_baselines.len(), records.len());
+        assert_eq!(
+            client_table.get(MAGAZINE_SLOT).unwrap().value,
+            Some(SlotValue::Number(3.0)),
+            "HUD readers keep a plain number",
+        );
+        assert_eq!(
+            client_table.get(RELOAD_ACTIVE_SLOT).unwrap().value,
+            Some(SlotValue::Boolean(true)),
+            "HUD readers keep a plain boolean",
+        );
+        let on_rifle = |value| Some(SlotSample { slot: 0, value });
+        let fresh = outcome.fresh_weapon_projection;
+        assert_eq!(fresh.magazine, on_rifle(3.0));
+        assert_eq!(fresh.reserve, on_rifle(11.0));
+        assert_eq!(fresh.reload_progress, on_rifle(0.5));
+        assert_eq!(
+            fresh.reload_active,
+            Some(SlotSample {
+                slot: 0,
+                value: true,
+            })
+        );
+        assert_eq!(*client.weapon_projection(), fresh);
+        host.apply_ack(CLIENT_A, 0, &outcome.slot_baselines, None);
+
+        // The host switches to a resourceless weapon in slot 1. The reload
+        // values follow it; the magazine and reserve have no source there, so
+        // the client keeps the rifle's counts, still named as the rifle's.
+        let mut sidearm = registry
+            .get_component::<WeaponComponent>(rifle)
+            .unwrap()
+            .clone();
+        sidearm.ammo = None;
+        sidearm.state = WieldableState::Idle;
+        sidearm.state_remaining_ms = 0;
+        let sidearm_id = registry.spawn(Transform::default());
+        registry.set_component(sidearm_id, sidearm).unwrap();
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        inventory.wieldables[1] = Some(sidearm_id);
+        inventory.active_slot = 1;
+        registry.set_component(pawn, inventory).unwrap();
+        host.ingest_frame(
+            &host_table,
+            &test_replication_identity(),
+            &registry,
+            &owners,
+            &weapon_owners,
+        );
+        let switched = host.produce_for_client(CLIENT_A, 1).unwrap();
+        let applied = client.apply_snapshot_state(
+            &mut client_table,
+            &test_replication_identity(),
+            1,
+            &fingerprint,
+            &switched,
+        );
+        assert_eq!(applied.fresh_weapon_projection.magazine, None);
+        let projection = *client.weapon_projection();
+        assert_eq!(
+            projection.magazine,
+            on_rifle(3.0),
+            "a value from another slot is reported with that slot",
+        );
+        assert_eq!(projection.reserve, on_rifle(11.0));
+        assert_eq!(
+            projection.reload_active,
+            Some(SlotSample {
+                slot: 1,
+                value: false,
+            })
+        );
+        assert_eq!(
+            projection.reload_progress,
+            Some(SlotSample {
+                slot: 1,
+                value: 0.0,
+            })
+        );
+
+        client.reset_schema();
+        assert!(
+            client.is_reset(),
+            "a reset forgets which slot the kept values describe"
+        );
+    }
+
+    #[test]
+    fn a_malformed_correlated_sample_rejects_the_batch() {
+        let table = owner_private_player_table();
+        let schema = build_test_schema(&table);
+        let active_id = schema.id_for(RELOAD_ACTIVE_SLOT).unwrap();
+        let magazine_id = schema.id_for(MAGAZINE_SLOT).unwrap();
+        for (slot_id, value) in [
+            (active_id, WireSlotValue::Array(vec![0.0, 0.5])),
+            (active_id, WireSlotValue::Boolean(true)),
+            (
+                magazine_id,
+                WireSlotValue::Array(vec![WIELDABLE_SLOT_CAPACITY as f32, 3.0]),
+            ),
+            (magazine_id, WireSlotValue::Array(vec![0.0, 3.0, 1.0])),
+        ] {
+            let mut client_table = owner_private_player_table();
+            let mut client = ClientStateApply::new();
+            let outcome = client.apply_snapshot_state(
+                &mut client_table,
+                &test_replication_identity(),
+                0,
+                schema.fingerprint(),
+                &[RawStateSlotRecord {
+                    slot_id: slot_id.0,
+                    kind: postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+                    has_baseline_ref: false,
+                    baseline_ref: 0,
+                    baseline_id: 1,
+                    value: value.clone(),
+                }],
+            );
+            assert!(outcome.slot_baselines.is_empty(), "{value:?}");
+            assert_eq!(
+                *client.weapon_projection(),
+                ReplicatedWeaponProjection::default(),
+                "{value:?}",
+            );
+        }
     }
 
     // A shared slot and an owner-private slot round-trip from host production into the
@@ -2707,8 +3091,8 @@ mod tests {
             .expect("registered client produces records");
         assert_eq!(
             records.len(),
-            4,
-            "health pair plus reload defaults projected"
+            2,
+            "the health pair; an inventory-less pawn names no wieldable slot for weapon values"
         );
 
         // Client applies through the store path; the engine-owned readonly player slots
@@ -2722,7 +3106,7 @@ mod tests {
             &fingerprint,
             &records,
         );
-        assert_eq!(outcome.slot_baselines.len(), 4);
+        assert_eq!(outcome.slot_baselines.len(), 2);
         assert_eq!(
             client_table.get("player.health").unwrap().value,
             Some(SlotValue::Number(75.0)),
@@ -2855,7 +3239,13 @@ mod tests {
             Some(SlotValue::Number(123.0)),
             "mapped sibling weapon cooldown reached the owner-private slot"
         );
-        assert_eq!(outcome.fresh_weapon_cooldown_slot, Some(0));
+        assert_eq!(
+            outcome.fresh_weapon_projection.cooldown,
+            Some(SlotSample {
+                slot: 0,
+                value: 123.0,
+            })
+        );
 
         host.apply_ack(CLIENT_A, 0, &outcome.slot_baselines, None);
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
@@ -2894,7 +3284,13 @@ mod tests {
             &fingerprint,
             &switched_records,
         );
-        assert_eq!(switched.fresh_weapon_cooldown_slot, Some(1));
+        assert_eq!(
+            switched.fresh_weapon_projection.cooldown,
+            Some(SlotSample {
+                slot: 1,
+                value: 123.0,
+            })
+        );
     }
 
     // Client apply validates ALL records before mutating any slot: a fingerprint
@@ -3539,8 +3935,8 @@ mod tests {
             .expect("registered client produces records");
         assert_eq!(
             records.len(),
-            4,
-            "health pair plus reload defaults projected"
+            2,
+            "the health pair; an inventory-less pawn names no wieldable slot for weapon values"
         );
 
         // The slot ids come from the same deterministic schema as store slots.
@@ -3561,7 +3957,7 @@ mod tests {
             &fingerprint,
             &records,
         );
-        assert_eq!(outcome.slot_baselines.len(), 4);
+        assert_eq!(outcome.slot_baselines.len(), 2);
         assert_eq!(
             client_table.get("player.health").unwrap().value,
             Some(SlotValue::Number(120.0)),

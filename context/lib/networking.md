@@ -491,36 +491,39 @@ crosshair-converged direction. The firing client predicts its own cooldown and r
 against an owner-private cooldown fact, the same pattern movement prediction uses.
 Client-side ammo and reload prediction/reconciliation remain out of scope. Owner-private
 state-slot projection supplies each owner with the host's authoritative magazine,
-reserve, reload progress, and reload-active state.
+reserve, reload progress, and reload-active state, each beside the host wieldable slot it describes.
 
-Fire prediction reads that projection only while it describes the client's own active
-weapon. The host projects its active weapon, which lags a local switch by a round trip; the
-slot-correlated cooldown sample names the host wieldable slot the projection came from, and
-the client trusts the magazine and reload flag only when that slot is its own active slot,
-otherwise predicting an ordinary fire. **Pull prediction:** an idle weapon whose projected
-magazine cannot pay the shot cost predicts a dry fire — it sets the cooldown and raises the
-dry-fire event. A magazine reload in progress predicts nothing, since the host refuses every
-pull silently; a per-shell reload predicts a fire only when the magazine covers the cost (the
-shot cancels the reload), else nothing. Neither a dry nor a refused pull predicts a shot,
-hit, or muzzle flash. The host may still have authorized a shot the client predicted as
-none, so every such pull sends an empty hit declaration for each selected fire command (a
-zero-tick pull once its command is sent), retiring it at once instead of leaving it to time
-out. Accepted residuals, each losing that one shot's damage: a per-shell reload's first
-shell loaded within one round trip of the reload press; a magazine reload completed within
-one round trip of a pull; and, because state-slot records are not atomic across a snapshot,
-a snapshot or two after a switch in which the cooldown sample already names the new slot
-while the magazine still shows the old weapon's count. Hitscan prediction keeps world
-contacts and each contact's normal, so predicted impact presentation matches the host's
-contact data.
+Each owner-private weapon value — cooldown, magazine, reserve, reload progress,
+reload-active — travels as a `[host wieldable slot, value]` sample; the store keeps a plain
+number or boolean, so HUD and script readers never see the slot. The slot names the weapon a
+value describes: the host projects its own active weapon, which lags a local switch by a
+round trip, and state records arrive per slot rather than atomically. **Client fire
+prediction is presentation-gated only.** Every pull the client fire gate passes predicts and
+declares as an ordinary fire — it records the predicted shot for reconcile and declares its
+hits (the first selected tick traced, later ticks of a multi-tick frame empty) — so the host
+applies damage whenever it fires. The projection only chooses what the pull presents,
+trusting each value it reads only when that value names the client's own active slot;
+otherwise the pull presents a fire. An idle weapon whose magazine cannot pay the shot cost
+presents a dry fire: the dry-fire sound, with no fire sound, muzzle FX or impact. A magazine
+reload in progress, or a per-shell reload whose magazine cannot pay the cost, presents
+nothing; a per-shell reload the magazine covers presents a fire, since the shot cancels it. A
+reload flag held at full progress is the replayed Completed endpoint, so the weapon reads
+idle. A dry or silent pull spawns no predicted projectile, so a projectile weapon declares
+that shot empty at once, as a projectile that fails to materialize does; its damage is lost
+when the host did fire. Any other wrong guess costs only a sound. Hitscan prediction keeps
+world contacts and each contact's normal, so predicted impact presentation matches the
+host's contact data.
 Reload presentation edges (start, shell, complete) derive from the projected reload-active,
-reload-progress, magazine, and reserve state, attributed to the weapon the projection slot
-names, one round trip late. Complete is the flag falling after the last held sample showed
-completion (magazine full, reserve empty, or a magazine reload at full progress), or a fall
-in which ammo rose by exactly what the reserve fell while the client wields that weapon. A
-rise that projects full progress replays a completion endpoint and is no start. A local
-switch the host refuses keeps the reload tracked; one it performs repoints the projection
-and presents nothing. Any other fall is a cancel and presents nothing (`audio.md` §4).
-Presentation only; ammo stays unpredicted.
+reload-progress, magazine, and reserve samples, one round trip late, attributed to the weapon
+the client holds in the host slot the reload flag names. Every value read must name that
+slot; a frame whose values name different slots is held unread. Complete is the flag falling
+after the last held sample showed completion (magazine full, reserve empty, or a magazine
+reload at full progress), or a fall in which ammo rose by exactly what the reserve fell while
+the client wields that weapon. A rise that projects full progress replays a completion
+endpoint and is no start. A local switch the host refuses keeps the reload tracked; one it
+performs names another slot and presents nothing — including a switch away and back, when
+any sample of the other slot arrives in between. Any other fall is a cancel and presents
+nothing (`audio.md` §4). Presentation only; ammo stays unpredicted.
 
 Projectile launch prediction is not rewind-synchronized. The firing client launches from
 its rendered local camera and rendered target state; the host later reconstructs from the
@@ -602,7 +605,7 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
   scoped to the declaring client only and never broadcast. Owner-private state slots
   carry the firing pawn's cooldown, magazine, reserve, reload progress, and reload-active
-  state, following the same per-owner projection pattern as `player.health`. The firing
+  state, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
   client reconciles predicted fire and hitmarker state against the verdict and cooldown;
   ammo and reload remain authoritative projections rather than predicted state.
 
@@ -630,6 +633,10 @@ normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. `WIRE_VER
 incompatible peers during the handshake; `SNAPSHOT_VERSION` 16 independently rejects
 incompatible snapshot envelopes during decode. The host movement descriptor's
 knockback response advances the independent tuning payload epoch to 9.
+Slot-correlated owner-private weapon samples change only the replicated state-schema
+fingerprint (its per-slot wire-shape tag): they ride the existing array value, so
+`WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged, and a peer that reads them as plain
+values rejects the state batch at the fingerprint gate.
 
 ## Current contract
 

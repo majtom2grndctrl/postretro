@@ -156,13 +156,6 @@ pub struct PredictedShotRecord {
 pub struct ClientPredictedShots {
     shots: HashMap<u64, PredictedShotRecord>,
     cooldown_authority_generation: HashMap<EntityId, u64>,
-    /// The host wieldable slot its owner-private weapon projection (magazine,
-    /// reserve, reload and cooldown slots) last described, from the latest
-    /// slot-correlated cooldown sample. It mirrors the replicated state
-    /// channel, not the predicted shots, so [`Self::clear`] keeps it: a hold
-    /// keeps the channel, and a state-schema reset re-delivers the sample with
-    /// its first full baseline.
-    projection_slot: Option<usize>,
 }
 
 impl ClientPredictedShots {
@@ -175,21 +168,9 @@ impl ClientPredictedShots {
         self.cooldown_authority_generation.clear();
     }
 
-    /// Record the host wieldable slot a fresh slot-correlated cooldown sample
-    /// named. The host projects every owner-private weapon slot from its
-    /// active weapon in one pass, so this names the weapon the replicated
-    /// magazine and reload state describe. It lags a local switch by a round
-    /// trip.
-    pub fn observe_projection_slot(&mut self, slot: usize) {
-        self.projection_slot = Some(slot);
-    }
-
-    /// The host wieldable slot the replicated weapon projection describes, if
-    /// a correlated sample has named one.
-    pub fn projection_slot(&self) -> Option<usize> {
-        self.projection_slot
-    }
-
+    /// Record a predicted shot for reconcile. Every shot the fire gate passes
+    /// is predicted, whatever it presents; only a [`ClientPullPresentation::Fire`]
+    /// shows its muzzle FX.
     pub fn predict(
         &mut self,
         shot_id: u64,
@@ -197,6 +178,7 @@ impl ClientPredictedShots {
         resolution: &ClientFireResolution,
         cooldown_before_ms: f32,
         cooldown_after_ms: f32,
+        presentation: ClientPullPresentation,
     ) {
         self.shots.insert(
             shot_id,
@@ -211,7 +193,7 @@ impl ClientPredictedShots {
                     .get(&weapon)
                     .copied()
                     .unwrap_or_default(),
-                muzzle_fx_visible: true,
+                muzzle_fx_visible: presentation == ClientPullPresentation::Fire,
                 hitmarker_visible: !resolution.hits.is_empty(),
                 status: PredictedShotStatus::Pending,
             },
@@ -1005,131 +987,112 @@ fn advance_client_fire_gate(
     true
 }
 
-/// The owner-private magazine and reload flag a connected client reads for
-/// its fire prediction. The caller supplies it only when the projection is
-/// known to describe the client's own active weapon; the host projects its
-/// active weapon, which lags a local switch by a round trip.
+/// One owner-private weapon value and the host wieldable slot it describes.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ReplicatedMagazine {
-    /// `player.ammo`, absent until replicated.
-    pub magazine: Option<f32>,
-    /// `player.reloadActive`.
-    pub reload_active: bool,
+pub struct SlotSample<T> {
+    pub slot: usize,
+    pub value: T,
 }
 
-impl ReplicatedMagazine {
-    /// The replicated magazine and reload flag, when the projection's host
-    /// slot ([`ClientPredictedShots::projection_slot`]) is the client's active
-    /// slot. Otherwise the values may describe another weapon — the host has
-    /// not yet followed a local switch — so there is none.
-    pub fn for_active_slot(
-        projection_slot: Option<usize>,
-        active_slot: usize,
-        magazine: Option<f32>,
-        reload_active: bool,
-    ) -> Option<Self> {
-        (projection_slot == Some(active_slot)).then_some(Self {
-            magazine,
-            reload_active,
-        })
+/// The owner-private weapon projection as a connected client last received
+/// it, each value beside the host wieldable slot it describes. The host
+/// projects its own active weapon, which lags a local switch by a round trip,
+/// and state records arrive per slot rather than atomically, so values may
+/// briefly describe different slots. Presentation trusts a value only for the
+/// slot it names.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ReplicatedWeaponProjection {
+    /// `player.weaponCooldownMs`.
+    pub cooldown: Option<SlotSample<f32>>,
+    /// `player.ammo`.
+    pub magazine: Option<SlotSample<f32>>,
+    /// `player.ammoReserve`.
+    pub reserve: Option<SlotSample<f32>>,
+    /// `player.reloadProgress`.
+    pub reload_progress: Option<SlotSample<f32>>,
+    /// `player.reloadActive`.
+    pub reload_active: Option<SlotSample<bool>>,
+}
+
+impl ReplicatedWeaponProjection {
+    /// Take every value `fresh` carries and keep the rest.
+    pub fn merge(&mut self, fresh: &Self) {
+        fn take<T: Copy>(held: &mut Option<SlotSample<T>>, fresh: Option<SlotSample<T>>) {
+            if fresh.is_some() {
+                *held = fresh;
+            }
+        }
+        take(&mut self.cooldown, fresh.cooldown);
+        take(&mut self.magazine, fresh.magazine);
+        take(&mut self.reserve, fresh.reserve);
+        take(&mut self.reload_progress, fresh.reload_progress);
+        take(&mut self.reload_active, fresh.reload_active);
     }
 }
 
-/// How a connected client predicts one trigger pull, mirroring what the host
-/// authorizes for it.
+/// A sample's value when it describes `slot`.
+fn sample_for_slot<T: Copy>(sample: Option<SlotSample<T>>, slot: usize) -> Option<T> {
+    sample
+        .filter(|sample| sample.slot == slot)
+        .map(|sample| sample.value)
+}
+
+/// What a connected client shows for a trigger pull. Presentation only: every
+/// pull the fire gate passes is predicted and declared the same way, so the
+/// host applies damage whenever it fires, and a wrong guess costs a sound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientPullPrediction {
-    /// An ordinary shot: fire sound, muzzle flash, impacts and any projectile.
+pub enum ClientPullPresentation {
+    /// Fire sound, muzzle FX, predicted impact and any predicted projectile.
     Fire,
-    /// The host's `Empty`: the pull sets the cooldown and raises `dry_fire`.
+    /// The host's `Empty`: the dry-fire sound only.
     DryFire,
-    /// The host's silent `Rejected`: a reload the pull cannot cancel is running.
+    /// The host's silent `Rejected`: a reload the pull cannot cancel is
+    /// running. Nothing is heard or seen.
     Silent,
 }
 
-/// Predict a trigger pull from the replicated magazine and reload flag.
+/// Choose a pull's presentation from the replicated magazine and reload
+/// state, mirroring what the host authorizes:
 ///
 /// - An idle weapon whose magazine cannot pay for a shot dry fires; with ammo
 ///   it fires.
-/// - During a magazine reload the host refuses every pull, so nothing is
-///   predicted. During a per-shell reload a pull the magazine covers cancels
-///   the reload and fires; one it does not cover is refused.
-/// - A weapon without ammo, no replicated count, or a projection not known to
-///   describe this weapon predicts an ordinary fire, which reconcile rolls back
-///   if the host rejects it.
-pub fn client_pull_prediction(
+/// - During a magazine reload the host refuses every pull. During a per-shell
+///   reload a pull the magazine covers cancels the reload and fires; one it
+///   does not cover is refused.
+/// - A reload flag held at full progress is the Completed endpoint the owner
+///   projection replays; live progress stays below 1 while a reload runs, so
+///   the weapon is idle.
+///
+/// A weapon without ammo, or any value used that is absent or describes a
+/// slot other than `active_slot`, presents a fire.
+pub fn client_pull_presentation(
     weapon: &WeaponComponent,
-    replicated: Option<ReplicatedMagazine>,
-) -> ClientPullPrediction {
-    let effective = weapon.effective();
-    let (Some(ammo), Some(replicated)) = (effective.ammo, replicated) else {
-        return ClientPullPrediction::Fire;
+    active_slot: usize,
+    projection: &ReplicatedWeaponProjection,
+) -> ClientPullPresentation {
+    let Some(ammo) = weapon.effective().ammo else {
+        return ClientPullPresentation::Fire;
     };
-    let Some(magazine) = replicated.magazine else {
-        return ClientPullPrediction::Fire;
+    let (Some(magazine), Some(reload_active)) = (
+        sample_for_slot(projection.magazine, active_slot),
+        sample_for_slot(projection.reload_active, active_slot),
+    ) else {
+        return ClientPullPresentation::Fire;
+    };
+    let reloading = if reload_active {
+        let Some(progress) = sample_for_slot(projection.reload_progress, active_slot) else {
+            return ClientPullPresentation::Fire;
+        };
+        progress < 1.0
+    } else {
+        false
     };
     let covers_shot = magazine >= ammo.cost_per_shot as f32;
-    match (replicated.reload_active, ammo.reload_style) {
-        (false, _) if covers_shot => ClientPullPrediction::Fire,
-        (false, _) => ClientPullPrediction::DryFire,
-        (true, ReloadStyle::PerShell) if covers_shot => ClientPullPrediction::Fire,
-        (true, _) => ClientPullPrediction::Silent,
-    }
-}
-
-/// What a connected client does with a trigger pull it predicts as no shot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnfiredPull {
-    /// Send this frame's zero-tick input command. The pull passed the fire
-    /// gate, so the host sees the press and decides for itself.
-    pub send_zero_tick_command: bool,
-    /// Client ticks to declare with no hits. The replicated projection lags
-    /// the host by a round trip, so the host may have authorized a shot this
-    /// frame predicted as none; an empty declaration retires it at once
-    /// instead of leaving it to time out. For a shot the host never opened it
-    /// is a no-op.
-    pub empty_declarations: Vec<u32>,
-    /// Raise `dry_fire`.
-    pub dry_fire: bool,
-}
-
-/// Resolve a pull predicted as [`ClientPullPrediction::DryFire`] or
-/// [`ClientPullPrediction::Silent`] the way the host treats it: bloom decays
-/// as on any frame without a shot and the fire gate advances. A dry pull that
-/// passes the gate sets the cooldown and dry fires (`Empty`); a silent one
-/// sets nothing (`Rejected`). No shot is predicted.
-///
-/// `selected_ticks` are this frame's selected fire commands. A zero-tick pull
-/// reaches the host only if this frame sends it, so one that failed the gate
-/// declares nothing; the caller declares only after a successful send.
-pub fn resolve_client_unfired_pull(
-    weapon: &mut WeaponComponent,
-    prediction: ClientPullPrediction,
-    button: FireButtonState,
-    frame_dt: f32,
-    logical_tick_elapsed_ms: &[f32],
-    selected_ticks: &[u32],
-    zero_tick: bool,
-) -> UnfiredPull {
-    debug_assert_ne!(
-        prediction,
-        ClientPullPrediction::Fire,
-        "a predicted fire resolves through resolve_client_fire",
-    );
-    let gate_passed = advance_client_fire_state(weapon, button, frame_dt, logical_tick_elapsed_ms);
-    let dry_fire = gate_passed && prediction == ClientPullPrediction::DryFire;
-    if dry_fire {
-        weapon.cooldown_remaining_ms = weapon.effective().cooldown_ms;
-    }
-    let empty_declarations = if zero_tick && !gate_passed {
-        Vec::new()
-    } else {
-        selected_ticks.to_vec()
-    };
-    UnfiredPull {
-        send_zero_tick_command: zero_tick && gate_passed,
-        empty_declarations,
-        dry_fire,
+    match (reloading, ammo.reload_style) {
+        (false, _) if covers_shot => ClientPullPresentation::Fire,
+        (false, _) => ClientPullPresentation::DryFire,
+        (true, ReloadStyle::PerShell) if covers_shot => ClientPullPresentation::Fire,
+        (true, _) => ClientPullPresentation::Silent,
     }
 }
 
@@ -2394,18 +2357,37 @@ pub(crate) mod tests {
         active: true,
     };
 
-    fn idle_magazine(magazine: f32) -> Option<ReplicatedMagazine> {
-        Some(ReplicatedMagazine {
-            magazine: Some(magazine),
-            reload_active: false,
-        })
+    /// The owner projection of host slot `slot`: magazine, reload flag and
+    /// reload progress, all from that slot.
+    fn projection(
+        slot: usize,
+        magazine: f32,
+        reload_active: bool,
+        progress: f32,
+    ) -> ReplicatedWeaponProjection {
+        ReplicatedWeaponProjection {
+            magazine: Some(SlotSample {
+                slot,
+                value: magazine,
+            }),
+            reload_active: Some(SlotSample {
+                slot,
+                value: reload_active,
+            }),
+            reload_progress: Some(SlotSample {
+                slot,
+                value: progress,
+            }),
+            ..ReplicatedWeaponProjection::default()
+        }
     }
 
-    fn reloading_magazine(magazine: f32) -> Option<ReplicatedMagazine> {
-        Some(ReplicatedMagazine {
-            magazine: Some(magazine),
-            reload_active: true,
-        })
+    fn idle_magazine(magazine: f32) -> ReplicatedWeaponProjection {
+        projection(0, magazine, false, 0.0)
+    }
+
+    fn reloading_magazine(magazine: f32, progress: f32) -> ReplicatedWeaponProjection {
+        projection(0, magazine, true, progress)
     }
 
     fn per_shell(mut weapon: WeaponComponent) -> WeaponComponent {
@@ -2417,139 +2399,76 @@ pub(crate) mod tests {
         weapon
     }
 
-    // A connected client predicts a dry fire from the replicated magazine.
+    // A connected client presents a dry fire from the replicated magazine.
     #[test]
     fn client_dry_fire_follows_the_replicated_magazine() {
-        let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
+        let weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
         assert_eq!(
-            client_pull_prediction(&weapon, idle_magazine(0.0)),
-            ClientPullPrediction::DryFire,
+            client_pull_presentation(&weapon, 0, &idle_magazine(0.0)),
+            ClientPullPresentation::DryFire,
         );
         assert_eq!(
-            client_pull_prediction(&weapon, idle_magazine(1.0)),
-            ClientPullPrediction::Fire,
+            client_pull_presentation(&weapon, 0, &idle_magazine(1.0)),
+            ClientPullPresentation::Fire,
             "with ammo it fires",
         );
         assert_eq!(
-            client_pull_prediction(
+            client_pull_presentation(
                 &weapon,
-                Some(ReplicatedMagazine {
+                0,
+                &ReplicatedWeaponProjection {
                     magazine: None,
-                    reload_active: false,
-                }),
+                    ..idle_magazine(0.0)
+                },
             ),
-            ClientPullPrediction::Fire,
-            "no count yet: predict a fire",
+            ClientPullPresentation::Fire,
+            "no count yet: present a fire",
         );
         let unlimited = weapon_component(FireMode::Semi, 100.0);
         assert_eq!(
-            client_pull_prediction(&unlimited, idle_magazine(0.0)),
-            ClientPullPrediction::Fire,
+            client_pull_presentation(&unlimited, 0, &idle_magazine(0.0)),
+            ClientPullPresentation::Fire,
             "no ammo, never dry",
         );
-
-        let dry = resolve_client_unfired_pull(
-            &mut weapon,
-            ClientPullPrediction::DryFire,
-            PRESSED,
-            1.0 / 60.0,
-            &[],
-            &[7],
-            false,
-        );
-        assert!(dry.dry_fire);
-        assert!((weapon.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
-        let held = resolve_client_unfired_pull(
-            &mut weapon,
-            ClientPullPrediction::DryFire,
-            PRESSED,
-            1.0 / 60.0,
-            &[],
-            &[8],
-            false,
-        );
-        assert!(
-            !held.dry_fire,
-            "a held semi trigger dry fires once, as the host does",
-        );
     }
 
     #[test]
-    fn a_dry_pull_declares_each_selected_command_empty() {
-        let mut weapon = ammo_weapon_component(FireMode::Auto, 100.0, 8, 1);
-        let pull = resolve_client_unfired_pull(
-            &mut weapon,
-            ClientPullPrediction::DryFire,
-            PRESSED,
-            0.05,
-            &[16.0, 32.0, 48.0],
-            &[40, 41, 42],
-            false,
-        );
-        assert_eq!(
-            pull,
-            UnfiredPull {
-                send_zero_tick_command: false,
-                empty_declarations: vec![40, 41, 42],
-                dry_fire: true,
-            },
-            "each tick-sent command may hold a host shot the lagging magazine hid",
-        );
-    }
-
-    #[test]
-    fn a_magazine_reload_in_progress_predicts_nothing_and_still_declares() {
-        let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
-        for magazine in [0.0, 5.0] {
+    fn client_pull_presentation_follows_the_host_reload_rules() {
+        let magazine = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
+        for rounds in [0.0, 5.0] {
             assert_eq!(
-                client_pull_prediction(&weapon, reloading_magazine(magazine)),
-                ClientPullPrediction::Silent,
-                "the host refuses every pull during a magazine reload (magazine {magazine})",
+                client_pull_presentation(&magazine, 0, &reloading_magazine(rounds, 0.4)),
+                ClientPullPresentation::Silent,
+                "the host refuses every pull during a magazine reload (magazine {rounds})",
             );
         }
-        let pull = resolve_client_unfired_pull(
-            &mut weapon,
-            ClientPullPrediction::Silent,
-            PRESSED,
-            1.0 / 60.0,
-            &[],
-            &[12, 13],
-            false,
+        // Regression: the replayed Completed endpoint (flag up, full progress)
+        // read as a reload in progress and silenced the next pull.
+        assert_eq!(
+            client_pull_presentation(&magazine, 0, &reloading_magazine(8.0, 1.0)),
+            ClientPullPresentation::Fire,
+            "a completed magazine reload is idle",
         );
         assert_eq!(
-            pull,
-            UnfiredPull {
-                send_zero_tick_command: false,
-                empty_declarations: vec![12, 13],
-                dry_fire: false,
-            },
+            client_pull_presentation(&magazine, 0, &reloading_magazine(0.0, 1.0)),
+            ClientPullPresentation::DryFire,
+            "a reload that completed with an empty reserve leaves an idle, empty weapon",
         );
-        assert_eq!(
-            weapon.cooldown_remaining_ms, 0.0,
-            "a refused pull sets no cooldown, as the host's Rejected does",
-        );
-        assert!(
-            weapon.shoot_press_consumed,
-            "the refused press is consumed, as the host consumes it",
-        );
-    }
 
-    #[test]
-    fn a_per_shell_reload_predicts_fire_only_when_the_magazine_covers_the_shot() {
-        let weapon = per_shell(ammo_weapon_component(FireMode::Semi, 100.0, 8, 2));
+        let shell = per_shell(ammo_weapon_component(FireMode::Semi, 100.0, 8, 2));
         assert_eq!(
-            client_pull_prediction(&weapon, reloading_magazine(2.0)),
-            ClientPullPrediction::Fire,
+            client_pull_presentation(&shell, 0, &reloading_magazine(2.0, 0.3)),
+            ClientPullPresentation::Fire,
             "a covered pull cancels the per-shell reload and fires",
         );
         assert_eq!(
-            client_pull_prediction(&weapon, reloading_magazine(1.0)),
-            ClientPullPrediction::Silent,
+            client_pull_presentation(&shell, 0, &reloading_magazine(1.0, 0.3)),
+            ClientPullPresentation::Silent,
             "an uncovered pull during a per-shell reload is refused, not dry",
         );
         assert_eq!(
-            client_pull_prediction(&weapon, idle_magazine(1.0)),
-            ClientPullPrediction::DryFire,
+            client_pull_presentation(&shell, 0, &idle_magazine(1.0)),
+            ClientPullPresentation::DryFire,
             "an idle per-shell weapon still dry fires",
         );
     }
@@ -2557,124 +2476,128 @@ pub(crate) mod tests {
     #[test]
     fn a_projection_of_another_weapon_predicts_a_fire() {
         let weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
-        let replicated = |projection_slot| {
-            ReplicatedMagazine::for_active_slot(projection_slot, 1, Some(0.0), false)
-        };
         assert_eq!(
-            client_pull_prediction(&weapon, replicated(Some(0))),
-            ClientPullPrediction::Fire,
+            client_pull_presentation(&weapon, 1, &projection(0, 0.0, false, 0.0)),
+            ClientPullPresentation::Fire,
             "the host still projects the weapon this client switched away from",
         );
         assert_eq!(
-            client_pull_prediction(&weapon, replicated(None)),
-            ClientPullPrediction::Fire,
-            "no correlated sample has named a slot yet",
+            client_pull_presentation(&weapon, 1, &ReplicatedWeaponProjection::default()),
+            ClientPullPresentation::Fire,
+            "nothing replicated yet",
         );
         assert_eq!(
-            client_pull_prediction(&weapon, replicated(Some(1))),
-            ClientPullPrediction::DryFire,
-            "the projection names this weapon",
+            client_pull_presentation(
+                &weapon,
+                1,
+                &ReplicatedWeaponProjection {
+                    magazine: Some(SlotSample {
+                        slot: 0,
+                        value: 0.0,
+                    }),
+                    ..projection(1, 0.0, false, 0.0)
+                },
+            ),
+            ClientPullPresentation::Fire,
+            "the magazine still shows the previous weapon's count",
         );
+        assert_eq!(
+            client_pull_presentation(
+                &weapon,
+                1,
+                &ReplicatedWeaponProjection {
+                    reload_progress: Some(SlotSample {
+                        slot: 0,
+                        value: 0.4,
+                    }),
+                    ..projection(1, 0.0, true, 0.4)
+                },
+            ),
+            ClientPullPresentation::Fire,
+            "a reload flag is read only beside progress of the same slot",
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 1, &projection(1, 0.0, false, 0.0)),
+            ClientPullPresentation::DryFire,
+            "every value names this weapon",
+        );
+    }
+
+    #[test]
+    fn a_projection_merge_keeps_values_the_fresh_batch_did_not_carry() {
+        let mut held = projection(0, 3.0, false, 0.0);
+        held.merge(&ReplicatedWeaponProjection {
+            magazine: Some(SlotSample {
+                slot: 1,
+                value: 7.0,
+            }),
+            ..ReplicatedWeaponProjection::default()
+        });
+        assert_eq!(
+            held.magazine,
+            Some(SlotSample {
+                slot: 1,
+                value: 7.0
+            })
+        );
+        assert_eq!(
+            held.reload_active,
+            Some(SlotSample {
+                slot: 0,
+                value: false,
+            }),
+        );
+    }
+
+    // The fire gate alone decides whether a pull is predicted. A dry
+    // presentation still records its shot for reconcile and resolves the
+    // contacts it declares, so the host applies damage whenever it fired.
+    #[test]
+    fn a_dry_pull_still_predicts_and_declares_its_shot() {
+        let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
+        let presentation = client_pull_presentation(&weapon, 0, &idle_magazine(0.0));
+        assert_eq!(presentation, ClientPullPresentation::DryFire);
+        let resolution = resolve_client_fire(
+            None,
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            PRESSED,
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
+            7,
+            &[0.0],
+            &[],
+            &wall_world(),
+            &EntityRegistry::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("the fire gate passes, so the pull resolves a shot");
+        assert_eq!(
+            resolution.world_contacts.len(),
+            1,
+            "the hitscan declaration carries the shot's contact",
+        );
+        assert!((weapon.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
 
         let mut shots = ClientPredictedShots::new();
-        assert_eq!(shots.projection_slot(), None);
-        shots.observe_projection_slot(1);
-        assert_eq!(shots.projection_slot(), Some(1));
-        shots.clear();
-        assert_eq!(
-            shots.projection_slot(),
-            Some(1),
-            "the slot mirrors the state channel, which a prediction reset keeps",
+        shots.predict(
+            0xD,
+            EntityId::from_raw(1),
+            &resolution,
+            0.0,
+            weapon.cooldown_remaining_ms,
+            presentation,
         );
-    }
-
-    #[test]
-    fn a_zero_tick_pull_declares_only_what_it_sends() {
-        let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
-        for prediction in [ClientPullPrediction::DryFire, ClientPullPrediction::Silent] {
-            weapon.cooldown_remaining_ms = 0.0;
-            weapon.shoot_press_consumed = false;
-            let pull = resolve_client_unfired_pull(
-                &mut weapon,
-                prediction,
-                PRESSED,
-                1.0 / 60.0,
-                &[],
-                &[9],
-                true,
-            );
-            assert!(pull.send_zero_tick_command, "{prediction:?}");
-            assert_eq!(pull.empty_declarations, [9], "{prediction:?}");
-        }
-
-        weapon.cooldown_remaining_ms = 50.0;
-        weapon.shoot_press_consumed = false;
-        let cooling = resolve_client_unfired_pull(
-            &mut weapon,
-            ClientPullPrediction::DryFire,
-            PRESSED,
-            1.0 / 60.0,
-            &[],
-            &[10],
-            true,
-        );
-        assert_eq!(
-            cooling,
-            UnfiredPull {
-                send_zero_tick_command: false,
-                empty_declarations: Vec::new(),
-                dry_fire: false,
-            },
-            "a zero-tick pull the gate stops is never sent, so the host holds no shot for it",
-        );
-    }
-
-    // Regression: a dry pull skipped the bloom decay every other client frame applies.
-    #[test]
-    fn client_dry_fire_decays_bloom_like_a_frame_without_a_shot() {
-        let mut dry = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
-        dry.bloom_per_shot_degrees = 3.0;
-        dry.bloom_max_degrees = 12.0;
-        dry.bloom_decay_degrees_per_second = 60.0;
-        dry.bloom_decay_delay_ms = 10.0;
-        dry.bloom_accumulator_degrees = 6.0;
-        dry.bloom_idle_ms = 0.0;
-        let mut idle = dry.clone();
-        let logical_ticks = [16.0, 32.0];
-
+        let record = shots.get(0xD).expect("the shot is recorded for reconcile");
+        assert_eq!(record.status, PredictedShotStatus::Pending);
         assert!(
-            resolve_client_unfired_pull(
-                &mut dry,
-                ClientPullPrediction::DryFire,
-                PRESSED,
-                0.04,
-                &logical_ticks,
-                &[],
-                false,
-            )
-            .dry_fire
-        );
-        let _ = advance_client_fire_state(
-            &mut idle,
-            FireButtonState {
-                pressed: false,
-                active: false,
-            },
-            0.04,
-            &logical_ticks,
-        );
-
-        assert!(
-            dry.bloom_accumulator_degrees < 6.0,
-            "the dry pull decays bloom past the decay delay"
-        );
-        assert!(
-            (dry.bloom_accumulator_degrees - idle.bloom_accumulator_degrees).abs() < 1.0e-5,
-            "a dry pull decays exactly as a frame without a shot"
-        );
-        assert!(
-            (dry.bloom_idle_ms - idle.bloom_idle_ms).abs() < 1.0e-5,
-            "a dry pull adds no bloom shot, so the idle clock keeps running"
+            !record.muzzle_fx_visible,
+            "a dry presentation shows no muzzle FX",
         );
     }
 
@@ -3614,7 +3537,14 @@ pub(crate) mod tests {
         };
         let mut predicted = ClientPredictedShots::new();
 
-        predicted.predict(0xA, EntityId::from_raw(1), &resolution, 0.0, 100.0);
+        predicted.predict(
+            0xA,
+            EntityId::from_raw(1),
+            &resolution,
+            0.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let record = predicted.get(0xA).expect("shot should be recorded");
         assert_eq!(record.client_tick, 9);
@@ -3632,7 +3562,14 @@ pub(crate) mod tests {
             projectile_launch: None,
         };
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, EntityId::from_raw(1), &resolution, 0.0, 100.0);
+        predicted.predict(
+            0xA,
+            EntityId::from_raw(1),
+            &resolution,
+            0.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         assert!(
             !predicted
@@ -3665,7 +3602,14 @@ pub(crate) mod tests {
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, weapon, &resolution, 0.0, 100.0);
+        predicted.predict(
+            0xA,
+            weapon,
+            &resolution,
+            0.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let record = predicted
             .apply_verdict(&mut registry, 0xA, true, true)
@@ -3697,7 +3641,14 @@ pub(crate) mod tests {
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let record = predicted
             .apply_verdict(&mut registry, 0xA, true, false)
@@ -3729,7 +3680,14 @@ pub(crate) mod tests {
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let record = predicted
             .apply_verdict(&mut registry, 0xA, false, false)
@@ -3804,7 +3762,14 @@ pub(crate) mod tests {
         let rejected = spawn_predicted(&mut registry, 0xA);
         let other = spawn_predicted(&mut registry, 0xB);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let record = predicted
             .apply_verdict(&mut registry, 0xA, false, false)
@@ -3841,7 +3806,14 @@ pub(crate) mod tests {
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let accepted = predicted
             .apply_verdict(&mut registry, 0xA, true, true)
@@ -3877,7 +3849,14 @@ pub(crate) mod tests {
         let (mut registry, weapon) = client_weapon_registry();
         set_client_cooldown(&mut registry, weapon, 100.0);
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, weapon, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            weapon,
+            &resolution,
+            25.0,
+            100.0,
+            ClientPullPresentation::Fire,
+        );
 
         let mut component = registry
             .get_component::<WeaponComponent>(weapon)

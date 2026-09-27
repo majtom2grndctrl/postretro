@@ -1439,22 +1439,6 @@ fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
         .is_some()
 }
 
-/// A replicated numeric slot as this client last received it.
-fn client_slot_number(script_ctx: &postretro_entities::ScriptCtx, name: &str) -> Option<f32> {
-    match script_ctx.slot_table.borrow().get(name)?.value {
-        Some(postretro_entities::SlotValue::Number(value)) => Some(value),
-        _ => None,
-    }
-}
-
-/// A replicated boolean slot as this client last received it.
-fn client_slot_bool(script_ctx: &postretro_entities::ScriptCtx, name: &str) -> Option<bool> {
-    match script_ctx.slot_table.borrow().get(name)?.value {
-        Some(postretro_entities::SlotValue::Boolean(value)) => Some(value),
-        _ => None,
-    }
-}
-
 /// Resolve the pawn followed by local camera and input consumers. Identity follows
 /// the registry's movement-pawn policy; callers apply camera-specific component gates.
 fn followed_player_pawn(
@@ -7036,16 +7020,12 @@ impl App {
                     &mut self.kinematic_mover_tick_states,
                     &apply_outcome.mover_corrections,
                 );
-                if let Some(slot) = apply_outcome.owner_private_weapon_cooldown_slot {
-                    // The host projects its magazine and reload slots from the
-                    // same active weapon this correlated sample names; fire
-                    // prediction and reload edges trust them only for it.
-                    self.client_predicted_shots.observe_projection_slot(slot);
+                if let Some(cooldown) = apply_outcome.owner_private_weapon.cooldown {
                     let _ = reconcile_client_weapon_cooldown_from_slot_table(
                         &mut self.client_predicted_shots,
                         &mut registry,
                         &slot_table,
-                        apply_outcome.owner_private_weapon_cooldown_slot,
+                        Some(cooldown.slot),
                     );
                 }
                 if apply_outcome.materialized_remote_entity_presentation {
@@ -7233,74 +7213,15 @@ impl App {
             }
             return;
         };
-        // Predict the pull from the replicated magazine and reload flag, read
-        // only while the host projects this client's own active weapon. A dry
-        // fire sets the cooldown and raises `dry_fire`; a pull a running reload
-        // refuses raises nothing. Neither predicts a shot or a muzzle flash.
-        let replicated = weapon::ReplicatedMagazine::for_active_slot(
-            self.client_predicted_shots.projection_slot(),
+        // Every pull the fire gate passes is predicted and declared below, so
+        // the host applies damage whenever it fires. The replicated magazine
+        // and reload state only choose what the pull presents, and only while
+        // each value describes this client's own active slot.
+        let presentation = weapon::client_pull_presentation(
+            &component,
             active_slot,
-            client_slot_number(&script_ctx, "player.ammo"),
-            client_slot_bool(&script_ctx, "player.reloadActive").unwrap_or(false),
+            &netcode::client_weapon_projection(session.net_endpoint.as_ref()),
         );
-        let prediction = weapon::client_pull_prediction(&component, replicated);
-        if prediction != weapon::ClientPullPrediction::Fire {
-            let selected_ticks = selected_fire_commands
-                .iter()
-                .map(|command| command.client_tick)
-                .collect::<Vec<_>>();
-            let pull = weapon::resolve_client_unfired_pull(
-                &mut component,
-                prediction,
-                button,
-                frame_dt,
-                &logical_tick_elapsed_ms,
-                &selected_ticks,
-                zero_tick_fire_command.is_some(),
-            );
-            {
-                let mut registry = script_ctx.registry.borrow_mut();
-                let _ = registry.set_component(weapon_id, component);
-            }
-            if let Some(command) = zero_tick_fire_command.as_ref() {
-                if pull.send_zero_tick_command {
-                    let aim_pitch = self.camera.pitch;
-                    let sent_tick = netcode::client_send_input_command(
-                        self.session
-                            .as_mut()
-                            .and_then(|session| session.net_endpoint.as_mut()),
-                        command,
-                        aim_pitch,
-                    );
-                    if sent_tick != Some(first_selected.client_tick) {
-                        return;
-                    }
-                }
-                if let Some(session) = self.session.as_mut() {
-                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
-                }
-            }
-            for client_tick in pull.empty_declarations {
-                let shot_id = netcode::shot_id_raw(local_pawn_network_id, client_tick);
-                let _ = netcode::client_send_hit_declaration(
-                    self.session
-                        .as_mut()
-                        .and_then(|session| session.net_endpoint.as_mut()),
-                    shot_id,
-                    &[],
-                    &[],
-                );
-            }
-            if pull.dry_fire {
-                let registry = script_ctx.registry.borrow();
-                pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                    address: "dry_fire",
-                    emitter: postretro_sim::emission::entity_emitter(&registry, local_pawn),
-                    weapon: postretro_sim::emission::descriptor_name(&registry, weapon_id),
-                });
-            }
-            return;
-        }
         let selected_shot_elapsed_ms = selected_fire_commands
             .iter()
             .map(|command| command.elapsed_ms)
@@ -7359,11 +7280,8 @@ impl App {
                 &resolution,
                 cooldown_before_ms,
                 cooldown_after_ms,
+                presentation,
             );
-            // Predict the muzzle FX on a gated local fire, mirroring the host/
-            // single-player weapon-activation ("activate") event. It drains with the
-            // shared sequence-aware named-event batch; a host reject rolls this shot's
-            // `muzzle_fx_visible` state back in reconcile.
             let (shooter, weapon_name) = {
                 let registry = script_ctx.registry.borrow();
                 (
@@ -7371,35 +7289,59 @@ impl App {
                     postretro_sim::emission::descriptor_name(&registry, weapon_id),
                 )
             };
-            pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                address: "activate",
-                emitter: shooter,
-                weapon: weapon_name.clone(),
-            });
-            // A predicted hitscan shot's contacts, wall hits included, are its
-            // one `impact`, heard now at the contact nearest the listener.
-            let contacts = resolution.impact_contacts();
-            if !contacts.is_empty() {
-                pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                    address: "impact",
-                    emitter: postretro_sim::emission::Emitter::Contacts(contacts),
-                    weapon: weapon_name.clone(),
-                });
+            let shows_fire = presentation == weapon::ClientPullPresentation::Fire;
+            match presentation {
+                // Predict the muzzle FX on a gated local fire, mirroring the host/
+                // single-player weapon-activation ("activate") event. It drains with
+                // the shared sequence-aware named-event batch; a host reject rolls
+                // this shot's `muzzle_fx_visible` state back in reconcile.
+                weapon::ClientPullPresentation::Fire => {
+                    pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
+                        address: "activate",
+                        emitter: shooter,
+                        weapon: weapon_name.clone(),
+                    });
+                    // A predicted hitscan shot's contacts, wall hits included, are
+                    // its one `impact`, heard now at the contact nearest the listener.
+                    let contacts = resolution.impact_contacts();
+                    if !contacts.is_empty() {
+                        pending_weapon_script_events.push(
+                            postretro_sim::emission::WeaponEmission {
+                                address: "impact",
+                                emitter: postretro_sim::emission::Emitter::Contacts(contacts),
+                                weapon: weapon_name.clone(),
+                            },
+                        );
+                    }
+                }
+                weapon::ClientPullPresentation::DryFire => {
+                    pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
+                        address: "dry_fire",
+                        emitter: shooter,
+                        weapon: weapon_name.clone(),
+                    });
+                }
+                weapon::ClientPullPresentation::Silent => {}
             }
-            let projectile_spawned = projectile_launch.is_some_and(|launch| {
-                sim::spawn_projectile(
-                    &mut script_ctx.registry.borrow_mut(),
-                    local_pawn,
-                    weapon_id,
-                    launch,
-                    Some(shot_id),
-                    sim::ProjectileSource {
-                        weapon: weapon_name,
-                        activation: None,
-                    },
-                )
-                .is_some()
-            });
+            // A dry or silent presentation shows no projectile. With none in
+            // flight to declare a contact, the shot declares empty now, as a
+            // projectile that fails to materialize does: its damage is lost
+            // when the host did fire.
+            let projectile_spawned = shows_fire
+                && projectile_launch.is_some_and(|launch| {
+                    sim::spawn_projectile(
+                        &mut script_ctx.registry.borrow_mut(),
+                        local_pawn,
+                        weapon_id,
+                        launch,
+                        Some(shot_id),
+                        sim::ProjectileSource {
+                            weapon: weapon_name,
+                            activation: None,
+                        },
+                    )
+                    .is_some()
+                });
             if !projectile_spawned {
                 // Hitscan resolves now. A projectile that could not materialize
                 // cannot declare later, so promptly retire its authorized shot
@@ -7439,9 +7381,9 @@ impl App {
     /// Derive the local pawn's reload edges from its replicated owner-private
     /// reload and ammo slots, and queue the sounds its weapon names. A
     /// connected client runs no host weapon machine, so this is how it hears
-    /// its own reloads, one round trip late (`audio.md` §4). The slots describe
-    /// the host's active weapon, named by the projection slot, so edges and
-    /// sounds follow that weapon rather than a local switch the host has not
+    /// its own reloads, one round trip late (`audio.md` §4). Each value names
+    /// the host wieldable slot it describes, so edges and sounds follow the
+    /// weapon the host projects rather than a local switch the host has not
     /// yet performed.
     fn observe_client_reload_edges(
         &mut self,
@@ -7452,36 +7394,27 @@ impl App {
         };
         let script_ctx = &session.scripting.script_ctx;
         let registry = script_ctx.registry.borrow();
-        let sample = self
-            .client_predicted_shots
-            .projection_slot()
-            .and_then(|slot| {
-                let pawn = registry.local_player_movement_pawn()?;
-                let inventory = registry.get_component::<Inventory>(pawn).ok()?;
-                let weapon = inventory.wieldables.get(slot).copied().flatten()?;
-                // The client holds the projected weapon, with no local switch
-                // away from it lowering or already repointed.
-                let wielded = inventory.active_slot == slot && inventory.switch_target.is_none();
-                let component = registry
-                    .get_component::<postretro_entities::components::weapon::WeaponComponent>(
-                        weapon,
-                    )
-                    .ok()?;
-                let ammo_stats = component.effective().ammo?;
-                Some(sound_events::ReloadSample {
-                    weapon,
-                    wielded,
-                    style: ammo_stats.reload_style,
-                    capacity: ammo_stats.capacity,
-                    active: client_slot_bool(script_ctx, "player.reloadActive").unwrap_or(false),
-                    progress: client_slot_number(script_ctx, "player.reloadProgress")
-                        .unwrap_or(0.0),
-                    ammo: client_slot_number(script_ctx, "player.ammo")?,
-                    reserve: client_slot_number(script_ctx, "player.ammoReserve"),
-                })
-            });
-        let weapon = sample.map(|sample| sample.weapon);
-        let addresses = self.client_reload_edges.observe(sample);
+        let projection = netcode::client_weapon_projection(session.net_endpoint.as_ref());
+        let reading = sound_events::ReloadReading::from_projection(&projection, |slot| {
+            let pawn = registry.local_player_movement_pawn()?;
+            let inventory = registry.get_component::<Inventory>(pawn).ok()?;
+            let weapon = inventory.wieldables.get(slot).copied().flatten()?;
+            let component = registry
+                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+                .ok()?;
+            let ammo_stats = component.effective().ammo?;
+            Some(sound_events::ProjectedWeapon {
+                weapon,
+                wielded: inventory.active_slot == slot && inventory.switch_target.is_none(),
+                style: ammo_stats.reload_style,
+                capacity: ammo_stats.capacity,
+            })
+        });
+        let weapon = match reading {
+            sound_events::ReloadReading::Sample(sample) => Some(sample.weapon),
+            _ => None,
+        };
+        let addresses = self.client_reload_edges.observe_reading(reading);
         if addresses.is_empty() {
             return;
         }
@@ -10631,6 +10564,7 @@ mod tests {
             },
             0.0,
             80.0,
+            weapon::ClientPullPresentation::Fire,
         );
 
         assert!(reconcile_client_weapon_cooldown_from_slot_table(

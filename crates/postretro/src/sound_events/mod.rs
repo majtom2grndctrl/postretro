@@ -9,7 +9,7 @@ mod descriptors;
 mod movers;
 
 pub(crate) use anchors::{AnchorScene, listener_attached_key};
-pub(crate) use client_reload::{ClientReloadEdges, ReloadSample};
+pub(crate) use client_reload::{ClientReloadEdges, ProjectedWeapon, ReloadReading};
 pub(crate) use descriptors::{
     DescriptorSoundTable, ai_sounds, movement_sound, warn_unknown_sound_keys,
     weapon_emission_sound, weapon_sound,

@@ -270,8 +270,9 @@ pub struct ClientApplyFrameOutcome {
     pub armed_local_pawn: Option<ClientArmedLocalPawn>,
     /// At least one replicated state-slot value was committed this frame.
     pub replicated_state_changed: bool,
-    /// Host slot identity carried with the latest fresh owner-private cooldown.
-    pub owner_private_weapon_cooldown_slot: Option<usize>,
+    /// Owner-private weapon values committed this frame, each with the host
+    /// wieldable slot it describes; a value no snapshot carried is `None`.
+    pub owner_private_weapon: crate::weapon::ReplicatedWeaponProjection,
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub mover_corrections: Vec<client::MoverCorrection>,

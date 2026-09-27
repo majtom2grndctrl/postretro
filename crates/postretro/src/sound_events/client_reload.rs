@@ -5,14 +5,79 @@
 
 use postretro_entities::EntityId;
 use postretro_foundation::ReloadStyle;
+use postretro_sim::weapon::ReplicatedWeaponProjection;
+
+/// What this client holds in the host wieldable slot a replicated reload flag
+/// names.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ProjectedWeapon {
+    pub(crate) weapon: EntityId,
+    /// Whether it is the client's own active weapon, with no local switch away
+    /// from it lowering or already repointed.
+    pub(crate) wielded: bool,
+    pub(crate) style: ReloadStyle,
+    pub(crate) capacity: u32,
+}
+
+/// One frame's replicated reload state, as the tracker reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ReloadReading {
+    /// Every value describes one reload-capable weapon.
+    Sample(ReloadSample),
+    /// Nothing is replicated yet, or the projected slot holds no
+    /// reload-capable weapon here.
+    Absent,
+    /// The values describe different host slots. State records arrive per
+    /// slot, not atomically, so after a host switch one value can already name
+    /// the new slot while another still names the old. Such a frame is held
+    /// rather than read, so no edge mixes two weapons' values.
+    Mixed,
+}
+
+impl ReloadReading {
+    /// Read the projection against the weapon its reload flag's host slot
+    /// holds. The magazine, progress and reserve must describe that slot too.
+    pub(crate) fn from_projection(
+        projection: &ReplicatedWeaponProjection,
+        weapon_at: impl FnOnce(usize) -> Option<ProjectedWeapon>,
+    ) -> Self {
+        let Some(active) = projection.reload_active else {
+            return Self::Absent;
+        };
+        let slot = active.slot;
+        let Some(projected) = weapon_at(slot) else {
+            return Self::Absent;
+        };
+        let (Some(progress), Some(ammo)) = (projection.reload_progress, projection.magazine) else {
+            return Self::Absent;
+        };
+        let reserve = projection.reserve;
+        if progress.slot != slot
+            || ammo.slot != slot
+            || reserve.is_some_and(|reserve| reserve.slot != slot)
+        {
+            return Self::Mixed;
+        }
+        Self::Sample(ReloadSample {
+            weapon: projected.weapon,
+            wielded: projected.wielded,
+            style: projected.style,
+            capacity: projected.capacity,
+            active: active.value,
+            progress: progress.value,
+            ammo: ammo.value,
+            reserve: reserve.map(|reserve| reserve.value),
+        })
+    }
+}
 
 /// One frame's replicated reload state, beside the authored reload shape of
 /// the weapon it describes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ReloadSample {
-    /// The weapon the replicated slots describe: the host's active weapon, as
-    /// its slot-correlated cooldown sample names it. It lags a local switch by
-    /// a round trip.
+    /// The weapon the replicated slots describe: the one the client holds in
+    /// the host wieldable slot every value names. The host projects its own
+    /// active weapon, which lags a local switch by a round trip.
     pub(crate) weapon: EntityId,
     /// Whether the client's own active weapon is that weapon.
     pub(crate) wielded: bool,
@@ -78,6 +143,11 @@ impl ReloadSample {
 /// the host performs repoints the projection, which ends the reload with no
 /// edge. Only a reload whose start this tracker saw on the projected weapon
 /// produces shells or a complete.
+///
+/// A host switch away and back that falls wholly between two applied samples
+/// is invisible here: the flag's slot names the original weapon on both sides.
+/// A per-shell reload it cancels after a shell landed then reads as a
+/// conserving fall and plays a complete.
 #[derive(Debug, Default)]
 pub(crate) struct ClientReloadEdges {
     previous: Option<ReloadSample>,
@@ -86,10 +156,20 @@ pub(crate) struct ClientReloadEdges {
 }
 
 impl ClientReloadEdges {
+    /// Observe this frame's reading and return the reload events it completes,
+    /// in host order. A mixed reading leaves the tracker as it was.
+    pub(crate) fn observe_reading(&mut self, reading: ReloadReading) -> Vec<&'static str> {
+        match reading {
+            ReloadReading::Sample(sample) => self.observe(Some(sample)),
+            ReloadReading::Absent => self.observe(None),
+            ReloadReading::Mixed => Vec::new(),
+        }
+    }
+
     /// Observe this frame's replicated state and return the reload events it
     /// completes, in host order. A missing sample or a change of projected
     /// weapon resets the baseline without an edge.
-    pub(crate) fn observe(&mut self, sample: Option<ReloadSample>) -> Vec<&'static str> {
+    fn observe(&mut self, sample: Option<ReloadSample>) -> Vec<&'static str> {
         let Some(current) = sample else {
             self.previous = None;
             self.held = None;
@@ -144,6 +224,7 @@ impl ClientReloadEdges {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_sim::weapon::SlotSample;
 
     fn rifle() -> EntityId {
         EntityId::from_raw(1)
@@ -535,6 +616,135 @@ mod tests {
                 .is_empty()
         );
         assert!(edges.observe(magazine(false, idle(8.0, 18.0))).is_empty());
+    }
+
+    fn slot_sample<T>(slot: usize, value: T) -> Option<SlotSample<T>> {
+        Some(SlotSample { slot, value })
+    }
+
+    /// Every reload value from host slot `slot`.
+    fn projection_of(slot: usize, slots: Slots) -> ReplicatedWeaponProjection {
+        ReplicatedWeaponProjection {
+            magazine: slot_sample(slot, slots.ammo),
+            reserve: slot_sample(slot, slots.reserve),
+            reload_progress: slot_sample(slot, slots.progress),
+            reload_active: slot_sample(slot, slots.active),
+            ..ReplicatedWeaponProjection::default()
+        }
+    }
+
+    /// The client's inventory: the rifle in slot 0 and the pistol in slot 1,
+    /// both magazine-fed.
+    fn held_in(slot: usize) -> Option<ProjectedWeapon> {
+        let weapon = match slot {
+            0 => rifle(),
+            1 => pistol(),
+            _ => return None,
+        };
+        Some(ProjectedWeapon {
+            weapon,
+            wielded: true,
+            style: ReloadStyle::Magazine,
+            capacity: 8,
+        })
+    }
+
+    #[test]
+    fn a_reading_attributes_every_value_to_the_reload_flags_slot() {
+        assert_eq!(
+            ReloadReading::from_projection(&projection_of(1, held(0.5, 2.0, 24.0)), held_in),
+            ReloadReading::Sample(sample(
+                pistol(),
+                ReloadStyle::Magazine,
+                8,
+                held(0.5, 2.0, 24.0)
+            )),
+        );
+        for (value, mixed) in [
+            (
+                "magazine",
+                ReplicatedWeaponProjection {
+                    magazine: slot_sample(0, 2.0),
+                    ..projection_of(1, held(0.5, 2.0, 24.0))
+                },
+            ),
+            (
+                "reserve",
+                ReplicatedWeaponProjection {
+                    reserve: slot_sample(0, 24.0),
+                    ..projection_of(1, held(0.5, 2.0, 24.0))
+                },
+            ),
+            (
+                "progress",
+                ReplicatedWeaponProjection {
+                    reload_progress: slot_sample(0, 0.5),
+                    ..projection_of(1, held(0.5, 2.0, 24.0))
+                },
+            ),
+        ] {
+            assert_eq!(
+                ReloadReading::from_projection(&mixed, held_in),
+                ReloadReading::Mixed,
+                "a {value} from another slot is not the flag's weapon's",
+            );
+        }
+        assert_eq!(
+            ReloadReading::from_projection(&ReplicatedWeaponProjection::default(), held_in),
+            ReloadReading::Absent,
+        );
+        assert_eq!(
+            ReloadReading::from_projection(&projection_of(4, idle(2.0, 24.0)), held_in),
+            ReloadReading::Absent,
+            "the named slot holds no reload-capable weapon here",
+        );
+    }
+
+    #[test]
+    fn a_mixed_reading_holds_the_tracked_reload() {
+        let mut edges = ClientReloadEdges::default();
+        let mut observed = Vec::new();
+        let mut observe = |projection| {
+            observed.extend(
+                edges.observe_reading(ReloadReading::from_projection(&projection, held_in)),
+            );
+        };
+        observe(projection_of(0, idle(2.0, 24.0)));
+        observe(projection_of(0, held(0.0, 2.0, 24.0)));
+        // The completion's flag and progress arrive a snapshot before its counts.
+        observe(ReplicatedWeaponProjection {
+            magazine: slot_sample(1, 12.0),
+            ..projection_of(0, held(1.0, 2.0, 24.0))
+        });
+        observe(projection_of(0, held(1.0, 8.0, 18.0)));
+        observe(projection_of(0, idle(8.0, 18.0)));
+        assert_eq!(observed, ["reload_started", "reload_completed"]);
+    }
+
+    // A quick host switch away from a per-shell reload and back, after a shell
+    // landed: when a sample of the other slot is seen between, the switch
+    // resets the tracker instead of reading the fall as a conserving complete.
+    #[test]
+    fn a_host_switch_away_and_back_seen_between_samples_plays_no_complete() {
+        let per_shell = |slot| {
+            held_in(slot).map(|weapon| ProjectedWeapon {
+                style: ReloadStyle::PerShell,
+                ..weapon
+            })
+        };
+        let mut edges = ClientReloadEdges::default();
+        let mut observed = Vec::new();
+        for projection in [
+            projection_of(0, idle(0.0, 10.0)),
+            projection_of(0, held(0.0, 0.0, 10.0)),
+            projection_of(1, idle(12.0, 50.0)),
+            projection_of(0, idle(1.0, 9.0)), // a shell landed before the cancel
+        ] {
+            observed.extend(
+                edges.observe_reading(ReloadReading::from_projection(&projection, per_shell)),
+            );
+        }
+        assert_eq!(observed, ["reload_started"]);
     }
 
     #[test]

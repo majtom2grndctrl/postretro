@@ -928,10 +928,9 @@ pub fn client_receive_and_apply(
                 snapshot.faction_sentiment_record.as_ref(),
             );
             frame_outcome.replicated_state_changed |= !state_outcome.fresh_slots.is_empty();
-            if state_outcome.fresh_weapon_cooldown_slot.is_some() {
-                frame_outcome.owner_private_weapon_cooldown_slot =
-                    state_outcome.fresh_weapon_cooldown_slot;
-            }
+            frame_outcome
+                .owner_private_weapon
+                .merge(&state_outcome.fresh_weapon_projection);
             if let Some(ack) = outcome.ack.as_mut() {
                 ack.slot_baselines = state_outcome.slot_baselines;
                 ack.faction_sentiment_baseline = faction_sentiment_baseline;
@@ -1325,6 +1324,17 @@ pub fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<Ne
     match endpoint {
         Some(NetEndpoint::Client { replication, .. }) => replication.local_pawn_network_id(),
         _ => None,
+    }
+}
+
+/// The connected client's owner-private weapon values as last committed, each
+/// with the host wieldable slot it describes. Empty on any other role.
+pub fn client_weapon_projection(
+    endpoint: Option<&NetEndpoint>,
+) -> weapon::ReplicatedWeaponProjection {
+    match endpoint {
+        Some(NetEndpoint::Client { state_slots, .. }) => *state_slots.weapon_projection(),
+        _ => weapon::ReplicatedWeaponProjection::default(),
     }
 }
 

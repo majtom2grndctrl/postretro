@@ -34,7 +34,15 @@
 - **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad** → `input.md`
+- **Remapping / rebinding / key bindings / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat)** → `player_options.md` §6 · `input.md` §5, §7
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
+- **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
+- **Accessibility panel / `ui.openAccessibility` / global panel input (Select/Back) / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
+- **Photosensitivity / flash limiter / strobe safety** → `rendering_pipeline.md` §7.8 (Photosensitivity limiter)
+- **Screen reader / assistive technology / accessibility snapshot / hidden-window adapter boot** → `ui.md` §4.2 · `boot_sequence.md` §Window visibility
+- **Theme variants / high contrast / text scale / contrast diagnostic / focus visuals** → `ui.md` §1, §2
+- **Captions / subtitles / sound-direction cues / mono audio / bus volume options** → `audio.md` §1 (Mixer bus tree), §5
+- **Damage direction indicator / player damage bearing** → `networking.md` §Presentation events vs. replicated state
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
 - **Engine-owned assets / `core/` tree / built-in UI descriptors / splash image / where engine assets live vs. mod content** → `ui.md` §5 · `build_pipeline.md` §Distribution packaging
 - **Resource management / textures / materials** → `resource_management.md`

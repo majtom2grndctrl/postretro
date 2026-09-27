@@ -450,11 +450,19 @@ successful present path.
 
 The resolve applies a near-neutral soft-knee tonemap before the existing flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). The former byte-identity resolve contract is superseded: in-range content remains a visual-parity/manual-GPU gate. The resolve sampler is NEAREST / pixel-aligned. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
 
+**Photosensitivity limiter (decided, not yet built).** An engine flash floor on every presented gameplay frame, whatever the source. On by default; the player may disable it only from the engine accessibility panel, never mod content (`ui.md` §4.1). The enable flag reaches the resolve through the UI snapshot and fails safe: absent or malformed reads as on; only an explicit off disables. Two stages, both off when the limiter is off:
+
+- *Channel clamp* — cheap first stage. `screen.flash` and `screen.vignette` are limited by the same rules as they pack into the effect uniform.
+- *Frame limiter* — the limiter of record, inside the resolve, on the whole composited frame. Every gameplay scene and UI pass writes `scene_color`, so world geometry, light animation, emissives, UI panels, and the resolve's own flash, vignette, and shake all cross it: screen-effect and scene flashes share one budget. It compares downsampled luminance against the previous presented (limited) frame's — its own result, never a swapchain readback — and holds three rules: **at most 3 flashes in any 1 s window**, a flash being a pair of opposing transitions (WCAG 2.3.1); **saturated-red transitions desaturated**; full-screen intensity change capped as a rate. A change covering less than the WCAG flash-area threshold passes; one covering at least that area anywhere counts, so luminance cells stay no larger than the threshold area. An over-budget flash is suppressed at its onset, so a limited strobe rests at its pre-flash level.
+
+Windows and rates run on **presented-frame time** — not frame count, and not UI time, which pauses with game logic while frames keep presenting — so a strobe limits the same at 30 Hz and 240 Hz and a hitch never turns the rate cap into one step. Enabling the limiter starts its history that frame; a resize keeps the budget. The boot splash writes the swapchain directly and paints every Loading frame, so gameplay ↔ splash edges bypass the resolve: each counts against the budget, the first resolve frame after a load limits against the splash the player last saw, and a load loop over budget rests at the splash's level (the gameplay → splash edge itself cannot be suppressed). The dev-tools egui overlay is the one other carve-out. Any later post pass composes before the limiter. All limiter GPU work stays in the renderer; its cost is reported through GPU pass timing (§12).
+
 **Frame capture.** Headless capture runs the same soft-knee
 tonemap into a capture-only `Rgba8UnormSrgb` target after the bloom composite,
 then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the
-readback (per the boundary rule).
+readback (per the boundary rule). Capture never presents, so it stays outside
+the photosensitivity limiter and never enters its history.
 
 **Capture measurement.** An optional measurement mode prepares the same static
 capture scene once, warms it up, then renders repeated samples without PNG readback in the

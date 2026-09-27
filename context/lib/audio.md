@@ -1,8 +1,8 @@
 # Audio
 
-> **Read this when:** working on the audio subsystem, adding or positioning sound events, authoring sound fields, or integrating reverb zones.
-> **Key invariant:** audio subsystem never touches wgpu or renderer types. It receives listener state and sound requests; it produces audio output internally via kira. Gameplay sounds are presentation: host-local, resolved after the tick loop, never on the wire.
-> **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md) · [Scripting](./scripting.md) §12 · [Networking](./networking.md) §Combat authority
+> **Read this when:** working on sound playback, sound events and their placement, authored sound fields, reverb zones, or audio accessibility — volume and mono options, captions, subtitles, sound-direction cues.
+> **Key invariant:** audio never touches wgpu or renderer types. It takes listener state and sound requests; kira produces output inside the audio crate. Gameplay sounds are presentation: host-local, resolved after the tick loop, never on the wire.
+> **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md) · [Scripting](./scripting.md) §12 · [Networking](./networking.md) §Combat authority · [Player Options](./player_options.md) §5
 
 ---
 
@@ -32,6 +32,8 @@ Sound assets load at level install time from `content/<mod>/sounds/<collection>/
 kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency.
 
 **The voice counter never disagrees with kira.** A request is admitted only when both the engine's voice counter and kira's live slot occupancy on that bus have room. kira frees a finished sound's slot on its own audio thread, after the engine reclaims the voice, so a slot kira still holds counts as occupied. Positional voices admitted but not yet started count too. Each bus's kira pools — sounds, and for SFX the spatial child tracks — are sized to twice its voice cap, so a full cap of new requests finds slots while kira releases the previous cap's. Over the cap a request is refused with a warning, never queued. A request the counter admits never fails for want of a kira slot.
+
+Decided, not yet built: Master, SFX, Music, and UI volumes are player options (`player_options.md` §5) — Master scales the main track, each other scales its own bus. A mono option folds left and right on the main track, after spatialization, so a hard-panned source reaches both ears; toggling it crossfades rather than stepping.
 
 ---
 
@@ -122,6 +124,15 @@ Every field is optional; an unknown key inside `sounds` is rejected. An event wh
 | Non-finite guard | No non-finite position reaches kira. The listener keeps its last finite pose, a contact set skips non-finite contacts, and an anchor with no finite point is dropped with a warning and its slot released. |
 
 **Level lifetime.** Unload, restart and return-to-frontend all pass through level unload, which fades every world-anchored sound — positional and own-pawn alike — over 150 ms and releases its slot, before the level's sounds are released. No sound outlives its world or follows an entity key into the next level. Unanchored sounds (music, UI) are untouched.
+
+### Captions and direction cues (decided, not yet built)
+
+Audio information is made visible for players who cannot hear it.
+
+- **Authoring.** Captions are keyed per sound asset, so every play path — `playSound` and descriptor sounds — captions without reshaping. A scripted subtitle primitive carries a speaker.
+- **Display.** Captions and cues draw in an engine-owned UI layer above the mod HUD, resolving theme tokens and the selected variant (`ui.md` §2), sized by text scale. A caption holds at least a minimum time after its sound starts; repeat plays within the hold refresh one entry; enabling captions mid-sound captions the rest of that sound. Caption background opacity is a player option.
+- **Direction.** A positional sound's caption carries a direction arrow computed at the spatial chokepoint and updated as the listener turns. Sound-direction cues mark off-screen positional sounds on their side and hold at least as long as a caption. 2D, UI, and music sounds get neither.
+- **Client-local.** Captions derive client-side from sounds the client plays locally. No caption or sound key ever goes on the wire.
 
 ---
 

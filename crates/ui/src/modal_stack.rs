@@ -131,6 +131,9 @@ impl UiTreeRegistry {
         hide_below: bool,
     ) {
         let name = name.into();
+        // Registration is the one build-time point that knows the tree's name, so
+        // focus-authoring diagnostics fire here rather than per push or per frame.
+        super::tree::warn_focus_authoring(&name, &tree);
         let entry = self.trees.entry(name.clone()).or_default();
         if tier == ScopeTier::Mod && entry.mod_scope.is_none() && entry.engine.is_some() {
             log::warn!(

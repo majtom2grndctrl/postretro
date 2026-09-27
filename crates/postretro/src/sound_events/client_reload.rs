@@ -58,6 +58,11 @@ impl ReloadReading {
         {
             return Self::Mixed;
         }
+        // The host names this slot's weapon resourceless: it has no reload
+        // to track.
+        let Some(ammo) = ammo.value else {
+            return Self::Absent;
+        };
         Self::Sample(ReloadSample {
             weapon: projected.weapon,
             wielded: projected.wielded,
@@ -65,8 +70,8 @@ impl ReloadReading {
             capacity: projected.capacity,
             active: active.value,
             progress: progress.value,
-            ammo: ammo.value,
-            reserve: reserve.map(|reserve| reserve.value),
+            ammo,
+            reserve: reserve.and_then(|reserve| reserve.value),
         })
     }
 }
@@ -625,8 +630,8 @@ mod tests {
     /// Every reload value from host slot `slot`.
     fn projection_of(slot: usize, slots: Slots) -> ReplicatedWeaponProjection {
         ReplicatedWeaponProjection {
-            magazine: slot_sample(slot, slots.ammo),
-            reserve: slot_sample(slot, slots.reserve),
+            magazine: slot_sample(slot, Some(slots.ammo)),
+            reserve: slot_sample(slot, Some(slots.reserve)),
             reload_progress: slot_sample(slot, slots.progress),
             reload_active: slot_sample(slot, slots.active),
             ..ReplicatedWeaponProjection::default()
@@ -664,14 +669,14 @@ mod tests {
             (
                 "magazine",
                 ReplicatedWeaponProjection {
-                    magazine: slot_sample(0, 2.0),
+                    magazine: slot_sample(0, Some(2.0)),
                     ..projection_of(1, held(0.5, 2.0, 24.0))
                 },
             ),
             (
                 "reserve",
                 ReplicatedWeaponProjection {
-                    reserve: slot_sample(0, 24.0),
+                    reserve: slot_sample(0, Some(24.0)),
                     ..projection_of(1, held(0.5, 2.0, 24.0))
                 },
             ),
@@ -698,6 +703,29 @@ mod tests {
             ReloadReading::Absent,
             "the named slot holds no reload-capable weapon here",
         );
+        assert_eq!(
+            ReloadReading::from_projection(
+                &ReplicatedWeaponProjection {
+                    magazine: slot_sample(1, None),
+                    reserve: slot_sample(1, None),
+                    ..projection_of(1, idle(0.0, 0.0))
+                },
+                held_in,
+            ),
+            ReloadReading::Absent,
+            "the host names the flag's slot resourceless",
+        );
+        assert_eq!(
+            ReloadReading::from_projection(
+                &ReplicatedWeaponProjection {
+                    magazine: slot_sample(0, None),
+                    ..projection_of(1, held(0.5, 2.0, 24.0))
+                },
+                held_in,
+            ),
+            ReloadReading::Mixed,
+            "an absence names its slot like a count does",
+        );
     }
 
     #[test]
@@ -713,7 +741,7 @@ mod tests {
         observe(projection_of(0, held(0.0, 2.0, 24.0)));
         // The completion's flag and progress arrive a snapshot before its counts.
         observe(ReplicatedWeaponProjection {
-            magazine: slot_sample(1, 12.0),
+            magazine: slot_sample(1, Some(12.0)),
             ..projection_of(0, held(1.0, 2.0, 24.0))
         });
         observe(projection_of(0, held(1.0, 8.0, 18.0)));

@@ -10,8 +10,8 @@ use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_entities::{Emitter, ImpactContact, WeaponEmission};
 use postretro_foundation::{
-    FireMode, KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode,
-    SplashDescriptor, WeaponPlacementDescriptor,
+    FireMode, KnockbackDescriptor, ProjectileDescriptor, ResolutionMode, SplashDescriptor,
+    WeaponPlacementDescriptor,
 };
 
 use crate::collision::{CollisionWorld, cast_ray, cast_sphere_exact};
@@ -21,9 +21,15 @@ use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
 };
 
+mod client_pull;
 mod damage;
 mod impact;
 pub mod spread;
+
+pub use client_pull::{
+    ClientPullEffects, ClientPullPresentation, ClientShotDeclaration, ReplicatedWeaponProjection,
+    SlotSample, client_pull_effects, client_pull_presentation,
+};
 
 pub use damage::DamagePayload;
 pub use impact::{
@@ -147,7 +153,14 @@ pub struct PredictedShotRecord {
     pub(crate) cooldown_before_ms: f32,
     pub(crate) cooldown_after_ms: f32,
     pub(crate) cooldown_authority_generation: u64,
+    /// Presentation bookkeeping: whether this shot showed its muzzle FX. Only
+    /// a [`ClientPullPresentation::Fire`] does. A rejecting verdict clears it;
+    /// nothing raises it after the pull.
     pub(crate) muzzle_fx_visible: bool,
+    /// Presentation bookkeeping: whether this shot shows a hit. Only a fire
+    /// that predicted an entity hit, or a fired projectile that later struck
+    /// one, marks it; a dry or silent pull never does, even when its
+    /// declaration carries a hit. The verdict only retracts it.
     pub(crate) hitmarker_visible: bool,
     pub(crate) status: PredictedShotStatus,
 }
@@ -170,7 +183,8 @@ impl ClientPredictedShots {
 
     /// Record a predicted shot for reconcile. Every shot the fire gate passes
     /// is predicted, whatever it presents; only a [`ClientPullPresentation::Fire`]
-    /// shows its muzzle FX.
+    /// shows its muzzle FX or a hitmarker. A dry click on an enemy marks no hit
+    /// before the verdict, since it presented no shot.
     pub fn predict(
         &mut self,
         shot_id: u64,
@@ -180,6 +194,7 @@ impl ClientPredictedShots {
         cooldown_after_ms: f32,
         presentation: ClientPullPresentation,
     ) {
+        let shows_fire = presentation == ClientPullPresentation::Fire;
         self.shots.insert(
             shot_id,
             PredictedShotRecord {
@@ -193,8 +208,8 @@ impl ClientPredictedShots {
                     .get(&weapon)
                     .copied()
                     .unwrap_or_default(),
-                muzzle_fx_visible: presentation == ClientPullPresentation::Fire,
-                hitmarker_visible: !resolution.hits.is_empty(),
+                muzzle_fx_visible: shows_fire,
+                hitmarker_visible: shows_fire && !resolution.hits.is_empty(),
                 status: PredictedShotStatus::Pending,
             },
         );
@@ -985,115 +1000,6 @@ fn advance_client_fire_gate(
         return false;
     }
     true
-}
-
-/// One owner-private weapon value and the host wieldable slot it describes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SlotSample<T> {
-    pub slot: usize,
-    pub value: T,
-}
-
-/// The owner-private weapon projection as a connected client last received
-/// it, each value beside the host wieldable slot it describes. The host
-/// projects its own active weapon, which lags a local switch by a round trip,
-/// and state records arrive per slot rather than atomically, so values may
-/// briefly describe different slots. Presentation trusts a value only for the
-/// slot it names.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct ReplicatedWeaponProjection {
-    /// `player.weaponCooldownMs`.
-    pub cooldown: Option<SlotSample<f32>>,
-    /// `player.ammo`.
-    pub magazine: Option<SlotSample<f32>>,
-    /// `player.ammoReserve`.
-    pub reserve: Option<SlotSample<f32>>,
-    /// `player.reloadProgress`.
-    pub reload_progress: Option<SlotSample<f32>>,
-    /// `player.reloadActive`.
-    pub reload_active: Option<SlotSample<bool>>,
-}
-
-impl ReplicatedWeaponProjection {
-    /// Take every value `fresh` carries and keep the rest.
-    pub fn merge(&mut self, fresh: &Self) {
-        fn take<T: Copy>(held: &mut Option<SlotSample<T>>, fresh: Option<SlotSample<T>>) {
-            if fresh.is_some() {
-                *held = fresh;
-            }
-        }
-        take(&mut self.cooldown, fresh.cooldown);
-        take(&mut self.magazine, fresh.magazine);
-        take(&mut self.reserve, fresh.reserve);
-        take(&mut self.reload_progress, fresh.reload_progress);
-        take(&mut self.reload_active, fresh.reload_active);
-    }
-}
-
-/// A sample's value when it describes `slot`.
-fn sample_for_slot<T: Copy>(sample: Option<SlotSample<T>>, slot: usize) -> Option<T> {
-    sample
-        .filter(|sample| sample.slot == slot)
-        .map(|sample| sample.value)
-}
-
-/// What a connected client shows for a trigger pull. Presentation only: every
-/// pull the fire gate passes is predicted and declared the same way, so the
-/// host applies damage whenever it fires, and a wrong guess costs a sound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientPullPresentation {
-    /// Fire sound, muzzle FX, predicted impact and any predicted projectile.
-    Fire,
-    /// The host's `Empty`: the dry-fire sound only.
-    DryFire,
-    /// The host's silent `Rejected`: a reload the pull cannot cancel is
-    /// running. Nothing is heard or seen.
-    Silent,
-}
-
-/// Choose a pull's presentation from the replicated magazine and reload
-/// state, mirroring what the host authorizes:
-///
-/// - An idle weapon whose magazine cannot pay for a shot dry fires; with ammo
-///   it fires.
-/// - During a magazine reload the host refuses every pull. During a per-shell
-///   reload a pull the magazine covers cancels the reload and fires; one it
-///   does not cover is refused.
-/// - A reload flag held at full progress is the Completed endpoint the owner
-///   projection replays; live progress stays below 1 while a reload runs, so
-///   the weapon is idle.
-///
-/// A weapon without ammo, or any value used that is absent or describes a
-/// slot other than `active_slot`, presents a fire.
-pub fn client_pull_presentation(
-    weapon: &WeaponComponent,
-    active_slot: usize,
-    projection: &ReplicatedWeaponProjection,
-) -> ClientPullPresentation {
-    let Some(ammo) = weapon.effective().ammo else {
-        return ClientPullPresentation::Fire;
-    };
-    let (Some(magazine), Some(reload_active)) = (
-        sample_for_slot(projection.magazine, active_slot),
-        sample_for_slot(projection.reload_active, active_slot),
-    ) else {
-        return ClientPullPresentation::Fire;
-    };
-    let reloading = if reload_active {
-        let Some(progress) = sample_for_slot(projection.reload_progress, active_slot) else {
-            return ClientPullPresentation::Fire;
-        };
-        progress < 1.0
-    } else {
-        false
-    };
-    let covers_shot = magazine >= ammo.cost_per_shot as f32;
-    match (reloading, ammo.reload_style) {
-        (false, _) if covers_shot => ClientPullPresentation::Fire,
-        (false, _) => ClientPullPresentation::DryFire,
-        (true, ReloadStyle::PerShell) if covers_shot => ClientPullPresentation::Fire,
-        (true, _) => ClientPullPresentation::Silent,
-    }
 }
 
 #[allow(clippy::too_many_arguments)] // mirrors the local fire query inputs without a throwaway struct.
@@ -2368,7 +2274,7 @@ pub(crate) mod tests {
         ReplicatedWeaponProjection {
             magazine: Some(SlotSample {
                 slot,
-                value: magazine,
+                value: Some(magazine),
             }),
             reload_active: Some(SlotSample {
                 slot,
@@ -2423,6 +2329,21 @@ pub(crate) mod tests {
             ),
             ClientPullPresentation::Fire,
             "no count yet: present a fire",
+        );
+        assert_eq!(
+            client_pull_presentation(
+                &weapon,
+                0,
+                &ReplicatedWeaponProjection {
+                    magazine: Some(SlotSample {
+                        slot: 0,
+                        value: None,
+                    }),
+                    ..idle_magazine(0.0)
+                },
+            ),
+            ClientPullPresentation::Fire,
+            "the host names this slot resourceless: no magazine to run dry",
         );
         let unlimited = weapon_component(FireMode::Semi, 100.0);
         assert_eq!(
@@ -2493,7 +2414,7 @@ pub(crate) mod tests {
                 &ReplicatedWeaponProjection {
                     magazine: Some(SlotSample {
                         slot: 0,
-                        value: 0.0,
+                        value: Some(0.0),
                     }),
                     ..projection(1, 0.0, false, 0.0)
                 },
@@ -2529,7 +2450,7 @@ pub(crate) mod tests {
         held.merge(&ReplicatedWeaponProjection {
             magazine: Some(SlotSample {
                 slot: 1,
-                value: 7.0,
+                value: Some(7.0),
             }),
             ..ReplicatedWeaponProjection::default()
         });
@@ -2537,7 +2458,7 @@ pub(crate) mod tests {
             held.magazine,
             Some(SlotSample {
                 slot: 1,
-                value: 7.0
+                value: Some(7.0),
             })
         );
         assert_eq!(
@@ -2547,13 +2468,36 @@ pub(crate) mod tests {
                 value: false,
             }),
         );
+        // A fresh absence is a value: it replaces the held count.
+        held.merge(&ReplicatedWeaponProjection {
+            magazine: Some(SlotSample {
+                slot: 1,
+                value: None,
+            }),
+            ..ReplicatedWeaponProjection::default()
+        });
+        assert_eq!(
+            held.magazine,
+            Some(SlotSample {
+                slot: 1,
+                value: None,
+            })
+        );
     }
 
-    // The fire gate alone decides whether a pull is predicted. A dry
-    // presentation still records its shot for reconcile and resolves the
-    // contacts it declares, so the host applies damage whenever it fired.
+    // The fire gate alone decides whether a pull is predicted. A dry click on
+    // an enemy still records its shot for reconcile and declares the hit it
+    // resolved, so the host applies damage whenever it fired; only what the
+    // pull presents changes.
     #[test]
     fn a_dry_pull_still_predicts_and_declares_its_shot() {
+        let mut registry = EntityRegistry::new();
+        let target = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.0, -3.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
         let mut weapon = ammo_weapon_component(FireMode::Semi, 100.0, 8, 1);
         let presentation = client_pull_presentation(&weapon, 0, &idle_magazine(0.0));
         assert_eq!(presentation, ClientPullPresentation::DryFire);
@@ -2571,18 +2515,39 @@ pub(crate) mod tests {
             &[0.0],
             &[],
             &wall_world(),
-            &EntityRegistry::new(),
+            &registry,
             &HitZoneStore::new(),
             0.0,
             0.0,
         )
         .expect("the fire gate passes, so the pull resolves a shot");
-        assert_eq!(
-            resolution.world_contacts.len(),
-            1,
-            "the hitscan declaration carries the shot's contact",
-        );
         assert!((weapon.cooldown_remaining_ms - 100.0).abs() < f32::EPSILON);
+
+        // The production dispatch: a dry hitscan pull raises only `dry_fire`,
+        // shows no projectile, and declares its resolved hits now.
+        let effects = client_pull_effects(
+            presentation,
+            resolution.projectile_launch.is_some(),
+            !resolution.impact_contacts().is_empty(),
+        );
+        assert_eq!(
+            effects,
+            ClientPullEffects {
+                addresses: vec!["dry_fire"],
+                spawn_projectile: false,
+                declaration: ClientShotDeclaration::ResolvedNow,
+            },
+        );
+        assert_eq!(
+            resolution
+                .hits
+                .iter()
+                .map(|hit| hit.target)
+                .collect::<Vec<_>>(),
+            [target],
+            "the declaration names the struck enemy, as a fire's would",
+        );
+        assert_eq!(resolution.client_tick, 7);
 
         let mut shots = ClientPredictedShots::new();
         shots.predict(
@@ -2595,10 +2560,17 @@ pub(crate) mod tests {
         );
         let record = shots.get(0xD).expect("the shot is recorded for reconcile");
         assert_eq!(record.status, PredictedShotStatus::Pending);
+        assert_eq!(record.client_tick, 7);
+        assert!((record.cooldown_after_ms - 100.0).abs() < f32::EPSILON);
+        assert!(!record.muzzle_fx_visible);
         assert!(
-            !record.muzzle_fx_visible,
-            "a dry presentation shows no muzzle FX",
+            !record.hitmarker_visible,
+            "a dry click marks no hit before the verdict",
         );
+        let reconciled = shots
+            .apply_verdict(&mut registry, 0xD, true, true)
+            .expect("the host's verdict reconciles the dry pull's shot");
+        assert_eq!(reconciled.status, PredictedShotStatus::Accepted);
     }
 
     #[test]
@@ -3551,6 +3523,30 @@ pub(crate) mod tests {
         assert!(record.muzzle_fx_visible);
         assert!(record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Pending);
+
+        // A dry or silent pull that resolved the same hit presents no shot:
+        // it is still recorded for reconcile, with neither marker shown.
+        for presentation in [
+            ClientPullPresentation::DryFire,
+            ClientPullPresentation::Silent,
+        ] {
+            predicted.predict(
+                0xB,
+                EntityId::from_raw(1),
+                &resolution,
+                0.0,
+                100.0,
+                presentation,
+            );
+            let record = predicted.get(0xB).expect("shot should be recorded");
+            assert_eq!(
+                record.status,
+                PredictedShotStatus::Pending,
+                "{presentation:?}"
+            );
+            assert!(!record.muzzle_fx_visible, "{presentation:?}");
+            assert!(!record.hitmarker_visible, "{presentation:?}");
+        }
     }
 
     #[test]

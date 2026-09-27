@@ -497,7 +497,13 @@ Each owner-private weapon value — cooldown, magazine, reserve, reload progress
 reload-active — travels as a `[host wieldable slot, value]` sample; the store keeps a plain
 number or boolean, so HUD and script readers never see the slot. The slot names the weapon a
 value describes: the host projects its own active weapon, which lags a local switch by a
-round trip, and state records arrive per slot rather than atomically. **Client fire
+round trip, and state records arrive per slot rather than atomically. A resourceless active
+weapon's magazine and reserve travel as the `[slot]` absence instead, which the client applies
+as the same store clear the host HUD makes; presentation reads it as no magazine to run dry
+(a fire) and reload edges as no reload-capable weapon. A pawn with no inventory sends the
+HUD's reload defaults (no progress, not reloading) attributed to slot 0. `Unset` skips the
+write for plain and correlated slots alike, and a correlated slot is sent only from its
+projection, never from a plain table value. **Client fire
 prediction is presentation-gated only.** Every pull the client fire gate passes predicts and
 declares as an ordinary fire — it records the predicted shot for reconcile and declares its
 hits (the first selected tick traced, later ticks of a multi-tick frame empty) — so the host
@@ -510,7 +516,9 @@ nothing; a per-shell reload the magazine covers presents a fire, since the shot 
 reload flag held at full progress is the replayed Completed endpoint, so the weapon reads
 idle. A dry or silent pull spawns no predicted projectile, so a projectile weapon declares
 that shot empty at once, as a projectile that fails to materialize does; its damage is lost
-when the host did fire. Any other wrong guess costs only a sound. Hitscan prediction keeps
+when the host did fire. Any other wrong guess costs only a sound. A dry or silent pull shows neither muzzle FX nor
+a hitmarker, even when its declaration carries an entity hit; the verdict only retracts
+those presentation flags. Hitscan prediction keeps
 world contacts and each contact's normal, so predicted impact presentation matches the
 host's contact data.
 Reload presentation edges (start, shell, complete) derive from the projected reload-active,
@@ -633,10 +641,13 @@ normal advances `WIRE_VERSION` to 23; `SNAPSHOT_VERSION` is unchanged. `WIRE_VER
 incompatible peers during the handshake; `SNAPSHOT_VERSION` 16 independently rejects
 incompatible snapshot envelopes during decode. The host movement descriptor's
 knockback response advances the independent tuning payload epoch to 9.
-Slot-correlated owner-private weapon samples change only the replicated state-schema
-fingerprint (its per-slot wire-shape tag): they ride the existing array value, so
-`WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged, and a peer that reads them as plain
-values rejects the state batch at the fingerprint gate.
+Slot-correlated owner-private weapon samples change only the state-schema fingerprint,
+through per-slot wire-shape tags: `[slot, number]` is tag 1, `[slot, flag]` tag 2, and
+`[slot, number]` or `[slot]` (magazine and reserve) tag 3. They ride the existing array
+value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A mixed-build peer is not
+refused: the handshake admits it, and its client rejects every state batch at the
+fingerprint check for the whole session, so no replicated state (health included) reaches
+it until both peers run the same build.
 
 ## Current contract
 

@@ -7289,45 +7289,34 @@ impl App {
                     postretro_sim::emission::descriptor_name(&registry, weapon_id),
                 )
             };
-            let shows_fire = presentation == weapon::ClientPullPresentation::Fire;
-            match presentation {
-                // Predict the muzzle FX on a gated local fire, mirroring the host/
-                // single-player weapon-activation ("activate") event. It drains with
-                // the shared sequence-aware named-event batch; a host reject rolls
-                // this shot's `muzzle_fx_visible` state back in reconcile.
-                weapon::ClientPullPresentation::Fire => {
-                    pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                        address: "activate",
-                        emitter: shooter,
-                        weapon: weapon_name.clone(),
-                    });
-                    // A predicted hitscan shot's contacts, wall hits included, are
-                    // its one `impact`, heard now at the contact nearest the listener.
-                    let contacts = resolution.impact_contacts();
-                    if !contacts.is_empty() {
-                        pending_weapon_script_events.push(
-                            postretro_sim::emission::WeaponEmission {
-                                address: "impact",
-                                emitter: postretro_sim::emission::Emitter::Contacts(contacts),
-                                weapon: weapon_name.clone(),
-                            },
-                        );
-                    }
-                }
-                weapon::ClientPullPresentation::DryFire => {
-                    pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
-                        address: "dry_fire",
-                        emitter: shooter,
-                        weapon: weapon_name.clone(),
-                    });
-                }
-                weapon::ClientPullPresentation::Silent => {}
+            // The presentation picks the emissions and whether a predicted
+            // projectile is shown; every presentation still declares the shot.
+            // Emissions drain with the shared sequence-aware named-event batch;
+            // a host reject rolls this shot's presentation state back in
+            // reconcile.
+            let contacts = resolution.impact_contacts();
+            let effects = weapon::client_pull_effects(
+                presentation,
+                projectile_launch.is_some(),
+                !contacts.is_empty(),
+            );
+            let mut contacts = Some(contacts);
+            for address in effects.addresses {
+                let emitter = if address == "impact" {
+                    // A predicted hitscan shot's contacts, wall hits included,
+                    // are its one `impact`, heard now at the contact nearest
+                    // the listener.
+                    postretro_sim::emission::Emitter::Contacts(contacts.take().unwrap_or_default())
+                } else {
+                    shooter.clone()
+                };
+                pending_weapon_script_events.push(postretro_sim::emission::WeaponEmission {
+                    address,
+                    emitter,
+                    weapon: weapon_name.clone(),
+                });
             }
-            // A dry or silent presentation shows no projectile. With none in
-            // flight to declare a contact, the shot declares empty now, as a
-            // projectile that fails to materialize does: its damage is lost
-            // when the host did fire.
-            let projectile_spawned = shows_fire
+            let projectile_spawned = effects.spawn_projectile
                 && projectile_launch.is_some_and(|launch| {
                     sim::spawn_projectile(
                         &mut script_ctx.registry.borrow_mut(),
@@ -7342,17 +7331,26 @@ impl App {
                     )
                     .is_some()
                 });
-            if !projectile_spawned {
-                // Hitscan resolves now. A projectile that could not materialize
-                // cannot declare later, so promptly retire its authorized shot
-                // with the same valid empty declaration used on normal expiry.
+            let declared = match effects.declaration {
+                weapon::ClientShotDeclaration::ResolvedNow => Some((
+                    resolution.hits.as_slice(),
+                    resolution.world_contacts.as_slice(),
+                )),
+                // A projectile that could not materialize cannot declare later,
+                // so it retires its authorized shot now with the same valid
+                // empty declaration used on normal expiry.
+                weapon::ClientShotDeclaration::OnProjectileResolution if projectile_spawned => None,
+                weapon::ClientShotDeclaration::OnProjectileResolution
+                | weapon::ClientShotDeclaration::EmptyNow => Some((&[][..], &[][..])),
+            };
+            if let Some((hits, world_contacts)) = declared {
                 let _ = netcode::client_send_hit_declaration(
                     self.session
                         .as_mut()
                         .and_then(|session| session.net_endpoint.as_mut()),
                     shot_id,
-                    &resolution.hits,
-                    &resolution.world_contacts,
+                    hits,
+                    world_contacts,
                 );
             }
             // Only the first tick casts a ray (once per frame, at the rendered pose);

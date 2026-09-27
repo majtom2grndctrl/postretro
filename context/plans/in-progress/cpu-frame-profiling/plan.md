@@ -41,47 +41,47 @@ read at: 683e363ba
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 Neutrality on small portal fixture, on/off in one process | visibility test on `portal_chain_world`: identical `visible_cells`, `fog_reachable`, `path` with gate on vs off; on-demand `#[ignore]` repeat in `candidate_cull_probes` | achievable as stated |
-| A2 Timing off: no timer allocation, no window accumulates | binary test (counting allocator in `main.rs` tests) driving every scope, frame end, 2+ windows with gate off; control allocation seen | achievable as stated |
-| A3 Timing on, Tracy off: steady-state zero alloc incl. window close | same harness, gate on, after the first window | achievable as stated |
-| A4 Proofs run where allocations are counted, with control, timer-only | binary tests only (P-alloc); each asserts a deliberate control alloc is counted | achievable as stated |
-| A5 Zero-tick frame: tick count 0, no sim time, frame counts | fold test (P-zero-tick) | achievable as stated |
-| A6 Multi-tick frame sums substages | fold test (P-many-tick) + sim test that each tick returns its stage frame | achievable as stated |
-| A7 Substage ≤ parent per frame; unattributed ≥ 0 | fold/property test over recorded frames; debug check in fold | achievable as stated |
-| A8 Stage averages over frames it ran; 60/60 walk/fallback | fold test | achievable as stated |
-| A9 Step-limit frame enters walk window, raises count, not fallback | visibility test (`portal_traverse_reports_step_limit…` fixture) + fold test (P-steplimit) | achievable as stated |
-| A10 Unattributed exact; acquire/present block in wait only | frame accountant test with injected durations (P-wait) | achievable as stated |
-| A11 Frame 120 closes; 121 opens; only counted frames advance | accountant test (P-close, P-count) | achievable as stated |
-| A12 Early return changes no window; fallback-then-early-return changes nothing | accountant test (P-early-fallback): frame staged, then discarded | achievable as stated |
-| A13 Portal frame adds walk time + all counters | visibility test + fold test | achievable as stated |
-| A14 Zero-portal walk present with zero counters | visibility test (P-zero-walk) | achievable as stated |
-| A15 Fallback frame: walk unchanged, fallback count +1; fallback-only window → walk absent | fold test | achievable as stated |
-| A16 Frontend frame changes no window | accountant test (frame never begun/committed) | achievable as stated |
-| A17 Step-limit trips reported as count | fold/log-line test | achievable as stated |
-| A18 Two timers isolated | leaf test: two instances interleaved | achievable as stated |
-| A19 Test-only stage set appears in window, log, capture report | binary test with a test enum nested under a top-level parent | achievable as stated |
-| A20 Stage entered twice sums | leaf test | achievable as stated |
-| A21 Reset on vsync/install/unload/reload; install frame excluded | accountant test (P-reset, P-reload) | achievable as stated |
-| A22 New level: no surface shows prior level's window | accountant test: install clears `last_window` read by log/UI/live | achievable as stated |
-| A23 No-surface frame changes no window | accountant test (P-surface-skip) | achievable as stated |
-| A24 Capture `cpu_stages`: present/omitted/not-requested, round-trip, warmup excluded, complete windows once, partial count, not-yet-windowed | `capture/report.rs` tests mirroring the `gpu_timing` suite + `Deserialize` round-trip | achievable as stated |
-| A25 Observe-live timing: window / unavailable / not-yet-windowed / idempotent reads | `observe_live/ingress.rs` tests | achievable as stated |
-| A26 Live timing with no level → no-world reply | ingress test beside `service_returns_no_world_…` | achievable as stated |
-| A27 Batch rejects flag by name; two batch runs byte-identical incl. gate on | `parse_runspec` test + new in-process headless double-run test (see Corrections) | achievable (clarified) |
-| A28 No `[CpuTiming]` line when off; exactly one per window when on | `test-log-capture` test on the log surface | achievable as stated |
-| A29 Absent-not-zero in log line, debug UI, observe-live | log-line test, live test, debug-UI row formatter unit test | achievable as stated |
-| A30 Leaf crate depends on no engine crate, names no stage | dependency test (cargo metadata) + source check that no crate's stage label appears in leaf source | achievable as stated |
-| A31 Mesh pose sampling under render recording; no `POSTRETRO_GPU_TIMING` read | renderer stage-tree test + source check on `mesh_pass.rs` | achievable as stated |
-| A32 Tracy absent under default / observability+observe-live+capture / dist features | xtask test running `cargo tree -e normal` per feature set | achievable as stated |
-| M1 Overhead within 1% median over 10 windows | owner, in-engine, release, vsync off | manual |
-| M2 Wait absorbs vsync block; near zero with vsync off | owner/executor, in-engine | manual |
-| M3 Unattributed < 5% work CPU on campaign-test | executor first measurement (task 2), owner confirms | manual |
-| M4 Baselines for three maps + walk-reach probe recorded | executor/owner, release, in-engine | manual |
-| M5 Parallelization gate verdict on release stress-warren | executor/owner | manual |
-| M6 Tracy capture shows scopes, gate set and unset | owner, Tracy GUI | manual |
-| M7 Debug UI CPU block updates each window beside GPU | owner, `dev-tools` build | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 Neutrality on small portal fixture, on/off in one process | visibility test on `portal_chain_world`: identical `visible_cells`, `fog_reachable`, `path` with gate on vs off; on-demand `#[ignore]` repeat in `candidate_cull_probes` | achievable as stated | pass — `timing_on_and_off_produce_identical_visibility`; stress-probe repeat on demand |
+| A2 Timing off: no timer allocation, no window accumulates | binary test (counting allocator in `main.rs` tests) driving every scope, frame end, 2+ windows with gate off; control allocation seen | achievable as stated | pass — `timing_off_frame_allocates_nothing_and_accumulates_no_window` |
+| A3 Timing on, Tracy off: steady-state zero alloc incl. window close | same harness, gate on, after the first window | achievable as stated | pass — `timing_on_steady_state_allocates_nothing_across_window_closes` (drives every engine stage set) |
+| A4 Proofs run where allocations are counted, with control, timer-only | binary tests only (P-alloc); each asserts a deliberate control alloc is counted | achievable as stated | pass — both proofs in the engine binary, each with a counted control allocation |
+| A5 Zero-tick frame: tick count 0, no sim time, frame counts | fold test (P-zero-tick) | achievable as stated | pass — `zero_tick_frame_records_zero_ticks_and_still_counts`, `zero_tick_frame_has_no_sim_rows_and_sim_averages_skip_it` |
+| A6 Multi-tick frame sums substages | fold test (P-many-tick) + sim test that each tick returns its stage frame | achievable as stated | pass — `multi_tick_frame_sums_sim_substages_and_reports_the_tick_count`, `timed_tick_reports_every_substage_inside_the_tick` |
+| A7 Substage ≤ parent per frame; unattributed ≥ 0 | fold/property test over recorded frames; debug check in fold | achievable as stated | pass — `substage_overrun_is_reported`, `nested_scopes_keep_substage_inside_parent`; `compose` debug-asserts every frame |
+| A8 Stage averages over frames it ran; 60/60 walk/fallback | fold test | achievable as stated | pass — `stage_averages_over_only_the_frames_it_ran_in` |
+| A9 Step-limit frame enters walk window, raises count, not fallback | visibility test (`portal_traverse_reports_step_limit…` fixture) + fold test (P-steplimit) | achievable as stated | pass — `step_limit_frame_is_a_walk_frame_not_a_fallback_frame` |
+| A10 Unattributed exact; acquire/present block in wait only | frame accountant test with injected durations (P-wait) | achievable as stated | pass — `unattributed_is_exactly_total_minus_top_level_stages_minus_wait` |
+| A11 Frame 120 closes; 121 opens; only counted frames advance | accountant test (P-close, P-count) | achievable as stated | pass — `frame_120_closes_window_one_and_frame_121_opens_window_two`, `only_committed_in_level_frames_advance_the_window` |
+| A12 Early return changes no window; fallback-then-early-return changes nothing | accountant test (P-early-fallback): frame staged, then discarded | achievable as stated | pass — `only_committed_in_level_frames_advance_the_window` |
+| A13 Portal frame adds walk time + all counters | visibility test + fold test | achievable as stated | pass — `portal_frame_records_walk_time_and_every_counter` |
+| A14 Zero-portal walk present with zero counters | visibility test (P-zero-walk) | achievable as stated | pass — `walk_that_considers_no_portal_is_present_with_zero_counters` |
+| A15 Fallback frame: walk unchanged, fallback count +1; fallback-only window → walk absent | fold test | achievable as stated | pass — `fallback_frame_records_only_the_fallback_marker`, `stage_absent_from_every_frame_has_no_row` |
+| A16 Frontend frame changes no window | accountant test (frame never begun/committed) | achievable as stated | pass — `only_committed_in_level_frames_advance_the_window` |
+| A17 Step-limit trips reported as count | fold/log-line test | achievable as stated | pass — `fields_mark_partial_rows_and_report_markers_as_counts` |
+| A18 Two timers isolated | leaf test: two instances interleaved | achievable as stated | pass — `two_windows_in_one_process_never_share_samples` |
+| A19 Test-only stage set appears in window, log, capture report | binary test with a test enum nested under a top-level parent | achievable as stated | pass — `test_only_stage_set_reaches_window_log_line_and_capture_report` |
+| A20 Stage entered twice sums | leaf test | achievable as stated | pass — `stage_entered_twice_in_one_frame_reports_the_sum` |
+| A21 Reset on vsync/install/unload/reload; install frame excluded | accountant test (P-reset, P-reload) | achievable as stated | pass — `vsync_toggle_discards_the_partial_window_only`, `level_change_clears_every_window_and_skips_the_install_frame`, `reload_commit_frame_is_discarded_with_the_partial_window` |
+| A22 New level: no surface shows prior level's window | accountant test: install clears `last_window` read by log/UI/live | achievable as stated | pass — `level_change_clears_every_window_and_skips_the_install_frame` |
+| A23 No-surface frame changes no window | accountant test (P-surface-skip) | achievable as stated | pass — `only_committed_in_level_frames_advance_the_window` |
+| A24 Capture `cpu_stages`: present/omitted/not-requested, round-trip, warmup excluded, complete windows once, partial count, not-yet-windowed | `capture/report.rs` tests mirroring the `gpu_timing` suite + `Deserialize` round-trip | achievable as stated | pass — `capture::cpu_windows` 5 tests + `measurement_report_round_trips_with_cpu_stages` |
+| A25 Observe-live timing: window / unavailable / not-yet-windowed / idempotent reads | `observe_live/ingress.rs` tests | achievable as stated | pass — `observe_live::ingress` live-timing tests (available / not-requested / not-yet-windowed / repeated reads) |
+| A26 Live timing with no level → no-world reply | ingress test beside `service_returns_no_world_…` | achievable as stated | pass — `live_timing_without_an_installed_level_returns_the_no_world_reply` |
+| A27 Batch rejects flag by name; two batch runs byte-identical incl. gate on | `parse_runspec` test + new in-process headless double-run test (see Corrections) | achievable (clarified) | pass — `batch_runspec_rejects_the_live_only_cpu_timing_section_by_name`; `tests/headless_byte_identity.rs` 2 passed |
+| A28 No `[CpuTiming]` line when off; exactly one per window when on | `test-log-capture` test on the log surface | achievable as stated | pass — `log_line_appears_once_per_closed_window_and_never_when_off` |
+| A29 Absent-not-zero in log line, debug UI, observe-live | log-line test, live test, debug-UI row formatter unit test | achievable as stated | pass — `absent_stage_is_missing_from_the_log_line_not_zero`, `live_timing_returns_the_latest_window_with_absent_stages_omitted`, debug-UI `rows_indent_substages_and_omit_stages_that_did_not_run` |
+| A30 Leaf crate depends on no engine crate, names no stage | dependency test (cargo metadata) + source check that no crate's stage label appears in leaf source | achievable as stated | pass — `shared_timing_crate_depends_on_no_engine_crate`, `shared_timing_crate_source_names_no_engine_stage` |
+| A31 Mesh pose sampling under render recording; no `POSTRETRO_GPU_TIMING` read | renderer stage-tree test + source check on `mesh_pass.rs` | achievable as stated | pass — `mesh_pose_sampling_nests_under_render_recording`, `mesh_pose_sampling_no_longer_reads_the_gpu_timing_gate` |
+| A32 Tracy absent under default / observability+observe-live+capture / dist features | xtask test running `cargo tree -e normal` per feature set | achievable as stated | pass — `tracy_is_absent_from_shipped_and_dependency_free_feature_sets` (default, dev-tools, observability+observe-live+capture) |
+| M1 Overhead within 1% median over 10 windows | owner, in-engine, release, vsync off | manual | outstanding — owner, release, vsync off (Alt+Shift+V) |
+| M2 Wait absorbs vsync block; near zero with vsync off | owner/executor, in-engine | manual | partial — vsync on measured: block lands in `wait_acquire` (13–14 ms), `wait_present` 0.05 ms; vsync-off half outstanding (needs the chord) |
+| M3 Unattributed < 5% work CPU on campaign-test | executor first measurement (task 2), owner confirms | manual | partial — dev build 0.004 ms ≈ 0.02% of work CPU; release confirmation outstanding |
+| M4 Baselines for three maps + walk-reach probe recorded | executor/owner, release, in-engine | manual | outstanding — maps compiled, probe chosen; release runs need an awake display |
+| M5 Parallelization gate verdict on release stress-warren | executor/owner | manual | outstanding — probe `-58.93,2.43,1.63,225,0` considers 257 portals (reach 19); release verdict pending |
+| M6 Tracy capture shows scopes, gate set and unset | owner, Tracy GUI | manual | outstanding — owner, Tracy GUI, `--features tracy` |
+| M7 Debug UI CPU block updates each window beside GPU | owner, `dev-tools` build | manual | outstanding — owner, `--features dev-tools` |
 
 ## Tasks
 
@@ -94,11 +94,14 @@ read at: 683e363ba
 | 5 | Renderer: render stage enum; one CPU scope per pass in `record_scene_passes` + `submit_windowed_frame` + `render_debug_ui`; mesh pose sampling as a substage, `PoseSampleStats` retired; stage frame returned beside GPU timing, capture path included. Tests A31. | integrating executor | 1, 2 | done — `cargo test -p postretro-renderer --lib cpu_stages` 3 passed (A31) |
 | 6 | Surfaces: debug UI CPU block (A29 formatter); observe-live `cpu_timing` live-only section + batch rejection + double-run byte test (A25–A27); capture `cpu_stages`, v3, round-trip (A24); test-only stage set end to end (A19). | integrating executor | 3, 4, 5 | done — `cargo test -p postretro --bin postretro --features capture capture::` 60 passed; `--features observe-live,observability -- observe_live` passed (6 new live-timing tests); `--features observability --test headless_byte_identity` 2 passed; `runspec` 25 passed; `cargo test -p postretro-renderer --features dev-tools --lib cpu_timing_block` 2 passed; `cpu_timing` 13 passed |
 | 7 | Tracy feature bridge in the leaf crate; feature wiring through binary; dependency-tree and source checks (A30, A32). | integrating executor | 1, 5 | done — `cargo test -p postretro --test dependency_isolation` 3 passed (A30 deps, A32); `cpu_timing::tests::shared_timing_crate_source_names_no_engine_stage` passed (A30 source) |
-| 8 | `--start-pose` launch arg; checked-in walk-reach probe for `stress-warren` (added to the probe table + README); release baselines for three maps + probe; gate verdict recorded in brief (M3–M5). Manual rows M1, M2, M6, M7 handed to owner. | integrating executor, owner | 2–7 | |
+| 8 | `--start-pose` launch arg; checked-in walk-reach probe for `stress-warren` (added to the probe table + README); release baselines for three maps + probe; gate verdict recorded in brief (M3–M5). Manual rows M1, M2, M6, M7 handed to owner. | integrating executor, owner | 2–7 | partial — `--start-pose` shipped and tested; both stress maps compiled (warm cache); probe chosen and recorded in `stress-warren.README.md`; release baselines (M3–M5) wait on an awake display |
 
 Tasks 3, 4 and 5 touch disjoint crates, so they can run as concurrent workers once 2 fixes the fold contract. The integrator owns every `main.rs` edit and all Cargo runs.
 
 ## Follow-ups (not in scope)
+
+- `postretro-tool` `sdk_dist::assemble::tests` flakes under parallel runs (1–2 of 14 fail per run; `sweep_requires_the_baked_materials_directory` and siblings report missing bundle files in their temp tree). Untouched by this branch.
+- `candidate_cull_probes::PROBES` feeds `player_spawn` origins in raw map units straight into engine-space cameras (engine units are meters); the `#[ignore]` equivalence test therefore probes far outside the maps.
 
 - `postretro-ai` (`graph_eval.rs`, `brain_scope.rs`, `candidate_scope.rs`, `targeting.rs`) and `postretro-physics` (`movement/mod.rs`) arm `AllocSnapshot` without installing a `#[global_allocator]`, so their zero-allocation assertions likely pass vacuously. Unverified by run.
 - `main.rs` diagnostics build `walk_reach_col` with `format!` every portal frame, a per-frame allocation outside the timer.

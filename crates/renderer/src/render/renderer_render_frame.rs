@@ -2,6 +2,7 @@
 // forward pass, mesh/smoke/fog passes, and submission.
 // See: context/lib/rendering_pipeline.md §1
 
+use super::cpu_stages::RenderStage;
 use super::*;
 use postretro_level_loader::{ShDrainBatch, ShDrainOutcome};
 
@@ -67,7 +68,11 @@ impl Renderer {
         // This is the sole loader→renderer admission point for a windowed
         // frame. It precedes surface acquisition so even a skipped frame
         // returns the ownership outcome to the session controller.
+        self.cpu_frame.clear();
+        let cpu = std::rc::Rc::clone(&self.cpu_frame);
+        let drain_scope = cpu.scope(RenderStage::ShDrain);
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        drop(drain_scope);
         let mut compose_submitted = false;
         let frame = (|| -> Result<Option<PresentHandle>> {
             let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
@@ -104,7 +109,10 @@ impl Renderer {
                 clear_color,
                 render_world,
             )?;
-            self.submit_windowed_frame(encoder);
+            {
+                let _submit = cpu.scope(RenderStage::Submit);
+                self.submit_windowed_frame(encoder);
+            }
 
             // Caller (`App`) presents after optionally appending the egui overlay
             // pass via `render_debug_ui`.
@@ -143,6 +151,11 @@ impl Renderer {
         // The drawable visible-cell set; candidate-cull eligibility derives
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
+        // One CPU scope per pass; the record scope spans the whole call,
+        // including capture's early return.
+        let cpu = std::rc::Rc::clone(&self.cpu_frame);
+        let _record_scope = cpu.scope(RenderStage::Record);
+        let mesh_plan_scope = cpu.scope(RenderStage::MeshPlan);
 
         // Before any pass requests timestamps: the frame's resolve reads
         // every query slot, so every slot must be written in this encoder.
@@ -198,7 +211,9 @@ impl Renderer {
         let promotion_mesh_frame_plan = selected_static_needs_mesh_gate
             .then(|| mesh_frame_plans.as_ref().map(|plans| &plans.world))
             .flatten();
+        drop(mesh_plan_scope);
         if render_world {
+            let light_slots_scope = cpu.scope(RenderStage::LightSlots);
             // mem::take avoids a simultaneous borrow of self; returned after call
             // to reuse the allocation.
             let eff_brightness = std::mem::take(&mut self.full_mut().light_effective_brightness);
@@ -231,7 +246,9 @@ impl Renderer {
             }
             self.full_mut().light_effective_brightness = eff_brightness;
             self.full_mut().animated_light_window_brightness = animated_window_brightness;
+            drop(light_slots_scope);
 
+            let _pre_scene_scope = cpu.scope(RenderStage::PreScene);
             self.prepare_streamed_sh_compose(
                 sh_sample_regions,
                 mesh_frame_plans.as_ref(),
@@ -248,6 +265,7 @@ impl Renderer {
             );
             compose_succeeded &= self.record_direct_sh_pre_scene_compute(encoder);
         } else {
+            let _pre_scene_scope = cpu.scope(RenderStage::PreScene);
             compose_succeeded &= self.record_pre_scene_compute(
                 encoder,
                 cam_vis,
@@ -268,6 +286,7 @@ impl Renderer {
         // both upload into the same buffers, but only the world partition reaches
         // shadow depth below.
         if let Some(plans) = &mesh_frame_plans {
+            let _mesh_upload_scope = cpu.scope(RenderStage::MeshUpload);
             // Overflow drops excess instances rather than corrupting the
             // palette or panicking — rate-limited warning. Covers BOTH the
             // palette-slot cap and the instance-count cap. Rigid / zero-joint
@@ -300,6 +319,7 @@ impl Renderer {
                     queue,
                     &[&plans.world, &plans.viewmodel],
                     &mut full.bone_palette_scratch,
+                    &cpu,
                 );
             }
         }
@@ -318,6 +338,7 @@ impl Renderer {
             full.promoted_depth_cache_timing_open = false;
         }
 
+        let shadow_scope = cpu.scope(RenderStage::ShadowDepth);
         if render_world {
             self.record_spot_shadow_depth(encoder, world_mesh_frame_plan);
         }
@@ -353,7 +374,12 @@ impl Renderer {
             self.record_cube_shadow_depth(encoder, world_mesh_frame_plan);
         }
 
-        self.record_depth_and_sdf_passes(encoder, view_proj, render_world);
+        drop(shadow_scope);
+
+        {
+            let _depth_sdf_scope = cpu.scope(RenderStage::DepthSdf);
+            self.record_depth_and_sdf_passes(encoder, view_proj, render_world);
+        }
 
         // Post-scene compositor seam: every gameplay scene + UI pass renders into
         // `scene_color` (the offscreen target) instead of the swapchain `view`.
@@ -369,6 +395,7 @@ impl Renderer {
         let scene_color = self.full().screen_effects.scene_color_view().clone();
 
         {
+            let _forward_scope = cpu.scope(RenderStage::Forward);
             let forward_ts = self
                 .full()
                 .frame_timing
@@ -438,6 +465,7 @@ impl Renderer {
         // They write depth and use the mesh dynamic-object lighting bindings
         // (baked SH indirect/static direct + runtime dynamic direct).
         if render_world && self.full().kinematic_brush.has_draws() {
+            let _kinematic_scope = cpu.scope(RenderStage::KinematicBrush);
             let frame_light_term_mask = self.frame_light_term_mask();
             {
                 let Self { queue, full, .. } = self;
@@ -496,6 +524,7 @@ impl Renderer {
         // read, so an entity and its shadow share one pose (no one-frame lag).
         if render_world {
             if let Some(plan) = world_mesh_frame_plan {
+                let _skinned_scope = cpu.scope(RenderStage::SkinnedMesh);
                 // Mesh group-2 params uniform (binding 4): the runtime-light count, the
                 // frame's render-clock time (the SAME value written to forward
                 // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
@@ -556,6 +585,7 @@ impl Renderer {
             && self.full().smoke_pass.has_any_sheet()
             && !particle_collections.is_empty()
         {
+            let _smoke_scope = cpu.scope(RenderStage::Smoke);
             let smoke_ts = self
                 .full()
                 .frame_timing
@@ -610,6 +640,7 @@ impl Renderer {
         // Volumetric fog: low-res compute raymarch + additive composite.
         // Skipped when no active volumes — scatter target need not be cleared.
         // See: context/lib/rendering_pipeline.md §7.5
+        let fog_scope = cpu.scope(RenderStage::Fog);
         if render_world {
             let cell_mask = compute_fog_cell_mask(
                 fog_reachable,
@@ -687,10 +718,13 @@ impl Renderer {
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
+        drop(fog_scope);
+
         // Bloom samples HDR scene color after fog and adds the blurred bright
         // contribution back before capture. The capture return below therefore
         // sees bloom, while wireframe/debug/viewmodel/UI remain un-bloomed.
         if self.full().bloom.enabled() {
+            let _bloom_scope = cpu.scope(RenderStage::Bloom);
             let full = self
                 .full
                 .as_ref()
@@ -715,6 +749,7 @@ impl Renderer {
         let font_system =
             font_system.expect("windowed gameplay rendering requires a UI font system");
 
+        let overlay_scope = cpu.scope(RenderStage::Overlay);
         self.record_wireframe_overlay(encoder, &scene_color, render_world, visible);
 
         #[cfg(feature = "dev-tools")]
@@ -736,6 +771,8 @@ impl Renderer {
             // leaking segments across frames.
         }
 
+        drop(overlay_scope);
+
         // First-person weapon presentation is deliberately last among scene
         // geometry: clear the shared depth attachment so nearby world surfaces
         // cannot clip it, then draw only the structurally separate viewmodel
@@ -743,6 +780,7 @@ impl Renderer {
         // interpretation; UI remains above this pass as usual.
         if render_world {
             if let Some(plan) = viewmodel_mesh_frame_plan {
+                let _viewmodel_scope = cpu.scope(RenderStage::Viewmodel);
                 {
                     let frame_light_term_mask = self.frame_light_term_mask();
                     let Self { queue, full, .. } = self;
@@ -804,6 +842,7 @@ impl Renderer {
         // skipped entirely — no `begin_render_pass`. This is the gameplay-path-
         // only early-out (A follow-up #3); the boot splash is a separate
         // renderer-owned pass (`BootSplashPass`) that always clears the swapchain.
+        let ui_scope = cpu.scope(RenderStage::Ui);
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
         // Destructure boot (`device`/`queue`) + `full` once for the whole UI
         // region: the layout/focus-ring/encode/resolve statements interleave a
@@ -943,6 +982,8 @@ impl Renderer {
         // soft-knee tonemap before flash/vignette/shake. This is the gameplay
         // path's sole swapchain writer and runs even when screen effects are at
         // rest; timing query resolution follows it.
+        drop(ui_scope);
+        let _resolve_scope = cpu.scope(RenderStage::Resolve);
         full.screen_effects
             .encode_resolve(queue, encoder, view, &full.ui_snapshot.slot_values);
 

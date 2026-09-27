@@ -6,6 +6,7 @@ mod billboard_direct_scatter;
 mod billboard_direct_scatter_compose;
 mod bloom;
 mod bloom_profile;
+pub mod cpu_stages;
 #[cfg(feature = "dev-tools")]
 mod debug_lines;
 #[cfg(feature = "dev-tools")]

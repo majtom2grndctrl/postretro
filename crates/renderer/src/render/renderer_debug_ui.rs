@@ -52,6 +52,8 @@ impl Renderer {
         paint_jobs: Vec<egui::ClippedPrimitive>,
         pixels_per_point: f32,
     ) -> Result<()> {
+        let cpu = std::rc::Rc::clone(&self.cpu_frame);
+        let _debug_ui_scope = cpu.scope(super::cpu_stages::RenderStage::DebugUi);
         let surface_view = present_handle.surface_view();
         let screen_desc = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.surface_config.width, self.surface_config.height],

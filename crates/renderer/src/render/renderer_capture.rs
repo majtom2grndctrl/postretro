@@ -59,7 +59,13 @@ impl Renderer {
         ShDrainFrameResult<Option<CaptureGpuTimingWindow>>,
         ShResidencyDrainError,
     > {
+        // Capture reports only recording stages: its submit blocks on the
+        // device, which is not recording cost.
+        self.cpu_frame.clear();
+        let cpu = std::rc::Rc::clone(&self.cpu_frame);
+        let drain_scope = cpu.scope(super::cpu_stages::RenderStage::ShDrain);
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
+        drop(drain_scope);
         let mut compose_submitted = false;
         let frame = (|| -> Result<Option<CaptureGpuTimingWindow>> {
             self.update_per_frame_uniforms(view_proj, camera_position, animation_time_seconds);
@@ -166,6 +172,7 @@ impl Renderer {
         render_world: bool,
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Vec<u8>>, ShResidencyDrainError> {
+        self.cpu_frame.clear();
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
         let frame = (|| -> Result<(Vec<u8>, bool)> {
             self.update_per_frame_uniforms(view_proj, camera_position, animation_time_seconds);

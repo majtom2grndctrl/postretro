@@ -4635,6 +4635,12 @@ impl ApplicationHandler for App {
                         self.cpu_timer.exclude_frame();
                     }
                     drop(render_scope);
+                    self.cpu_timer.nested_mut().extend_from(
+                        renderer.cpu_stages(),
+                        Some(postretro_stage_timing::StageSet::label(
+                            cpu_timing::FrameStage::Render,
+                        )),
+                    );
                 }
 
                 drop(stage_scope);

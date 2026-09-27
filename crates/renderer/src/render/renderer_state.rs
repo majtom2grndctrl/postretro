@@ -216,6 +216,15 @@ impl Renderer {
     /// binary; see context/lib/rendering_pipeline.md §12.
     pub fn set_cpu_timing(&mut self, gate: postretro_stage_timing::TimingGate) {
         self.cpu_timing = gate;
+        self.cpu_frame = std::rc::Rc::new(postretro_stage_timing::StageFrame::new(gate));
+    }
+
+    /// CPU stage values for the frame most recently recorded (windowed or
+    /// capture), including the debug-UI overlay when it ran.
+    pub fn cpu_stages(
+        &self,
+    ) -> &postretro_stage_timing::StageFrame<super::cpu_stages::RenderStage> {
+        &self.cpu_frame
     }
 }
 

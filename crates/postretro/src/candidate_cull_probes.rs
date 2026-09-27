@@ -176,27 +176,45 @@ mod tests {
         }
     }
 
-    /// On-demand search for the CPU-timing walk-reach probe on `stress-warren`
+    /// On-demand search for CPU-timing walk-reach probes on the stress maps
     /// (brief: cpu-frame-profiling, parallelization gate). Sweeps every open
     /// drawable cell at pawn height with eight headings, and ranks poses by
-    /// portals the walk considered — the cost the gate measures. Reads the
-    /// already-compiled `content/dev/maps/stress-warren.prl`. Run with:
+    /// portals the walk considered — the cost the gate measures. Reads each
+    /// map's already-compiled `.prl` beside its `.map`, skipping any that is
+    /// missing or stale. Run with:
     ///   cargo test -p postretro --bin postretro -- --ignored walk_reach_probe_search --nocapture
     #[test]
     #[ignore = "loads the compiled stress-warren PRL; on-demand only"]
     fn walk_reach_probe_search() {
+        let mut searched = 0;
+        for map in [
+            "stress-warren",
+            "stress-warren-mini",
+            "stress-warren-hallway-inspection",
+        ] {
+            let prl = format!(
+                "{}/../../content/dev/maps/{map}.prl",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            match postretro_level_loader::load_prl(&prl) {
+                Ok(world) => {
+                    println!("\n== {map}");
+                    search_map(&world);
+                    searched += 1;
+                }
+                Err(err) => println!("\n== {map}: skipped, {err}"),
+            }
+        }
+        assert!(searched > 0, "compile at least one stress map first");
+    }
+
+    fn search_map(world: &postretro_level_loader::LevelWorld) {
         use glam::{Mat4, Vec3};
         use postretro_visibility::{TimingGate, VisibilityPath, VisibilityStage};
 
         // Dev player capsule: 0.8 m half-height, eye 0.5 m above the origin.
         const HALF_HEIGHT: f32 = 0.8;
         const EYE_ABOVE_ORIGIN: f32 = 0.5;
-        let prl = format!(
-            "{}/../../content/dev/maps/stress-warren.prl",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let world = postretro_level_loader::load_prl(&prl)
-            .unwrap_or_else(|e| panic!("compile stress-warren.prl first: {e:?}"));
         let aspect = 16.0 / 9.0;
         let vfov = 2.0 * ((std::f32::consts::FRAC_PI_4).tan() / aspect).atan();
         let proj = Mat4::perspective_rh(vfov, aspect, 0.1, 4096.0);
@@ -218,7 +236,7 @@ mod tests {
                 let (vis, _) = postretro_visibility::determine_visible_cells(
                     eye,
                     proj * view,
-                    &world,
+                    world,
                     &[],
                     false,
                     &mut scratch,

@@ -30,6 +30,8 @@ read at: 683e363ba
 - Window rows are emitted in depth-first pre-order and `total`/`work` carry an `aggregate` mark (on `Sample`, `WindowRow` and the JSON `CpuStageReport`), so every surface can tell the frame partition (stages, `wait`, `unattributed`) from its aggregates. Found by the review panel's seam pass.
 - `--start-pose` applies to the session's first level install only.
 
+- **Owner direction (2026-09-27):** baselines run on the maps the owner tests with, `stress-warren-mini` (quick) and `stress-warren-hallway-inspection` (big), plus `campaign-test`, in place of `stress-warren` / `stress-warren-crates`. The gate is evaluated at the `stress-warren-mini` probe, whose walk is the costliest found (2346 portals considered vs 257 on `stress-warren`); hallway-inspection is re-baked for its baseline.
+
 ## Measurements
 
 - 2026-09-27, task 2, `campaign-test` at spawn, dev profile (`opt-level` per workspace dev profile, debuginfo), Apple Metal, vsync on, cache warm, 120-frame windows: total 35.5–36.5 ms avg; work 22.0 ms; wait 13.4–14.5 ms, of which `wait_acquire` 13.4–14.5 ms and `wait_present` 0.05 ms; unattributed 0.004 ms avg (≈0.02% of work CPU). Largest stages: render 17.0 ms, render_prep 3.0 ms, fixed_step 1.4–1.5 ms (2.1–2.2 ticks/frame), visibility 0.34 ms with portal_walk 0.30 ms (1110 considered, 150 accepted, 810 clipped, 150 cycle). **Vsync blocks in surface acquire on this platform**; present is negligible. Machine class and release numbers are recorded with the baselines in task 8.

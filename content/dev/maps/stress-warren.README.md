@@ -319,13 +319,15 @@ The portal-walk parallelization gate (`POSTRETRO_CPU_TIMING`, see
 `context/lib/rendering_pipeline.md` §12) measures the walk at a pose chosen for
 walk cost, not at the spawn. `walk_reach_probe_search` in
 `crates/postretro/src/candidate_cull_probes.rs` sweeps every open drawable cell
-at pawn height with eight headings; its top pose on the current map:
+at pawn height with eight headings on each variant that has a current `.prl`;
+its top poses (2026-09-27):
 
-| Pose (`--start-pose x,y,z,yaw_deg,pitch_deg`, engine meters) | Portals considered | Walk reach (drawable cells) |
-|---|---|---|
-| `-58.93,2.43,1.63,225,0` | 257 | 19 |
+| Map | Pose (`--start-pose x,y,z,yaw_deg,pitch_deg`, engine meters) | Portals considered | Walk reach (drawable cells) |
+|---|---|---|---|
+| `stress-warren-mini` (gate probe) | `0.00,2.43,-76.40,180,0` | 2346 | 66 |
+| `stress-warren` | `-58.93,2.43,1.63,225,0` | 257 | 19 |
 
 Launch a timing run there with
-`POSTRETRO_CPU_TIMING=1 RUST_LOG=info cargo run -p xtask -- run --release -- content/dev/maps/stress-warren.prl --start-pose=-58.93,2.43,1.63,225,0`
+`POSTRETRO_CPU_TIMING=1 RUST_LOG=info cargo run -p xtask -- run --release -- content/dev/maps/stress-warren-mini.prl --start-pose=0.00,2.43,-76.40,180,0`
 (the `=` form keeps the leading minus sign from reading as a flag). Re-run the
 search after regenerating the map.

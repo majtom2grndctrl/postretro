@@ -1051,8 +1051,14 @@ impl App {
         }
         // `--start-pose` moves the local pawn (or, pawnless, the fly camera)
         // to a checked-in measurement probe instead of the map spawn, on the
-        // session's first install only.
-        if let Some(pose) = self.session_boot_config.take_start_pose() {
+        // session's first gameplay install only. A frontend backdrop install
+        // (menu on the stack) leaves the pose for the map the player picks.
+        let start_pose = if self.frontend_menu_is_present() {
+            None
+        } else {
+            self.session_boot_config.take_start_pose()
+        };
+        if let Some(pose) = start_pose {
             let moved = self.session.as_ref().is_some_and(|session| {
                 crate::startup::start_pose::place_local_pawn(
                     &mut session.scripting.script_ctx.registry.borrow_mut(),

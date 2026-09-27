@@ -67,7 +67,7 @@ impl SessionBootConfig {
     }
 
     /// `--start-pose` override, handed out once: only the session's first
-    /// level install starts there; later installs use their map spawn.
+    /// gameplay install starts there; later installs use their map spawn.
     pub(crate) fn take_start_pose(&mut self) -> Option<super::start_pose::StartPose> {
         self.start_pose.take()
     }
@@ -752,6 +752,24 @@ mod tests {
     #[test]
     fn content_root_from_map_returns_dot_for_bare_filename() {
         assert_eq!(content_root_from_map(Some("test.prl")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn start_pose_is_handed_out_to_the_first_install_only() {
+        let args: Vec<String> = ["postretro", "--start-pose", "1,2,3,90,0", "maps/probe.prl"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let mut config = SessionBootConfig::from_args(&args);
+        let pose = config
+            .take_start_pose()
+            .expect("first install gets the pose");
+        assert_eq!(pose.position, glam::Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(
+            config.take_start_pose(),
+            None,
+            "later installs use the map spawn"
+        );
     }
 
     #[test]

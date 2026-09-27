@@ -228,7 +228,8 @@ impl StageWindow {
 }
 
 /// Appends `rows[index]` and, depth-first, every substage that ran. Writes
-/// into fixed-capacity storage; the length guard also stops a parent cycle.
+/// into fixed-capacity storage; the length guard is a capacity backstop.
+/// Rows in a parent cycle are never roots, so they are dropped, not looped.
 fn push_subtree(rows: &[Accumulator], index: usize, out: &mut Vec<WindowRow>) {
     if out.len() >= rows.len() {
         return;

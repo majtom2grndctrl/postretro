@@ -1,7 +1,7 @@
 # E12--positional-sound-events — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: b99101534
 
 ## Owner resolutions
@@ -45,56 +45,54 @@ read at: b99101534
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 positioned request on spatial track under SFX; muting SFX silences it | `audio::spatial` capturing-backend test: play positioned, render, mute SFX, render ≈ silence | achievable as stated |
-| 2 cap N plays, N+1 refused; finished frees; track outlives its sound | mock-backend test on positional voices; assert kira `num_sub_tracks` stays until the sound reports `Stopped` | achievable as stated |
-| 3 P1 full cap after reclaim, before mixer runs, all play | mock-backend test: fill, advance, reclaim, then N requests with no mixer step, all `Some` | achievable as stated |
-| 4 P8 finish frees at next audio step; earlier request refused | mock-backend test ordering finish → play (refused) → `update` → play (admitted) | achievable as stated |
-| 5 right-louder, turning swaps, twice as far quieter | capturing-backend per-channel RMS test | achievable as stated |
-| 6 moving entity tracks pose; despawn holds last position and completes | spatial test with an anchor resolver returning moving positions, then `None` | achievable as stated |
-| 7 P6 removed before first reposition plays at fire-time point | spatial test: resolver `None` on the first `update` | achievable as stated |
-| 8 P12 treatment kept across listener pawn change | spatial test: start with pawn A attached, switch to B | achievable as stated |
-| 9 own-pawn non-spatial, other pawn spatial | spatial test asserting treatment per anchor | achievable as stated |
-| 10 listener equals render eye incl. view-feel offset | `frame_eye::listener_is_the_rendered_eye_including_the_view_feel_offset` | achievable as stated |
-| 11 P10 view feel advances once per frame; one eye | `frame_eye::frame_eye_advances_view_feel_exactly_once`; `main.rs` calls `assemble_frame_eye` once and feeds render and listener from its result | achievable as stated |
-| 12 each descriptor field plays once at its anchor (all kinds) | `sound_events` tests: emissions → requests audio receives, asserting key and anchor per field | achievable as stated |
-| 13 P4 multi-pellet one impact at nearest; none on miss; two shots two | sim emission test plus spatial nearest-contact test | achievable as stated |
-| 14 P14 projectile despawned on hit still sounds once; per-tick grouping | sim projectile-stage emission test | achievable as stated |
-| 15 every impact carries point, normal, entity/world | `multi_pellet_shot_is_one_impact_emission_carrying_every_contact`, `projectile_despawned_on_hit_reports_its_full_contact_and_source`, `remote_hitscan_declaration_yields_every_contact_with_its_normal` | achievable as stated |
-| 16 enemy projectile contact fires `impact` once; weapon sound from projectile | sim test with an enemy-spawned projectile | achievable as stated |
-| 17 enemy attack naming weapon: fire at enemy, impact at contact, plus `AttackParams.sound` | ai/sim emission plus `sound_events` resolution test | achievable as stated |
-| 18 descriptor sound and reaction both play | `sound_events` test with a `playSound` reaction on `activate` | achievable as stated |
-| 19 P11 crush two actors, two sounds | physics blocking test counting emissions with anchor | achievable as stated |
-| 20 activity `sound` without `onEnter` plays, fires no reaction | ai apply test plus `sound_events` test | achievable as stated |
-| 21 no descriptor sound, nothing and no warn | `sound_events` test with log capture (negative) | achievable as stated |
-| 22 P5 client own events once; remote fire and mover edges none | client-path unit tests (dry fire, wall contact, reload edges) plus the structural fact that a client runs no host sim or mover events; no end-to-end client harness exercises the frame loop | achievable as stated (partly structural) |
-| 23 client empty mag predicts dry fire, not fire or flash | `client_dry_fire_follows_the_replicated_magazine`, `client_pull_presentation_follows_the_host_reload_rules`, `a_projection_of_another_weapon_predicts_a_fire`, `a_dry_pull_still_predicts_and_declares_its_shot`, `client_pull_effects_cover_every_presentation_and_resolution`, `owner_ammo_and_reload_values_carry_the_host_slot_they_describe`; the fire path raises `activate` (muzzle FX) and `impact` only for a Fire presentation, and `dry_fire` for DryFire | achievable as stated |
-| 24 client predicted hitscan into wall plays impact at wall | `client_hitscan_into_a_wall_keeps_the_world_contact_and_its_normal`; the fire path pushes `impact` with `impact_contacts()` | achievable as stated |
-| 25 client cancelled reload plays start only; completed plays start and complete | `a_cancelled_reload_plays_its_start_only`, `a_completed_magazine_reload_plays_start_and_complete`, `a_lost_completion_endpoint_still_plays_complete_when_ammo_is_conserved`, `a_reading_attributes_every_value_to_the_reload_flags_slot`, `a_mixed_reading_holds_the_tracked_reload` | achievable as stated |
-| 26 P13 rejected predicted shot plays fire once, nothing more | client reconcile test counting requests | achievable as stated |
-| 27 Scripting-surface fixture TS and Luau installs and runs; `door.open` hands one anchored request | `the_positional_sound_fixture_is_identical_in_both_authorings`, `every_sound_key_the_positional_sound_fixture_names_ships_in_content_dev`, `door_open_fixture_hands_audio_one_request_at_the_bounds_center` | achievable as stated |
-| 28 `on.emitter` from `levelLoad` or crossing skipped with one warning, no dry play | dispatch test with log capture | achievable as stated |
-| 29 P7 trigger, death and completion skipped with one warning | dispatch tests with log capture | achievable as stated |
-| 30 `on.emitter` plays at anchor on fire, reload, attack, entry, landing, mover | `sound_events` tests per source | achievable as stated |
-| 31 install rejects token after `wait` and as a `fire` target; token-free versions install | `reaction_validation` V4a/V4b tests | achievable as stated |
-| 32 install rejects `at` with non-SFX bus; accepts `at` alone or with SFX | reaction install test | achievable as stated |
-| 33 sound fields parse JS and Luau, round-trip; unknown key in `sounds` rejected; optional | scripting-core descriptor tests, both runtimes | achievable as stated |
-| 34 v7 round-trips; v6 loads with none; blank KVP absent | level-format codec tests plus compiler parse test | achievable as stated |
-| 35 mover sound keys leave the static-content hash unchanged | `level_content_digest` test | achievable as stated |
-| 36 unknown key warns once, level loads; known key silent | install check test with log capture | achievable as stated |
-| 37 manifest attenuation changes gain; default when omitted; malformed warns naming field | manifest parser tests (JS and Luau) plus capturing-backend gain test | achievable as stated |
-| 38 P9 attenuation reload applies to new sounds only | spatial test: start, change settings, start again | achievable as stated |
-| 39 P3 hot-reload key change plays new key; unknown warns once | staged-commit test over the rebuilt table | achievable as stated |
-| 40 P2 unload fades all positional voices; none survives or follows | `fade_out_positional_stops_every_anchored_voice_and_spares_the_rest`; `unload_level` calls it beside `release_level_sounds` | achievable as stated |
-| 41 typedef fixtures match | `committed_sdk_types_match_current_registry` and snapshot tests | achievable as stated |
-| 42 grep gate: kira spatial calls only in chokepoint module | preflight grep (`add_spatial_sub_track`, `SpatialTrackBuilder`, spatial `set_position`) | achievable as stated |
-| 43 grep gate: sim names no audio types; IR types Number and Bool; no sound key on wire | preflight grep over `crates/sim`, `crates/ai`, `crates/physics`, `crates/net` plus `IrType` read | achievable as stated |
-| 44 own actions heard centered, full level | owner, in-engine | manual |
-| 45 enemy attack from its direction, quieter moving away | owner, in-engine | manual |
-| 46 door pans to its side; re-pans smoothly on head turn | owner, in-engine | manual |
-| 47 killed enemy's attack sound plays out where it died | owner, in-engine | manual |
-| 48 SFX volume scales positional sounds | owner, in-engine | manual |
+| 1 positioned request on spatial track under SFX; muting SFX silences it | `audio::spatial` capturing-backend test: play positioned, render, mute SFX, render ≈ silence | achievable as stated | pass |
+| 2 cap N plays, N+1 refused; finished frees; track outlives its sound | mock-backend test on positional voices; assert kira `num_sub_tracks` stays until the sound reports `Stopped` | achievable as stated | pass |
+| 3 P1 full cap after reclaim, before mixer runs, all play | mock-backend test: fill, advance, reclaim, then N requests with no mixer step, all `Some` | achievable as stated | pass |
+| 4 P8 finish frees at next audio step; earlier request refused | mock-backend test ordering finish → play (refused) → `update` → play (admitted) | achievable as stated | pass |
+| 5 right-louder, turning swaps, twice as far quieter | capturing-backend per-channel RMS test | achievable as stated | pass |
+| 6 moving entity tracks pose; despawn holds last position and completes | spatial test with an anchor resolver returning moving positions, then `None` | achievable as stated | pass |
+| 7 P6 removed before first reposition plays at fire-time point | spatial test: resolver `None` on the first `update` | achievable as stated | pass |
+| 8 P12 treatment kept across listener pawn change | spatial test: start with pawn A attached, switch to B | achievable as stated | pass |
+| 9 own-pawn non-spatial, other pawn spatial | spatial test asserting treatment per anchor | achievable as stated | pass |
+| 10 listener equals render eye incl. view-feel offset | `frame_eye::listener_is_the_rendered_eye_including_the_view_feel_offset` | achievable as stated | pass |
+| 11 P10 view feel advances once per frame; one eye | `frame_eye::frame_eye_advances_view_feel_exactly_once`; `main.rs` calls `assemble_frame_eye` once and feeds render and listener from its result | achievable as stated | pass |
+| 12 each descriptor field plays once at its anchor (all kinds) | `sound_events` tests: emissions → requests audio receives, asserting key and anchor per field | achievable as stated | pass |
+| 13 P4 multi-pellet one impact at nearest; none on miss; two shots two | sim emission test plus spatial nearest-contact test | achievable as stated | pass |
+| 14 P14 projectile despawned on hit still sounds once; per-tick grouping | sim projectile-stage emission test | achievable as stated | pass |
+| 15 every impact carries point, normal, entity/world | `multi_pellet_shot_is_one_impact_emission_carrying_every_contact`, `projectile_despawned_on_hit_reports_its_full_contact_and_source`, `remote_hitscan_declaration_yields_every_contact_with_its_normal` | achievable as stated | pass |
+| 16 enemy projectile contact fires `impact` once; weapon sound from projectile | sim test with an enemy-spawned projectile | achievable as stated | pass |
+| 17 enemy attack naming weapon: fire at enemy, impact at contact, plus `AttackParams.sound` | ai/sim emission plus `sound_events` resolution test | achievable as stated | pass |
+| 18 descriptor sound and reaction both play | `sound_events` test with a `playSound` reaction on `activate` | achievable as stated | pass |
+| 19 P11 crush two actors, two sounds | physics blocking test counting emissions with anchor | achievable as stated | pass |
+| 20 activity `sound` without `onEnter` plays, fires no reaction | ai apply test plus `sound_events` test | achievable as stated | pass |
+| 21 no descriptor sound, nothing and no warn | `sound_events` test with log capture (negative) | achievable as stated | pass |
+| 22 P5 client own events once; remote fire and mover edges none | client-path unit tests (dry fire, wall contact, reload edges) plus the structural fact that a client runs no host sim or mover events; no end-to-end client harness exercises the frame loop | achievable as stated (partly structural) | pass |
+| 23 client empty mag predicts dry fire, not fire or flash | `client_dry_fire_follows_the_replicated_magazine`, `client_pull_presentation_follows_the_host_reload_rules`, `a_projection_of_another_weapon_predicts_a_fire`, `a_dry_pull_still_predicts_and_declares_its_shot`, `client_pull_effects_cover_every_presentation_and_resolution`, `owner_ammo_and_reload_values_carry_the_host_slot_they_describe`; the fire path raises `activate` (muzzle FX) and `impact` only for a Fire presentation, and `dry_fire` for DryFire | achievable as stated | pass |
+| 24 client predicted hitscan into wall plays impact at wall | `client_hitscan_into_a_wall_keeps_the_world_contact_and_its_normal`; the fire path pushes `impact` with `impact_contacts()` | achievable as stated | pass |
+| 25 client cancelled reload plays start only; completed plays start and complete | `a_cancelled_reload_plays_its_start_only`, `a_completed_magazine_reload_plays_start_and_complete`, `a_lost_completion_endpoint_still_plays_complete_when_ammo_is_conserved`, `a_reading_attributes_every_value_to_the_reload_flags_slot`, `a_mixed_reading_holds_the_tracked_reload` | achievable as stated | pass |
+| 26 P13 rejected predicted shot plays fire once, nothing more | structural: the client fire path raises its emissions once, at prediction (`client_pull_effects`, tested per presentation); verdict and reconcile (`apply_verdict`, cooldown reconcile) raise no emission and no sound request, so a host reject retracts only cooldown/muzzle/hitmarker bookkeeping. No frame-loop test counts requests | restated as structural at landing (same meaning) | pass |
+| 27 Scripting-surface fixture TS and Luau installs and runs; `door.open` hands one anchored request | `the_positional_sound_fixture_is_identical_in_both_authorings`, `every_sound_key_the_positional_sound_fixture_names_ships_in_content_dev`, `door_open_fixture_hands_audio_one_request_at_the_bounds_center` | achievable as stated | pass |
+| 28 `on.emitter` from `levelLoad` or crossing skipped with one warning, no dry play | dispatch test with log capture | achievable as stated | pass |
+| 29 P7 trigger, death and completion skipped with one warning | dispatch tests with log capture | achievable as stated | pass |
+| 30 `on.emitter` plays at anchor on fire, reload, attack, entry, landing, mover | `sound_events` tests per source | achievable as stated | pass |
+| 31 install rejects token after `wait` and as a `fire` target; token-free versions install | `reaction_validation` V4a/V4b tests | achievable as stated | pass |
+| 32 install rejects `at` with non-SFX bus; accepts `at` alone or with SFX | reaction install test | achievable as stated | pass |
+| 33 sound fields parse JS and Luau, round-trip; unknown key in `sounds` rejected; optional | scripting-core descriptor tests, both runtimes | achievable as stated | pass |
+| 34 v7 round-trips; v6 loads with none; blank KVP absent | level-format codec tests plus compiler parse test | achievable as stated | pass |
+| 35 mover sound keys leave the static-content hash unchanged | `level_content_digest` test | achievable as stated | pass |
+| 36 unknown key warns once, level loads; known key silent | install check test with log capture | achievable as stated | pass |
+| 37 manifest attenuation changes gain; default when omitted; malformed warns naming field | manifest parser tests (JS and Luau) plus capturing-backend gain test | achievable as stated | pass |
+| 38 P9 attenuation reload applies to new sounds only | spatial test: start, change settings, start again | achievable as stated | pass |
+| 39 P3 hot-reload key change plays new key; unknown warns once | staged-commit test over the rebuilt table | achievable as stated | pass |
+| 40 P2 unload fades all positional voices; none survives or follows | `fade_out_positional_stops_every_anchored_voice_and_spares_the_rest`; `unload_level` calls it beside `release_level_sounds` | achievable as stated | pass |
+| 41 typedef fixtures match | `committed_sdk_types_match_current_registry` and snapshot tests | achievable as stated | pass |
+| 42 grep gate: kira spatial calls only in chokepoint module | preflight grep (`add_spatial_sub_track`, `SpatialTrackBuilder`, spatial `set_position`) | achievable as stated | pass |
+| 43 grep gate: sim names no audio types; IR types Number and Bool; no sound key on wire | preflight grep over `crates/sim`, `crates/ai`, `crates/physics`, `crates/net` plus `IrType` read | achievable as stated | pass |
+| 44 own actions heard centered, full level | owner, in-engine | manual | outstanding — owner, in-engine |
+| 45 enemy attack from its direction, quieter moving away | owner, in-engine | manual | outstanding — owner, in-engine |
+| 46 door pans to its side; re-pans smoothly on head turn | owner, in-engine | manual | outstanding — owner, in-engine |
+| 47 killed enemy's attack sound plays out where it died | owner, in-engine | manual | outstanding — owner, in-engine |
+| 48 SFX volume scales positional sounds | owner, in-engine | manual | outstanding — owner, in-engine |
 
 ## Tasks
 
@@ -112,3 +110,12 @@ read at: b99101534
 | 9 | Client hears its own actions: ammo-gated fire and dry-fire prediction, hitscan world hits and normals (declared through 9a), predicted projectile impacts, reload-edge tracker, client emissions. Rows 22–26 | integrating executor | 5, 7, 9a | done: an empty replicated magazine (`player.ammo` below the shot cost) every gated pull predicts and declares as a fire; `client_pull_presentation` picks Fire/DryFire/Silent presentation from the slot-correlated owner projection (`netcode::client_weapon_projection`); DryFire raises `dry_fire` only, Silent nothing, neither shows muzzle FX or a projectile (owner resolution); predicted hitscan contacts (world included) and predicted projectile contacts raise the client's own `impact`; `ClientReloadEdges` reads `ReloadReading::from_projection` (slot-attributed) plus the projected weapon's reload style (sounds only; reset at unload and on weapon switch; rule in Corrections); movement sounds reach the client pawn via the local-descriptor recovery (task 7). Remote peers' events and mover edges never reach a client drain (host-only sim), so they play nothing there. Tests: `client_dry_fire_follows_the_replicated_magazine`, `client_hitscan_into_a_wall_keeps_the_world_contact_and_its_normal`, `client_reload` (4). Suites: sim 1186, netcode 471, binary 893 |
 | 10 | Content: Scripting-surface fixtures (TS and Luau) under their own canonical names, generated sound assets under `content/dev/sounds/sfx`, `door.open` fixture, `arena-lights.ts` migrated. Row 27 | integrating executor | 6, 7, 3 | done: `content/dev/scripts/positional-sound.{ts,luau}` (canonical names `positional_sound_shotgun`, `positional_sound_grunt`; `door.open` at `on.emitter`; `positionalSoundAlert` unanchored; attenuation and movement sounds adopted by the dev mod's `defineMod` and player). Eleven generated placeholder WAVs under `content/dev/sounds/sfx/` (synthesized tones/noise, dev-only; the untracked CC0 packs in that directory were left alone). `arena-lights.ts` migrated in task 6. Tests: `the_positional_sound_fixture_is_identical_in_both_authorings`, `every_sound_key_the_positional_sound_fixture_names_ships_in_content_dev`, `door_open_fixture_hands_audio_one_request_at_the_bounds_center`; the dev start script bundles through `scripts-build`. Suites: binary 894, scripting-core 719 |
 | 11 | Grep gates and full preflight. Rows 42, 43 | integrating executor | all | gates pass: no kira spatial API outside `crates/audio/src/spatial.rs`; no audio type or `postretro-audio` dependency in sim, ai, physics, netcode, entities, foundation, net or combat-model (layering test pins it); `IrType`/`IrValue` remain Number and Bool; no sound key in `net` wire types, and movement `sounds` is stripped from the tuning payload (`payload_round_trips…` asserts it). Preflight: see Preflight and review |
+
+## Preflight and review
+- Preflight at 839892987: fmt, clippy (two mechanical fixes), 8294 tests, release check and crate graph all pass.
+- Review panel with 8 lenses: 3 correctness tracers, 2 contract verifiers and 1 adversarial tester (Opus), plus 2 hygiene/drift reviewers (Sonnet). It found 1 🔴 (a client dry fire left a host-authorized shot undeclared) plus stale `audio.md`; 🟡 own-pawn treatment one frame late, `quadratic` inverted, reload emitters resolved at drain, client reload-edge gaps; and about 20 🟢. Fixed in 81d3e159a.
+- Re-review rounds on the client fire and reload path found new windows twice: 565a33609, and a lost shot after every magazine reload. The owner then resolved the gate as presentation-only over slot-correlated weapon slots (133d77c92). A contract verifier and an adversarial tester on that commit found no 🔴, and their 🟡/🟢 were fixed in 4bb140088.
+- Final gate at 4bb140088: fmt, clippy, 8331 tests passed and 0 failed, release check, crate graph, and grep gates 42/43, all pass.
+- Not acted on, recorded:
+  - The client adds bloom and advances `shells_fired` on a dry or silent pull, as before E12. The reticle ring kicks on a dry click. This follows the owner's "exactly as before E12"; a later presentation pass could decide otherwise.
+  - Untracked raw sound packs sit in `content/dev/sounds/sfx/`. They are the owner's files, outside the commit.

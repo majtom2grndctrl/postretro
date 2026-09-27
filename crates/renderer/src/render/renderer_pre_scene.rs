@@ -158,34 +158,33 @@ impl Renderer {
             visible,
             cam_vis.path,
         ) {
-            (
-                Some(index),
-                Some(candidate),
-                VisibleCells::Culled(cells),
-                VisibilityPath::PrlPortal { .. },
-            ) => match candidate.gather(index, cells) {
-                crate::candidate_cull::GatherStatus::Ok => Some((
-                    candidate.candidates().len() as u32,
-                    count_submitted_candidates(
-                        &full.bvh_leaves,
-                        candidate.candidates(),
-                        &view_proj,
-                    ),
-                )),
-                crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
-                    if !full.candidate_cull_oor_logged {
-                        log::warn!(
-                            "[Renderer] candidate cull: visible cell id {} out of \\
+            (Some(index), Some(candidate), VisibleCells::Culled(cells), path)
+                if crate::candidate_cull::visibility_path_uses_candidate_cull(path) =>
+            {
+                match candidate.gather(index, cells) {
+                    crate::candidate_cull::GatherStatus::Ok => Some((
+                        candidate.candidates().len() as u32,
+                        count_submitted_candidates(
+                            &full.bvh_leaves,
+                            candidate.candidates(),
+                            &view_proj,
+                        ),
+                    )),
+                    crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
+                        if !full.candidate_cull_oor_logged {
+                            log::warn!(
+                                "[Renderer] candidate cull: visible cell id {} out of \\
                              CellDrawIndex range ({} cells); using whole-BVH tree walk \\
                              for this frame",
-                            cell_id,
-                            index.cell_count,
-                        );
-                        full.candidate_cull_oor_logged = true;
+                                cell_id,
+                                index.cell_count,
+                            );
+                            full.candidate_cull_oor_logged = true;
+                        }
+                        None
                     }
-                    None
                 }
-            },
+            }
             _ => None,
         };
 
@@ -363,10 +362,11 @@ impl Renderer {
             // Candidate-cull routing. Eligible iff ALL hold:
             //   * a valid loaded `CellDrawIndex`,
             //   * `VisibleCells::Culled` (a concrete visible-cell set), AND
-            //   * portal-traversal provenance (`VisibilityPath::PrlPortal`).
+            //   * a path `visibility_path_uses_candidate_cull` accepts (the
+            //     portal walk or its step-limit fallback).
             // The gather may still bail to the tree walk for THIS frame if a
-            // visible cell id is out of the index's range. DrawAll and
-            // non-portal Culled fallbacks also route to the unchanged tree walk.
+            // visible cell id is out of the index's range. DrawAll and the
+            // solid/exterior/no-portals fallbacks route to the tree walk.
             // `None` for the installed index means no installed level, an empty
             // BVH map, or released resources; missing or invalid required PRL
             // indexes fail at load time. Gathered into the pipeline's reused
@@ -381,27 +381,26 @@ impl Renderer {
                 visible,
                 cam_vis.path,
             ) {
-                (
-                    Some(index),
-                    Some(candidate),
-                    VisibleCells::Culled(cells),
-                    VisibilityPath::PrlPortal { .. },
-                ) => match candidate.gather(index, cells) {
-                    crate::candidate_cull::GatherStatus::Ok => true,
-                    crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
-                        if !full.candidate_cull_oor_logged {
-                            log::warn!(
-                                "[Renderer] candidate cull: visible cell id {} out of \\
+                (Some(index), Some(candidate), VisibleCells::Culled(cells), path)
+                    if crate::candidate_cull::visibility_path_uses_candidate_cull(path) =>
+                {
+                    match candidate.gather(index, cells) {
+                        crate::candidate_cull::GatherStatus::Ok => true,
+                        crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
+                            if !full.candidate_cull_oor_logged {
+                                log::warn!(
+                                    "[Renderer] candidate cull: visible cell id {} out of \\
                                  CellDrawIndex range ({} cells); using whole-BVH tree walk \\
                                  for this frame",
-                                cell_id,
-                                index.cell_count,
-                            );
-                            full.candidate_cull_oor_logged = true;
+                                    cell_id,
+                                    index.cell_count,
+                                );
+                                full.candidate_cull_oor_logged = true;
+                            }
+                            false
                         }
-                        false
                     }
-                },
+                }
                 _ => false,
             };
 
@@ -448,7 +447,7 @@ impl Renderer {
                         cull_ts,
                     );
                 }
-                // Tree-walk fallback (DrawAll, non-portal Culled, out-of-range
+                // Tree-walk fallback (DrawAll, solid/exterior/no-portals Culled, out-of-range
                 // cell id, no installed level/empty BVH/released resources, or
                 // no candidate pipeline).
                 _ => {

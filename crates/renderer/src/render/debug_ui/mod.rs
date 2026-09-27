@@ -17,7 +17,7 @@ use super::SdfShadowMode;
 use super::ShStreamingLiveDiagnostics;
 use super::SpatialCellSetDiagnostics;
 use super::WorldWireframeMode;
-use super::frame_timing::FrameTimingSnapshot;
+use super::frame_timing::{FrameTimingSnapshot, PassTiming};
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 
 mod streaming_tab;
@@ -710,14 +710,31 @@ fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnap
         .default_open(true)
         .show(ui, |ui| match frame_timing {
             Some(snapshot) if !snapshot.passes.is_empty() => {
-                for (label, avg_ms, _skip) in &snapshot.passes {
-                    ui.label(format!("{label}: {avg_ms:.2} ms"));
+                for pass in &snapshot.passes {
+                    ui.label(pass_timing_label(pass, snapshot.readbacks));
                 }
             }
             _ => {
                 ui.label("GPU timing unavailable");
             }
         });
+}
+
+/// `—` for a pass not sampled in the window, so it never reads as zero cost;
+/// `(n/N)` when it ran in only some readbacks, since the mean is per run.
+fn pass_timing_label(pass: &PassTiming, readbacks: u32) -> String {
+    let label = pass.label;
+    let timing = match pass.average_ms {
+        Some(ms) if pass.sampled_readbacks < readbacks => {
+            format!("{ms:.2} ms ({}/{readbacks})", pass.sampled_readbacks)
+        }
+        Some(ms) => format!("{ms:.2} ms"),
+        None => "—".to_string(),
+    };
+    match pass.malformed_readbacks {
+        0 => format!("{label}: {timing}"),
+        malformed => format!("{label}: {timing}, {malformed} malformed"),
+    }
 }
 
 fn agent_flags_label(row: &AgentDiagnosticsRow) -> String {
@@ -1247,6 +1264,32 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pass(average_ms: Option<f32>, sampled: u32, malformed: u32) -> PassTiming {
+        PassTiming {
+            label: "forward",
+            average_ms,
+            sampled_readbacks: sampled,
+            malformed_readbacks: malformed,
+        }
+    }
+
+    #[test]
+    fn pass_timing_label_distinguishes_unsampled_partial_and_full_passes() {
+        assert_eq!(pass_timing_label(&pass(None, 0, 0), 120), "forward: —");
+        assert_eq!(
+            pass_timing_label(&pass(Some(1.5), 60, 0), 120),
+            "forward: 1.50 ms (60/120)"
+        );
+        assert_eq!(
+            pass_timing_label(&pass(Some(1.5), 120, 0), 120),
+            "forward: 1.50 ms"
+        );
+        assert_eq!(
+            pass_timing_label(&pass(Some(1.5), 118, 2), 120),
+            "forward: 1.50 ms (118/120), 2 malformed"
+        );
+    }
 
     #[test]
     fn diagnostics_state_defaults_to_lighting_tab() {

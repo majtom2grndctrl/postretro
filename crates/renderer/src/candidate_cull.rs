@@ -21,6 +21,7 @@ use glam::Mat4;
 use crate::compute_cull::{CullUniforms, serialize_cull_uniforms};
 use postretro_level_loader::CellDrawIndex;
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
+use postretro_visibility::VisibilityPath;
 
 pub(crate) const CANDIDATE_CULL_SHADER_SOURCE: &str = include_str!("shaders/candidate_cull.wgsl");
 
@@ -61,6 +62,26 @@ pub enum GatherStatus {
     /// (`>= cell_count`). The caller logs once and falls back to the legacy
     /// tree walk for this frame rather than using the partial set in `out`.
     OutOfRange { cell_id: u32 },
+}
+
+/// Whether a visibility path's `VisibleCells::Culled` set may drive the
+/// candidate cull. The gather is correct for any concrete visible set: every
+/// drawable leaf sits in exactly one cell's CSR span, so it submits the same
+/// leaves the tree walk would for that set. This is therefore a cost choice,
+/// not a correctness gate. The portal path qualifies, and so does its
+/// step-limit fallback: its frustum-culled set is a superset of the exact
+/// portal set except for geometry lying entirely in the near slab, which the
+/// near plane clips regardless, so that gap is never visible. The solid-cell,
+/// exterior and no-portals fallbacks stay on the tree walk. Exhaustive so a
+/// new path must choose.
+pub fn visibility_path_uses_candidate_cull(path: VisibilityPath) -> bool {
+    match path {
+        VisibilityPath::PrlPortal { .. } | VisibilityPath::PortalStepLimitFallback { .. } => true,
+        VisibilityPath::EmptyWorldFallback
+        | VisibilityPath::SolidCellFallback
+        | VisibilityPath::ExteriorCellFallback
+        | VisibilityPath::NoPortalsFallback => false,
+    }
 }
 
 /// Pure, GPU-free candidate gather. Expands the visible cells' owned BVH-leaf
@@ -558,6 +579,32 @@ mod tests {
         let mut seen = HashSet::new();
         let status = gather_candidate_leaves(index, visible_cells, &mut out, &mut seen);
         (status, out)
+    }
+
+    // Regression: the portal step-limit fallback used the single-invocation
+    // whole-BVH tree walk on stress-warren-hallway-inspection.
+    #[test]
+    fn candidate_cull_selected_for_portal_and_step_limit_paths_only() {
+        assert!(visibility_path_uses_candidate_cull(
+            VisibilityPath::PrlPortal { walk_reach: 3 }
+        ));
+        assert!(visibility_path_uses_candidate_cull(
+            VisibilityPath::PortalStepLimitFallback {
+                considered: 20_000,
+                accepted: 19_000,
+            }
+        ));
+        for path in [
+            VisibilityPath::EmptyWorldFallback,
+            VisibilityPath::SolidCellFallback,
+            VisibilityPath::ExteriorCellFallback,
+            VisibilityPath::NoPortalsFallback,
+        ] {
+            assert!(
+                !visibility_path_uses_candidate_cull(path),
+                "{path:?} must stay on the tree walk"
+            );
+        }
     }
 
     /// Smoke test: dedupe of visible cell ids (first-seen order) plus CSR span

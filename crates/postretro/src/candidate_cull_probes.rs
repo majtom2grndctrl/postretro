@@ -135,8 +135,11 @@ mod tests {
                 &mut scratch,
             );
 
-            // The probe asserts the portal path is exercised; non-portal
-            // provenance would route to the tree walk in the renderer.
+            // Exact portal provenance is required: these spawn poses stay
+            // within the step budget, so the probe covers the exact portal
+            // path by comparing the candidate cull against the tree walk on
+            // the same set. The step-limit path is covered separately by the
+            // candidate-cull mirror test.
             assert!(
                 matches!(
                     vis.stats.path,

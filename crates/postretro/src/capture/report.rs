@@ -13,7 +13,7 @@ use crate::render::{
     ShStreamingLifecycleSummary,
 };
 
-const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v1";
+const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v2";
 const CPU_COMPLETION_STRATEGY: &str = "device-poll-wait-after-submit";
 const CPU_COMPLETION_CADENCE: &str = "once-per-sample-frame";
 
@@ -262,30 +262,38 @@ enum GpuTimingReason {
 
 #[derive(Debug, Serialize)]
 struct GpuTimingWindowReport {
+    /// Readbacks in the window; bounds every pass's `sampled_readbacks`.
+    readbacks: u32,
     passes: Vec<GpuTimingPassReport>,
 }
 
 impl From<CaptureGpuTimingWindow> for GpuTimingWindowReport {
     fn from(window: CaptureGpuTimingWindow) -> Self {
         Self {
+            readbacks: window.readbacks,
             passes: window
                 .passes
                 .into_iter()
                 .map(|pass| GpuTimingPassReport {
                     label: pass.label,
                     average_ms: pass.average_ms,
-                    skipped_frames: pass.skipped_frames,
+                    sampled_readbacks: pass.sampled_readbacks,
+                    malformed_readbacks: pass.malformed_readbacks,
                 })
                 .collect(),
         }
     }
 }
 
+/// `average_ms` is the mean over `sampled_readbacks`, not over the window, so
+/// summing passes over-counts conditional ones. It serializes as `null` when
+/// the pass was not sampled, never as a zero-cost pass.
 #[derive(Debug, Serialize)]
 struct GpuTimingPassReport {
     label: &'static str,
-    average_ms: f32,
-    skipped_frames: u32,
+    average_ms: Option<f32>,
+    sampled_readbacks: u32,
+    malformed_readbacks: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -876,10 +884,12 @@ mod tests {
             CaptureGpuTimingState::Active,
             1,
             vec![CaptureGpuTimingWindow {
+                readbacks: 120,
                 passes: vec![crate::render::CaptureGpuTimingPass {
                     label: "forward",
-                    average_ms: 2.5,
-                    skipped_frames: 3,
+                    average_ms: Some(2.5),
+                    sampled_readbacks: 117,
+                    malformed_readbacks: 3,
                 }],
             }],
         ));
@@ -891,9 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_timing_frames_follow_readbacks_not_requested_sample_count() {
-        // The scene requests 121 frames. A dropped readback can leave a
-        // completed 120-sample window and no trailing partial sample.
+    fn timing_pass_report_carries_sample_counts_and_nulls_an_unsampled_average() {
         let json = as_json(measurement_report(
             &scene_with_measurement(),
             99,
@@ -903,7 +911,57 @@ mod tests {
             vec![1.0],
             CaptureGpuTimingState::Active,
             0,
-            vec![CaptureGpuTimingWindow { passes: Vec::new() }],
+            vec![CaptureGpuTimingWindow {
+                readbacks: 120,
+                passes: vec![
+                    crate::render::CaptureGpuTimingPass {
+                        label: "forward",
+                        average_ms: Some(2.5),
+                        sampled_readbacks: 117,
+                        malformed_readbacks: 3,
+                    },
+                    crate::render::CaptureGpuTimingPass {
+                        label: "animated_lm_compose",
+                        average_ms: None,
+                        sampled_readbacks: 0,
+                        malformed_readbacks: 0,
+                    },
+                ],
+            }],
+        ));
+
+        let window = &json["gpu_timing"]["windows"][0];
+        assert_eq!(window["readbacks"], 120);
+        let forward = &window["passes"][0];
+        let forward_ms = forward["average_ms"].as_f64().unwrap();
+        assert!((forward_ms - 2.5).abs() < 1e-6, "{forward_ms}");
+        assert_eq!(forward["sampled_readbacks"], 117);
+        assert_eq!(forward["malformed_readbacks"], 3);
+        let unsampled = &window["passes"][1];
+        assert!(
+            unsampled["average_ms"].is_null(),
+            "unsampled pass must not report zero cost: {unsampled}"
+        );
+        assert_eq!(unsampled["sampled_readbacks"], 0);
+    }
+
+    #[test]
+    fn partial_timing_frames_follow_readbacks_not_requested_sample_count() {
+        // The scene requests 121 frames. A dropped readback can leave a
+        // completed 120-readback window and no trailing partial sample.
+        let json = as_json(measurement_report(
+            &scene_with_measurement(),
+            99,
+            None,
+            adapter(),
+            None,
+            vec![1.0],
+            CaptureGpuTimingState::Active,
+            0,
+            vec![CaptureGpuTimingWindow {
+                readbacks: 120,
+                passes: Vec::new(),
+            }],
         ));
         assert_eq!(json["workload"]["sample_frames"], 121);
         assert!(json["gpu_timing"].get("partial_frames").is_none());

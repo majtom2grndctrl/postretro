@@ -106,7 +106,7 @@ use postretro_render_cpu::chunk_list::ChunkGrid;
 use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
-use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
+use postretro_visibility::{CameraCullVisibility, VisibleCells};
 
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use billboard_direct_scatter_compose::BillboardDirectScatterComposeResources;

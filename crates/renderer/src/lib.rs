@@ -7,5 +7,7 @@ mod lighting;
 mod render;
 mod shadow_cull;
 
-pub use candidate_cull::{GatherStatus, gather_candidate_leaves};
+pub use candidate_cull::{
+    GatherStatus, gather_candidate_leaves, visibility_path_uses_candidate_cull,
+};
 pub use render::*;

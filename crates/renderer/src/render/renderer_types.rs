@@ -26,7 +26,7 @@ pub struct CaptureAdapterIdentity {
 /// Why capture can or cannot collect timestamp-query windows.
 ///
 /// `Active` only means the renderer has a readable timing seam. A report still
-/// waits for a full 120-frame window before calling timing `available`.
+/// waits for a full 120-readback window before calling timing `available`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureGpuTimingState {
     NotRequested,
@@ -39,13 +39,19 @@ pub enum CaptureGpuTimingState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureGpuTimingPass {
     pub label: &'static str,
-    pub average_ms: f32,
-    pub skipped_frames: u32,
+    /// Mean over `sampled_readbacks` only; `None` when the pass ran in none.
+    pub average_ms: Option<f32>,
+    /// Readbacks in which the pass ran and decoded a sample.
+    pub sampled_readbacks: u32,
+    /// Readbacks in which the pass ran but decoded malformed.
+    pub malformed_readbacks: u32,
 }
 
-/// A completed 120-frame GPU timing window made safe for non-renderer code.
+/// A completed 120-readback GPU timing window made safe for non-renderer code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureGpuTimingWindow {
+    /// Readbacks in the window; bounds every pass's `sampled_readbacks`.
+    pub readbacks: u32,
     pub passes: Vec<CaptureGpuTimingPass>,
 }
 
@@ -301,10 +307,10 @@ impl Default for AgentOverlayState {
 /// tab. Diagnostic only — never gates behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CameraCullPath {
-    /// Visible-cell candidate cull (valid `CellDrawIndex` + `Culled` + portal
-    /// provenance). `candidate_leaves` is the gathered candidate count.
+    /// Visible-cell candidate cull (valid `CellDrawIndex` + `Culled` + portal or
+    /// portal-step-limit provenance). `candidate_leaves` is the gathered count.
     Candidate { candidate_leaves: u32 },
-    /// Whole-BVH tree walk (`DrawAll`, non-portal `Culled` fallback, or an
+    /// Whole-BVH tree walk (`DrawAll`, solid/exterior/no-portals `Culled`, or an
     /// out-of-range visible cell id).
     TreeWalk,
 }
@@ -483,7 +489,7 @@ pub struct LevelGeometry<'a> {
     /// `None` only for no installed level or an empty-BVH map. Non-empty BVHs
     /// require this index at load; missing or invalid data is a load error.
     /// Whole-BVH tree-walk fallback is a per-frame runtime path for `DrawAll`,
-    /// non-portal visibility, out-of-range gathered cell ids, or no candidate
+    /// solid/exterior/no-portals visibility, out-of-range gathered cell ids, or no candidate
     /// cull pipeline.
     pub cell_draw_index: Option<&'a postretro_level_loader::CellDrawIndex>,
     /// Runtime-loaded local-space kinematic brush mover geometry (PRL section
@@ -1004,7 +1010,7 @@ pub(super) struct FullRenderer {
     /// map has an empty BVH, or resources were released. Non-empty BVHs require
     /// this index at load; missing or invalid data is a load error. Whole-BVH
     /// tree-walk fallback is a per-frame runtime path for `DrawAll`,
-    /// non-portal visibility, out-of-range gathered cell ids, or no candidate
+    /// solid/exterior/no-portals visibility, out-of-range gathered cell ids, or no candidate
     /// cull pipeline.
     pub(super) cell_draw_index: Option<postretro_level_loader::CellDrawIndex>,
     /// `None` for maps with no BVH.
@@ -1013,7 +1019,8 @@ pub(super) struct FullRenderer {
     /// leaves (via the baked `cell_draw_index` CSR) and dispatches one
     /// invocation per candidate leaf, writing the SAME global indirect/status
     /// slots as `compute_cull`. Built in lockstep with `compute_cull`; used only
-    /// on candidate-eligible frames (valid index + `Culled` + `PrlPortal`),
+    /// on candidate-eligible frames (valid index + `Culled` + `PrlPortal` or
+    /// `PortalStepLimitFallback`),
     /// otherwise the whole-BVH tree walk runs. `None` for maps with no BVH.
     pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
     /// Per-slot cone cull for the spot-shadow depth passes. Sibling to

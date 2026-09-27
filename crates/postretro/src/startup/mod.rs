@@ -12,6 +12,7 @@ pub(crate) mod render_profile;
 pub(crate) mod session;
 pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;
+pub(crate) mod start_pose;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;

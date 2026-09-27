@@ -1049,6 +1049,28 @@ impl App {
             self.frame_timing
                 .push_state(InterpolableState::new(self.camera.position));
         }
+        // `--start-pose` moves the local pawn (or, pawnless, the fly camera)
+        // to a checked-in measurement probe instead of the map spawn.
+        if let Some(pose) = self.session_boot_config.start_pose() {
+            let moved = self.session.as_ref().is_some_and(|session| {
+                crate::startup::start_pose::place_local_pawn(
+                    &mut session.scripting.script_ctx.registry.borrow_mut(),
+                    pose,
+                )
+            });
+            self.camera.position = pose.position;
+            self.camera.yaw = pose.yaw;
+            self.camera.pitch = pose.pitch;
+            self.frame_timing
+                .push_state(InterpolableState::new(pose.position));
+            log::info!(
+                "[Startup] start pose {:?} yaw {:.1}° pitch {:.1}° ({})",
+                pose.position,
+                pose.yaw.to_degrees(),
+                pose.pitch.to_degrees(),
+                if moved { "local pawn" } else { "camera only" },
+            );
+        }
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
         // were created in segment B; this is the windowed GPU half.

@@ -68,6 +68,7 @@ postretro-render-data = { workspace = true }
 postretro-render-cpu = { workspace = true }
 postretro-renderer = { workspace = true }
 postretro-lighting = { workspace = true, features = ["script-ffi"] }
+postretro-stage-timing.workspace = true
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }

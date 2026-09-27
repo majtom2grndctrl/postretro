@@ -149,6 +149,7 @@ impl PreparedCapture {
             &[],
             CAPTURE_PORTAL_WALK,
             &mut scratch,
+            postretro_visibility::TimingGate::OFF,
         );
         let sh_streaming = world
             .sh_stream_manifest()

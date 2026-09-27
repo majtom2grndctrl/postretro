@@ -211,6 +211,12 @@ impl Renderer {
     pub fn vsync_enabled(&self) -> bool {
         self.full().vsync_enabled
     }
+
+    /// Enables CPU stage timing for this renderer. Read once at startup by the
+    /// binary; see context/lib/rendering_pipeline.md §12.
+    pub fn set_cpu_timing(&mut self, gate: postretro_stage_timing::TimingGate) {
+        self.cpu_timing = gate;
+    }
 }
 
 impl Renderer {

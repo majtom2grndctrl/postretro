@@ -17,6 +17,9 @@ pub struct ShDrainFrameResult<T> {
     /// not surface acquisition or later readback success, to gate promotion.
     pub compose_submitted: bool,
     pub frame: std::result::Result<T, anyhow::Error>,
+    /// Time spent in the surface texture request, when CPU timing is on and a
+    /// request was made. The binary moves it out of render work into wait.
+    pub acquire_nanos: Option<u64>,
 }
 
 // Must match the near/far the caller bakes into `view_proj`
@@ -111,6 +114,7 @@ impl Renderer {
             outcome,
             compose_submitted,
             frame,
+            acquire_nanos: self.last_acquire_nanos.take(),
         })
     }
 
@@ -1013,6 +1017,7 @@ mod tests {
             },
             compose_submitted: false,
             frame: Err(anyhow::anyhow!("surface acquisition failed")),
+            acquire_nanos: None,
         };
 
         assert_eq!(result.outcome.accepted, vec![4]);

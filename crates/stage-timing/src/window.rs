@@ -92,9 +92,7 @@ impl WindowSnapshot {
                     row.average_ms(),
                     row.max_ms()
                 )?,
-                StageKind::Count => {
-                    write!(out, "{}={:.1}/{}", row.label, row.average, row.max)?
-                }
+                StageKind::Count => write!(out, "{}={:.1}/{}", row.label, row.average, row.max)?,
                 StageKind::Marker => write!(out, "{}={}", row.label, row.frames)?,
             }
             if row.kind != StageKind::Marker && row.frames < self.frames {
@@ -256,7 +254,11 @@ mod tests {
         window.fold(&frame(&[("stage", None, 9_000)]));
         assert_eq!(window.partial_frames(), 1);
         let first = window.last_window().unwrap();
-        assert_eq!(first.row("stage").unwrap().max, 1_000, "nothing carries across");
+        assert_eq!(
+            first.row("stage").unwrap().max,
+            1_000,
+            "nothing carries across"
+        );
     }
 
     #[test]
@@ -358,6 +360,9 @@ mod tests {
         assert!(fields.contains("total=2.000/2.000ms"), "{fields}");
         assert!(fields.contains("step_limit=3"), "{fields}");
         assert!(!fields.contains("step_limit=3("), "{fields}");
-        assert!(fields.contains("considered=20000.0/20000(3/120)"), "{fields}");
+        assert!(
+            fields.contains("considered=20000.0/20000(3/120)"),
+            "{fields}"
+        );
     }
 }

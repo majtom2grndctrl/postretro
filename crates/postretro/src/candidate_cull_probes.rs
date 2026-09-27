@@ -133,6 +133,7 @@ mod tests {
                 &[],
                 false,
                 &mut scratch,
+                postretro_visibility::TimingGate::OFF,
             );
 
             // Exact portal provenance is required: these spawn poses stay

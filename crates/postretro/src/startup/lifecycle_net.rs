@@ -143,6 +143,7 @@ impl App {
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
+        self.cpu_timer.level_changed();
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
         // the session borrow.

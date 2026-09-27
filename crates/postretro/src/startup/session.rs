@@ -284,6 +284,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         scratch_cells: Vec::new(),
         blocked_portals: Vec::new(),
         frame_rate_meter: FrameRateMeter::new(),
+        cpu_timer: crate::cpu_timing::CpuFrameTimer::new(crate::cpu_timing::gate_from_env()),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         // Every session-lifetime field (scripting core, options, frontend, net

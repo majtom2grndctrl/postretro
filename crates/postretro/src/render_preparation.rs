@@ -33,6 +33,7 @@ impl VisibleRenderPreparation {
         blocked_portals: &[bool],
         capture_portal_walk: bool,
         scratch: &mut Vec<u32>,
+        timing: postretro_visibility::TimingGate,
     ) -> Self {
         let (visibility, _) = determine_visible_cells(
             eye,
@@ -41,6 +42,7 @@ impl VisibleRenderPreparation {
             blocked_portals,
             capture_portal_walk,
             scratch,
+            timing,
         );
         let fog_reachable = visibility.fog_reachable;
         let (light_reachable_cell_mask, reachable_cell_aabbs) =
@@ -71,6 +73,7 @@ impl VisibleRenderPreparation {
                 total_faces: 0,
                 drawn_faces: 0,
                 path: VisibilityPath::EmptyWorldFallback,
+                cpu: Default::default(),
             },
         }
     }

@@ -95,7 +95,11 @@ impl FrameRecord {
     /// Gathers every stage that ran in `frame`. The set's roots are placed
     /// under `anchor`; substages keep their in-set parent. No stage is named
     /// here, so a new stage in an existing set needs no caller change.
-    pub fn extend_from<S: StageSet>(&mut self, frame: &StageFrame<S>, anchor: Option<&'static str>) {
+    pub fn extend_from<S: StageSet>(
+        &mut self,
+        frame: &StageFrame<S>,
+        anchor: Option<&'static str>,
+    ) {
         for &stage in S::ALL {
             if let Some(value) = frame.value(stage) {
                 self.push(Sample {
@@ -177,8 +181,16 @@ mod tests {
         record.push_time("host", None, 500);
         record.extend_from(&frame, Some("host"));
 
-        let outer = record.samples().iter().find(|s| s.label == "outer").unwrap();
-        let inner = record.samples().iter().find(|s| s.label == "inner").unwrap();
+        let outer = record
+            .samples()
+            .iter()
+            .find(|s| s.label == "outer")
+            .unwrap();
+        let inner = record
+            .samples()
+            .iter()
+            .find(|s| s.label == "inner")
+            .unwrap();
         assert_eq!(outer.parent, Some("host"));
         assert_eq!(inner.parent, Some("outer"));
         assert_eq!(record.top_level_time(), 500);

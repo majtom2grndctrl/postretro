@@ -560,6 +560,9 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                // The install frame never counts, and no CPU timing surface may
+                // show a window from the previous level.
+                self.cpu_timer.level_changed();
                 // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
                 // outbound replication now that the install has spawned + marked it the
                 // local player. Reload-safe and a no-op off the host / on a map without a
@@ -1765,6 +1768,7 @@ mod tests {
             scratch_cells: Vec::new(),
             blocked_portals: Vec::new(),
             frame_rate_meter: FrameRateMeter::new(),
+            cpu_timer: crate::cpu_timing::CpuFrameTimer::new(crate::cpu_timing::TimingGate::OFF),
             title_buffer: String::new(),
             last_title_update: Instant::now(),
             mod_theme_override: Default::default(),

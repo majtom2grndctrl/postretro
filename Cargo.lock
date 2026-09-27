@@ -3693,6 +3693,7 @@ dependencies = [
  "postretro-script-compiler",
  "postretro-scripting-core",
  "postretro-sim",
+ "postretro-stage-timing",
  "postretro-test-log-capture",
  "postretro-ui",
  "postretro-visibility",
@@ -3967,6 +3968,7 @@ dependencies = [
  "postretro-render-cpu",
  "postretro-render-data",
  "postretro-scripting-core",
+ "postretro-stage-timing",
  "postretro-test-log-capture",
  "postretro-ui",
  "postretro-visibility",
@@ -4100,6 +4102,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-render-data",
+ "postretro-stage-timing",
 ]
 
 [[package]]

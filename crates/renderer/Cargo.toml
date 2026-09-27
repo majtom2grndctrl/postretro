@@ -24,6 +24,7 @@ postretro-render-cpu.workspace = true
 postretro-render-data.workspace = true
 postretro-scripting-core.workspace = true
 postretro-ui.workspace = true
+postretro-stage-timing.workspace = true
 postretro-visibility.workspace = true
 wgpu.workspace = true
 winit.workspace = true

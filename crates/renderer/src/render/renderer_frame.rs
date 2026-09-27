@@ -124,12 +124,17 @@ impl Renderer {
             self.reconfigure_surface();
         }
 
-        let output = match self
+        // Times only the texture request: a pending reconfigure above is
+        // renderer work, while the request is where a vsync block lands.
+        let acquire_start = self.cpu_timing.is_enabled().then(std::time::Instant::now);
+        let current = self
             .surface
             .as_ref()
             .expect("surface presence checked above")
-            .get_current_texture()
-        {
+            .get_current_texture();
+        self.last_acquire_nanos = acquire_start
+            .map(|start| u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        let output = match current {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
                 self.surface_reconfigure_pending = true;

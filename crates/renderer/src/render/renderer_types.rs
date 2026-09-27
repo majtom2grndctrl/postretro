@@ -645,6 +645,11 @@ pub struct Renderer {
     pub(super) surface_config: wgpu::SurfaceConfiguration,
     pub(super) is_surface_configured: bool,
     pub(super) surface_reconfigure_pending: bool,
+    /// CPU stage timing gate, handed in by the binary after construction.
+    pub(super) cpu_timing: postretro_stage_timing::TimingGate,
+    /// Duration of the last surface texture request, when timing is on. Taken
+    /// into the frame result so the binary can count the vsync block as wait.
+    pub(super) last_acquire_nanos: Option<u64>,
 
     /// `has_multi_draw_indirect` flag cached for `finish_full_init` and
     /// `install_level_geometry`. Boot-phase: derived from the adapter, needed to

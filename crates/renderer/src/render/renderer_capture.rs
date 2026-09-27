@@ -99,6 +99,7 @@ impl Renderer {
             outcome,
             compose_submitted,
             frame,
+            acquire_nanos: None,
         })
     }
 
@@ -218,6 +219,7 @@ impl Renderer {
             outcome,
             compose_submitted,
             frame,
+            acquire_nanos: None,
         })
     }
 }

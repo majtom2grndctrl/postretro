@@ -3289,8 +3289,10 @@ impl ApplicationHandler for App {
                     frame_dt,
                     frame_anim_time,
                     &mut pending_weapon_script_events,
-                    &mut client_sounds,
                 );
+                if self.is_connected_client() {
+                    self.observe_client_reload_edges(&mut client_sounds);
+                }
 
                 // Status overlays are host/single-player presentation facts.
                 // This runs once after every fixed tick (including zero-tick
@@ -3460,7 +3462,7 @@ impl ApplicationHandler for App {
                         &script_ctx,
                     ));
                     pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-                        pending_mover_event_names.into_iter(),
+                        pending_mover_event_names,
                         &script_ctx.data_registry.borrow(),
                         &session.scripting.sequence_registry,
                         &session.scripting.reaction_registry,
@@ -7123,7 +7125,6 @@ impl App {
         frame_dt: f32,
         frame_anim_time: f64,
         pending_weapon_script_events: &mut Vec<PendingWeaponScriptEvent>,
-        client_sounds: &mut Vec<postretro_audio::SoundRequest>,
     ) {
         self.client_fire_resolutions.clear();
         if !self.is_connected_client() {
@@ -7145,7 +7146,6 @@ impl App {
             frame_anim_time,
             pending_weapon_script_events,
         );
-        self.observe_client_reload_edges(client_sounds);
     }
 
     fn run_client_fire_path_post_loop_inner(

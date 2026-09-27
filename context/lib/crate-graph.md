@@ -35,6 +35,7 @@ recompiles every dependent.
 - **scripting-core** — 6 dependents (postretro, lighting, netcode, renderer, sim, ui)
 - **net** — 4 dependents (postretro, combat-model, netcode, sim)
 - **physics** — 4 dependents (postretro, ai, netcode, sim)
+- **stage-timing** — 4 dependents (postretro, renderer, sim, visibility)
 - **combat-model** — 3 dependents (postretro, netcode, sim)
 - **lighting** — 3 dependents (postretro, renderer, sim)
 - **sim** — 3 dependents (postretro, ai, netcode)

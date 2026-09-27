@@ -10,4 +10,15 @@ license.workspace = true
 # crate, so a new stage recompiles its owning crate, not everything above it.
 # See: context/lib/rendering_pipeline.md §12
 
+[features]
+# External profiler bridge: every stage scope also opens a Tracy zone, whether
+# or not POSTRETRO_CPU_TIMING is set. Release, dist and the dependency-free
+# diagnostic features (observability, observe-live, capture) never enable it.
+tracy = ["dep:tracy-client"]
+
 [dependencies]
+# Tracy client, only under `tracy`. Default features off: zones and frame marks
+# need only `enable`; sampling, system tracing and the crash handler add
+# platform work a stage profiler does not use. The client's protocol version
+# must match the Tracy GUI release it connects to (see the crate's README table).
+tracy-client = { version = "0.19", default-features = false, features = ["enable"], optional = true }

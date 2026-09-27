@@ -558,6 +558,8 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
+    // No-op unless built with the `tracy` feature.
+    postretro_stage_timing::start_external_profiler();
 
     // Build boot-lifetime `App` state (args, content root, camera, frame
     // timing, the `pending_session` bundle) and the event loop. The entire
@@ -4726,6 +4728,7 @@ impl ApplicationHandler for App {
                 drop(stage_scope);
                 drop(cpu_stages);
                 self.cpu_timer.finish_frame(Instant::now());
+                postretro_stage_timing::mark_frame();
             }
             _ => {}
         }

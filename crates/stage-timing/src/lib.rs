@@ -21,6 +21,24 @@ pub use frame::{StageFrame, StageScope};
 pub use record::{FrameRecord, MAX_FRAME_SAMPLES, Sample};
 pub use window::{StageWindow, WINDOW_FRAMES, WindowRow, WindowSnapshot};
 
+/// Starts the external profiler client. A no-op unless the `tracy` feature is
+/// on; call once at startup, before the first stage scope.
+pub fn start_external_profiler() {
+    #[cfg(feature = "tracy")]
+    {
+        let _ = tracy_client::Client::start();
+    }
+}
+
+/// Marks a frame boundary for the external profiler. A no-op unless the
+/// `tracy` feature is on.
+pub fn mark_frame() {
+    #[cfg(feature = "tracy")]
+    if let Some(client) = tracy_client::Client::running() {
+        client.frame_mark();
+    }
+}
+
 /// Largest stage set a crate may declare. Bounds per-frame storage to a fixed
 /// array so recording never allocates.
 pub const MAX_STAGES_PER_SET: usize = 32;

@@ -422,3 +422,39 @@ fn test_only_stage_set_reaches_window_log_line_and_capture_report() {
     assert!(labels.contains(&"probe_outer".to_string()));
     assert!(labels.contains(&"probe_inner".to_string()));
 }
+
+#[test]
+fn shared_timing_crate_source_names_no_engine_stage() {
+    // Drift guard derived from every stage set the binary folds.
+    fn labels<S: StageSet>() -> impl Iterator<Item = &'static str> {
+        S::ALL.iter().map(|stage| stage.label())
+    }
+    let stage_labels: Vec<&str> = labels::<FrameStage>()
+        .chain(labels::<super::PredictionStage>())
+        .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
+        .chain(labels::<postretro_visibility::VisibilityStage>())
+        .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
+        .chain([
+            derived::TOTAL,
+            derived::WORK,
+            derived::WAIT,
+            derived::UNATTRIBUTED,
+            derived::WAIT_ACQUIRE,
+            derived::WAIT_PRESENT,
+        ])
+        .collect();
+    let sources = [
+        include_str!("../../../stage-timing/src/lib.rs"),
+        include_str!("../../../stage-timing/src/frame.rs"),
+        include_str!("../../../stage-timing/src/record.rs"),
+        include_str!("../../../stage-timing/src/window.rs"),
+    ];
+    for label in stage_labels {
+        let quoted = format!("\"{label}\"");
+        for source in sources {
+            // Shipped code only: the leaf's own test fixtures may use any label.
+            let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
+            assert!(!shipped.contains(&quoted), "leaf crate names stage {label}");
+        }
+    }
+}

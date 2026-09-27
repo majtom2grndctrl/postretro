@@ -39,12 +39,15 @@ impl<S: StageSet> StageFrame<S> {
     }
 
     /// Times `stage` until the guard drops. Re-entering a stage in the same
-    /// frame adds to its total.
+    /// frame adds to its total. Under the `tracy` feature the scope is also a
+    /// Tracy zone, whatever the gate says.
     pub fn scope(&self, stage: S) -> StageScope<'_, S> {
         StageScope {
             frame: self,
             stage,
             start: self.gate.is_enabled().then(Instant::now),
+            #[cfg(feature = "tracy")]
+            _zone: tracy_zone(stage.label()),
         }
     }
 
@@ -148,6 +151,17 @@ pub struct StageScope<'a, S: StageSet> {
     frame: &'a StageFrame<S>,
     stage: S,
     start: Option<Instant>,
+    #[cfg(feature = "tracy")]
+    _zone: Option<tracy_client::Span>,
+}
+
+/// Labels are chosen at runtime, so zones use Tracy's allocated source
+/// locations rather than its static-literal macro. Allocation here is outside
+/// the built-in timer's allocation contract, which assumes Tracy off.
+#[cfg(feature = "tracy")]
+fn tracy_zone(label: &'static str) -> Option<tracy_client::Span> {
+    tracy_client::Client::running()
+        .map(|client| client.span_alloc(Some(label), "", file!(), line!(), 0))
 }
 
 impl<S: StageSet> Drop for StageScope<'_, S> {

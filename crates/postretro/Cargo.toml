@@ -108,6 +108,10 @@ observe-live = []
 # Static offscreen frame capture for content CI. Gates binary-only modules and
 # adds no dependencies or UI surface.
 capture = []
+# Tracy profiler bridge: every CPU stage scope becomes a Tracy zone, with or
+# without POSTRETRO_CPU_TIMING. Adds tracy-client; never part of a release,
+# dist, or dependency-free diagnostic build. See: rendering_pipeline.md §12
+tracy = ["postretro-stage-timing/tracy"]
 # Narrow cross-crate seams used by binary-owned tests after the gameplay split.
 # Production callers never enable this feature.
 test-support = [

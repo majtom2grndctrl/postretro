@@ -40,6 +40,11 @@ pub(crate) struct CpuStageReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) parent: Option<String>,
     pub(crate) kind: CpuStageKind,
+    /// A frame aggregate (`total`, `work`), not a stage: stages plus `wait`
+    /// and `unattributed` partition `total`, so a reader summing top-level
+    /// rows must skip aggregates.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) aggregate: bool,
     /// Frames of the window this stage ran in; its average covers only these.
     pub(crate) frames: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +82,7 @@ impl From<&WindowSnapshot> for CpuWindowReport {
                         label: row.label.to_string(),
                         parent: row.parent.map(str::to_string),
                         kind,
+                        aggregate: row.aggregate,
                         frames: row.frames,
                         average,
                         max,

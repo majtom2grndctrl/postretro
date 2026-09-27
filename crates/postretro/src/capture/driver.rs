@@ -100,7 +100,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         let map_bytes = fs::metadata(map_path)
             .with_context(|| format!("failed to inspect capture map `{}`", map_path.display()))?
             .len();
-        let mut cpu_windows = CaptureCpuWindows::new(crate::cpu_timing::gate_from_env());
+        let mut cpu_windows = CaptureCpuWindows::new(prepared.cpu_stages().gate());
         for _ in 0..measurement.warmup_frames {
             let _ = prepared.capture_measurement_frame()?;
             cpu_windows.fold_sample(prepared.cpu_stages());

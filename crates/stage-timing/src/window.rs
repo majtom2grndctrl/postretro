@@ -12,6 +12,7 @@ struct Accumulator {
     label: &'static str,
     parent: Option<&'static str>,
     kind: StageKind,
+    aggregate: bool,
     frames: u32,
     sum: u64,
     max: u64,
@@ -24,6 +25,9 @@ pub struct WindowRow {
     pub label: &'static str,
     pub parent: Option<&'static str>,
     pub kind: StageKind,
+    /// A frame aggregate (total, work CPU) rather than a stage; see
+    /// [`crate::Sample::aggregate`].
+    pub aggregate: bool,
     /// Frames of the window this stage ran in.
     pub frames: u32,
     /// Mean over `frames` only (nanoseconds for time, units for counts).
@@ -41,8 +45,9 @@ impl WindowRow {
     }
 }
 
-/// A closed window. Rows follow first-seen order, so a parent precedes its
-/// substages when both ran in the window's first frame that saw either.
+/// A closed window. Rows are in depth-first pre-order: each row is followed by
+/// its substages, siblings keep the order they were first seen in, and a row
+/// whose parent did not run in the window is a root.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WindowSnapshot {
     pub frames: u32,
@@ -148,6 +153,7 @@ impl StageWindow {
                         label: sample.label,
                         parent: sample.parent,
                         kind: sample.kind,
+                        aggregate: sample.aggregate,
                         frames: 0,
                         sum: 0,
                         max: 0,
@@ -168,18 +174,16 @@ impl StageWindow {
     }
 
     fn close(&mut self) {
+        let rows = &self.rows;
         let snapshot = &mut self.spare;
         snapshot.frames = self.frames;
         snapshot.rows.clear();
-        for row in self.rows.iter().filter(|row| row.frames > 0) {
-            snapshot.rows.push(WindowRow {
-                label: row.label,
-                parent: row.parent,
-                kind: row.kind,
-                frames: row.frames,
-                average: row.sum as f64 / f64::from(row.frames),
-                max: row.max,
-            });
+        let ran = |label: &str| rows.iter().any(|row| row.frames > 0 && row.label == label);
+        for (index, row) in rows.iter().enumerate() {
+            let is_root = row.parent.is_none_or(|parent| !ran(parent));
+            if row.frames > 0 && is_root {
+                push_subtree(rows, index, &mut snapshot.rows);
+            }
         }
         std::mem::swap(&mut self.last, &mut self.spare);
         self.has_last = true;
@@ -220,6 +224,29 @@ impl StageWindow {
     /// Frames folded into the current, not yet closed, window.
     pub fn partial_frames(&self) -> u32 {
         self.frames
+    }
+}
+
+/// Appends `rows[index]` and, depth-first, every substage that ran. Writes
+/// into fixed-capacity storage; the length guard also stops a parent cycle.
+fn push_subtree(rows: &[Accumulator], index: usize, out: &mut Vec<WindowRow>) {
+    if out.len() >= rows.len() {
+        return;
+    }
+    let row = &rows[index];
+    out.push(WindowRow {
+        label: row.label,
+        parent: row.parent,
+        kind: row.kind,
+        aggregate: row.aggregate,
+        frames: row.frames,
+        average: row.sum as f64 / f64::from(row.frames),
+        max: row.max,
+    });
+    for (child, candidate) in rows.iter().enumerate() {
+        if candidate.frames > 0 && candidate.parent == Some(row.label) {
+            push_subtree(rows, child, out);
+        }
     }
 }
 
@@ -364,5 +391,45 @@ mod tests {
             fields.contains("considered=20000.0/20000(3/120)"),
             "{fields}"
         );
+    }
+
+    #[test]
+    fn rows_come_out_in_depth_first_order_whatever_order_they_were_first_seen() {
+        let mut window = StageWindow::new();
+        for index in 0..WINDOW_FRAMES {
+            let mut record = FrameRecord::new();
+            record.push_aggregate_time("total", 10);
+            record.push_time("wait", None, 2);
+            record.push_time("stage_a", None, 3);
+            record.push_time("stage_b", None, 4);
+            record.push_time("wait_acquire", Some("wait"), 1);
+            record.push_time("b_child", Some("stage_b"), 2);
+            if index > 0 {
+                // First seen after its parent's siblings, and after window start.
+                record.push_time("a_child", Some("stage_a"), 1);
+            }
+            window.fold(&record);
+        }
+        let labels: Vec<_> = window
+            .last_window()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| row.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "total",
+                "wait",
+                "wait_acquire",
+                "stage_a",
+                "a_child",
+                "stage_b",
+                "b_child"
+            ]
+        );
+        let total = window.last_window().unwrap().row("total").unwrap();
+        assert!(total.aggregate);
     }
 }

@@ -426,12 +426,11 @@ fn determine_visible_cell_set(
             cpu.gate(),
         );
         // A step-limit trip is still a walk frame: its walk is the cost the
-        // budget exists to bound.
-        cpu_stages::record_walk(
-            cpu,
-            &portal_result.stats,
-            portal_result.stats.walk_nanos.unwrap_or(0),
-        );
+        // budget exists to bound. An out-of-range camera cell never floods, so
+        // it records no walk.
+        if let Some(walk_nanos) = portal_result.stats.walk_nanos {
+            cpu_stages::record_walk(cpu, &portal_result.stats, walk_nanos);
+        }
 
         if portal_result.stats.step_limit_hit {
             log::debug!(

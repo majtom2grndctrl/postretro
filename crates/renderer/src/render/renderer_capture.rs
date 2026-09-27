@@ -59,8 +59,8 @@ impl Renderer {
         ShDrainFrameResult<Option<CaptureGpuTimingWindow>>,
         ShResidencyDrainError,
     > {
-        // Capture reports only recording stages: its submit blocks on the
-        // device, which is not recording cost.
+        // Capture reports the renderer's CPU stages but no submit: its submit
+        // blocks on the device, which is not CPU recording cost.
         self.cpu_frame.clear();
         let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let drain_scope = cpu.scope(super::cpu_stages::RenderStage::ShDrain);
@@ -172,6 +172,8 @@ impl Renderer {
         render_world: bool,
         sh_drain_batch: ShDrainBatch,
     ) -> std::result::Result<ShDrainFrameResult<Vec<u8>>, ShResidencyDrainError> {
+        // The PNG frame is never folded into a CPU window, so its drain goes
+        // untimed; clearing keeps a prior sample's stages from reading as its.
         self.cpu_frame.clear();
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
         let frame = (|| -> Result<(Vec<u8>, bool)> {

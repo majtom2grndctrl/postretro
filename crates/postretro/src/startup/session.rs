@@ -66,9 +66,10 @@ impl SessionBootConfig {
         }
     }
 
-    /// `--start-pose` override for the local player's first placement.
-    pub(crate) fn start_pose(self) -> Option<super::start_pose::StartPose> {
-        self.start_pose
+    /// `--start-pose` override, handed out once: only the session's first
+    /// level install starts there; later installs use their map spawn.
+    pub(crate) fn take_start_pose(&mut self) -> Option<super::start_pose::StartPose> {
+        self.start_pose.take()
     }
 
     /// Windowed installs always roll. Without an explicit seed, resolve fresh

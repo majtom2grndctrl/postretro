@@ -69,6 +69,8 @@ impl Renderer {
         // frame. It precedes surface acquisition so even a skipped frame
         // returns the ownership outcome to the session controller.
         self.cpu_frame.clear();
+        // A splash acquire leaves its time behind; only this frame's counts.
+        self.last_acquire_nanos = None;
         let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let drain_scope = cpu.scope(RenderStage::ShDrain);
         let outcome = self.drain_sh_residency(sh_drain_batch)?;

@@ -22,10 +22,12 @@ pub struct StageFrame<S: StageSet> {
 
 impl<S: StageSet> StageFrame<S> {
     pub fn new(gate: TimingGate) -> Self {
-        debug_assert!(
-            S::ALL.len() <= MAX_STAGES_PER_SET,
-            "stage set exceeds MAX_STAGES_PER_SET"
-        );
+        const {
+            assert!(
+                S::ALL.len() <= MAX_STAGES_PER_SET,
+                "stage set exceeds MAX_STAGES_PER_SET"
+            );
+        }
         Self {
             gate,
             values: Default::default(),

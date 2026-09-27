@@ -731,7 +731,8 @@ mod tests {
         let mut progress_tracker = ProgressTracker::new();
         progress_tracker.initialize(&data, &registry.borrow());
 
-        // The zero-HP sweep itself must not queue kill progress.
+        // Latch the zero-HP target the way a tick's sweep would. Kill progress
+        // is asserted below, after removal.
         postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry.borrow_mut());
         crate::impact_effects::despawn(&mut registry.borrow_mut(), target, None);
 

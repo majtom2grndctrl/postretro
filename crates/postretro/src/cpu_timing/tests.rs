@@ -220,24 +220,74 @@ fn absent_stage_is_missing_from_the_log_line_not_zero() {
     capture.assert_not_logged(log::Level::Info, "snapshot_apply=");
 }
 
+/// Opens every time stage of `S` nested under its parent, as the owning crate
+/// does, so each substage's time stays inside its parent's. No allocation:
+/// the guards live on the recursion's stack.
+fn scope_subtree<S: StageSet>(frame: &postretro_stage_timing::StageFrame<S>, parent: Option<S>) {
+    for &stage in S::ALL {
+        if stage.parent() != parent {
+            continue;
+        }
+        match stage.kind() {
+            StageKind::Time => {
+                let _scope = frame.scope(stage);
+                scope_subtree(frame, Some(stage));
+            }
+            StageKind::Count => frame.add_count(stage, 3),
+            StageKind::Marker => frame.mark(stage),
+        }
+    }
+}
+
+fn every_stage<S: StageSet>(gate: TimingGate) -> postretro_stage_timing::StageFrame<S> {
+    let frame = postretro_stage_timing::StageFrame::<S>::new(gate);
+    scope_subtree(&frame, None);
+    frame
+}
+
 /// Drives every operation the timer performs per frame: open, every stage
-/// scope, a nested sample, wait attribution, commit.
+/// scope of every set the engine folds (each built inside its anchor's scope),
+/// per-tick absorb, nested placement by anchor, wait attribution, commit and
+/// window close.
 fn drive_timer_frames(timer: &mut CpuFrameTimer, frames: u32) {
+    use postretro_renderer::cpu_stages::RenderStage;
+    use postretro_sim::sim::cpu_stages::SimStage;
+    use postretro_visibility::VisibilityStage;
+
+    let gate = timer.gate();
     for _ in 0..frames {
         timer.begin_frame(Instant::now());
         let stages = timer.stages();
         for &stage in FrameStage::ALL {
-            if stage == FrameStage::Ticks {
-                stages.add_count(stage, 2);
-            } else {
-                drop(stages.scope(stage));
+            let scope = (stage != FrameStage::Ticks).then(|| stages.scope(stage));
+            let anchor = Some(stage.label());
+            match stage {
+                FrameStage::Ticks => stages.add_count(stage, 2),
+                FrameStage::FixedStep => {
+                    let sim = postretro_stage_timing::StageFrame::<SimStage>::new(gate);
+                    for _ in 0..2 {
+                        sim.absorb(&every_stage::<SimStage>(gate));
+                    }
+                    let prediction = every_stage::<super::PredictionStage>(gate);
+                    let nested = timer.nested_mut();
+                    nested.extend_from(&sim, anchor);
+                    nested.extend_from(&prediction, anchor);
+                }
+                FrameStage::Visibility => {
+                    let visibility = every_stage::<VisibilityStage>(gate);
+                    timer.nested_mut().extend_from(&visibility, anchor);
+                }
+                FrameStage::Render => {
+                    let render = every_stage::<RenderStage>(gate);
+                    timer.nested_mut().extend_from(&render, anchor);
+                    timer.add_wait_within(FrameStage::Render, WaitSource::Acquire, 0);
+                    timer.add_wait_within(FrameStage::Render, WaitSource::Present, 0);
+                }
+                _ => {}
             }
+            drop(scope);
         }
         drop(stages);
-        timer
-            .nested_mut()
-            .push_time("nested_probe", Some("render"), 0);
-        timer.add_wait_within(FrameStage::Render, WaitSource::Present, 0);
         timer.commit_frame(Instant::now());
     }
 }
@@ -457,4 +507,56 @@ fn shared_timing_crate_source_names_no_engine_stage() {
             assert!(!shipped.contains(&quoted), "leaf crate names stage {label}");
         }
     }
+}
+
+#[test]
+fn every_folded_stage_label_is_unique() {
+    // Rows key by label: two sets sharing one would silently sum.
+    fn labels<S: StageSet>() -> impl Iterator<Item = &'static str> {
+        S::ALL.iter().map(|stage| stage.label())
+    }
+    let all: Vec<&str> = labels::<FrameStage>()
+        .chain(labels::<super::PredictionStage>())
+        .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
+        .chain(labels::<postretro_visibility::VisibilityStage>())
+        .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
+        .chain([
+            derived::TOTAL,
+            derived::WORK,
+            derived::WAIT,
+            derived::UNATTRIBUTED,
+            derived::WAIT_ACQUIRE,
+            derived::WAIT_PRESENT,
+        ])
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    for label in &all {
+        assert!(seen.insert(*label), "stage label {label} is used twice");
+    }
+    assert!(all.len() <= postretro_stage_timing::MAX_FRAME_SAMPLES);
+}
+
+#[test]
+fn totals_are_marked_as_aggregates_and_excluded_from_the_stage_sum() {
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    counted_frame(&mut timer, &[(FrameStage::Render, MS)], 3 * MS);
+    let record = timer.last_record();
+    let aggregate = |label: &str| {
+        record
+            .samples()
+            .iter()
+            .find(|sample| sample.label == label)
+            .unwrap()
+            .aggregate
+    };
+    assert!(aggregate(derived::TOTAL));
+    assert!(aggregate(derived::WORK));
+    assert!(!aggregate(derived::WAIT));
+    assert!(!aggregate(derived::UNATTRIBUTED));
+    assert!(!aggregate("render"));
+    // Stages, wait and unattributed partition the total.
+    assert_eq!(
+        record.top_level_time(),
+        record.value(derived::TOTAL).unwrap()
+    );
 }

@@ -14,6 +14,9 @@ pub struct Sample {
     pub parent: Option<&'static str>,
     pub kind: StageKind,
     pub value: u64,
+    /// An aggregate over other rows (frame total, work CPU), not a stage that
+    /// partitions its parent. Readers summing stages must skip it.
+    pub aggregate: bool,
 }
 
 const EMPTY_SAMPLE: Sample = Sample {
@@ -21,6 +24,7 @@ const EMPTY_SAMPLE: Sample = Sample {
     parent: None,
     kind: StageKind::Time,
     value: 0,
+    aggregate: false,
 };
 
 /// Every stage that ran in one frame, gathered by the binary from each
@@ -71,6 +75,7 @@ impl FrameRecord {
             parent,
             kind: StageKind::Time,
             value: nanos,
+            aggregate: false,
         });
     }
 
@@ -80,6 +85,7 @@ impl FrameRecord {
             parent,
             kind: StageKind::Count,
             value: count,
+            aggregate: false,
         });
     }
 
@@ -89,6 +95,18 @@ impl FrameRecord {
             parent,
             kind: StageKind::Marker,
             value: 1,
+            aggregate: false,
+        });
+    }
+
+    /// Adds an aggregate time row (a frame total, not a stage).
+    pub fn push_aggregate_time(&mut self, label: &'static str, nanos: u64) {
+        self.push(Sample {
+            label,
+            parent: None,
+            kind: StageKind::Time,
+            value: nanos,
+            aggregate: true,
         });
     }
 
@@ -107,6 +125,7 @@ impl FrameRecord {
                     parent: stage.parent().map(StageSet::label).or(anchor),
                     kind: stage.kind(),
                     value,
+                    aggregate: false,
                 });
             }
         }
@@ -134,11 +153,13 @@ impl FrameRecord {
         }
     }
 
-    /// Sum of the top-level time stages.
+    /// Sum of the top-level time stages, aggregates excluded.
     pub fn top_level_time(&self) -> u64 {
         self.samples()
             .iter()
-            .filter(|sample| sample.parent.is_none() && sample.kind == StageKind::Time)
+            .filter(|sample| {
+                sample.parent.is_none() && sample.kind == StageKind::Time && !sample.aggregate
+            })
             .map(|sample| sample.value)
             .sum()
     }

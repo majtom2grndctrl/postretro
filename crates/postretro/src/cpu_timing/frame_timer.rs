@@ -52,6 +52,8 @@ pub(crate) struct CpuFrameTimer {
     /// Blocking time moved out of each top-level stage into wait.
     blocked: [u64; FrameStage::ALL.len()],
     excluded: bool,
+    /// Set once a frame was dropped for an impossible record; see `compose`.
+    warned_invalid_frame: bool,
 }
 
 impl CpuFrameTimer {
@@ -67,6 +69,7 @@ impl CpuFrameTimer {
             wait_sources: [None; 2],
             blocked: [0; FrameStage::ALL.len()],
             excluded: false,
+            warned_invalid_frame: false,
         }
     }
 
@@ -145,7 +148,15 @@ impl CpuFrameTimer {
         }
         let total =
             u64::try_from(end.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX);
-        if !self.compose(total) {
+        if let Err(reason) = self.compose(total) {
+            // Unreachable with disjoint top-level scopes and today's label
+            // count. Warn once so a future overlap cannot silently shorten
+            // windows instead of surfacing.
+            debug_assert!(false, "[CpuTiming] frame dropped: {reason}");
+            if !self.warned_invalid_frame {
+                self.warned_invalid_frame = true;
+                log::warn!("[CpuTiming] frame dropped from the window: {reason}");
+            }
             return false;
         }
         self.window
@@ -165,38 +176,38 @@ impl CpuFrameTimer {
     }
 
     /// Builds the frame's record: derived split first, then top-level stages
-    /// in frame order, then nested sets. Returns `false` if the stage values
-    /// cannot fit inside the frame total, which would mean overlapping stages.
-    fn compose(&mut self, total: u64) -> bool {
+    /// in frame order, then nested sets. Fails if the stage values cannot fit
+    /// inside the frame total, which would mean overlapping stages.
+    fn compose(&mut self, total: u64) -> Result<(), &'static str> {
+        if self.nested.overflowed() {
+            return Err("more stage labels than a frame record holds");
+        }
         let record = &mut self.record;
         record.clear();
         for &stage in FrameStage::ALL {
             let Some(value) = self.stages.value(stage) else {
                 continue;
             };
-            let Some(value) = value.checked_sub(self.blocked[stage.index()]) else {
-                debug_assert!(false, "wait exceeds enclosing stage {}", stage.label());
-                return false;
-            };
+            let value = value
+                .checked_sub(self.blocked[stage.index()])
+                .ok_or("wait exceeds its enclosing stage")?;
             record.push(postretro_stage_timing::Sample {
                 label: stage.label(),
                 parent: None,
                 kind: stage.kind(),
                 value,
+                aggregate: false,
             });
         }
-        let Some(unattributed) = total
+        let unattributed = total
             .checked_sub(record.top_level_time())
             .and_then(|rest| rest.checked_sub(self.wait_nanos))
-        else {
-            debug_assert!(false, "top-level stages and wait exceed frame total");
-            return false;
-        };
+            .ok_or("top-level stages and wait exceed the frame total")?;
 
         let stages = record.clone();
         record.clear();
-        record.push_time(derived::TOTAL, None, total);
-        record.push_time(derived::WORK, None, total - self.wait_nanos);
+        record.push_aggregate_time(derived::TOTAL, total);
+        record.push_aggregate_time(derived::WORK, total - self.wait_nanos);
         record.push_time(derived::WAIT, None, self.wait_nanos);
         record.push_time(derived::UNATTRIBUTED, None, unattributed);
         for source in [WaitSource::Acquire, WaitSource::Present] {
@@ -210,7 +221,11 @@ impl CpuFrameTimer {
         for sample in self.nested.samples() {
             record.push(*sample);
         }
-        true
+        debug_assert!(
+            record.substage_overruns().next().is_none(),
+            "a substage exceeds its parent"
+        );
+        Ok(())
     }
 
     /// The last composed frame, for tests of the frame split.
@@ -225,7 +240,7 @@ impl CpuFrameTimer {
     }
 
     /// Frames counted toward the window that has not closed yet.
-    #[cfg_attr(not(any(test, feature = "observe-live")), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn partial_frames(&self) -> u32 {
         self.window.as_ref().map_or(0, StageWindow::partial_frames)
     }

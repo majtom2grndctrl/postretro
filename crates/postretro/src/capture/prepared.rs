@@ -310,14 +310,15 @@ impl PreparedCapture {
         result.frame
     }
 
-    /// Submit and complete one prepared static sample without PNG readback.
-    /// Renderer recording stages for the frame just captured.
+    /// Renderer CPU stages for the frame just captured. Its gate is the one
+    /// `prepare` read from the environment.
     pub(super) fn cpu_stages(
         &self,
     ) -> &postretro_stage_timing::StageFrame<postretro_renderer::cpu_stages::RenderStage> {
         self.renderer.cpu_stages()
     }
 
+    /// Submit and complete one prepared static sample without PNG readback.
     pub(super) fn capture_measurement_frame(&mut self) -> Result<Option<CaptureGpuTimingWindow>> {
         let animation_time_seconds = self.measurement_animation.advance_frame();
         self.submit_frame_without_readback(true, animation_time_seconds)

@@ -3220,12 +3220,9 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Ticks executed this frame; a UI-captured frame runs none.
-                let ticks_run = if gameplay_snapshot.is_some() {
-                    ticks
-                } else {
-                    0
-                };
+                // Fixed ticks run this frame. A UI-captured frame still ticks
+                // (on a neutral snapshot), so this is the accumulator's count.
+                let ticks_run = ticks;
                 cpu_stages.add_count(cpu_timing::FrameStage::Ticks, u64::from(ticks_run));
                 let fixed_step_label = Some(postretro_stage_timing::StageSet::label(
                     cpu_timing::FrameStage::FixedStep,

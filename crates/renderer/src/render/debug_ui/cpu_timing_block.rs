@@ -24,7 +24,12 @@ pub(super) fn draw_cpu_timing(ui: &mut egui::Ui, panel: CpuTimingPanel<'_>) {
                 ui.label("CPU timing: no window closed yet");
             }
             CpuTimingPanel::Window(window) => {
-                ui.label(format!("{} frames, avg/max", window.frames));
+                // The GPU window counts completed readbacks, this one counted
+                // in-level frames: they close at different times.
+                ui.label(format!(
+                    "{} in-level frames, avg/max (not aligned with the GPU window)",
+                    window.frames
+                ));
                 for row in cpu_timing_rows(window) {
                     ui.monospace(row);
                 }
@@ -34,11 +39,13 @@ pub(super) fn draw_cpu_timing(ui: &mut egui::Ui, panel: CpuTimingPanel<'_>) {
 
 /// One line per stage that ran, indented by tree depth. A stage that did not
 /// run in the window has no line, so absent never reads as zero. Stages that
-/// ran in only part of the window carry `(ran/frames)`.
+/// ran in only part of the window carry `(ran/frames)`. Aggregates (`total`,
+/// `work`) come first, marked `=`, apart from the stages that partition them.
 pub(super) fn cpu_timing_rows(window: &WindowSnapshot) -> Vec<String> {
-    window
-        .rows
-        .iter()
+    let aggregates = window.rows.iter().filter(|row| row.aggregate);
+    let stages = window.rows.iter().filter(|row| !row.aggregate);
+    aggregates
+        .chain(stages)
         .map(|row| {
             let indent = "  ".repeat(window.depth(row));
             let value = match row.kind {
@@ -51,7 +58,8 @@ pub(super) fn cpu_timing_rows(window: &WindowSnapshot) -> Vec<String> {
             } else {
                 String::new()
             };
-            format!("{indent}{}: {value}{partial}", row.label)
+            let marker = if row.aggregate { "= " } else { "" };
+            format!("{indent}{marker}{}: {value}{partial}", row.label)
         })
         .collect()
 }
@@ -98,5 +106,21 @@ mod tests {
         }
         let rows = cpu_timing_rows(window.last_window().unwrap());
         assert_eq!(rows[1], "  sim_tick: 0.500 / 0.500 ms (10/120)");
+    }
+
+    #[test]
+    fn aggregates_lead_and_are_marked_apart_from_the_stage_tree() {
+        let mut window = StageWindow::new();
+        for _ in 0..WINDOW_FRAMES {
+            let mut record = FrameRecord::new();
+            record.push_time("render", None, 2_000_000);
+            record.push_aggregate_time("total", 3_000_000);
+            window.fold(&record);
+        }
+        let rows = cpu_timing_rows(window.last_window().unwrap());
+        assert_eq!(
+            rows,
+            ["= total: 3.000 / 3.000 ms", "render: 2.000 / 2.000 ms"]
+        );
     }
 }

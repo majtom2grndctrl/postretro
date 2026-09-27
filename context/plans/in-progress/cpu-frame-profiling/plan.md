@@ -26,6 +26,10 @@ read at: 683e363ba
 - The batch byte-identity proof runs the built binary as a child process (`tests/headless_byte_identity.rs`, `required-features = ["observability"]`): the env var is set on the child, never on the test process, so P-gate holds. Checked-in `.prl` files are stale against the current SH section version, so the test compiles `spawner-test` fresh.
 - Observe-live's socket transport tests (`observe_live::tests::*socket*`, `reaccepts…`) flaked once on this machine with a localhost `connect` timeout that poisoned their shared lock; two serial re-runs passed 11/11. Transport code is untouched here.
 
+- Sim substages: the brief names movers, movement, triggers/scripts, AI and weapons. The tick also spends measurable time in projectile flight with ready-hit ingest, and in agent steering/animation/presentation-pose/mover-blocking work, so those are two more labelled substages (`sim_projectiles`, `sim_steering`) under `sim_tick` rather than unattributed time inside it. Same contract: engine-closed labels, substages inside their parent.
+- Window rows are emitted in depth-first pre-order and `total`/`work` carry an `aggregate` mark (on `Sample`, `WindowRow` and the JSON `CpuStageReport`), so every surface can tell the frame partition (stages, `wait`, `unattributed`) from its aggregates. Found by the review panel's seam pass.
+- `--start-pose` applies to the session's first level install only.
+
 ## Measurements
 
 - 2026-09-27, task 2, `campaign-test` at spawn, dev profile (`opt-level` per workspace dev profile, debuginfo), Apple Metal, vsync on, cache warm, 120-frame windows: total 35.5–36.5 ms avg; work 22.0 ms; wait 13.4–14.5 ms, of which `wait_acquire` 13.4–14.5 ms and `wait_present` 0.05 ms; unattributed 0.004 ms avg (≈0.02% of work CPU). Largest stages: render 17.0 ms, render_prep 3.0 ms, fixed_step 1.4–1.5 ms (2.1–2.2 ticks/frame), visibility 0.34 ms with portal_walk 0.30 ms (1110 considered, 150 accepted, 810 clipped, 150 cycle). **Vsync blocks in surface acquire on this platform**; present is negligible. Machine class and release numbers are recorded with the baselines in task 8.

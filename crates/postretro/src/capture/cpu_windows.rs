@@ -8,8 +8,9 @@ use postretro_stage_timing::{
 use crate::cpu_timing::{CpuStagesReport, capture_stages_report};
 
 /// Folds each sample frame's renderer stages into 120-frame windows. Capture
-/// runs no tick or walk per sample, so only recording stages appear, as
-/// top-level rows. Every complete window is kept once; the trailing partial
+/// runs no tick or walk per sample, so only renderer stages appear, and their
+/// roots are top-level rows here rather than children of the windowed
+/// `render` stage. Every complete window is kept once; the trailing partial
 /// window is reported only as a frame count.
 pub(super) struct CaptureCpuWindows {
     gate: TimingGate,
@@ -96,7 +97,11 @@ mod tests {
                 .iter()
                 .find(|stage| stage["label"] == "rec_forward")
                 .unwrap();
-            assert_eq!(forward["max"], 1.0, "no warmup frame reached a window");
+            let max_ms = forward["max"].as_f64().unwrap();
+            assert!(
+                (max_ms - 1.0).abs() < 1e-9,
+                "no warmup frame reached a window"
+            );
             assert_eq!(forward["parent"], "render_record");
         }
         assert_eq!(report["partial_frames"], 10);

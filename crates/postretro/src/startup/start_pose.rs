@@ -31,7 +31,8 @@ pub(crate) fn start_pose_arg(args: &[String]) -> Option<StartPose> {
         let parsed = value.and_then(parse_start_pose);
         if parsed.is_none() {
             log::warn!(
-                "[Startup] invalid --start-pose {value:?}; expected x,y,z,yaw_deg,pitch_deg — starting at the map spawn"
+                "[Startup] invalid --start-pose \"{}\"; expected x,y,z,yaw_deg,pitch_deg — starting at the map spawn",
+                value.unwrap_or_default()
             );
         }
         return parsed;

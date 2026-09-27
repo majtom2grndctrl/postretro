@@ -430,3 +430,76 @@ fn every_sound_key_the_positional_sound_fixture_names_ships_in_content_dev() {
         );
     }
 }
+
+/// `playSound` evaluated through the engine's QuickJS definition context, which
+/// carries the SDK prelude. `Err` holds the thrown message.
+fn play_sound_ts(call: &str) -> Result<serde_json::Value, String> {
+    let registry = crate::primitives_registry::PrimitiveRegistry::new();
+    let subsystem =
+        crate::quickjs::QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("quickjs definition context");
+    subsystem.definition_ctx().with(|ctx| {
+        let value: JsValue = crate::quickjs::run_script(&ctx, call, "play-sound.js")
+            .map_err(|error| error.to_string())?;
+        Ok(conv::js_to_json(&ctx, value).expect("the body lowers to JSON"))
+    })
+}
+
+/// `playSound` evaluated through the engine's Luau state and its
+/// `postretro/ui` module. `Err` holds the raised message.
+fn play_sound_luau(call: &str) -> Result<serde_json::Value, String> {
+    let lua = crate::luau::build_lua_state(
+        &[],
+        None,
+        Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+    )
+    .expect("mod-rooted luau state");
+    let source = format!("local UI = require(\"postretro/ui\")\nreturn {call}");
+    let value: LuaValue = lua
+        .load(&source)
+        .set_name("play-sound.luau")
+        .eval()
+        .map_err(|error| error.to_string())?;
+    Ok(conv::lua_to_json(value).expect("the body lowers to JSON"))
+}
+
+// Regression: a level PRL baked before `playSound`'s second argument became an
+// options object embeds `playSound("sfx/test_tone", "sfx")`. The TypeScript
+// lowering read `"sfx"?.at` — `String.prototype.at`, a function — as an
+// authored `at` and emitted `at: "@invalid"`, so install dropped an unanchored
+// reaction with a misleading emitter-token error. A non-object options value
+// must fail at the call with a message naming the shape.
+#[test]
+fn play_sound_rejects_a_non_object_options_value_in_both_runtimes() {
+    let unanchored = serde_json::json!({
+        "primitive": "playSound",
+        "args": { "sound": "sfx/test_tone", "bus": "sfx" },
+    });
+    assert_eq!(
+        play_sound_ts(r#"playSound("sfx/test_tone", { bus: "sfx" })"#),
+        Ok(unanchored.clone()),
+        "an options object without `at` lowers no `at`",
+    );
+    assert_eq!(
+        play_sound_luau(r#"UI.playSound("sfx/test_tone", { bus = "sfx" })"#),
+        Ok(unanchored),
+        "an options table without `at` lowers no `at`",
+    );
+
+    for bad in [r#""sfx""#, "7", "true", "[]"] {
+        let ts = play_sound_ts(&format!(r#"playSound("sfx/test_tone", {bad})"#))
+            .expect_err(&format!("TS `{bad}` options must throw"));
+        assert!(
+            ts.contains("playSound: options must be an object"),
+            "TS `{bad}`: {ts}"
+        );
+    }
+    for bad in [r#""sfx""#, "7", "true"] {
+        let luau = play_sound_luau(&format!(r#"UI.playSound("sfx/test_tone", {bad})"#))
+            .expect_err(&format!("Luau `{bad}` options must raise"));
+        assert!(
+            luau.contains("playSound: options must be a table"),
+            "Luau `{bad}`: {luau}"
+        );
+    }
+}

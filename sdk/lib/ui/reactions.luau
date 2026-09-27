@@ -182,6 +182,12 @@ export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
 --- `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
 --- Without `at` the sound plays unpositioned.
 function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): PrimitiveReactionDescriptor
+  -- Guard the shape before reading fields: a string indexes the string
+  -- library, so the pre-options `playSound(sound, "sfx")` form would read
+  -- nil fields and silently drop its bus.
+  if options ~= nil and type(options) ~= "table" then
+    error("playSound: options must be a table `{ bus?, at? }` when provided")
+  end
   local args: { [string]: any } = { sound = sound }
   if options ~= nil then
     if options.bus ~= nil then

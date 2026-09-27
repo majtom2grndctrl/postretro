@@ -142,7 +142,7 @@ export function onStateCrossing(
       fire: crossingFireNames(conditionOrFire),
     };
     const options = fireOrOptions as CrossingOptions | undefined;
-    if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
+    if (options != null && (typeof options !== "object" || Array.isArray(options))) {
       throw new Error("onStateCrossing: predicate options must be an object when provided");
     }
     if (options !== undefined && Object.prototype.hasOwnProperty.call(options, "edge")) {
@@ -191,6 +191,12 @@ export function playSound(
   sound: string,
   options?: PlaySoundOptions,
 ): import("../data_script").PrimitiveReactionDescriptor {
+  // Guard the shape before reading fields: a primitive inherits properties
+  // from its prototype, so the pre-options `playSound(sound, "sfx")` form
+  // would read `String.prototype.at` as an authored `at` and drop its bus.
+  if (options != null && (typeof options !== "object" || Array.isArray(options))) {
+    throw new Error("playSound: options must be an object `{ bus?, at? }` when provided");
+  }
   const args: { sound: string; bus?: string; at?: string } = { sound };
   if (options?.bus !== undefined) args.bus = options.bus;
   if (options?.at !== undefined && options.at !== null) {

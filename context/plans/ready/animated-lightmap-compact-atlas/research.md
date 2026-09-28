@@ -18,6 +18,7 @@ Pages are Rgba16Float irradiance plus Rgba8Unorm direction, 12 B per texel: a 10
 | campaign-test | 144 MiB (3 × 2048²) | ≈31.5 MiB | 1024² | 3 (36 MiB) / 4 (48 MiB) / 6 (72 MiB) | 154 blocks, largest side 645; chunks cover 20.3% of slot texels, lit texels 11.1% |
 | occlusion-test | 84 MiB (7 × 1024²) | ≈10 MiB | 1024² | 1 (12 MiB) / 2 (24 MiB) / 3 (36 MiB) | 97 blocks, largest side 568 |
 | stress-warren-mini | 5.06 MiB (27 × 128²) | ≈3.1 MiB | 128², capped by the static layer | 17 (3.2 MiB) / 20 (3.8 MiB) / 37 (6.9 MiB) | 977 blocks, largest side 78 |
+| stress-warren-hallway-inspection (fresh bake 2026-09-28) | 144 MiB (3 slots × 2048²) | 1,484,095 texels (≈17 MiB raw) | 1024² | 2 (24 MiB) / 4 shelf (48 MiB) / 3 MaxRects in cell order (36 MiB) | 47 blocks from 40,187 chunks; largest block 318×655; identity fallback does not trigger |
 
 Blocks are approximated as each face's surviving-chunk bounding box plus the 2-texel padding. Neither shelf packer is the real one; they bracket packer quality. The "near a quarter" figure for `campaign-test` assumes a MaxRects packer reaches the area bound's page count; a height-sorted shelf reaches a third. Face order stands in for cell order. An in-order shelf exceeds today's bytes on `stress-warren-mini`, so packer quality is load-bearing on small static layers.
 
@@ -78,3 +79,9 @@ Additional research pins (subtract lens), literal text:
 - **P16** — supersedes the Data invariants cap figure ("2040 blocks"): block count ≤ 977 across content (chunk count reaches 40187). The cap derives from the requested `max_uniform_buffer_binding_size` (64 KiB under `Limits::default()` in wgpu 29). Blocks pack into 16-byte uniform array elements, so the cap is (limit − header) / per-block bytes after packing: 8190 blocks at 8 B per block behind a 16 B header, 4095 at 16 B. Current content (≤ 977 blocks) uses about 12% or 24% of it. Both caps sit under the 16-bit vertex id's 65535.
 
 - **P17** — The identity layout is one page per static layer holding a chunk after the cull, ascending, compact layer = today's slot index. One page per static layer would exceed today (campaign-test 192 vs 144 MiB; occlusion-test 144 vs 84 MiB; stress-warren-hallway-inspection ≈3.4 GiB vs 144 MiB, over the 1 GiB animated-atlas budget).
+
+## PR #531 (open, not merged at promotion)
+
+Checked against this brief: no Decision, Acceptance row or cited symbol changes. Two things for the builder to re-verify if it merges first:
+- `LevelGeometry` gains a `cells` field. A parity harness that builds `LevelGeometry` directly sets it, as the `renderer_resources.rs` placeholder does.
+- Level install in `renderer_resources.rs` adds an SH residency construction from the geometry's cells, near the `AnimatedLightmapResources::new` call site. Adjacent, not overlapping.

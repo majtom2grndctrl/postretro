@@ -172,14 +172,14 @@ Whole-resident lightmap-shaped GPU bytes, parsed from compiled PRLs on 2026-09-2
 and 42 are single-mip, so GPU bytes equal disk bytes. The animated atlas is derived and
 never on disk.
 
-| Resource | `campaign-test` | `stress-warren-mini` |
-|---|---|---|
-| Animated lightmap atlas (irradiance + direction) | 144 MiB (3 slots × 2048²) | 5.1 MiB |
-| Animated light weight maps (id 25) | 35.4 MiB | 1.4 MiB |
-| Shadowmask atlas (id 42, BC5) | 32 MiB | ≈0.8 MiB (est.; file predates BC5) |
-| Lightmap (id 22, BC6H + direction) | 24 MiB (4 × 2048²) | 0.6 MiB (27 × 128²) |
+| Resource | `campaign-test` | `stress-warren-mini` | `stress-warren-hallway-inspection` (fresh, 2026-09-28) |
+|---|---|---|---|
+| Animated lightmap atlas (irradiance + direction) | 144 MiB (3 slots × 2048²) | 5.1 MiB | 144 MiB (3 slots × 2048²) |
+| Animated light weight maps (id 25) | 35.4 MiB | 1.4 MiB | 35.4 MiB |
+| Shadowmask atlas (id 42, BC5) | 32 MiB | ≈0.8 MiB (est.; file predates BC5) | 584 MiB (73 layers, 338 selected lights) |
+| Lightmap (id 22, BC6H + direction) | 24 MiB (4 × 2048²) | 0.6 MiB (27 × 128²) | 438 MiB (73 × 2048²; 292 irradiance + 146 direction) |
 
-For scale, `campaign-test`'s streamed SH payload (id 50) is 26 MiB on disk.
+For scale, streamed SH payloads (id 50) are 26 MiB on `campaign-test` and 246 MiB on the hallway map. On the hallway map, whole-resident lightmap-shaped data is about 1.2 GiB, and the static lightmap and shadowmask are over 1 GiB of it. Those two are where stage 5 pays off. The hallway map has 336 playable clusters of 3,385. Its largest cluster payload is 17 MiB, over twice the per-drain install budget.
 
 The animated atlas allocates a full layer per slot, while its chunks cover about a fifth
 of those texels. It is the largest lightmap-shaped consumer and needs no I/O to shrink.
@@ -195,8 +195,7 @@ Still needed:
 
 - Resident and mandatory bytes per GPU resource, CPU frame time, and draw counts in the
   dev panel, before any stage 5 plan or tier value is judged.
-- Rebuilds of `stress-warren-hallway-inspection` and `stress-warren-mini`. Their PRLs
-  predate BC5 and ids 25/49/50.
+- A rebuild of `stress-warren-mini`, whose PRL predates BC5.
 - A production-shaped map beyond the Stress Warren family and `campaign-test`.
 - Seam and miss prototypes for the first lightmap-shaped resource, including
   cross-sector lights.

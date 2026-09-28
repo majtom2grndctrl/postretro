@@ -117,17 +117,50 @@ Leanings come from a read-only dry run (research below). None is decided.
 - Ownership. Texels belong to their receiver cell, so partitioning receivers cannot
   double-count a light. The shadowmask channel table and the animation descriptors stay
   global.
-- Platform residency budgets per resource. Lean: one planner and one player-facing
-  tier, split into per-resource GPU caps and per-drain budgets. The owner wants laptop
-  GPUs well supported. Carry forward:
-  - Use a resource-neutral settings key.
-  - Add a menu control like `ShadowQuality`'s.
-  - Don't infer low VRAM from wgpu's `IntegratedGpu`: Metal reports it for every
-    unified-memory Mac.
-  - A tier below a map's mandatory set (visible, pinned and owner closure) is mostly
-    overshoot.
+- Residency budgets. See the next section.
 - Whether the next directory version drops solid and exterior cells from clustering. The
   lightmap layer-range table can ride the same version bump.
+
+## Residency budget tiers
+
+Goal: PostRetro runs impressively on laptop GPUs, as classic DOOM runs on a potato. One
+player-facing tier covers every streamed and whole-resident resource, not SH alone. The
+bullets below are leanings, not decisions.
+
+- **Today.** SH alone has a budget: a hardcoded 256 MiB floor sized to a 6 GB GTX 1660,
+  held twice (`DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES` in `plan_initial_pool_floor`,
+  `DEFAULT_GPU_FLOOR_BYTES` in `ShResidencyAccounting`). Pools reserve the smaller of the
+  whole map and their share at install.
+- **Shape.** Lean: Low, Medium, High, and an auto default. One planner splits the tier into
+  per-resource GPU caps and per-drain budgets, replacing both constants. Resource-neutral
+  settings key. Options slot, menu control ("Applies after reload") and SDK type follow
+  `ShadowQuality`. Applies at the next level install, as `configure_player_shadow_quality`
+  does.
+- **Auto default.** wgpu 29 reports no portable VRAM size or budget. `AdapterInfo` has
+  name, vendor and device ids, device type, driver and backend. `Limits` are capability
+  caps. `MemoryHints` only tunes allocator block sizes. `MemoryBudgetThresholds` makes D3D12
+  and Vulkan fail allocations at a percent of the native budget but never returns it.
+  `Device::generate_allocator_report` sums our own allocations, on D3D12 and Vulkan only.
+  Candidates:
+  - Fixed Medium; players step down. Portable, no guessing.
+  - Device type. Metal reports `IntegratedGpu` for every unified-memory Mac, so Apple
+    Silicon lands on Low without a Metal exception.
+  - A vendor and device-id table. Catches known laptop parts; needs upkeep.
+  - Native queries (DXGI, `VK_EXT_memory_budget`, Metal `recommendedMaxWorkingSetSize`)
+    through raw backend handles. Three backend paths, and `unsafe` needs approval.
+- **Mandatory overshoot.** Visible, pinned and owner-closure data is never evicted, so a
+  tier below a map's mandatory set is mostly overshoot. On `stress-warren-mini` the owner
+  closure covers most clusters. Judge tier values against mandatory bytes per resource
+  (unmeasured; see Still needed).
+- **Whole-resident resources.** They count against the tier but cannot yield. Until stage
+  5, a tier shrinks only the SH pools. On `campaign-test`, lightmap-shaped data alone is
+  about 235 MiB, near the whole SH floor. A pooled animated atlas, stage 5's first step, is
+  the first change that lets a low tier bite there.
+- **Hardware floor.** `rendering_pipeline.md` §10 sets discrete-GPU floors; only adaptive
+  base-probe spacing names a laptop iGPU floor. Tiers extend that divergence; record it.
+- **Open for the owner.** Tier byte values, and whether they scale per map. The auto
+  heuristic. Whether a tier below mandatory warns, clamps, or stays silent. Whether tiers
+  also drive load-time quality cuts, or residency alone.
 
 ## Pre-planning measurements
 
@@ -156,8 +189,8 @@ Dry-run chart-to-cluster attribution on `campaign-test` (area estimated from UV 
 
 Still needed:
 
-- Resident bytes per GPU resource, CPU frame time, and draw counts in the dev panel,
-  before any stage 5 plan is judged.
+- Resident and mandatory bytes per GPU resource, CPU frame time, and draw counts in the
+  dev panel, before any stage 5 plan or tier value is judged.
 - Rebuilds of `stress-warren-hallway-inspection` and `stress-warren-mini`. Their PRLs
   predate BC5 and ids 25/49/50.
 - A production-shaped map beyond the Stress Warren family and `campaign-test`.

@@ -34,6 +34,7 @@ postretro-net.workspace = true
 postretro-physics.workspace = true
 postretro-render-data.workspace = true
 postretro-scripting-core.workspace = true
+postretro-stage-timing.workspace = true
 postretro-test-log-capture = { workspace = true, optional = true }
 
 [dev-dependencies]

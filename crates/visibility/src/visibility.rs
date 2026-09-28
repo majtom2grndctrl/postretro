@@ -3,8 +3,10 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
+use crate::cpu_stages::{self, VisibilityStage};
 use crate::portal_vis;
 use postretro_level_loader::{CellData, LevelWorld};
+use postretro_stage_timing::{StageFrame, TimingGate};
 
 /// Result of per-frame visibility determination for the GPU-driven indirect
 /// draw path. Portal DFS still determines the visible cell set; the BVH
@@ -44,6 +46,9 @@ pub struct VisibilityStats {
     /// Which visibility determination path produced these stats. Path-
     /// specific diagnostics (e.g., portal walk reach) live on the variant.
     pub path: VisibilityPath,
+    /// CPU stage values for this frame: walk time and traversal counters on a
+    /// walk frame, a fallback marker otherwise. Empty when timing is off.
+    pub cpu: StageFrame<VisibilityStage>,
 }
 
 /// Identifies the code path that produced a given `VisibilityStats`, and
@@ -346,6 +351,7 @@ fn determine_visible_cell_set(
     blocked_portals: &[bool],
     capture_portal_walk: bool,
     portal_step_limit: u32,
+    cpu: &StageFrame<VisibilityStage>,
 ) -> CellVisResult {
     let total_faces = world.total_face_count();
     let mut frustum = extract_frustum_planes(view_proj);
@@ -417,7 +423,14 @@ fn determine_visible_cell_set(
             blocked_portals,
             capture_portal_walk,
             portal_step_limit,
+            cpu.gate(),
         );
+        // A step-limit trip is still a walk frame: its walk is the cost the
+        // budget exists to bound. An out-of-range camera cell never floods, so
+        // it records no walk.
+        if let Some(walk_nanos) = portal_result.stats.walk_nanos {
+            cpu_stages::record_walk(cpu, &portal_result.stats, walk_nanos);
+        }
 
         if portal_result.stats.step_limit_hit {
             log::debug!(
@@ -510,6 +523,7 @@ fn build_visibility_stats(
     result: &CellVisResult,
     visible_cells: &[usize],
     world: &LevelWorld,
+    cpu: StageFrame<VisibilityStage>,
 ) -> VisibilityStats {
     let mut drawn_faces = 0u32;
     for &cell_idx in visible_cells {
@@ -565,6 +579,7 @@ fn build_visibility_stats(
         total_faces: result.total_faces,
         drawn_faces,
         path,
+        cpu,
     }
 }
 
@@ -588,6 +603,7 @@ pub fn determine_visible_cells(
     blocked_portals: &[bool],
     capture_portal_walk: bool,
     scratch: &mut Vec<u32>,
+    timing: TimingGate,
 ) -> (VisibilityResult, Frustum) {
     determine_visible_cells_with_step_limit(
         camera_position,
@@ -597,9 +613,11 @@ pub fn determine_visible_cells(
         capture_portal_walk,
         scratch,
         portal_vis::MAX_PORTAL_WALK_STEPS,
+        timing,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn determine_visible_cells_with_step_limit(
     camera_position: Vec3,
     view_proj: Mat4,
@@ -608,7 +626,9 @@ fn determine_visible_cells_with_step_limit(
     capture_portal_walk: bool,
     scratch: &mut Vec<u32>,
     portal_step_limit: u32,
+    timing: TimingGate,
 ) -> (VisibilityResult, Frustum) {
+    let cpu = StageFrame::new(timing);
     let result = determine_visible_cell_set(
         camera_position,
         view_proj,
@@ -616,7 +636,14 @@ fn determine_visible_cells_with_step_limit(
         blocked_portals,
         capture_portal_walk,
         portal_step_limit,
+        &cpu,
     );
+    if !matches!(
+        result.path,
+        CellVisPath::Portal | CellVisPath::PortalStepLimit { .. }
+    ) {
+        cpu.mark(VisibilityStage::PortalFallback);
+    }
 
     let visible_cells = match result.cells {
         None => {
@@ -625,6 +652,7 @@ fn determine_visible_cells_with_step_limit(
                 total_faces: result.total_faces,
                 drawn_faces: result.total_faces,
                 path: VisibilityPath::EmptyWorldFallback,
+                cpu,
             };
             return (
                 VisibilityResult {
@@ -643,7 +671,7 @@ fn determine_visible_cells_with_step_limit(
         scratch.push(cell_idx as u32);
     }
 
-    let stats = build_visibility_stats(&result, visible_cells, world);
+    let stats = build_visibility_stats(&result, visible_cells, world, cpu);
     let fog_reachable = result.fog_reachable;
     (
         VisibilityResult {
@@ -931,6 +959,7 @@ mod tests {
             &[],
             false,
             &mut scratch,
+            TimingGate::OFF,
         );
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
@@ -960,8 +989,15 @@ mod tests {
         .expect("valid empty visibility-only test world");
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(Vec3::ZERO, vp, &world, &[], false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(
+            Vec3::ZERO,
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::OFF,
+        );
         assert!(matches!(result.visible_cells, VisibleCells::DrawAll));
         assert_eq!(result.stats.total_faces, 0);
         assert!(matches!(
@@ -981,8 +1017,15 @@ mod tests {
         let vp = proj * view;
 
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(position, vp, &world, &[], false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(
+            position,
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::OFF,
+        );
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert_eq!(cells.len(), 1, "should cull cell behind camera");
@@ -1010,7 +1053,7 @@ mod tests {
             frustum: extract_frustum_planes(wide_view_proj(Vec3::ZERO)),
         };
 
-        let stats = build_visibility_stats(&result, &[0, 1], &world);
+        let stats = build_visibility_stats(&result, &[0, 1], &world, StageFrame::default());
 
         assert_eq!(stats.drawn_faces, 5);
         assert_eq!(stats.walk_reach(), Some(2));
@@ -1031,6 +1074,7 @@ mod tests {
             &[],
             false,
             &mut scratch,
+            TimingGate::OFF,
         );
         // Solid fallback draws all drawable cells.
         match result.visible_cells {
@@ -1063,6 +1107,7 @@ mod tests {
             &[],
             false,
             &mut scratch,
+            TimingGate::OFF,
         );
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
@@ -1209,6 +1254,7 @@ mod tests {
             false,
             &mut scratch,
             0,
+            TimingGate::OFF,
         );
 
         assert!(matches!(
@@ -1240,6 +1286,7 @@ mod tests {
             false,
             &mut scratch,
             0,
+            TimingGate::OFF,
         );
 
         assert!(matches!(
@@ -1256,8 +1303,15 @@ mod tests {
         let world = portal_chain_world();
         let eye = Vec3::ZERO;
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(eye, wide_view_proj(eye), &world, &[], false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(
+            eye,
+            wide_view_proj(eye),
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::OFF,
+        );
 
         assert!(matches!(
             result.stats.path,
@@ -1274,10 +1328,19 @@ mod tests {
         let eye = Vec3::ZERO;
         let vp = wide_view_proj(eye);
         let mut scratch = Vec::new();
-        let (exact, _) = determine_visible_cells(eye, vp, &world, &[], false, &mut scratch);
+        let (exact, _) =
+            determine_visible_cells(eye, vp, &world, &[], false, &mut scratch, TimingGate::OFF);
         let exact_visible = culled(&exact.visible_cells).to_vec();
-        let (fallback, _) =
-            determine_visible_cells_with_step_limit(eye, vp, &world, &[], false, &mut scratch, 0);
+        let (fallback, _) = determine_visible_cells_with_step_limit(
+            eye,
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            0,
+            TimingGate::OFF,
+        );
 
         let fallback_visible = culled(&fallback.visible_cells);
         for cell in &exact_visible {
@@ -1359,7 +1422,8 @@ mod tests {
         let mut scratch = Vec::new();
 
         // Ground truth: the exact walk with a large step limit.
-        let (exact, _) = determine_visible_cells(eye, vp, &world, &[], false, &mut scratch);
+        let (exact, _) =
+            determine_visible_cells(eye, vp, &world, &[], false, &mut scratch, TimingGate::OFF);
         assert!(
             matches!(exact.stats.path, VisibilityPath::PrlPortal { .. }),
             "expected the exact portal walk to run without hitting the step limit"
@@ -1371,8 +1435,16 @@ mod tests {
 
         // Force the step-limit fallback and check its fog-reachable set still
         // covers what the exact walk reached.
-        let (fallback, _) =
-            determine_visible_cells_with_step_limit(eye, vp, &world, &[], false, &mut scratch, 0);
+        let (fallback, _) = determine_visible_cells_with_step_limit(
+            eye,
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            0,
+            TimingGate::OFF,
+        );
         assert!(matches!(
             fallback.stats.path,
             VisibilityPath::PortalStepLimitFallback { .. }
@@ -1391,6 +1463,183 @@ mod tests {
             !culled(&fallback.visible_cells).contains(&1),
             "fallback drawing set should not draw the near-slab cell; \
              only fog reach slides its near plane to the camera"
+        );
+    }
+
+    // --- CPU stage timing ---
+
+    fn cpu(result: &VisibilityResult, stage: VisibilityStage) -> Option<u64> {
+        result.stats.cpu.value(stage)
+    }
+
+    #[test]
+    fn timing_on_and_off_produce_identical_visibility() {
+        // Behavior neutrality (P-gate): the gate reaches visibility as a value.
+        let world = portal_chain_world();
+        for (eye, limit) in [
+            (Vec3::ZERO, portal_vis::MAX_PORTAL_WALK_STEPS),
+            (Vec3::ZERO, 0),
+            (
+                Vec3::new(100.0, 0.0, 0.0),
+                portal_vis::MAX_PORTAL_WALK_STEPS,
+            ),
+        ] {
+            let vp = wide_view_proj(eye);
+            let run = |timing| {
+                let mut scratch = Vec::new();
+                let (result, _) = determine_visible_cells_with_step_limit(
+                    eye,
+                    vp,
+                    &world,
+                    &[],
+                    false,
+                    &mut scratch,
+                    limit,
+                    timing,
+                );
+                (
+                    format!("{:?}", result.visible_cells),
+                    result.fog_reachable,
+                    format!("{:?}", result.stats.path),
+                )
+            };
+            assert_eq!(
+                run(TimingGate::ON),
+                run(TimingGate::OFF),
+                "eye {eye}, limit {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn portal_frame_records_walk_time_and_every_counter() {
+        let world = portal_chain_world();
+        let eye = Vec3::ZERO;
+        let mut scratch = Vec::new();
+        let (result, _) = determine_visible_cells(
+            eye,
+            wide_view_proj(eye),
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::ON,
+        );
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::PrlPortal { .. }
+        ));
+        assert!(cpu(&result, VisibilityStage::PortalWalk).is_some());
+        assert!(cpu(&result, VisibilityStage::Considered).unwrap() >= 2);
+        assert!(cpu(&result, VisibilityStage::Accepted).unwrap() >= 1);
+        for stage in [
+            VisibilityStage::RejectedBlocked,
+            VisibilityStage::RejectedSolid,
+            VisibilityStage::RejectedClipped,
+            VisibilityStage::RejectedNarrow,
+            VisibilityStage::RejectedInvalid,
+            VisibilityStage::RejectedPathCycle,
+            VisibilityStage::RejectedDepthLimit,
+        ] {
+            assert!(cpu(&result, stage).is_some(), "{stage:?} present");
+        }
+        assert_eq!(cpu(&result, VisibilityStage::StepLimit), None);
+        assert_eq!(cpu(&result, VisibilityStage::PortalFallback), None);
+    }
+
+    #[test]
+    fn step_limit_frame_is_a_walk_frame_not_a_fallback_frame() {
+        // P-steplimit
+        let world = portal_chain_world();
+        let eye = Vec3::ZERO;
+        let mut scratch = Vec::new();
+        let (result, _) = determine_visible_cells_with_step_limit(
+            eye,
+            wide_view_proj(eye),
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            0,
+            TimingGate::ON,
+        );
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::PortalStepLimitFallback { .. }
+        ));
+        assert!(cpu(&result, VisibilityStage::PortalWalk).is_some());
+        assert!(cpu(&result, VisibilityStage::Considered).is_some());
+        assert_eq!(cpu(&result, VisibilityStage::StepLimit), Some(1));
+        assert_eq!(cpu(&result, VisibilityStage::PortalFallback), None);
+    }
+
+    #[test]
+    fn walk_that_considers_no_portal_is_present_with_zero_counters() {
+        // P-zero-walk: a portal-path world whose camera cell has no portals.
+        let mut world = portal_chain_world();
+        world.cells[0].portal_ref_count = 0;
+        let eye = Vec3::ZERO;
+        let mut scratch = Vec::new();
+        let (result, _) = determine_visible_cells(
+            eye,
+            wide_view_proj(eye),
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::ON,
+        );
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::PrlPortal { .. }
+        ));
+        assert!(cpu(&result, VisibilityStage::PortalWalk).is_some());
+        assert_eq!(cpu(&result, VisibilityStage::Considered), Some(0));
+        assert_eq!(cpu(&result, VisibilityStage::Accepted), Some(0));
+    }
+
+    #[test]
+    fn fallback_frame_records_only_the_fallback_marker() {
+        let world = two_cell_prl_world();
+        let eye = Vec3::new(50.0, 0.0, 0.0);
+        let mut scratch = Vec::new();
+        let (result, _) = determine_visible_cells(
+            eye,
+            wide_view_proj(eye),
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::ON,
+        );
+        assert!(matches!(
+            result.stats.path,
+            VisibilityPath::NoPortalsFallback
+        ));
+        assert_eq!(cpu(&result, VisibilityStage::PortalFallback), Some(1));
+        assert_eq!(cpu(&result, VisibilityStage::PortalWalk), None);
+        assert_eq!(cpu(&result, VisibilityStage::Considered), None);
+    }
+
+    #[test]
+    fn timing_off_records_no_stage() {
+        let world = portal_chain_world();
+        let eye = Vec3::ZERO;
+        let mut scratch = Vec::new();
+        let (result, _) = determine_visible_cells(
+            eye,
+            wide_view_proj(eye),
+            &world,
+            &[],
+            false,
+            &mut scratch,
+            TimingGate::OFF,
+        );
+        use postretro_stage_timing::StageSet;
+        assert!(
+            VisibilityStage::ALL
+                .iter()
+                .all(|&stage| cpu(&result, stage).is_none())
         );
     }
 }

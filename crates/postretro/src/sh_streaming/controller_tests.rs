@@ -335,6 +335,7 @@ fn closed_door_visibility_promotes_only_the_loader_resolved_seam_endpoint() {
         &[true],
         false,
         &mut Vec::new(),
+        postretro_visibility::TimingGate::OFF,
     );
     assert_eq!(culled_ids(&visibility.visible_cells), &[0]);
 
@@ -433,6 +434,7 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         &closed_portals,
         false,
         &mut Vec::new(),
+        postretro_visibility::TimingGate::OFF,
     )
     .visible_cells;
     assert!(culled_ids(&visible).contains(&near_cell));
@@ -739,6 +741,7 @@ fn real_visible_cells(drawable_cell_count: usize) -> VisibleCells {
         &[],
         false,
         &mut Vec::new(),
+        postretro_visibility::TimingGate::OFF,
     )
     .visible_cells
 }

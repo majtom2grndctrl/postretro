@@ -7,6 +7,7 @@ use glam::Vec3;
 
 use crate::visibility::{Frustum, FrustumPlane};
 use postretro_level_loader::LevelWorld;
+use postretro_stage_timing::TimingGate;
 
 // Half-space boundary epsilon for Sutherland-Hodgman. Over-inclusion at the
 // boundary is safe: the next narrowing iteration will discard any slop, so the
@@ -36,6 +37,8 @@ pub(crate) struct PortalTraversalStats {
     pub rejected_path_cycle: u32,
     pub rejected_depth_limit: u32,
     pub step_limit_hit: bool,
+    /// Time inside `flood`, when CPU timing is on and the flood ran.
+    pub walk_nanos: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -96,9 +99,11 @@ pub(crate) fn portal_traverse_detailed(
         blocked_portals,
         capture,
         MAX_PORTAL_WALK_STEPS,
+        TimingGate::OFF,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn portal_traverse_with_step_limit(
     camera_position: Vec3,
     camera_cell: usize,
@@ -107,6 +112,7 @@ pub(crate) fn portal_traverse_with_step_limit(
     blocked_portals: &[bool],
     capture: bool,
     step_limit: u32,
+    timing: TimingGate,
 ) -> PortalTraversalResult {
     let (visible, trace) = portal_traverse_inner(
         camera_position,
@@ -116,6 +122,7 @@ pub(crate) fn portal_traverse_with_step_limit(
         blocked_portals,
         capture,
         step_limit,
+        timing,
     );
     // One `log::info!` call: one timestamp/target prefix per traced frame
     // instead of one per event.
@@ -127,6 +134,7 @@ pub(crate) fn portal_traverse_with_step_limit(
 
 // Split from `portal_traverse` so tests can inspect the formatted trace string
 // directly without wiring a test logger.
+#[allow(clippy::too_many_arguments)]
 fn portal_traverse_inner(
     camera_position: Vec3,
     camera_cell: usize,
@@ -135,6 +143,7 @@ fn portal_traverse_inner(
     blocked_portals: &[bool],
     capture: bool,
     step_limit: u32,
+    timing: TimingGate,
 ) -> (PortalTraversalResult, Option<String>) {
     let cell_count = world.cell_count();
     let visible = vec![false; cell_count];
@@ -212,6 +221,7 @@ fn portal_traverse_inner(
     let mut path: Vec<usize> = Vec::new();
     let mut clip_scratch_a: Vec<Vec3> = Vec::new();
     let mut clip_scratch_b: Vec<Vec3> = Vec::new();
+    let walk_start = timing.is_enabled().then(std::time::Instant::now);
     flood(
         &mut state,
         camera_cell,
@@ -220,6 +230,8 @@ fn portal_traverse_inner(
         &mut clip_scratch_a,
         &mut clip_scratch_b,
     );
+    state.stats.walk_nanos =
+        walk_start.map(|start| u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
 
     // Summary: reach count + the considered/accepted totals, plus a compact
     // rej[...] bracket that elides zero counters. An all-clean frame still
@@ -954,6 +966,7 @@ mod tests {
             &[true],
             true,
             MAX_PORTAL_WALK_STEPS,
+            TimingGate::OFF,
         );
 
         assert!(from_a.visible[0], "camera cell stays visible");
@@ -991,8 +1004,16 @@ mod tests {
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
 
-        let result =
-            portal_traverse_with_step_limit(camera_pos, 0, &frustum, &world, &[], false, 0);
+        let result = portal_traverse_with_step_limit(
+            camera_pos,
+            0,
+            &frustum,
+            &world,
+            &[],
+            false,
+            0,
+            TimingGate::OFF,
+        );
 
         assert!(
             result.stats.step_limit_hit,
@@ -2122,6 +2143,7 @@ mod tests {
             &[],
             true,
             MAX_PORTAL_WALK_STEPS,
+            TimingGate::OFF,
         );
         let buf = trace.expect("capture: true should produce a trace buffer");
 

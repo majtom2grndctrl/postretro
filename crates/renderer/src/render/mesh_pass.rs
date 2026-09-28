@@ -1000,15 +1000,6 @@ pub struct MeshPass {
     /// the renderer's palette scratch so a capture does not clobber an in-flight
     /// pose sample.
     capture_scratch: Vec<LocalTrs>,
-
-    /// Optional per-frame pose-sampling measurement. `Some` only when
-    /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
-    /// touches the environment), so the unmeasured frame pays nothing beyond an
-    /// `Option` check. Accumulates the CPU cost of the per-instance `sample_clip`
-    /// loop and logs it rate-limited — a profiling gate to measure per-instance
-    /// pose-sampling cost at representative wave counts and decide whether a baked
-    /// pose buffer is worth the complexity over per-frame CPU sampling.
-    pose_sample_stats: Option<PoseSampleStats>,
 }
 
 /// CPU animation assets moved into the mesh cache together at model install.
@@ -1018,62 +1009,6 @@ pub(super) struct ModelAnimationData {
     pub(super) skeleton: Skeleton,
     pub(super) clips: Vec<AnimationClip>,
     pub(super) pose_stack: postretro_model::pose_modifier::PoseModifierStack,
-}
-
-/// CPU pose-sampling cost accumulator for the mesh pass (finding-grade, not a
-/// gate). Counts the instances sampled and the wall time spent in `sample_clip`,
-/// flushing a rate-limited `[Renderer]` line so the measurement does not spam the
-/// hot path. Only constructed under `POSTRETRO_GPU_TIMING=1`.
-///
-/// Measured shape (GTX 1660 Super, debug build): one `sample_clip` over a
-/// few-dozen-joint clip is ~single-digit microseconds; a 64-instance wave costs
-/// ~tens of microseconds per frame — well under a frame budget, so per-instance
-/// CPU sampling is not a bottleneck at the representative wave counts this task
-/// targets. The shared palette buffer at `MAX_PALETTE_ENTRIES = 4096` slots is
-/// 256 KiB of VRAM.
-struct PoseSampleStats {
-    /// Instances sampled since the last flushed log line.
-    instances: u64,
-    /// Accumulated `sample_clip` wall time since the last flush.
-    elapsed: std::time::Duration,
-    /// When the last line was logged, so the flush is interval-gated.
-    last_log: std::time::Instant,
-}
-
-impl PoseSampleStats {
-    /// Minimum wall-clock gap between flushed measurement lines.
-    const LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-
-    fn new() -> Self {
-        Self {
-            instances: 0,
-            elapsed: std::time::Duration::ZERO,
-            last_log: std::time::Instant::now(),
-        }
-    }
-
-    /// Fold one frame's sampled-instance count + elapsed time in, then flush a
-    /// rate-limited line and reset the running totals when the interval elapses.
-    fn record_frame(&mut self, instances: u64, elapsed: std::time::Duration) {
-        self.instances += instances;
-        self.elapsed += elapsed;
-        if self.last_log.elapsed() < Self::LOG_INTERVAL {
-            return;
-        }
-        if self.instances > 0 {
-            let per_inst_us = self.elapsed.as_secs_f64() * 1.0e6 / self.instances as f64;
-            log::info!(
-                "[Renderer] mesh pose sampling: {} instance-samples in {:.3} ms total \
-                 ({:.2} us/instance) over the last interval",
-                self.instances,
-                self.elapsed.as_secs_f64() * 1.0e3,
-                per_inst_us,
-            );
-        }
-        self.instances = 0;
-        self.elapsed = std::time::Duration::ZERO;
-        self.last_log = std::time::Instant::now();
-    }
 }
 
 impl MeshPass {
@@ -1353,12 +1288,6 @@ impl MeshPass {
             mapped_at_creation: false,
         });
 
-        // Cache the gate once at construction so the per-frame sampling loop
-        // never re-reads the environment. Same flag the GPU-timing path uses.
-        let pose_sample_stats = (std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref()
-            == Some("1"))
-        .then(PoseSampleStats::new);
-
         Self {
             pipeline,
             depth_pipeline,
@@ -1377,7 +1306,6 @@ impl MeshPass {
             snapshot_store: SnapshotStore::default(),
             palette_cache: PaletteCache::default(),
             capture_scratch: Vec::new(),
-            pose_sample_stats,
         }
     }
 
@@ -1714,6 +1642,7 @@ impl MeshPass {
         queue: &wgpu::Queue,
         plans: &[&MeshFramePlan],
         scratch: &mut Vec<BonePaletteEntry>,
+        cpu: &postretro_stage_timing::StageFrame<super::cpu_stages::RenderStage>,
     ) {
         if plans.iter().all(|plan| plan.groups.is_empty()) {
             self.snapshot_store
@@ -1734,13 +1663,9 @@ impl MeshPass {
             capture_scratch,
             instance_buffer,
             palette_buffer,
-            pose_sample_stats,
             ..
         } = self;
 
-        let measure = pose_sample_stats.is_some();
-        let mut sampled_instances: u64 = 0;
-        let mut sample_elapsed = std::time::Duration::ZERO;
         let mut active_snapshot_fades: HashMap<u32, SnapshotTag> = HashMap::new();
 
         for plan in plans {
@@ -1795,7 +1720,8 @@ impl MeshPass {
                     if palette_cache.must_sample(inst.palette_cache_key, inst.resample) {
                         // RESAMPLE: sample this instance's pose, upload it, and refresh
                         // the cache with the freshly sampled run.
-                        let started = measure.then(std::time::Instant::now);
+                        let sample_scope =
+                            cpu.scope(super::cpu_stages::RenderStage::MeshPoseSampling);
                         let sampled = sample_instance(
                             InstancePoseSample {
                                 params: &inst.sample,
@@ -1808,10 +1734,8 @@ impl MeshPass {
                             &resolve_clip,
                             scratch,
                         );
-                        if let Some(started) = started {
-                            sampled_instances += 1;
-                            sample_elapsed += started.elapsed();
-                        }
+                        drop(sample_scope);
+                        cpu.add_count(super::cpu_stages::RenderStage::MeshPoseSamples, 1);
                         if sampled && !scratch.is_empty() {
                             queue.write_buffer(
                                 palette_buffer,
@@ -1847,12 +1771,6 @@ impl MeshPass {
         // Evict snapshots after sampling, not before: a capture frame's snapshot
         // fade must resolve against the capture that landed earlier in this pass.
         snapshot_store.retain_active_snapshot_fades(&active_snapshot_fades);
-
-        // Fold this frame's pose-sampling tallies in and flush the rate-limited
-        // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
-        if let Some(stats) = pose_sample_stats.as_mut() {
-            stats.record_frame(sampled_instances, sample_elapsed);
-        }
     }
 
     /// Upload the tight view-projection used exclusively by the viewmodel pass.

@@ -133,6 +133,7 @@ mod tests {
                 &[],
                 false,
                 &mut scratch,
+                postretro_visibility::TimingGate::OFF,
             );
 
             // Exact portal provenance is required: these spawn poses stay
@@ -173,6 +174,98 @@ mod tests {
             let proj = Mat4::perspective_rh(vfov, probe.aspect, probe.near, probe.far);
             proj * view
         }
+    }
+
+    /// On-demand search for CPU-timing walk-reach probes on the stress maps
+    /// (brief: cpu-frame-profiling, parallelization gate). Sweeps every open
+    /// drawable cell at pawn height with eight headings, and ranks poses by
+    /// portals the walk considered — the cost the gate measures. Reads each
+    /// map's already-compiled `.prl` beside its `.map`, skipping any that is
+    /// missing or stale. Run with:
+    ///   cargo test -p postretro --bin postretro -- --ignored walk_reach_probe_search --nocapture
+    #[test]
+    #[ignore = "loads the compiled stress-warren PRL; on-demand only"]
+    fn walk_reach_probe_search() {
+        let mut searched = 0;
+        for map in [
+            "stress-warren",
+            "stress-warren-mini",
+            "stress-warren-hallway-inspection",
+        ] {
+            let prl = format!(
+                "{}/../../content/dev/maps/{map}.prl",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            match postretro_level_loader::load_prl(&prl) {
+                Ok(world) => {
+                    println!("\n== {map}");
+                    search_map(&world);
+                    searched += 1;
+                }
+                Err(err) => println!("\n== {map}: skipped, {err}"),
+            }
+        }
+        assert!(searched > 0, "compile at least one stress map first");
+    }
+
+    fn search_map(world: &postretro_level_loader::LevelWorld) {
+        use glam::{Mat4, Vec3};
+        use postretro_visibility::{TimingGate, VisibilityPath, VisibilityStage};
+
+        // Dev player capsule: 0.8 m half-height, eye 0.5 m above the origin.
+        const HALF_HEIGHT: f32 = 0.8;
+        const EYE_ABOVE_ORIGIN: f32 = 0.5;
+        let aspect = 16.0 / 9.0;
+        let vfov = 2.0 * ((std::f32::consts::FRAC_PI_4).tan() / aspect).atan();
+        let proj = Mat4::perspective_rh(vfov, aspect, 0.1, 4096.0);
+
+        let mut results = Vec::new();
+        for cell in world
+            .cells
+            .iter()
+            .filter(|c| !c.is_solid && !c.is_exterior && c.is_drawable)
+        {
+            let center = (cell.bounds_min + cell.bounds_max) * 0.5;
+            let origin = Vec3::new(center.x, cell.bounds_min.y + HALF_HEIGHT, center.z);
+            let eye = origin + Vec3::Y * EYE_ABOVE_ORIGIN;
+            for step in 0..8 {
+                let yaw = step as f32 * std::f32::consts::FRAC_PI_4;
+                let look = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+                let view = Mat4::look_at_rh(eye, eye + look, Vec3::Y);
+                let mut scratch = Vec::new();
+                let (vis, _) = postretro_visibility::determine_visible_cells(
+                    eye,
+                    proj * view,
+                    world,
+                    &[],
+                    false,
+                    &mut scratch,
+                    TimingGate::ON,
+                );
+                let considered = vis
+                    .stats
+                    .cpu
+                    .value(VisibilityStage::Considered)
+                    .unwrap_or(0);
+                let step_limit = matches!(
+                    vis.stats.path,
+                    VisibilityPath::PortalStepLimitFallback { .. }
+                );
+                results.push((considered, vis.stats.walk_reach(), step_limit, origin, yaw));
+            }
+        }
+        results.sort_by(|a, b| b.0.cmp(&a.0));
+        println!("considered | walk_reach | step_limit | --start-pose x,y,z,yaw_deg,0");
+        for (considered, reach, step_limit, origin, yaw) in results.iter().take(12) {
+            println!(
+                "{considered:>10} | {reach:>10?} | {step_limit:>10} | {:.2},{:.2},{:.2},{:.0},0",
+                origin.x,
+                origin.y,
+                origin.z,
+                yaw.to_degrees()
+            );
+        }
+        assert!(!results.is_empty(), "no open drawable cell to probe");
     }
 
     /// Compile `content/dev/maps/<map>.map` to a temp `.prl` via `prl-build`,

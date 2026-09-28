@@ -17,6 +17,8 @@ mod candidate_cull_mirror;
 mod candidate_cull_probes;
 use postretro_physics::collision;
 mod content_hash;
+// Per-stage CPU frame timing (`POSTRETRO_CPU_TIMING`).
+mod cpu_timing;
 // App-side diagnostics for baked door-to-portal occluder associations. Keeps
 // the render-only blocked portal buffer inspectable without changing gameplay.
 #[cfg(feature = "dev-tools")]
@@ -556,6 +558,8 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
+    // No-op unless built with the `tracy` feature.
+    postretro_stage_timing::start_external_profiler();
 
     // Build boot-lifetime `App` state (args, content root, camera, frame
     // timing, the `pending_session` bundle) and the event loop. The entire
@@ -759,6 +763,9 @@ pub(crate) struct App {
     /// Ring buffer of per-frame CPU durations. Reports min/avg/max so
     /// hitches don't vanish into the average.
     frame_rate_meter: FrameRateMeter,
+
+    /// Per-stage CPU frame timing; inert unless `POSTRETRO_CPU_TIMING=1`.
+    cpu_timer: cpu_timing::CpuFrameTimer,
 
     /// Reused across frames to avoid a per-frame `format!` allocation.
     title_buffer: String,
@@ -1762,7 +1769,7 @@ impl ApplicationHandler for App {
         // See: context/lib/boot_sequence.md §1.
         self.boot_timings.record("window_created");
 
-        let renderer = match Renderer::new(&window) {
+        let mut renderer = match Renderer::new(&window) {
             Ok(r) => r,
             Err(err) => {
                 self.exit_result = Err(err);
@@ -1771,6 +1778,7 @@ impl ApplicationHandler for App {
             }
         };
         self.boot_timings.record("wgpu_init");
+        renderer.set_cpu_timing(self.cpu_timer.gate());
 
         // Splash decode + upload is deferred to the first Splash frame's
         // post-paint window so the OS window opens and presents its first frame
@@ -2243,6 +2251,12 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
+                // CPU stage timing: frontend and early-returned frames never
+                // commit. See: context/lib/rendering_pipeline.md §12
+                self.cpu_timer.begin_frame(now);
+                let cpu_stages = self.cpu_timer.stages();
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
+
                 #[cfg(feature = "observe-live")]
                 self.drain_observe_live_requests();
 
@@ -2296,6 +2310,9 @@ impl ApplicationHandler for App {
                     self.render_frontend_frame(event_loop, now);
                     return;
                 }
+
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
 
                 // The frame's animation sample clock is a single value shared by
                 // game-side hit-zone pose resolution and render collection. It is
@@ -2635,7 +2652,11 @@ impl ApplicationHandler for App {
                 // Driven through `netcode::frame_order` so the apply-before-detect
                 // order is owned by one seam: the witness minted here is the only key
                 // to the crossing stage below, so inverting the two is a type error.
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::SnapshotApply);
                 let applied = frame_order::run_snapshot_apply_stage(self, engine_frame, frame_dt);
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FixedStep);
 
                 // Accumulate app-side residual and post-tick events across all ticks;
                 // drain after the loop against fully-settled world state. Direct trigger
@@ -2662,6 +2683,13 @@ impl ApplicationHandler for App {
                 // resolves. Frame-end removals append to the session buffer after
                 // this drain, so take that carryover now rather than running game
                 // logic during render.
+                // Per-tick stage values, summed over this frame's ticks.
+                let sim_cpu = postretro_stage_timing::StageFrame::<
+                    postretro_sim::sim::cpu_stages::SimStage,
+                >::new(self.cpu_timer.gate());
+                let prediction_cpu = postretro_stage_timing::StageFrame::<
+                    cpu_timing::PredictionStage,
+                >::new(self.cpu_timer.gate());
                 let mut pending_death_events = std::mem::take(
                     &mut self
                         .session
@@ -2809,6 +2837,8 @@ impl ApplicationHandler for App {
                                 let registry = script_ctx.registry.borrow();
                                 registry.local_player_movement_pawn()
                             };
+                            let predict_scope =
+                                prediction_cpu.scope(cpu_timing::PredictionStage::Wieldable);
                             let (switch_accepted, repointed) = {
                                 let hit_zone_store = &self
                                     .session
@@ -2828,6 +2858,7 @@ impl ApplicationHandler for App {
                                     tick_dt,
                                 )
                             };
+                            drop(predict_scope);
                             if let Some(pawn) = repointed {
                                 repointed_pawns.push(pawn);
                             }
@@ -2855,10 +2886,17 @@ impl ApplicationHandler for App {
                             if switch_accepted && let Some(slot) = command.select_slot {
                                 self.client_declare_switch(slot);
                             }
-                            self.client_predict_loaded_movers_tick(tick_dt);
-                            if let Some(prediction_tick) =
-                                self.client_predict_movement_tick(&command, tick_dt)
                             {
+                                let _scope =
+                                    prediction_cpu.scope(cpu_timing::PredictionStage::Movers);
+                                self.client_predict_loaded_movers_tick(tick_dt);
+                            }
+                            let prediction_tick = {
+                                let _scope =
+                                    prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
+                                self.client_predict_movement_tick(&command, tick_dt)
+                            };
+                            if let Some(prediction_tick) = prediction_tick {
                                 let mut addresses = Vec::new();
                                 prediction_tick
                                     .movement_events
@@ -3088,7 +3126,9 @@ impl ApplicationHandler for App {
                                 );
                             },
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+                            sim_cpu.gate(),
                         );
+                        sim_cpu.absorb(&tick_events.cpu);
                         // Advance timed-reaction countdowns for this tick. Position
                         // relative to `evaluate_slot_accumulators` is not
                         // behaviourally load-bearing: landings execute at the
@@ -3179,6 +3219,19 @@ impl ApplicationHandler for App {
                         self.host_register_world_items_after_fixed_sim_tick();
                     }
                 }
+
+                // Fixed ticks run this frame. A UI-captured frame still ticks
+                // (on a neutral snapshot), so this is the accumulator's count.
+                let ticks_run = ticks;
+                cpu_stages.add_count(cpu_timing::FrameStage::Ticks, u64::from(ticks_run));
+                let fixed_step_label = Some(postretro_stage_timing::StageSet::label(
+                    cpu_timing::FrameStage::FixedStep,
+                ));
+                let nested_cpu = self.cpu_timer.nested_mut();
+                nested_cpu.extend_from(&sim_cpu, fixed_step_label);
+                nested_cpu.extend_from(&prediction_cpu, fixed_step_label);
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Presentation);
 
                 // Regression: a turntable's transform slerps through this tick while
                 // carry_yaw previously held the local view until the next input seam.
@@ -3287,6 +3340,9 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Audio);
+
                 // Descriptor sounds for this frame's events, placed at fire time.
                 // They play alongside any reaction addressed to the same event.
                 // The listener's pawn is named here, before any play this frame,
@@ -3333,6 +3389,9 @@ impl ApplicationHandler for App {
                         audio.play(request);
                     }
                 }
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::ScriptDrain);
+
                 // A mover edge's reactions may play `at: on.emitter`: the mover.
                 // An edge with no point publishes no emitter, so such a reaction
                 // is skipped, as the edge's own descriptor sound is dropped.
@@ -3570,6 +3629,9 @@ impl ApplicationHandler for App {
                         .discard_app_drain_pending();
                 }
 
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameEndRemoval);
+
                 // Terminal impact effects stay live through every post-catch-up
                 // presentation/reaction drain above. Reap them exactly once per
                 // rendered frame, before replication and render observe state.
@@ -3587,6 +3649,9 @@ impl ApplicationHandler for App {
                         );
                     },
                 );
+
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::HostSend);
 
                 // Host serialize + send after terminal removals, so the
                 // authoritative snapshot cannot carry an entity already reaped
@@ -3612,6 +3677,9 @@ impl ApplicationHandler for App {
                     &mut script_ctx.registry.borrow_mut(),
                     &owner_projected_weapons,
                 );
+
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Eye);
 
                 // Reconcile the input seam + focus with the modal stack's top
                 // capture mode, now that every command drain this frame has
@@ -3694,6 +3762,9 @@ impl ApplicationHandler for App {
                 // portal plane, causing one-frame clear-color holes.
                 let render_eye_position = render_camera.eye_position;
 
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Audio);
+
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
                 // game logic settles every entity and before render. The listener
@@ -3726,6 +3797,9 @@ impl ApplicationHandler for App {
                         scene.presented_point(key, frame_result.alpha)
                     });
                 }
+
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Visibility);
 
                 // Level-relative monotonic clock consumed by light_bridge.update,
                 // the emitter sim, and the map-light collector.
@@ -3772,6 +3846,7 @@ impl ApplicationHandler for App {
                         &self.blocked_portals,
                         capture_portal_walk,
                         &mut self.scratch_cells,
+                        self.cpu_timer.gate(),
                     ),
                     None => render_preparation::VisibleRenderPreparation::empty_world(),
                 };
@@ -3783,6 +3858,18 @@ impl ApplicationHandler for App {
                     visible_cell_aabbs,
                     stats,
                 } = visible_render;
+                // Walk time and counters (or the fallback marker) sit under the
+                // binary's visibility stage; staged until the frame commits.
+                self.cpu_timer.nested_mut().extend_from(
+                    &stats.cpu,
+                    Some(postretro_stage_timing::StageSet::label(
+                        cpu_timing::FrameStage::Visibility,
+                    )),
+                );
+                drop(stage_scope);
+                // `Option` so the renderer block can hand over to `Render`.
+                let mut stage_scope = Some(cpu_stages.scope(cpu_timing::FrameStage::RenderPrep));
+
                 // A streamed map retains only its validated manifest. Keep the
                 // application-side controller keyed to this exact load before
                 // the renderer records the frame; legacy storage is `None` and
@@ -4274,6 +4361,13 @@ impl ApplicationHandler for App {
                                 let window = &ws.window;
                                 let raw_input = debug_ui.winit_state.take_egui_input(window);
                                 let timing_snapshot = renderer.frame_timing_snapshot().cloned();
+                                let cpu_timing_panel = if !self.cpu_timer.gate().is_enabled() {
+                                    render::debug_ui::CpuTimingPanel::Off
+                                } else if let Some(window) = self.cpu_timer.last_window() {
+                                    render::debug_ui::CpuTimingPanel::Window(window)
+                                } else {
+                                    render::debug_ui::CpuTimingPanel::NotYetWindowed
+                                };
                                 let panel_state = &mut debug_ui.panel_state;
                                 let sh_state = &mut debug_ui.sh_diagnostics_state;
                                 let sh_streaming_live = session
@@ -4300,6 +4394,7 @@ impl ApplicationHandler for App {
                                             sh_state,
                                             renderer,
                                             timing_snapshot.as_ref(),
+                                            cpu_timing_panel,
                                             &agent_rows,
                                             &trigger_rows,
                                             &door_occluder_diagnostics.mover_rows,
@@ -4434,6 +4529,8 @@ impl ApplicationHandler for App {
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
 
+                    drop(stage_scope.take());
+                    let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);
                     let sh_frame_result = match renderer.render_frame_indirect(
                         &mut session.font_system,
                         CameraCullVisibility {
@@ -4468,6 +4565,14 @@ impl ApplicationHandler for App {
                             return;
                         }
                     };
+                    // The surface request is where a vsync block lands: wait, not render.
+                    if let Some(acquire) = sh_frame_result.acquire_nanos {
+                        self.cpu_timer.add_wait_within(
+                            cpu_timing::FrameStage::Render,
+                            cpu_timing::WaitSource::Acquire,
+                            acquire,
+                        );
+                    }
                     let compose_submitted = sh_frame_result.compose_submitted;
                     if let Err(err) =
                         session.apply_sh_streaming_outcome(sh_frame_result.outcome, renderer)
@@ -4513,7 +4618,17 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
+                        let present_start = self.cpu_timer.gate().is_enabled().then(Instant::now);
                         renderer.present(present_handle);
+                        if let Some(start) = present_start {
+                            let nanos =
+                                u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                            self.cpu_timer.add_wait_within(
+                                cpu_timing::FrameStage::Render,
+                                cpu_timing::WaitSource::Present,
+                                nanos,
+                            );
+                        }
                         if self.pending_level_log {
                             // First level frame just presented — close out
                             // log line C with the present-cost of the frame
@@ -4522,9 +4637,21 @@ impl ApplicationHandler for App {
                             log::info!("{}", self.level_timings.summary());
                             self.pending_level_log = false;
                         }
+                    } else {
+                        // No surface this frame: nothing presented, nothing counted.
+                        self.cpu_timer.exclude_frame();
                     }
+                    drop(render_scope);
+                    self.cpu_timer.nested_mut().extend_from(
+                        renderer.cpu_stages(),
+                        Some(postretro_stage_timing::StageSet::label(
+                            cpu_timing::FrameStage::Render,
+                        )),
+                    );
                 }
 
+                drop(stage_scope);
+                let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameTail);
                 self.poll_staged_manifest_results();
 
                 if let VisibleCells::Culled(mut cells) = visible_cells {
@@ -4595,6 +4722,10 @@ impl ApplicationHandler for App {
                 // (pinned to ~16.6ms); this shows actual load.
                 let frame_cpu = Instant::now().duration_since(now);
                 self.frame_rate_meter.record(frame_cpu);
+                drop(stage_scope);
+                drop(cpu_stages);
+                self.cpu_timer.finish_frame(Instant::now());
+                postretro_stage_timing::mark_frame();
             }
             _ => {}
         }
@@ -4822,6 +4953,10 @@ impl App {
                 registry.as_deref(),
                 world,
                 self.camera.yaw,
+                observe_live::LiveCpuTiming {
+                    gate: self.cpu_timer.gate(),
+                    last_window: self.cpu_timer.last_window(),
+                },
             )
         });
     }
@@ -8693,6 +8828,7 @@ impl App {
                     // to pre-toggle numbers for up to two seconds — exactly
                     // when the user is staring at it to see what changed.
                     self.frame_rate_meter.clear();
+                    self.cpu_timer.discard_partial();
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
@@ -9500,6 +9636,7 @@ mod tests {
                 blocked_portals,
                 false,
                 &mut Vec::new(),
+                postretro_visibility::TimingGate::OFF,
             );
             result
         };

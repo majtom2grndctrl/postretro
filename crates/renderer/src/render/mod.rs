@@ -6,6 +6,7 @@ mod billboard_direct_scatter;
 mod billboard_direct_scatter_compose;
 mod bloom;
 mod bloom_profile;
+pub mod cpu_stages;
 #[cfg(feature = "dev-tools")]
 mod debug_lines;
 #[cfg(feature = "dev-tools")]
@@ -185,8 +186,8 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
-    AgentDiagnosticsRow, DebugUi, DoorOccluderDiagnosticsRow, TriggerDiagnosticsRow,
-    draw_diagnostics_panel,
+    AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow,
+    TriggerDiagnosticsRow, draw_diagnostics_panel,
 };
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;

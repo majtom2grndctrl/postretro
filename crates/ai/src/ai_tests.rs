@@ -2245,6 +2245,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         None,
         |_, _| {},
         |_| {},
+        crate::sim::TimingGate::OFF,
     );
 
     assert_eq!(events.local_projectile_contacts.len(), 1);
@@ -2448,6 +2449,7 @@ impl FactionSentimentHarness {
             None,
             |_, _| {},
             |registry| policies.evaluate_pending_in_registry(registry),
+            crate::sim::TimingGate::OFF,
         )
     }
 
@@ -2866,6 +2868,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
             on_impact(registry);
         },
         |_| {},
+        crate::sim::TimingGate::OFF,
     );
 
     assert!(

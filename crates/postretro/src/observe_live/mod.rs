@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 mod ingress;
 
-pub(crate) use ingress::{run_observe_ingress_stage, service_observe_request};
+pub(crate) use ingress::{LiveCpuTiming, run_observe_ingress_stage, service_observe_request};
 
 pub(crate) const OBSERVE_LIVE_PROTOCOL: u32 = 1;
 pub(crate) const OBSERVE_LIVE_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -565,6 +565,7 @@ mod tests {
                     Some(&registry),
                     Some(&world),
                     1.25,
+                    crate::observe_live::LiveCpuTiming::OFF,
                 )
             }),
             1
@@ -591,6 +592,7 @@ mod tests {
                     Some(&registry),
                     Some(&world),
                     1.25,
+                    crate::observe_live::LiveCpuTiming::OFF,
                 )
             }),
             1

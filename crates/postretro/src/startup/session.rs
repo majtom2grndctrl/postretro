@@ -45,6 +45,7 @@ pub(crate) struct BootSession {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SessionBootConfig {
     pool_seed_override: Option<u64>,
+    start_pose: Option<super::start_pose::StartPose>,
 }
 
 impl SessionBootConfig {
@@ -59,7 +60,16 @@ impl SessionBootConfig {
                 None
             }
         };
-        Self { pool_seed_override }
+        Self {
+            pool_seed_override,
+            start_pose: super::start_pose::start_pose_arg(args),
+        }
+    }
+
+    /// `--start-pose` override, handed out once: only the session's first
+    /// gameplay install starts there; later installs use their map spawn.
+    pub(crate) fn take_start_pose(&mut self) -> Option<super::start_pose::StartPose> {
+        self.start_pose.take()
     }
 
     /// Windowed installs always roll. Without an explicit seed, resolve fresh
@@ -284,6 +294,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         scratch_cells: Vec::new(),
         blocked_portals: Vec::new(),
         frame_rate_meter: FrameRateMeter::new(),
+        cpu_timer: crate::cpu_timing::CpuFrameTimer::new(crate::cpu_timing::gate_from_env()),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         // Every session-lifetime field (scripting core, options, frontend, net
@@ -357,7 +368,11 @@ const PATH_FLAGS: [&str; 3] = ["--mod", "--baked-root", "--core-root"];
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if PATH_FLAGS.contains(&arg.as_str()) || arg == "--pool-seed" || arg == "--observe-live" {
+        if PATH_FLAGS.contains(&arg.as_str())
+            || arg == "--pool-seed"
+            || arg == "--observe-live"
+            || arg == super::start_pose::START_POSE_FLAG
+        {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
@@ -737,6 +752,33 @@ mod tests {
     #[test]
     fn content_root_from_map_returns_dot_for_bare_filename() {
         assert_eq!(content_root_from_map(Some("test.prl")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn start_pose_is_handed_out_to_the_first_install_only() {
+        let args: Vec<String> = ["postretro", "--start-pose", "1,2,3,90,0", "maps/probe.prl"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let mut config = SessionBootConfig::from_args(&args);
+        let pose = config
+            .take_start_pose()
+            .expect("first install gets the pose");
+        assert_eq!(pose.position, glam::Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(
+            config.take_start_pose(),
+            None,
+            "later installs use the map spawn"
+        );
+    }
+
+    #[test]
+    fn resolve_map_path_skips_start_pose_value() {
+        let args: Vec<String> = ["postretro", "--start-pose", "1,2,3,0,0", "maps/probe.prl"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/probe.prl"));
     }
 
     #[test]

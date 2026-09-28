@@ -99,6 +99,7 @@ impl PreparedCapture {
         let mut renderer = Renderer::new_offscreen(width, height)
             .context("failed to initialize offscreen frame capture renderer")?;
         renderer.set_force_full_resident_sh_compose(scene.force_full_resident_sh_compose);
+        renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
         let content_root = content_root_from_map(Some(&scene.map));
@@ -149,6 +150,7 @@ impl PreparedCapture {
             &[],
             CAPTURE_PORTAL_WALK,
             &mut scratch,
+            postretro_visibility::TimingGate::OFF,
         );
         let sh_streaming = world
             .sh_stream_manifest()
@@ -306,6 +308,14 @@ impl PreparedCapture {
             }
         }
         result.frame
+    }
+
+    /// Renderer CPU stages for the frame just captured. Its gate is the one
+    /// `prepare` read from the environment.
+    pub(super) fn cpu_stages(
+        &self,
+    ) -> &postretro_stage_timing::StageFrame<postretro_renderer::cpu_stages::RenderStage> {
+        self.renderer.cpu_stages()
     }
 
     /// Submit and complete one prepared static sample without PNG readback.

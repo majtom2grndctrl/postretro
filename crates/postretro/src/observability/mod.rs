@@ -174,6 +174,7 @@ mod tests {
     /// `PlayerMovementComponent` in [`sample_component_value`].
     fn sample_player_movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            sounds: None,
             knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
@@ -286,6 +287,7 @@ mod tests {
             )),
             ComponentKind::Weapon => {
                 ComponentValue::Weapon(WeaponComponent::from_descriptor(&WeaponDescriptor {
+                    sounds: None,
                     knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
@@ -342,6 +344,7 @@ mod tests {
                         activities: std::collections::BTreeMap::from([(
                             "idle".to_string(),
                             BehaviorActivityDescriptor {
+                                sound: None,
                                 animation: Some("idle".to_string()),
                                 motion: Some(MotionVerb::Hold),
                                 action: Some(ActionVerb::Attack("attack".to_string())),
@@ -357,6 +360,7 @@ mod tests {
                     attacks: std::collections::BTreeMap::from([(
                         "attack".to_string(),
                         AttackParams {
+                            sound: None,
                             weapon: None,
                             damage: Some(5.0),
                             max_range: Some(2.0),
@@ -422,6 +426,8 @@ mod tests {
                 },
             ),
             ComponentKind::Projectile => ComponentValue::Projectile(ProjectileComponent {
+                activation: None,
+                source_weapon: None,
                 knockback_impulse: [0.0; 3],
                 direction: [0.0, 0.0, -1.0],
                 speed: 20.0,

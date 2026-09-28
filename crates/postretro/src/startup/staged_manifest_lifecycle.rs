@@ -160,6 +160,10 @@ impl App {
                 | StagedManifestCommitOutcome::ReleaseNoop => false,
             };
             if committed {
+                // A reload commit resets CPU timing: this frame and the partial
+                // window before it are dropped (rendering_pipeline.md §12).
+                self.cpu_timer.discard_partial();
+                self.cpu_timer.exclude_frame();
                 let events = match &result.status {
                     StagedManifestBuildStatus::Built(manifest) => manifest.events.clone(),
                     StagedManifestBuildStatus::NoStartScript => Vec::new(),

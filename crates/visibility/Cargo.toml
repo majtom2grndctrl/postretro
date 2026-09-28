@@ -10,6 +10,7 @@ license.workspace = true
 glam.workspace = true
 log.workspace = true
 postretro-level-loader = { path = "../level-loader", default-features = false }
+postretro-stage-timing.workspace = true
 
 [dev-dependencies]
 postretro-render-data.workspace = true

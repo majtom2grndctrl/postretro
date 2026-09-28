@@ -560,6 +560,9 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                // The install frame never counts, and no CPU timing surface may
+                // show a window from the previous level.
+                self.cpu_timer.level_changed();
                 // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
                 // outbound replication now that the install has spawned + marked it the
                 // local player. Reload-safe and a no-op off the host / on a map without a
@@ -1045,6 +1048,35 @@ impl App {
             self.camera.position = world.spawn_position();
             self.frame_timing
                 .push_state(InterpolableState::new(self.camera.position));
+        }
+        // `--start-pose` moves the local pawn (or, pawnless, the fly camera)
+        // to a checked-in measurement probe instead of the map spawn, on the
+        // session's first gameplay install only. A frontend backdrop install
+        // (menu on the stack) leaves the pose for the map the player picks.
+        let start_pose = if self.frontend_menu_is_present() {
+            None
+        } else {
+            self.session_boot_config.take_start_pose()
+        };
+        if let Some(pose) = start_pose {
+            let moved = self.session.as_ref().is_some_and(|session| {
+                crate::startup::start_pose::place_local_pawn(
+                    &mut session.scripting.script_ctx.registry.borrow_mut(),
+                    pose,
+                )
+            });
+            self.camera.position = pose.position;
+            self.camera.yaw = pose.yaw;
+            self.camera.pitch = pose.pitch;
+            self.frame_timing
+                .push_state(InterpolableState::new(pose.position));
+            log::info!(
+                "[Startup] start pose {:?} yaw {:.1}° pitch {:.1}° ({})",
+                pose.position,
+                pose.yaw.to_degrees(),
+                pose.pitch.to_degrees(),
+                if moved { "local pawn" } else { "camera only" },
+            );
         }
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
@@ -1765,6 +1797,7 @@ mod tests {
             scratch_cells: Vec::new(),
             blocked_portals: Vec::new(),
             frame_rate_meter: FrameRateMeter::new(),
+            cpu_timer: crate::cpu_timing::CpuFrameTimer::new(crate::cpu_timing::TimingGate::OFF),
             title_buffer: String::new(),
             last_title_update: Instant::now(),
             mod_theme_override: Default::default(),

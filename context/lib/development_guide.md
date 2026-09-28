@@ -381,5 +381,5 @@ When you find a misleading, stale, or code-restating comment in a file you're al
 
 ### 6.4 Diagnostic gating
 
-- **Runtime instrumentation compiles into every build**, toggled by a `POSTRETRO_*` environment variable (`POSTRETRO_GPU_TIMING`; `POSTRETRO_CPU_TIMING`, not built yet). A diagnostic present only in some builds is worse for modders than one uniformly available.
-- **Diagnostic surfaces sit behind cargo features.** `observability`, `observe-live` and `capture` add no dependencies. `dev-tools` carries egui. An external profiler bridge (Tracy, not built yet) is its own feature. Release and dist builds enable none of them.
+- **Runtime instrumentation compiles into every build**, toggled by a `POSTRETRO_*` environment variable (`POSTRETRO_GPU_TIMING`, `POSTRETRO_CPU_TIMING`; see `rendering_pipeline.md` §12). A diagnostic present only in some builds is worse for modders than one uniformly available.
+- **Diagnostic surfaces sit behind cargo features.** `observability`, `observe-live` and `capture` add no dependencies. `dev-tools` carries egui. The Tracy profiler bridge is its own feature (`tracy`). Release and dist builds enable none of them.

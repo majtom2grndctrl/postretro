@@ -2360,6 +2360,7 @@ mod tests {
                 blocked_portals,
                 false,
                 &mut Vec::new(),
+                postretro_visibility::TimingGate::OFF,
             );
             match result.visible_cells {
                 VisibleCells::Culled(ids) => ids,

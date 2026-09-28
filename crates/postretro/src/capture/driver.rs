@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+
+use super::cpu_windows::CaptureCpuWindows;
 #[cfg(test)]
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
@@ -98,12 +100,15 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         let map_bytes = fs::metadata(map_path)
             .with_context(|| format!("failed to inspect capture map `{}`", map_path.display()))?
             .len();
+        let mut cpu_windows = CaptureCpuWindows::new(prepared.cpu_stages().gate());
         for _ in 0..measurement.warmup_frames {
             let _ = prepared.capture_measurement_frame()?;
+            cpu_windows.fold_sample(prepared.cpu_stages());
         }
         // Warmup may have completed a full timing window. It belongs to setup,
         // never to sample statistics or report output.
         prepared.reset_measurement_timing();
+        cpu_windows.reset();
 
         let mut cpu_samples_ms = Vec::with_capacity(measurement.sample_frames as usize);
         let mut gpu_windows = Vec::new();
@@ -112,6 +117,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             if let Some(window) = prepared.capture_measurement_frame()? {
                 gpu_windows.push(window);
             }
+            cpu_windows.fold_sample(prepared.cpu_stages());
             cpu_samples_ms.push(sample_start.elapsed().as_secs_f64() * 1000.0);
         }
 
@@ -125,6 +131,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             prepared.measurement_timing_state(),
             prepared.measurement_partial_timing_frames(),
             gpu_windows,
+            cpu_windows.report(),
         );
         let staged_report = stage_measurement_report(
             report_path.expect("measurement report path was preflighted"),

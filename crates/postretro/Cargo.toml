@@ -68,6 +68,7 @@ postretro-render-data = { workspace = true }
 postretro-render-cpu = { workspace = true }
 postretro-renderer = { workspace = true }
 postretro-lighting = { workspace = true, features = ["script-ffi"] }
+postretro-stage-timing.workspace = true
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
@@ -107,6 +108,10 @@ observe-live = []
 # Static offscreen frame capture for content CI. Gates binary-only modules and
 # adds no dependencies or UI surface.
 capture = []
+# Tracy profiler bridge: every CPU stage scope becomes a Tracy zone, with or
+# without POSTRETRO_CPU_TIMING. Adds tracy-client; never part of a release,
+# dist, or dependency-free diagnostic build. See: rendering_pipeline.md §12
+tracy = ["postretro-stage-timing/tracy"]
 # Narrow cross-crate seams used by binary-owned tests after the gameplay split.
 # Production callers never enable this feature.
 test-support = [
@@ -165,3 +170,8 @@ required-features = ["capture"]
 name = "capture_shadowmask_groups"
 path = "tests/capture_shadowmask_groups.rs"
 required-features = ["capture"]
+
+[[test]]
+name = "headless_byte_identity"
+path = "tests/headless_byte_identity.rs"
+required-features = ["observability"]

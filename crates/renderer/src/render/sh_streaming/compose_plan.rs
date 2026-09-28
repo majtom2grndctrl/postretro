@@ -1,10 +1,9 @@
 //! GPU-free trigger, staleness, and retry planning for streamed SH compose.
 //! See: context/lib/rendering_pipeline.md §4 "Sampled-row compose"
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
+use super::compose_staleness::{PassStaleness, PassTriggers};
 use super::{AnimatedDirectShDebugOverride, DirectShDebugOverride};
 
 /// The three streamed passes in their required encode order.
@@ -15,11 +14,23 @@ pub(super) enum ComposePass {
     AnimatedDirect,
 }
 
-/// Resident rows and the subset whose contents depend on a pass's inputs.
-#[derive(Clone, Copy)]
-pub(super) struct ComposePassRows<'a> {
-    pub(super) resident: &'a [u32],
-    pub(super) contributing: &'a [u32],
+/// One row's membership in one pass's change sources.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct PassMembership {
+    pub(super) resident: bool,
+    /// The row carries the pass's own streamed contribution.
+    pub(super) contributing: bool,
+    /// Pass B only: the row carries a Pass-A (id-41) contribution, so its
+    /// promotion term changes when static weights do.
+    pub(super) upstream: bool,
+}
+
+/// A row's membership in every pass, as of the frame being planned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct RowMembership {
+    pub(super) indirect: PassMembership,
+    pub(super) static_direct: PassMembership,
+    pub(super) animated_direct: PassMembership,
 }
 
 /// Input values that force a full-resident repair when they change.
@@ -38,9 +49,9 @@ pub(super) struct ComposePlannerFrame<'a> {
     /// Exactness/debug bypass: compose every resident row in every pass.
     pub(super) force_full_resident: bool,
     pub(super) gated_rows: &'a [u32],
-    pub(super) indirect_rows: ComposePassRows<'a>,
-    pub(super) static_direct_rows: ComposePassRows<'a>,
-    pub(super) animated_direct_rows: ComposePassRows<'a>,
+    /// Current membership of every row whose residency or contribution may
+    /// have changed since the previous plan. Rows may repeat or be unchanged.
+    pub(super) membership_changes: &'a [(u32, RowMembership)],
     pub(super) indirect_active: bool,
     pub(super) animated_direct_active: bool,
     /// Exact f32 values uploaded by Pass A, after cache-layer zeroing.
@@ -54,11 +65,12 @@ pub(super) struct ComposePlannerFrame<'a> {
 /// successful encode.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ComposePassPlan {
-    pass: ComposePass,
-    rows: Vec<u32>,
-    required_generations: Vec<u64>,
-    lagged_rows: usize,
-    full_repair: bool,
+    pub(super) pass: ComposePass,
+    pub(super) rows: Vec<u32>,
+    /// Planner generation the rows become current at when committed.
+    pub(super) generation: u64,
+    pub(super) lagged_rows: usize,
+    pub(super) full_repair: bool,
 }
 
 impl ComposePassPlan {
@@ -76,19 +88,42 @@ impl ComposePassPlan {
     }
 
     #[cfg(test)]
+    pub(super) fn full_repair(&self) -> bool {
+        self.full_repair
+    }
+
+    #[cfg(test)]
     pub(super) fn test_plan(pass: ComposePass, rows: Vec<u32>, lagged_rows: usize) -> Self {
         Self {
-            required_generations: vec![0; rows.len()],
             pass,
             rows,
+            generation: 0,
             lagged_rows,
             full_repair: false,
         }
     }
+
+    fn empty(pass: ComposePass) -> Self {
+        Self {
+            pass,
+            rows: Vec::new(),
+            generation: 0,
+            lagged_rows: 0,
+            full_repair: false,
+        }
+    }
+
+    pub(super) fn reset(&mut self, pass: ComposePass, generation: u64, full_repair: bool) {
+        self.pass = pass;
+        self.rows.clear();
+        self.generation = generation;
+        self.lagged_rows = 0;
+        self.full_repair = full_repair;
+    }
 }
 
 /// Current-frame work in encode order. Pass B is planned after Pass A and is
-/// guaranteed to contain every row Pass A rewrites.
+/// guaranteed to contain every row Pass A rewrites that Pass B holds.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ComposeFramePlan {
     pub(super) indirect: ComposePassPlan,
@@ -106,39 +141,21 @@ impl ComposeFramePlan {
     }
 
     fn clear(&mut self) {
-        self.indirect.clear();
-        self.static_direct.clear();
-        self.animated_direct.clear();
+        self.indirect.reset(ComposePass::Indirect, 0, false);
+        self.static_direct
+            .reset(ComposePass::StaticDirect, 0, false);
+        self.animated_direct
+            .reset(ComposePass::AnimatedDirect, 0, false);
     }
 
     #[cfg(test)]
-    fn capacities(&self) -> [(usize, usize); 3] {
-        self.ordered()
-            .map(|plan| (plan.rows.capacity(), plan.required_generations.capacity()))
+    fn capacities(&self) -> [usize; 3] {
+        self.ordered().map(|plan| plan.rows.capacity())
     }
 
     #[cfg(test)]
     pub(super) fn ordered(&self) -> [&ComposePassPlan; 3] {
         [&self.indirect, &self.static_direct, &self.animated_direct]
-    }
-}
-
-impl ComposePassPlan {
-    fn empty(pass: ComposePass) -> Self {
-        Self {
-            pass,
-            rows: Vec::new(),
-            required_generations: Vec::new(),
-            lagged_rows: 0,
-            full_repair: false,
-        }
-    }
-
-    fn clear(&mut self) {
-        self.rows.clear();
-        self.required_generations.clear();
-        self.lagged_rows = 0;
-        self.full_repair = false;
     }
 }
 
@@ -148,119 +165,11 @@ impl Default for ComposeFramePlan {
     }
 }
 
-#[derive(Default)]
-struct PassStaleness {
-    next_generation: u64,
-    required: BTreeMap<u32, u64>,
-    composed: BTreeMap<u32, u64>,
-    pending: BTreeSet<u32>,
-    full_repair_pending: bool,
-}
-
-impl PassStaleness {
-    fn mark_changed<'a>(&mut self, rows: impl IntoIterator<Item = &'a u32>) {
-        self.next_generation = self.next_generation.checked_add(1).unwrap_or_else(|| {
-            // Generation overflow is practically unreachable, but rebasing
-            // preserves the ordering contract instead of wrapping stale rows
-            // into apparently-current ones.
-            let lagging: BTreeSet<_> = self
-                .required
-                .iter()
-                .filter_map(|(&row, &required)| {
-                    (self.composed.get(&row).copied().unwrap_or(0) < required).then_some(row)
-                })
-                .collect();
-            self.required.clear();
-            self.composed.clear();
-            for row in lagging {
-                self.required.insert(row, 1);
-            }
-            1
-        });
-        for &row in rows {
-            self.required.insert(row, self.next_generation);
-        }
-    }
-
-    fn retain_resident(&mut self, resident: &[u32]) {
-        self.required
-            .retain(|row, _| resident.binary_search(row).is_ok());
-        self.composed
-            .retain(|row, _| resident.binary_search(row).is_ok());
-        self.pending
-            .retain(|row| resident.binary_search(row).is_ok());
-    }
-
-    fn plan_into(
-        &self,
-        pass: ComposePass,
-        resident: &[u32],
-        gated: &[u32],
-        force_full_resident: bool,
-        plan: &mut ComposePassPlan,
-    ) {
-        plan.clear();
-        plan.pass = pass;
-        plan.full_repair = self.full_repair_pending;
-        plan.rows.extend(
-            self.pending
-                .iter()
-                .copied()
-                .filter(|row| resident.binary_search(row).is_ok()),
-        );
-        if force_full_resident || self.full_repair_pending {
-            plan.rows.extend(resident.iter().copied().filter(|row| {
-                self.composed.get(row).copied().unwrap_or(0)
-                    < self.required.get(row).copied().unwrap_or(0)
-            }));
-        } else {
-            plan.rows.extend(gated.iter().copied().filter(|row| {
-                resident.binary_search(row).is_ok()
-                    && self.composed.get(row).copied().unwrap_or(0)
-                        < self.required.get(row).copied().unwrap_or(0)
-            }));
-        }
-        plan.rows.sort_unstable();
-        plan.rows.dedup();
-        plan.lagged_rows = plan
-            .rows
-            .iter()
-            .filter(|row| {
-                self.composed.get(row).copied().unwrap_or(0)
-                    < self.required.get(row).copied().unwrap_or(0)
-            })
-            .count();
-        plan.required_generations.extend(
-            plan.rows
-                .iter()
-                .map(|row| self.required.get(row).copied().unwrap_or(0)),
-        );
-    }
-
-    fn commit(&mut self, plan: &ComposePassPlan) {
-        for (&row, &generation) in plan.rows.iter().zip(&plan.required_generations) {
-            self.composed.insert(row, generation);
-            self.pending.remove(&row);
-        }
-        if plan.full_repair {
-            self.full_repair_pending = false;
-        }
-    }
-
-    fn lagging_count(&self, resident: &[u32]) -> usize {
-        self.required
-            .iter()
-            .filter(|(row, required)| {
-                resident.binary_search(row).is_ok()
-                    && self.composed.get(row).copied().unwrap_or(0) < **required
-            })
-            .count()
-    }
-}
-
 /// Persistent planner state. Observing a frame may make rows stale; only
 /// `commit_pass` makes planned rows current or consumes pending residency work.
-#[derive(Default)]
+/// Per-frame cost scales with gated, pending, and membership-changed rows;
+/// only a control-change repair and forced full-resident compose visit every
+/// row.
 pub(super) struct StreamedComposePlanner {
     indirect: PassStaleness,
     static_direct: PassStaleness,
@@ -273,8 +182,38 @@ pub(super) struct StreamedComposePlanner {
 }
 
 impl StreamedComposePlanner {
+    /// `rows` bounds every affinity row id the level can name.
+    pub(super) fn with_row_capacity(rows: usize) -> Self {
+        Self {
+            indirect: PassStaleness::with_row_capacity(rows),
+            static_direct: PassStaleness::with_row_capacity(rows),
+            animated_direct: PassStaleness::with_row_capacity(rows),
+            indirect_was_active: false,
+            animated_direct_was_active: false,
+            static_weight_bits: None,
+            animated_weight_bits: None,
+            controls: None,
+        }
+    }
+
+    /// Forget trigger history, staleness, and pending work. Observed
+    /// membership survives; `clear_membership` drops it with the residency
+    /// mirrors.
     pub(super) fn reset_generation(&mut self) {
-        *self = Self::default();
+        self.indirect.reset_generation();
+        self.static_direct.reset_generation();
+        self.animated_direct.reset_generation();
+        self.indirect_was_active = false;
+        self.animated_direct_was_active = false;
+        self.static_weight_bits = None;
+        self.animated_weight_bits = None;
+        self.controls = None;
+    }
+
+    pub(super) fn clear_membership(&mut self) {
+        self.indirect.clear_membership();
+        self.static_direct.clear_membership();
+        self.animated_direct.clear_membership();
     }
 
     pub(super) fn mark_residency_rows(
@@ -282,7 +221,10 @@ impl StreamedComposePlanner {
         pass: ComposePass,
         rows: impl IntoIterator<Item = u32>,
     ) {
-        self.pass_mut(pass).pending.extend(rows);
+        let staleness = self.pass_mut(pass);
+        for row in rows {
+            staleness.mark_pending(row);
+        }
     }
 
     #[cfg(test)]
@@ -298,11 +240,16 @@ impl StreamedComposePlanner {
         plan: &mut ComposeFramePlan,
     ) {
         plan.clear();
-        self.indirect.retain_resident(frame.indirect_rows.resident);
-        self.static_direct
-            .retain_resident(frame.static_direct_rows.resident);
-        self.animated_direct
-            .retain_resident(frame.animated_direct_rows.resident);
+        for &(row, membership) in frame.membership_changes {
+            self.indirect.observe_membership(row, membership.indirect);
+            self.static_direct
+                .observe_membership(row, membership.static_direct);
+            self.animated_direct
+                .observe_membership(row, membership.animated_direct);
+        }
+        self.indirect.retain_resident_pending();
+        self.static_direct.retain_resident_pending();
+        self.animated_direct.retain_resident_pending();
 
         let controls_changed = self
             .controls
@@ -315,54 +262,38 @@ impl StreamedComposePlanner {
             frame.effective_animated_weights,
         );
 
-        let indirect_changed =
-            frame.indirect_active || self.indirect_was_active || controls_changed;
-        let static_changed = static_weights_changed || controls_changed;
+        let indirect_changed = frame.indirect_active || self.indirect_was_active;
         let animated_changed = frame.animated_direct_active
             || self.animated_direct_was_active
             || animated_weights_changed
-            || static_weights_changed
-            || controls_changed;
+            || static_weights_changed;
 
         if controls_changed {
             self.indirect.full_repair_pending = true;
             self.static_direct.full_repair_pending = true;
             self.animated_direct.full_repair_pending = true;
-            self.indirect
-                .mark_changed(frame.indirect_rows.resident.iter());
-            self.static_direct
-                .mark_changed(frame.static_direct_rows.resident.iter());
-            self.animated_direct
-                .mark_changed(frame.animated_direct_rows.resident.iter());
-        } else {
-            if indirect_changed {
-                self.indirect
-                    .mark_changed(frame.indirect_rows.contributing.iter());
-            }
-            if static_changed {
-                self.static_direct
-                    .mark_changed(frame.static_direct_rows.contributing.iter());
-            }
-            if animated_changed {
-                self.animated_direct
-                    .mark_changed(frame.animated_direct_rows.contributing.iter());
-            }
-            // Pass B reads Pass A's intermediate. Even a row with no id-45
-            // contribution becomes stale when its promotion term changes.
-            if static_weights_changed {
-                self.animated_direct
-                    .mark_changed(frame.static_direct_rows.contributing.iter());
-            }
         }
-
-        if frame.force_full_resident {
-            self.indirect
-                .mark_changed(frame.indirect_rows.resident.iter());
-            self.static_direct
-                .mark_changed(frame.static_direct_rows.resident.iter());
-            self.animated_direct
-                .mark_changed(frame.animated_direct_rows.resident.iter());
-        }
+        // A control change or the exactness switch stales every resident row;
+        // otherwise each pass stales only rows carrying its changed input.
+        let resident = controls_changed || frame.force_full_resident;
+        let per_source = !controls_changed;
+        self.indirect.fire(PassTriggers {
+            resident,
+            contributing: per_source && indirect_changed,
+            upstream: false,
+        });
+        self.static_direct.fire(PassTriggers {
+            resident,
+            contributing: per_source && static_weights_changed,
+            upstream: false,
+        });
+        // Pass B reads Pass A's intermediate. Even a row with no id-45
+        // contribution becomes stale when its promotion term changes.
+        self.animated_direct.fire(PassTriggers {
+            resident,
+            contributing: per_source && animated_changed,
+            upstream: per_source && static_weights_changed,
+        });
 
         self.indirect_was_active = frame.indirect_active;
         self.animated_direct_was_active = frame.animated_direct_active;
@@ -373,25 +304,26 @@ impl StreamedComposePlanner {
 
         self.indirect.plan_into(
             ComposePass::Indirect,
-            frame.indirect_rows.resident,
             frame.gated_rows,
             frame.force_full_resident,
             &mut plan.indirect,
         );
         self.static_direct.plan_into(
             ComposePass::StaticDirect,
-            frame.static_direct_rows.resident,
             frame.gated_rows,
             frame.force_full_resident,
             &mut plan.static_direct,
         );
         // Planning Pass A creates durable Pass-B retry work before encoding.
-        self.animated_direct
-            .pending
-            .extend(plan.static_direct.rows.iter().copied());
+        // Membership is already observed, so a row Pass B does not hold (a
+        // level without id-45) would only be dropped as non-resident later.
+        for &row in &plan.static_direct.rows {
+            if self.animated_direct.resident(row) {
+                self.animated_direct.mark_pending(row);
+            }
+        }
         self.animated_direct.plan_into(
             ComposePass::AnimatedDirect,
-            frame.animated_direct_rows.resident,
             frame.gated_rows,
             frame.force_full_resident,
             &mut plan.animated_direct,
@@ -402,8 +334,9 @@ impl StreamedComposePlanner {
         self.pass_mut(plan.pass).commit(plan);
     }
 
-    pub(super) fn lagging_rows(&self, pass: ComposePass, resident: &[u32]) -> usize {
-        self.pass(pass).lagging_count(resident)
+    /// Resident rows still lagging for `pass`. O(1).
+    pub(super) fn lagging_rows(&self, pass: ComposePass) -> usize {
+        self.pass(pass).lagging_count()
     }
 
     fn pass(&self, pass: ComposePass) -> &PassStaleness {
@@ -420,6 +353,38 @@ impl StreamedComposePlanner {
             ComposePass::StaticDirect => &mut self.static_direct,
             ComposePass::AnimatedDirect => &mut self.animated_direct,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_stale(&self, pass: ComposePass, row: u32) -> bool {
+        self.pass(pass).is_stale(row)
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_resident(&self, pass: ComposePass, row: u32) -> bool {
+        self.pass(pass).resident(row)
+    }
+
+    #[cfg(test)]
+    pub(super) fn observed_membership(&self, pass: ComposePass, row: u32) -> PassMembership {
+        self.pass(pass).observed_membership(row)
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_visited_for_test(&mut self) {
+        self.indirect.visited = 0;
+        self.static_direct.visited = 0;
+        self.animated_direct.visited = 0;
+    }
+
+    #[cfg(test)]
+    pub(super) fn visited_for_test(&self) -> usize {
+        self.indirect.visited + self.static_direct.visited + self.animated_direct.visited
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_generation_for_test(&mut self, pass: ComposePass, generation: u64) {
+        self.pass_mut(pass).set_generation_for_test(generation);
     }
 }
 
@@ -442,6 +407,7 @@ fn snapshot_changed(snapshot: &mut Option<Vec<u32>>, values: &[f32]) -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::collections::BTreeSet;
 
     fn list(rows: &[u32]) -> Vec<u32> {
         rows.to_vec()
@@ -465,6 +431,15 @@ mod tests {
         animated_contributing: Vec<u32>,
         static_weights: Vec<f32>,
         animated_weights: Vec<f32>,
+        membership: Vec<(u32, RowMembership)>,
+    }
+
+    /// Row space for these fixtures; membership is re-observed for every row
+    /// each frame, which the planner treats idempotently.
+    const FIXTURE_ROWS: u32 = 64;
+
+    fn planner() -> StreamedComposePlanner {
+        StreamedComposePlanner::with_row_capacity(FIXTURE_ROWS as usize)
     }
 
     impl Fixture {
@@ -479,31 +454,46 @@ mod tests {
                 animated_contributing: rows.to_vec(),
                 static_weights: vec![0.0],
                 animated_weights: vec![1.0],
+                membership: Vec::new(),
             }
         }
 
         fn frame(
-            &self,
+            &mut self,
             records_compose: bool,
             indirect: bool,
             animated: bool,
         ) -> ComposePlannerFrame<'_> {
+            let has = |rows: &[u32], row: u32| rows.contains(&row);
+            self.membership = (0..FIXTURE_ROWS)
+                .map(|row| {
+                    (
+                        row,
+                        RowMembership {
+                            indirect: PassMembership {
+                                resident: has(&self.indirect_resident, row),
+                                contributing: has(&self.indirect_contributing, row),
+                                upstream: false,
+                            },
+                            static_direct: PassMembership {
+                                resident: has(&self.static_resident, row),
+                                contributing: has(&self.static_contributing, row),
+                                upstream: false,
+                            },
+                            animated_direct: PassMembership {
+                                resident: has(&self.animated_resident, row),
+                                contributing: has(&self.animated_contributing, row),
+                                upstream: has(&self.static_contributing, row),
+                            },
+                        },
+                    )
+                })
+                .collect();
             ComposePlannerFrame {
                 records_compose,
                 force_full_resident: false,
                 gated_rows: &self.gated,
-                indirect_rows: ComposePassRows {
-                    resident: &self.indirect_resident,
-                    contributing: &self.indirect_contributing,
-                },
-                static_direct_rows: ComposePassRows {
-                    resident: &self.static_resident,
-                    contributing: &self.static_contributing,
-                },
-                animated_direct_rows: ComposePassRows {
-                    resident: &self.animated_resident,
-                    contributing: &self.animated_contributing,
-                },
+                membership_changes: &self.membership,
                 indirect_active: indirect,
                 animated_direct_active: animated,
                 effective_static_weights: &self.static_weights,
@@ -521,7 +511,7 @@ mod tests {
 
     #[test]
     fn trigger_selects_only_gated_contributing_rows_per_pass() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[1, 2, 3, 4]);
         fixture.gated = list(&[1, 2, 4]);
         fixture.indirect_contributing = list(&[2, 3]);
@@ -535,8 +525,8 @@ mod tests {
 
     #[test]
     fn idle_plan_contains_only_pending_residency_rows() {
-        let mut planner = StreamedComposePlanner::default();
-        let fixture = Fixture::all(&[1, 2, 3]);
+        let mut planner = planner();
+        let mut fixture = Fixture::all(&[1, 2, 3]);
         planner.mark_residency_rows(ComposePass::Indirect, [2]);
         planner.mark_residency_rows(ComposePass::StaticDirect, [3]);
 
@@ -548,7 +538,7 @@ mod tests {
 
     #[test]
     fn effective_uploaded_promotion_weights_drive_static_trigger() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[4]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -565,7 +555,7 @@ mod tests {
 
     #[test]
     fn effective_uploaded_animated_weights_drive_only_pass_b() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[4]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -578,7 +568,7 @@ mod tests {
 
     #[test]
     fn direct_plan_splits_activity_and_follows_static_rewrite() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[7]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -598,8 +588,8 @@ mod tests {
 
     #[test]
     fn deactivation_tail_waits_for_next_recorded_compose() {
-        let mut planner = StreamedComposePlanner::default();
-        let fixture = Fixture::all(&[9]);
+        let mut planner = planner();
+        let mut fixture = Fixture::all(&[9]);
         let active = planner.plan_frame(fixture.frame(true, true, true));
         commit_all(&mut planner, &active);
 
@@ -622,8 +612,8 @@ mod tests {
 
     #[test]
     fn mask_or_override_change_forces_all_passes_in_order() {
-        let mut planner = StreamedComposePlanner::default();
-        let fixture = Fixture::all(&[1, 2]);
+        let mut planner = planner();
+        let mut fixture = Fixture::all(&[1, 2]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
 
@@ -645,7 +635,7 @@ mod tests {
 
     #[test]
     fn control_change_bypasses_partial_or_empty_gate_until_committed() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[1, 2, 3]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -675,7 +665,7 @@ mod tests {
 
     #[test]
     fn control_change_on_nonrecording_frame_repairs_full_resident_later() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[4, 5]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -701,7 +691,7 @@ mod tests {
 
     #[test]
     fn force_full_resident_plans_all_resident_rows() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[1, 2, 3]);
         fixture.gated = list(&[2]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
@@ -725,7 +715,7 @@ mod tests {
 
     #[test]
     fn only_lagging_rows_compose_on_idle_reentry() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[1, 2]);
         fixture.gated = list(&[1]);
         let first = planner.plan_frame(fixture.frame(true, true, false));
@@ -753,12 +743,12 @@ mod tests {
 
     #[test]
     fn empty_contributing_gate_advances_generation_without_dispatch() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[5]);
         fixture.gated.clear();
         let empty = planner.plan_frame(fixture.frame(true, true, false));
         assert!(empty.indirect.rows().is_empty());
-        assert_eq!(planner.lagging_rows(ComposePass::Indirect, &[5]), 1);
+        assert_eq!(planner.lagging_rows(ComposePass::Indirect), 1);
 
         fixture.gated.push(5);
         assert_eq!(
@@ -772,7 +762,7 @@ mod tests {
 
     #[test]
     fn deactivation_outside_gate_is_repaired_on_reentry() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[6]);
         let active = planner.plan_frame(fixture.frame(true, true, false));
         planner.commit_pass(&active.indirect);
@@ -796,7 +786,7 @@ mod tests {
 
     #[test]
     fn promotion_change_outside_gate_repairs_both_direct_passes() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[3]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -812,7 +802,7 @@ mod tests {
 
     #[test]
     fn camera_cut_rows_compose_before_sampling() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[11]);
         fixture.gated.clear();
         planner.plan_frame(fixture.frame(true, true, false));
@@ -823,7 +813,7 @@ mod tests {
 
     #[test]
     fn eviction_and_generation_reset_preserve_lag_contract() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[1, 2]);
         fixture.gated.clear();
         planner.plan_frame(fixture.frame(true, true, false));
@@ -835,10 +825,7 @@ mod tests {
         assert_eq!(eviction.indirect.rows(), &[2]);
 
         planner.reset_generation();
-        assert_eq!(
-            planner.lagging_rows(ComposePass::Indirect, &fixture.indirect_resident),
-            0
-        );
+        assert_eq!(planner.lagging_rows(ComposePass::Indirect), 0);
         assert!(
             planner
                 .plan_frame(fixture.frame(true, false, false))
@@ -850,7 +837,7 @@ mod tests {
 
     #[test]
     fn install_and_slot_reuse_bypass_gate_before_promotion() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[8]);
         fixture.gated.clear();
         planner.mark_residency_rows(ComposePass::Indirect, [8]);
@@ -869,7 +856,7 @@ mod tests {
 
     #[test]
     fn failed_encode_commits_no_compose_state() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[12]);
         planner.mark_residency_rows(ComposePass::Indirect, [12]);
         let failed = planner.plan_frame(fixture.frame(true, true, false));
@@ -883,7 +870,7 @@ mod tests {
 
     #[test]
     fn failed_pass_b_retries_without_rewriting_committed_pass_a() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[13]);
         planner.plan_frame(fixture.frame(true, false, false));
         fixture.static_weights[0] = 0.5;
@@ -898,7 +885,7 @@ mod tests {
 
     #[test]
     fn failed_control_repair_pass_b_keeps_its_full_retry_only() {
-        let mut planner = StreamedComposePlanner::default();
+        let mut planner = planner();
         let mut fixture = Fixture::all(&[13, 14]);
         let initial = planner.plan_frame(fixture.frame(true, false, false));
         commit_all(&mut planner, &initial);
@@ -923,8 +910,8 @@ mod tests {
     #[test]
     fn compose_planner_reuses_warmed_pass_vectors() {
         let rows = (0..64).collect::<Vec<_>>();
-        let fixture = Fixture::all(&rows);
-        let mut planner = StreamedComposePlanner::default();
+        let mut fixture = Fixture::all(&rows);
+        let mut planner = planner();
         let mut plan = ComposeFramePlan::default();
         let mut first = fixture.frame(true, true, true);
         first.force_full_resident = true;
@@ -957,7 +944,7 @@ mod tests {
         ) {
             let rows: Vec<u32> = (0..16).collect();
             let mut fixture = Fixture::all(&rows);
-            let mut planner = StreamedComposePlanner::default();
+            let mut planner = planner();
             let mut previous_resident: BTreeSet<u32> =
                 fixture.indirect_resident.iter().copied().collect();
 
@@ -1020,7 +1007,10 @@ mod tests {
                             .copied()
                             .filter(|row| resident.binary_search(row).is_ok())
                             .collect();
-                        prop_assert_eq!(planner.pass(pass).lagging_count(&gated_resident), 0);
+                        let current = gated_resident.iter().all(|&row| {
+                            planner.is_resident(pass, row) && !planner.is_stale(pass, row)
+                        });
+                        prop_assert!(current);
                     }
                 }
             }

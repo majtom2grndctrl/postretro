@@ -109,8 +109,11 @@ impl ShResidencyState {
             self.indirect_dirty_rows.insert(row);
             self.release_row_refs(RowRefTable::IndirectBase, row, count)?;
             if self.direct_required {
-                self.direct_promotion_dirty_rows.insert(row);
-                self.direct_animated_dirty_rows.insert(row);
+                // Without id-41/id-45 no direct pass consumes dirty rows.
+                if self.direct_compose_required {
+                    self.direct_promotion_dirty_rows.insert(row);
+                    self.direct_animated_dirty_rows.insert(row);
+                }
                 self.release_row_refs(RowRefTable::DirectBase, row, count)?;
             }
         }

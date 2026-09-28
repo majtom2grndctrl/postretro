@@ -150,21 +150,38 @@ physical light accumulates once and an owner cannot be evicted out from under a 
 boundary.
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
-the application hands the renderer `ShSampleRegionSets`: world AABBs for visible cells,
-fog-reachable cells, and drawn movers swept from their current to interpolated transform.
-Renderer-admitted `MeshFramePlan`s supply the accepted forward-mesh bounds; only the
-windowed path also supplies first-person viewmodel bounds, while capture excludes them.
-An empty fog-reachable set means every cell and therefore gates all resident rows. Only the
-renderer maps these regions to affinity rows; it expands them by 1.1 cell spacings for the
-sampler footprint, intersects them with resident rows, and closes the result over
-scaled-node writer rows. No row indices cross the application/renderer boundary. Rows are
+the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
+fog-reachable cells, and world AABBs for drawn movers swept from their current to
+interpolated transform. Renderer-admitted `MeshFramePlan`s supply the accepted forward-mesh
+bounds; only the windowed path also supplies first-person viewmodel bounds, while capture
+excludes them. An empty fog-reachable set means every cell and therefore gates all resident
+rows. Only the renderer maps these inputs to affinity rows; it expands each cell or region by
+1.1 cell spacings for the sampler footprint, intersects the result with resident rows, and
+closes it over scaled-node writer rows. Everything static about that mapping is cached at
+level install and dropped with the residency state: each row's scaled-node writer and each
+cell's covered rows, before residency filtering. Per affinity row this costs roughly 35
+bytes — a 4-byte writer-row cache entry, a 4-byte dedup stamp, and per pass (three passes)
+a 1-byte staleness flag, an 8-byte composed generation, and one resident bit — plus 4 bytes
+per (cell, covered row) entry in the per-cell row lists, the one term not bounded by row
+count, since large overlapping cells each list every row their dilated bounds cover: a
+36,000-row stress level with ~5,700 cells caches about 1.1 MB of cell lists this way.
+Building this index, and failing it with a slot overflow, happens at level install, not
+per frame. A frame therefore pays for the rows its
+cells list plus the bricks of its moving regions; resident membership is a dense bitset per
+pass, updated per touched row on install and eviction. No row indices cross the
+application/renderer boundary. Rows are
 also filtered per pass by whether the resident streamed data actually contributes: indirect
-section 27, static-direct section 41, or animated-direct section 45.
+section 27, static-direct section 41, or animated-direct section 45. A level with id-35 base
+direct SH but neither id 41 nor id 45 samples that base uncomposed, so its direct passes hold
+no rows; without id 45, Pass B holds none.
 
 Invariant: every stored slot a consumer can sample in frame N equals what full-resident
 compose would write in frame N, so no stale slot is sampled. Per-pass generations record
 changes while rows are outside the gate or a frame cannot encode; lagging rows compose on
-the frame they re-enter the gate, before any consumer samples them. Install, eviction, and
+the frame they re-enter the gate, before any consumer samples them. A trigger advances a
+per-pass change epoch rather than stamping rows: a row lags when a source it belonged to
+fired after the row was last composed, and dense per-row state lets planning, commit, and
+the lag counters visit only gated, pending, and residency-changed rows. Install, eviction, and
 slot-reuse rows bypass the view gate, including their scaled-node writers. Unlike the warm
 set, the gate is view-dependent: turning in place composes lagging rows as they come into
 view. Any new SH consumer (an alternate camera, GPU particles, reflection probes) adds its

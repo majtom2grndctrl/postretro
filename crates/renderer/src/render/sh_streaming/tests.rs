@@ -139,6 +139,7 @@ fn state_with_clusters(cluster_count: u32) -> ShResidencyState {
         &directory,
         &one_l0_brick(),
         &postretro_level_loader::ShStreamSourceMetadata::default(),
+        &[],
     )
     .expect("minimal dense directory is valid")
 }
@@ -196,6 +197,7 @@ fn dense_patch_owner_is_the_lowest_cluster_containing_the_probe() {
         &directory,
         &one_l0_brick(),
         &postretro_level_loader::ShStreamSourceMetadata::default(),
+        &[],
     )
     .unwrap();
 
@@ -248,9 +250,14 @@ fn sparse_owner_halo_ranges_keep_the_writer_for_ids_27_41_and_45() {
         cluster_hints: Vec::new(),
     };
 
-    let state =
-        ShResidencyState::from_parts([11; 32], &directory, &one_l0_brick(), &all_sparse_sources())
-            .expect("overlapping sparse ownership is valid");
+    let state = ShResidencyState::from_parts(
+        [11; 32],
+        &directory,
+        &one_l0_brick(),
+        &all_sparse_sources(),
+        &[],
+    )
+    .expect("overlapping sparse ownership is valid");
 
     for section_id in [INDIRECT_DELTA_ID, DIRECT_DELTA_ID, ANIMATED_DIRECT_DELTA_ID] {
         assert_eq!(state.sparse_row_owner[&(section_id, 0)], 1);
@@ -286,6 +293,7 @@ fn dense_patch_writer_waits_for_a_different_stored_node_owner() {
         &directory,
         &one_l0_brick(),
         &postretro_level_loader::ShStreamSourceMetadata::default(),
+        &[],
     )
     .expect("one stored node can contain patches owned by distinct clusters");
 
@@ -325,6 +333,7 @@ fn paired_direct_manifest_refuses_a_chunk_missing_id35() {
         },
         &one_l0_brick(),
         &all_sparse_sources(),
+        &[],
     )
     .expect("paired direct manifest metadata is valid");
 
@@ -366,6 +375,9 @@ fn paired_direct_manifest_refuses_a_chunk_missing_id35() {
 
 #[test]
 fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
+    // Highest row id this fixture's tables reference is 4 (direct_promotion_dirty_rows /
+    // direct_animated_dirty_rows insert row 4 below); capacity must cover 0..=4.
+    const ROW_SPACE: usize = 5;
     let mut state = ShResidencyState {
         // This fixture exercises only the row-union mirrors. Building a
         // complete directory would obscure the eviction invariant.
@@ -395,13 +407,13 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         pending_promotion: BTreeSet::new(),
         dirty_rows: BTreeSet::new(),
         indirect_dirty_rows: BTreeSet::new(),
-        indirect_resident_rows: BTreeSet::new(),
+        indirect_resident_rows: RowBitSet::with_row_capacity(ROW_SPACE),
         indirect_base_row_refs: BTreeMap::from([(2, 1)]),
         indirect_delta_row_refs: BTreeMap::from([(2, 1)]),
         direct_promotion_dirty_rows: BTreeSet::new(),
         direct_animated_dirty_rows: BTreeSet::new(),
-        direct_promotion_resident_rows: BTreeSet::new(),
-        direct_animated_resident_rows: BTreeSet::new(),
+        direct_promotion_resident_rows: RowBitSet::with_row_capacity(ROW_SPACE),
+        direct_animated_resident_rows: RowBitSet::with_row_capacity(ROW_SPACE),
         direct_base_row_refs: BTreeMap::new(),
         direct_promotion_row_refs: BTreeMap::new(),
         direct_animated_row_refs: BTreeMap::new(),
@@ -409,18 +421,24 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         direct_compose_required: false,
         animated_direct_compose_required: false,
         direct_animation_descriptor_indices: Vec::new(),
-        compose_planner: StreamedComposePlanner::default(),
+        compose_planner: StreamedComposePlanner::with_row_capacity(ROW_SPACE),
         compose_frame_plan: None,
+        sample_region_index: SampleRegionIndex::build(
+            &sample_regions::SampleRegionGrid {
+                origin: [0.0; 3],
+                cell_size: [1.0; 3],
+                dimensions: [4, 4, 4],
+                dense_nodes: &[],
+            },
+            std::iter::empty(),
+        )
+        .unwrap(),
         compose_input_regions: Vec::new(),
         compose_region_rows: Vec::new(),
         compose_residency_rows: Vec::new(),
-        compose_indirect_resident_rows: Vec::new(),
-        compose_indirect_contributing_rows: Vec::new(),
-        compose_static_contributing_rows: Vec::new(),
-        compose_animated_contributing_rows: Vec::new(),
+        compose_membership_touched: RowQueue::with_row_capacity(ROW_SPACE),
+        compose_membership_changes: Vec::new(),
         compose_animated_weights: Vec::new(),
-        compose_direct_resident_rows: Vec::new(),
-        compose_animated_resident_rows: Vec::new(),
         indirect_compose_diagnostics: ShComposePassDiagnostics::default(),
         static_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
         animated_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
@@ -431,7 +449,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         install_cpu: InstallCpuCounters::default(),
         gpu: None,
     };
-    state.indirect_resident_rows = state.rebuilt_resident_rows()[0].clone();
+    state.indirect_resident_rows = state.rebuilt_resident_rows()[0].iter().copied().collect();
     assert_eq!(state.indirect_resident_rows, BTreeSet::from([2]));
     state
         .release_row_refs(RowRefTable::IndirectBase, 2, 1)

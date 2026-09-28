@@ -282,8 +282,8 @@ impl PreparedCapture {
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
             postretro_renderer::ShSampleRegionSets {
-                visible_cells: &self.visible_render.visible_cell_aabbs,
-                fog_cells: &self.visible_render.reachable_cell_aabbs,
+                visible_cells: &self.visible_render.visible_cells,
+                fog_cells: &self.visible_render.fog_reachable,
                 movers: &self.mover_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),
@@ -341,8 +341,8 @@ impl PreparedCapture {
             &self.visible_render.reachable_cell_aabbs,
             &self.visible_render.fog_reachable,
             postretro_renderer::ShSampleRegionSets {
-                visible_cells: &self.visible_render.visible_cell_aabbs,
-                fog_cells: &self.visible_render.reachable_cell_aabbs,
+                visible_cells: &self.visible_render.visible_cells,
+                fog_cells: &self.visible_render.fog_reachable,
                 movers: &self.mover_sample_regions,
             },
             Some(self.visible_render.stats.camera_cell),

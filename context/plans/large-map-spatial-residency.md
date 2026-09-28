@@ -91,8 +91,10 @@ byte counts residency is designed around.
   of lightmap-shaped data needs a packer that orders by cluster and caps the layer size.
 - Lightmap (id 22) and shadowmask (id 42) share the fragment's layer index. They are
   resident together or not at all.
-- The forward fragment stage has no free binding. Layer indirection lives in the vertex
-  stage (a table in the existing animated-slot uniform), never as a new fragment binding.
+- The forward fragment stage has no free binding. Layer indirection folds into the
+  existing binding-7 uniform, never a new fragment binding. The animated atlas resolves
+  per-face blocks there in the fragment stage; static-layer indirection may use the
+  vertex stage.
 
 ## Decisions still open
 
@@ -102,8 +104,10 @@ Leanings come from a read-only dry run (research below). None is decided.
   bound by pre-pack chart texel area, and have the packer consume the partition. The
   partition would then run before the lightmap bake.
 - First lightmap-shaped work. Lean, in order:
-  1. A vertex-stage virtual-layer table plus a pooled animated atlas. No I/O, and it
-     covers the largest byte class.
+  1. Compact the animated atlas (`drafts/animated-lightmap-compact-atlas`). Per-face
+     blocks resolved in the fragment stage from the binding-7 table replace the pooled
+     animated-slot idea. No I/O, and it covers the largest byte class. A virtual-layer
+     table for static layers remains open.
   2. Ids 22 and 42 as one layer-keyed unit through the issuer. Existing layer-major
      payloads give per-layer file ranges, so there is no new section.
   3. Id 25 weight maps by chunk range.

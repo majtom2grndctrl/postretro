@@ -40,6 +40,9 @@ serde_json.workspace = true
 toml.workspace = true
 directories.workspace = true
 
+# OS accessibility preferences behind the app-side seam (`os_preferences`).
+mundy.workspace = true
+
 # Device-local player identity generation at session build. Kept out of net so
 # the transport remains a dependency-minimal, registry-blind courier.
 getrandom.workspace = true
@@ -121,6 +124,10 @@ test-support = [
 
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }
+
+[target.'cfg(windows)'.dependencies]
+# Windows text scale for the OS-preference seam (`UISettings`).
+windows.workspace = true
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true

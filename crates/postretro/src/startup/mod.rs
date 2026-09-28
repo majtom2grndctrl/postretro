@@ -327,9 +327,10 @@ mod tests {
             "audio_init_complete", // session::Session::build (post-first-pixel, before scripting)
             "script_runtime_ctor", // session::Session::build (post-first-pixel, inside install)
             "net_endpoint_complete", // session::Session::build (post-first-pixel, after scripting)
+            "os_reader_started", // session::Session::build (OS preference subscription)
             "session_init_complete", // session::PendingSessionInit::install
             "renderer_full_init_complete", // splash_lifecycle::finish_renderer_full_init
-            "boot_worker_dispatch", // splash_lifecycle::run_splash_frame_one (boot-map path)
+            "boot_worker_dispatch", // splash_lifecycle::leave_splash (boot-map path)
         ]
     }
 
@@ -375,6 +376,12 @@ mod tests {
             index_of(&t.entries, "first_splash_frame")
                 < index_of(&t.entries, "script_runtime_ctor"),
             "script_runtime_ctor is built post-first-pixel, after the logo frame presents",
+        );
+        // The OS preference reader never delays the splash: it starts after
+        // the first splash frame presents.
+        assert!(
+            index_of(&t.entries, "first_splash_frame") < index_of(&t.entries, "os_reader_started"),
+            "the OS reader starts after the first splash frame presents",
         );
     }
 

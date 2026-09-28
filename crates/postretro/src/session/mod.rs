@@ -211,6 +211,11 @@ pub(crate) struct Session {
     /// unloads and renderer suspend/resume.
     pub(crate) options_bridge: options::OptionsBridge,
 
+    /// OS accessibility preferences (reduced motion, contrast, Windows text
+    /// scale), polled at the top of every frame. Subscribed here, on the main
+    /// thread, after the first splash frame has presented.
+    pub(crate) os_preferences: crate::os_preferences::OsPreferenceFeed,
+
     /// Resolved `settings.toml` path. Inner `Option` is genuine runtime absence:
     /// `None` when the platform exposes no config directory (the engine then runs
     /// on in-memory defaults without persistence). `OptionsBridge` uses this path
@@ -560,6 +565,8 @@ impl Session {
         // so a mod menu under any tree name shows resolved values from the
         // first frame.
         let mut options_bridge = options::OptionsBridge::new();
+        let os_preferences = crate::os_preferences::OsPreferenceFeed::start();
+        boot_timings.record("os_reader_started");
         options_bridge.seed_accessibility(
             &mut scripting.script_ctx.slot_table.borrow_mut(),
             &player_options,
@@ -605,6 +612,7 @@ impl Session {
             sh_worker_retirement: None,
             player_options,
             options_bridge,
+            os_preferences,
             settings_path,
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.

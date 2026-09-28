@@ -323,6 +323,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         anim_time_scale: 1.0,
         boot_state: App::initial_boot_state(),
         splash_frame: 0,
+        os_wait_from: None,
         pending_level_log: false,
         pending_splash_override: None,
         boot_timings,

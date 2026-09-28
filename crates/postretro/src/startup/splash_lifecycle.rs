@@ -2,6 +2,8 @@
 //! handoff, deferred mod init, and the boot-map / frontend transition.
 //! See: context/lib/boot_sequence.md §1 (Splash state machine)
 
+use std::time::Instant;
+
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
@@ -11,6 +13,10 @@ use crate::scripting::state_persistence::{
     persisted_state_version_is_supported, state_path,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
+
+/// Splash frames 0 and 1 are the black and logo frames; this one repeats while
+/// boot waits for the OS preference reader.
+const SPLASH_FRAME_OS_WAIT: u32 = 2;
 
 impl App {
     /// Drive one Splash-state frame. Returns `false` when the splash frame was
@@ -24,12 +30,16 @@ impl App {
     ///   (Source is always `Base` until the mod system ships.)
     /// - frame 1: paint splash (now visible). After paint: record
     ///   `first_splash_frame`; emit log line A; run `mod_init`; optionally
-    ///   swap splash on override; emit log line B; enqueue boot load or enter
+    ///   swap splash on override; emit log line B; then wait for the OS
+    ///   preference reader (below).
+    /// - frame 2 and on while waiting: repaint the splash until the OS reader
+    ///   replies or its wait expires, then enqueue the boot load or enter
     ///   Frontend when no map was supplied.
     pub(super) fn run_splash_frame(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
         match self.splash_frame {
             0 => self.run_splash_frame_zero(event_loop, frame_dt),
             1 => self.run_splash_frame_one(event_loop, frame_dt),
+            SPLASH_FRAME_OS_WAIT => self.run_splash_os_wait_frame(event_loop, frame_dt),
             _ => {
                 self.boot_state = BootState::Loading;
                 self.run_loading_frame(event_loop, frame_dt)
@@ -151,6 +161,51 @@ impl App {
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());
 
+        // The OS reader's wait counts from here, so a slow mod init still gets
+        // its full wait. A reply already in adds no frames.
+        self.os_wait_from = Some(Instant::now());
+        self.splash_frame = SPLASH_FRAME_OS_WAIT;
+        self.leave_splash_when_os_replied(event_loop)
+    }
+
+    /// A splash frame held for the OS reader's first reply: repaint so frames
+    /// keep presenting, keep the transport alive, then leave the splash once
+    /// the reply is in or the wait has expired.
+    fn run_splash_os_wait_frame(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
+        let painted = self.paint_splash(event_loop);
+        let _ = self.poll_world_less_transport(frame_dt);
+        if !painted {
+            self.request_redraw();
+            return false;
+        }
+        self.leave_splash_when_os_replied(event_loop)
+    }
+
+    fn leave_splash_when_os_replied(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let replied = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.os_preferences.has_replied());
+        let mod_init_finished = self.os_wait_from.unwrap_or_else(Instant::now);
+        if !crate::os_preferences::os_wait_complete(replied, mod_init_finished, Instant::now()) {
+            self.request_redraw();
+            return false;
+        }
+        if !replied {
+            log::info!(
+                "[Options] no OS preference reply within {:?}; a later reply applies live",
+                crate::os_preferences::OS_REPLY_WAIT
+            );
+        }
+        self.os_wait_from = None;
+        // Apply the reply before anything draws, so the first frame after the
+        // splash shows OS-seeded values.
+        self.update_player_options(0.0, false);
+        self.leave_splash(event_loop)
+    }
+
+    /// Exit Splash: to Frontend with no boot map, or to Loading with one.
+    fn leave_splash(&mut self, _event_loop: &ActiveEventLoop) -> bool {
         let Some(map_path) = self.map_path.clone() else {
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.clear_splash();

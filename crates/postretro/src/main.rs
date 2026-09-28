@@ -59,6 +59,7 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
+mod os_preferences;
 use postretro_sim::weapon;
 pub(crate) use postretro_sim::{
     presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
@@ -858,6 +859,11 @@ pub(crate) struct App {
     /// schedule the deferred `mod_init` and boot load request after the first
     /// visible splash frame; Loading owns worker polling.
     splash_frame: u32,
+
+    /// When deferred mod init finished this boot. Whatever follows mod init
+    /// waits for the OS preference reader's first reply up to
+    /// `os_preferences::OS_REPLY_WAIT` from here. `None` outside that wait.
+    os_wait_from: Option<Instant>,
 
     /// Set when `Loading → Running` transitions; consumed at the bottom of the
     /// first `Running` frame after `render_frame_indirect` returns. Ensures
@@ -2006,6 +2012,9 @@ impl ApplicationHandler for App {
                 // CPU stage timing: frontend and early-returned frames never
                 // commit. See: context/lib/rendering_pipeline.md §12
                 self.cpu_timer.begin_frame(now);
+                // OS preference replies land ahead of the Input stage, so a
+                // player write later this frame wins over them (UO1).
+                self.poll_os_preferences();
                 let cpu_stages = self.cpu_timer.stages();
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
 

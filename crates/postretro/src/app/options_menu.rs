@@ -5,6 +5,21 @@
 use crate::*;
 
 impl App {
+    /// Frame top: take the OS reader's latest readings. The bridge applies them
+    /// to unset fields at its next update, the same frame (UO1).
+    pub(crate) fn poll_os_preferences(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if let Some(readings) = session.os_preferences.poll() {
+            session
+                .options_bridge
+                .set_os_preferences(options::OsPreferences {
+                    reduce_motion: readings.reduce_motion,
+                });
+        }
+    }
+
     pub(crate) fn options_menu_is_top(&self) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.modal_stack.active_name() == Some(options::OPTIONS_MENU_TREE_NAME)

@@ -27,6 +27,7 @@ impl App {
         // no-op and the engine would stay permanently renderer-less.
         self.boot_state = BootState::Booting;
         self.splash_frame = 0;
+        self.os_wait_from = None;
         self.pending_level_log = false;
         self.level_load = None;
         self.active_level_tags.clear();

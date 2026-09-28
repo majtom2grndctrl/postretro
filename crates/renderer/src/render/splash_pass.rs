@@ -36,7 +36,7 @@ const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uno
 ///   R 28/255 → 0.011612, G 33/255 → 0.015209, B 39/255 → 0.020289.
 /// This matches how `FRONTEND_CLEAR_COLOR` authors linear values for the same
 /// sRGB attachment (`startup/lifecycle.rs`).
-const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
+pub(super) const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.011612,
     g: 0.015209,
     b: 0.020289,

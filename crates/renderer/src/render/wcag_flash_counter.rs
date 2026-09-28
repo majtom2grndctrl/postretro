@@ -1,9 +1,8 @@
 // Independent WCAG 2.2 flash counter for limiter tests. Counts transitions on
-// read-back presented luminance, written from the WCAG definitions rather than
-// the limiter's own shader rules, so a test does not grade the limiter by its
-// own detector.
-// See: context/plans/in-progress/E23--preferences-comfort-floor/research.md
-//      §Limiter mechanism (Definitions)
+// read-back presented color, written from the WCAG definitions (general flash;
+// red flash by CIE 1976 u′v′) rather than the limiter's own shader rules, so a
+// test does not grade the limiter by its own detector.
+// See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
 /// WCAG general flash: a change of at least 10% of maximum relative luminance.
 const GENERAL_FLASH_DELTA: f32 = 0.1;
@@ -61,6 +60,57 @@ impl TransitionCounter {
     }
 }
 
+/// WCAG 2.2 red flash (Note 3, ISO 9241-391): one state is saturated red,
+/// R/(R+G+B) ≥ 0.8, and the two states differ by more than 0.2 in CIE 1976
+/// u′v′ chromaticity.
+const RED_SATURATION: f32 = 0.8;
+const RED_UV_DISTANCE: f32 = 0.2;
+
+/// Linear sRGB → CIE 1976 u′v′.
+fn uv_prime(rgb: [f32; 3]) -> Option<[f32; 2]> {
+    let [r, g, b] = rgb;
+    let x = 0.4124 * r + 0.3576 * g + 0.1805 * b;
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let z = 0.0193 * r + 0.1192 * g + 0.9505 * b;
+    let d = x + 15.0 * y + 3.0 * z;
+    (d > 1e-6).then(|| [4.0 * x / d, 9.0 * y / d])
+}
+
+fn saturated_red(rgb: [f32; 3]) -> bool {
+    let total = rgb[0] + rgb[1] + rgb[2];
+    total > 1e-4 && rgb[0] / total >= RED_SATURATION
+}
+
+/// Counts WCAG 2.2 red transitions in a series of mean presented colors: a
+/// change of more than 0.2 in u′v′ from the last counted state, where one of
+/// the two states is saturated red.
+#[derive(Default)]
+pub(crate) struct RedTransitionCounter {
+    reference: Option<[f32; 3]>,
+    times: Vec<f32>,
+}
+
+impl RedTransitionCounter {
+    pub(crate) fn push(&mut self, time: f32, rgb: [f32; 3]) {
+        let Some(reference) = self.reference else {
+            self.reference = Some(rgb);
+            return;
+        };
+        let (Some(a), Some(b)) = (uv_prime(reference), uv_prime(rgb)) else {
+            return;
+        };
+        let distance = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+        if distance > RED_UV_DISTANCE && (saturated_red(reference) || saturated_red(rgb)) {
+            self.times.push(time);
+            self.reference = Some(rgb);
+        }
+    }
+
+    pub(crate) fn transition_times(&self) -> &[f32] {
+        &self.times
+    }
+}
+
 /// The most transitions inside any one-second window. Three flashes is six
 /// transitions.
 pub(crate) fn max_transitions_in_any_second(times: &[f32]) -> usize {
@@ -101,5 +151,21 @@ mod tests {
         }
         assert!(small.transition_times().is_empty());
         assert!(bright.transition_times().is_empty());
+    }
+
+    #[test]
+    fn red_counter_counts_an_equal_brightness_red_green_flicker_but_not_gray() {
+        // Red and green at equal relative luminance.
+        let red = [1.0, 0.0, 0.0];
+        let green = [0.0, 0.2126 / 0.7152, 0.0];
+        let mut flicker = RedTransitionCounter::default();
+        let mut gray = RedTransitionCounter::default();
+        for n in 0..10 {
+            let t = n as f32 * 0.1;
+            flicker.push(t, if n % 2 == 0 { red } else { green });
+            gray.push(t, if n % 2 == 0 { [0.2; 3] } else { [0.21; 3] });
+        }
+        assert_eq!(flicker.transition_times().len(), 9);
+        assert!(gray.transition_times().is_empty());
     }
 }

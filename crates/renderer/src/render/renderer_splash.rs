@@ -74,6 +74,14 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
+    /// The color a splash or Loading frame presents, for the flash limiter's
+    /// splash hand-off. The clear dominates the frame; the boot logo covers a
+    /// small central area and is not counted.
+    pub fn splash_presented_rgb(&self) -> [f32; 3] {
+        let color = super::splash_pass::SPLASH_CLEAR_COLOR;
+        [color.r as f32, color.g as f32, color.b as f32]
+    }
+
     /// Store the elapsed presented-frame time the flash limiter ages its window
     /// and rate allowance by. The App calls this beside `set_ui_snapshot`.
     pub fn set_limiter_frame(

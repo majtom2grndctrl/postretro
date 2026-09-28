@@ -13,9 +13,9 @@ use postretro_render_cpu::flash_limiter::{
 /// `screen_effects.wgsl`. Buffers are sized from these; the shader declares the
 /// fixed-length arrays.
 const CELL_MEASURE_BYTES: u64 = 16;
-const CELL_STATE_BYTES: u64 = 32;
+const CELL_STATE_BYTES: u64 = 48;
 const CELL_PARAMS_BYTES: u64 = 32;
-const GLOBAL_BYTES: u64 = 8 * 4 + 4 * 4;
+const GLOBAL_BYTES: u64 = 8 * 4 + 6 * 4;
 
 /// The limiter's GPU state. Measurement samples `scene_color` through the
 /// resolve's own composite (group 0 of the screen-effects layout), so there is
@@ -187,27 +187,37 @@ impl FlashLimiter {
         &self.resolve_bind_group
     }
 
+    /// Decide this frame's limiter uniform: the enable flag read once for both
+    /// stages, presented-frame time, and whether history restarts. Enabling
+    /// starts history that frame; a fresh limiter adopts its first frame.
+    pub(super) fn begin_frame(
+        &mut self,
+        input: LimiterFrameInput,
+        enabled: bool,
+    ) -> LimiterFrameUniform {
+        let reset = enabled && !self.history_live;
+        let frame = pack_limiter_frame(input, enabled, reset, !self.initialized);
+        self.initialized = true;
+        self.history_live = enabled;
+        frame
+    }
+
     /// Record the measure and limit dispatches for one presented frame. Runs
     /// every frame, the limiter on or off: off, it passes content unchanged but
     /// keeps tracking what was presented, so re-enabling compares against the
     /// frame presented just before it.
     pub(super) fn encode(
-        &mut self,
+        &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         effects_bind_group: &wgpu::BindGroup,
-        input: LimiterFrameInput,
-        enabled: bool,
+        frame: &LimiterFrameUniform,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        let reset = enabled && !self.history_live;
-        let frame = pack_limiter_frame(input, enabled, reset, !self.initialized);
-        queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&frame));
-        self.initialized = true;
-        self.history_live = enabled;
-
+        queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flash Limiter Pass"),
-            timestamp_writes: None,
+            timestamp_writes,
         });
         pass.set_bind_group(0, effects_bind_group, &[]);
         pass.set_bind_group(1, &self.compute_bind_group, &[]);

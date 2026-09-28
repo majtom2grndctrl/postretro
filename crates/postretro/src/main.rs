@@ -874,6 +874,13 @@ pub(crate) struct App {
     /// `os_preferences::OS_REPLY_WAIT` from here. `None` outside that wait.
     os_wait_from: Option<Instant>,
 
+    /// When the last resolve frame presented; the flash limiter ages its window
+    /// by presented-frame time measured from here, splash frames included.
+    last_resolve_at: Option<Instant>,
+    /// When the current stretch of splash frames began, if one is presenting.
+    /// Handed to the next resolve frame so the limiter counts both load edges.
+    splash_stretch_started: Option<Instant>,
+
     /// Where boot continues when the first-launch hold ends. `Some` only
     /// during the hold.
     boot_destination: Option<crate::startup::BootDestination>,
@@ -2086,7 +2093,7 @@ impl ApplicationHandler for App {
                     if !self.run_frontend_ui_logic(event_loop, frame_dt, options_menu_was_open) {
                         return;
                     }
-                    self.render_frontend_frame(event_loop, now, frame_dt);
+                    self.render_frontend_frame(event_loop, now);
                     self.finish_first_launch_hold_if_closed();
                     return;
                 }
@@ -4337,11 +4344,13 @@ impl ApplicationHandler for App {
                         frontend_menu_is_present,
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
-                    renderer.set_limiter_frame(
-                        postretro_render_cpu::flash_limiter::LimiterFrameInput {
-                            elapsed_seconds: frame_dt,
-                        },
+                    let limiter_frame = Self::next_limiter_frame(
+                        &mut self.last_resolve_at,
+                        &mut self.splash_stretch_started,
+                        renderer.splash_presented_rgb(),
+                        now,
                     );
+                    renderer.set_limiter_frame(limiter_frame);
 
                     drop(stage_scope.take());
                     let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);
@@ -5386,12 +5395,40 @@ impl App {
     /// seam stays passthrough during boot). Returns true only after presentation
     /// so the splash schedule advances on a visible frame; a transient surface
     /// failure requests another redraw without advancing.
+    /// Presented-frame time and any splash stretch for the frame about to
+    /// resolve. Time runs from the previous resolve frame, so a stretch of
+    /// splash frames (a load) ages the flash window by its whole length.
+    fn next_limiter_frame(
+        last_resolve_at: &mut Option<Instant>,
+        splash_stretch_started: &mut Option<Instant>,
+        splash_rgb: [f32; 3],
+        now: Instant,
+    ) -> postretro_render_cpu::flash_limiter::LimiterFrameInput {
+        use postretro_render_cpu::flash_limiter::{LimiterFrameInput, SplashHandOff};
+        let elapsed_seconds = last_resolve_at.map_or(
+            postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS,
+            |previous| now.saturating_duration_since(previous).as_secs_f32(),
+        );
+        *last_resolve_at = Some(now);
+        let splash = splash_stretch_started.take().map(|started| SplashHandOff {
+            rgb: splash_rgb,
+            seconds: now.saturating_duration_since(started).as_secs_f32(),
+        });
+        LimiterFrameInput {
+            elapsed_seconds,
+            splash,
+        }
+    }
+
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) -> bool {
         match self.renderer.as_mut() {
             // Splash requires only boot-ready (surface/device/queue/boot-splash).
             Some(renderer) if renderer.is_boot_ready() => match renderer.render_splash_frame() {
                 Ok(Some(handle)) => {
                     renderer.present(handle);
+                    // A stretch of splash frames between resolve frames: the
+                    // flash limiter counts its edges at the next resolve.
+                    self.splash_stretch_started.get_or_insert_with(Instant::now);
                     true
                 }
                 Ok(None) => false,
@@ -5555,12 +5592,7 @@ impl App {
         true
     }
 
-    fn render_frontend_frame(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        frame_start: Instant,
-        frame_dt: f32,
-    ) {
+    fn render_frontend_frame(&mut self, event_loop: &ActiveEventLoop, frame_start: Instant) {
         self.apply_frontend_menu_camera_pose_if_present();
         self.reconcile_ui_focus();
         // The first-launch hold shows the panel alone: no HUD beneath it.
@@ -5591,9 +5623,13 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
-        renderer.set_limiter_frame(postretro_render_cpu::flash_limiter::LimiterFrameInput {
-            elapsed_seconds: frame_dt,
-        });
+        let limiter_frame = Self::next_limiter_frame(
+            &mut self.last_resolve_at,
+            &mut self.splash_stretch_started,
+            renderer.splash_presented_rgb(),
+            frame_start,
+        );
+        renderer.set_limiter_frame(limiter_frame);
         let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
         session
             .presentation_pool

@@ -997,12 +997,22 @@ impl Renderer {
         // rest; timing query resolution follows it.
         drop(ui_scope);
         let _resolve_scope = cpu.scope(RenderStage::Resolve);
+        let limiter_timestamps = full
+            .frame_timing
+            .as_ref()
+            .map(|t| t.compute_pass_writes(TIMING_PAIR_FLASH_LIMITER));
+        let resolve_timestamps = full
+            .frame_timing
+            .as_ref()
+            .map(|t| t.render_pass_writes(TIMING_PAIR_RESOLVE));
         full.screen_effects.encode_resolve(
             queue,
             encoder,
             view,
             &full.ui_snapshot.slot_values,
             full.limiter_frame,
+            limiter_timestamps,
+            resolve_timestamps,
         );
 
         if let Some(timing) = &mut full.frame_timing {
@@ -1143,6 +1153,8 @@ mod tests {
             "self.record_depth_and_sdf_passes(",
             "render_pass_writes(",
             "write_encoder_start(",
+            "compute_pass_writes(TIMING_PAIR_FLASH_LIMITER)",
+            "render_pass_writes(TIMING_PAIR_RESOLVE)",
             "timing.encode_resolve(encoder)",
         ] {
             let at = body
@@ -1153,6 +1165,18 @@ mod tests {
                 "the timing prefill must precede `{pass}`: every timestamped pass and the resolve"
             );
         }
+    }
+
+    /// The resolve and the flash limiter each report their own GPU timing
+    /// entry under `POSTRETRO_GPU_TIMING=1`.
+    #[test]
+    fn the_resolve_and_the_flash_limiter_own_labeled_timing_pairs() {
+        assert_ne!(TIMING_PAIR_RESOLVE, TIMING_PAIR_FLASH_LIMITER);
+        assert!(TIMING_PAIR_RESOLVE < TIMING_PAIR_COUNT);
+        assert!(TIMING_PAIR_FLASH_LIMITER < TIMING_PAIR_COUNT);
+        let labels = include_str!("renderer_init_resources.rs");
+        assert!(labels.contains("pass_labels[TIMING_PAIR_FLASH_LIMITER] = \"flash_limiter\""));
+        assert!(labels.contains("pass_labels[TIMING_PAIR_RESOLVE] = \"resolve\""));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 pub mod animated_lightmap;
 pub mod chunk_list;
+pub mod flash_clamp;
 pub mod flash_limiter;
 pub mod fog_mask;
 pub mod frame_uniforms;

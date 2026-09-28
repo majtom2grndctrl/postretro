@@ -26,19 +26,34 @@ pub const HITCH_CEILING_SECONDS: f32 = 1.0 / 30.0;
 /// renderer).
 pub const DEFAULT_FRAME_SECONDS: f32 = 1.0 / 60.0;
 
+/// A stretch of splash frames between two resolve frames. The splash path
+/// writes the swapchain without the limiter, so the App hands the first resolve
+/// frame after it what the player saw and when it began.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplashHandOff {
+    /// The splash's presented color, linear.
+    pub rgb: [f32; 3],
+    /// Seconds since the stretch began.
+    pub seconds: f32,
+}
+
 /// What the App tells the limiter about the frame being presented. Time is
 /// presented-frame time, never script time: dev tools freeze script time while
 /// frames keep presenting.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LimiterFrameInput {
-    /// Seconds since the previous resolve frame presented.
+    /// Seconds since the previous resolve frame presented, splash frames
+    /// between them included.
     pub elapsed_seconds: f32,
+    /// Splash frames presented since the previous resolve frame.
+    pub splash: Option<SplashHandOff>,
 }
 
 impl Default for LimiterFrameInput {
     fn default() -> Self {
         Self {
             elapsed_seconds: DEFAULT_FRAME_SECONDS,
+            splash: None,
         }
     }
 }
@@ -59,7 +74,13 @@ pub struct LimiterFrameUniform {
     /// 1 on a fresh limiter's first frame: adopt the measured frame as the last
     /// presented one rather than ramping from black.
     pub init: u32,
-    pub _pad: [u32; 3],
+    /// 1 when a splash stretch preceded this frame.
+    pub splash_active: u32,
+    /// Seconds since that stretch began.
+    pub splash_seconds: f32,
+    pub _pad0: u32,
+    /// The splash's presented color (linear), `w` unused.
+    pub splash_rgb: [f32; 4],
 }
 
 /// Fail-safe read of the enable flag: an absent, non-boolean, or `true` value
@@ -79,18 +100,29 @@ pub fn pack_limiter_frame(
     reset: bool,
     init: bool,
 ) -> LimiterFrameUniform {
-    let elapsed = if input.elapsed_seconds.is_finite() {
-        input.elapsed_seconds.max(0.0)
-    } else {
-        0.0
-    };
+    let elapsed = finite_non_negative(input.elapsed_seconds);
     LimiterFrameUniform {
         dt_window: elapsed,
         dt_rate: elapsed.min(HITCH_CEILING_SECONDS),
         enabled: u32::from(enabled),
         reset: u32::from(reset),
         init: u32::from(init),
-        _pad: [0; 3],
+        splash_active: u32::from(input.splash.is_some()),
+        splash_seconds: input
+            .splash
+            .map_or(0.0, |splash| finite_non_negative(splash.seconds)),
+        _pad0: 0,
+        splash_rgb: input.splash.map_or([0.0; 4], |splash| {
+            [splash.rgb[0], splash.rgb[1], splash.rgb[2], 0.0]
+        }),
+    }
+}
+
+fn finite_non_negative(seconds: f32) -> f32 {
+    if seconds.is_finite() {
+        seconds.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -120,6 +152,7 @@ mod tests {
         let frame = pack_limiter_frame(
             LimiterFrameInput {
                 elapsed_seconds: 2.0,
+                splash: None,
             },
             true,
             false,
@@ -131,6 +164,7 @@ mod tests {
         let steady = pack_limiter_frame(
             LimiterFrameInput {
                 elapsed_seconds: 1.0 / 240.0,
+                splash: None,
             },
             true,
             false,
@@ -145,6 +179,7 @@ mod tests {
             let frame = pack_limiter_frame(
                 LimiterFrameInput {
                     elapsed_seconds: bad,
+                    splash: None,
                 },
                 true,
                 false,

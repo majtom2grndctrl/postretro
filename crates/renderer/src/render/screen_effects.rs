@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use super::SCENE_COLOR_FORMAT;
 use super::flash_limiter::FlashLimiter;
 use postretro_entities::SlotValue;
+use postretro_render_cpu::flash_clamp::ChannelClamp;
 use postretro_render_cpu::flash_limiter::{LimiterFrameInput, flash_limiter_enabled};
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 
@@ -60,6 +61,18 @@ pub struct ScreenEffectsPass {
     /// rebuilds the bind group, which re-references this buffer).
     effect_buffer: wgpu::Buffer,
     flash_limiter: FlashLimiter,
+    /// The limiter's first stage: `screen.flash` / `screen.vignette` limited as
+    /// they pack. CPU-side history, advanced once per resolve frame.
+    channel_clamp: ChannelClamp,
+    /// Test-only stage switches: bypass the channel clamp, or the frame
+    /// limiter, to compare each stage against the other.
+    #[cfg(test)]
+    pub(super) bypass_channel_clamp: bool,
+    #[cfg(test)]
+    pub(super) bypass_frame_limiter: bool,
+    /// The effect uniform the last resolve packed, after the channel clamp.
+    #[cfg(test)]
+    pub(super) last_packed: EffectUniform,
 }
 
 impl ScreenEffectsPass {
@@ -176,6 +189,13 @@ impl ScreenEffectsPass {
             capture_pipeline,
             effect_buffer,
             flash_limiter,
+            channel_clamp: ChannelClamp::default(),
+            #[cfg(test)]
+            bypass_channel_clamp: false,
+            #[cfg(test)]
+            bypass_frame_limiter: false,
+            #[cfg(test)]
+            last_packed: EffectUniform::default(),
         }
     }
 
@@ -213,9 +233,17 @@ impl ScreenEffectsPass {
     ///
     /// Writes the per-frame effect uniform from the packed `slot_values` first.
     /// At rest all three effect slots collapse to no-ops (see [`pack_effect_uniform`]
-    /// and the WGSL), so only the tonemap changes an at-rest scene. The flash
-    /// limiter then measures the composited frame, reading its enable flag from
-    /// the same snapshot, so both see one frame's values.
+    /// and the WGSL), so only the tonemap changes an at-rest scene.
+    ///
+    /// Both limiter stages read one frame uniform, so they see one frame's
+    /// enable flag and time: the channel clamp limits the packed flash and
+    /// vignette, the uniform is written, and the frame limiter measures the
+    /// composite with that uniform before the resolve applies it plus the
+    /// per-cell result.
+    // Wide by necessity: the GPU handles, the target, the frame's slot values,
+    // its presented-frame time, and the two stages' timestamp brackets are all
+    // distinct encode inputs.
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_resolve(
         &mut self,
         queue: &wgpu::Queue,
@@ -223,16 +251,36 @@ impl ScreenEffectsPass {
         swapchain_view: &wgpu::TextureView,
         slot_values: &HashMap<String, SlotValue>,
         limiter_frame: LimiterFrameInput,
+        limiter_timestamps: Option<wgpu::ComputePassTimestampWrites<'_>>,
+        resolve_timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
-        let uniform = pack_effect_uniform(slot_values);
+        let frame = self
+            .flash_limiter
+            .begin_frame(limiter_frame, flash_limiter_enabled(slot_values));
+        let mut uniform = pack_effect_uniform(slot_values);
+        #[cfg(test)]
+        let clamp_on = !self.bypass_channel_clamp;
+        #[cfg(not(test))]
+        let clamp_on = true;
+        if clamp_on {
+            self.channel_clamp.apply(&mut uniform, &frame);
+        }
+        #[cfg(test)]
+        {
+            self.last_packed = uniform;
+        }
         queue.write_buffer(&self.effect_buffer, 0, bytemuck::bytes_of(&uniform));
-        self.flash_limiter.encode(
-            queue,
-            encoder,
-            &self.bind_group,
-            limiter_frame,
-            flash_limiter_enabled(slot_values),
-        );
+
+        #[cfg(test)]
+        let frame = {
+            let mut frame = frame;
+            if self.bypass_frame_limiter {
+                frame.enabled = 0;
+            }
+            frame
+        };
+        self.flash_limiter
+            .encode(queue, encoder, &self.bind_group, &frame, limiter_timestamps);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Screen Effects Resolve Pass"),
@@ -249,7 +297,7 @@ impl ScreenEffectsPass {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes: resolve_timestamps,
             ..Default::default()
         });
         pass.set_pipeline(&self.resolve_pipeline);

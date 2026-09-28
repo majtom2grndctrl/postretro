@@ -151,13 +151,22 @@ impl FlashLimiter {
             bind_group_layouts: &[Some(effects_layout), Some(&compute_layout)],
             immediate_size: 0,
         });
+        // No workgroup-memory zero-fill: both entry points write every
+        // workgroup variable before any invocation reads it (behind a barrier),
+        // so the fill is dead work, and not cheap — the backend emits it as one
+        // invocation clearing each whole array behind an extra barrier, which
+        // on Metal cost more than the measure pass's own sampling. A new
+        // workgroup variable must keep that write-before-read rule.
         let compute_pipeline = |entry: &'static str, label: &'static str| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 module: shader,
                 entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    zero_initialize_workgroup_memory: false,
+                    ..Default::default()
+                },
                 cache: None,
             })
         };

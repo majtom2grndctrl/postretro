@@ -12553,7 +12553,9 @@ mod tests {
     #[test]
     fn production_title_and_options_trees_preserve_composed_control_contracts() {
         use postretro_entities::ReactionDescriptor;
-        use postretro_ui::descriptor::{BindSource, PredicateValue, Widget};
+        use postretro_ui::descriptor::{
+            BindSource, CellInit, Predicate, PredicateValue, Role, Widget,
+        };
 
         if !install_scripts_build_next_to_current_exe() {
             eprintln!("skipping: could not install scripts-build next to test binary");
@@ -12604,32 +12606,268 @@ mod tests {
         let Widget::VStack(options_root) = &options_tree.root else {
             panic!("options root is a vstack")
         };
-        assert_eq!(options_root.width, Some(1180.0));
-        fn collect_grids<'a>(
-            widget: &'a Widget,
-            out: &mut Vec<&'a postretro_ui::descriptor::GridWidget>,
-        ) {
-            match widget {
-                Widget::Grid(grid) => out.push(grid),
-                Widget::VStack(container) | Widget::HStack(container) => {
-                    for child in &container.children {
-                        collect_grids(child, out);
-                    }
-                }
-                _ => {}
+        assert_eq!(
+            options_root.width,
+            Some(640.0),
+            "tabs replace the two-column layout with one column"
+        );
+        assert_eq!(
+            options_tree.initial_focus.as_deref(),
+            Some("optionsTabControls"),
+            "focus opens on the first tab"
+        );
+        assert!(
+            options_root.focus.is_some(),
+            "one focus group spans the tab strip, the visible panel and BACK"
+        );
+        assert!(
+            options_root.restore_on_return,
+            "closing the engine panel returns focus to the button that opened it"
+        );
+        let tab_state = options_root
+            .local_state
+            .as_ref()
+            .expect("the root declares the tab cell's scope over the strip and every panel");
+        assert_eq!(
+            tab_state.cells.get("tab"),
+            Some(&CellInit::String("controls".into())),
+            "the tab is presentation-local state that opens on CONTROLS"
+        );
+
+        /// Every widget in `widget`'s subtree, in tree order, `widget` included.
+        fn collect_widgets<'a>(widget: &'a Widget, out: &mut Vec<&'a Widget>) {
+            out.push(widget);
+            let children: &[Widget] = match widget {
+                Widget::VStack(container) | Widget::HStack(container) => &container.children,
+                Widget::Grid(grid) => &grid.children,
+                _ => return,
+            };
+            for child in children {
+                collect_widgets(child, out);
             }
         }
-        let mut options_grids = Vec::new();
-        collect_grids(&options_tree.root, &mut options_grids);
-        assert_eq!(
-            options_grids.len(),
-            3,
-            "controls, graphics and accessibility use separate visual groups"
+        fn find_by_id<'a>(widget: &'a Widget, id: &str) -> Option<&'a Widget> {
+            let mut all = Vec::new();
+            collect_widgets(widget, &mut all);
+            all.into_iter().find(|candidate| {
+                let own = match candidate {
+                    Widget::Text(text) => text.id.as_deref(),
+                    Widget::VStack(container) | Widget::HStack(container) => {
+                        container.id.as_deref()
+                    }
+                    Widget::Grid(grid) => grid.id.as_deref(),
+                    Widget::Button(button) => Some(button.id.as_str()),
+                    Widget::Slider(slider) => Some(slider.id.as_str()),
+                    _ => None,
+                };
+                own == Some(id)
+            })
+        }
+        fn grids_in(widget: &Widget) -> Vec<&postretro_ui::descriptor::GridWidget> {
+            let mut all = Vec::new();
+            collect_widgets(widget, &mut all);
+            all.into_iter()
+                .filter_map(|candidate| match candidate {
+                    Widget::Grid(grid) => Some(grid),
+                    _ => None,
+                })
+                .collect()
+        }
+        let tab_is = |key: &str| Predicate {
+            source: BindSource::Local {
+                local: "tab".into(),
+            },
+            equals: Some(PredicateValue::String(key.into())),
+        };
+
+        let tab_strip = options_root
+            .children
+            .iter()
+            .find_map(|child| match child {
+                Widget::HStack(strip) if strip.role == Some(Role::Tablist) => Some(strip),
+                _ => None,
+            })
+            .expect("the options root carries a tablist strip outside every panel");
+        assert!(
+            tab_strip.focus.is_none(),
+            "a focus policy on the strip would open a nested group and trap nav in it"
         );
-        assert!(options_grids.iter().all(|grid| grid.cols == 2));
-        assert_eq!(options_grids[0].children.len(), 8);
-        assert_eq!(options_grids[1].children.len(), 6);
-        assert_eq!(options_grids[2].children.len(), 14);
+        let tab_ids: Vec<&str> = tab_strip
+            .children
+            .iter()
+            .map(|child| match child {
+                Widget::Button(button) => button.id.as_str(),
+                other => panic!("the tab strip holds only tab buttons, found {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            tab_ids,
+            [
+                "optionsTabControls",
+                "optionsTabGraphics",
+                "optionsTabAccessibility"
+            ]
+        );
+        assert!(
+            options_root
+                .children
+                .iter()
+                .any(|child| matches!(child, Widget::Button(button) if button.id == "optionsBack")),
+            "BACK sits outside the tab panels, so every tab reaches it"
+        );
+
+        for (tab_id, key, panel_id, grid_len, controls) in [
+            (
+                "optionsTabControls",
+                "controls",
+                "optionsPanelControls",
+                8,
+                &[
+                    "optionsMouseSensitivity",
+                    "optionsInvertYOff",
+                    "optionsInvertYOn",
+                    "optionsViewFeelScale",
+                    "optionsCrouchHold",
+                    "optionsCrouchToggle",
+                ][..],
+            ),
+            (
+                "optionsTabGraphics",
+                "graphics",
+                "optionsPanelGraphics",
+                6,
+                &[
+                    "optionsShadowLow",
+                    "optionsShadowMedium",
+                    "optionsShadowHigh",
+                    "optionsFogLow",
+                    "optionsFogMedium",
+                    "optionsFogHigh",
+                    "optionsSurfaceDepthOff",
+                    "optionsSurfaceDepthOn",
+                ][..],
+            ),
+            (
+                "optionsTabAccessibility",
+                "accessibility",
+                "optionsPanelAccessibility",
+                // 14 existing cells plus the flash limiter's label and status.
+                16,
+                &[
+                    "optionsReduceMotionOff",
+                    "optionsReduceMotionOn",
+                    "optionsScreenShakeScale",
+                    "optionsMasterVolume",
+                    "optionsSfxVolume",
+                    "optionsMusicVolume",
+                    "optionsUiVolume",
+                    "optionsMonoAudioOff",
+                    "optionsMonoAudioOn",
+                    "optionsAccessibilityPanel",
+                ][..],
+            ),
+        ] {
+            let tab = find_button(&options_tree.root, tab_id)
+                .unwrap_or_else(|| panic!("{tab_id} is reachable in the options tree"));
+            assert_eq!(tab.role, Some(Role::Tab));
+            assert_eq!(tab.selected.as_ref(), Some(&tab_is(key)));
+            assert_eq!(
+                tab.bind.as_ref(),
+                tab.selected.as_ref(),
+                "{tab_id}: highlight and a11y selection share one predicate"
+            );
+            assert!(
+                tab.style_ranges.is_some(),
+                "{tab_id}: highlight is value-driven"
+            );
+            let reaction = manifest
+                .reactions
+                .iter()
+                .find(|reaction| reaction.reaction.name == tab.on_press)
+                .unwrap_or_else(|| panic!("{tab_id} names a registered reaction"));
+            let ReactionDescriptor::Primitive(primitive) = &reaction.reaction.descriptor else {
+                panic!("{tab_id} reaction is a primitive");
+            };
+            assert_eq!(
+                primitive.primitive, "cellWrite",
+                "{tab_id} writes the presentation cell, never a player option"
+            );
+            assert_eq!(
+                primitive.args,
+                serde_json::json!({ "scope": tab_state.scope, "cell": "tab", "value": key })
+            );
+
+            let panel_widget = find_by_id(&options_tree.root, panel_id)
+                .unwrap_or_else(|| panic!("{panel_id} is in the options tree"));
+            let Widget::VStack(panel) = panel_widget else {
+                panic!("{panel_id} is a vstack");
+            };
+            assert_eq!(
+                panel.visible_when.as_ref(),
+                Some(&tab_is(key)),
+                "{panel_id} shows only while its tab is selected"
+            );
+            let grids = grids_in(panel_widget);
+            assert_eq!(grids.len(), 1, "{panel_id} lays its rows out in one grid");
+            assert_eq!(grids[0].cols, 2);
+            assert_eq!(grids[0].children.len(), grid_len, "{panel_id} grid cells");
+            assert!(
+                grids[0]
+                    .children
+                    .iter()
+                    .all(|child| !matches!(child, Widget::Spacer(_))),
+                "{panel_id}: label and control columns have no empty tracks"
+            );
+            for control in controls {
+                assert!(
+                    find_button(panel_widget, control).is_some()
+                        || find_slider(panel_widget, control).is_some(),
+                    "{control} lives in the {key} tab"
+                );
+            }
+        }
+        assert_eq!(
+            grids_in(&options_tree.root).len(),
+            3,
+            "no grid sits outside the three tab panels"
+        );
+
+        let accessibility_panel = find_by_id(&options_tree.root, "optionsPanelAccessibility")
+            .expect("accessibility panel is in the options tree");
+        for (id, content, on) in [
+            ("optionsFlashLimiterOn", "ON", true),
+            ("optionsFlashLimiterOff", "OFF", false),
+        ] {
+            let Some(Widget::Text(status)) = find_by_id(accessibility_panel, id) else {
+                panic!("{id} is a text in the accessibility tab");
+            };
+            assert_eq!(status.content, content);
+            assert_eq!(
+                status.visible_when,
+                Some(Predicate {
+                    source: BindSource::Slot {
+                        slot: "accessibility.flashLimiter".into()
+                    },
+                    equals: Some(PredicateValue::Boolean(on)),
+                }),
+                "{id} reads the resolved readonly limiter slot"
+            );
+        }
+        let mut every_widget = Vec::new();
+        collect_widgets(&options_tree.root, &mut every_widget);
+        assert!(
+            every_widget.iter().all(|widget| match widget {
+                Widget::Button(button) => !button.on_press.contains("flashLimiter"),
+                Widget::Slider(slider) => slider
+                    .bind
+                    .source
+                    .slot()
+                    .is_none_or(|slot| !slot.contains("flashLimiter")),
+                _ => true,
+            }),
+            "the flash limiter is read-only here: only the engine panel changes it"
+        );
+
         for (slider, slot) in [
             ("optionsScreenShakeScale", "options.screenShakeScale"),
             ("optionsMasterVolume", "options.masterVolume"),
@@ -12648,13 +12886,6 @@ mod tests {
         assert_eq!(
             button_action(&title.root, "frontendAccessibility"),
             Some(postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION)
-        );
-        assert!(
-            options_grids
-                .iter()
-                .flat_map(|grid| &grid.children)
-                .all(|child| !matches!(child, Widget::Spacer(_))),
-            "label and control columns have no empty tracks"
         );
         let sensitivity = find_slider(&options_tree.root, "optionsMouseSensitivity")
             .expect("mouse sensitivity slider is reachable in the options tree");

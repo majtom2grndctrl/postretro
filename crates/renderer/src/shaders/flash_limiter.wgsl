@@ -8,6 +8,10 @@
 // History lives only here, on the GPU: each cell's last presented mean color,
 // its luminance and redness extrema, its luminance floor, and the global
 // flash window. Nothing reads back.
+//
+// Both pipelines skip workgroup-memory zero-fill (see `FlashLimiter::new`):
+// every `var<workgroup>` here must be written before any invocation reads it.
+//
 // See context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter).
 
 // Mirrors `LimiterFrameUniform` in render-cpu/src/flash_limiter.rs.

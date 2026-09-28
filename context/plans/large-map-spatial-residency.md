@@ -85,39 +85,75 @@ byte counts residency is designed around.
   Present. Renderer owns GPU upload, synchronization, and retirement.
 - Co-op admission preserves one logical level/content identity. Residency is
   local resource state, not divergent gameplay/collision/visibility content.
-- Lightmap charts pack across atlas layers without regard to clusters. Cluster residency
-  of lightmap-shaped data needs a chart-to-cluster mapping, or a packer that respects it.
-- Whole-atlas animated-lightmap compute already exceeds wgpu's per-dimension dispatch
-  limit on `campaign-test`. Per-cluster dispatch must not inherit that shape.
+- Lightmap charts pack by cell (next-fit; a cell never spans layers), but cell-id order
+  scatters a cluster's cells across layers. Layer size follows the largest cell, so one
+  huge cell can force a single 4096² layer that residency cannot split. Cluster residency
+  of lightmap-shaped data needs a packer that orders by cluster and caps the layer size.
+- Lightmap (id 22) and shadowmask (id 42) share the fragment's layer index. They are
+  resident together or not at all.
+- The forward fragment stage has no free binding. Layer indirection lives in the vertex
+  stage (a table in the existing animated-slot uniform), never as a new fragment binding.
 
 ## Decisions still open
 
-- Byte-aware partition bounds, now that a second resource shares each cluster.
-- Which lightmap-shaped section streams first (shadowmask id 42, lightmap id 22, animated
-  weight maps id 25), and whether partial atlas layers justify their packing-density cost.
-- Cross-cluster light, texture-boundary, and chart ownership for lightmap-shaped data.
-- Platform residency budgets per resource.
-- Whether the next directory version drops solid and exterior cells from clustering.
+Leanings come from a read-only dry run (research below). None is decided.
+
+- Byte-aware partition bounds, now that a second resource shares each cluster. Lean:
+  bound by pre-pack chart texel area, and have the packer consume the partition. The
+  partition would then run before the lightmap bake.
+- First lightmap-shaped work. Lean, in order:
+  1. A vertex-stage virtual-layer table plus a pooled animated atlas. No I/O, and it
+     covers the largest byte class.
+  2. Ids 22 and 42 as one layer-keyed unit through the issuer. Existing layer-major
+     payloads give per-layer file ranges, so there is no new section.
+  3. Id 25 weight maps by chunk range.
+- Packing granularity. Lean: soft, cluster-ordered packing with a capped layer size.
+  Measured hard per-cluster boundaries cost 2.1–5.5× the texels. The packer must also
+  weigh animated-slot count, because cluster order can raise it.
+- Miss policy. Lean:
+  - Visible-cluster layers are mandatory. The pool grows rather than refusing them.
+  - A transient miss drops static direct light and keeps SH indirect.
+  - A low-resolution fallback tile is still a candidate. It needs a seam prototype.
+- Ownership. Texels belong to their receiver cell, so partitioning receivers cannot
+  double-count a light. The shadowmask channel table and the animation descriptors stay
+  global.
+- Platform residency budgets per resource. Lean: one planner and one tier (see
+  `sh-streaming--reveal-gate-and-budget-tiers`), split into per-resource GPU caps and
+  per-drain budgets.
+- Whether the next directory version drops solid and exterior cells from clustering. The
+  lightmap layer-range table can ride the same version bump.
 
 ## Pre-planning measurements
 
-Measured whole-resident section sizes (SH streams and is excluded):
+Whole-resident lightmap-shaped GPU bytes, parsed from compiled PRLs on 2026-09-27. Ids 22
+and 42 are single-mip, so GPU bytes equal disk bytes. The animated atlas is derived and
+never on disk.
 
-| Section | `campaign-test` | `stress-warren-mini` (lightmap density 0.8) |
+| Resource | `campaign-test` | `stress-warren-mini` |
 |---|---|---|
-| Shadowmask atlas (id 42) | 64 MiB | 1.7 MiB |
-| Animated light weight maps (id 25) | 60 MiB | 1.4 MiB |
-| Lightmap (id 22) | 24 MiB | 0.6 MiB |
+| Animated lightmap atlas (irradiance + direction) | 144 MiB (3 slots × 2048²) | 5.1 MiB |
+| Animated light weight maps (id 25) | 35.4 MiB | 1.4 MiB |
+| Shadowmask atlas (id 42, BC5) | 32 MiB | ≈0.8 MiB (est.; file predates BC5) |
+| Lightmap (id 22, BC6H + direction) | 24 MiB (4 × 2048²) | 0.6 MiB (27 × 128²) |
 
-`stress-warren-hallway-inspection` measured id 42 at 88 MB, projected to 1.29 GB at the
-default density (`context/plans/ready/shadowmask-atlas-compress-at-rest/`).
+For scale, `campaign-test`'s streamed SH payload (id 50) is 26 MiB on disk.
+
+The animated atlas allocates a full layer per slot, while its chunks cover about a fifth
+of those texels. It is the largest lightmap-shaped consumer and needs no I/O to shrink.
+
+Dry-run chart-to-cluster attribution on `campaign-test` (area estimated from UV bounds):
+- Only a minority of clusters carry charts.
+- No cell spans two layers.
+- An 8-cluster warm set touches most layers on average and all of them at worst.
+- Soft cluster-ordered packing at 1024² layers roughly halves the average touched share,
+  for about 25% more texels.
 
 Still needed:
 
 - Resident bytes per GPU resource, CPU frame time, and draw counts in the dev panel,
   before any stage 5 plan is judged.
-- Per-cluster attribution of lightmap-shaped bytes from a dry-run chart-to-cluster pass.
-- Post-compression sizes once the shadowmask at-rest brief lands.
+- Rebuilds of `stress-warren-hallway-inspection` and `stress-warren-mini`. Their PRLs
+  predate BC5 and ids 25/49/50.
 - A production-shaped map beyond the Stress Warren family and `campaign-test`.
 - Seam and miss prototypes for the first lightmap-shaped resource, including
   cross-sector lights.

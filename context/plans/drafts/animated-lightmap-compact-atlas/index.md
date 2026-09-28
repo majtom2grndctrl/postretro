@@ -1,92 +1,96 @@
 # animated-lightmap-compact-atlas
 
-Brief · compact · reads: `context/lib/rendering_pipeline.md` (animated lightmap), `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache, `context/lib/development_guide.md` §1.4 · read at 0a7352039
+Brief · compact · reads: `context/lib/rendering_pipeline.md` (animated lightmap), `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache, `context/lib/development_guide.md` §1.4 · read at f95d476ac
 
-**Sequence: 1 of 4.** No dependency on any brief in the series or on `E23--preferences-comfort-floor`, whose changes in these crates are limited to the flash limiter and screen effects. It touches the compiler, `level-format` and the renderer, not `startup/` or netcode. Later briefs do not depend on it. Lightmap-shaped streaming (`context/plans/large-map-spatial-residency.md` stage 5) will build on its layout.
+**Sequence: 1 of 4.** No dependency on any brief in the series or on `E23--preferences-comfort-floor`, whose changes in the crates the Boundary inventory names are limited to the flash limiter and screen effects. Later briefs do not depend on it.
 
 ## Problem
-The owner wants PostRetro to run well on laptop GPUs. Basis: an anticipated need backed by a measured waste. The animated lightmap atlas pair is the largest lightmap-shaped VRAM consumer: 144 MiB on `campaign-test`. Cause: forward samples it with the static lightmap UV, so each animated slot is a full static-layer-sized array layer, while its chunks cover about a fifth of those texels. Nothing in the dev panel or load log reports lightmap-family bytes, so the waste was found by parsing PRLs by hand. When done: the atlas holds only the texels animated faces use, packed at compile time. `campaign-test` lands near a third of today's bytes (one layer instead of three) and renders identical pixels. The dev panel and load log report resident bytes for each lightmap-family texture.
+The owner wants PostRetro to run well on laptop GPUs. Basis: an anticipated need backed by a measured waste. The animated lightmap atlas pair is the largest lightmap-shaped VRAM consumer: 144 MiB on `campaign-test`. Cause: forward samples it with the static lightmap UV, so each animated slot is a full static-layer-sized array layer, while its chunks cover about a fifth of those texels. Nothing in the dev panel or load log reports lightmap-family bytes, so the waste was found by parsing PRLs by hand. When done: the atlas holds only the texels animated faces use, packed at compile time. `campaign-test` lands near a quarter of today's bytes and renders the same frame to within one 8-bit step. The dev panel and load log report resident bytes for each lightmap-family texture.
 
 ## Decisions
-- **Compile-time repack.** prl-build packs one block per animated face into a compact atlas and writes it into section 25 v4. The weight bake stays in static-lightmap space, because its visibility seed keys on static coordinates. The repack is a pure coordinate rewrite after the unlit-chunk cull. Placement: baked over computed (`index.md` §2). Undo cost: a section version and stage-version bump.
-- **Compact layers keep the static layer's size.** Blocks pack into as many static-layer-sized layers as they need. A later merge of the static and animated direction arrays then stays shape-compatible (`plans/done/static-light-shadowmask-world-receipt`). The tightest free extent would save about another third on `campaign-test`. It loses because it closes that door.
-- **Block equals chart placement.** A block is the face's static chart placement rect, including the existing chart padding. That padding is the gutter. It stays zero and is never composed, matching today's zero-initialized atlas outside chunk rects. Result: pixel parity with today.
-- **The compiler enforces what the repack relies on, and fails the build otherwise.** Each block sits on one static layer. No vertex is shared across blocks. Every bilinear footprint stays inside its block plus gutter. The block count stays under the binding-7 uniform cap. The cap is derived from the uniform binding limit the renderer requests, which is `wgpu::Limits::default()` today (64 KiB). Current content is far below it. If a map ever reaches it, the remedy is merging a cell's faces on one layer into one block. That is not built here, and the guard wording already allows it.
-- **Forward remap without a new binding.**
-  - Each vertex carries its animated block id in the geometry vertex's existing pad field, with 0 meaning none. Stride and on-disk size are unchanged.
-  - The group-4 binding-7 uniform grows from a slot table into a block table: compact extent, plus per-block texel offset and compact layer.
-  - The fragment stage resolves the block from a flat varying. Binding 7 stays FRAGMENT-only, and storage and sampled binding counts are unchanged. This respects the forward binding wall.
-  - This departs from `context/plans/large-map-spatial-residency.md`, which leans toward a vertex-stage indirection at layer or cluster granularity. Per-face blocks make the animated-slot-count worry in that plan irrelevant, and a fragment lookup costs the same as today's slot lookup. The same change updates that plan's stage-5 notes.
-- **Compose is unchanged in shape.** Chunk rects arrive in compact coordinates, and dispatch tiles target compact layers.
-- **Strict versions.** The loader rejects section 25 v2 and v3 with a recompile error, following the exact-match rule in `build_pipeline.md` §PRL section IDs. The animated weight-map stage version bumps, because its cached payload encoding changes (§Build Cache).
-- **Lightmap-family byte meter.** The dev panel and the load log report resident GPU bytes separately for:
+- **Compile-time repack.** prl-build packs one block per animated face into a compact atlas and writes it into section 25 v4. Placement: baked over computed (`index.md` §2). Undo cost: a section version and stage-version bump.
+- **Uniform pages.** The compact atlas is an array of pages of one size, a power of two the compiler picks: at least the largest block, at most the static layer size, and at least 1024² unless the static layer is smaller. Blocks pack in cell order. The compiler never writes a packed layout larger than the identity layout (below); if packing would be larger, it writes the identity layout. Waste is at most one partial page, about what a free extent would save; a page is the load-and-evict unit for `context/plans/large-map-spatial-residency.md` stage 5; and a free extent must reallocate to grow.
+- **Block equals chart placement.** A block is the face's static chart placement rect, including the existing chart padding, which is the gutter. The gutter stays zero and is never composed, matching today's zero-initialized atlas outside chunk rects, so the frame matches today's.
+- **Identity layout as reference.** A block table that leaves every block at its static position, one page per static layer at the static size, is a valid v4 layout and reproduces today's full-layer atlas. The weight-map stage caches its payload in this layout, and the renderer's parity test renders it as the reference.
+- **The compiler enforces what the repack relies on, and fails the build otherwise.** No vertex is shared across blocks. Every bilinear footprint stays inside its face's placement rect. The block count stays under one cap that the compiler and the forward shader's block table share.
+- **Forward remap without a new binding.** Each vertex carries its animated block id in the geometry vertex's pad field, with 0 meaning none. The group-4 binding-7 uniform grows from a slot table into a block table, which the fragment stage reads through a flat varying. Binding 7 stays FRAGMENT-only and the storage and sampled binding counts are unchanged, respecting the forward binding wall. This follows `large-map-spatial-residency.md`, whose stage-5 notes resolve per-face animated blocks in the fragment stage from the binding-7 table.
+- **Strict versions.** The loader rejects section 25 v2 and v3 with a recompile error, following the exact-match rule in `build_pipeline.md` §PRL section IDs. The animated weight-map stage version bumps, because its cached payload becomes v4 in the identity layout (§Build Cache).
+- **Block-id mismatch.** A vertex whose block id disagrees with the block table, or names a block past it, fails the load with a recompile error in debug builds and in any build with `dev-tools`. A player release build without `dev-tools` loads the level with no animated light and logs an error.
+- **Lightmap-family byte meter.** The dev panel, the load log and the capture report show resident GPU bytes separately for:
   - static irradiance;
   - static direction;
   - shadowmask;
   - animated irradiance;
   - animated direction.
 
-  It generalizes the existing per-resource resident-byte ledger (`ShResidencyReport`) rather than starting a second accounting model. This is the brief's own proof. It also fills part of the gap in `context/plans/large-map-spatial-residency.md` §Pre-planning measurements.
+  It generalizes the existing per-resource resident-byte ledger (`ShResidencyReport`) rather than starting a second accounting model. It is the brief's own proof, and fills part of the gap in `large-map-spatial-residency.md` §Pre-planning measurements.
 - **Non-goals.**
   - Streaming or visibility-driven pooling of the atlas. That is stage 5 of `large-map-spatial-residency.md`, which builds on this layout.
   - Smaller texel formats. Storage-writable formats in core wgpu leave little to gain once the atlas is compact.
   - Filling the gutter by edge-replicate. That would remove today's darkened animated-edge fringe, which is a visual change for the owner to decide separately.
-  - Any change to the static lightmap, shadowmask or direction atlases.
+  - Any change to the static lightmap, shadowmask or direction atlases. They are not the largest class, and stage 5 owns their residency.
 
 ## Acceptance
 ### Automated
 **Pixel parity**
-- [ ] With identical animation state, a before/after frame capture on `campaign-test` and `stress-warren-mini` is pixel-identical. The diff is compared against the last full-layer build.
-- [ ] A level with no animated lights builds and renders as before, with an empty block table and no atlas memory beyond today's placeholder.
-- [ ] Each parity capture forces the level's animated lights on, and the frame differs from the same capture with those lights dark. A capture where no animated light contributes does not count. (pin P9)
+- [ ] A lasting GPU test in the existing GPU test harness renders the same scene with the identity block table and with the packed one, animated lights forced on, and every pixel matches within one 8-bit step. The same test shows the forced lights change the frame; a render where no animated light contributes does not count.
+- [ ] With the identity block table, every chunk composes at its static layer and position, and forward samples each face at its static UV.
 - [ ] The repack changes only where chunks sit. Per-texel weights and light lists are byte-identical before and after it. Each block spans its face's full chart placement, and every chunk keeps the same offset inside its block in both spaces. (pin P4)
+- [ ] A level with no animated lights writes no animated sections, every vertex carries no block id, it renders as before, and the meter shows the animated pair at placeholder size. (pin P5)
 
 **Repack**
 - [ ] A face whose every chunk the unlit cull drops gets no block, and its vertices carry no block id. A level whose chunks are all dropped writes no animated sections. (pin P3, P5)
 - [ ] A face with several chunks, some of them culled, gets exactly one block. Culled chunk texels inside it stay zero. (pin P4)
 
 **Compiler guards**
-- [ ] A face whose block would span two static layers fails the build with a message naming the face.
 - [ ] A vertex shared across two blocks fails the build.
-- [ ] A bilinear footprint past block plus gutter fails the build. A footprint just inside it passes.
+- [ ] A bilinear footprint past its face's placement rect fails the build. A footprint just inside it passes.
 - [ ] A block count over the uniform cap fails the build, naming the cap and the count. A count at the cap passes.
 - [ ] The compiler's block cap equals the block-table capacity the forward shader declares. That table fits the uniform size the renderer requests, and the cap never exceeds what a vertex's 16-bit block id can name. (pin P10)
 
 **Format and cache**
 - [ ] Section 25 v4 round-trips. v2 and v3 are rejected with a recompile error.
-- [ ] A warm build after the stage-version bump re-bakes the weight-map stage and does not re-bake the SDF atlas.
-- [ ] Every vertex's block id agrees with the block table's static layer, or the loader rejects the level.
-- [ ] Vertices with no animated block read block 0 and take today's no-animated-light path.
+- [ ] The loader rejects a section whose page size is not a power of two or lies outside the page-size bounds. (pin P14)
+- [ ] A warm build over a cache written before this change re-bakes the weight-map stage.
+- [ ] Editing only an animated light's properties leaves the SDF atlas stage cached. (pin P1)
 - [ ] A warm rebuild whose weight-map stage hits the cache writes section 25 and the geometry section byte-identical to a cold build. (pin P2)
+- [ ] Vertices with no animated block carry no block id (0 means none) and take today's no-animated-light path.
+
+**Block-id mismatch** (pin P11)
+- [ ] In a debug build, and in any build with `dev-tools`, a level where a vertex's block id disagrees with the block table, or names a block past it, fails to load with a recompile error.
+- [ ] In a player release build without `dev-tools`, the same level loads with no animated light and logs one error.
 
 **Forward remap**
 - [ ] When the animated atlas falls back to the placeholder, or has nothing to compose, every vertex resolves to no block, whatever ids the level carries. (pin P6)
-- [ ] No two blocks overlap on a compact layer, and every block and chunk lies inside its layer.
+- [ ] No two blocks overlap on a page, and every block and chunk lies inside its page.
 - [ ] The geometry vertex stays 36 bytes on disk and in the vertex buffer. The forward pass's storage and sampled binding counts are unchanged, and the block table is visible to the fragment stage only.
 
 **Size**
-- [ ] Compact layers have the static layer's dimensions. The layer count is the fewest that hold every block, with no layer allocated per static layer.
-- [ ] A level whose blocks fit in one layer allocates one layer, however many static layers carry animated faces.
-- [ ] When blocks overflow one compact layer, they spill into a second. Compose and forward resolve every block to the same compact layer and offset, including blocks on the second layer. (pin P9)
-- [ ] A block as large as a whole layer packs alone at that layer's origin, the next block starts a new layer, and no compact layer is left empty. (pin P8)
+- [ ] The page size is a power of two within the Decision's bounds.
+- [ ] The page count is the fewest pages the packer fills in cell order, and no page is empty.
+- [ ] A level whose blocks fit on one page allocates one page, however many static layers carry animated faces.
+- [ ] When blocks overflow one page, they spill into a second. Compose and forward resolve every block to the same page and offset, including blocks on the second page. (pin P9)
+- [ ] A block as large as a whole page packs alone at that page's origin, and the next block starts a new page. (pin P8)
+- [ ] On every level with animated faces, the animated atlas bytes never exceed the identity layout's. A level where packing would be larger ships the identity layout.
+- [ ] On `campaign-test`, the capture report's animated irradiance and direction bytes each equal the level's page count times one page's bytes, and fall below the meter's reading on the full-layer build. (pin P13)
 
 **Byte meter**
-- [ ] The load log reports bytes for each of the five lightmap-family textures. The dev panel shows the same numbers.
-- [ ] After a level unload, every lightmap-family count returns to its placeholder size.
+- [ ] The load log reports bytes for each lightmap-family texture the byte-meter Decision lists. The dev panel and the capture report show the same numbers.
+- [ ] After a level unload, every lightmap-family count returns to its placeholder size. (pin P12)
 - [ ] When the animated atlas falls back to the placeholder, the meter reports the placeholder's bytes, not those of the atlas it rejected. (pin P7)
 
 ### Manual
 - [ ] Visual: animated lights on `campaign-test`, `occlusion-test` and `closet-reveal` look unchanged in play, including edges and seams.
-- [ ] Resource: record lightmap-family bytes from the meter on `campaign-test`, `occlusion-test` and `stress-warren-mini`, before and after, rebuilding stale PRLs first. Expect `campaign-test`'s animated pair to fall to about a third.
+- [ ] Resource: record the meter's lightmap-family bytes on `campaign-test`, `occlusion-test` and `stress-warren-mini` on the full-layer build and after the repack, rebuilding stale PRLs first.
 
 ## Wire format
 Little-endian throughout, like v3. Unsigned 32-bit fields unless stated otherwise. Mirrors v3's layout: header, then fixed records, then pools.
 
 | Part | Fields, in order | Notes |
 |---|---|---|
-| Header | version = 4, chunk_count, offset_counts_len, texel_lights_len, block_count, compact_width, compact_height, compact_layers | Replaces v3's slot_count. Width and height equal the static layer's; the loader rejects a mismatch. An empty block table has block_count 0 and compact_layers 0. |
+| Header | version = 4, chunk_count, offset_counts_len, texel_lights_len, block_count, page_size, compact_layers | Replaces v3's slot_count. Every page is page_size × page_size, a power of two; the loader rejects a non-power-of-two or out-of-range page size. compact_layers is the page count. A level with no surviving chunk writes no animated sections. |
 | Chunk rect × chunk_count | compact_x, compact_y, w, h, texel_offset, block | In compact coordinates; block indexes the block table. Replaces v3's static-space rect and layer. |
-| Block × block_count | static_layer, static_x, static_y, compact_x, compact_y, compact_layer, w, h | One per animated face. Static→compact is a translation plus a layer change. |
+| Block × block_count | static_layer, static_x, static_y, compact_x, compact_y, compact_layer, w, h | One per animated face. compact_layer is the page. Static→compact is a translation plus a layer change. |
 | Offset counts, texel lights | Unchanged from v3 | |
 
 v3's trailing slot table is dropped. The geometry vertex (section 17) keeps its 36-byte layout. Its u16 pad becomes the animated block id, where 0 means none and n means block n − 1. Section 17 has no version field, so a stale file reads 0 everywhere, and the v4 requirement on section 25 rejects that file anyway.
@@ -94,23 +98,24 @@ v3's trailing slot table is dropped. The geometry vertex (section 17) keeps its 
 ## Boundary inventory
 | Name | Compiler | level-format | Loader / render-cpu | Renderer | WGSL |
 |---|---|---|---|---|---|
-| Animated block id | stamped per face vertex after the SDF key is hashed | `Vertex` pad field | per-vertex cross-check against the block table | `Uint16x2` attribute (layer, block) | flat varying |
-| Block table | repack output | new block record type in section 25 | `validate_cross_section` | binding-7 uniform builder | binding-7 struct |
-| Compact extent | repack output | section 25 header | extent preflight | atlas creation, compose dispatch | unchanged compose; forward UV scale |
+| Animated block id | stamped per face vertex after the SDF key is hashed | `Vertex` pad field | per-vertex cross-check against the block table; rejects or disables per the mismatch Decision | `Uint16x2` attribute (layer, block) | flat varying |
+| Block table | repack output; identity layout in the stage cache | new block record type in section 25 | `validate_cross_section` | binding-7 uniform builder | binding-7 struct |
+| Page size and count | repack output | section 25 header | page-size preflight | atlas creation, compose dispatch | unchanged compose; forward UV scale |
 
 ## Path
-- Writer: `bake_animated_light_weight_maps_controlled` → `cull_unlit_chunks` → `validate_animated_atlas_budget` in the compiler pipeline. The repack goes after the cull and replaces the full-layer budget estimate with the compact extent. It reads `face_charts` and `face_placements` only.
+- Writer: `bake_animated_light_weight_maps_controlled` → `cull_unlit_chunks` → `validate_animated_atlas_budget` in the compiler pipeline. The weight bake stays in static-lightmap space, because its visibility seed keys on static coordinates (`soft_visibility_texel_seed`). The repack is a pure coordinate rewrite after the cull, on both cache hit and miss, and replaces the full-layer budget estimate with the page count. It reads `face_charts` and `face_placements` only.
 - Vertex stamping must happen after the `sdf_atlas` key hashes `geo_result`. Stamping earlier would make the SDF atlas re-bake for no reason.
-- Runtime: `AnimatedLightmapResources::new` / `animated_atlas_extent`, `StaticLayerToAnimatedSlot` (binding 7), `animated_slot_for_static_layer` and `sample_lightmap_animated` in forward.wgsl, `DispatchTile.target_slot`. The `WorldVertex` layer attribute sits at offset 32.
-- First slice: the compiler repack plus a capture diff, before the byte meter or any cleanup. It tests the riskiest assumption, that zero gutters give pixel parity. Measured worst UV overrun is far below 1.5 texels on current content.
+- Runtime: `AnimatedLightmapResources::new` / `animated_atlas_extent`, `StaticLayerToAnimatedSlot` (binding 7), `animated_slot_for_static_layer` and `sample_lightmap_animated` in forward.wgsl, `DispatchTile.target_slot`. Compose keeps its shape: chunk rects arrive in compact coordinates and dispatch tiles target pages. A likely block-table layout is the page size, then per-block texel offset and page.
+- Cap: derive it once from the uniform binding size the renderer requests and share it with the forward shader's array length; figures in research P16. If a map nears it, merge a cell's faces on one layer into one block. That is not built here, and the guard wording allows it.
+- Packer: MaxRects per page in cell order, as `pack_layers` does per layer. An in-order shelf packer overshoots today's bytes on `stress-warren-mini` (research §Measurements). `drafts/bvh-leaf-clustering` assumes one chunk per face; whichever lands second updates the other's assumption.
+- Parity harness: `gpu_or_skip` in `shadowmask_sample_test.rs` is the self-skipping GPU test pattern, and the capture scene's `force_active` seeding forces animated lights on.
+- First slice: the byte meter against today's full-layer atlas, so a before reading exists. Then the repack with the identity-versus-packed parity test, which tests the riskiest assumption: that zero gutters give pixel parity.
 - Many tests pin the slot-table shape. Research lists them. Rewrite them; don't wrap them.
 - Rejected rivals:
   - A load-time repack from existing data, with no format change. The owner chose compile time.
   - A vertex-stage remap. It needs VERTEX visibility on binding 7 and gains nothing over a fragment lookup.
-  - A free compact extent. See Decisions.
-  - Block merging now. Deferred until a map nears the cap.
-- Pack blocks in cell order, so a later cluster-ordered residency pass inherits some locality. `drafts/bvh-leaf-clustering` assumes one chunk per face; whichever lands second updates the other's assumption.
 - Measurements, invariants data and the test list: `research.md`.
 
 ## Open questions
 - Where the byte meter lives in the dev panel, and its log line format — **delegated**.
+- Whether the unload row needs a new unload harness or can be proven by loading a second level after the first — **delegated**.

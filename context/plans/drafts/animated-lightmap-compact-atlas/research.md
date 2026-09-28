@@ -11,13 +11,17 @@ Read-only research. PRLs were parsed with scratchpad Python scripts; nothing was
 
 ## Measurements
 
-| Map | Today | Compact (blocks) | Notes |
-|---|---|---|---|
-| campaign-test | 144 MiB | ≈31.5 MiB, 48 MiB as one 2048² layer | 3 slots, 154 chunks; chunks cover 20.3% of slot texels, lit texels 11.1% |
-| occlusion-test | 84 MiB | ≈10 MiB | |
-| stress-warren-mini | 5.06 MiB | ≈3.1 MiB | Power-of-two width and height would make it worse than today |
+Pages are Rgba16Float irradiance plus Rgba8Unorm direction, 12 B per texel: a 1024² page is 12 MiB.
 
-The sizing script is in the session scratchpad (`compact.py`), which is not durable.
+| Map | Today | Block area | Page size | Pages: area bound / shelf by height / shelf in face order | Notes |
+|---|---|---|---|---|---|
+| campaign-test | 144 MiB (3 × 2048²) | ≈31.5 MiB | 1024² | 3 (36 MiB) / 4 (48 MiB) / 6 (72 MiB) | 154 blocks, largest side 645; chunks cover 20.3% of slot texels, lit texels 11.1% |
+| occlusion-test | 84 MiB (7 × 1024²) | ≈10 MiB | 1024² | 1 (12 MiB) / 2 (24 MiB) / 3 (36 MiB) | 97 blocks, largest side 568 |
+| stress-warren-mini | 5.06 MiB (27 × 128²) | ≈3.1 MiB | 128², capped by the static layer | 17 (3.2 MiB) / 20 (3.8 MiB) / 37 (6.9 MiB) | 977 blocks, largest side 78 |
+
+Blocks are approximated as each face's surviving-chunk bounding box plus the 2-texel padding. Neither shelf packer is the real one; they bracket packer quality. The "near a quarter" figure for `campaign-test` assumes a MaxRects packer reaches the area bound's page count; a height-sorted shelf reaches a third. Face order stands in for cell order. An in-order shelf exceeds today's bytes on `stress-warren-mini`, so packer quality is load-bearing on small static layers.
+
+The sizing scripts are in the session scratchpad (`compact.py`, `pages.py`), which is not durable.
 
 ## Data invariants observed in all PRLs with section 25
 
@@ -26,7 +30,7 @@ These were observed in the data. The compiler does not enforce them, which is wh
 - Vertices are emitted per face and never shared (`extract_geometry`).
 - No animated leaf spans two layers.
 - Chunk rect ⊆ leaf vertex-UV box + 1 texel. Worst excess: 0.873 texel against the UV box, 0.015 on campaign-test, and 0.001 on stress-warren-mini against the placement.
-- Chunk count ≤ 977 across content. The block table at 8 B per block is well under 16 KiB. The cap with a 16 B header is 2040 blocks.
+- Chunk count ≤ 977 across content, and block count reaches 977 on stress-warren-mini. Cap figures: P16.
 - `CHART_PADDING_TEXELS = 2`. A 2-texel gutter holds while overrun stays below 1.5 texels.
 
 ## Formats
@@ -60,15 +64,15 @@ These PRLs carry section 25 and must be rebuilt after the version bump: campaign
 | P5 | Every candidate chunk culled, or no animated light | Emptiness decided after the cull | No section 24 or 25; every vertex id 0; animated pair at placeholder bytes |
 | P6 | Chunks exist but compose has nothing to write (all SDF-typed animated lights), or atlas construction fails | Block table is built from the installed resource state, after the active/dummy decision | Every vertex resolves to no block; no compact offset is applied against the dummy |
 | P7 | Atlas construction fails after its size is computed (tile buffer over the storage limit) | Meter records at the allocation that survives the fallback decision | Meter reports placeholder bytes, not the rejected atlas's |
-| P8 | One block whose extent equals the layer extent | Packer places blocks in order | It sits alone at the layer origin; the next block starts the next layer; no layer is empty |
-| P9 | Blocks overflow one compact layer | Compose tile targets and forward lookup read one block table | Two compact layers; compose and forward agree on layer and offset for every block, including layer 1 |
+| P8 | One block whose extent equals the page size | Packer places blocks in cell order | It sits alone at the page origin; the next block starts the next page; no page is empty |
+| P9 | Blocks overflow one page | Compose tile targets and forward lookup read one block table | Two pages; compose and forward agree on page and offset for every block, including page 1 |
 | P10 | Block count at the cap, and cap + 1 | Cap derived once, shared by compiler and forward shader | At cap passes; cap + 1 fails naming both; the cap fits the requested uniform size and the 16-bit vertex id |
-| P11 | Vertex names a block past the table, or a block on another static layer | Checked after both sections decode | Rejected per owner choice (F11) |
+| P11 | Vertex names a block past the table, or a block on another static layer | Checked after both sections decode | Debug or `dev-tools` build: load fails with a recompile error. Player release build: level loads with no animated light and one logged error |
 | P12 | Load level A, unload, load level B | Meter rebuilt per install; block table rewritten at install | After unload each count is placeholder; after B, counts are B's alone |
 | P13 | "Before" resource reading | Meter must exist while the atlas is still full-layer | Before numbers come from the meter, not hand-parsed PRLs (F15) |
-| P14 | Section 25 whose compact width/height differ from the static layer's | Extent preflight after both sections decode | Level rejected |
+| P14 | Section 25 whose page size is not a power of two, is below the largest block or the lower bound, or exceeds the static layer size | Page-size preflight after both sections decode | Level rejected |
 
 Additional research pins (subtract lens), literal text:
 
 - **P15** — supersedes the Data invariants bullet "No animated leaf spans two layers.": No animated leaf spans two layers. Enforced by type: one face has one `ChartPlacement` with a single `layer`, and one leaf is one face.
-- **P16** — supersedes the Data invariants cap figure ("2040 blocks"): Chunk count ≤ 977 across content. The cap derives from the requested `max_uniform_buffer_binding_size` (64 KiB under `Limits::default()` in wgpu 29). Blocks pack into 16-byte uniform array elements, so the cap is (limit − header) / per-block bytes after packing. Current content is under 10% of it.
+- **P16** — supersedes the Data invariants cap figure ("2040 blocks"): Chunk count ≤ 977 across content. The cap derives from the requested `max_uniform_buffer_binding_size` (64 KiB under `Limits::default()` in wgpu 29). Blocks pack into 16-byte uniform array elements, so the cap is (limit − header) / per-block bytes after packing: 8190 blocks at 8 B per block behind a 16 B header, 4095 at 16 B. Current content (≤ 977 blocks) uses about 12% or 24% of it. Both caps sit under the 16-bit vertex id's 65535.

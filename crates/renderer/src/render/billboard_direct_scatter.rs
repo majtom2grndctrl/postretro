@@ -8,11 +8,12 @@ use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 use postretro_render_cpu::sh_volume::BIND_BILLBOARD_DIRECT_SCATTER;
 use wgpu::util::DeviceExt;
 
+use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
     billboard_scatter_base_allocation, billboard_scatter_composed_allocation,
     billboard_scatter_dummy_allocation, storage_byte_len, texture_allocation_bytes, volume_3d_fits,
 };
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Renderer-owned textures for the billboard direct-scatter path. The sampled
@@ -111,7 +112,7 @@ impl BillboardDirectScatterResources {
                     animated_section_present.then_some(48),
                 ]),
                 false,
-                ShResidencyAllocationState::Data,
+                ResidencyAllocationState::Data,
             );
             let composed = device.create_texture(
                 &allocation.descriptor(Some("Billboard Direct Scatter Composed Volume")),
@@ -243,16 +244,16 @@ fn upload_base_texture(
             ]),
             false,
             if base_section_present {
-                ShResidencyAllocationState::Fallback
+                ResidencyAllocationState::Fallback
             } else {
-                ShResidencyAllocationState::Dummy
+                ResidencyAllocationState::Dummy
             },
         );
         return (upload_dummy_texture(device, queue, allocation), false);
     };
 
     let allocation = billboard_scatter_base_allocation(section.grid_dimensions);
-    ledger.record_texture(allocation, &[47], false, ShResidencyAllocationState::Data);
+    ledger.record_texture(allocation, &[47], false, ResidencyAllocationState::Data);
     let texture = device.create_texture_with_data(
         queue,
         &allocation.descriptor(Some("Billboard Direct Scatter Base Volume")),

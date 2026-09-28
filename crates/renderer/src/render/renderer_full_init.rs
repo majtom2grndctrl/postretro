@@ -317,6 +317,7 @@ pub(crate) fn build_full_renderer(
                 &uniform_bind_group_layout,
                 animated_lm_debug,
             )
+            .into_fallback()
         },
         "animated lightmap initialization",
     );
@@ -340,6 +341,10 @@ pub(crate) fn build_full_renderer(
         installed_slot_to_static_layer,
     );
     let shadowmask_present = lightmap_resources.shadowmask_present;
+    let lightmap_residency_report = LightmapResidencyReport::new(
+        lightmap_resources.residency.clone(),
+        animated_lightmap.residency_rows(),
+    );
 
     // SDF half-res shadow pass (Task 4). Always allocated — dispatch is
     // gated on `sdf_atlas_resources.present`. Owns the half-res factor
@@ -645,6 +650,7 @@ pub(crate) fn build_full_renderer(
         probe_occlusion_enabled,
         sh_volume_resources,
         sh_residency_report: None,
+        lightmap_residency_report,
         sh_streaming: None,
         sdf_atlas_resources,
         sdf_shadow_pass,

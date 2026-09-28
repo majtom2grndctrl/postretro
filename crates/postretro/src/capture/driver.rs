@@ -127,6 +127,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             capture_git_revision(),
             prepared.measurement_adapter_identity(),
             prepared.sh_residency_report()?,
+            prepared.lightmap_residency_report(),
             cpu_samples_ms,
             prepared.measurement_timing_state(),
             prepared.measurement_partial_timing_frames(),

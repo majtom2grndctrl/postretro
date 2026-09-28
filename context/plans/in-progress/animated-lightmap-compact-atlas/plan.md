@@ -57,11 +57,22 @@ read at: 76a6370ac
 | Visual: animated lights unchanged on campaign-test, occlusion-test, closet-reveal | owner, in-engine | manual |
 | Resource: meter bytes before/after on campaign-test, occlusion-test, stress-warren-mini | owner, in-engine (builder records its own readings too) | manual |
 
+## Before readings (meter, full-layer build, main-tree PRLs of 2026-09-28)
+
+Capture measurement runs (`POSTRETRO_SH_STREAMING=sync-proof`), load-log `Lightmap residency` line:
+
+| Map | static irr | static dir | shadowmask | animated irr | animated dir |
+|---|---|---|---|---|---|
+| campaign-test | 16,777,216 | 8,388,608 | 33,554,432 | 100,663,296 | 50,331,648 |
+| stress-warren-mini | 442,368 | 221,184 | 8 | 3,538,944 | 1,769,472 |
+
+occlusion-test and closet-reveal PRLs are stale in section 34 and do not load; their before readings need a rebuild with the pre-change compiler (owner's manual Resource row).
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Lightmap-family byte meter on today's full-layer atlas (renderer ledger generalization, load log, dev panel, capture JSON) and before readings | integrating executor | — | |
+| 1 | Lightmap-family byte meter on today's full-layer atlas (renderer ledger generalization, load log, dev panel, capture JSON) and before readings | integrating executor | — | done: `residency`, `lightmap_residency`, capture `report_serializes_lightmap_family_rows_with_the_meter_bytes`; before readings below |
 | 2 | Section 25 v4 types, shared block cap and page bounds (level-format); vertex pad → `animated_block` | integrating executor | — | |
 | 3 | Compiler: identity-layout bake, cull with blocks, cell-order MaxRects repack, guards, vertex stamping after the SDF key, budget on pages, stage bump, golden rebaseline | integrating executor (may delegate) | 2 | |
 | 4 | Loader / render-cpu: page-size preflight, v4 cross-section validation, block-id cross-check with mismatch policy | integrating executor | 2 | |

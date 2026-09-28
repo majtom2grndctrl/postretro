@@ -2,6 +2,7 @@
 // sampler, and bind group (group 4).
 // See: context/lib/rendering_pipeline.md §4
 
+use postretro_level_format::SectionId;
 use postretro_level_format::lightmap::{
     DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapHeader,
 };
@@ -10,6 +11,9 @@ use postretro_level_format::shadowmask_atlas::{
     ShadowmaskAtlasSection,
 };
 use wgpu::util::DeviceExt;
+
+use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
+use crate::render::{LIGHTMAP_SHADOWMASK, LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE};
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
 /// `@binding` decorators must match these values.
@@ -113,6 +117,9 @@ pub struct LightmapResources {
     /// Forward shading samples it for bumped-Lambert normal-map correction.
     #[allow(dead_code)]
     direction_texture: wgpu::Texture,
+    /// Static irradiance, static direction and shadowmask meter rows, read
+    /// from the textures this set actually binds.
+    pub residency: [ResidencyAllocation; 3],
 }
 
 /// Build the lightmap bind group layout. Callable before resources exist so
@@ -209,6 +216,27 @@ impl LightmapResources {
             Some((sec, data)) => upload_shadowmask_texture(device, queue, sec, &data),
             None => upload_placeholder_shadowmask(device, queue),
         };
+        let lightmap_state = residency_state(section.is_some(), present);
+        let residency = [
+            texture_row(
+                LIGHTMAP_STATIC_IRRADIANCE,
+                &irradiance_tex,
+                &section_source(SectionId::Lightmap, present),
+                lightmap_state,
+            ),
+            texture_row(
+                LIGHTMAP_STATIC_DIRECTION,
+                &direction_tex,
+                &section_source(SectionId::Lightmap, present),
+                lightmap_state,
+            ),
+            texture_row(
+                LIGHTMAP_SHADOWMASK,
+                &shadowmask_tex,
+                &section_source(SectionId::ShadowmaskAtlas, shadowmask_present),
+                residency_state(shadowmask_section.is_some(), shadowmask_present),
+            ),
+        ];
 
         // The irradiance + direction atlases are `texture_2d_array` (group-4
         // bindings 0/1 declare `D2Array`), so their views must declare the same
@@ -278,7 +306,26 @@ impl LightmapResources {
             present,
             shadowmask_present,
             direction_texture: direction_tex,
+            residency,
         }
+    }
+}
+
+/// Data when the section's texture is bound, Dummy when the section is
+/// absent, Fallback when a present section was rejected for its placeholder.
+fn residency_state(section_present: bool, texture_present: bool) -> ResidencyAllocationState {
+    match (section_present, texture_present) {
+        (_, true) => ResidencyAllocationState::Data,
+        (true, false) => ResidencyAllocationState::Fallback,
+        (false, false) => ResidencyAllocationState::Dummy,
+    }
+}
+
+fn section_source(section: SectionId, texture_present: bool) -> Vec<u16> {
+    if texture_present {
+        vec![section as u16]
+    } else {
+        Vec::new()
     }
 }
 

@@ -10,6 +10,7 @@ use super::BvhOverlayDepthMode;
 use super::CameraCullPath;
 use super::CellOverlayState;
 use super::LightTermMask;
+use super::LightmapResidencyReport;
 use super::LocatorDiagnostics;
 use super::PortalOverlayState;
 use super::Renderer;
@@ -332,7 +333,12 @@ pub fn draw_diagnostics_panel(
         match state.selected_tab {
             DiagnosticsTab::Lighting => draw_lighting_tab(ui, state, renderer),
             DiagnosticsTab::Volumes => draw_volumes_tab(ui, state, sh_state, renderer),
-            DiagnosticsTab::Performance => draw_performance_tab(ui, frame_timing, cpu_timing),
+            DiagnosticsTab::Performance => draw_performance_tab(
+                ui,
+                frame_timing,
+                cpu_timing,
+                renderer.lightmap_residency_report().as_ref(),
+            ),
             DiagnosticsTab::Spatial => draw_spatial_tab(ui, state, renderer),
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
             DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
@@ -715,8 +721,22 @@ fn draw_performance_tab(
     ui: &mut egui::Ui,
     frame_timing: Option<&FrameTimingSnapshot>,
     cpu_timing: CpuTimingPanel<'_>,
+    lightmap_residency: Option<&LightmapResidencyReport>,
 ) {
     cpu_timing_block::draw_cpu_timing(ui, cpu_timing);
+    egui::CollapsingHeader::new("Lightmap memory")
+        .default_open(true)
+        .show(ui, |ui| match lightmap_residency {
+            Some(report) => {
+                for row in &report.allocations {
+                    ui.label(residency_bytes_label(row.name, row.bytes));
+                }
+                ui.label(residency_bytes_label("total", report.total_bytes));
+            }
+            None => {
+                ui.label("Lightmap memory unavailable");
+            }
+        });
     egui::CollapsingHeader::new("GPU Timing")
         .default_open(true)
         .show(ui, |ui| match frame_timing {
@@ -729,6 +749,15 @@ fn draw_performance_tab(
                 ui.label("GPU timing unavailable");
             }
         });
+}
+
+/// Same byte count the load log and capture report print, with MiB for
+/// reading at a glance.
+fn residency_bytes_label(name: &str, bytes: u64) -> String {
+    format!(
+        "{name}: {:.2} MiB ({bytes} B)",
+        bytes as f64 / (1024.0 * 1024.0)
+    )
 }
 
 /// `—` for a pass not sampled in the window, so it never reads as zero cost;

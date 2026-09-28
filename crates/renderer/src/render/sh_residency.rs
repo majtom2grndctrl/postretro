@@ -1,51 +1,13 @@
 // Plain-Rust accounting for level-owned SH GPU allocations.
 // See: context/lib/rendering_pipeline.md §7.8
 
+use super::residency::{
+    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState,
+    allocation_total_bytes, sources, texture_dimension_name, texture_format_name,
+};
 use super::sh_allocation::{
     BufferAllocation, ShAllocationKind, TextureAllocation, texture_allocation_bytes,
 };
-
-/// A PRL section or renderer-derived input cited by an SH residency row.
-///
-/// The report intentionally carries no `wgpu` handles or descriptors: capture
-/// and other non-renderer consumers only need the allocation decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShResidencySource {
-    Section(u16),
-    Derived,
-}
-
-/// Whether the allocation backs accepted source data or a required valid GPU
-/// binding for an unavailable source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShResidencyAllocationState {
-    Data,
-    Dummy,
-    Fallback,
-}
-
-/// Requested physical shape of a level-owned SH allocation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ShResidencyAllocationShape {
-    Texture {
-        format: &'static str,
-        dimension: &'static str,
-        extent: [u32; 3],
-    },
-    Buffer {
-        binding_bytes: u64,
-    },
-}
-
-/// One physical texture or buffer created for the installed level.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShResidencyAllocation {
-    pub name: &'static str,
-    pub sources: Vec<ShResidencySource>,
-    pub bytes: u64,
-    pub state: ShResidencyAllocationState,
-    pub shape: ShResidencyAllocationShape,
-}
 
 /// Renderer-accounted requested SH residency for one completed level install.
 ///
@@ -54,7 +16,7 @@ pub struct ShResidencyAllocation {
 /// included.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShResidencyReport {
-    pub allocations: Vec<ShResidencyAllocation>,
+    pub allocations: Vec<ResidencyAllocation>,
     pub total_bytes: u64,
     /// Streaming-only live pool accounting. It intentionally remains separate
     /// from descriptor rows: logical occupancy is not another GPU allocation,
@@ -179,7 +141,7 @@ impl ShResidencyReport {
 
 /// Mutable collector passed only through level-owned SH constructors.
 pub(super) struct ShAllocationLedger {
-    allocations: Vec<ShResidencyAllocation>,
+    allocations: Vec<ResidencyAllocation>,
     streaming: Option<ShStreamingAllocationSummary>,
 }
 
@@ -196,15 +158,15 @@ impl ShAllocationLedger {
         allocation: TextureAllocation,
         section_ids: &[u16],
         derived: bool,
-        state: ShResidencyAllocationState,
+        state: ResidencyAllocationState,
     ) {
         let bytes = texture_allocation_bytes(allocation);
-        self.record(ShResidencyAllocation {
+        self.record(ResidencyAllocation {
             name: allocation_name(allocation.kind),
             sources: sources(section_ids, derived),
             bytes,
             state,
-            shape: ShResidencyAllocationShape::Texture {
+            shape: ResidencyAllocationShape::Texture {
                 format: texture_format_name(allocation.format),
                 dimension: texture_dimension_name(allocation.dimension),
                 extent: [
@@ -221,15 +183,15 @@ impl ShAllocationLedger {
         allocation: BufferAllocation,
         section_ids: &[u16],
         derived: bool,
-        state: ShResidencyAllocationState,
+        state: ResidencyAllocationState,
     ) {
         let bytes = allocation.byte_len as u64;
-        self.record(ShResidencyAllocation {
+        self.record(ResidencyAllocation {
             name: allocation_name(allocation.kind),
             sources: sources(section_ids, derived),
             bytes,
             state,
-            shape: ShResidencyAllocationShape::Buffer {
+            shape: ResidencyAllocationShape::Buffer {
                 binding_bytes: bytes,
             },
         });
@@ -244,7 +206,7 @@ impl ShAllocationLedger {
         self.streaming = Some(summary);
     }
 
-    fn record(&mut self, allocation: ShResidencyAllocation) {
+    fn record(&mut self, allocation: ResidencyAllocation) {
         self.allocations.push(allocation);
     }
 
@@ -260,46 +222,6 @@ impl ShAllocationLedger {
             Some(summary) => report.with_streaming_summary(summary),
             None => report,
         }
-    }
-}
-
-fn allocation_total_bytes(allocations: &[ShResidencyAllocation]) -> u64 {
-    allocations
-        .iter()
-        .try_fold(0_u64, |total, row| total.checked_add(row.bytes))
-        .expect("SH residency static allocation total overflow")
-}
-
-pub(super) fn source_ids<const N: usize>(ids: [Option<u16>; N]) -> Vec<u16> {
-    ids.into_iter().flatten().collect()
-}
-
-fn sources(section_ids: &[u16], derived: bool) -> Vec<ShResidencySource> {
-    let mut sources = section_ids
-        .iter()
-        .copied()
-        .map(ShResidencySource::Section)
-        .collect::<Vec<_>>();
-    if derived || sources.is_empty() {
-        sources.push(ShResidencySource::Derived);
-    }
-    sources
-}
-
-fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
-    match format {
-        wgpu::TextureFormat::Bc6hRgbUfloat => "Bc6hRgbUfloat",
-        wgpu::TextureFormat::Rgba16Float => "Rgba16Float",
-        wgpu::TextureFormat::Rgba16Uint => "Rgba16Uint",
-        format => panic!("unexpected SH allocation format {format:?}"),
-    }
-}
-
-fn texture_dimension_name(dimension: wgpu::TextureDimension) -> &'static str {
-    match dimension {
-        wgpu::TextureDimension::D2 => "D2",
-        wgpu::TextureDimension::D3 => "D3",
-        wgpu::TextureDimension::D1 => "D1",
     }
 }
 
@@ -373,15 +295,16 @@ fn allocation_name(kind: ShAllocationKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::residency::ResidencySource;
     use crate::render::sh_allocation::{ShAllocationKind, TextureAllocation};
 
-    fn test_allocation(bytes: u64) -> ShResidencyAllocation {
-        ShResidencyAllocation {
+    fn test_allocation(bytes: u64) -> ResidencyAllocation {
+        ResidencyAllocation {
             name: "test_allocation",
-            sources: vec![ShResidencySource::Derived],
+            sources: vec![ResidencySource::Derived],
             bytes,
-            state: ShResidencyAllocationState::Data,
-            shape: ShResidencyAllocationShape::Buffer {
+            state: ResidencyAllocationState::Data,
+            shape: ResidencyAllocationShape::Buffer {
                 binding_bytes: bytes,
             },
         }
@@ -404,7 +327,7 @@ mod tests {
             },
             &[34],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         ledger.record_buffer(
             BufferAllocation {
@@ -414,7 +337,7 @@ mod tests {
             },
             &[27],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
 
         let report = ledger.finish();
@@ -422,7 +345,7 @@ mod tests {
         assert_eq!(report.total_bytes, 136);
         assert_eq!(
             report.allocations[0].shape,
-            ShResidencyAllocationShape::Texture {
+            ResidencyAllocationShape::Texture {
                 format: "Bc6hRgbUfloat",
                 dimension: "D2",
                 extent: [5, 7, 2],
@@ -447,7 +370,7 @@ mod tests {
             },
             &[35, 41, 45],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
 
         let report = ledger.finish();
@@ -456,9 +379,9 @@ mod tests {
         assert_eq!(
             report.allocations[0].sources,
             vec![
-                ShResidencySource::Section(35),
-                ShResidencySource::Section(41),
-                ShResidencySource::Section(45),
+                ResidencySource::Section(35),
+                ResidencySource::Section(41),
+                ResidencySource::Section(45),
             ]
         );
     }
@@ -480,7 +403,7 @@ mod tests {
             },
             &[],
             false,
-            ShResidencyAllocationState::Dummy,
+            ResidencyAllocationState::Dummy,
         );
         let mut accepted_empty = ShAllocationLedger::new();
         accepted_empty.record_texture(
@@ -497,26 +420,23 @@ mod tests {
             },
             &[34],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
 
         let absent = absent.finish();
         let accepted_empty = accepted_empty.finish();
         assert_eq!(
             absent.allocations[0].sources,
-            vec![ShResidencySource::Derived]
+            vec![ResidencySource::Derived]
         );
-        assert_eq!(
-            absent.allocations[0].state,
-            ShResidencyAllocationState::Dummy
-        );
+        assert_eq!(absent.allocations[0].state, ResidencyAllocationState::Dummy);
         assert_eq!(
             accepted_empty.allocations[0].sources,
-            vec![ShResidencySource::Section(34)]
+            vec![ResidencySource::Section(34)]
         );
         assert_eq!(
             accepted_empty.allocations[0].state,
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         );
     }
 
@@ -531,7 +451,7 @@ mod tests {
             },
             &[47],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         ledger.record_streaming_summary(ShStreamingAllocationSummary {
             fixed_metadata_bytes: 11,
@@ -612,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "SH residency static allocation total overflow")]
+    #[should_panic(expected = "residency static allocation total overflow")]
     fn static_allocation_total_rejects_overflow() {
         let _ = allocation_total_bytes(&[test_allocation(u64::MAX), test_allocation(1)]);
     }

@@ -654,6 +654,7 @@ impl Renderer {
                     &full.uniform_bind_group_layout,
                     animated_lm_debug,
                 )
+                .into_fallback()
             },
             "animated lightmap install",
         );
@@ -673,6 +674,11 @@ impl Renderer {
             installed_slot_to_static_layer,
         );
         full.shadowmask_present = full.lightmap_resources.shadowmask_present;
+        full.lightmap_residency_report = LightmapResidencyReport::new(
+            full.lightmap_resources.residency.clone(),
+            animated_lightmap.residency_rows(),
+        );
+        log::info!("{}", full.lightmap_residency_report.log_line());
         full.animated_lightmap = animated_lightmap;
 
         // SDF half-res shadow pass — rebind to the freshly-loaded SH

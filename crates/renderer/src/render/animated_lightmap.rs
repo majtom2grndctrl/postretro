@@ -30,7 +30,10 @@ use crate::lighting::lightmap::{
     static_layer_to_animated_slot,
 };
 
+use super::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use super::sh_volume::AnimatedLightBuffers;
+use super::{LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE};
+use postretro_level_format::SectionId;
 
 /// Grid-padding record: the compose shader returns on this `chunk_idx`.
 /// Mirrors `PADDING_TILE` in `animated_lightmap_compose.wgsl`.
@@ -200,6 +203,13 @@ pub struct AnimatedLightmapResources {
     direction_atlas_texture: Option<wgpu::Texture>,
     #[allow(dead_code)]
     dummy_texture: wgpu::Texture,
+    /// 1×1 zero direction placeholder, its own texture so the meter reports
+    /// the direction slot's placeholder bytes apart from the irradiance one.
+    #[allow(dead_code)]
+    dummy_direction_texture: wgpu::Texture,
+    /// Meter state of the bound pair: Data with a real atlas, Fallback after a
+    /// failed construction, Dummy otherwise.
+    residency_state: ResidencyAllocationState,
     /// Bound to the forward-pass lightmap bind group. Points at `atlas_texture`
     /// when present, otherwise at `dummy_texture` — keeps the bind-group layout constant.
     pub forward_view: wgpu::TextureView,
@@ -297,25 +307,37 @@ impl AnimatedLightmapResources {
             validate_weight_map_section(section)?;
         }
 
-        let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
+        let dummy_texture = create_zero_texture(
+            device,
+            "Animated LM Dummy",
+            wgpu::TextureFormat::Rgba16Float,
+        );
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Animated LM Dummy Forward View"),
             dimension: Some(animated_atlas_view_dimension()),
             ..Default::default()
         });
-        // Separate 1×1 zero view for the direction atlas slot so the forward
+        // Separate 1×1 zero texture for the direction atlas slot so the forward
         // bind group stays valid on the empty-map path.
-        let dummy_direction_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Animated LM Dummy Direction Forward View"),
-            dimension: Some(animated_atlas_view_dimension()),
-            ..Default::default()
-        });
+        let dummy_direction_texture = create_zero_texture(
+            device,
+            "Animated LM Dummy Direction",
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let dummy_direction_view =
+            dummy_direction_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Animated LM Dummy Direction Forward View"),
+                dimension: Some(animated_atlas_view_dimension()),
+                ..Default::default()
+            });
 
         let Some(section) = weight_maps else {
             return Ok(Self {
                 atlas_texture: None,
                 direction_atlas_texture: None,
                 dummy_texture,
+                dummy_direction_texture,
+                residency_state: ResidencyAllocationState::Dummy,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -331,6 +353,8 @@ impl AnimatedLightmapResources {
                 atlas_texture: None,
                 direction_atlas_texture: None,
                 dummy_texture,
+                dummy_direction_texture,
+                residency_state: ResidencyAllocationState::Dummy,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -352,6 +376,8 @@ impl AnimatedLightmapResources {
                 atlas_texture: None,
                 direction_atlas_texture: None,
                 dummy_texture,
+                dummy_direction_texture,
+                residency_state: ResidencyAllocationState::Dummy,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -379,6 +405,8 @@ impl AnimatedLightmapResources {
                 atlas_texture: None,
                 direction_atlas_texture: None,
                 dummy_texture,
+                dummy_direction_texture,
+                residency_state: ResidencyAllocationState::Dummy,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -613,6 +641,8 @@ impl AnimatedLightmapResources {
             atlas_texture: Some(atlas_texture),
             direction_atlas_texture: Some(direction_atlas_texture),
             dummy_texture,
+            dummy_direction_texture,
+            residency_state: ResidencyAllocationState::Data,
             forward_view,
             direction_forward_view,
             dispatch_state: Some(DispatchState {
@@ -629,6 +659,39 @@ impl AnimatedLightmapResources {
                 total_tiles,
             }),
         })
+    }
+
+    /// Mark a dummy installed because construction failed, so the meter
+    /// reports the placeholder as a fallback rather than an absent section.
+    pub(crate) fn into_fallback(mut self) -> Self {
+        self.residency_state = ResidencyAllocationState::Fallback;
+        self
+    }
+
+    /// Animated irradiance and direction meter rows for the pair actually
+    /// bound: the real atlases when present, otherwise their placeholders.
+    pub(crate) fn residency_rows(&self) -> [ResidencyAllocation; 2] {
+        let sources: &[u16] = if self.atlas_texture.is_some() {
+            &[SectionId::AnimatedLightWeightMaps as u16]
+        } else {
+            &[]
+        };
+        [
+            texture_row(
+                LIGHTMAP_ANIMATED_IRRADIANCE,
+                self.atlas_texture.as_ref().unwrap_or(&self.dummy_texture),
+                sources,
+                self.residency_state,
+            ),
+            texture_row(
+                LIGHTMAP_ANIMATED_DIRECTION,
+                self.direction_atlas_texture
+                    .as_ref()
+                    .unwrap_or(&self.dummy_direction_texture),
+                sources,
+                self.residency_state,
+            ),
+        ]
     }
 
     /// Returns `false` on maps with no animated weight maps. Callers skip
@@ -844,22 +907,21 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
 
 fn create_zero_texture(
     device: &wgpu::Device,
-    width: u32,
-    height: u32,
     label: &str,
+    format: wgpu::TextureFormat,
 ) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
-            width,
-            height,
+            width: 1,
+            height: 1,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba16Float,
-        // `Rgba16Float` zero-initializes to (0,0,0,0); no upload needed.
+        format,
+        // wgpu zero-initializes to (0,0,0,0); no upload needed.
         // `STORAGE_BINDING` required so the bind-group layout is compatible
         // with the real atlas slot when weight maps are absent.
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,

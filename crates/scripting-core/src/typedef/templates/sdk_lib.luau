@@ -779,15 +779,11 @@ declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
 --- Reserved button `onPress` action that opens the engine accessibility panel.
 declare OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility"
 
---- Accessibility toggles a mod menu button may cycle. The flash limiter is
---- absent: only the engine panel changes it.
-export type AccessibilityToggleField = "reduceMotion" | "monoAudio"
-
---- Accessibility numeric fields a mod menu button may step, each within [0, 1].
-export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
-
 --- The reserved `onPress` action for one accessibility field. Toggles `cycle`;
---- numeric fields `increase` or `decrease`.
+--- numeric fields `increase` or `decrease`. `AccessibilityToggleField` and
+--- `AccessibilityNumericField` are declared in virtual_module.luau — they type
+--- `PostretroUiModule.accessibilityAction` too, and this bare declaration falls
+--- inside the stripped UI range, while the two type aliases must survive it.
 declare accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string)
 
 --- Reserved button `onPress` action that returns to the frontend menu. The App

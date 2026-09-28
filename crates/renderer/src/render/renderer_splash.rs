@@ -75,20 +75,24 @@ impl Renderer {
     }
 
     /// The color a splash or Loading frame presents, for the flash limiter's
-    /// splash hand-off. The clear dominates the frame; the boot logo covers a
-    /// small central area and is not counted.
+    /// splash hand-off: the clear color alone. The base splash logo covers a
+    /// small central area, so the clear dominates the frame. A mod override
+    /// logo can cover far more of it and is still not counted.
     pub fn splash_presented_rgb(&self) -> [f32; 3] {
         let color = super::splash_pass::SPLASH_CLEAR_COLOR;
         [color.r as f32, color.g as f32, color.b as f32]
     }
 
     /// Store the elapsed presented-frame time the flash limiter ages its window
-    /// and rate allowance by. The App calls this beside `set_ui_snapshot`.
+    /// and rate allowance by, and any splash hand-off. The App calls this beside
+    /// `set_ui_snapshot`. An input the resolve has not yet consumed (its frame's
+    /// acquire failed) is merged, not replaced, so a skipped frame never drops
+    /// a hand-off; the next resolve takes it once.
     pub fn set_limiter_frame(
         &mut self,
         frame: postretro_render_cpu::flash_limiter::LimiterFrameInput,
     ) {
-        self.full_mut().limiter_frame = frame;
+        self.full_mut().limiter_frame.set(frame);
     }
 
     /// Store this frame's app-produced passive presentation instances. The
@@ -130,22 +134,15 @@ impl Renderer {
         // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
         // against the same frame snapshot the draw build used, so the a11y readback
         // matches the author-wired highlight.
-        let mut rects = full.ui.export_top_focus_rects(
+        // The export carries the owner recorded with the retained top layer's
+        // layout, not this frame's snapshot: a frame that skipped layout after a
+        // stack change still attributes these rects to the tree that made them
+        // (`ui.md` §4.1).
+        full.ui.export_top_focus_rects(
             viewport,
             &full.ui_snapshot.slot_values,
             &full.ui_snapshot.cell_values,
-        );
-        // The export is the snapshot's top layer; name it so the App can
-        // attribute a press to the tree that owned it (`ui.md` §4.1).
-        rects.owner =
-            full.ui_snapshot
-                .trees
-                .last()
-                .map(|entry| postretro_ui::tree::FocusRectOwner {
-                    name: entry.name.clone(),
-                    tier: entry.tier,
-                });
-        rects
+        )
     }
 
     /// Install an override UI theme and bump the theme generation. Engine-side

@@ -189,16 +189,36 @@ impl App {
         self.leave_splash_when_os_replied(event_loop)
     }
 
-    fn leave_splash_when_os_replied(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    /// Poll the OS reader, then report whether its wait gate is satisfied (a
+    /// reply is in, or the deadline has passed). Split out from
+    /// `leave_splash_when_os_replied` so the poll-before-read fix is
+    /// testable without an `ActiveEventLoop`.
+    ///
+    /// The frame-top `poll_os_preferences` call (main.rs) no-ops on the logo
+    /// frame: the session it needs is installed later that same frame, by
+    /// `run_splash_frame_one` above, after that call already ran. Polling
+    /// again here picks up a reply already sitting in the channel before the
+    /// gate reads it — otherwise it costs a needless `SPLASH_FRAME_OS_WAIT`
+    /// frame waiting for next frame's top-of-loop poll to see it.
+    fn poll_os_wait_gate(&mut self) -> bool {
+        self.poll_os_preferences();
         let replied = self
             .session
             .as_ref()
             .is_some_and(|session| session.os_preferences.has_replied());
         let mod_init_finished = self.os_wait_from.unwrap_or_else(Instant::now);
-        if !crate::os_preferences::os_wait_complete(replied, mod_init_finished, Instant::now()) {
+        crate::os_preferences::os_wait_complete(replied, mod_init_finished, Instant::now())
+    }
+
+    fn leave_splash_when_os_replied(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if !self.poll_os_wait_gate() {
             self.request_redraw();
             return false;
         }
+        let replied = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.os_preferences.has_replied());
         if !replied {
             log::info!(
                 "[Options] no OS preference reply within {:?}; a later reply applies live",
@@ -260,7 +280,16 @@ impl App {
             BootDestination::BootMap(_) if host_load_queued => {
                 // The host's map replaces the CLI boot map; it loads as an
                 // ordinary runtime request, so a failure returns to Frontend.
+                // Present the menu first (mirrors the Frontend arm above): a
+                // worker failure or an unresolved catalog id leaves Frontend
+                // with no level, and the first-launch hold left the modal
+                // stack empty, so without this the player would be stranded
+                // on a blank frame. `drain_level_requests` overwrites
+                // `boot_state` to `Loading` when the load is actually
+                // dispatched, so the splash pass (which Loading still paints)
+                // is left untouched here.
                 self.boot_state = BootState::Frontend;
+                self.present_frontend_menu();
                 self.drain_level_requests();
                 log::info!("[Engine] loading the host's map instead of the CLI boot map");
             }
@@ -588,5 +617,96 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::os_preferences::{OS_REPLY_WAIT, OsPreferenceFeed, OsUpdate};
+    use crate::startup::lifecycle::tests::test_app;
+    use std::path::PathBuf;
+
+    // --- Finding A: the OS-wait gate must see a reply already queued before
+    // it runs, not only on a later top-of-frame poll. ---
+
+    #[test]
+    fn poll_os_wait_gate_opens_immediately_when_a_reply_is_already_queued() {
+        let mut app = test_app();
+        let (feed, tx) = OsPreferenceFeed::fake();
+        app.session.as_mut().unwrap().os_preferences = feed;
+        // Sent, but never drained by a top-of-frame `poll_os_preferences` —
+        // on the real logo frame that call runs before `Session::build`
+        // installs the session this update would land on.
+        tx.send(OsUpdate::Preferences {
+            reduce_motion: Some(true),
+            increased_contrast: None,
+        })
+        .unwrap();
+        app.os_wait_from = Some(Instant::now());
+
+        assert!(
+            app.poll_os_wait_gate(),
+            "a reply already queued before the gate runs must open it on the same check"
+        );
+        assert!(app.session.as_ref().unwrap().os_preferences.has_replied());
+    }
+
+    #[test]
+    fn poll_os_wait_gate_waits_for_the_deadline_when_no_reply_arrives() {
+        let mut app = test_app();
+        let (feed, _tx) = OsPreferenceFeed::fake();
+        app.session.as_mut().unwrap().os_preferences = feed;
+        app.os_wait_from = Some(Instant::now());
+
+        assert!(
+            !app.poll_os_wait_gate(),
+            "gate must stay closed before the reply or the deadline"
+        );
+
+        // No reply arrives; back-date the wait start past the deadline.
+        app.os_wait_from = Some(Instant::now() - OS_REPLY_WAIT);
+        assert!(
+            app.poll_os_wait_gate(),
+            "gate must open once the wait deadline has passed with no reply"
+        );
+    }
+
+    // --- Finding B: a host map that replaces the CLI boot map must leave a
+    // frontend menu behind, so a worker failure or an unresolved catalog id
+    // doesn't strand the player on a blank Frontend. ---
+
+    #[test]
+    fn start_boot_destination_presents_frontend_menu_before_draining_a_queued_host_map() {
+        let mut app = test_app();
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                postretro_ui::demo::FRONTEND_MENU_NAME,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Engine,
+                false,
+            );
+        // The host named a catalog id this fixture's empty map catalog
+        // doesn't carry, so `resolve_level_source` rejects it and the queued
+        // load never spawns a worker — the failure case finding B guards.
+        app.level_requests
+            .push_back(LevelRequest::Load(LevelSource::Catalog(
+                "host-map".to_string(),
+            )));
+
+        app.start_boot_destination(BootDestination::BootMap(PathBuf::from(
+            "content/dev/maps/cli-boot.prl",
+        )));
+
+        assert_eq!(app.boot_state, BootState::Frontend);
+        assert_eq!(
+            app.session.as_ref().unwrap().modal_stack.active_name(),
+            Some(postretro_ui::demo::FRONTEND_MENU_NAME),
+            "the frontend menu must be on the stack even though the queued host map failed to resolve",
+        );
     }
 }

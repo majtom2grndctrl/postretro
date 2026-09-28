@@ -21,7 +21,10 @@ pub const OPEN_ACCESSIBILITY_ACTION: &str = "ui.openAccessibility";
 /// Prefix of the reserved accessibility field-action family,
 /// `ui.accessibility.<op>.<field>`: `op` is `cycle`, `increase`, or `decrease`;
 /// `field` is the `accessibility.*` slot's camelCase suffix. The App intercepts
-/// the family before named-reaction dispatch and owns the field vocabulary.
+/// a string under this prefix only when it parses as exactly two non-empty
+/// segments (`<op>.<field>`) and owns the field vocabulary for those; any other
+/// string under the prefix falls through to named-reaction dispatch as an
+/// ordinary reaction name.
 pub const ACCESSIBILITY_FIELD_ACTION_PREFIX: &str = "ui.accessibility.";
 
 /// A parsed accessibility field action: the raw `op` and `field` segments.

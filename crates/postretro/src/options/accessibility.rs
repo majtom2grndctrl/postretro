@@ -90,12 +90,12 @@ impl AccessibilityOptions {
 
     pub(super) fn write(&self, writer: &mut DocumentWriter<'_>) {
         writer.put_in(GROUP, "reduce_motion", self.reduce_motion.as_ref());
-        writer.put_in(GROUP, "screen_shake_scale", Some(&self.screen_shake_scale));
+        writer.put_f32_in(GROUP, "screen_shake_scale", Some(&self.screen_shake_scale));
         writer.put_in(GROUP, "flash_limiter", Some(&self.flash_limiter));
-        writer.put_in(GROUP, "master_volume", Some(&self.master_volume));
-        writer.put_in(GROUP, "sfx_volume", Some(&self.sfx_volume));
-        writer.put_in(GROUP, "music_volume", Some(&self.music_volume));
-        writer.put_in(GROUP, "ui_volume", Some(&self.ui_volume));
+        writer.put_f32_in(GROUP, "master_volume", Some(&self.master_volume));
+        writer.put_f32_in(GROUP, "sfx_volume", Some(&self.sfx_volume));
+        writer.put_f32_in(GROUP, "music_volume", Some(&self.music_volume));
+        writer.put_f32_in(GROUP, "ui_volume", Some(&self.ui_volume));
         writer.put_in(GROUP, "mono_audio", Some(&self.mono_audio));
     }
 

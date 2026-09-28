@@ -298,6 +298,13 @@ fn default_scroll_notch_pixels() -> f32 {
     DEFAULT_SCROLL_NOTCH_PIXELS
 }
 
+/// Warn that the stored value for `field` (dotted key) is not finite and is
+/// about to fall back to its default. TOML's `nan`/`inf` float literals parse
+/// cleanly, so this is the only place a hand-edited non-finite value surfaces.
+fn warn_non_finite(field: &str, value: f32) {
+    log::warn!("[Options] `{field}` is not a finite number ({value}); using its default");
+}
+
 impl Default for PlayerOptions {
     fn default() -> Self {
         Self {
@@ -321,16 +328,36 @@ impl Default for PlayerOptions {
 impl PlayerOptions {
     /// Clamp loaded values into their valid ranges. Applied after
     /// deserialization so hand-edited out-of-range values are corrected rather
-    /// than rejected. `mouse_sensitivity` falls back to its default when not
-    /// finite-positive (a zero/negative/NaN sensitivity would break look input).
+    /// than rejected. Every f32 field falls back to its default when not
+    /// finite: TOML accepts `nan`/`inf` as valid float literals, so a
+    /// hand-edited value sails past deserialization, and `f32::clamp` (unlike
+    /// a `<`/`>` fallback check) leaves NaN untouched rather than clamping it —
+    /// an unclamped NaN then fails every downstream `PartialEq` comparison,
+    /// which is what let a NaN `view_feel_scale` keep the options bridge from
+    /// ever settling. `mouse_sensitivity` also falls back when non-positive (a
+    /// zero/negative sensitivity would break look input).
     fn sanitize(&mut self) {
-        self.view_feel_scale = self.view_feel_scale.clamp(0.0, 1.0);
+        if self.view_feel_scale.is_finite() {
+            self.view_feel_scale = self.view_feel_scale.clamp(0.0, 1.0);
+        } else {
+            warn_non_finite(keys::VIEW_FEEL_SCALE, self.view_feel_scale);
+            self.view_feel_scale = default_view_feel_scale();
+        }
+
+        if !self.mouse_sensitivity.is_finite() {
+            warn_non_finite(keys::MOUSE_SENSITIVITY, self.mouse_sensitivity);
+        }
         if !(self.mouse_sensitivity.is_finite() && self.mouse_sensitivity > 0.0) {
             self.mouse_sensitivity = default_mouse_sensitivity();
         }
+
         self.switch_cycle_dwell_ms = self
             .switch_cycle_dwell_ms
             .map(|dwell| dwell.min(MAX_SWITCH_CYCLE_DWELL_MS));
+
+        if !self.scroll_notch_pixels.is_finite() {
+            warn_non_finite(keys::SCROLL_NOTCH_PIXELS, self.scroll_notch_pixels);
+        }
         if !self.scroll_notch_pixels.is_finite() || self.scroll_notch_pixels <= 0.0 {
             self.scroll_notch_pixels = default_scroll_notch_pixels();
         } else {
@@ -453,9 +480,9 @@ impl PlayerOptions {
     fn to_document(&self) -> toml::Table {
         let mut writer = DocumentWriter::new(&self.stored);
         writer.put(keys::PLAYER_ID, self.player_id.as_ref());
-        writer.put(keys::MOUSE_SENSITIVITY, Some(&self.mouse_sensitivity));
+        writer.put_f32(keys::MOUSE_SENSITIVITY, Some(&self.mouse_sensitivity));
         writer.put(keys::INVERT_Y, Some(&self.invert_y));
-        writer.put(keys::VIEW_FEEL_SCALE, Some(&self.view_feel_scale));
+        writer.put_f32(keys::VIEW_FEEL_SCALE, Some(&self.view_feel_scale));
         writer.put(keys::CROUCH_MODE, Some(&self.crouch_mode));
         writer.put(keys::SHADOW_QUALITY, Some(&self.shadow_quality));
         writer.put(keys::FOG_QUALITY, Some(&self.fog_quality));
@@ -467,7 +494,7 @@ impl PlayerOptions {
             keys::SWITCH_CYCLE_DWELL_MS,
             self.switch_cycle_dwell_ms.as_ref(),
         );
-        writer.put(keys::SCROLL_NOTCH_PIXELS, Some(&self.scroll_notch_pixels));
+        writer.put_f32(keys::SCROLL_NOTCH_PIXELS, Some(&self.scroll_notch_pixels));
         // Written only once true: a first launch's file holds no record until
         // the player closes the panel.
         writer.put(
@@ -1076,5 +1103,69 @@ mod tests {
             Some(MAX_SWITCH_CYCLE_DWELL_MS)
         );
         assert!((loaded.scroll_notch_pixels - DEFAULT_SCROLL_NOTCH_PIXELS).abs() < EPSILON);
+    }
+
+    #[test]
+    fn a_nan_view_feel_scale_falls_back_to_default() {
+        // `clamp` leaves NaN untouched (it fails every `<`/`>` comparison), so
+        // a hand-edited `nan` — a valid TOML float literal — used to sail past
+        // `sanitize` and land in `ResolvedAccessibility`, where `PartialEq`
+        // treats NaN as never equal to itself: the options bridge would then
+        // never see two equal snapshots and re-apply every frame.
+        let capture = LogCapture::start();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "view_feel_scale = nan\ninvert_y = true\n").unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert!((loaded.view_feel_scale - 1.0).abs() < EPSILON);
+        assert!(
+            loaded.invert_y,
+            "a non-finite field must not take the rest of the file down with it"
+        );
+        capture.assert_logged_once(Level::Warn, "`view_feel_scale` is not a finite number");
+    }
+
+    #[test]
+    fn every_non_finite_f32_field_falls_back_to_default_with_a_warning() {
+        let capture = LogCapture::start();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(
+            &path,
+            "mouse_sensitivity = inf\nscroll_notch_pixels = -nan\ninvert_y = true\n",
+        )
+        .unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert!((loaded.mouse_sensitivity - DEFAULT_MOUSE_SENSITIVITY).abs() < EPSILON);
+        assert!((loaded.scroll_notch_pixels - DEFAULT_SCROLL_NOTCH_PIXELS).abs() < EPSILON);
+        assert!(loaded.invert_y);
+        capture.assert_logged_once(Level::Warn, "`mouse_sensitivity` is not a finite number");
+        capture.assert_logged_once(Level::Warn, "`scroll_notch_pixels` is not a finite number");
+    }
+
+    #[test]
+    fn default_options_save_mouse_sensitivity_at_full_f32_precision() {
+        let text = to_toml(&PlayerOptions::default());
+        assert!(
+            text.contains("mouse_sensitivity = 0.002\n"),
+            "Value::try_from(f32) widens through f64 and would write \
+             0.0020000000949949026 instead; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_stepped_f32_value_saves_at_full_precision_not_f64_widened_noise() {
+        // Regression for a panel step (e.g. a slider settling on 0.85): the
+        // generic `Value::try_from` path serializes f32 through
+        // `serialize_f64(value as f64)`, so 0.85 would round-trip to
+        // 0.8500000238418579 and get rewritten on every subsequent save.
+        let stepped = PlayerOptions {
+            view_feel_scale: 0.85,
+            ..PlayerOptions::default()
+        };
+        let text = to_toml(&stepped);
+        assert!(text.contains("view_feel_scale = 0.85\n"), "got:\n{text}");
     }
 }

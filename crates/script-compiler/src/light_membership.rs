@@ -565,6 +565,8 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "CLOSE_DIALOG_ACTION",
             "EXIT_TO_DESKTOP_ACTION",
             "QUIT_TO_MENU_ACTION",
+            "OPEN_ACCESSIBILITY_ACTION",
+            "accessibilityAction",
             "loadLevel",
             "restartLevel",
             "returnToFrontend",
@@ -1642,6 +1644,38 @@ mod tests {
             &table(),
         )
         .expect("compiler-time postretro/ui exposes fact");
+        assert_eq!(manifest.lights[0].index, 2);
+    }
+
+    // Regression: compiler-time postretro/ui omitted the accessibility-panel
+    // reaction exports (OPEN_ACCESSIBILITY_ACTION, accessibilityAction) that
+    // the runtime module exposes, so a level data script using
+    // `UI.accessibilityAction(...)` failed at prl-build with "attempt to call
+    // a nil value" while the same script worked fine at runtime.
+    #[test]
+    fn luau_virtual_ui_module_exports_accessibility_actions() {
+        let source = r#"
+            local Postretro = require("postretro")
+            local Ui = require("postretro/ui")
+            local openAction = Ui.OPEN_ACCESSIBILITY_ACTION
+            local fieldAction = Ui.accessibilityAction("reduceMotion", "cycle")
+            function setupLevel(_)
+              if type(openAction) ~= "string" or type(fieldAction) ~= "string" then
+                error("postretro/ui accessibility action exports missing")
+              end
+              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              return { reactions = {
+                Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
+              } }
+            end
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("compiler-time postretro/ui exposes accessibility actions");
         assert_eq!(manifest.lights[0].index, 2);
     }
 

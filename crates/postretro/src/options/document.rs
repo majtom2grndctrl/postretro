@@ -137,6 +137,16 @@ impl<'a> DocumentWriter<'a> {
         put_value(&mut self.table, key, value);
     }
 
+    /// Write a top-level `f32` field. See `put_f32_value` for why this must
+    /// not go through `put`'s generic `Value::try_from` path. `None` removes
+    /// the key.
+    pub(super) fn put_f32(&mut self, key: &str, value: Option<&f32>) {
+        if self.document.is_unrecognized(key) {
+            return;
+        }
+        put_f32_value(&mut self.table, key, value);
+    }
+
     /// Write a field inside `[group]`, creating the table (or replacing a
     /// non-table value) as needed; `None` removes the key.
     pub(super) fn put_in<T: Serialize>(&mut self, group: &str, key: &str, value: Option<&T>) {
@@ -152,6 +162,24 @@ impl<'a> DocumentWriter<'a> {
         }
         if let Value::Table(group_table) = entry {
             put_value(group_table, key, value);
+        }
+    }
+
+    /// Group-scoped counterpart to `put_f32`, for an `f32` field inside
+    /// `[group]`.
+    pub(super) fn put_f32_in(&mut self, group: &str, key: &str, value: Option<&f32>) {
+        if self.document.is_unrecognized(&format!("{group}.{key}")) {
+            return;
+        }
+        let entry = self
+            .table
+            .entry(group.to_string())
+            .or_insert_with(|| Value::Table(Table::new()));
+        if !entry.is_table() {
+            *entry = Value::Table(Table::new());
+        }
+        if let Value::Table(group_table) = entry {
+            put_f32_value(group_table, key, value);
         }
     }
 
@@ -173,5 +201,77 @@ fn put_value<T: Serialize>(table: &mut Table, key: &str, value: Option<&T>) {
         None => {
             table.remove(key);
         }
+    }
+}
+
+/// Store `value` at `key` as the exact TOML float for its f32 bits, or remove
+/// the key when `value` is `None`.
+///
+/// This bypasses `put_value`'s `Value::try_from` (which goes through serde's
+/// `serialize_f32`) because toml 1.x's `Value` has no narrower-than-`f64`
+/// float variant: `serialize_f32` widens with `value as f64`, which is exact
+/// bit-for-bit but not decimal-for-decimal — `0.002_f32 as f64` is
+/// `0.0020000000949949026`. Every f32 setting would round-trip fine but save
+/// with that widening noise, and any hand-typed value (`0.85`) would be
+/// rewritten to noise on the very next save. `f32_to_toml_float` writes the
+/// float the player actually sees instead.
+fn put_f32_value(table: &mut Table, key: &str, value: Option<&f32>) {
+    match value {
+        Some(value) => {
+            table.insert(key.to_string(), f32_to_toml_float(*value));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+/// The `Value::Float` for `value`'s shortest round-trip decimal text. `f32`'s
+/// `Display` produces the shortest decimal string that reparses to the exact
+/// same f32 bits (e.g. `0.002`, not `0.0020000000949949026`); reparsing that
+/// text as `f64` keeps the stored value exact instead of exposing f32-to-f64
+/// widening. `PlayerOptions::sanitize` and `AccessibilityOptions::sanitize`
+/// keep every persisted f32 finite, so `value` is never NaN/inf here in
+/// practice; `f32::to_string` still reparses cleanly for a non-finite value
+/// (`f64::from_str` accepts `"NaN"`/`"inf"`/`"-inf"`), matching how toml's own
+/// `serialize_f32` handles NaN, so this never panics.
+fn f32_to_toml_float(value: f32) -> Value {
+    Value::Float(
+        value
+            .to_string()
+            .parse()
+            .expect("f32's Display output always reparses as f64"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn put_f32_writes_the_exact_f32_decimal_not_widened_f64_noise() {
+        let document = StoredDocument::default();
+        let mut writer = DocumentWriter::new(&document);
+        writer.put_f32("mouse_sensitivity", Some(&0.002_f32));
+        writer.put_f32("view_feel_scale", Some(&0.85_f32));
+        let table = writer.finish();
+
+        let text = toml::to_string(&table).unwrap();
+        assert!(
+            text.contains("mouse_sensitivity = 0.002\n"),
+            "Value::try_from(0.002_f32) would write 0.0020000000949949026 \
+             (serialize_f32 widens through `as f64`); got:\n{text}"
+        );
+        assert!(text.contains("view_feel_scale = 0.85\n"), "got:\n{text}");
+    }
+
+    #[test]
+    fn put_f32_none_removes_the_key() {
+        let mut initial = Table::new();
+        initial.insert("mouse_sensitivity".to_string(), Value::Float(0.002));
+        let document = StoredDocument::from_table(initial);
+        let mut writer = DocumentWriter::new(&document);
+        writer.put_f32("mouse_sensitivity", None);
+        assert!(!writer.finish().contains_key("mouse_sensitivity"));
     }
 }

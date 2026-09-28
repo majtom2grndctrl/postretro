@@ -2602,6 +2602,13 @@ export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.
 -- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
 -- is typed directly from SDK function signatures instead of bare globals.
 
+--- Accessibility toggles a mod menu button may cycle. The flash limiter is
+--- absent: only the engine panel changes it.
+export type AccessibilityToggleField = "reduceMotion" | "monoAudio"
+
+--- Accessibility numeric fields a mod menu button may step, each within [0, 1].
+export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
+
 export type PostretroUiModule = {
   --- Build a `text` widget descriptor. `props.content` is fallback text; optional `bind` can replace rendered content from state.
   Text: (props: TextProps) -> WidgetDescriptor,

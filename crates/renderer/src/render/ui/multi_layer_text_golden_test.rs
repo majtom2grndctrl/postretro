@@ -102,6 +102,17 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
     }
 }
 
+/// A stack entry for `tree`; the owner does not affect drawing.
+fn layer_entry(tree: AnchoredTree) -> postretro_ui::UiTreeEntry {
+    postretro_ui::UiTreeEntry {
+        name: "layer".into(),
+        tier: postretro_ui::modal_stack::ScopeTier::Engine,
+        capture_mode: tree.capture_mode,
+        descriptor: tree,
+        on_commit: None,
+    }
+}
+
 /// Lay both layers out through the pass's RETAINED gameplay path — layer 0
 /// (bottom) then layer 1 (top) against ONE `UiPass`, so each is independently
 /// retained under its own stack index. This is the exact modal-stack shape the
@@ -120,7 +131,7 @@ fn layout_two_layers(
     let lower = pass.layout_gameplay_tree(
         font_system,
         0,
-        &text_tree(S0, S0_OFFSET),
+        &layer_entry(text_tree(S0, S0_OFFSET)),
         viewport,
         &images,
         0,
@@ -133,7 +144,7 @@ fn layout_two_layers(
     let upper = pass.layout_gameplay_tree(
         font_system,
         1,
-        &text_tree(S1, S1_OFFSET),
+        &layer_entry(text_tree(S1, S1_OFFSET)),
         viewport,
         &images,
         0,

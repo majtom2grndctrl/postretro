@@ -34,6 +34,34 @@ fn redness(rgb: [f32; 3]) -> f32 {
     ((rgb[0] / total - 1.0 / 3.0) * 1.5).clamp(0.0, 1.0)
 }
 
+/// How far to mix `rgb` toward its own luminance so its redness falls to
+/// `held`, as the frame limiter's `desaturation_to_redness` solves it. Mixing
+/// by d moves the red share R/(R+G+B) along (r + d(L − r)) / (T + d(3L − T)),
+/// which is not linear in d, so this solves for d exactly. Luminance is
+/// unchanged by the mix.
+fn desaturation_to_redness(rgb: [f32; 3], held: f32) -> f32 {
+    let total = rgb[0] + rgb[1] + rgb[2];
+    let lum = luminance(rgb);
+    // The red share whose redness is `held` (inverse of `redness`).
+    let share = 1.0 / 3.0 + held / 1.5;
+    let excess = rgb[0] - share * total;
+    if excess <= 0.0 {
+        return 0.0;
+    }
+    // Positive whenever `excess` is: `share` ≥ 1/3 and L ≤ T.
+    let denom = (rgb[0] - lum) - share * (total - 3.0 * lum);
+    (excess / denom.max(1e-6)).clamp(0.0, 1.0)
+}
+
+/// A finite strength in [0, 1]; anything else is no effect.
+fn unit_strength(strength: f32) -> f32 {
+    if strength.is_finite() {
+        strength.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 /// One tracked value: what was presented, its last extremum and direction.
 #[derive(Clone, Copy, Debug, Default)]
 struct Tracker {
@@ -73,10 +101,20 @@ impl Tracker {
     }
 }
 
-/// Transitions counted in the last second, aged by presented-frame time.
+/// Which value of a channel a window slot's transition belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Value {
+    #[default]
+    Level,
+    Red,
+}
+
+/// Transitions counted in the last second, aged by presented-frame time,
+/// oldest first. Each slot records its value and whether it was an onset.
 #[derive(Clone, Copy, Debug, Default)]
 struct FlashWindow {
     ages: [f32; WINDOW_SLOTS],
+    kinds: [(Value, bool); WINDOW_SLOTS],
     count: usize,
 }
 
@@ -87,30 +125,50 @@ impl FlashWindow {
             let age = self.ages[i] + dt;
             if age < FLASH_WINDOW_SECONDS {
                 self.ages[kept] = age;
+                self.kinds[kept] = self.kinds[i];
                 kept += 1;
             }
         }
         self.count = kept;
     }
 
-    fn push(&mut self) {
+    fn push(&mut self, value: Value, onset: bool) {
         if self.count < WINDOW_SLOTS {
             self.ages[self.count] = 0.0;
+            self.kinds[self.count] = (value, onset);
             self.count += 1;
         }
     }
 
+    /// Returns the window still owes: onsets in it whose return it does not
+    /// hold yet. A return with no onset before it owes nothing.
+    fn owed_returns(&self) -> usize {
+        let mut open = [0usize; 2];
+        for &(value, onset) in &self.kinds[..self.count] {
+            let owed = &mut open[value as usize];
+            if onset {
+                *owed += 1;
+            } else {
+                *owed = owed.saturating_sub(1);
+            }
+        }
+        open[0] + open[1]
+    }
+
+    /// An onset is admitted only while the window holds it, the returns
+    /// earlier onsets still owe, and its own return.
     fn onset_fits(&self) -> bool {
-        self.count + 2 <= FLASH_MAX_TRANSITIONS
+        self.count + self.owed_returns() + 2 <= FLASH_MAX_TRANSITIONS
     }
 }
 
 /// Decide one tracked value's next presented level. Onsets (rises) are admitted
-/// only while the window holds them and their return; over budget the value
-/// holds. Returns always pass.
+/// only while the window holds them, their return, and the returns earlier
+/// onsets still owe; over budget the value holds. Returns always pass.
 fn decide(
     tracker: &mut Tracker,
     window: &mut FlashWindow,
+    value: Value,
     target: f32,
     threshold: f32,
     deadband: f32,
@@ -125,7 +183,7 @@ fn decide(
     let onset = sign > 0;
     if counts && sign != tracker.last_sign && excursion.abs() >= threshold {
         if !onset || fits {
-            window.push();
+            window.push(value, onset);
             tracker.last_sign = sign;
         } else {
             tracker.suppressing = true;
@@ -163,11 +221,7 @@ impl EffectChannel {
         frame: &LimiterFrameUniform,
     ) -> (f32, [f32; 3]) {
         self.window.age(frame.dt_window);
-        let strength = if strength.is_finite() {
-            strength.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let strength = unit_strength(strength);
 
         // Full-screen rate cap, hitch-clamped.
         let cap = INTENSITY_RATE_PER_SECOND * frame.dt_rate;
@@ -177,6 +231,7 @@ impl EffectChannel {
         let level = decide(
             &mut self.level,
             &mut self.window,
+            Value::Level,
             capped,
             FLASH_LUMINANCE_THRESHOLD,
             SUPPRESSION_DEADBAND,
@@ -192,6 +247,7 @@ impl EffectChannel {
         let red = decide(
             &mut self.red,
             &mut self.window,
+            Value::Red,
             red_target,
             RED_TRANSITION_THRESHOLD,
             RED_SUPPRESSION_DEADBAND,
@@ -199,17 +255,23 @@ impl EffectChannel {
         );
         self.red.present(red);
         let rgb = if red < red_target && red_target > 0.0 {
-            // Hold redness by desaturating toward the color's own luminance.
-            let keep = red / red_target;
+            // Hold the presented redness (strength × tint redness) by
+            // desaturating the tint toward its own luminance; `red_target > 0`
+            // means `level > 0`.
+            let held = (red / level).clamp(0.0, 1.0);
+            let d = desaturation_to_redness(rgb, held);
             let gray = luminance(rgb);
-            rgb.map(|channel| gray + (channel - gray) * keep)
+            rgb.map(|channel| channel + (gray - channel) * d)
         } else {
             rgb
         };
         (level, rgb)
     }
 
+    /// Start fresh against this frame's own values: an empty window and
+    /// nothing to rate-cap from.
     fn restart(&mut self, strength: f32, rgb: [f32; 3]) {
+        let strength = unit_strength(strength);
         self.window = FlashWindow::default();
         self.level.restart(strength);
         self.red.restart(strength * redness(rgb));
@@ -218,8 +280,10 @@ impl EffectChannel {
 }
 
 /// The channel clamp's state across frames. Off, it passes the uniform through
-/// but keeps tracking it, so re-enabling starts history against what was just
-/// presented.
+/// and keeps no history. The frame that turns it on (`init`) starts fresh
+/// against its own values — an empty window, nothing to rate-cap from — so
+/// that frame packs unchanged, exactly as the frame limiter presents it
+/// unchanged, and nothing from before the off counts.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ChannelClamp {
     flash: EffectChannel,
@@ -231,20 +295,18 @@ impl ChannelClamp {
     /// reading the same frame uniform as the frame limiter so both stages see
     /// one frame's enable flag and time.
     pub fn apply(&mut self, uniform: &mut EffectUniform, frame: &LimiterFrameUniform) {
+        if frame.enabled == 0 {
+            return;
+        }
         let flash_rgb = [uniform.flash[0], uniform.flash[1], uniform.flash[2]];
         let vignette_rgb = [
             uniform.vignette[0],
             uniform.vignette[1],
             uniform.vignette[2],
         ];
-        if frame.enabled == 0 || frame.reset != 0 || frame.init != 0 {
-            self.flash
-                .restart(uniform.flash[3].clamp(0.0, 1.0), flash_rgb);
-            self.vignette
-                .restart(uniform.vignette[3].clamp(0.0, 1.0), vignette_rgb);
-            if frame.enabled == 0 {
-                return;
-            }
+        if frame.init != 0 {
+            self.flash.restart(uniform.flash[3], flash_rgb);
+            self.vignette.restart(uniform.vignette[3], vignette_rgb);
         }
         let (flash_a, flash_rgb) = self.flash.limit(uniform.flash[3], flash_rgb, frame);
         uniform.flash = [flash_rgb[0], flash_rgb[1], flash_rgb[2], flash_a];
@@ -272,7 +334,6 @@ mod tests {
                 splash: None,
             },
             enabled,
-            false,
             false,
         )
     }
@@ -362,21 +423,86 @@ mod tests {
     }
 
     #[test]
-    fn off_passes_through_and_on_restarts_history() {
-        let mut clamp = ChannelClamp::default();
+    fn off_passes_through_and_the_enabling_frame_starts_fresh() {
         let dt = 1.0 / 60.0;
+        let mut clamp = ChannelClamp::default();
+        let pack = |clamp: &mut ChannelClamp, alpha: f32, frame: LimiterFrameUniform| {
+            let mut uniform = flash([1.0; 3], alpha);
+            clamp.apply(&mut uniform, &frame);
+            uniform
+        };
+        // On: dark for half a second, then a 7.5 Hz strobe spends the whole
+        // budget in the half second before the off.
         for n in 0..60 {
-            let mut uniform = flash([1.0; 3], (n % 2) as f32);
-            let before = uniform;
-            clamp.apply(&mut uniform, &frame(dt, false));
-            assert_eq!(uniform, before, "off packs content unchanged");
+            let alpha = if n >= 30 && ((n - 30) / 4) % 2 == 0 {
+                1.0
+            } else {
+                0.0
+            };
+            pack(&mut clamp, alpha, frame(dt, true));
         }
-        // Re-enabled, the first frame matches what was just presented.
-        let mut uniform = flash([1.0; 3], 1.0);
-        let mut enable = frame(dt, true);
-        enable.reset = 1;
-        clamp.apply(&mut uniform, &enable);
-        assert_eq!(uniform.flash[3], 1.0);
+        // Off for half a second, mid-strobe, ending on a dark frame.
+        for n in 60..90 {
+            let alpha = ((n + 1) % 2) as f32;
+            let off = pack(&mut clamp, alpha, frame(dt, false));
+            assert_eq!(off, flash([1.0; 3], alpha), "off packs content unchanged");
+        }
+        // Turned on on a frame that jumps 0 → 1: that frame packs unchanged,
+        // not rate-capped, as the frame limiter presents it unchanged.
+        let mut enabling = frame(dt, true);
+        enabling.init = 1;
+        assert_eq!(pack(&mut clamp, 1.0, enabling).flash[3], 1.0);
+        // Nothing from before the off counts: the fall that follows and the
+        // next onset are both admitted, though the six transitions before the
+        // off were all under a second old when it turned back on.
+        let alphas: Vec<f32> = (1..=12)
+            .map(|k| {
+                let alpha = if (1..6).contains(&k) { 0.0 } else { 1.0 };
+                pack(&mut clamp, alpha, frame(dt, true)).flash[3]
+            })
+            .collect();
+        let trough = alphas[..5].iter().copied().fold(f32::INFINITY, f32::min);
+        let peak = alphas[5..].iter().copied().fold(0.0, f32::max);
+        assert!(trough <= 0.9, "the fall is admitted: {alphas:?}");
+        assert!(
+            peak >= trough + 0.2,
+            "the next onset is admitted: {alphas:?}"
+        );
+    }
+
+    #[test]
+    fn an_onset_waits_for_the_returns_earlier_onsets_still_owe() {
+        let mut window = FlashWindow::default();
+        // A return with no onset before it owes nothing.
+        window.push(Value::Level, false);
+        window.push(Value::Level, true);
+        assert!(window.onset_fits(), "2 held + 1 owed + 2 fits in six");
+        window.push(Value::Red, true);
+        // Two onsets now owe their returns: 3 + 2 + 2 is over six, though
+        // counting held transitions alone would admit it.
+        assert!(!window.onset_fits());
+        window.push(Value::Level, false);
+        window.push(Value::Red, false);
+        assert!(!window.onset_fits(), "five held leaves no room for a pair");
+    }
+
+    #[test]
+    fn a_held_red_tint_presents_exactly_its_held_redness() {
+        for rgb in [[1.0, 0.0, 0.0], [0.9, 0.1, 0.05], [0.6, 0.05, 0.2]] {
+            for held in [0.0, 0.3, 0.55] {
+                let d = desaturation_to_redness(rgb, held);
+                let gray = luminance(rgb);
+                let mixed = rgb.map(|channel| channel + (gray - channel) * d);
+                assert!(
+                    (redness(mixed) - held).abs() < 1e-4,
+                    "{rgb:?} held at {held}: presents {}",
+                    redness(mixed)
+                );
+                assert!((luminance(mixed) - gray).abs() < 1e-6);
+            }
+        }
+        // Already at or below the held redness: nothing to take away.
+        assert_eq!(desaturation_to_redness([0.3, 0.3, 0.3], 0.2), 0.0);
     }
 
     #[test]

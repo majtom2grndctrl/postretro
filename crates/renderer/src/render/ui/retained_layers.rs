@@ -21,6 +21,11 @@ pub(super) struct RetainedGameplayTree {
     /// The retained taffy-backed tree, carrying its layout cache, last viewport,
     /// per-bound-node last-resolved values, and cached draw list across frames.
     pub(super) tree: tree::UiTree,
+    /// The registry name and tier of the stack entry last laid out at this
+    /// layer. The focus export is stamped from here, never from a later
+    /// snapshot, so a frame that skipped layout cannot attribute these rects
+    /// to a different tree.
+    pub(super) owner: tree::FocusRectOwner,
 }
 
 /// Renderer-local state retained for one live passive presentation. Layout,
@@ -87,6 +92,9 @@ impl UiPass {
     /// reduce-motion switch) threaded
     /// down to the retained build for the tween runtime to ease bound values over
     /// time.
+    ///
+    /// `entry` also names the layer's owner (registry name and tier), which the
+    /// focus export carries: the owner is recorded with the layout it names.
     // Wide by necessity: layer + viewport + image sizes + slot values + theme +
     // theme generation + frame time are all distinct retained-build inputs;
     // bundling them into a struct would only obscure the per-frame call site.
@@ -95,7 +103,7 @@ impl UiPass {
         &mut self,
         font_system: &mut FontSystem,
         layer: usize,
-        tree: &descriptor::AnchoredTree,
+        entry: &postretro_ui::UiTreeEntry,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         image_sizes_generation: u64,
@@ -115,6 +123,7 @@ impl UiPass {
         // it was built from (a structural change), OR when the theme generation
         // moved (override theme installed, so baked tokens are stale). A settled
         // frame (same descriptor + same generation) reuses the retained tree.
+        let tree = &entry.descriptor;
         let needs_build = match self.gameplay_trees.get(layer) {
             Some(retained) => {
                 retained.descriptor != *tree || retained.theme_generation != theme_generation
@@ -126,6 +135,10 @@ impl UiPass {
                 descriptor: tree.clone(),
                 theme_generation,
                 tree: tree::UiTree::from_descriptor(tree, theme),
+                owner: tree::FocusRectOwner {
+                    name: entry.name.clone(),
+                    tier: entry.tier,
+                },
             };
             if layer < self.gameplay_trees.len() {
                 self.gameplay_trees[layer] = rebuilt;
@@ -135,6 +148,15 @@ impl UiPass {
         }
 
         let retained = &mut self.gameplay_trees[layer];
+        // An identical descriptor under another name reuses the layout; the
+        // owner still follows the entry. Written only on change, so a settled
+        // frame allocates nothing.
+        if retained.owner.name != entry.name || retained.owner.tier != entry.tier {
+            retained.owner = tree::FocusRectOwner {
+                name: entry.name.clone(),
+                tier: entry.tier,
+            };
+        }
         retained
             .tree
             .build_draw_data_retained_with_image_generation(
@@ -270,12 +292,18 @@ impl UiPass {
         cell_values: &tree::CellValues,
     ) -> tree::FocusRectList {
         match self.gameplay_trees.last() {
-            Some(retained) => retained.tree.export_focus_rects(
-                &retained.descriptor,
-                viewport,
-                slot_values,
-                cell_values,
-            ),
+            Some(retained) => {
+                let mut rects = retained.tree.export_focus_rects(
+                    &retained.descriptor,
+                    viewport,
+                    slot_values,
+                    cell_values,
+                );
+                // Stamped with the owner laid out beside these rects, so a
+                // press attributes to the tree that owned them (`ui.md` §4.1).
+                rects.owner = Some(retained.owner.clone());
+                rects
+            }
             None => tree::FocusRectList::default(),
         }
     }
@@ -289,5 +317,109 @@ impl UiPass {
         if self.gameplay_trees.len() > len {
             self.gameplay_trees.truncate(len);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::gpu_test_harness::try_init_gpu;
+    use postretro_ui::modal_stack::ScopeTier;
+
+    fn entry(name: &str, tier: ScopeTier) -> postretro_ui::UiTreeEntry {
+        let descriptor = descriptor::AnchoredTree {
+            anchor: layout::Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: descriptor::Widget::Text(descriptor::TextWidget {
+                content: "MENU".into(),
+                font_size: 24.0,
+                color: descriptor::ColorValue::Literal([1.0; 4]),
+                font: None,
+                bind: None,
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
+            }),
+            capture_mode: descriptor::CaptureMode::Capture,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        postretro_ui::UiTreeEntry {
+            name: name.into(),
+            tier,
+            capture_mode: descriptor.capture_mode,
+            descriptor,
+            on_commit: None,
+        }
+    }
+
+    fn owner(name: &str, tier: ScopeTier) -> Option<tree::FocusRectOwner> {
+        Some(tree::FocusRectOwner {
+            name: name.into(),
+            tier,
+        })
+    }
+
+    // The focus export names the tree whose layout produced its rects. A frame
+    // that skips layout (its acquire failed) after the stack changed exports
+    // the retained layer, so it must still name that layer's tree, whatever
+    // the newer snapshot's top is. An identical descriptor under another name
+    // reuses the layout but takes the new owner.
+    #[test]
+    fn the_focus_export_names_the_tree_its_rects_were_laid_out_from() {
+        let Some(ctx) = try_init_gpu() else {
+            eprintln!("retained layer owner test: no adapter, skipping (not a pass)");
+            return;
+        };
+        let mut pass = UiPass::new(&ctx.device, &ctx.queue, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut font_system = postretro_ui::text::build_font_system();
+        let viewport = [1280, 720];
+        let images = tree::ImageSizes::new();
+        let slots = std::collections::HashMap::new();
+        let cells = tree::CellValues::new();
+        let theme = theme::UiTheme::engine_default();
+        let mut lay_out = |pass: &mut UiPass, entry: &postretro_ui::UiTreeEntry| {
+            pass.layout_gameplay_tree(
+                &mut font_system,
+                0,
+                entry,
+                viewport,
+                &images,
+                0,
+                &slots,
+                &cells,
+                &theme,
+                0,
+                tree::TweenClock::easing(0.0),
+            );
+        };
+
+        let mod_menu = entry("modMenu", ScopeTier::Mod);
+        lay_out(&mut pass, &mod_menu);
+        let exported = pass.export_top_focus_rects(viewport, &slots, &cells);
+        assert_eq!(exported.owner, owner("modMenu", ScopeTier::Mod));
+
+        // The snapshot's top becomes the engine panel, but this frame lays
+        // nothing out: the export still names the mod tree.
+        let exported = pass.export_top_focus_rects(viewport, &slots, &cells);
+        assert_eq!(exported.owner, owner("modMenu", ScopeTier::Mod));
+
+        let panel = entry("accessibilityPanel", ScopeTier::Engine);
+        lay_out(&mut pass, &panel);
+        let exported = pass.export_top_focus_rects(viewport, &slots, &cells);
+        assert_eq!(
+            exported.owner,
+            owner("accessibilityPanel", ScopeTier::Engine)
+        );
+
+        pass.truncate_gameplay_stack(0);
+        assert_eq!(
+            pass.export_top_focus_rects(viewport, &slots, &cells).owner,
+            None
+        );
     }
 }

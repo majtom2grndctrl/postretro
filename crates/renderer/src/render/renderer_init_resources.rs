@@ -614,7 +614,8 @@ pub(crate) fn build_frame_timing(
             "billboard_direct_scatter_compose";
         pass_labels[TIMING_PAIR_DYNAMIC_SPOT_DEPTH] = "dynamic_spot_depth_upper";
         pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
-        pass_labels[TIMING_PAIR_FLASH_LIMITER] = "flash_limiter";
+        pass_labels[TIMING_PAIR_FLASH_LIMITER_MEASURE] = "flash_limiter_measure";
+        pass_labels[TIMING_PAIR_FLASH_LIMITER_LIMIT] = "flash_limiter_limit";
         pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {

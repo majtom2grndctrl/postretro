@@ -12,7 +12,7 @@ use postretro_render_cpu::flash_limiter::{
 };
 
 use super::gpu_test_harness::{GpuCtx, read_texture_rgba8, try_init_gpu};
-use super::screen_effects::ScreenEffectsPass;
+use super::screen_effects::{ResolveTimestamps, ScreenEffectsPass};
 use super::wcag_flash_counter::{
     RedTransitionCounter, TransitionCounter, max_transitions_in_any_second, srgb8_to_linear,
 };
@@ -40,15 +40,44 @@ const FULL: Rect = Rect {
     h: HEIGHT,
 };
 
+impl Rect {
+    fn contains(&self, x: u32, y: u32) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+}
+
+/// A rectangle of whole limiter cells (10×10 pixels at 160×90).
+fn cells(x: u32, y: u32, w: u32, h: u32) -> Rect {
+    let cell = WIDTH / 16;
+    Rect {
+        x: x * cell,
+        y: y * cell,
+        w: w * cell,
+        h: h * cell,
+    }
+}
+
 /// One synthetic `scene_color` frame: a black field with `rect` at `rgb`.
 fn scene(rect: Rect, rgb: [f32; 3]) -> Vec<u8> {
+    scene_of(&[(rect, rgb)])
+}
+
+/// A black field with each rectangle painted in order, later ones on top.
+fn scene_of(rects: &[(Rect, [f32; 3])]) -> Vec<u8> {
     let mut data = Vec::with_capacity((WIDTH * HEIGHT * 8) as usize);
-    let lit = rgb.map(f32_to_f16_bits);
+    let lit: Vec<[u16; 3]> = rects
+        .iter()
+        .map(|(_, rgb)| rgb.map(f32_to_f16_bits))
+        .collect();
     let one = f32_to_f16_bits(1.0);
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
-            let inside = x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h;
-            let px = if inside { lit } else { [0; 3] };
+            let mut px = [0; 3];
+            for ((rect, _), color) in rects.iter().zip(&lit) {
+                if rect.contains(x, y) {
+                    px = *color;
+                }
+            }
             for half in [px[0], px[1], px[2], one] {
                 data.extend_from_slice(&half.to_le_bytes());
             }
@@ -220,8 +249,7 @@ impl Rig {
                     seconds,
                 }),
             },
-            None,
-            None,
+            ResolveTimestamps::default(),
         );
         let [w, h] = self.size;
         Presented {
@@ -466,42 +494,60 @@ fn a_hitch_never_turns_the_cap_into_one_step_and_a_slow_change_passes() {
 }
 
 #[test]
-fn turning_the_limiter_on_mid_strobe_limits_from_that_frame_against_the_last_presented() {
-    // UO5 and hub AC 4: on for 0.5 s, off 0.5 s, then on again.
+fn turning_the_limiter_back_on_starts_a_fresh_window_and_presents_that_frame_unchanged() {
+    // L8 (UO5, restated by owner decision A): on, off mid-strobe for about
+    // half a second, then on again.
     let fps = 60.0;
-    let mut rig = rig_or_skip!();
-    let frames = strobe(FULL, fps, 3.0, |t| square(t, 5.0));
-    let mut presented = Vec::new();
-    let mut reenabled_at = None;
-    let mut first_reenabled_matches_input = false;
-    for (n, frame) in frames.into_iter().enumerate() {
-        let t = n as f32 / fps;
-        // Re-enabled mid-way through a dark half-period, so the first frame
-        // after matches the frame presented just before it.
-        let off = (0.5..1.05).contains(&t);
-        let input_level = if frame.pixels[0] == 0 && frame.pixels[1] == 0 {
-            0.0
-        } else {
-            1.0
-        };
-        let reenables = !off && t >= 1.05 && reenabled_at.is_none();
-        let p = rig.present(&if off { frame.limiter_off() } else { frame });
-        if reenables {
-            reenabled_at = Some(n);
-            first_reenabled_matches_input = (p.luminance(FULL) - input_level).abs() < 0.05;
+    let dt = 1.0 / fps;
+    // A 5 Hz strobe starting dark: its sixth limited transition, the third
+    // fall, counts on frame 37, so the window is full when the limiter turns
+    // off. It turns back on at frame 66 (1.1 s), while all six are still under
+    // a second old.
+    let off = 38..66;
+    let enable = off.end;
+    let level = |n: usize| -> f32 {
+        if n < enable {
+            return square(n as f32 * dt, 5.0);
         }
-        presented.push(p);
-    }
-    let start = reenabled_at.unwrap();
-    // The first frame after re-enabling matches the frame presented just
-    // before it (a strobe half-period is several frames), so it presents
-    // unchanged.
-    assert!((presented[start].luminance(FULL) - presented[start - 1].luminance(FULL)).abs() < 0.05);
-    assert!(first_reenabled_matches_input);
-    // No transition from before the off counts: the window after re-enabling
-    // admits a full three flashes, and never more.
-    let after = worst(&presented[start..], fps, FULL);
-    assert!((4..=6).contains(&after), "{after}");
+        // From the enabling frame: one bright frame, four dark, then a 5 Hz
+        // strobe starting bright, all at 0.7.
+        let k = n - enable;
+        let on = k == 0 || (k >= 5 && ((k - 5) / 6) % 2 == 0);
+        if on { 0.7 } else { 0.0 }
+    };
+    let mut rig = rig_or_skip!();
+    let presented: Vec<Presented> = (0..enable + 60)
+        .map(|n| {
+            let frame = Frame::scene(scene(FULL, gray(level(n))), dt);
+            rig.present(&if off.contains(&n) {
+                frame.limiter_off()
+            } else {
+                frame
+            })
+        })
+        .collect();
+    // The enabling frame jumps from dark and presents unchanged: it starts
+    // fresh against its own measure, with nothing to rate-cap from.
+    assert!(presented[enable - 1].luminance(FULL) < 0.02);
+    let first = presented[enable].luminance(FULL);
+    assert!((first - 0.7).abs() < 0.02, "{first}");
+    // No transition from before the off counts: the fall that follows and the
+    // next rise are both admitted. With the earlier six still in the window,
+    // that rise would be held at its trough.
+    let lum: Vec<f32> = presented[enable..]
+        .iter()
+        .map(|p| p.luminance(FULL))
+        .collect();
+    let trough = lum[1..=5].iter().copied().fold(f32::INFINITY, f32::min);
+    let peak = lum[5..=10].iter().copied().fold(0.0, f32::max);
+    assert!(trough < 0.6, "the fall is admitted: {:?}", &lum[..=10]);
+    assert!(
+        peak >= trough + 0.2,
+        "the next rise is admitted: {:?}",
+        &lum[..=10]
+    );
+    let after = worst(&presented[enable..], fps, FULL);
+    assert!(after <= 6, "{after}");
 }
 
 #[test]
@@ -813,4 +859,396 @@ fn threshold_area_strobe_straddling_cells_is_limited() {
     let fps = 60.0;
     let presented = rig.run(strobe(rect, fps, 3.0, |t| square(t, 8.0)));
     assert!(worst(&presented, fps, rect) <= 6);
+}
+
+#[test]
+fn an_uneven_flash_counts_its_whole_area() {
+    // Two cells jump to white while the thirty around and beside them rise to
+    // 0.25: 32 cells, 22% of the frame, strobing at 10 Hz. Weighed against the
+    // brightest change, each dim cell read as a quarter and the whole as 9.5
+    // cells, under the threshold, so the strobe passed unlimited. Each cell's
+    // own coverage counts all 32.
+    let ring = cells(4, 2, 6, 5);
+    let beside = cells(10, 2, 1, 2);
+    let core = cells(6, 4, 2, 1);
+    let fps = 60.0;
+    let dark = scene(FULL, gray(0.0));
+    let lit = scene_of(&[(ring, gray(0.25)), (beside, gray(0.25)), (core, gray(1.0))]);
+    let frames: Vec<Frame> = (0..(2.0 * fps) as usize)
+        .map(|n| {
+            let on = square(n as f32 / fps, 10.0) > 0.5;
+            Frame::scene(if on { lit.clone() } else { dark.clone() }, 1.0 / fps)
+        })
+        .collect();
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    let worst = worst(&presented, fps, ring);
+    assert!(worst <= 6, "{worst} transitions in one second");
+}
+
+#[test]
+fn a_still_cell_holding_an_old_excursion_does_not_shrink_a_later_flash() {
+    // Two cells brighten to white once, below the flash area, and hold still;
+    // their excursion stays uncounted. A 20-cell strobe at 0.25 then starts
+    // beside them. Weighed against the still cells' old change, it read as
+    // about four cells and passed unlimited.
+    let still = cells(7, 5, 1, 2);
+    let strobe_rect = cells(8, 4, 5, 4);
+    let fps = 60.0;
+    let dark = scene(FULL, gray(0.0));
+    let held = scene(still, gray(1.0));
+    let lit = scene_of(&[(still, gray(1.0)), (strobe_rect, gray(0.25))]);
+    let start = 30;
+    let frames: Vec<Frame> = (0..(3.0 * fps) as usize)
+        .map(|n| {
+            let pixels = if n < 5 {
+                dark.clone()
+            } else if n < start || square((n - start) as f32 / fps, 10.0) < 0.5 {
+                held.clone()
+            } else {
+                lit.clone()
+            };
+            Frame::scene(pixels, 1.0 / fps)
+        })
+        .collect();
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    let worst = worst(&presented[start..], fps, strobe_rect);
+    assert!(worst <= 6, "{worst} transitions in one second");
+}
+
+#[test]
+fn an_over_budget_red_onset_holds_exactly_its_last_redness() {
+    // Red against a reddish partner of equal luminance at 5 Hz. Mixing toward
+    // gray in proportion to the redness to shed overshoots, since redness is
+    // not linear in the mix; storing that presented redness let each held
+    // frame creep redder, back to saturated red within a few frames.
+    let fps = 60.0;
+    let red = [1.0, 0.0, 0.0];
+    let partner = [0.2535, 0.2218, 0.0];
+    let is_red = |n: usize| square(n as f32 / fps, 5.0) > 0.5;
+    let frames: Vec<Frame> = (0..(2.0 * fps) as usize)
+        .map(|n| {
+            Frame::scene(
+                scene(FULL, if is_red(n) { red } else { partner }),
+                1.0 / fps,
+            )
+        })
+        .collect();
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+
+    let mut counter = RedTransitionCounter::default();
+    for (n, p) in presented.iter().enumerate() {
+        counter.push(n as f32 / fps, p.mean_rgb(FULL));
+    }
+    let worst = max_transitions_in_any_second(counter.transition_times());
+    assert!(worst <= 6, "{worst} red transitions in one second");
+
+    // Redness on the frame limiter's scale: 0 neutral, 1 pure red.
+    let redness = |[r, g, b]: [f32; 3]| ((r / (r + g + b) - 1.0 / 3.0) * 1.5).clamp(0.0, 1.0);
+    let held = redness(presented[0].mean_rgb(FULL));
+    let mut held_frames = 0;
+    for (n, p) in presented.iter().enumerate() {
+        if !is_red(n) {
+            continue;
+        }
+        let shown = redness(p.mean_rgb(FULL));
+        if shown < 0.95 {
+            held_frames += 1;
+            assert!(
+                shown <= held + 0.03,
+                "frame {n}: held redness crept from {held} to {shown}"
+            );
+        }
+    }
+    assert!(held_frames > 0, "over budget, red onsets are held");
+}
+
+#[test]
+fn a_luminance_and_a_red_onset_in_one_frame_cannot_share_the_last_room() {
+    // Two white flashes on the left spend four transitions. Then, in one
+    // frame, a third white onset counts on the left and the right turns
+    // saturated red at its own luminance. Only one onset and its return fit;
+    // admitting both took the window to seven, then eight.
+    let fps = 60.0;
+    let dt = 1.0 / fps;
+    let left = Rect {
+        x: 0,
+        y: 0,
+        w: WIDTH / 2,
+        h: HEIGHT,
+    };
+    let right = Rect {
+        x: WIDTH / 2,
+        y: 0,
+        w: WIDTH / 2,
+        h: HEIGHT,
+    };
+    let lead = 5;
+    let red_from = lead + 30;
+    // Stops before the first transition ages out, so the held red onset is
+    // never admitted inside the run.
+    let frames: Vec<Frame> = (0..lead + 61)
+        .map(|n| {
+            let k = n as i64 - lead as i64;
+            // The rate cap counts a white onset on its second frame, so the
+            // third starts one frame before the red.
+            let white = (0..6).contains(&k) || (15..21).contains(&k) || (29..36).contains(&k);
+            let right_rgb = if n >= red_from {
+                [1.0, 0.0, 0.0]
+            } else {
+                gray(0.2126)
+            };
+            let pixels = scene_of(&[
+                (left, gray(if white { 1.0 } else { 0.0 })),
+                (right, right_rgb),
+            ]);
+            Frame::scene(pixels, dt)
+        })
+        .collect();
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+
+    let mut times = Vec::new();
+    for rect in [left, right] {
+        let mut luminance = TransitionCounter::default();
+        let mut red = RedTransitionCounter::default();
+        for (n, p) in presented.iter().enumerate() {
+            luminance.push(n as f32 * dt, p.luminance(rect));
+            red.push(n as f32 * dt, p.mean_rgb(rect));
+        }
+        times.extend_from_slice(luminance.transition_times());
+        times.extend_from_slice(red.transition_times());
+    }
+    times.sort_by(f32::total_cmp);
+    let worst = max_transitions_in_any_second(&times);
+    assert!(worst <= 6, "{worst} transitions in one second: {times:?}");
+    // The red onset waits: the right presents without its hue.
+    let [r, g, b] = presented[red_from].mean_rgb(right);
+    assert!(r / (r + g + b) < 0.8, "{r} {g} {b}");
+}
+
+#[test]
+fn a_strobe_from_a_load_after_a_fade_to_black_is_held_to_three_flashes() {
+    // The last gameplay frame is darker than the splash, so the edge into the
+    // splash is a small brightening that does not count. The first brightening
+    // after the load continues it and must still count; marking the drop
+    // counted let it pass uncounted, and the first second showed seven
+    // transitions.
+    let fps = 60.0;
+    let dt = 1.0 / fps;
+    let splash_elapsed = 0.07;
+    let mut frames = Vec::new();
+    // Bright gameplay, then a fade to black the limiter counts, held long
+    // enough to present black.
+    for _ in 0..4 {
+        frames.push(Frame::scene(scene(FULL, gray(1.0)), dt));
+    }
+    for _ in 0..24 {
+        frames.push(Frame::scene(scene(FULL, gray(0.0)), dt));
+    }
+    // A load: a short splash, then a strobe that starts bright.
+    let load = frames.len();
+    for n in 0..60 {
+        let frame = Frame::scene(scene(FULL, gray(1.0 - square(n as f32 * dt, 5.0))), dt);
+        frames.push(if n == 0 {
+            Frame {
+                elapsed: splash_elapsed,
+                ..frame
+            }
+            .after_splash(0.05)
+        } else {
+            frame
+        });
+    }
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    assert!(
+        presented[load - 1].luminance(FULL) < 0.005,
+        "gameplay ends darker than the splash"
+    );
+
+    let mut counter = TransitionCounter::default();
+    let mut t = 0.0;
+    for (n, p) in presented.iter().enumerate() {
+        t += if n == load { splash_elapsed } else { dt };
+        counter.push(t, p.luminance(FULL));
+    }
+    let worst = max_transitions_in_any_second(counter.transition_times());
+    assert!(worst <= 6, "{worst} transitions in one second");
+}
+
+#[test]
+fn over_budget_a_sub_threshold_brightening_passes_while_a_flash_is_still_held() {
+    // Owner decision B: three full-screen flashes spend the budget. A slow
+    // brightening that stays below the flash threshold then presents as
+    // authored — it used to be held with every other brightening — while a
+    // fourth flash is still held.
+    let fps = 60.0;
+    let dt = 1.0 / fps;
+    let lead = 5;
+    let level = |n: usize| -> f32 {
+        let Some(k) = n.checked_sub(lead) else {
+            return 0.0;
+        };
+        if k < 45 {
+            // Three flashes, six frames on and nine off.
+            return if k % 15 < 6 { 1.0 } else { 0.0 };
+        }
+        match k {
+            // +0.02 a frame, to 0.08.
+            47..=50 => 0.02 * (k - 46) as f32,
+            51..=56 => 1.0,
+            _ => 0.0,
+        }
+    };
+    let mut rig = rig_or_skip!();
+    let presented = rig.run((0..lead + 62).map(|n| Frame::scene(scene(FULL, gray(level(n))), dt)));
+    for (n, p) in presented.iter().enumerate().take(lead + 51).skip(lead + 47) {
+        let shown = p.luminance(FULL);
+        assert!(
+            (shown - level(n)).abs() < 0.004,
+            "frame {n}: a sub-threshold brightening was held at {shown}, authored {}",
+            level(n)
+        );
+    }
+    for (n, p) in presented.iter().enumerate().take(lead + 57).skip(lead + 51) {
+        let shown = p.luminance(FULL);
+        assert!(
+            shown < 0.09,
+            "frame {n}: the fourth flash presented {shown}"
+        );
+    }
+    assert!(worst(&presented, fps, FULL) <= 6);
+}
+
+/// Wall-clock cost of the resolve with the frame limiter on, off (the measure
+/// pass skipped, the limit pass writing identity) and bypassed (the test-only
+/// switch, which also skips the measure pass), at 1920×1080 and 3840×2160. A
+/// measurement, not a gate: each mode encodes and submits `FRAMES` resolves
+/// one command buffer per frame, then waits for the GPU; the best of several
+/// rounds is printed as ms per frame. Wall-clock time includes submission
+/// overhead, so it bounds the GPU cost from above; per-pass GPU time needs a
+/// timestamp-capable adapter (`POSTRETRO_GPU_TIMING=1`).
+///
+/// Run: `cargo test -p postretro-renderer --lib flash_limiter_resolve_cost --
+/// --ignored --nocapture` (a release build gives steadier numbers: add
+/// `--release`).
+#[test]
+#[ignore = "measurement, not a gate; run with --ignored --nocapture"]
+fn flash_limiter_resolve_cost() {
+    const FRAMES: u32 = 60;
+    const ROUNDS: u32 = 5;
+    let Some(ctx) = try_init_gpu() else {
+        eprintln!("flash limiter cost: no adapter, skipping (not a pass)");
+        return;
+    };
+    for [width, height] in [[1920u32, 1080u32], [3840, 2160]] {
+        let mut pass = ScreenEffectsPass::new(&ctx.device, width, height, PRESENT_FORMAT);
+        // A varied HDR scene so the measure pass samples real content.
+        let one = f32_to_f16_bits(1.0);
+        let mut data = Vec::with_capacity((width * height * 8) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let r = f32_to_f16_bits(x as f32 / width as f32);
+                let g = f32_to_f16_bits(y as f32 / height as f32);
+                let b = f32_to_f16_bits(((x ^ y) & 0xff) as f32 / 255.0);
+                for half in [r, g, b, one] {
+                    data.extend_from_slice(&half.to_le_bytes());
+                }
+            }
+        }
+        ctx.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: pass.scene_color_texture(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 8),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Flash limiter cost target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PRESENT_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let on = HashMap::new();
+        let off = HashMap::from([(FLASH_LIMITER_SLOT.to_string(), SlotValue::Boolean(false))]);
+
+        let run = |pass: &mut ScreenEffectsPass, slots: &HashMap<String, SlotValue>| {
+            let start = std::time::Instant::now();
+            for _ in 0..FRAMES {
+                let mut encoder = ctx
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                pass.encode_resolve(
+                    &ctx.queue,
+                    &mut encoder,
+                    &view,
+                    slots,
+                    LimiterFrameInput::default(),
+                    ResolveTimestamps::default(),
+                );
+                ctx.queue.submit(std::iter::once(encoder.finish()));
+            }
+            let recorded = start.elapsed().as_secs_f64();
+            ctx.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("poll");
+            let per_frame = |seconds: f64| seconds * 1000.0 / f64::from(FRAMES);
+            [
+                per_frame(start.elapsed().as_secs_f64()),
+                per_frame(recorded),
+            ]
+        };
+
+        // Warm up pipelines and the upload.
+        run(&mut pass, &on);
+        // Per mode: best total (to the GPU finishing) and best CPU recording.
+        let mut best = [[f64::MAX; 2]; 3];
+        let keep = |slot: &mut [f64; 2], sample: [f64; 2]| {
+            slot[0] = slot[0].min(sample[0]);
+            slot[1] = slot[1].min(sample[1]);
+        };
+        for _ in 0..ROUNDS {
+            pass.bypass_frame_limiter = false;
+            keep(&mut best[0], run(&mut pass, &on));
+            keep(&mut best[1], run(&mut pass, &off));
+            pass.bypass_frame_limiter = true;
+            keep(&mut best[2], run(&mut pass, &on));
+        }
+        println!(
+            "flash limiter resolve cost {width}x{height} (ms/frame, total / CPU recording): \
+             limiter on {:.3} / {:.3}, limiter off {:.3} / {:.3}, bypassed {:.3} / {:.3}; \
+             on - off = {:.3}",
+            best[0][0],
+            best[0][1],
+            best[1][0],
+            best[1][1],
+            best[2][0],
+            best[2][1],
+            best[0][0] - best[1][0],
+        );
+    }
 }

@@ -874,8 +874,10 @@ pub(crate) struct App {
     /// `os_preferences::OS_REPLY_WAIT` from here. `None` outside that wait.
     os_wait_from: Option<Instant>,
 
-    /// When the last resolve frame presented; the flash limiter ages its window
-    /// by presented-frame time measured from here, splash frames included.
+    /// When the App last handed the renderer a resolve frame's limiter input;
+    /// the flash limiter ages its window by presented-frame time measured from
+    /// here, splash frames included. A frame whose acquire fails still advances
+    /// it: the renderer merges that frame's unconsumed input into the next.
     last_resolve_at: Option<Instant>,
     /// When the current stretch of splash frames began, if one is presenting.
     /// Handed to the next resolve frame so the limiter counts both load edges.
@@ -2131,8 +2133,9 @@ impl ApplicationHandler for App {
                 // events forward through the seam. See: context/lib/input.md §7
                 // Reached only in Running (Frontend returned above), so the
                 // session is installed. Disjoint borrows of the session group and
-                // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
-                // votes are collected and applied after the borrow ends.
+                // the non-session `nav_stick_tracker`; mode-signal, menu-toggle,
+                // and panel-toggle votes are collected and applied after the
+                // borrow ends.
                 let (gamepad_nav_seen, gamepad_menu_toggle, gamepad_panel_toggle) = {
                     let App {
                         session,
@@ -5388,16 +5391,11 @@ impl App {
         }
     }
 
-    /// Paint a single boot-splash frame through the renderer-owned splash pass:
-    /// clear to black, then draw the logo quad once one is installed. The boot
-    /// splash is independent of the UI system — `paint_splash` publishes no UI
-    /// snapshot and does not query the renderer for a capture mode (the input
-    /// seam stays passthrough during boot). Returns true only after presentation
-    /// so the splash schedule advances on a visible frame; a transient surface
-    /// failure requests another redraw without advancing.
     /// Presented-frame time and any splash stretch for the frame about to
     /// resolve. Time runs from the previous resolve frame, so a stretch of
-    /// splash frames (a load) ages the flash window by its whole length.
+    /// splash frames (a load) ages the flash window by its whole length. The
+    /// stretch is taken here; if the frame then fails to acquire, the renderer
+    /// keeps it for the next resolve (`Renderer::set_limiter_frame`).
     fn next_limiter_frame(
         last_resolve_at: &mut Option<Instant>,
         splash_stretch_started: &mut Option<Instant>,
@@ -5420,6 +5418,13 @@ impl App {
         }
     }
 
+    /// Paint a single boot-splash frame through the renderer-owned splash pass:
+    /// clear to black, then draw the logo quad once one is installed. The boot
+    /// splash is independent of the UI system — `paint_splash` publishes no UI
+    /// snapshot and does not query the renderer for a capture mode (the input
+    /// seam stays passthrough during boot). Returns true only after presentation
+    /// so the splash schedule advances on a visible frame; a transient surface
+    /// failure requests another redraw without advancing.
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) -> bool {
         match self.renderer.as_mut() {
             // Splash requires only boot-ready (surface/device/queue/boot-splash).
@@ -14309,5 +14314,52 @@ mod tests {
             Some(&SlotValue::Number(42.0)),
             "popping options restores the title without reseeding its local state",
         );
+    }
+
+    // The splash stretch is handed to exactly one resolve frame, at an age no
+    // larger than the time since the previous resolve; the first resolve of a
+    // renderer takes the default frame time.
+    #[test]
+    fn next_limiter_frame_takes_the_splash_stretch_once() {
+        use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
+        let splash_rgb = [0.01, 0.02, 0.03];
+        let start = Instant::now();
+        let mut last_resolve_at = None;
+        let mut splash_stretch_started = None;
+
+        let first = App::next_limiter_frame(
+            &mut last_resolve_at,
+            &mut splash_stretch_started,
+            splash_rgb,
+            start,
+        );
+        assert_eq!(first.elapsed_seconds, DEFAULT_FRAME_SECONDS);
+        assert_eq!(first.splash, None);
+        assert_eq!(last_resolve_at, Some(start));
+
+        // A load: splash frames open a stretch after that resolve.
+        splash_stretch_started = Some(start + Duration::from_millis(100));
+        let resolved_at = start + Duration::from_millis(2100);
+        let after_load = App::next_limiter_frame(
+            &mut last_resolve_at,
+            &mut splash_stretch_started,
+            splash_rgb,
+            resolved_at,
+        );
+        assert!((after_load.elapsed_seconds - 2.1).abs() < 1e-4);
+        let splash = after_load.splash.expect("the stretch is handed over");
+        assert_eq!(splash.rgb, splash_rgb);
+        assert!((splash.seconds - 2.0).abs() < 1e-4);
+        assert!(splash.seconds <= after_load.elapsed_seconds);
+        assert_eq!(splash_stretch_started, None, "taken, not copied");
+
+        let next = App::next_limiter_frame(
+            &mut last_resolve_at,
+            &mut splash_stretch_started,
+            splash_rgb,
+            resolved_at + Duration::from_millis(16),
+        );
+        assert_eq!(next.splash, None, "a stretch hands over once");
+        assert!((next.elapsed_seconds - 0.016).abs() < 1e-4);
     }
 }

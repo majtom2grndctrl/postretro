@@ -75,6 +75,18 @@ pub struct ScreenEffectsPass {
     pub(super) last_packed: EffectUniform,
 }
 
+/// GPU timestamp brackets for one resolve frame: the flash limiter's measure
+/// and limit passes and the resolve itself, each its own timing pair. The
+/// measure bracket is requested only on a frame whose measure pass runs
+/// ([`ScreenEffectsPass::limiter_measures`]), so while the limiter is off its
+/// entry reports absent rather than a zero-cost pass.
+#[derive(Default)]
+pub(crate) struct ResolveTimestamps<'a> {
+    pub measure: Option<wgpu::ComputePassTimestampWrites<'a>>,
+    pub limit: Option<wgpu::ComputePassTimestampWrites<'a>>,
+    pub resolve: Option<wgpu::RenderPassTimestampWrites<'a>>,
+}
+
 impl ScreenEffectsPass {
     pub fn new(
         device: &wgpu::Device,
@@ -240,19 +252,14 @@ impl ScreenEffectsPass {
     /// vignette, the uniform is written, and the frame limiter measures the
     /// composite with that uniform before the resolve applies it plus the
     /// per-cell result.
-    // Wide by necessity: the GPU handles, the target, the frame's slot values,
-    // its presented-frame time, and the two stages' timestamp brackets are all
-    // distinct encode inputs.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_resolve(
+    pub(crate) fn encode_resolve(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         swapchain_view: &wgpu::TextureView,
         slot_values: &HashMap<String, SlotValue>,
         limiter_frame: LimiterFrameInput,
-        limiter_timestamps: Option<wgpu::ComputePassTimestampWrites<'_>>,
-        resolve_timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+        timestamps: ResolveTimestamps<'_>,
     ) {
         let frame = self
             .flash_limiter
@@ -279,8 +286,14 @@ impl ScreenEffectsPass {
             }
             frame
         };
-        self.flash_limiter
-            .encode(queue, encoder, &self.bind_group, &frame, limiter_timestamps);
+        self.flash_limiter.encode(
+            queue,
+            encoder,
+            &self.bind_group,
+            &frame,
+            timestamps.measure,
+            timestamps.limit,
+        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Screen Effects Resolve Pass"),
@@ -297,13 +310,25 @@ impl ScreenEffectsPass {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: resolve_timestamps,
+            timestamp_writes: timestamps.resolve,
             ..Default::default()
         });
         pass.set_pipeline(&self.resolve_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_bind_group(1, self.flash_limiter.resolve_bind_group(), &[]);
         pass.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
+    }
+
+    /// Whether this frame's resolve runs the limiter's measure pass: only while
+    /// the limiter is on. Decided by the same fail-safe flag read as
+    /// `encode_resolve`, so a caller can skip requesting the measure pass's
+    /// timestamps on a frame it will not run.
+    pub(crate) fn limiter_measures(&self, slot_values: &HashMap<String, SlotValue>) -> bool {
+        #[cfg(test)]
+        if self.bypass_frame_limiter {
+            return false;
+        }
+        flash_limiter_enabled(slot_values)
     }
 
     /// Tonemap the raw HDR scene into the fixed RGBA8 sRGB capture format.

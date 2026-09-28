@@ -1,7 +1,7 @@
 # E23--preferences-comfort-floor — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: b21e81d7c
 
 Sibling units: U3 and U4 have not landed (no drafts exist), so U1 lands first. AC 32's panel pass and AC 21's armed-capture clause are not U1's (hub Concurrent landing). U1 pins per-field storage, the `accessibility.*` projection and the global input; F1 goes where `nav_intent_for_key`'s neighbours live today, and U3 later moves it into its binding table.

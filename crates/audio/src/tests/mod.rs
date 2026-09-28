@@ -3,6 +3,7 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use crate::volume::linear_volume_to_decibels;
 use kira::backend::mock::MockBackend;
 use kira::backend::{Backend, Renderer};
 
@@ -96,8 +97,10 @@ impl CapturingBackend {
 /// frames carry the tone at full resolution (kira's `MockBackend` defaults
 /// to 1 Hz, which would resample the clip away to near-nothing).
 pub(super) fn capturing_audio() -> Audio<CapturingBackend> {
+    let mono = mono::MonoFoldHandle::default();
     let settings = AudioManagerSettings::<CapturingBackend> {
         capacities: Audio::CAPACITIES,
+        main_track_builder: Audio::main_track_builder(&mono),
         backend_settings: 8_000,
         ..Default::default()
     };
@@ -108,7 +111,7 @@ pub(super) fn capturing_audio() -> Audio<CapturingBackend> {
         .expect("listener allocates");
     let buses = BusTree::build(&mut manager).expect("bus tree builds");
 
-    let mut audio = Audio::from_parts(manager, listener, buses);
+    let mut audio = Audio::from_parts(manager, listener, buses, mono);
     audio.load_level_sounds(&dev_content_root());
     audio
 }
@@ -129,8 +132,10 @@ pub(super) fn dev_content_root() -> std::path::PathBuf {
 /// `Audio` and its `MockBackend` manager pieces — kira's mock backend lives
 /// inside the manager, reached via `manager.backend_mut()`.
 pub(super) fn mock_audio() -> Audio<MockBackend> {
+    let mono = mono::MonoFoldHandle::default();
     let settings = AudioManagerSettings::<MockBackend> {
         capacities: Audio::CAPACITIES,
+        main_track_builder: Audio::main_track_builder(&mono),
         ..Default::default()
     };
     let mut manager =
@@ -140,7 +145,7 @@ pub(super) fn mock_audio() -> Audio<MockBackend> {
         .expect("listener allocates under mock backend");
     let buses = BusTree::build(&mut manager).expect("bus tree builds under mock backend");
 
-    let mut audio = Audio::from_parts(manager, listener, buses);
+    let mut audio = Audio::from_parts(manager, listener, buses, mono);
     audio.load_level_sounds(&dev_content_root());
     audio
 }
@@ -484,4 +489,20 @@ pub(super) fn advance_playback(audio: &mut Audio<MockBackend>, steps: usize) {
         audio.manager.backend_mut().on_start_processing();
         audio.manager.backend_mut().process();
     }
+}
+
+#[test]
+fn bus_volume_zero_silences_the_bus_and_master_zero_silences_everything() {
+    let frames = 4096;
+    let mut audio = capturing_audio();
+    audio.set_bus_volume(BusId::Sfx, linear_volume_to_decibels(0.0));
+    audio.manager.backend_mut().capture_rms(frames);
+    audio.play(sfx_request()).expect("fixture plays");
+    assert_eq!(audio.manager.backend_mut().capture_peak(frames), 0.0);
+
+    let mut master_off = capturing_audio();
+    master_off.set_main_volume(linear_volume_to_decibels(0.0));
+    master_off.manager.backend_mut().capture_rms(frames);
+    master_off.play(sfx_request()).expect("fixture plays");
+    assert_eq!(master_off.manager.backend_mut().capture_peak(frames), 0.0);
 }

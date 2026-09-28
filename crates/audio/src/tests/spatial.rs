@@ -657,3 +657,19 @@ fn unknown_positional_sound_releases_its_reserved_slot() {
     audio.update(forward_listener(), 1.0 / 60.0, |_| None);
     assert_eq!(sfx_sub_tracks(&audio), 0);
 }
+
+#[test]
+fn mono_folds_a_hard_panned_source_to_both_ears_after_spatialization() {
+    let listener = forward_listener();
+    let right_of_listener = at([4.0, 0.0, 0.0]);
+    let (left, right) = channel_rms_of(listener, right_of_listener.clone(), |_| {});
+    assert!(right > left * 1.5, "stereo pans right: {left} vs {right}");
+
+    let (left, right) = channel_rms_of(listener, right_of_listener, |audio| {
+        audio.set_mono(true);
+        // Let the crossfade finish before the tone starts.
+        audio.manager.backend_mut().capture_rms(400);
+    });
+    assert!(right > 0.001, "folded tone is audible");
+    assert!((left - right).abs() < 1e-4, "mono: {left} vs {right}");
+}

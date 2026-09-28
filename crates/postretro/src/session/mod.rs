@@ -567,10 +567,14 @@ impl Session {
         let mut options_bridge = options::OptionsBridge::new();
         let os_preferences = crate::os_preferences::OsPreferenceFeed::start();
         boot_timings.record("os_reader_started");
-        options_bridge.seed_accessibility(
+        let resolved = options_bridge.seed_accessibility(
             &mut scripting.script_ctx.slot_table.borrow_mut(),
             &player_options,
         );
+        let mut audio = audio;
+        if let Some(audio) = audio.as_mut() {
+            options::apply_to_audio(&resolved, audio);
+        }
 
         Ok(Self {
             input_system,

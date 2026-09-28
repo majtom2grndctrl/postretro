@@ -75,6 +75,20 @@ pub(crate) fn reduce_motion_from_slots(
     )
 }
 
+/// Apply the resolved volumes and mono fold to the audio subsystem. Volumes
+/// are stored linear and mapped to decibels at the audio seam.
+pub(crate) fn apply_to_audio(resolved: &ResolvedAccessibility, audio: &mut postretro_audio::Audio) {
+    use postretro_audio::{BusId, linear_volume_to_decibels};
+    audio.set_main_volume(linear_volume_to_decibels(resolved.master_volume));
+    audio.set_bus_volume(BusId::Sfx, linear_volume_to_decibels(resolved.sfx_volume));
+    audio.set_bus_volume(
+        BusId::Music,
+        linear_volume_to_decibels(resolved.music_volume),
+    );
+    audio.set_bus_volume(BusId::UI, linear_volume_to_decibels(resolved.ui_volume));
+    audio.set_mono(resolved.mono_audio);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

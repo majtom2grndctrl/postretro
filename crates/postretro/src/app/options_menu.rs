@@ -72,6 +72,12 @@ impl App {
             self.apply_player_fog_quality(quality);
         }
 
+        if let Some(resolved) = effects.accessibility
+            && let Some(audio) = self.session.as_mut().and_then(|s| s.audio.as_mut())
+        {
+            options::apply_to_audio(&resolved, audio);
+        }
+
         // Live: the renderer rewrites every installed material's uniform
         // buffer, so this takes effect on the next frame with no level reload
         // and is a safe no-op when no level (or no renderer) is present.

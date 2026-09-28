@@ -1,0 +1,122 @@
+# E23--preferences-comfort-floor — plan of record
+
+mode: resumable
+status: proposed
+read at: b21e81d7c
+
+Sibling units: U3 and U4 have not landed (no drafts exist), so U1 lands first. AC 32's panel pass and AC 21's armed-capture clause are not U1's (hub Concurrent landing). U1 pins per-field storage, the `accessibility.*` projection and the global input; F1 goes where `nav_intent_for_key`'s neighbours live today, and U3 later moves it into its binding table.
+
+## Corrections
+
+Source re-read at `b21e81d7c` (27 commits past `683e363ba`; the only changes to cited files are `cpu-frame-profiling` CPU scopes and `--start-pose`). No Decision premise is false.
+
+- Path: "`an_out_of_vocabulary_surface_depth_state_falls_back_to_defaults` … asserts whole-document fallback" → that test asserts only that `surface_depth_quality = "ultra"` loads as `On` (also the default) and the file is untouched (`options/mod.rs:560`). The test that proves the whole reset is `load_returns_defaults_and_preserves_file_when_graphics_quality_is_unknown` (`:714`; `invert_y = true` is lost). Planning around it by rewriting both, as the Path says: the first additionally asserts a sibling field survives, the second asserts `invert_y` survives and `shadow_quality` alone falls back.
+- Research pin: `OPTIONS_MENU_TREE_NAME` lives in `options/mod.rs:20`, not `bridge.rs`. No planning impact.
+- Research pin: "Select → `NavIntent::Options`, only in `UiCaptureMode::Capture`" → `nav_intent_for_gamepad_button` maps Select unconditionally (`input/ui_nav.rs:165`); the Capture-only gate is App-side (`main.rs:2375-2387` Running, `:5689-5698` Frontend). Planning around it by intercepting `nav.options` ahead of that gate, at the same point for keyboard and gamepad.
+- Research pin: engine trees register at `ScopeTier::Engine` through `registry_mut().register` → through `tree_asset::register_tree_from_disk` (four calls in `Session::build`, `session/mod.rs:456-483`), which calls `register(.., ScopeTier::Engine, ..)`. Planning around it by registering `core/ui/accessibilityPanel.json` through the same function.
+- Research pin: the missing-frontend warning reads "`…is not registered; using '{fallback_name}'`" (`modal_stack.rs:428`). Wording precedent only.
+- Hub claim "the resolve is the gameplay path's sole swapchain writer" → the frontend frame (`render_frontend_frame`, `main.rs:5875`) also runs `encode_resolve` with `render_world = false`. Planning around it by treating frontend frames as resolve frames: they count toward limiter history, and a splash → frontend clear takes the same hand-off as splash → gameplay.
+- Tween path: `drive_tween_f32` / `drive_tween_rgba` take an absolute `now`, not a dt, and no per-frame context struct reaches `UiTree::resolve_bindings` or `presentation_layout::resolve_facts`. Planning around it by adding a `reduce_motion` field to `UiReadSnapshot` that `layout_gameplay_tree` and `layout_presentation_inputs` pass down to `drive_tween_*` (snap = target on start). The field is set by the App, which keeps I9: no simulation code reads it.
+- `Session::build` runs on the main thread inside `RedrawRequested`, after `run_app` has started (`main.rs:2244` → `install_pending_session`, `main.rs:5232`), and two frames have presented by then (`splash_lifecycle.rs:53`, `:102`). No `ActiveEventLoop` reaches `Session::build`; the reader does not need one, only the main thread. Planning around it by subscribing inside `Session::build` and polling the channel at the frame top.
+- Split-first sizes (production lines, before each file's `mod tests`): `main.rs` ≈ 9,010; `startup/lifecycle.rs` ≈ 1,503 (already split into `#[path]` children); `ui/src/modal_stack.rs` ≈ 572; `options/bridge.rs` ≈ 330; `renderer/src/render/ui/mod.rs` ≈ 1,668; `input/ui_focus.rs` ≈ 776. `bridge.rs` sits below the ~600 threshold. Planning around it by still splitting it first, because U1 adds eleven fields and the reseed/player-set logic to it and would cross the threshold. `main.rs` is split along the seams U1 extends (UI action routing, UI input intake, options-menu wiring, the boot-state frame dispatch it hosts), not wholesale.
+
+## Delegated answers
+
+- Missing-entry warning wording — `[UI] {role} tree '{name}' has no button whose onPress is 'ui.openAccessibility'; add one so players can reach the accessibility panel from it. Players can still open the panel with F1 or gamepad Select/Back.` `{role}` is `frontend menu` or `pause menu`. It names the tree, the fix, and the global input, as the brief requires.
+- Restart-loop fixture home — a level-scoped `levelLoad` reaction on its own uncatalogued map. `setupLevel` already returns `levelLoad` reactions (`content/dev/scripts/anim-demo-reaction.ts:23`). The loop map is `content/dev/maps/a11y-restart-loop.map`, outside the catalog like `a11y-strobe-test.map`, so no player payload ships it and the dev map is unaffected. If `restartLevel` is not reachable from a `levelLoad` reaction, Task 13 falls back to a separate fixture mod root and records that here.
+
+## Task order note (for the owner's skim)
+
+The hub's Brief form sequences substrate → panel → limiter. This plan keeps that stage order, but runs one thin limiter slice first (Task 1), as the brief's Path asks ("First slice, limiter stage … falsifies the riskiest assumptions"). The slice needs no substrate: the enable flag fails safe, so an absent `accessibility.flashLimiter` already means on (Decision; D4). If shared-composite measurement proves brittle, the Decision's named rival (intermediate target) is taken before any substrate work depends on the limiter's shape.
+
+## AC-to-proof
+
+Brief rows are numbered in the brief's order. Hub rows are H1–H13. "GPU test" means an adapter-gated test through the hoisted harness; a skip is not a pass. This Mac has a Metal adapter without `TIMESTAMP_QUERY`.
+
+| AC | Proof | Status |
+|---|---|---|
+| S1 never-set OS-seedable field writes no key; absent loads unset; later OS change moves it | `options` store round-trip tests + resolver test | achievable as stated |
+| S2 cycle from Off returns to System; key gone; follows OS | panel field-action unit test over the store + save round-trip | achievable as stated |
+| S3 "System (On)" label and `reduceMotionFollowsSystem` true; after one cycle "On" and false | panel descriptor + slot projection test (label resolved through the retained tree) | achievable as stated |
+| S4 unrecognised value + unknown key survive a save of another field; player write replaces the value | `toml::Table` round-trip save test | achievable as stated |
+| S5 panel write (limiter included) persists after 250 ms with no menu; immediately on panel close | bridge settled-save test driving the App panel-action path | achievable as stated |
+| S6 same-value write marks player-set; key written; later OS change ignored | bridge + resolver test | achievable as stated |
+| S7 invalid TOML: panel write, mod-menu write, close leave file byte-for-byte; no record; panel shows next launch | `Unavailable`-status save-refusal test + first-launch predicate test | achievable as stated |
+| S8 first launch writes no OS-seedable key and no record until close; OS change still moves each | `Session` options load/write test with a fake reader | achievable as stated |
+| R1 first splash frame presents before reader starts | boot-order test: fake reader records its start against `StartupTimings` marks | achievable as stated |
+| R2 reply within bound applied before splash clears; later reply is a live change | pure OS-wait gate test + boot-state test | achievable as stated |
+| R3 splash keeps presenting while waiting; reply already in adds no frames | boot-state frame-count test with the fake reader | achievable as stated |
+| R4 400 ms mod init + reply 100 ms later → applied before clear (UO9) | OS-wait gate test with injected clock | achievable as stated |
+| R5 OS reply + mod-menu write same frame → player-set at menu value; OS reply on the frame a cycle returns to System → that reply (UO1) | App frame-order test over bridge + resolver | achievable as stated |
+| M1 switch on, sliders 1.0: packed shake and view feel zero; rise spawns full; scatter and fade stay | `pack_effect_uniform` test, `view_feel` test, `PresentationPool` test | achievable as stated |
+| M2 on mid-shake zeroes next pack while `screen.shake` decays; off resumes at decayed amplitude; running tween snaps (UO2) | pack + decay test; `drive_tween_*` snap test | achievable as stated |
+| M3 bus 0 silent, 1.0 unity, 0.5 → −12 dB ±0.1; Master 0 silences all | volume-mapping test + `Audio` bus-volume test (headless kira backend, as existing audio tests) | achievable as stated |
+| M4 mono reversed mid-crossfade: no step larger than untoggled max; stereo returns within elapsed half (UO3) | mono `Effect` test driving `process` on a captured buffer | achievable as stated |
+| M5 Scripting surface example runs as a `content/dev` fixture in TS and Luau; buttons fire reserved actions; `visibleWhen` tracks; type test rejects `accessibilityAction("flashLimiter", "cycle")` | scripting fixture test (TS + Luau) + SDK type test (`tsc` negative fixture) | achievable as stated |
+| L1 below-threshold strobe straddling cells passes; threshold-area strobe limited | GPU test | achievable as stated |
+| L2 5 Hz sine at 240 Hz → ≤ 3 flashes/s, same as 30 Hz | GPU test + independent WCAG counter | achievable as stated |
+| L3 2 s hitch: ≤ 4.0 × 1/30 change; steady 20 fps black→white ≥ 375 ms | GPU test | achievable as stated |
+| L4 limiter action / engine-routed slider step from a mod tree or non-engine tier ignored, warns, unchanged; another field's action from a mod tree writes it | App activation test over a stamped focus export + log capture | achievable as stated |
+| L5 resolve and limiter each report a GPU timing entry; absent, never zero, without timestamp support | timing decode unit test (absent path); timestamped report is manual X2 | achievable as stated (report half on X2) |
+| L6 resolve and measure pass own `TIMING_PAIR_*` + label; prefill test covers both | extended `scene_recording_prefills_timing_queries_before_any_pass_or_resolve` | achievable as stated |
+| L7 both stages: four-flash `screen.flash` strobe presents the same as clamp-bypassed + clamp output fed to the limiter; suppressed onset uses no budget (UO4) | GPU test | achievable as stated |
+| L8 off mid-strobe, on 0.5 s later: limits against last presented frame; nothing from before counts (UO5) | GPU test | achievable as stated |
+| L9 after 2 s of splash or a 2 s hitch no earlier transition counts; change within one hitch allowance (UO6) | GPU test with splash hand-off | achievable as stated |
+| L10 both stages run when the flag is absent or non-boolean; only explicit `false` passes | pack/flag unit test + GPU test | achievable as stated |
+| L11 capture bytes equal with limiter on/off; capture leaves per-cell history unchanged | capture path test (adapter-gated) | achievable as stated |
+| L12 hub AC 4/5 automated halves as GPU tests with readback every frame, splash hand-offs included | GPU test suite | achievable as stated |
+| L13 equal-brightness red/green 5 Hz → ≤ 3 flashes/s, presents desaturated | GPU test + independent u′v′ counter | achievable as stated |
+| L14 gameplay → splash → gameplay counts two transitions | GPU test with splash hand-off | achievable as stated |
+| L15 measure pass and resolve compose through one WGSL function; shader-source test fails if either applies shake/tonemap/vignette/flash outside it | shader-source test | achievable as stated |
+| P1 panel write at the hold persists after 250 ms with the panel open; quit before close leaves field saved and no record (UO7) | hold boot-state test over the bridge | achievable as stated |
+| P2 `--connect` client with CLI map, host names a different map during the hold → host's map when hold ends | `test_app` level-request test (hold + `follow_relevel_catalog`) | achievable as stated |
+| P3 staged reload retargeting `frontend.menuTree` warns naming the new tree; adding the button silences it (UO8) | staged-commit test + log capture | achievable as stated |
+| G1 F1 held with OS repeat in a text-entry modal toggles once each way; the revealed modal does not reopen it | keyboard intake test | achievable as stated |
+| G2 F1/Select on a Loading frame opens nothing on the first Running frame | intake + boot-state test | achievable as stated |
+| G3 confirm in the same Input stage as the opening F1 activates nothing; F1 + confirm while the panel is active closes it and activates nothing beneath | App frame test | achievable as stated |
+| X1 hub AC 5 and 6 visual and strobe passes on hardware | owner, in-engine | manual |
+| X2 hub AC 6 GPU timing on a timestamp-capable adapter | owner, Windows | manual |
+| X3 hub AC 1 OS reduced-motion toggle on Windows, macOS, Linux (incl. no portal) | owner, per platform | manual |
+| X4 hub AC 12 loopback `--connect` hold; hub AC 13 two-instance co-op | owner, loopback | manual |
+| H1 OS-seedable follows OS / live change / player-set sticks / no OS → default | fake-reader tests (R2, R5, S1); manual half is X3 | achievable as stated |
+| H2 bad value in one accessibility field or `fog_quality` falls back alone with a warning; no group → unset/defaults; save writes unset | store tests + log capture | achievable as stated |
+| H3a `accessibility.*` readable in play; live; script write warns, no change | scripting-core slot test + readonly `setState` log test | achievable as stated |
+| H3b working-copy write updates store and slot in the same frame's snapshot; crossing fires next frame | App frame-order test (O5) | achievable as stated |
+| H3c engine write reseeds working copy that frame without a menu write; OS-changed field stays unset | bridge reseed test (O3, O4) | achievable as stated |
+| H4 limiter counts, rates, resize, stage split, off-passes-unchanged | GPU tests (L-rows) + clamp unit tests | achievable as stated |
+| H5 every source covered; splash load loop | GPU tests (L12, L14); manual half is X1 | achievable as stated |
+| H6 timing and binary-size report; visual pass | manual (X1, X2); binary-size delta measured on this Mac and recorded here, other platforms on handoff | manual |
+| H7 panel limiter toggle under a no-reaction mod; restart persistence; engine sliders step and persist; mod slider warns; verdict table; catalog has no `options.flashLimiter`; review gate on the single store write site | App tests + catalog test + review gate (grep) | achievable as stated |
+| H8 reduce motion snaps tweens and presentation motion; sliders survive toggling; slot semantics | M1/M2 tests + slot test | achievable as stated |
+| H9 bus isolation, Master, mono equal L/R, crossfade | M3/M4 tests + mono equal-channel test | achievable as stated |
+| H10 every open/close path; warnings; theme tokens; every group field in the panel | App input tests + descriptor field-coverage test (derived from the group's field list) | achievable as stated |
+| H11 reserved name rejected at mod, level, staged reload; boot continues; `pauseMenu` still shadows | `modal_stack` registry tests + log capture | achievable as stated |
+| H12 first-launch hold on each path; `--connect`; second launch; crash reshows; manual loopback | boot-state tests (P1, P2); manual half is X4 | achievable as stated |
+| H13 per-machine application (manual); every `accessibility.*` and accessibility `options.*` entry is `ReplicationScope::None`, derived from the catalog | catalog-derived test; manual half is X4 | achievable as stated |
+
+## Tasks
+
+Each task lands as its own commit(s) with its `plan.md` row update. Owner is the integrating executor unless marked; "delegable" slices get the full brief, research, routed docs and Acceptance list.
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | **Limiter spike.** Hoist `render/ui/gpu_test_harness.rs` to `render/` (a behavior-preserving move of its users first). Factor the resolve's shake → tonemap → vignette → flash into one WGSL composite function. Add a 16×9 measure compute pass that samples `scene_color` through it and holds per-cell history on the GPU. The resolve applies a per-cell gain. GPU tests: a full-screen square strobe is limited, and a below-threshold strobe straddling cell boundaries passes (L1; L15's shader-source test). If shared composite measurement is brittle, stop and report before taking the intermediate-target rival. | integrating executor | — | |
+| 2 | **Split first**, one behavior-preserving commit per file: `main.rs` (UI action routing, UI input intake, options-menu wiring, boot-state frame dispatch), `startup/lifecycle.rs` (boot-state dispatch and level-request queue), `ui/src/modal_stack.rs` (registry vs. stack), `options/bridge.rs` (slot mapping vs. save scheduling), `renderer/src/render/ui/mod.rs` (tree set and focus export), `input/ui_focus.rs` (slider capture). | integrating executor | — | |
+| 3 | **Store.** Per-field parse from `toml::Table` with a warning per bad field, every `PlayerOptions` field (I7). Round-trip save over the kept table (unknown keys and values survive; retired alias rewritten). `[accessibility]` group with unset = absent key for OS-seedable fields, `accessibility_panel_shown`, and save refusal on `Unavailable`. Rewrite the two whole-document tests. (S1, S4, S7, S8 store halves; H2) | integrating executor | 2 | |
+| 4 | **Resolution and slots.** Resolver (player-set > OS > default). `accessibility.*` readonly slots, `*FollowsSystem` slots, and new `options.*` working copies in `BUILTIN_ENGINE_STATE` (all `ReplicationScope::None`). Bridge: engine-write reseed that frame, session-build seeding of every accessibility working copy, same-value write marks player-set, UO1 ordering. Catalog-derived replication test; committed typedefs regenerated. (S6, R5, H3a–c, H13 automated) | integrating executor | 3 | |
+| 5 | **OS reader.** `OsPreferences` seam with a fake. `mundy` (`reduced-motion`, `contrast`, `callback`, `async-io`; no default features) subscribed on the main thread in `Session::build`; direct Windows-only `windows` 0.62 (`UI_ViewManagement`) for `TextScaleFactor`, exposed on the seam for U2. Channel polled at the frame top. 150 ms gate counted from mod-init end, gating the splash clear, first-launch panel and boot-map enqueue. Record the binary-size delta. (R1–R4, H1) | integrating executor | 4 | |
+| 6 | **Reduce motion and screen shake.** `screen_shake_scale` and reduce motion applied at `pack_effect_uniform` (packed offset only) and `view_feel::evaluate_with_edges`'s global scale. `UiReadSnapshot.reduce_motion` snaps `drive_tween_*`. The App passes the switch to `PresentationPool::advance_and_collect_inputs`, and spawns start at full rise. (M1, M2, H8) | integrating executor | 4 | |
+| 7 | **Audio.** Volume mapping 40·log₁₀ v dB (0 → silence) wired from the store to `set_main_volume` / `set_bus_volume` on load and on change. A mono fold `Effect` on `main_track_builder` with a ≥ 10 ms crossfade that reverses from its current mix. (M3, M4, H9) | delegable (crate-local: `crates/audio` + one App wiring call the executor integrates) | 4 | |
+| 8 | **Panel and write path.** `core/ui/accessibilityPanel.json` registered at engine tier. Reserved `ui.openAccessibility` and the `ui.accessibility.<op>.<field>` family in `crates/ui/src/actions.rs`, mirrored to `sdk/lib/ui/reactions.{ts,luau}`, typedef templates, `UI_REACTIONS_FIELDS` and `docs/scripting-reference.md`. `UiButtonAction` interception writes the store and schedules the settled save; closing flushes it. The focus export is stamped with registry name and tier. Limiter attribution follows the verdict table; engine-routed sliders go through `apply_slider_nav_capture`; a mismatched op warns. Panel entries in the fallback frontend and pause menus. (S2, S3, S5, L4, H7, H10 panel parts) | integrating executor | 4, 6, 7 | |
+| 9 | **Global input.** `nav.options` + F1 consumed ahead of text entry, the Capture gate and slider capture, on the press edge only. Dropped on splash and Loading frames, with no latch. Toggle rules (open, close when active, no-op beneath). Same-frame intents do not activate the revealed or pushed tree. `nav.cancel` / `ui.closeDialog` close paths in Running, Frontend and the hold. (G1–G3, H10 input parts) | integrating executor | 8 | |
+| 10 | **Reserved name and missing-entry warning.** Reject mod- and level-tier registration of `accessibilityPanel` in `register_with_presentation` and `replace_tier`. App-side missing-entry check after the frontend declaration commits, at mod init, level load and staged reload (UO8). (P3, H11, H10 warning parts) | integrating executor | 8 | |
+| 11 | **First-launch hold.** New `BootState` that drains no level requests, polls `poll_world_less_transport`, runs `update_player_options`, and writes the record on any close. A host `Relevel` received during the hold or the OS wait outranks the backdrop and the CLI boot map. On the CLI path the splash clears to a world-less panel frame. (P1, P2, S7 record half, H12) | integrating executor | 5, 9 | |
+| 12 | **Limiter complete.** Channel clamp at the pack step. Counting rules: IRIS transitions, red chromaticity, the 0.111 area threshold, the 4.0/s rate cap, the hitch clamp, presented-frame time. Enable restarts history and resize keeps it; fail-safe flag. The splash-stretch hand-off comes from the App. `TIMING_PAIR_*` for the resolve and the measure pass. Capture is untouched. An independent WCAG 2.2 counter backs the GPU tests. (L2–L14, H4, H5, H6 automated parts) | integrating executor | 1, 4 | |
+| 13 | **Dev-mod consumer and fixtures.** `content/dev` options menu gains the group's fields (not the limiter); dev frontend and pause menus gain `ui.openAccessibility` buttons. The Scripting-surface fixture in TS and Luau, with the type test. `a11y-strobe-test.map` (full-screen `screen.flash`, UI-panel color, light animation, sine and area variants) and `a11y-restart-loop.map`, both uncatalogued. (M5, H10 dev parts; fixtures for X1) | delegable (content + SDK fixture; executor reviews) | 8, 12 | |
+
+## Stage checkpoints
+
+- After Task 1: report the spike verdict (shared composite holds, or rival needed).
+- After Tasks 3–7: substrate complete; `cargo test` for touched crates.
+- After Tasks 8–11: panel complete.
+- After Tasks 12–13: limiter and fixtures complete; then `/preflight`, `/review-panel`, `/fix-review-findings`.

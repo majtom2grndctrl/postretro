@@ -43,10 +43,10 @@ impl App {
                 scripting,
                 ..
             } = session;
-            let slot_table = scripting.script_ctx.slot_table.borrow();
+            let mut slot_table = scripting.script_ctx.slot_table.borrow_mut();
             options_bridge.update(
                 frame_dt,
-                &slot_table,
+                &mut slot_table,
                 player_options,
                 input_system,
                 settings_path.as_deref(),

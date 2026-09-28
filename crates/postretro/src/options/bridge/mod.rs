@@ -1,6 +1,9 @@
 // App-side bridge from writable option slots to session-owned player settings.
 // See: context/lib/player_options.md §4
 
+mod accessibility;
+#[cfg(test)]
+mod accessibility_tests;
 mod save_schedule;
 
 use std::io;
@@ -8,8 +11,10 @@ use std::path::Path;
 
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
+use super::resolved::{OsPreferences, ResolvedAccessibility};
 use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality, keys};
 use crate::input::InputSystem;
+use accessibility::AccessibilitySync;
 use save_schedule::SaveSchedule;
 
 pub(crate) const MOUSE_SENSITIVITY_SLOT: &str = "options.mouseSensitivity";
@@ -24,7 +29,6 @@ pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality
 struct ObservedGenerations {
     mouse_sensitivity: u64,
     invert_y: u64,
-    view_feel_scale: u64,
     crouch_mode: u64,
     shadow_quality: u64,
     fog_quality: u64,
@@ -43,12 +47,17 @@ pub(crate) struct OptionsApplyEffects {
     pub(crate) invert_y: Option<bool>,
     pub(crate) fog_quality: Option<FogQuality>,
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
+    /// The resolved accessibility preferences, when they changed this frame.
+    pub(crate) accessibility: Option<ResolvedAccessibility>,
 }
 
 /// Deterministic, session-lifetime synchronization state for `options.*`.
 #[derive(Default)]
 pub(crate) struct OptionsBridge {
     observed: ObservedGenerations,
+    accessibility: AccessibilitySync,
+    /// Latest OS accessibility readings; unset fields follow them.
+    os: OsPreferences,
     save: SaveSchedule,
 }
 
@@ -68,11 +77,6 @@ impl OptionsBridge {
         );
         self.observed.invert_y =
             seed_slot(table, INVERT_Y_SLOT, SlotValue::Boolean(options.invert_y));
-        self.observed.view_feel_scale = seed_slot(
-            table,
-            VIEW_FEEL_SCALE_SLOT,
-            SlotValue::Number(options.view_feel_scale),
-        );
         self.observed.crouch_mode = seed_slot(
             table,
             CROUCH_MODE_SLOT,
@@ -93,6 +97,29 @@ impl OptionsBridge {
             SURFACE_DEPTH_QUALITY_SLOT,
             SlotValue::Enum(options.surface_depth_quality.slot_value().to_string()),
         );
+        self.accessibility.seed_all(table, options, &self.os);
+    }
+
+    /// Seed every accessibility working copy and `accessibility.*` slot once at
+    /// session build, so a mod menu under any tree name shows resolved values.
+    pub(crate) fn seed_accessibility(
+        &mut self,
+        table: &mut SlotTable,
+        options: &PlayerOptions,
+    ) -> ResolvedAccessibility {
+        self.accessibility.seed_all(table, options, &self.os)
+    }
+
+    /// Record the OS's latest accessibility readings. Unset fields follow them
+    /// from the next `update`, which reseeds their working copies.
+    pub(crate) fn set_os_preferences(&mut self, os: OsPreferences) {
+        self.os = os;
+    }
+
+    /// Schedule the settled save for an engine-side store write (a panel
+    /// action), exactly as an accepted menu change does.
+    pub(crate) fn schedule_save(&mut self, settings_path: Option<&Path>) {
+        self.save.arm(settings_path);
     }
 
     /// Observe writes once per app frame, apply live input changes immediately,
@@ -100,7 +127,7 @@ impl OptionsBridge {
     pub(crate) fn update(
         &mut self,
         frame_dt_seconds: f32,
-        table: &SlotTable,
+        table: &mut SlotTable,
         options: &mut PlayerOptions,
         input: &mut InputSystem,
         settings_path: Option<&Path>,
@@ -136,7 +163,7 @@ impl OptionsBridge {
     fn update_with_save<F>(
         &mut self,
         frame_dt_seconds: f32,
-        table: &SlotTable,
+        table: &mut SlotTable,
         options: &mut PlayerOptions,
         input: &mut InputSystem,
         settings_path: Option<&Path>,
@@ -146,7 +173,11 @@ impl OptionsBridge {
         F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
     {
         let mut effects = OptionsApplyEffects::default();
-        let changed = self.observe_changes(table, options, input, &mut effects);
+        let mut changed = self.observe_changes(table, options, input, &mut effects);
+        changed |= self.accessibility.observe(table, options);
+        // Projection and engine-write reseeds run every frame, but write only
+        // what changed.
+        effects.accessibility = self.accessibility.sync(table, options, &self.os);
 
         if changed {
             self.save.arm(settings_path);
@@ -193,19 +224,6 @@ impl OptionsBridge {
                 changed = true;
             }
             self.observed.invert_y = generation;
-        }
-
-        if let Some((generation, SlotValue::Number(value))) = changed_value(
-            table,
-            VIEW_FEEL_SCALE_SLOT,
-            &mut self.observed.view_feel_scale,
-        ) {
-            options.mark_written(keys::VIEW_FEEL_SCALE);
-            if options.view_feel_scale != *value {
-                options.view_feel_scale = *value;
-                changed = true;
-            }
-            self.observed.view_feel_scale = generation;
         }
 
         if let Some((generation, SlotValue::Enum(value))) =
@@ -480,7 +498,7 @@ mod tests {
         write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(0.006));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -511,7 +529,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(true));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -527,7 +545,7 @@ mod tests {
         write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(0.4));
         bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -540,7 +558,7 @@ mod tests {
         write(&ctx, CROUCH_MODE_SLOT, json!("toggle"));
         bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -552,7 +570,7 @@ mod tests {
         write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -564,7 +582,7 @@ mod tests {
         write(&ctx, FOG_QUALITY_SLOT, json!("high"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -581,7 +599,7 @@ mod tests {
         write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -599,7 +617,7 @@ mod tests {
         write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("on"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -622,7 +640,7 @@ mod tests {
             write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(value));
             bridge.update_with_save(
                 0.016,
-                &ctx.slot_table.borrow(),
+                &mut ctx.slot_table.borrow_mut(),
                 &mut options,
                 &mut input,
                 Some(path),
@@ -634,7 +652,7 @@ mod tests {
         }
         bridge.update_with_save(
             0.249,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -646,7 +664,7 @@ mod tests {
         assert!(saved.is_empty());
         bridge.update_with_save(
             0.002,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -670,7 +688,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(true));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -687,7 +705,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(false));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -711,7 +729,7 @@ mod tests {
         write(&ctx, FOG_QUALITY_SLOT, json!("high"));
         bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -745,7 +763,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(true));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),
@@ -754,7 +772,7 @@ mod tests {
         let mut failed_attempts = 0;
         bridge.update_with_save(
             0.251,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),
@@ -771,7 +789,7 @@ mod tests {
         write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(0.5));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),
@@ -779,7 +797,7 @@ mod tests {
         );
         bridge.update_with_save(
             0.251,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),

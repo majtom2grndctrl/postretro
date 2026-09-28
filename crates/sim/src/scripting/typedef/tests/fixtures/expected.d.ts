@@ -1253,6 +1253,18 @@ declare module "postretro" {
   export function worldSetGravity(value: number): void;
   /** Generated engine-owned state reference tree returned by `getGameState()`. */
   export type GameStateRefs = {
+    readonly accessibility: {
+      readonly flashLimiter: ComputedRef<boolean>;
+      readonly masterVolume: ComputedRef<number>;
+      readonly monoAudio: ComputedRef<boolean>;
+      readonly musicVolume: ComputedRef<number>;
+      readonly reduceMotion: ComputedRef<boolean>;
+      readonly reduceMotionFollowsSystem: ComputedRef<boolean>;
+      readonly screenShakeScale: ComputedRef<number>;
+      readonly sfxVolume: ComputedRef<number>;
+      readonly uiVolume: ComputedRef<number>;
+      readonly viewFeelScale: ComputedRef<number>;
+    };
     readonly input: {
       readonly mode: ComputedRef<"pointer" | "focus">;
     };
@@ -1260,9 +1272,16 @@ declare module "postretro" {
       readonly crouchMode: Ref<"hold" | "toggle">;
       readonly fogQuality: Ref<"low" | "medium" | "high">;
       readonly invertY: Ref<boolean>;
+      readonly masterVolume: Ref<number>;
+      readonly monoAudio: Ref<boolean>;
       readonly mouseSensitivity: Ref<number>;
+      readonly musicVolume: Ref<number>;
+      readonly reduceMotion: Ref<boolean>;
+      readonly screenShakeScale: Ref<number>;
+      readonly sfxVolume: Ref<number>;
       readonly shadowQuality: Ref<"low" | "medium" | "high">;
       readonly surfaceDepthQuality: Ref<"off" | "on">;
+      readonly uiVolume: Ref<number>;
       readonly viewFeelScale: Ref<number>;
     };
     readonly player: {

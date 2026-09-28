@@ -14,10 +14,12 @@ use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 mod accessibility;
 mod bridge;
 mod document;
+mod resolved;
 
 pub use accessibility::AccessibilityOptions;
 pub(crate) use bridge::OptionsBridge;
 use document::{DocumentWriter, FieldReader, StoredDocument};
+pub(crate) use resolved::{OsPreferences, ResolvedAccessibility};
 
 /// Registered dev-mod options tree whose open/close boundaries seed and flush
 /// the session-owned settings bridge.

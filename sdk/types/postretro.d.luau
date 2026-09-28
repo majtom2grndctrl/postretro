@@ -1252,6 +1252,18 @@ declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEnt
 declare function worldSetGravity(value: number): ()
 --- Generated engine-owned state reference tree returned by `getGameState()`.
 export type GameStateRefs = {
+  accessibility: {
+    flashLimiter: ComputedRef<boolean>,
+    masterVolume: ComputedRef<number>,
+    monoAudio: ComputedRef<boolean>,
+    musicVolume: ComputedRef<number>,
+    reduceMotion: ComputedRef<boolean>,
+    reduceMotionFollowsSystem: ComputedRef<boolean>,
+    screenShakeScale: ComputedRef<number>,
+    sfxVolume: ComputedRef<number>,
+    uiVolume: ComputedRef<number>,
+    viewFeelScale: ComputedRef<number>,
+  },
   input: {
     mode: ComputedRef<"pointer" | "focus">,
   },
@@ -1259,9 +1271,16 @@ export type GameStateRefs = {
     crouchMode: Ref<"hold" | "toggle">,
     fogQuality: Ref<"low" | "medium" | "high">,
     invertY: Ref<boolean>,
+    masterVolume: Ref<number>,
+    monoAudio: Ref<boolean>,
     mouseSensitivity: Ref<number>,
+    musicVolume: Ref<number>,
+    reduceMotion: Ref<boolean>,
+    screenShakeScale: Ref<number>,
+    sfxVolume: Ref<number>,
     shadowQuality: Ref<"low" | "medium" | "high">,
     surfaceDepthQuality: Ref<"off" | "on">,
+    uiVolume: Ref<number>,
     viewFeelScale: Ref<number>,
   },
   player: {

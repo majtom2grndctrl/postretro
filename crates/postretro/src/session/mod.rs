@@ -556,6 +556,15 @@ impl Session {
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 
+        // Seed every accessibility working copy and `accessibility.*` slot once,
+        // so a mod menu under any tree name shows resolved values from the
+        // first frame.
+        let mut options_bridge = options::OptionsBridge::new();
+        options_bridge.seed_accessibility(
+            &mut scripting.script_ctx.slot_table.borrow_mut(),
+            &player_options,
+        );
+
         Ok(Self {
             input_system,
             gameplay_input_latch: input::GameplayInputLatch::new(),
@@ -595,7 +604,7 @@ impl Session {
             sh_streaming: None,
             sh_worker_retirement: None,
             player_options,
-            options_bridge: options::OptionsBridge::new(),
+            options_bridge,
             settings_path,
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.

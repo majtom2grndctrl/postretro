@@ -13828,8 +13828,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            19,
-            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + seven options slots appear",
+            36,
+            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
         );
     }
 

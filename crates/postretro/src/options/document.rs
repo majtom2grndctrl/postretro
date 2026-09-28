@@ -43,10 +43,6 @@ impl StoredDocument {
         self.read_only
     }
 
-    pub(super) fn table(&self) -> &Table {
-        &self.table
-    }
-
     pub(super) fn note_unrecognized(&mut self, key: String) {
         self.unrecognized.insert(key);
     }

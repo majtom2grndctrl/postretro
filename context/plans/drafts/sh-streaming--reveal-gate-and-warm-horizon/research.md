@@ -1,6 +1,6 @@
 # sh-streaming--reveal-gate-and-warm-horizon — research
 
-Read at 0a7352039 (`feat/preferences-comfort-floor`). Symbols, not lines.
+Read at 3f070e32d (`feat/preferences-comfort-floor`). Symbols, not lines. In the co-op sections, **V** means read in source and **I** means inferred, not executed.
 
 ## Pop-in sources (in play)
 
@@ -29,9 +29,49 @@ Owner's "low VRAM" observation: the resident set is capped by what's targeted, n
 - SH is the only asynchronously streamed data. Textures, meshes and audio load synchronously during install. Pipelines are built at full-init.
 - Lifecycle primitives are `loadLevel`, `restartLevel` and `returnToFrontend`. Respawn in test content uses `restartLevel`. In-level teleports don't touch residency.
 
-## Co-op parity
+## Settling shape rivals
 
-`install_level_payload` calls `endpoint.set_level_parity` during install, before any reveal. If that stays put, a Settling hold would let a peer be promoted and its pawn ticked while the local player is still on the splash.
+| Shape | Verdict |
+|---|---|
+| New Settling boot state | **Chosen** |
+| Enter Running; suppress sim tick and world draw behind a flag | Rejected. Spreads a boot concern through the frame loop |
+| Post-install sub-phase of Loading | Rejected, strongest rival. Once install runs a world exists, and request draining, parity and dev tooling must see it as installed |
+| Synchronous preload at install, reusing capture's `preload_visible_sh` | Rejected. Blocks the event loop and the transport poll |
+| Per-cluster SH fade-in | Rejected. Breaks the invariant that a sampled slot matches what a full-resident compose would write |
+
+## Co-op participation today
+
+- **V.** `install_level_payload` calls `endpoint.set_level_parity` during install, before any reveal. With a Settling hold and no other term, a peer would be promoted and its pawn ticked while the local player is still on the splash.
+- **V.** `NetServer::reevaluate_parity` is the single predicate site. It runs on `set_mod_digest`, `set_level_parity`, and once per client after each Control batch. `parity_cause` returns the first `HoldingCause` in variant order; variant order is documented as diagnostic precedence.
+- **V.** `SlotTable::transition` requires a holding cause for participating → admitted. A revealed-only demotion therefore needs a cause, which is why the hold adds `HoldingCause` variants instead of holding silently.
+- **V.** `send_divergence` deduplicates per slot by cause; `NetClient::drain_control` retires the active epoch on any `Divergence(Holding)` frame carrying an epoch.
+- **V.** Control is drained per poll to the last retained declaration. An unload (`None`) and a same-level re-install (`Some`) that land in one host batch leave parity unchanged, so parity alone cannot see a client that re-installed and is settling again. The revealed declaration's retraction at unload is also retained-last, so the batch ends not-revealed until the reveal arrives.
+- **V.** `NetEndpoint::poll_world_less` never applies snapshots. `poll_world_less_transport` handles `SlotEvent::Participating` by applying the join seed only; `host_handle_lifecycle` ignores the edge. A promotion consumed in a world-less poll leaves a participating slot with no pawn. This is the reason for the host half of the revealed term.
+- **V.** The client sends its join seed only alongside a parity send (`set_level_parity` resets `join_seed_sent`). Parity at install keeps the seed's install timing.
+- **V.** On a host `restartLevel`, the client does not reload: `relevel_is_already_selected` returns early for the active catalog id. It is demoted (the `Holding` arm of `client_drain_control` calls `demote_client_state`) and then re-promoted in place.
+
+## Why revealed needs both halves
+
+- **Client.** The client-revealed term, not parity timing, stops promotion during client Settling. Parity at install gives the client its divergence cause during its settle rather than after reveal.
+- **Host.** The host-revealed term stops promotion during host Settling. Without it, a host restart would promote a Running, revealed client during the host's settle, in the world-less-style poll, with no pawn.
+
+## Revealed shapes
+
+| Shape | Slot lifecycle | Cost | Verdict |
+|---|---|---|---|
+| Revealed term in the participation predicate; hold = admitted with a revealed cause | Unchanged stages; predicate gains a term | Two holding causes, one client message, one host setter | **Chosen** |
+| New stage between admitted and participating | Adds a transition pair beside the predicate | Duplicates what an admitted-with-cause slot already expresses | Rejected: `networking.md` warns against lifecycle as transition pairs |
+| Participating with the pawn withheld | Amends "any entry to participating spawns its pawn" | Epoch, tuning and snapshots to a client that cannot apply them in Settling | Rejected |
+| Revealed folded into parity: both peers publish parity at reveal | Parity means installed and revealed | No new message | Rejected. Double meaning; a settling host reads as `HostLevelAbsent`; a divergent client learns its cause only after reveal |
+| Host publishes parity at reveal; only the client declares revealed | Host parity means installed and revealed | One client message | Rejected. Same double meaning and mislabel on the host side |
+
+Revealed is keyed to level identity, not reset by parity arrivals. Resetting on any parity arrival would strand a client after a mod-digest change: it re-declares parity but never re-reveals, so it would never re-send its declaration.
+
+## Co-op timing
+
+- **I.** The pawnless window after client reveal is the declaration's one-way trip, the host's next poll, and the epoch marker, tuning and first baseline's one-way trip: about one round trip plus up to one snapshot interval. Not measured.
+- **I.** Between client reveal and the first snapshot, movers show their install phase and remote pawns are absent; the first snapshot corrects both. Today's join has the same window.
+- **I.** On a host restart, a Running client's pawnless window is the host's whole settle, up to the Settling timeout. Accepted: the client sees the level, cannot act, and nothing acts on it.
 
 ## Budget tiers (split out)
 
@@ -46,3 +86,4 @@ Findings for the later resource-neutral budget brief:
 - `sh-probe-streaming` epic: misses never stall, doors never wait. Kept for in-play misses. The entry gate adds to the existing load wait, which already exists.
 - The io-contract lists warm count, coalescing caps, byte budget and permits as tuning, not contract. It deferred "cap warm set by bytes as well as count"; the single budget still plays that role via pressure.
 - `large-map-spatial-residency.md` says lightmap-shaped data is the next resource and per-resource platform budgets are an open decision. Budget tiers are split out for that reason.
+- `networking.md` §Slot lifecycle: four stages, participation as one predicate, "any entry to participating spawns its pawn". Kept; the predicate gains the revealed term. §Admission and content parity: parity stays content identity, published at install.

@@ -28,6 +28,17 @@ Source re-read at `b21e81d7c` (27 commits past `683e363ba`; the only changes to 
 - Missing-entry warning wording — `[UI] {role} tree '{name}' has no button whose onPress is 'ui.openAccessibility'; add one so players can reach the accessibility panel from it. Players can still open the panel with F1 or gamepad Select/Back.` `{role}` is `frontend menu` or `pause menu`. It names the tree, the fix, and the global input, as the brief requires.
 - Restart-loop fixture home — a level-scoped `levelLoad` reaction on its own uncatalogued map. `setupLevel` already returns `levelLoad` reactions (`content/dev/scripts/anim-demo-reaction.ts:23`). The loop map is `content/dev/maps/a11y-restart-loop.map`, outside the catalog like `a11y-strobe-test.map`, so no player payload ships it and the dev map is unaffected. If `restartLevel` is not reachable from a `levelLoad` reaction, Task 13 falls back to a separate fixture mod root and records that here.
 
+## Performance (binding on every task)
+
+The owner's direction (2026-09-27): performance is a priority in implementation details, not just completing the task (`development_guide.md` §1.4). Every task, and every delegated worker's prompt, carries these:
+
+- **No per-frame heap allocation** on any path this brief adds to the frame: limiter encode, the OS-reader poll (`try_recv` on a channel, nothing else), global-input intake, panel action routing, the reduce-motion snap, and the audio mono effect's `process`.
+- **Change-driven, not per-frame.** `accessibility.*` projection and working-copy reseeds write a slot only when its value changes, so they never churn slot generations, UI rebuilds or crossings. Per-field parse and the round-trip save run on load and on a settled save, never per frame.
+- **Limiter GPU cost stays bounded by construction.** Each presented pixel is read once by the measure pass. The limit pass is one 144-thread workgroup. There is no second full-resolution target, no readback and no CPU wait. Cost is reported per AC 6 (Windows handoff for timestamps), with the limiter on and off. If the measure pass shows up as a real cost, measure first, then reduce it with a design that keeps the per-cell result exact; a blind subsample could alias fine strobes.
+- **Audio mono fold** costs a per-sample mix only while mono is on or crossfading. Off and settled, it passes frames through untouched.
+- **UI**: the panel descriptor registers once at engine tier. The snap flag is a branch in `drive_tween_*`, not an extra pass. Attribution and slider routing are O(1) checks on data the frame already has.
+- Review (`/review-panel`) includes a performance lens on each of these paths.
+
 ## Task order note (for the owner's skim)
 
 The hub's Brief form sequences substrate → panel → limiter. This plan keeps that stage order, but runs one thin limiter slice first (Task 1), as the brief's Path asks ("First slice, limiter stage … falsifies the riskiest assumptions"). The slice needs no substrate: the enable flag fails safe, so an absent `accessibility.flashLimiter` already means on (Decision; D4). If shared-composite measurement proves brittle, the Decision's named rival (intermediate target) is taken before any substrate work depends on the limiter's shape.

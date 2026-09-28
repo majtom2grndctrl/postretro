@@ -255,6 +255,11 @@ impl ModalStack {
         self.stack.last().map(|t| t.name.as_str())
     }
 
+    /// The scope tier of the top (active) tree, or `None` when empty.
+    pub fn active_tier(&self) -> Option<ScopeTier> {
+        self.stack.last().map(|t| t.tier)
+    }
+
     /// Whether a pushed instance named `name` is anywhere in the live stack.
     /// Frontend presentation uses this ancestry check while one of its menus is
     /// pushed above the root title tree.
@@ -312,6 +317,7 @@ impl ModalStack {
             .iter()
             .map(|t| UiTreeEntry {
                 name: t.name.clone(),
+                tier: t.tier,
                 descriptor: t.descriptor.clone(),
                 capture_mode: t.descriptor.capture_mode,
                 on_commit: t.on_commit.clone(),

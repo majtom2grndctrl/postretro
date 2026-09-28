@@ -85,6 +85,14 @@ impl App {
             self.apply_player_surface_depth_quality(quality);
         }
 
+        // Any close path — close button, cancel, the global input — writes the
+        // first-launch record and flushes a pending panel write.
+        let panel_open = self.accessibility_panel_is_open();
+        if self.accessibility_panel_was_open && !panel_open {
+            self.note_accessibility_panel_closed();
+        }
+        self.accessibility_panel_was_open = panel_open;
+
         if options_menu_was_open && !self.options_menu_is_top() {
             let session = self
                 .session

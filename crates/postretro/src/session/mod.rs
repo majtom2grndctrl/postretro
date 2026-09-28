@@ -453,8 +453,8 @@ impl Session {
         // working directory, unchanged.
         //
         // The HUD registers under `HUD_NAME` and resolves as the always-on bottom
-        // passthrough layer each frame. The pause menu, frontend menu, and
-        // keyboard register as pushed-only modals.
+        // passthrough layer each frame. The pause menu, frontend menu,
+        // keyboard, and accessibility panel register as pushed-only modals.
         let mut modal_stack = postretro_ui::modal_stack::ModalStack::new();
         {
             let registry = modal_stack.registry_mut();
@@ -484,6 +484,14 @@ impl Session {
                 core_root,
                 postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
+                false,
+            );
+            // The engine accessibility panel: reserved name, never shadowed.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::ACCESSIBILITY_PANEL_NAME,
+                "accessibilityPanel.json",
                 false,
             );
         }

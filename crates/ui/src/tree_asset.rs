@@ -158,9 +158,10 @@ mod tests {
             CaptureMode::Capture,
             "the pause menu captures input (gates player controls, releases cursor)",
         );
-        assert!(
-            tree.initial_focus.is_none(),
-            "the fallback has no focusable controls",
+        assert_eq!(
+            tree.initial_focus.as_deref(),
+            Some("pauseAccessibility"),
+            "the fallback's one control is its accessibility entry",
         );
     }
 

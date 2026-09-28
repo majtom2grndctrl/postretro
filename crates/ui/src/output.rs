@@ -195,6 +195,9 @@ pub struct UiTreeEntry {
     /// in the stack (e.g. for diagnostics); the renderer keys retained state by
     /// stack position, not by name.
     pub name: String,
+    /// Scope tier the tree was registered at. Stamped onto the focus export so
+    /// the App can attribute a press to the tree that owned it.
+    pub tier: crate::modal_stack::ScopeTier,
     /// The descriptor tree to lay out and draw this frame.
     pub descriptor: descriptor::AnchoredTree,
     /// Resolved capture behavior (from the descriptor's `capture_mode` envelope).

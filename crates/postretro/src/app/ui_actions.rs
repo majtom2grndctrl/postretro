@@ -105,6 +105,7 @@ impl App {
         let Some((interaction, slot, min)) = slider else {
             return;
         };
+        let owner = rects.owner.clone();
 
         let script_ctx = self
             .session
@@ -126,6 +127,11 @@ impl App {
         // Peel off captured nav intents (mutating `nav_intents`) and compute the
         // stepped value; emit one `setState` for the new clamped value.
         if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
+            // An engine-tier slider on a readonly `accessibility.*` slot steps its
+            // field through the panel's field action instead of `setState`.
+            if self.route_engine_accessibility_slider(&slot, owner.as_ref(), current, next) {
+                return;
+            }
             script_ctx
                 .system_commands
                 .push(SystemReactionCommand::SetState {
@@ -149,6 +155,20 @@ impl App {
             focused_id,
         );
         if let Some(on_press) = on_press {
+            if on_press == postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION {
+                self.open_accessibility_panel();
+                return;
+            }
+            if let Some(action) = postretro_ui::actions::parse_accessibility_field_action(&on_press)
+            {
+                let owner = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.ui_focus_rects.as_ref())
+                    .and_then(|rects| rects.owner.clone());
+                self.fire_accessibility_field_action(action.op, action.field, owner.as_ref());
+                return;
+            }
             let action = match self.session.as_mut() {
                 Some(session) => route_ui_button_action(&on_press, &mut session.modal_stack),
                 None => return,

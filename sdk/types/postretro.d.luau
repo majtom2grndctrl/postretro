@@ -2696,6 +2696,10 @@ export type PostretroUiModule = {
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
+  --- Reserved button `onPress` action that opens the engine accessibility panel.
+  OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. The flash limiter has none.
+  accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
   --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
   updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
   appendText: (ref: Ref<string>, text: string) -> PrimitiveReactionDescriptor,

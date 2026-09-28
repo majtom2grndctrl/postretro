@@ -154,6 +154,18 @@ pub struct FocusRectList {
     /// that returns focus here, the focus engine restores this tree's last-focused
     /// node instead of resetting to `initial_focus`.
     pub restore_on_return: bool,
+    /// The registry name and scope tier of the tree this list was exported
+    /// from. A press resolves against last frame's export, so the stack's top
+    /// at activation cannot attribute it; this stamp can. `None` when no tree
+    /// was drawn.
+    pub owner: Option<FocusRectOwner>,
+}
+
+/// The tree a [`FocusRectList`] was exported from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusRectOwner {
+    pub name: String,
+    pub tier: crate::modal_stack::ScopeTier,
 }
 
 impl From<super::super::descriptor::FocusKind> for FocusKind {

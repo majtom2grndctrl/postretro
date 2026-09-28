@@ -808,6 +808,10 @@ pub(crate) struct App {
     /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
     pending_menu_toggle: bool,
 
+    /// Whether the engine accessibility panel was on the stack at the last
+    /// options update, so any close path is noticed once.
+    accessibility_panel_was_open: bool,
+
     /// App-local quit request raised by the reserved `ui.exitToDesktop` button
     /// action. The UI action classifier is generic, but only the event-loop owner
     /// actually exits, so this flag is drained in the redraw/game-logic phase

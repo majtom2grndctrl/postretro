@@ -122,11 +122,22 @@ impl Renderer {
         // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
         // against the same frame snapshot the draw build used, so the a11y readback
         // matches the author-wired highlight.
-        full.ui.export_top_focus_rects(
+        let mut rects = full.ui.export_top_focus_rects(
             viewport,
             &full.ui_snapshot.slot_values,
             &full.ui_snapshot.cell_values,
-        )
+        );
+        // The export is the snapshot's top layer; name it so the App can
+        // attribute a press to the tree that owned it (`ui.md` §4.1).
+        rects.owner =
+            full.ui_snapshot
+                .trees
+                .last()
+                .map(|entry| postretro_ui::tree::FocusRectOwner {
+                    name: entry.name.clone(),
+                    tier: entry.tier,
+                });
+        rects
     }
 
     /// Install an override UI theme and bump the theme generation. Engine-side

@@ -508,6 +508,8 @@ mod tests {
                 "CLOSE_DIALOG_ACTION",
                 "EXIT_TO_DESKTOP_ACTION",
                 "QUIT_TO_MENU_ACTION",
+                "OPEN_ACCESSIBILITY_ACTION",
+                "accessibilityAction",
                 "loadLevel",
                 "restartLevel",
                 "returnToFrontend",

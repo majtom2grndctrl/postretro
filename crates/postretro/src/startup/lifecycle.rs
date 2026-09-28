@@ -1331,7 +1331,7 @@ pub(crate) struct ConnectedClientTriggerPoolInstallFixture {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::startup::LevelRequest;
     use std::collections::{BTreeMap, VecDeque};
@@ -1501,7 +1501,8 @@ mod tests {
         ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), ctx).unwrap()
     }
 
-    fn test_app() -> App {
+    /// A windowless `App` with an installed session, for App-level tests.
+    pub(crate) fn test_app() -> App {
         let script_ctx = ScriptCtx::new();
         let script_runtime = test_runtime(&script_ctx);
         let initial_state = InterpolableState::new(Vec3::ZERO);
@@ -1628,6 +1629,7 @@ mod tests {
             switching: Default::default(),
             pending_mode_signal: None,
             pending_menu_toggle: false,
+            accessibility_panel_was_open: false,
             pending_exit_to_desktop: false,
             ui_focused_id: None,
             particle_live_counts: std::collections::HashMap::new(),
@@ -3154,6 +3156,7 @@ mod tests {
             groups: Vec::new(),
             initial_focus: Some("play".to_string()),
             restore_on_return: false,
+            owner: None,
         });
         script_ctx(&app)
             .data_registry

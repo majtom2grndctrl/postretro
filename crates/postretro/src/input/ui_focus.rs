@@ -818,6 +818,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         }
     }
 
@@ -838,6 +839,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         }
     }
 
@@ -1397,6 +1399,7 @@ mod tests {
             groups: vec![],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let r = fe.tick(
             Some("t"),
@@ -1519,6 +1522,7 @@ mod tests {
             groups: vec![],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         }
     }
 
@@ -1702,6 +1706,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         }
     }
 
@@ -1836,6 +1841,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         let r = fe.tick(
@@ -1887,6 +1893,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         fe.tick(
@@ -1933,6 +1940,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         fe.tick(
@@ -2045,6 +2053,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         let r = fe.tick(
@@ -2105,6 +2114,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         fe.tick(
@@ -2154,6 +2164,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         let r = fe.tick(
@@ -2185,6 +2196,7 @@ mod tests {
             groups: vec![],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         let mut fe = UiFocusEngine::new();
         let r = fe.tick(
@@ -2230,6 +2242,7 @@ mod tests {
             }],
             initial_focus: None,
             restore_on_return: false,
+            owner: None,
         };
         // Enabled focused node activates normally.
         assert_eq!(

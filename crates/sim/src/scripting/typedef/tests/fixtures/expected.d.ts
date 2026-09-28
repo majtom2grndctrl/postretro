@@ -2473,6 +2473,15 @@ declare module "postretro/ui" {
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
   /** Reserved `Button.onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`. */
   export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
+  /** Reserved `Button.onPress` action that opens the engine accessibility panel. */
+  export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
+  /** Accessibility toggles a mod menu button may cycle. The flash limiter is absent: only the engine panel changes it. */
+  export type AccessibilityToggleField = "reduceMotion" | "monoAudio";
+  /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
+  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
+  /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */
+  export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
+  export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;
   /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */
   export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
   /** Push a menu tree by registry name. Unknown tree names warn and no-op. */

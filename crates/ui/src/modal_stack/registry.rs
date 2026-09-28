@@ -208,8 +208,9 @@ impl UiTreeRegistry {
         });
         entries
             .into_iter()
-            .map(|(_, name, t)| UiTreeEntry {
+            .map(|(tier, name, t)| UiTreeEntry {
                 name: name.clone(),
+                tier,
                 descriptor: t.descriptor.clone(),
                 capture_mode: t.descriptor.capture_mode,
                 on_commit: None,

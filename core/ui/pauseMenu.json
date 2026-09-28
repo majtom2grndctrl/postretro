@@ -23,8 +23,18 @@
         "fontSize": 16.0,
         "color": "ok",
         "font": "mono"
+      },
+      {
+        "kind": "button",
+        "id": "pauseAccessibility",
+        "label": "ACCESSIBILITY",
+        "onPress": "ui.openAccessibility"
       }
-    ]
+    ],
+    "focus": {
+      "policy": "linear"
+    }
   },
-  "captureMode": "capture"
+  "captureMode": "capture",
+  "initialFocus": "pauseAccessibility"
 }

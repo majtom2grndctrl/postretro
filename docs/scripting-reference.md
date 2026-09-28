@@ -1952,9 +1952,12 @@ reaction uplink.
 
 Button `onPress` values have two paths. Ordinary strings are named reactions.
 Reserved `ui.*` strings are engine actions intercepted before named-reaction
-dispatch. Use `CLOSE_DIALOG_ACTION` for the reserved `"ui.closeDialog"` value
-or `EXIT_TO_DESKTOP_ACTION` for `"ui.exitToDesktop"`, or
-`QUIT_TO_MENU_ACTION` for `"ui.quitToMenu"` instead of spelling them by hand.
+dispatch. Use `CLOSE_DIALOG_ACTION` for the reserved `"ui.closeDialog"` value,
+`EXIT_TO_DESKTOP_ACTION` for `"ui.exitToDesktop"`, `QUIT_TO_MENU_ACTION` for
+`"ui.quitToMenu"`, `OPEN_ACCESSIBILITY_ACTION` for `"ui.openAccessibility"`, or
+`accessibilityAction(field, op)` for an accessibility field action (see
+[The accessibility panel](#the-accessibility-panel-and-accessibility-slots))
+instead of spelling them by hand.
 
 ### Game-flow reactions
 
@@ -2415,6 +2418,64 @@ the OS cursor (visible in `pointer`, hidden in `focus`) and the focus ring (hidd
 in `pointer`, visible in `focus`); it is inert when no capturing tree is up. A
 `text` widget can `bind` it to display the live mode. It is **read-only from
 scripts** — the engine is its sole producer.
+
+### The accessibility panel and `accessibility.*` slots
+
+The engine ships an accessibility panel every player can reach, whatever your
+menus include. It opens from:
+
+- any button whose `onPress` is `OPEN_ACCESSIBILITY_ACTION` (`"ui.openAccessibility"`);
+- the global input — **F1** on the keyboard, **Select/Back** on a gamepad — from
+  gameplay or over any menu.
+
+Give your frontend menu and `pauseMenu` trees a button that opens it. A frontend
+or pause tree without one draws a load-time warning naming the tree. The panel's
+registry name, `accessibilityPanel`, is reserved: a tree you register under it is
+rejected and the engine panel stays.
+
+**Reading preferences.** Content that honors a preference reads the readonly
+`accessibility.*` slots from `getGameState()`. Each carries the player's
+resolved value, live during play whether or not a menu is open:
+
+| Slot | Type | Meaning |
+|---|---|---|
+| `accessibility.reduceMotion` | boolean | Reduce motion. Follows the OS setting until the player chooses. |
+| `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
+| `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
+| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway) scale. |
+| `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. |
+| `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
+| `accessibility.monoAudio` | boolean | Mono audio. |
+
+Scripts cannot write these slots; a `setState` on one warns and changes nothing.
+The engine already applies each preference to what it presents: reduce motion
+zeroes screen shake and view feel and makes UI tweens reach their targets at
+once. Read the slots to honor a preference in your own content.
+
+**Editing preferences in your own menus.** Every field except the flash limiter
+has a writable `options.*` working copy (`options.reduceMotion`,
+`options.screenShakeScale`, `options.masterVolume`, …) that behaves like the
+existing options: bind a `Slider` to it, or write it with `updateState`. For a
+button, `accessibilityAction(field, op)` builds the reserved action the panel's
+own controls fire: toggles `cycle` (reduce motion cycles System → On → Off);
+numeric fields `increase` or `decrease` by one step. The flash limiter has no
+working copy and no `accessibilityAction`: only the engine panel changes it.
+
+```typescript
+import { Button, Slider, Text, getGameState, stateEquals, OPEN_ACCESSIBILITY_ACTION, accessibilityAction } from "postretro/ui";
+
+const { options, accessibility } = getGameState();
+
+Button({ id: "openA11y", label: "ACCESSIBILITY", onPress: OPEN_ACCESSIBILITY_ACTION });
+Button({ id: "reduceMotion", label: "REDUCE MOTION", onPress: accessibilityAction("reduceMotion", "cycle") });
+Text({ id: "shakeLabel", content: "SCREEN SHAKE" });
+Slider({ id: "shake", labelledBy: "shakeLabel", bind: options.screenShakeScale, min: 0, max: 1, step: 0.1, capturesNav: ["nav.left", "nav.right"] });
+Text({ content: "MOTION REDUCED", visibleWhen: stateEquals(accessibility.reduceMotion, true) });
+Text({ content: "FOLLOWING SYSTEM", visibleWhen: stateEquals(accessibility.reduceMotionFollowsSystem, true) });
+```
+
+Preferences are the local player's: in co-op each machine applies its own, and
+none of these slots replicate.
 
 ## Authoring UI with the SDK
 

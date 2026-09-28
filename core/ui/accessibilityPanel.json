@@ -1,0 +1,418 @@
+{
+  "anchor": "center",
+  "offset": [
+    0.0,
+    0.0
+  ],
+  "root": {
+    "kind": "vstack",
+    "gap": 10.0,
+    "padding": 20.0,
+    "align": "start",
+    "fill": "panel.default",
+    "focus": {
+      "policy": "linear"
+    },
+    "children": [
+      {
+        "kind": "text",
+        "content": "ACCESSIBILITY",
+        "fontSize": 24,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "text",
+        "content": "F1 OR SELECT CLOSES THIS PANEL",
+        "fontSize": 12,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "button",
+            "id": "a11y_reduceMotion",
+            "label": "REDUCE MOTION",
+            "onPress": "ui.accessibility.cycle.reduceMotion"
+          },
+          {
+            "kind": "hstack",
+            "gap": 8.0,
+            "padding": 0.0,
+            "align": "center",
+            "visibleWhen": {
+              "slot": "accessibility.reduceMotionFollowsSystem",
+              "equals": true
+            },
+            "children": [
+              {
+                "kind": "text",
+                "content": "SYSTEM (ON)",
+                "fontSize": 16,
+                "color": "ok",
+                "font": "mono",
+                "visibleWhen": {
+                  "slot": "accessibility.reduceMotion",
+                  "equals": true
+                }
+              },
+              {
+                "kind": "text",
+                "content": "SYSTEM (OFF)",
+                "fontSize": 16,
+                "color": "ok",
+                "font": "mono",
+                "visibleWhen": {
+                  "slot": "accessibility.reduceMotion",
+                  "equals": false
+                }
+              }
+            ]
+          },
+          {
+            "kind": "hstack",
+            "gap": 8.0,
+            "padding": 0.0,
+            "align": "center",
+            "visibleWhen": {
+              "slot": "accessibility.reduceMotionFollowsSystem",
+              "equals": false
+            },
+            "children": [
+              {
+                "kind": "text",
+                "content": "ON",
+                "fontSize": 16,
+                "color": "ok",
+                "font": "mono",
+                "visibleWhen": {
+                  "slot": "accessibility.reduceMotion",
+                  "equals": true
+                }
+              },
+              {
+                "kind": "text",
+                "content": "OFF",
+                "fontSize": 16,
+                "color": "ok",
+                "font": "mono",
+                "visibleWhen": {
+                  "slot": "accessibility.reduceMotion",
+                  "equals": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "text",
+            "content": "SCREEN SHAKE",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_screenShakeScaleLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_screenShakeScale",
+            "labelledBy": "a11y_screenShakeScaleLabel",
+            "bind": {
+              "slot": "accessibility.screenShakeScale"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.1,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "text",
+            "content": "VIEW FEEL",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_viewFeelScaleLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_viewFeelScale",
+            "labelledBy": "a11y_viewFeelScaleLabel",
+            "bind": {
+              "slot": "accessibility.viewFeelScale"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.1,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "button",
+            "id": "a11y_flashLimiter",
+            "label": "FLASH LIMITER",
+            "onPress": "ui.accessibility.cycle.flashLimiter"
+          },
+          {
+            "kind": "text",
+            "content": "ON",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "visibleWhen": {
+              "slot": "accessibility.flashLimiter",
+              "equals": true
+            }
+          },
+          {
+            "kind": "text",
+            "content": "OFF",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "visibleWhen": {
+              "slot": "accessibility.flashLimiter",
+              "equals": false
+            }
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "text",
+            "content": "MASTER VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_masterVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_masterVolume",
+            "labelledBy": "a11y_masterVolumeLabel",
+            "bind": {
+              "slot": "accessibility.masterVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "text",
+            "content": "SFX VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_sfxVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_sfxVolume",
+            "labelledBy": "a11y_sfxVolumeLabel",
+            "bind": {
+              "slot": "accessibility.sfxVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "text",
+            "content": "MUSIC VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_musicVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_musicVolume",
+            "labelledBy": "a11y_musicVolumeLabel",
+            "bind": {
+              "slot": "accessibility.musicVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "text",
+            "content": "UI VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_uiVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_uiVolume",
+            "labelledBy": "a11y_uiVolumeLabel",
+            "bind": {
+              "slot": "accessibility.uiVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "hstack",
+        "gap": 16.0,
+        "padding": 0.0,
+        "align": "center",
+        "children": [
+          {
+            "kind": "button",
+            "id": "a11y_monoAudio",
+            "label": "MONO AUDIO",
+            "onPress": "ui.accessibility.cycle.monoAudio"
+          },
+          {
+            "kind": "text",
+            "content": "ON",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "visibleWhen": {
+              "slot": "accessibility.monoAudio",
+              "equals": true
+            }
+          },
+          {
+            "kind": "text",
+            "content": "OFF",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "visibleWhen": {
+              "slot": "accessibility.monoAudio",
+              "equals": false
+            }
+          }
+        ]
+      },
+      {
+        "kind": "button",
+        "id": "a11y_close",
+        "label": "CLOSE",
+        "onPress": "ui.closeDialog"
+      }
+    ]
+  },
+  "captureMode": "capture",
+  "initialFocus": "a11y_reduceMotion",
+  "accessibleName": "Accessibility"
+}

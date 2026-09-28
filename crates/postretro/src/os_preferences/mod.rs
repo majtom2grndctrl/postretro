@@ -7,7 +7,9 @@ mod mundy_source;
 #[cfg(windows)]
 mod windows_text_scale;
 
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+#[cfg(test)]
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 /// Whatever follows mod init waits at most this long for the reader's first
@@ -24,6 +26,7 @@ pub(crate) enum OsUpdate {
         increased_contrast: Option<bool>,
     },
     /// Windows text scale (1.0 = 100%).
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     TextScale(f32),
 }
 

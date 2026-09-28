@@ -207,7 +207,10 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
         Err(error) if error.to_string().contains("requires a GPU adapter") => return,
         Err(error) => panic!("offscreen renderer must initialize: {error:#}"),
     };
-    let boot = renderer.lightmap_residency_report().cloned().expect("full renderer");
+    let boot = renderer
+        .lightmap_residency_report()
+        .cloned()
+        .expect("full renderer");
     assert_eq!(boot.allocations.len(), 5);
 
     // A 64² two-layer static lightmap and no animated sections.

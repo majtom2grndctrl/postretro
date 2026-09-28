@@ -1,4 +1,4 @@
-# sh-streaming--reveal-gate-and-budget-tiers — research
+# sh-streaming--reveal-gate-and-warm-horizon — research
 
 Read at 0a7352039 (`feat/preferences-comfort-floor`). Symbols, not lines.
 
@@ -11,7 +11,7 @@ Read at 0a7352039 (`feat/preferences-comfort-floor`). Symbols, not lines.
 | Hysteresis expiry | `HYSTERESIS_SECONDS` = 2.0; after it, the departed cluster is evictable (`targeting.rs` `unsuppressed_target_classes`) | Unchanged; wider horizon makes departure rarer |
 | Install throttle | `MAX_INSTALL_DECODED_BYTES_PER_DRAIN` 8 MiB per drain, `MAX_STREAM_PERMITS` 8. The io-contract notes some stress-warren-mini clusters exceed the drain budget | Non-goal unless measurement implicates it |
 
-Owner's "low VRAM" observation: the resident set is capped by what's targeted, not by the pool. Pools grow only on demand (`grow_dense` / `grow_sparse`).
+Owner's "low VRAM" observation: the resident set is capped by what's targeted, not by the pool. The pool reserves physical capacity at install: `plan_initial_pool_floor` → `StreamingGpuPools::new`, where each family gets `min(whole map, share)` via `dense_slots_for_share`. It grows on demand beyond that (`grow_dense` / `grow_sparse`). So on a map that fits its share, evicting a departed cluster frees no VRAM. Keeping departure eviction anyway is an owner decision (see brief).
 
 ## Budget today
 
@@ -29,12 +29,20 @@ Owner's "low VRAM" observation: the resident set is capped by what's targeted, n
 - SH is the only asynchronously streamed data. Textures, meshes and audio load synchronously during install. Pipelines are built at full-init.
 - Lifecycle primitives are `loadLevel`, `restartLevel` and `returnToFrontend`. Respawn in test content uses `restartLevel`. In-level teleports don't touch residency.
 
-## Tier precedent
+## Co-op parity
 
-`ShadowQuality` (options/mod.rs, key `shadow_quality`) → `renderer_spot_shadow_map_resolution` → `configure_player_shadow_quality` → retained renderer boot state, applied at full-init (`finish_renderer_full_init`) and on level install. It exists only in the settings file: no menu entry, no SDK. Its default is a static High, whereas this brief's Auto resolves at apply time.
+`install_level_payload` calls `endpoint.set_level_parity` during install, before any reveal. If that stays put, a Settling hold would let a peer be promoted and its pawn ticked while the local player is still on the splash.
+
+## Budget tiers (split out)
+
+Findings for the later resource-neutral budget brief:
+- wgpu-hal Metal reports `IntegratedGpu` whenever the device has unified memory. A tier derived from device type would put every Apple Silicon Mac on the lowest tier.
+- `ShadowQuality` has an options slot and a dev frontend-menu control ("Applies after reload"). It is not settings-file only.
+- On `campaign-test`, whole-resident lightmap-shaped data far outweighs streamed SH (`large-map-spatial-residency.md` §Pre-planning measurements). An SH-only tier does little for laptops.
+- Owner closure alone covers most clusters on `stress-warren-mini`. A low budget below the mandatory set is mostly overshoot.
 
 ## Prior commitments touched
 
 - `sh-probe-streaming` epic: misses never stall, doors never wait. Kept for in-play misses. The entry gate adds to the existing load wait, which already exists.
-- The io-contract lists warm count, coalescing caps, byte budget and permits as tuning, not contract. It deferred "cap warm set by bytes as well as count", and the budget tier plays that role now.
-- `large-map-spatial-residency.md` says lightmap-shaped data is the next resource and per-resource platform budgets are an open decision. This brief's tier is SH-only. A shared budget waits for the second resource.
+- The io-contract lists warm count, coalescing caps, byte budget and permits as tuning, not contract. It deferred "cap warm set by bytes as well as count"; the single budget still plays that role via pressure.
+- `large-map-spatial-residency.md` says lightmap-shaped data is the next resource and per-resource platform budgets are an open decision. Budget tiers are split out for that reason.

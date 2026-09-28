@@ -117,9 +117,15 @@ Leanings come from a read-only dry run (research below). None is decided.
 - Ownership. Texels belong to their receiver cell, so partitioning receivers cannot
   double-count a light. The shadowmask channel table and the animation descriptors stay
   global.
-- Platform residency budgets per resource. Lean: one planner and one tier (see
-  `sh-streaming--reveal-gate-and-budget-tiers`), split into per-resource GPU caps and
-  per-drain budgets.
+- Platform residency budgets per resource. Lean: one planner and one player-facing
+  tier, split into per-resource GPU caps and per-drain budgets. The owner wants laptop
+  GPUs well supported. Carry forward:
+  - Use a resource-neutral settings key.
+  - Add a menu control like `ShadowQuality`'s.
+  - Don't infer low VRAM from wgpu's `IntegratedGpu`: Metal reports it for every
+    unified-memory Mac.
+  - A tier below a map's mandatory set (visible, pinned and owner closure) is mostly
+    overshoot.
 - Whether the next directory version drops solid and exterior cells from clustering. The
   lightmap layer-range table can ride the same version bump.
 

@@ -96,7 +96,7 @@ fn run() -> Result<()> {
                     format!("failed to create output directory `{}`", parent.display())
                 })?;
             }
-            std::fs::write(&output, &bundled.js)
+            atomic_write(&output, bundled.js.as_bytes())
                 .with_context(|| format!("failed to write output `{}`", output.display()))?;
             if let (Some(light_table), Some(manifest_out)) = (light_table, manifest_out) {
                 let table_json = std::fs::read_to_string(&light_table).with_context(|| {
@@ -128,7 +128,7 @@ fn run() -> Result<()> {
                         )
                     })?;
                 }
-                std::fs::write(&manifest_out, serde_json::to_vec(&manifest)?).with_context(
+                atomic_write(&manifest_out, &serde_json::to_vec(&manifest)?).with_context(
                     || {
                         format!(
                             "failed to write light-membership manifest `{}`",
@@ -155,6 +155,31 @@ fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Write `bytes` to `<target>.tmp.<pid>` beside `target`, then rename it into
+/// place. A reader never observes a truncated or half-written output: the
+/// engine reads `start-script.js` right after this process exits, and a second
+/// `scripts-build` bundling the same entry (a concurrent mod-init, a hot
+/// reload racing a startup scan) would otherwise truncate the file under it.
+/// The scratch name matches the shape `postretro-tool dist` already excludes.
+fn atomic_write(target: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| anyhow!("output `{}` has no file name", target.display()))?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    let tmp_path = target.with_file_name(tmp_name);
+    std::fs::write(&tmp_path, bytes)
+        .with_context(|| format!("failed to write `{}`", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        anyhow!(
+            "failed to rename `{}` -> `{}`: {e}",
+            tmp_path.display(),
+            target.display()
+        )
+    })
 }
 
 /// Parsed command-line invocation: either bundle a user entry script or build

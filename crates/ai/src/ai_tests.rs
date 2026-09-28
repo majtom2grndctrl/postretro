@@ -3024,10 +3024,9 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
         .expect("rejected actor keeps its brain");
     assert_eq!(later_brain.activity_attack_count(0), Some(0));
     assert!(
-        later_brain
+        !later_brain
             .attack_cooldown_remaining_ms
-            .get("attack")
-            .is_none()
+            .contains_key("attack")
     );
 }
 
@@ -3091,10 +3090,9 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
         .expect("rejected actor keeps its brain");
     assert_eq!(later_brain.activity_attack_count(0), Some(0));
     assert!(
-        later_brain
+        !later_brain
             .attack_cooldown_remaining_ms
-            .get("attack")
-            .is_none()
+            .contains_key("attack")
     );
 }
 
@@ -3177,10 +3175,9 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
         .expect("rejected actor keeps its brain");
     assert_eq!(later_brain.activity_attack_count(0), Some(0));
     assert!(
-        later_brain
+        !later_brain
             .attack_cooldown_remaining_ms
-            .get("attack")
-            .is_none()
+            .contains_key("attack")
     );
 }
 
@@ -3248,10 +3245,9 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
         .expect("rejected actor keeps its brain");
     assert_eq!(later_brain.activity_attack_count(0), Some(0));
     assert!(
-        later_brain
+        !later_brain
             .attack_cooldown_remaining_ms
-            .get("attack")
-            .is_none()
+            .contains_key("attack")
     );
 }
 
@@ -3351,10 +3347,9 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
         .expect("recovered actor keeps its brain");
     assert_eq!(recovered_brain.activity_attack_count(0), Some(0));
     assert!(
-        recovered_brain
+        !recovered_brain
             .attack_cooldown_remaining_ms
-            .get("attack")
-            .is_none(),
+            .contains_key("attack"),
     );
 
     let next_tick = run_ai_tick_with_navigation_and_impact(
@@ -7076,10 +7071,9 @@ fn visible_target_memory_overrides_damage_seed_tracks_live_position_then_ages_an
     assert_eq!(brain.time_since_target_visible, 0.0);
 
     let second_position = Vec3::new(3.0, 0.0, 0.0);
-    let mut transform = registry
+    let mut transform = *registry
         .get_component::<Transform>(player)
-        .expect("player carries a transform")
-        .clone();
+        .expect("player carries a transform");
     transform.position = second_position;
     registry.set_component(player, transform).unwrap();
     run_ai_tick_with_navigation(
@@ -10738,7 +10732,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
         .get_component::<BrainComponent>(enemy)
         .expect("rejected actor keeps its brain");
     assert_eq!(brain.activity_attack_count(0), Some(0));
-    assert!(brain.attack_cooldown_remaining_ms.get("attack").is_none());
+    assert!(!brain.attack_cooldown_remaining_ms.contains_key("attack"));
 }
 
 #[test]
@@ -10922,12 +10916,11 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
     assert!(event_addresses(&disabled_missing.events).is_empty());
     assert_eq!(projectile_ids(&registry).len(), projectile_count);
     assert!(
-        registry
+        !registry
             .get_component::<BrainComponent>(enemy)
             .expect("live enemy keeps its brain")
             .attack_cooldown_remaining_ms
-            .get("attack")
-            .is_none(),
+            .contains_key("attack"),
         "invalid reload does not consume cooldown"
     );
 }
@@ -10975,7 +10968,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
         .get_component::<BrainComponent>(enemy)
         .expect("test enemy keeps its brain");
     assert_eq!(brain.activity_attack_count(0), Some(0));
-    assert!(brain.attack_cooldown_remaining_ms.get("attack").is_none());
+    assert!(!brain.attack_cooldown_remaining_ms.contains_key("attack"));
 }
 
 #[test]

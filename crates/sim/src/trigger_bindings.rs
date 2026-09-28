@@ -1367,7 +1367,7 @@ mod tests {
             value: BoundStoreValue::Literal(SlotValue::Number(99.0)),
         };
         let mut registry = EntityRegistry::new();
-        let mut dispatch_scope = DispatchScope::script(ctx.clone(), &TRIGGER_EVENT_INPUTS);
+        let mut dispatch_scope = DispatchScope::script(ctx.clone(), TRIGGER_EVENT_INPUTS);
         for command in [&defensive_per_owner, &global] {
             command.execute_with_script_ctx(
                 &mut registry,

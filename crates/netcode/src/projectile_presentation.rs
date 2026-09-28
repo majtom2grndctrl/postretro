@@ -1167,17 +1167,19 @@ mod tests {
             spawn_enemy_gameplay_projectile(&mut registry, enemy, starts[0]),
             spawn_enemy_gameplay_projectile(&mut registry, enemy, starts[1]),
         ];
-        let mut tick_events = crate::sim::TickEvents::default();
-        tick_events.enemy_projectile_spawns = vec![
-            EnemyProjectilePresentationSpawn {
-                projectile: sources[0],
-                descriptor_class: "enemy_plasma_blue".to_string(),
-            },
-            EnemyProjectilePresentationSpawn {
-                projectile: sources[1],
-                descriptor_class: "enemy_plasma_orange".to_string(),
-            },
-        ];
+        let tick_events = crate::sim::TickEvents {
+            enemy_projectile_spawns: vec![
+                EnemyProjectilePresentationSpawn {
+                    projectile: sources[0],
+                    descriptor_class: "enemy_plasma_blue".to_string(),
+                },
+                EnemyProjectilePresentationSpawn {
+                    projectile: sources[1],
+                    descriptor_class: "enemy_plasma_orange".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
         let descriptors = [
             projectile_visual_descriptor_named("enemy_plasma_blue", "sprites/projectiles/blue.png"),
             projectile_visual_descriptor_named(
@@ -1389,17 +1391,19 @@ mod tests {
             spawn_enemy_gameplay_projectile(&mut registry, enemy, Vec3::X),
         ];
         registry.set_test_capacity_limit(4);
-        let mut tick_events = crate::sim::TickEvents::default();
-        tick_events.enemy_projectile_spawns = vec![
-            EnemyProjectilePresentationSpawn {
-                projectile: sources[0],
-                descriptor_class: "enemy_plasma_blue".to_string(),
-            },
-            EnemyProjectilePresentationSpawn {
-                projectile: sources[1],
-                descriptor_class: "enemy_plasma_orange".to_string(),
-            },
-        ];
+        let tick_events = crate::sim::TickEvents {
+            enemy_projectile_spawns: vec![
+                EnemyProjectilePresentationSpawn {
+                    projectile: sources[0],
+                    descriptor_class: "enemy_plasma_blue".to_string(),
+                },
+                EnemyProjectilePresentationSpawn {
+                    projectile: sources[1],
+                    descriptor_class: "enemy_plasma_orange".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
         let mut replication = ServerReplication::new();

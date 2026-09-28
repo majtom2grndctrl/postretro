@@ -601,7 +601,7 @@ mod tests {
         let outgoing = registry.get_component::<WeaponComponent>(outgoing).unwrap();
         assert_eq!(outgoing.state, WieldableState::Lowering);
         assert_eq!(outgoing.state_remaining_ms, 7);
-        assert_eq!(outgoing.reload_status().1, false);
+        assert!(!outgoing.reload_status().1);
         assert_eq!(
             registry
                 .get_component::<Inventory>(pawn)

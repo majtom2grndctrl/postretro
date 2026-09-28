@@ -272,7 +272,6 @@ mod tests {
                     mean_sq_distance: 0xabcd,
                     density_level: Level::L2.to_u8(),
                     node_scale: 1,
-                    ..Default::default()
                 };
                 8 * 8 * 8
             ],
@@ -316,7 +315,7 @@ mod tests {
         );
 
         let l1_a = decode_probe_indirection_word(words[4]);
-        let l1_b = decode_probe_indirection_word(words[7 + 2 * 16 + 1 * 16 * 4]);
+        let l1_b = decode_probe_indirection_word(words[7 + 2 * 16 + 16 * 4]);
         assert_eq!(
             l1_a,
             ProbeIndirectionWord {
@@ -329,7 +328,7 @@ mod tests {
         assert_eq!(l1_b, l1_a);
 
         let l2_a = decode_probe_indirection_word(words[8]);
-        let l2_b = decode_probe_indirection_word(words[11 + 1 * 16 + 2 * 16 * 4]);
+        let l2_b = decode_probe_indirection_word(words[11 + 16 + 2 * 16 * 4]);
         assert_eq!(
             l2_a,
             ProbeIndirectionWord {
@@ -342,7 +341,7 @@ mod tests {
         assert_eq!(l2_b, l2_a);
 
         assert_eq!(words[12], INVALID_PROBE_INDIRECTION);
-        assert_eq!(decode_probe_indirection_word(words[12]).valid, false);
+        assert!(!decode_probe_indirection_word(words[12]).valid);
     }
 
     #[test]
@@ -426,7 +425,7 @@ mod tests {
 
     #[test]
     fn wgsl_decode_constants_match_the_rust_contract() {
-        assert!(SH_INDIRECTION_SLOT_BITS >= 27);
+        const { assert!(SH_INDIRECTION_SLOT_BITS >= 27) };
         for (name, value) in [
             ("SH_INDIRECTION_LEVEL_MASK", SH_INDIRECTION_LEVEL_MASK),
             ("SH_INDIRECTION_VALID_BIT", SH_INDIRECTION_VALID_BIT),

@@ -2438,7 +2438,6 @@ mod tests {
         run_pass(&mut registry); // First player's 100 ms cadence is due.
         run_pass(&mut registry); // Second player's 100 ms cadence is due.
         run_pass(&mut registry); // First player is hit again despite being at zero HP.
-        drop(run_pass);
 
         assert!(
             registry
@@ -2677,7 +2676,6 @@ mod tests {
         postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry);
         run_pass(&mut registry);
         run_pass(&mut registry); // The latched enemy still receives overkill damage.
-        drop(run_pass);
 
         let health = registry
             .get_component::<HealthComponent>(enemy)
@@ -2795,7 +2793,6 @@ mod tests {
             .set_component(enemy, transform)
             .expect("enemy repins");
         run_pass(&mut registry);
-        drop(run_pass);
 
         assert!(
             (registry

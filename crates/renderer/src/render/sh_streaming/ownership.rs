@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn slot_rewrite_retains_all_non_address_indirection_bits() {
-        let word = 0b1_10_01_1_0101u32;
+        let word = 0b11_0011_0101_u32;
         let rewritten = rewrite_slot(word, 7).unwrap();
         assert_eq!(rewritten & 0x1f, word & 0x1f);
         assert_eq!(rewritten >> 5, 7);

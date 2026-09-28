@@ -4145,11 +4145,10 @@ mod tests {
         assert_eq!(animation.current_state, "idle");
         assert!(animation.previous_state.is_none());
         assert!(
-            client
+            !client
                 .presented_player_inputs()
                 .heading_yaws
-                .get(&NetworkId(7))
-                .is_none(),
+                .contains_key(&NetworkId(7)),
             "zero intrinsic velocity falls back to the replicated facing Transform"
         );
         let (presented_yaw, _, _) = registry
@@ -4282,11 +4281,10 @@ mod tests {
             "idle"
         );
         assert!(
-            client
+            !client
                 .presented_player_inputs()
                 .heading_yaws
-                .get(&NetworkId(7))
-                .is_none(),
+                .contains_key(&NetworkId(7)),
             "movement-only idle clears the lower-body travel override"
         );
     }

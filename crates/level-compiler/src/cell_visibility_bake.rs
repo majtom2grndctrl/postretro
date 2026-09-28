@@ -990,10 +990,10 @@ mod tests {
                     }
                 }
             }
-            for target in 0..tree.leaves.len() {
+            for (target, &is_reachable) in reachable.iter().enumerate() {
                 assert_eq!(
                     section.component_ids[start] == section.component_ids[target],
-                    reachable[target]
+                    is_reachable
                 );
             }
         }

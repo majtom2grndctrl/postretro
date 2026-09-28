@@ -4,7 +4,6 @@
 
 use std::collections::BTreeSet;
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -426,6 +425,7 @@ fn decode_runs_on_a_pool_thread_never_the_issuer() {
 mod positional {
     use super::*;
     use std::os::unix::fs::FileExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Reads "payload" out of "headpayloadtail" after a delay, through a
     /// real positional read.

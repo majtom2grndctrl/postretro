@@ -678,87 +678,6 @@ fn authority_seat_table_or_local_only<T, E>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn session_options_generate_and_persist_missing_device_identity() {
-        let dir = tempdir().expect("temporary settings directory");
-        let path = dir.path().join("settings.toml");
-
-        let generated = load_player_options(Some(&path));
-        let player_id = generated.player_id.expect("session generated player id");
-        assert!(path.exists(), "generated identity is persisted");
-
-        let reloaded = options::PlayerOptions::load(&path);
-        assert_eq!(reloaded.player_id, Some(player_id));
-    }
-
-    #[test]
-    fn session_options_persist_identity_added_to_existing_settings() {
-        let dir = tempdir().expect("temporary settings directory");
-        let path = dir.path().join("settings.toml");
-        std::fs::write(&path, "invert_y = true\n").expect("write existing settings");
-
-        let generated = load_player_options(Some(&path));
-        assert!(generated.invert_y);
-        assert!(generated.player_id.is_some());
-
-        let reloaded = options::PlayerOptions::load(&path);
-        assert_eq!(reloaded.player_id, generated.player_id);
-    }
-
-    #[test]
-    fn session_options_connect_anonymously_without_persistent_settings() {
-        let player_options = load_player_options(None);
-
-        assert_eq!(player_options.player_id, None);
-    }
-
-    #[test]
-    fn session_options_leave_malformed_settings_anonymous_and_untouched() {
-        let dir = tempdir().expect("temporary settings directory");
-        let path = dir.path().join("settings.toml");
-        let malformed = "this is not valid toml = = =\n";
-        std::fs::write(&path, malformed).expect("write malformed settings");
-
-        let player_options = load_player_options(Some(&path));
-
-        assert_eq!(player_options.player_id, None);
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("read malformed settings"),
-            malformed
-        );
-    }
-
-    // Regression: session-id entropy failure used to abort engine boot.
-    #[test]
-    fn session_identity_failure_keeps_local_carry_ledger_but_is_not_network_safe() {
-        let mut net_endpoint = Some(());
-        let (seats, identity_error) = authority_seat_table_or_local_only(
-            &mut net_endpoint,
-            std::result::Result::<netcode::SeatTable, _>::Err("entropy unavailable"),
-        );
-
-        assert_eq!(identity_error, Some("entropy unavailable"));
-        assert_eq!(net_endpoint, None, "failed identity disables the endpoint");
-        assert_eq!(
-            seats.session_id_for_test(),
-            postretro_net::wire::SessionId([0; 16])
-        );
-        assert_eq!(
-            seats.roster_entries_for_test(),
-            vec![postretro_net::wire::RosterEntry {
-                seat: 0,
-                connected: true,
-            }],
-            "single-player carry still owns local seat zero"
-        );
-    }
-}
-
 /// Construct the scripting core — the script VM runtime, script context, all
 /// Rust-side registries (sequence/reaction/system), the classname dispatch table,
 /// and every subsystem that captures a `ScriptCtx` clone — shared verbatim
@@ -1127,6 +1046,87 @@ mod headless_tests {
         assert!(
             msg.contains("cargo run -p xtask -- observe"),
             "names the observe launcher: {msg}",
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn session_options_generate_and_persist_missing_device_identity() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+
+        let generated = load_player_options(Some(&path));
+        let player_id = generated.player_id.expect("session generated player id");
+        assert!(path.exists(), "generated identity is persisted");
+
+        let reloaded = options::PlayerOptions::load(&path);
+        assert_eq!(reloaded.player_id, Some(player_id));
+    }
+
+    #[test]
+    fn session_options_persist_identity_added_to_existing_settings() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "invert_y = true\n").expect("write existing settings");
+
+        let generated = load_player_options(Some(&path));
+        assert!(generated.invert_y);
+        assert!(generated.player_id.is_some());
+
+        let reloaded = options::PlayerOptions::load(&path);
+        assert_eq!(reloaded.player_id, generated.player_id);
+    }
+
+    #[test]
+    fn session_options_connect_anonymously_without_persistent_settings() {
+        let player_options = load_player_options(None);
+
+        assert_eq!(player_options.player_id, None);
+    }
+
+    #[test]
+    fn session_options_leave_malformed_settings_anonymous_and_untouched() {
+        let dir = tempdir().expect("temporary settings directory");
+        let path = dir.path().join("settings.toml");
+        let malformed = "this is not valid toml = = =\n";
+        std::fs::write(&path, malformed).expect("write malformed settings");
+
+        let player_options = load_player_options(Some(&path));
+
+        assert_eq!(player_options.player_id, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read malformed settings"),
+            malformed
+        );
+    }
+
+    // Regression: session-id entropy failure used to abort engine boot.
+    #[test]
+    fn session_identity_failure_keeps_local_carry_ledger_but_is_not_network_safe() {
+        let mut net_endpoint = Some(());
+        let (seats, identity_error) = authority_seat_table_or_local_only(
+            &mut net_endpoint,
+            std::result::Result::<netcode::SeatTable, _>::Err("entropy unavailable"),
+        );
+
+        assert_eq!(identity_error, Some("entropy unavailable"));
+        assert_eq!(net_endpoint, None, "failed identity disables the endpoint");
+        assert_eq!(
+            seats.session_id_for_test(),
+            postretro_net::wire::SessionId([0; 16])
+        );
+        assert_eq!(
+            seats.roster_entries_for_test(),
+            vec![postretro_net::wire::RosterEntry {
+                seat: 0,
+                connected: true,
+            }],
+            "single-player carry still owns local seat zero"
         );
     }
 }

@@ -531,7 +531,7 @@ mod tests {
             let path = dir.path().join("settings.toml");
             fs::write(
                 &path,
-                &format!("invert_y = true\nsurface_depth_quality = \"{retired}\"\n"),
+                format!("invert_y = true\nsurface_depth_quality = \"{retired}\"\n"),
             )
             .unwrap();
 

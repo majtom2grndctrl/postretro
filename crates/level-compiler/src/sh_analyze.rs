@@ -3588,10 +3588,10 @@ mod tests {
         // Trilinear from the 8 corners must reproduce it exactly.
         let texels = 4;
         let mut tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
-        for local in 0..PROBES_PER_CELL {
+        for (local, tile) in tiles.iter_mut().enumerate() {
             let (lx, _ly, _lz) = local_xyz(local);
             let val = 10.0 + lx as f32 * 2.0; // linear in x only
-            tiles[local] = Some(vec![Vec3::splat(val); texels]);
+            *tile = Some(vec![Vec3::splat(val); texels]);
         }
         for target in 0..PROBES_PER_CELL {
             let recon = reconstruct_l1_tile(&tiles, target, texels).unwrap();

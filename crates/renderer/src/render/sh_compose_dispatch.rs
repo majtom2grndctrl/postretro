@@ -323,8 +323,9 @@ mod tests {
     fn gather_records_honor_non_256_dynamic_offset_alignment() {
         let rows = [0, 1];
         for alignment in [64, 384] {
-            let stride = (u32::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE).unwrap() + alignment - 1)
-                / alignment
+            let stride = u32::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE)
+                .unwrap()
+                .div_ceil(alignment)
                 * alignment;
             let upload = build_dynamic_compose_grid_upload_for_rows(
                 grid(2),

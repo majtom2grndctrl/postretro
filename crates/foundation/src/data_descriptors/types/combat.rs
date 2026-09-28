@@ -1295,7 +1295,8 @@ mod tests {
         descriptor.resolution = ResolutionMode::Projectile;
         descriptor.projectile = Some(projectile_descriptor());
 
-        let invalid_shapes: [(&str, fn(&mut ProjectileDescriptor)); 9] = [
+        type InvalidShapeCase = (&'static str, fn(&mut ProjectileDescriptor));
+        let invalid_shapes: [InvalidShapeCase; 9] = [
             ("body.sprite", |projectile| {
                 let ProjectileBodyVisual::Sprite { sprite, .. } = &mut projectile.visual.body
                 else {

@@ -2212,11 +2212,11 @@ mod tests {
             + glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4) * glam::Vec3::X;
 
         assert!(
-            packed_dynamic_position(&update.lights_bytes).distance(expected) <= 1.0e-6,
+            packed_dynamic_position(update.lights_bytes).distance(expected) <= 1.0e-6,
             "carrier pose overrides the light's own follow-transform pose"
         );
         assert!(
-            packed_dynamic_influence_center(&update.influence_bytes).distance(expected) <= 1.0e-6,
+            packed_dynamic_influence_center(update.influence_bytes).distance(expected) <= 1.0e-6,
             "carrier pose relocates the matching dynamic-light influence"
         );
     }
@@ -2252,8 +2252,8 @@ mod tests {
         let update = bridge
             .update(&mut registry, 0.0, 1.0)
             .expect("initial bridge update should pack the light");
-        let packed_position = packed_dynamic_position(&update.lights_bytes);
-        let packed_influence = packed_dynamic_influence_center(&update.influence_bytes);
+        let packed_position = packed_dynamic_position(update.lights_bytes);
+        let packed_influence = packed_dynamic_influence_center(update.influence_bytes);
 
         assert!(packed_position.is_finite());
         assert!(packed_influence.is_finite());
@@ -2320,7 +2320,7 @@ mod tests {
             .update(&mut registry, 0.0, zero_tick_alpha)
             .expect("first bridge update packs the bound carrier");
         assert!(
-            packed_dynamic_position(&zero_tick_update.lights_bytes).distance(zero_tick_expected)
+            packed_dynamic_position(zero_tick_update.lights_bytes).distance(zero_tick_expected)
                 <= 1.0e-6,
             "zero-tick render frame must compose from the mover's spawn pose"
         );
@@ -2342,12 +2342,12 @@ mod tests {
             .update(&mut registry, 0.0, two_tick_alpha)
             .expect("mover movement makes the carrier upload dirty");
         assert!(
-            packed_dynamic_position(&two_tick_update.lights_bytes).distance(two_tick_expected)
+            packed_dynamic_position(two_tick_update.lights_bytes).distance(two_tick_expected)
                 <= 1.0e-6,
             "two-tick render frame must match geometry's interpolated mover pose"
         );
         assert!(
-            packed_dynamic_influence_center(&two_tick_update.influence_bytes)
+            packed_dynamic_influence_center(two_tick_update.influence_bytes)
                 .distance(two_tick_expected)
                 <= 1.0e-6,
             "two-tick light influence must share the geometry-matched position"
@@ -2421,7 +2421,7 @@ mod tests {
             .update(&mut registry, 0.0, reversal_alpha)
             .expect("reversal movement repacks the carried light");
         assert!(
-            packed_dynamic_position(&reversal_update.lights_bytes).distance(reversal_expected)
+            packed_dynamic_position(reversal_update.lights_bytes).distance(reversal_expected)
                 <= 1.0e-6,
             "the light must remain on the interpolation path through reversal"
         );
@@ -2443,11 +2443,11 @@ mod tests {
             .update(&mut registry, 0.0, 0.5)
             .expect("the stop frame changes the followed pose from the reversal blend");
         assert!(
-            packed_dynamic_position(&stop_update.lights_bytes).distance(stop_expected) <= 1.0e-6,
+            packed_dynamic_position(stop_update.lights_bytes).distance(stop_expected) <= 1.0e-6,
             "a stopped mover keeps its composed carrier position"
         );
         assert!(
-            packed_dynamic_position(&stop_update.lights_bytes).distance(glam::Vec3::splat(50.0))
+            packed_dynamic_position(stop_update.lights_bytes).distance(glam::Vec3::splat(50.0))
                 > 1.0,
             "a stop must never snap the light back to its authored origin"
         );
@@ -2528,7 +2528,7 @@ mod tests {
             .expect("completion frame packs the terminus pose");
         let terminus = glam::Vec3::new(2.0, 0.0, 1.0);
         assert!(
-            packed_dynamic_position(&terminus_update.lights_bytes).distance(terminus) <= 1.0e-6,
+            packed_dynamic_position(terminus_update.lights_bytes).distance(terminus) <= 1.0e-6,
             "completion frame must publish the composed terminus position"
         );
 
@@ -2590,16 +2590,16 @@ mod tests {
         let expected_position = interpolated_mover_position + local_offset;
 
         assert!(
-            packed_dynamic_position(&update.lights_bytes).distance(expected_position) <= 1.0e-6,
+            packed_dynamic_position(update.lights_bytes).distance(expected_position) <= 1.0e-6,
             "carried spot position must use the translating mover's interpolated pose"
         );
         assert!(
-            packed_dynamic_influence_center(&update.influence_bytes).distance(expected_position)
+            packed_dynamic_influence_center(update.influence_bytes).distance(expected_position)
                 <= 1.0e-6,
             "the carried spot's culling influence must follow its packed position"
         );
         assert!(
-            packed_dynamic_direction(&update.lights_bytes).distance(authored_aim) <= 1.0e-6,
+            packed_dynamic_direction(update.lights_bytes).distance(authored_aim) <= 1.0e-6,
             "a translating mover must not rotate a carried spot's authored world-space cone aim"
         );
     }
@@ -2647,16 +2647,16 @@ mod tests {
             + glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4) * local_offset;
 
         assert!(
-            packed_dynamic_position(&update.lights_bytes).distance(expected_position) <= 1.0e-6,
+            packed_dynamic_position(update.lights_bytes).distance(expected_position) <= 1.0e-6,
             "a carried omni must orbit with the mover's interpolated rotation"
         );
         assert!(
-            packed_dynamic_influence_center(&update.influence_bytes).distance(expected_position)
+            packed_dynamic_influence_center(update.influence_bytes).distance(expected_position)
                 <= 1.0e-6,
             "the orbiting omni's culling influence must share its moved center"
         );
         assert!(
-            (packed_dynamic_position(&update.lights_bytes)
+            (packed_dynamic_position(update.lights_bytes)
                 .distance(glam::Vec3::new(3.0, 2.0, -1.0))
                 - local_offset.length())
             .abs()
@@ -2706,14 +2706,14 @@ mod tests {
         let update = bridge
             .update(&mut registry, 0.0, 0.0)
             .expect("far-moved carried light is packed");
-        let moved_center = packed_dynamic_influence_center(&update.influence_bytes);
+        let moved_center = packed_dynamic_influence_center(update.influence_bytes);
         let reachable_receiver = [(
             glam::Vec3::new(99.0, -1.0, -1.0),
             glam::Vec3::new(103.0, 1.0, 1.0),
         )];
 
         assert!(
-            packed_dynamic_position(&update.lights_bytes).distance(moved_center) <= 1.0e-6,
+            packed_dynamic_position(update.lights_bytes).distance(moved_center) <= 1.0e-6,
             "the direct-light record and culling influence must agree on the carried position"
         );
         assert!(
@@ -3828,7 +3828,7 @@ mod tests {
     #[test]
     fn runtime_light_churn_far_past_reserve_reuses_peak_concurrent_slots() {
         const CONCURRENT_LIGHTS: usize = 3;
-        assert!(CONCURRENT_LIGHTS < RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        const { assert!(CONCURRENT_LIGHTS < RUNTIME_DYNAMIC_LIGHT_RESERVE) };
 
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
@@ -4658,7 +4658,7 @@ mod tests {
         assert!(first.has_dirty_data);
         assert_eq!(first.lights_bytes.len(), GPU_LIGHT_SIZE);
         assert!(
-            packed_dynamic_direction(&first.lights_bytes).distance(authored_rest_direction)
+            packed_dynamic_direction(first.lights_bytes).distance(authored_rest_direction)
                 <= 1.0e-6,
             "the injected promoted light must hold its authored rest direction",
         );

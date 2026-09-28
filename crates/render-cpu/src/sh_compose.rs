@@ -836,7 +836,7 @@ mod tests {
         assert!(
             (1..tile_texels)
                 .step_by(2)
-                .all(|texel| texel * DELTA_TILE_TEXEL_F16_COUNT & 1 == 1),
+                .all(|texel| (texel * DELTA_TILE_TEXEL_F16_COUNT) & 1 == 1),
             "every odd texel starts at an odd half offset with RGB stride three",
         );
         assert_ne!(

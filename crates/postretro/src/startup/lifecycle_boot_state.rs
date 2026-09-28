@@ -48,6 +48,15 @@ impl App {
             self.drain_level_requests();
         }
 
+        // Splash and Loading frames draw no UI, so UI input that reached them
+        // is dropped here rather than delivered to the first frame that does.
+        if matches!(
+            self.boot_state,
+            BootState::Booting | BootState::Splash | BootState::Loading
+        ) {
+            self.drop_ui_input_on_non_ui_frame();
+        }
+
         match self.boot_state {
             BootState::Booting => {
                 // A `RedrawRequested` queued before `resumed()` (or after

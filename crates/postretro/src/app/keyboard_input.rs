@@ -64,6 +64,17 @@ impl App {
                 self.handle_diagnostic_action(action);
             }
 
+            // The accessibility panel's global input reads ahead of text entry
+            // and every tree: F1 is never typed, never a nav intent, never
+            // forwarded to gameplay.
+            if code == crate::app::global_input::PANEL_TOGGLE_KEY {
+                if crate::app::global_input::is_panel_toggle_press(code, pressed, key_event.repeat)
+                {
+                    self.request_panel_toggle();
+                }
+                return;
+            }
+
             // UI-dispatch seam, ahead of the gameplay forward and
             // mirroring the `egui_consumed` gate: when the active UI
             // layer is in Capture mode the event is consumed (queued
@@ -190,7 +201,9 @@ impl App {
             if record_nav_signal {
                 self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
             }
-            if set_menu_toggle {
+            // Splash and Loading frames draw no UI; a menu toggle pressed on one
+            // is dropped, not latched for the first frame that does.
+            if set_menu_toggle && self.boot_state_accepts_ui_input() {
                 self.pending_menu_toggle = true;
             }
         }

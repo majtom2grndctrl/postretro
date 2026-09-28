@@ -1629,6 +1629,7 @@ pub(crate) mod tests {
             switching: Default::default(),
             pending_mode_signal: None,
             pending_menu_toggle: false,
+            pending_panel_toggle: false,
             accessibility_panel_was_open: false,
             pending_exit_to_desktop: false,
             ui_focused_id: None,

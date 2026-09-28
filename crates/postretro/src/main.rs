@@ -808,6 +808,11 @@ pub(crate) struct App {
     /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
     pending_menu_toggle: bool,
 
+    /// The accessibility panel's global input (F1, gamepad Select) was pressed
+    /// this frame's Input stage. Applied in game logic; never latched across a
+    /// frame that draws no UI.
+    pending_panel_toggle: bool,
+
     /// Whether the engine accessibility panel was on the stack at the last
     /// options update, so any close path is noticed once.
     accessibility_panel_was_open: bool,
@@ -2111,7 +2116,7 @@ impl ApplicationHandler for App {
                 // session is installed. Disjoint borrows of the session group and
                 // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
                 // votes are collected and applied after the borrow ends.
-                let (gamepad_nav_seen, gamepad_menu_toggle) = {
+                let (gamepad_nav_seen, gamepad_menu_toggle, gamepad_panel_toggle) = {
                     let App {
                         session,
                         nav_stick_tracker,
@@ -2119,6 +2124,7 @@ impl ApplicationHandler for App {
                     } = self;
                     let mut nav_seen = false;
                     let mut menu_toggle = false;
+                    let mut panel_toggle = false;
                     if let Some(session) = session.as_mut() {
                         if let Some(gp) = session.gamepad_system.as_mut() {
                             let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
@@ -2148,6 +2154,13 @@ impl ApplicationHandler for App {
                                     menu_toggle = true;
                                     continue;
                                 }
+                                // `nav.options` is the panel's global input: the
+                                // App consumes it ahead of the capture gate and
+                                // slider capture, so no tree claims it.
+                                if intent == input::NavIntent::Options {
+                                    panel_toggle = true;
+                                    continue;
+                                }
                                 if capture {
                                     session
                                         .ui_dispatch
@@ -2156,13 +2169,16 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    (nav_seen, menu_toggle)
+                    (nav_seen, menu_toggle, panel_toggle)
                 };
                 if gamepad_nav_seen {
                     self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
                 }
                 if gamepad_menu_toggle {
                     self.pending_menu_toggle = true;
+                }
+                if gamepad_panel_toggle {
+                    self.request_panel_toggle();
                 }
 
                 // Resolve this frame's input-mode signal into the engine-owned
@@ -2302,15 +2318,20 @@ impl ApplicationHandler for App {
                 // + cursor effect follows on this frame's `reconcile_ui_focus`
                 // below. The toggle flag is a punch-through from gameplay;
                 // `cancelled` rides the captured-intent queue.
+                //
+                // The accessibility panel's global input applies first; while the
+                // panel is the active tree, `nav.cancel` closes it too.
+                let panel_toggled = self.apply_panel_toggle();
                 if self.pending_menu_toggle {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
-                } else if focus_result.cancelled && !text_entry_consumed_nav {
+                } else if focus_result.cancelled && !text_entry_consumed_nav && !panel_toggled {
                     let close_frontend_submenu =
                         self.frontend_menu_is_present() && !self.frontend_menu_is_top();
                     if let Some(session) = self.session.as_mut() {
-                        if session.modal_stack.active_name()
-                            == Some(postretro_ui::demo::PAUSE_MENU_NAME)
+                        let active = session.modal_stack.active_name();
+                        if active == Some(postretro_ui::demo::PAUSE_MENU_NAME)
+                            || active == Some(postretro_ui::demo::ACCESSIBILITY_PANEL_NAME)
                             || close_frontend_submenu
                         {
                             session.modal_stack.pop();
@@ -5384,7 +5405,7 @@ impl App {
         // Gamepad poll: disjoint borrows of the session group and the
         // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
         // recorded after the borrow ends.
-        let nav_input_seen = {
+        let (nav_input_seen, panel_toggle) = {
             let App {
                 session,
                 nav_stick_tracker,
@@ -5392,6 +5413,7 @@ impl App {
             } = self;
             let session = session.as_mut().expect("frontend session installed");
             let mut nav_input_seen = false;
+            let mut panel_toggle = false;
             if let Some(gp) = session.gamepad_system.as_mut() {
                 let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
                 gp.tick_rumble(frame_dt);
@@ -5407,6 +5429,10 @@ impl App {
                     if intent == input::NavIntent::Menu {
                         continue;
                     }
+                    if intent == input::NavIntent::Options {
+                        panel_toggle = true;
+                        continue;
+                    }
                     if capture {
                         session
                             .ui_dispatch
@@ -5414,10 +5440,13 @@ impl App {
                     }
                 }
             }
-            nav_input_seen
+            (nav_input_seen, panel_toggle)
         };
         if nav_input_seen {
             self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
+        }
+        if panel_toggle {
+            self.request_panel_toggle();
         }
 
         let mode_signal = self.pending_mode_signal.take();
@@ -5476,8 +5505,10 @@ impl App {
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
+        let panel_toggled = self.apply_panel_toggle();
         if focus_result.cancelled
             && !text_entry_consumed_nav
+            && !panel_toggled
             && !self.frontend_menu_is_top()
             && let Some(session) = self.session.as_mut()
         {

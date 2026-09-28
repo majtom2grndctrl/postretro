@@ -46,6 +46,11 @@ mod ui;
 
 #[cfg(test)]
 mod curve_eval_test;
+/// Shared headless GPU harness for offscreen readback tests: the `pollster`
+/// device init (self-skip on no adapter) and texture readback. See
+/// `testing_guide.md` §3/§4.
+#[cfg(test)]
+pub(crate) mod gpu_test_harness;
 #[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]

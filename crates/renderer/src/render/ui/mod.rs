@@ -24,13 +24,6 @@ pub(crate) use postretro_ui::{
     UiDrawList, UiInstance, UiReadSnapshot, UiRingInstance, UiText, UiUniform, descriptor, layout,
     theme, tree,
 };
-/// Shared headless GPU harness for the UI offscreen golden tests: the
-/// `pollster` device init (self-skip on no adapter) and the offscreen-texture
-/// readback. Used by `multi_batch_test` and `multi_layer_text_golden_test`.
-/// See `testing_guide.md` §3/§4.
-#[cfg(test)]
-mod gpu_test_harness;
-
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
 /// its own batch's color. Self-skips when no GPU adapter is present.

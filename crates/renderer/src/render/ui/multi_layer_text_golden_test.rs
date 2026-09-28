@@ -27,7 +27,7 @@
 // See: context/lib/testing_guide.md §3, context/lib/ui.md
 
 use super::descriptor::{AnchoredTree, ColorValue, TextWidget, Widget};
-use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::layout::Anchor;
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData};

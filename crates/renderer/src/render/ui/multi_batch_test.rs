@@ -16,7 +16,7 @@
 // precedent); self-skips when no GPU adapter is present so it can never be the
 // thing that fails CI.
 
-use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::{UiBatch, UiComposition, UiDrawList, UiInstance, UiPass};
 
 /// Offscreen target size. Even width so the left/right halves split cleanly at

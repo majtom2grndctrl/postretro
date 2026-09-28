@@ -1,14 +1,14 @@
-// Shared headless GPU harness for the UI pass's offscreen golden tests.
+// Shared headless GPU harness for the renderer's offscreen readback tests.
 //
-// The UI golden tests (`multi_batch_test`, `multi_layer_text_golden_test`) all
-// need the same three things: a `pollster`
+// The UI goldens and the screen-effects limiter tests all need the same three
+// things: a `pollster`
 // headless `wgpu::Device`/`Queue` that self-skips when no adapter is present, an
 // offscreen-texture readback that copies to a mappable buffer (256-byte row
 // alignment), maps, and de-pads to a tight RGBA8 grid, and a `Readback` accessor
 // over that grid. These were duplicated across the test modules (with two
 // divergent `Readback` shapes); per testing_guide §4 ("Multiple test modules
 // need the same builders" → extract into a `#[cfg(test)]` sibling) they live
-// here once, and every UI golden migrates onto this single copy.
+// here once, at the `render/` root so any pass's tests can reach it.
 //
 // No GPU context in CI is the norm (testing_guide §3): `try_init_gpu` returns
 // `None` so each test self-skips rather than failing for adapter absence.
@@ -23,7 +23,7 @@ pub(crate) struct GpuCtx {
 }
 
 /// Build a headless device, or `None` when no adapter is available (the
-/// headless-CI case). Every UI golden self-skips on `None` so adapter absence
+/// headless-CI case). Every caller self-skips on `None` so adapter absence
 /// can never be the thing that fails CI.
 pub(crate) fn try_init_gpu() -> Option<GpuCtx> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -37,7 +37,7 @@ pub(crate) fn try_init_gpu() -> Option<GpuCtx> {
     }))
     .ok()?;
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("UI golden test Device"),
+        label: Some("GPU test harness Device"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),
         ..Default::default()
@@ -85,7 +85,7 @@ pub(crate) fn read_texture_rgba8(
     let padded = unpadded.div_ceil(align) * align;
 
     let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("UI golden readback"),
+        label: Some("GPU test harness readback"),
         size: (padded * height) as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,

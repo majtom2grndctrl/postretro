@@ -39,6 +39,7 @@ read at: 683e363ba
   - Player spawn, vsync on: total 21.0 ms, work 20.8 ms, wait 0.18 ms (acquire 0.05, present 0.14), unattributed 0.016 ms. `rec_pre_scene` 13.8 ms (66% of work); render 17.3, render_prep 2.1, fixed_step 1.2 (`sim_steering` 0.86); portal_walk 0.037 ms at 136 considered.
   - Big arena under the purple light, vsync off: total 26.0 ms, work 25.9 ms, unattributed 0.016 ms. `rec_pre_scene` 18.1 ms (70% of work); fixed_step 1.4 (`sim_steering` 1.05); portal_walk 0.185 ms at 950 considered (≈0.2 µs/portal).
   - Provisional gate reading: walk 0.185 ms < 0.5 ms and 0.7% of work < 5%, in a dev build; a release run can only lower it. Formal verdict still at the `stress-warren-mini` probe in release.
+  - After the split, same arena pose, vsync on: work 25.7 ms, wait 0.19 ms, unattributed 0.017 ms. `rec_pre_scene` 17.9 ms = `rec_sh_compose_prep` **14.06 ms (55% of work)** + `rec_sh_compose` 1.45 + `rec_direct_sh` 1.44 + `rec_cull` 0.82 (of which `rec_cull_diagnostics` 0.75) + `rec_animated_lm` 0.12. fixed_step 1.42 (`sim_steering` 1.05); portal_walk 0.188 ms at 961 considered. Next target: SH streaming compose planning (`ShResidencyState::prepare_compose_frame`), handed to a new `/draft-session`.
   - `rec_pre_scene` was one scope over several passes, against the brief's one-scope-per-pass Decision; split into `rec_sh_compose_prep`, `rec_cull` (with `rec_cull_diagnostics`: CPU leaf walks that only feed diagnostics — `count_submitted_*` run in every build), `rec_animated_lm`, `rec_sh_compose`, `rec_direct_sh`.
 
 ## Delegated answers

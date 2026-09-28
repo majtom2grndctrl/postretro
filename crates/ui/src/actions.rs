@@ -40,6 +40,23 @@ pub fn parse_accessibility_field_action(on_press: &str) -> Option<AccessibilityF
         .then_some(AccessibilityFieldAction { op, field })
 }
 
+/// Whether any button in `tree` fires `on_press`.
+pub fn tree_has_button_action(tree: &crate::descriptor::AnchoredTree, on_press: &str) -> bool {
+    use crate::descriptor::Widget;
+    fn visit(widget: &Widget, on_press: &str) -> bool {
+        match widget {
+            Widget::Button(button) => button.on_press == on_press,
+            Widget::VStack(container) | Widget::HStack(container) => container
+                .children
+                .iter()
+                .any(|child| visit(child, on_press)),
+            Widget::Grid(grid) => grid.children.iter().any(|child| visit(child, on_press)),
+            _ => false,
+        }
+    }
+    visit(&tree.root, on_press)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

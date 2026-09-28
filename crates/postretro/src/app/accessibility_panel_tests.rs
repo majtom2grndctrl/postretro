@@ -350,3 +350,64 @@ fn an_unreadable_settings_file_is_never_replaced_by_panel_writes_or_close() {
     app.update_player_options(0.0, false);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), malformed);
 }
+
+/// A registered menu tree: with or without an accessibility entry button.
+fn menu(with_entry: bool) -> postretro_ui::descriptor::AnchoredTree {
+    let mut tree = postretro_ui::demo::build_frontend_menu_descriptor();
+    if !with_entry {
+        let postretro_ui::descriptor::Widget::VStack(root) = &mut tree.root else {
+            panic!("fallback frontend root is a vstack");
+        };
+        root.children.pop();
+    }
+    tree
+}
+
+#[test]
+fn a_frontend_or_pause_tree_without_an_accessibility_entry_warns_naming_it() {
+    use super::accessibility_panel::warn_missing_accessibility_entries;
+    use postretro_ui::demo::{FRONTEND_MENU_NAME, PAUSE_MENU_NAME};
+    use postretro_ui::modal_stack::ModalStack;
+
+    let warning =
+        |name: &str| format!("tree '{name}' has no button whose onPress is 'ui.openAccessibility'");
+    let mut stack = ModalStack::new();
+    stack
+        .registry_mut()
+        .register(FRONTEND_MENU_NAME, menu(true), ScopeTier::Engine, false);
+    stack
+        .registry_mut()
+        .register(PAUSE_MENU_NAME, menu(true), ScopeTier::Engine, false);
+
+    // Engine fallbacks carry the entry: silent.
+    let capture = LogCapture::start();
+    warn_missing_accessibility_entries(&stack, FRONTEND_MENU_NAME, None);
+    capture.assert_not_logged(Level::Warn, "has no button whose onPress");
+
+    // UO8: a staged reload retargets `frontend.menuTree` to a mod tree without
+    // the button; the check names that tree, not the previous one.
+    stack
+        .registry_mut()
+        .register("titleV2", menu(false), ScopeTier::Mod, false);
+    stack
+        .registry_mut()
+        .register(PAUSE_MENU_NAME, menu(false), ScopeTier::Mod, false);
+    capture.clear();
+    warn_missing_accessibility_entries(&stack, "titleV2", None);
+    capture.assert_logged_once(Level::Warn, &warning("titleV2"));
+    capture.assert_logged_once(Level::Warn, &warning(PAUSE_MENU_NAME));
+    capture.assert_not_logged(Level::Warn, &warning(FRONTEND_MENU_NAME));
+
+    // A reload that adds the button draws no warning for that tree.
+    stack
+        .registry_mut()
+        .register("titleV2", menu(true), ScopeTier::Mod, false);
+    capture.clear();
+    warn_missing_accessibility_entries(&stack, "titleV2", None);
+    capture.assert_not_logged(Level::Warn, &warning("titleV2"));
+
+    // Level load checks only level-scope trees.
+    capture.clear();
+    warn_missing_accessibility_entries(&stack, "titleV2", Some(ScopeTier::Level));
+    capture.assert_not_logged(Level::Warn, "has no button whose onPress");
+}

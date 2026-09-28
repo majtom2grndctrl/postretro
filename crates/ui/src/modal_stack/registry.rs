@@ -121,6 +121,14 @@ impl UiTreeRegistry {
         hide_below: bool,
     ) {
         let name = name.into();
+        // Every registration path — mod init, level load, staged reload — lands
+        // here, so the accessibility panel's reserved name is enforced once.
+        if name == crate::demo::ACCESSIBILITY_PANEL_NAME && tier != ScopeTier::Engine {
+            log::warn!(
+                "[UI] rejected {tier:?}-scope tree '{name}': the name is reserved for the engine accessibility panel"
+            );
+            return;
+        }
         // Registration is the one build-time point that knows the tree's name, so
         // focus-authoring diagnostics fire here rather than per push or per frame.
         crate::tree::warn_focus_authoring(&name, &tree);

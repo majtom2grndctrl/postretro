@@ -780,6 +780,16 @@ impl App {
                 }
             },
         );
+        crate::app::accessibility_panel::warn_missing_accessibility_entries(
+            &session.modal_stack,
+            session
+                .frontend
+                .as_ref()
+                .map_or(postretro_ui::demo::FRONTEND_MENU_NAME, |f| {
+                    f.menu_tree.as_str()
+                }),
+            Some(postretro_ui::modal_stack::ScopeTier::Level),
+        );
 
         // Lights are installed before movers. This synchronous pass is the
         // only windowed binding funnel, so it runs before the first

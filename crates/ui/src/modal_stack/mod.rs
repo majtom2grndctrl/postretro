@@ -109,6 +109,11 @@ impl ModalStack {
         self.stack.clear();
     }
 
+    /// The tree `name` resolves to by tier precedence, with that tier.
+    pub fn resolve_with_tier(&self, name: &str) -> Option<(ScopeTier, &AnchoredTree)> {
+        self.registry.resolve_with_tier(name)
+    }
+
     /// Read a registered tree by `name`, or `None` if no such name is registered.
     /// Public `&self` read seam onto the registry's tiered resolution: keeps
     /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The
@@ -1098,6 +1103,71 @@ mod tests {
             stack.entries()[0].descriptor.root,
             identified(CaptureMode::Passthrough, "dialogV2").root,
             "reopening resolves the updated registry entry",
+        );
+    }
+
+    /// Hub AC 11: a mod- or level-scope tree under the panel's reserved name is
+    /// rejected on every registration path, and the engine panel remains. Other
+    /// built-in names keep their shadowing.
+    #[test]
+    fn the_accessibility_panel_name_is_reserved_on_every_registration_path() {
+        use crate::demo::{ACCESSIBILITY_PANEL_NAME, PAUSE_MENU_NAME};
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let engine = tree(CaptureMode::Capture);
+        let impostor = AnchoredTree {
+            capture_mode: CaptureMode::Passthrough,
+            ..tree(CaptureMode::Capture)
+        };
+        let script = |name: &str| RegisteredUiTree {
+            name: name.to_string(),
+            tree: impostor.clone(),
+            always_on: false,
+            hide_below: false,
+        };
+
+        let capture = LogCapture::start();
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            ACCESSIBILITY_PANEL_NAME,
+            engine.clone(),
+            ScopeTier::Engine,
+            false,
+        );
+        stack
+            .registry_mut()
+            .register(PAUSE_MENU_NAME, engine.clone(), ScopeTier::Engine, false);
+
+        stack.register_script_trees([script(ACCESSIBILITY_PANEL_NAME)], ScopeTier::Mod);
+        stack.register_script_trees([script(ACCESSIBILITY_PANEL_NAME)], ScopeTier::Level);
+        stack.replace_script_tree_tier(
+            [script(ACCESSIBILITY_PANEL_NAME), script(PAUSE_MENU_NAME)],
+            ScopeTier::Mod,
+        );
+
+        let (tier, panel) = stack.resolve_with_tier(ACCESSIBILITY_PANEL_NAME).unwrap();
+        assert_eq!(tier, ScopeTier::Engine);
+        assert_eq!(
+            panel.capture_mode,
+            CaptureMode::Capture,
+            "the engine panel remains"
+        );
+        let (pause_tier, _) = stack.resolve_with_tier(PAUSE_MENU_NAME).unwrap();
+        assert_eq!(pause_tier, ScopeTier::Mod, "pauseMenu still shadows");
+
+        let rejections = capture
+            .records()
+            .iter()
+            .filter(|r| {
+                r.level == Level::Warn
+                    && r.message
+                        .contains("reserved for the engine accessibility panel")
+            })
+            .count();
+        assert_eq!(
+            rejections, 3,
+            "mod init, level load and staged reload each warn"
         );
     }
 }

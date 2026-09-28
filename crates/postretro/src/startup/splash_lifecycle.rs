@@ -409,6 +409,16 @@ impl App {
                 if let Some(frontend) = committed_frontend {
                     session.frontend = frontend;
                 }
+                crate::app::accessibility_panel::warn_missing_accessibility_entries(
+                    &session.modal_stack,
+                    session
+                        .frontend
+                        .as_ref()
+                        .map_or(postretro_ui::demo::FRONTEND_MENU_NAME, |f| {
+                            f.menu_tree.as_str()
+                        }),
+                    None,
+                );
 
                 if session
                     .state_store_lifecycle

@@ -9,6 +9,40 @@ use postretro_ui::tree::FocusRectOwner;
 
 use crate::*;
 
+/// Warn once per check for each mod- or level-scope frontend menu or
+/// `pauseMenu` tree that carries no `ui.openAccessibility` button. Runs after
+/// trees and the frontend declaration commit — mod init, level load, staged
+/// reload — so it reads the committed declaration. Engine fallbacks carry the
+/// entry already. `only_tier` limits the check to trees resolving at that tier
+/// (level load checks only the level's own trees, so a mod tree is not
+/// re-warned on every map).
+pub(crate) fn warn_missing_accessibility_entries(
+    modal_stack: &postretro_ui::modal_stack::ModalStack,
+    frontend_menu_tree: &str,
+    only_tier: Option<ScopeTier>,
+) {
+    for (role, name) in [
+        ("frontend menu", frontend_menu_tree),
+        ("pause menu", postretro_ui::demo::PAUSE_MENU_NAME),
+    ] {
+        let Some((tier, tree)) = modal_stack.resolve_with_tier(name) else {
+            continue;
+        };
+        if tier == ScopeTier::Engine
+            || only_tier.is_some_and(|only| only != tier)
+            || postretro_ui::actions::tree_has_button_action(
+                tree,
+                postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION,
+            )
+        {
+            continue;
+        }
+        log::warn!(
+            "[UI] {role} tree '{name}' has no button whose onPress is 'ui.openAccessibility'; add one so players can reach the accessibility panel from it. Players can still open the panel with F1 or gamepad Select/Back."
+        );
+    }
+}
+
 impl App {
     /// `ui.openAccessibility`: push the engine panel over whatever shows. A
     /// panel already on the stack is not pushed twice.

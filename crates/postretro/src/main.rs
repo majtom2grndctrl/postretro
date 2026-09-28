@@ -5160,6 +5160,13 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.frontend = frontend;
         }
+        if let Some(session) = self.session.as_ref() {
+            crate::app::accessibility_panel::warn_missing_accessibility_entries(
+                &session.modal_stack,
+                self.frontend_menu_tree_name(),
+                None,
+            );
+        }
         if frontend_was_top || self.boot_state == BootState::Frontend {
             self.present_frontend_menu();
         }

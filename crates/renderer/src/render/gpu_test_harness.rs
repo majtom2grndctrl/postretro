@@ -1,7 +1,6 @@
 // Shared headless GPU harness for the renderer's offscreen readback tests.
 //
-// The UI goldens and the screen-effects limiter tests all need the same three
-// things: a `pollster`
+// The UI goldens all need the same three things: a `pollster`
 // headless `wgpu::Device`/`Queue` that self-skips when no adapter is present, an
 // offscreen-texture readback that copies to a mappable buffer (256-byte row
 // alignment), maps, and de-pads to a tight RGBA8 grid, and a `Readback` accessor

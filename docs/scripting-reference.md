@@ -2443,7 +2443,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
 | `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
 | `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway) scale. |
-| `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. |
+| `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |
 

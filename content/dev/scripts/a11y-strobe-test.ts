@@ -1,12 +1,15 @@
-// Flash-limiter strobe fixture for `a11y-strobe-test.map`. Each floor pad plays
-// one strobe for three seconds on entry, so the flash limiter can be judged on
-// hardware (hub AC 5 and 6, X1). The map sits outside the catalog; no player
-// payload ships it.
+// Photosensitivity strobe fixture for `a11y-strobe-test.map`. Each floor pad
+// plays one strobe for three seconds on entry, so limiting can be judged on
+// hardware. The map sits outside the catalog; no player payload ships it.
+//
+// Pads 1-2 exercise the flash limiter's channel clamp. Pads 3-6 strobe sources
+// the limiter does not cover today; they stay as the first fixtures for the
+// planned source-level floor.
 //
 // Pads, west to east:
 //   1. full-screen `screen.flash`, white, 10 Hz
 //   2. full-screen `screen.flash`, saturated red, 5 Hz
-//   3. UI panel below the flash-area threshold (~4% of the screen), 10 Hz
+//   3. UI panel below the WCAG flash-area threshold (~4% of the screen), 10 Hz
 //   4. UI panel above the threshold (~21% of the screen), 10 Hz
 //   5. light animation, square wave, 8 Hz
 //   6. light animation, 5 Hz sine

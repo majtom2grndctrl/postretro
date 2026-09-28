@@ -15,7 +15,6 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
-mod flash_limiter;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
@@ -47,8 +46,6 @@ mod ui;
 
 #[cfg(test)]
 mod curve_eval_test;
-#[cfg(test)]
-mod flash_limiter_test;
 /// Shared headless GPU harness for offscreen readback tests: the `pollster`
 /// device init (self-skip on no adapter) and texture readback. See
 /// `testing_guide.md` §3/§4.
@@ -58,8 +55,6 @@ pub(crate) mod gpu_test_harness;
 mod sdf_light_select_test;
 #[cfg(test)]
 mod shadowmask_sample_test;
-#[cfg(test)]
-mod wcag_flash_counter;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
 mod material_plan;

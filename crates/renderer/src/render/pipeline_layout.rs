@@ -174,10 +174,8 @@ pub(crate) const TIMING_PAIR_BLOOM: usize = 10;
 pub(crate) const TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE: usize = 11;
 pub(crate) const TIMING_PAIR_DYNAMIC_SPOT_DEPTH: usize = 12;
 pub(crate) const TIMING_PAIR_DYNAMIC_CUBE_DEPTH: usize = 13;
-pub(crate) const TIMING_PAIR_FLASH_LIMITER_MEASURE: usize = 14;
-pub(crate) const TIMING_PAIR_FLASH_LIMITER_LIMIT: usize = 15;
-pub(crate) const TIMING_PAIR_RESOLVE: usize = 16;
-pub(crate) const TIMING_PAIR_COUNT: usize = 17;
+pub(crate) const TIMING_PAIR_RESOLVE: usize = 14;
+pub(crate) const TIMING_PAIR_COUNT: usize = 15;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.

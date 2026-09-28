@@ -993,20 +993,6 @@ impl Renderer {
         // rest; timing query resolution follows it.
         drop(ui_scope);
         let _resolve_scope = cpu.scope(RenderStage::Resolve);
-        // The measure pass runs only while the limiter is on. Off, its pair is
-        // never requested, so the report shows it absent, not a zero-cost pass.
-        let measure_timestamps = full
-            .frame_timing
-            .as_ref()
-            .filter(|_| {
-                full.screen_effects
-                    .limiter_measures(&full.ui_snapshot.slot_values)
-            })
-            .map(|t| t.compute_pass_writes(TIMING_PAIR_FLASH_LIMITER_MEASURE));
-        let limit_timestamps = full
-            .frame_timing
-            .as_ref()
-            .map(|t| t.compute_pass_writes(TIMING_PAIR_FLASH_LIMITER_LIMIT));
         let resolve_timestamps = full
             .frame_timing
             .as_ref()
@@ -1017,11 +1003,7 @@ impl Renderer {
             view,
             &full.ui_snapshot.slot_values,
             full.limiter_frame.take(),
-            super::screen_effects::ResolveTimestamps {
-                measure: measure_timestamps,
-                limit: limit_timestamps,
-                resolve: resolve_timestamps,
-            },
+            resolve_timestamps,
         );
 
         if let Some(timing) = &mut full.frame_timing {
@@ -1162,8 +1144,6 @@ mod tests {
             "self.record_depth_and_sdf_passes(",
             "render_pass_writes(",
             "write_encoder_start(",
-            "compute_pass_writes(TIMING_PAIR_FLASH_LIMITER_MEASURE)",
-            "compute_pass_writes(TIMING_PAIR_FLASH_LIMITER_LIMIT)",
             "render_pass_writes(TIMING_PAIR_RESOLVE)",
             "timing.encode_resolve(encoder)",
         ] {
@@ -1177,29 +1157,14 @@ mod tests {
         }
     }
 
-    /// The resolve and the flash limiter's measure and limit passes each
-    /// report their own GPU timing entry under `POSTRETRO_GPU_TIMING=1`.
+    /// The resolve reports its own GPU timing entry under
+    /// `POSTRETRO_GPU_TIMING=1`.
     #[test]
-    fn the_resolve_and_the_flash_limiter_own_labeled_timing_pairs() {
-        const PAIRS: [usize; 3] = [
-            TIMING_PAIR_FLASH_LIMITER_MEASURE,
-            TIMING_PAIR_FLASH_LIMITER_LIMIT,
-            TIMING_PAIR_RESOLVE,
-        ];
-        const {
-            assert!(PAIRS[0] != PAIRS[1] && PAIRS[1] != PAIRS[2] && PAIRS[0] != PAIRS[2]);
-            assert!(PAIRS[0] < TIMING_PAIR_COUNT);
-            assert!(PAIRS[1] < TIMING_PAIR_COUNT);
-            assert!(PAIRS[2] < TIMING_PAIR_COUNT);
-        }
+    fn the_resolve_owns_a_labeled_timing_pair() {
+        const { assert!(TIMING_PAIR_RESOLVE < TIMING_PAIR_COUNT) }
         let labels = include_str!("renderer_init_resources.rs");
-        for line in [
-            "pass_labels[TIMING_PAIR_FLASH_LIMITER_MEASURE] = \"flash_limiter_measure\"",
-            "pass_labels[TIMING_PAIR_FLASH_LIMITER_LIMIT] = \"flash_limiter_limit\"",
-            "pass_labels[TIMING_PAIR_RESOLVE] = \"resolve\"",
-        ] {
-            assert!(labels.contains(line), "missing timing label `{line}`");
-        }
+        let line = "pass_labels[TIMING_PAIR_RESOLVE] = \"resolve\"";
+        assert!(labels.contains(line), "missing timing label `{line}`");
     }
 
     #[test]

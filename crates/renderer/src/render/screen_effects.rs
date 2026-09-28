@@ -5,20 +5,10 @@
 use std::collections::HashMap;
 
 use super::SCENE_COLOR_FORMAT;
-use super::flash_limiter::FlashLimiter;
 use postretro_entities::SlotValue;
 use postretro_render_cpu::flash_clamp::ChannelClamp;
 use postretro_render_cpu::flash_limiter::{LimiterFrameInput, flash_limiter_enabled};
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
-
-/// The resolve shader with the flash limiter's compute entry points appended.
-/// One module, so the limiter's measure pass and the resolve share
-/// `compose_presented` (rendering_pipeline.md §8).
-const SCREEN_EFFECTS_SHADER: &str = concat!(
-    include_str!("../shaders/screen_effects.wgsl"),
-    "\n",
-    include_str!("../shaders/flash_limiter.wgsl"),
-);
 
 /// The offscreen color target every gameplay scene + UI pass renders into, plus
 /// the fullscreen-triangle resolve pass that samples it into the swapchain.
@@ -38,9 +28,9 @@ const SCREEN_EFFECTS_SHADER: &str = concat!(
 /// math in `screen_effects.wgsl`. At-rest slot values pack to the identity
 /// uniform and every effect term ALU-collapses to a no-op after tonemapping.
 ///
-/// **Flash limiter.** Every resolve frame first runs the limiter's measure and
-/// limit dispatches, which sample `scene_color` through the same composite the
-/// resolve presents; the resolve then applies the per-cell result.
+/// **Photosensitivity limiter.** The channel clamp limits the packed flash and
+/// vignette before the uniform is written. It is CPU-only; the GPU sees an
+/// ordinary effect uniform.
 pub struct ScreenEffectsPass {
     /// Offscreen color target. The scene/UI passes render here; the resolve
     /// samples it. Recreated on resize at the surface size.
@@ -60,31 +50,9 @@ pub struct ScreenEffectsPass {
     /// the packed snapshot values; persists across resize (recreating the texture
     /// rebuilds the bind group, which re-references this buffer).
     effect_buffer: wgpu::Buffer,
-    flash_limiter: FlashLimiter,
-    /// The limiter's first stage: `screen.flash` / `screen.vignette` limited as
-    /// they pack. CPU-side history, advanced once per resolve frame.
+    /// The photosensitivity limiter: `screen.flash` / `screen.vignette` limited
+    /// as they pack. CPU-side history, advanced once per resolve frame.
     channel_clamp: ChannelClamp,
-    /// Test-only stage switches: bypass the channel clamp, or the frame
-    /// limiter, to compare each stage against the other.
-    #[cfg(test)]
-    pub(super) bypass_channel_clamp: bool,
-    #[cfg(test)]
-    pub(super) bypass_frame_limiter: bool,
-    /// The effect uniform the last resolve packed, after the channel clamp.
-    #[cfg(test)]
-    pub(super) last_packed: EffectUniform,
-}
-
-/// GPU timestamp brackets for one resolve frame: the flash limiter's measure
-/// and limit passes and the resolve itself, each its own timing pair. The
-/// measure bracket is requested only on a frame whose measure pass runs
-/// ([`ScreenEffectsPass::limiter_measures`]), so while the limiter is off its
-/// entry reports absent rather than a zero-cost pass.
-#[derive(Default)]
-pub(crate) struct ResolveTimestamps<'a> {
-    pub measure: Option<wgpu::ComputePassTimestampWrites<'a>>,
-    pub limit: Option<wgpu::ComputePassTimestampWrites<'a>>,
-    pub resolve: Option<wgpu::RenderPassTimestampWrites<'a>>,
 }
 
 impl ScreenEffectsPass {
@@ -113,7 +81,7 @@ impl ScreenEffectsPass {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -123,13 +91,13 @@ impl ScreenEffectsPass {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -158,35 +126,24 @@ impl ScreenEffectsPass {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Screen Effects Shader"),
-            source: wgpu::ShaderSource::Wgsl(SCREEN_EFFECTS_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/screen_effects.wgsl").into()),
         });
-        let flash_limiter = FlashLimiter::new(device, &shader, &bind_group_layout);
-        let resolve_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Screen Effects Resolve Pipeline Layout"),
-            bind_group_layouts: &[
-                Some(&bind_group_layout),
-                Some(flash_limiter.resolve_bind_group_layout()),
-            ],
-            immediate_size: 0,
-        });
-        let capture_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Screen Effects Capture Pipeline Layout"),
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Screen Effects Pipeline Layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
         let resolve_pipeline = create_resolve_pipeline(
             device,
-            &resolve_layout,
+            &layout,
             &shader,
-            "fs_main",
             surface_format,
             "Screen Effects Resolve Pipeline",
         );
         let capture_pipeline = create_resolve_pipeline(
             device,
-            &capture_layout,
+            &layout,
             &shader,
-            "fs_capture",
             wgpu::TextureFormat::Rgba8UnormSrgb,
             "Screen Effects Capture Tonemap Pipeline",
         );
@@ -200,14 +157,7 @@ impl ScreenEffectsPass {
             resolve_pipeline,
             capture_pipeline,
             effect_buffer,
-            flash_limiter,
             channel_clamp: ChannelClamp::default(),
-            #[cfg(test)]
-            bypass_channel_clamp: false,
-            #[cfg(test)]
-            bypass_frame_limiter: false,
-            #[cfg(test)]
-            last_packed: EffectUniform::default(),
         }
     }
 
@@ -247,11 +197,8 @@ impl ScreenEffectsPass {
     /// At rest all three effect slots collapse to no-ops (see [`pack_effect_uniform`]
     /// and the WGSL), so only the tonemap changes an at-rest scene.
     ///
-    /// Both limiter stages read one frame uniform, so they see one frame's
-    /// enable flag and time: the channel clamp limits the packed flash and
-    /// vignette, the uniform is written, and the frame limiter measures the
-    /// composite with that uniform before the resolve applies it plus the
-    /// per-cell result.
+    /// The channel clamp limits the packed flash and vignette against
+    /// `limiter_frame`'s presented-frame time before the uniform is written.
     pub(crate) fn encode_resolve(
         &mut self,
         queue: &wgpu::Queue,
@@ -259,41 +206,14 @@ impl ScreenEffectsPass {
         swapchain_view: &wgpu::TextureView,
         slot_values: &HashMap<String, SlotValue>,
         limiter_frame: LimiterFrameInput,
-        timestamps: ResolveTimestamps<'_>,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         let frame = self
-            .flash_limiter
+            .channel_clamp
             .begin_frame(limiter_frame, flash_limiter_enabled(slot_values));
         let mut uniform = pack_effect_uniform(slot_values);
-        #[cfg(test)]
-        let clamp_on = !self.bypass_channel_clamp;
-        #[cfg(not(test))]
-        let clamp_on = true;
-        if clamp_on {
-            self.channel_clamp.apply(&mut uniform, &frame);
-        }
-        #[cfg(test)]
-        {
-            self.last_packed = uniform;
-        }
+        self.channel_clamp.apply(&mut uniform, &frame);
         queue.write_buffer(&self.effect_buffer, 0, bytemuck::bytes_of(&uniform));
-
-        #[cfg(test)]
-        let frame = {
-            let mut frame = frame;
-            if self.bypass_frame_limiter {
-                frame.enabled = 0;
-            }
-            frame
-        };
-        self.flash_limiter.encode(
-            queue,
-            encoder,
-            &self.bind_group,
-            &frame,
-            timestamps.measure,
-            timestamps.limit,
-        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Screen Effects Resolve Pass"),
@@ -310,25 +230,12 @@ impl ScreenEffectsPass {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: timestamps.resolve,
+            timestamp_writes,
             ..Default::default()
         });
         pass.set_pipeline(&self.resolve_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_bind_group(1, self.flash_limiter.resolve_bind_group(), &[]);
         pass.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
-    }
-
-    /// Whether this frame's resolve runs the limiter's measure pass: only while
-    /// the limiter is on. Decided by the same fail-safe flag read as
-    /// `encode_resolve`, so a caller can skip requesting the measure pass's
-    /// timestamps on a frame it will not run.
-    pub(crate) fn limiter_measures(&self, slot_values: &HashMap<String, SlotValue>) -> bool {
-        #[cfg(test)]
-        if self.bypass_frame_limiter {
-            return false;
-        }
-        flash_limiter_enabled(slot_values)
     }
 
     /// Tonemap the raw HDR scene into the fixed RGBA8 sRGB capture format.
@@ -403,21 +310,11 @@ fn create_scene_color(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: SCENE_COLOR_FORMAT,
-        usage: scene_color_usage(),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
-}
-
-fn scene_color_usage() -> wgpu::TextureUsages {
-    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-    // Limiter GPU tests upload synthetic scene content directly.
-    if cfg!(test) {
-        usage | wgpu::TextureUsages::COPY_DST
-    } else {
-        usage
-    }
 }
 
 fn create_capture_color(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -441,7 +338,6 @@ fn create_resolve_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
-    fragment_entry: &'static str,
     target_format: wgpu::TextureFormat,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
@@ -462,7 +358,7 @@ fn create_resolve_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some(fragment_entry),
+            entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
                 blend: None,
@@ -521,90 +417,5 @@ mod tests {
             .any(|ep| ep.name == "fs_main" && ep.stage == naga::ShaderStage::Fragment);
         assert!(has_vs, "screen_effects.wgsl must export @vertex vs_main");
         assert!(has_fs, "screen_effects.wgsl must export @fragment fs_main");
-    }
-
-    /// The combined resolve + flash limiter module validates and exports every
-    /// entry point the pipelines name.
-    #[test]
-    fn screen_effects_with_flash_limiter_validates() {
-        let module = naga::front::wgsl::parse_str(super::SCREEN_EFFECTS_SHADER)
-            .expect("screen effects + flash limiter WGSL should parse");
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("screen effects + flash limiter WGSL should validate");
-        for entry in [
-            "fs_main",
-            "fs_capture",
-            "cs_measure_cells",
-            "cs_limit_cells",
-        ] {
-            assert!(
-                module.entry_points.iter().any(|ep| ep.name == entry),
-                "missing entry point {entry}"
-            );
-        }
-    }
-
-    /// The body of WGSL function `name` in `src`, from its opening brace to the
-    /// matching close.
-    fn wgsl_fn_body<'a>(src: &'a str, name: &str) -> &'a str {
-        let start = src
-            .find(&format!("fn {name}("))
-            .unwrap_or_else(|| panic!("fn {name} not found"));
-        let open = start + src[start..].find('{').expect("fn body");
-        let mut depth = 0usize;
-        for (offset, ch) in src[open..].char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &src[open..=open + offset];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("fn {name} body is unterminated");
-    }
-
-    /// The flash limiter measures exactly what the resolve presents only while
-    /// both go through one composite. Every entry point that samples the scene
-    /// must call `compose_presented` and apply none of its terms itself.
-    #[test]
-    fn measure_pass_and_resolve_compose_through_one_function() {
-        let src = super::SCREEN_EFFECTS_SHADER;
-        for entry in ["fs_main", "fs_capture", "cs_measure_cells"] {
-            let body = wgsl_fn_body(src, entry);
-            assert!(
-                body.contains("compose_presented("),
-                "{entry} must compose through compose_presented"
-            );
-            for term in [
-                "soft_knee_tonemap",
-                "effect.shake",
-                "effect.vignette",
-                "effect.flash",
-                "textureSample",
-                "textureLoad",
-            ] {
-                assert!(
-                    !body.contains(term),
-                    "{entry} applies `{term}` outside compose_presented"
-                );
-            }
-        }
-        let composite = wgsl_fn_body(src, "compose_presented");
-        for term in [
-            "soft_knee_tonemap(",
-            "effect.shake",
-            "effect.vignette",
-            "effect.flash",
-        ] {
-            assert!(composite.contains(term), "compose_presented lost `{term}`");
-        }
     }
 }

@@ -875,13 +875,10 @@ pub(crate) struct App {
     os_wait_from: Option<Instant>,
 
     /// When the App last handed the renderer a resolve frame's limiter input;
-    /// the flash limiter ages its window by presented-frame time measured from
+    /// the channel clamp ages its window by presented-frame time measured from
     /// here, splash frames included. A frame whose acquire fails still advances
     /// it: the renderer merges that frame's unconsumed input into the next.
     last_resolve_at: Option<Instant>,
-    /// When the current stretch of splash frames began, if one is presenting.
-    /// Handed to the next resolve frame so the limiter counts both load edges.
-    splash_stretch_started: Option<Instant>,
 
     /// Where boot continues when the first-launch hold ends. `Some` only
     /// during the hold.
@@ -4347,12 +4344,7 @@ impl ApplicationHandler for App {
                         frontend_menu_is_present,
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
-                    let limiter_frame = Self::next_limiter_frame(
-                        &mut self.last_resolve_at,
-                        &mut self.splash_stretch_started,
-                        renderer.splash_presented_rgb(),
-                        now,
-                    );
+                    let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, now);
                     renderer.set_limiter_frame(limiter_frame);
 
                     drop(stage_scope.take());
@@ -5391,31 +5383,21 @@ impl App {
         }
     }
 
-    /// Presented-frame time and any splash stretch for the frame about to
-    /// resolve. Time runs from the previous resolve frame, so a stretch of
-    /// splash frames (a load) ages the flash window by its whole length. The
-    /// stretch is taken here; if the frame then fails to acquire, the renderer
-    /// keeps it for the next resolve (`Renderer::set_limiter_frame`).
+    /// Presented-frame time for the frame about to resolve. Time runs from the
+    /// previous resolve frame, so a stretch of splash frames (a load) ages the
+    /// flash window by its whole length. If the frame then fails to acquire,
+    /// the renderer keeps its time for the next resolve
+    /// (`Renderer::set_limiter_frame`).
     fn next_limiter_frame(
         last_resolve_at: &mut Option<Instant>,
-        splash_stretch_started: &mut Option<Instant>,
-        splash_rgb: [f32; 3],
         now: Instant,
     ) -> postretro_render_cpu::flash_limiter::LimiterFrameInput {
-        use postretro_render_cpu::flash_limiter::{LimiterFrameInput, SplashHandOff};
-        let elapsed_seconds = last_resolve_at.map_or(
-            postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS,
-            |previous| now.saturating_duration_since(previous).as_secs_f32(),
-        );
-        *last_resolve_at = Some(now);
-        let splash = splash_stretch_started.take().map(|started| SplashHandOff {
-            rgb: splash_rgb,
-            seconds: now.saturating_duration_since(started).as_secs_f32(),
+        use postretro_render_cpu::flash_limiter::{DEFAULT_FRAME_SECONDS, LimiterFrameInput};
+        let elapsed_seconds = last_resolve_at.map_or(DEFAULT_FRAME_SECONDS, |previous| {
+            now.saturating_duration_since(previous).as_secs_f32()
         });
-        LimiterFrameInput {
-            elapsed_seconds,
-            splash,
-        }
+        *last_resolve_at = Some(now);
+        LimiterFrameInput { elapsed_seconds }
     }
 
     /// Paint a single boot-splash frame through the renderer-owned splash pass:
@@ -5431,9 +5413,6 @@ impl App {
             Some(renderer) if renderer.is_boot_ready() => match renderer.render_splash_frame() {
                 Ok(Some(handle)) => {
                     renderer.present(handle);
-                    // A stretch of splash frames between resolve frames: the
-                    // flash limiter counts its edges at the next resolve.
-                    self.splash_stretch_started.get_or_insert_with(Instant::now);
                     true
                 }
                 Ok(None) => false,
@@ -5628,12 +5607,7 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
-        let limiter_frame = Self::next_limiter_frame(
-            &mut self.last_resolve_at,
-            &mut self.splash_stretch_started,
-            renderer.splash_presented_rgb(),
-            frame_start,
-        );
+        let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, frame_start);
         renderer.set_limiter_frame(limiter_frame);
         let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
         session
@@ -14547,50 +14521,28 @@ mod tests {
         );
     }
 
-    // The splash stretch is handed to exactly one resolve frame, at an age no
-    // larger than the time since the previous resolve; the first resolve of a
-    // renderer takes the default frame time.
+    // The first resolve of a renderer takes the default frame time; each later
+    // one takes the time since the previous resolve, a load's splash frames
+    // included.
     #[test]
-    fn next_limiter_frame_takes_the_splash_stretch_once() {
+    fn next_limiter_frame_measures_time_since_the_previous_resolve() {
         use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
-        let splash_rgb = [0.01, 0.02, 0.03];
         let start = Instant::now();
         let mut last_resolve_at = None;
-        let mut splash_stretch_started = None;
 
-        let first = App::next_limiter_frame(
-            &mut last_resolve_at,
-            &mut splash_stretch_started,
-            splash_rgb,
-            start,
-        );
+        let first = App::next_limiter_frame(&mut last_resolve_at, start);
         assert_eq!(first.elapsed_seconds, DEFAULT_FRAME_SECONDS);
-        assert_eq!(first.splash, None);
         assert_eq!(last_resolve_at, Some(start));
 
-        // A load: splash frames open a stretch after that resolve.
-        splash_stretch_started = Some(start + Duration::from_millis(100));
+        // A load: two seconds of splash frames between resolves.
         let resolved_at = start + Duration::from_millis(2100);
-        let after_load = App::next_limiter_frame(
-            &mut last_resolve_at,
-            &mut splash_stretch_started,
-            splash_rgb,
-            resolved_at,
-        );
+        let after_load = App::next_limiter_frame(&mut last_resolve_at, resolved_at);
         assert!((after_load.elapsed_seconds - 2.1).abs() < 1e-4);
-        let splash = after_load.splash.expect("the stretch is handed over");
-        assert_eq!(splash.rgb, splash_rgb);
-        assert!((splash.seconds - 2.0).abs() < 1e-4);
-        assert!(splash.seconds <= after_load.elapsed_seconds);
-        assert_eq!(splash_stretch_started, None, "taken, not copied");
 
         let next = App::next_limiter_frame(
             &mut last_resolve_at,
-            &mut splash_stretch_started,
-            splash_rgb,
             resolved_at + Duration::from_millis(16),
         );
-        assert_eq!(next.splash, None, "a stretch hands over once");
         assert!((next.elapsed_seconds - 0.016).abs() < 1e-4);
     }
 }

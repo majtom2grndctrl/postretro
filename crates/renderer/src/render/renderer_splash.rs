@@ -74,20 +74,11 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
-    /// The color a splash or Loading frame presents, for the flash limiter's
-    /// splash hand-off: the clear color alone. The base splash logo covers a
-    /// small central area, so the clear dominates the frame. A mod override
-    /// logo can cover far more of it and is still not counted.
-    pub fn splash_presented_rgb(&self) -> [f32; 3] {
-        let color = super::splash_pass::SPLASH_CLEAR_COLOR;
-        [color.r as f32, color.g as f32, color.b as f32]
-    }
-
-    /// Store the elapsed presented-frame time the flash limiter ages its window
-    /// and rate allowance by, and any splash hand-off. The App calls this beside
+    /// Store the elapsed presented-frame time the photosensitivity limiter
+    /// ages its window and rate allowance by. The App calls this beside
     /// `set_ui_snapshot`. An input the resolve has not yet consumed (its frame's
     /// acquire failed) is merged, not replaced, so a skipped frame never drops
-    /// a hand-off; the next resolve takes it once.
+    /// presented time; the next resolve takes it once.
     pub fn set_limiter_frame(
         &mut self,
         frame: postretro_render_cpu::flash_limiter::LimiterFrameInput,

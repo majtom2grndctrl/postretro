@@ -1204,10 +1204,10 @@ pub(super) struct FullRenderer {
     /// both render signatures stay stable.
     pub(super) ui_snapshot: ui::UiReadSnapshot,
 
-    /// Presented-frame time and any splash hand-off for the flash limiter, set
-    /// by the App beside the UI snapshot and taken by the resolve that consumes
-    /// it. A frame that never resolves leaves it for the next. Never script
-    /// time, which dev tools freeze.
+    /// Presented-frame time for the photosensitivity limiter, set by the App
+    /// beside the UI snapshot and taken by the resolve that consumes it. A
+    /// frame that never resolves leaves it for the next. Never script time,
+    /// which dev tools freeze.
     pub(super) limiter_frame: postretro_render_cpu::flash_limiter::PendingLimiterFrame,
 
     /// Frame-local passive presentation instances from the app-side pool. The

@@ -1,6 +1,8 @@
 // Game: Postretro
 // Format: Standard
-// Flash-limiter strobe fixture (E23 U1, X1). Uncatalogued: no payload ships it.
+// Photosensitivity strobe fixture. Uncatalogued: no payload ships it.
+// Pads 1-2 (screen.flash) are limited by the channel clamp; pads 3-6 (UI panels,
+// light animation) are unlimited today, kept for the planned source-level floor.
 // Walk onto a pad to play its three-second strobe; see ../scripts/a11y-strobe-test.ts.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/a11y-strobe-test.map -o content/dev/maps/a11y-strobe-test.prl
 // Run: cargo run -p xtask -- run content/dev/maps/a11y-strobe-test.prl

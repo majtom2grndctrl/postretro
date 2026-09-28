@@ -172,10 +172,10 @@ fn the_scripting_surface_fixture_runs_in_both_runtimes_and_drives_the_engine() {
     assert_eq!(stack.active_name(), Some(ACCESSIBILITY_PANEL_NAME));
 }
 
-/// The manual strobe fixtures (X1) evaluate to complete manifests, so a
-/// surface change that breaks them fails here rather than on hardware.
+/// The manual strobe fixture (X1) evaluates to a complete manifest, so a
+/// surface change that breaks it fails here rather than on hardware.
 #[test]
-fn the_strobe_and_restart_loop_fixtures_evaluate() {
+fn the_strobe_fixture_evaluates() {
     let app = test_app();
     let runtime = &app.session.as_ref().unwrap().scripting.script_runtime;
     let run = |name: &str| {
@@ -215,8 +215,4 @@ fn the_strobe_and_restart_loop_fixtures_evaluate() {
     }
     let trees: Vec<&str> = strobe.ui_trees.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(trees, ["a11y.strobe.smallPanel", "a11y.strobe.largePanel"]);
-
-    let restart = run("a11y-restart-loop.ts");
-    let names: Vec<&str> = restart.reactions.iter().map(|r| r.name.as_str()).collect();
-    assert_eq!(names, ["a11y.restartLoop.restart", "levelLoad"]);
 }

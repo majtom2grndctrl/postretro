@@ -38,26 +38,42 @@ The owner wants PostRetro to run well on laptop GPUs. Basis: an anticipated need
 **Pixel parity**
 - [ ] With identical animation state, a before/after frame capture on `campaign-test` and `stress-warren-mini` is pixel-identical. The diff is compared against the last full-layer build.
 - [ ] A level with no animated lights builds and renders as before, with an empty block table and no atlas memory beyond today's placeholder.
+- [ ] Each parity capture forces the level's animated lights on, and the frame differs from the same capture with those lights dark. A capture where no animated light contributes does not count. (pin P9)
+- [ ] The repack changes only where chunks sit. Per-texel weights and light lists are byte-identical before and after it. Each block spans its face's full chart placement, and every chunk keeps the same offset inside its block in both spaces. (pin P4)
+
+**Repack**
+- [ ] A face whose every chunk the unlit cull drops gets no block, and its vertices carry no block id. A level whose chunks are all dropped writes no animated sections. (pin P3, P5)
+- [ ] A face with several chunks, some of them culled, gets exactly one block. Culled chunk texels inside it stay zero. (pin P4)
 
 **Compiler guards**
 - [ ] A face whose block would span two static layers fails the build with a message naming the face.
 - [ ] A vertex shared across two blocks fails the build.
 - [ ] A bilinear footprint past block plus gutter fails the build. A footprint just inside it passes.
 - [ ] A block count over the uniform cap fails the build, naming the cap and the count. A count at the cap passes.
+- [ ] The compiler's block cap equals the block-table capacity the forward shader declares. That table fits the uniform size the renderer requests, and the cap never exceeds what a vertex's 16-bit block id can name. (pin P10)
 
 **Format and cache**
 - [ ] Section 25 v4 round-trips. v2 and v3 are rejected with a recompile error.
 - [ ] A warm build after the stage-version bump re-bakes the weight-map stage and does not re-bake the SDF atlas.
 - [ ] Every vertex's block id agrees with the block table's static layer, or the loader rejects the level.
 - [ ] Vertices with no animated block read block 0 and take today's no-animated-light path.
+- [ ] A warm rebuild whose weight-map stage hits the cache writes section 25 and the geometry section byte-identical to a cold build. (pin P2)
+
+**Forward remap**
+- [ ] When the animated atlas falls back to the placeholder, or has nothing to compose, every vertex resolves to no block, whatever ids the level carries. (pin P6)
+- [ ] No two blocks overlap on a compact layer, and every block and chunk lies inside its layer.
+- [ ] The geometry vertex stays 36 bytes on disk and in the vertex buffer. The forward pass's storage and sampled binding counts are unchanged, and the block table is visible to the fragment stage only.
 
 **Size**
 - [ ] Compact layers have the static layer's dimensions. The layer count is the fewest that hold every block, with no layer allocated per static layer.
 - [ ] A level whose blocks fit in one layer allocates one layer, however many static layers carry animated faces.
+- [ ] When blocks overflow one compact layer, they spill into a second. Compose and forward resolve every block to the same compact layer and offset, including blocks on the second layer. (pin P9)
+- [ ] A block as large as a whole layer packs alone at that layer's origin, the next block starts a new layer, and no compact layer is left empty. (pin P8)
 
 **Byte meter**
 - [ ] The load log reports bytes for each of the five lightmap-family textures. The dev panel shows the same numbers.
 - [ ] After a level unload, every lightmap-family count returns to its placeholder size.
+- [ ] When the animated atlas falls back to the placeholder, the meter reports the placeholder's bytes, not those of the atlas it rejected. (pin P7)
 
 ### Manual
 - [ ] Visual: animated lights on `campaign-test`, `occlusion-test` and `closet-reveal` look unchanged in play, including edges and seams.

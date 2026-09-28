@@ -48,3 +48,27 @@ These PRLs carry section 25 and must be rebuilt after the version bump: campaign
 - render-cpu: `validate_cross_section_rejects_*slot*`, `…rect_outside_static_atlas_bounds`.
 - renderer: slot-table preflight, compose/forward shader string pins, `dispatch_tile_expansion_*`, atlas extent and dimension tests, `static_layer_slot_uniform_layout_matches_forward_wgsl`, `bgl_entries_pin_sampler_split`, `lightmap_layer_serialized_at_byte_offset_32`, over-budget fallback.
 - compiler: `real_multi_layer_*`, `cull_drops_*`, `animated_atlas_over_budget…`, `overlap_assert_rejects_cross_face_rects_on_one_layer`, `stage_version_bump_*`, `animated_layer_spill_fixture…`, the golden-PRL test.
+
+## Pin table
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Edit only an animated light so faces gain or lose a block; rebuild warm | SDF-atlas input hash is taken before block ids are stamped on vertices | SDF-atlas cache key unchanged; SDF stage hits |
+| P2 | Cold build, then warm rebuild with no edits (weight-map stage hits) | Cache holds the pre-cull, pre-repack bake; cull, repack and stamping run after both hit and miss | Section 25 and section 17 bytes identical between the two builds |
+| P3 | A face whose every chunk the unlit cull drops | Repack runs after the cull | No block for that face; its vertices carry id 0; block count equals faces with a surviving chunk |
+| P4 | A face with several chunks, some culled | Repack after cull; block = whole placement | One block; surviving chunks keep their offset inside the block; culled chunk texels stay zero |
+| P5 | Every candidate chunk culled, or no animated light | Emptiness decided after the cull | No section 24 or 25; every vertex id 0; animated pair at placeholder bytes |
+| P6 | Chunks exist but compose has nothing to write (all SDF-typed animated lights), or atlas construction fails | Block table is built from the installed resource state, after the active/dummy decision | Every vertex resolves to no block; no compact offset is applied against the dummy |
+| P7 | Atlas construction fails after its size is computed (tile buffer over the storage limit) | Meter records at the allocation that survives the fallback decision | Meter reports placeholder bytes, not the rejected atlas's |
+| P8 | One block whose extent equals the layer extent | Packer places blocks in order | It sits alone at the layer origin; the next block starts the next layer; no layer is empty |
+| P9 | Blocks overflow one compact layer | Compose tile targets and forward lookup read one block table | Two compact layers; compose and forward agree on layer and offset for every block, including layer 1 |
+| P10 | Block count at the cap, and cap + 1 | Cap derived once, shared by compiler and forward shader | At cap passes; cap + 1 fails naming both; the cap fits the requested uniform size and the 16-bit vertex id |
+| P11 | Vertex names a block past the table, or a block on another static layer | Checked after both sections decode | Rejected per owner choice (F11) |
+| P12 | Load level A, unload, load level B | Meter rebuilt per install; block table rewritten at install | After unload each count is placeholder; after B, counts are B's alone |
+| P13 | "Before" resource reading | Meter must exist while the atlas is still full-layer | Before numbers come from the meter, not hand-parsed PRLs (F15) |
+| P14 | Section 25 whose compact width/height differ from the static layer's | Extent preflight after both sections decode | Level rejected |
+
+Additional research pins (subtract lens), literal text:
+
+- **P15** — supersedes the Data invariants bullet "No animated leaf spans two layers.": No animated leaf spans two layers. Enforced by type: one face has one `ChartPlacement` with a single `layer`, and one leaf is one face.
+- **P16** — supersedes the Data invariants cap figure ("2040 blocks"): Chunk count ≤ 977 across content. The cap derives from the requested `max_uniform_buffer_binding_size` (64 KiB under `Limits::default()` in wgpu 29). Blocks pack into 16-byte uniform array elements, so the cap is (limit − header) / per-block bytes after packing. Current content is under 10% of it.

@@ -79,7 +79,7 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
     let shadow_depth_plan = shadow_depth_plan.expect("world instances require a shadow plan");
     let viewmodel_plan = viewmodel_plan.expect("viewmodel instance requires a viewmodel plan");
 
-    fn models<'a>(plan: &'a mesh_instances::MeshFramePlan) -> Vec<&'a str> {
+    fn models(plan: &mesh_instances::MeshFramePlan) -> Vec<&str> {
         plan.groups
             .iter()
             .map(|group| group.model.as_str())

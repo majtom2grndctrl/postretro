@@ -516,7 +516,7 @@ mod tests {
             let projection = project([2, 2, 2], &bricks, 1, passing).unwrap();
             assert_eq!(projection.histogram[0][Level::L1.to_u8() as usize], 8);
         }
-        let failed = project([2, 2, 2], &vec![brick(Level::L1); 8], 1, |_, _, _| {
+        let failed = project([2, 2, 2], &[brick(Level::L1); 8], 1, |_, _, _| {
             NodeEvaluation::default()
         })
         .unwrap();

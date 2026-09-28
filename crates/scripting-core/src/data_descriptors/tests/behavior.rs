@@ -247,7 +247,7 @@ fn both_runtimes_allow_mutually_exclusive_nested_position_goal_and_action() {
     );
 
     assert!(
-        eval_js(&js, |ctx, value| entity_descriptor_from_js(ctx, value)).is_ok(),
+        eval_js(&js, entity_descriptor_from_js).is_ok(),
         "QuickJS must retain mutually exclusive nested activities"
     );
     assert!(
@@ -370,12 +370,7 @@ fn both_runtimes_enforce_the_shared_nesting_cap() {
         "return {{ components = {{ behavior = {} }} }}",
         lua_envelope(MAX_BEHAVIOR_NESTING_DEPTH).replacen('{', "{ moveSpeed = 3,", 1)
     );
-    assert!(
-        eval_js(&js_at_cap, |ctx, value| entity_descriptor_from_js(
-            ctx, value
-        ))
-        .is_ok()
-    );
+    assert!(eval_js(&js_at_cap, entity_descriptor_from_js).is_ok());
     assert!(eval_lua(&lua_at_cap, entity_descriptor_from_lua).is_ok());
 
     let js_too_deep = format!(
@@ -395,12 +390,7 @@ fn both_runtimes_enforce_the_shared_nesting_cap() {
 fn both_runtimes_allow_selectors_but_reject_two_stateful_layers_with_paths() {
     // `js_behavior` / `lua_behavior` are the positive fixture: one nested
     // offense graph plus a move selector must remain legal.
-    assert!(
-        eval_js(&js_behavior(""), |ctx, value| entity_descriptor_from_js(
-            ctx, value
-        ))
-        .is_ok()
-    );
+    assert!(eval_js(&js_behavior(""), entity_descriptor_from_js).is_ok());
     assert!(eval_lua(&lua_behavior(""), entity_descriptor_from_lua).is_ok());
 
     let js = js_error(

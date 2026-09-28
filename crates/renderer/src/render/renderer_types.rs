@@ -496,6 +496,9 @@ pub struct LevelGeometry<'a> {
     /// 43). Uploaded into a renderer-owned dynamic-object pass, never into the
     /// static world BVH/indirect buffers.
     pub kinematic_geometry: Option<&'a postretro_level_loader::KinematicGeometry>,
+    /// Runtime cells in id order. A streamed-SH level indexes their bounds
+    /// at install so per-frame sample gating names cells by id.
+    pub cells: &'a [postretro_level_loader::CellData],
     pub texture_materials: &'a [postretro_render_data::material::Material],
 }
 

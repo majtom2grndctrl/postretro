@@ -2862,7 +2862,7 @@ mod tests {
         let straddled_region = scale_region([-0.1, -1.0, -0.1], [0.1, 1.0, 0.1], 0.5);
         let outside = scale_region([2.0, -1.0, 2.0], [3.0, 1.0, 3.0], 0.25);
         let baseline = plan_charts(&geo, 0.25, &[]).unwrap();
-        let straddled = plan_charts(&geo, 0.25, &[straddled_region.clone()]).unwrap();
+        let straddled = plan_charts(&geo, 0.25, std::slice::from_ref(&straddled_region)).unwrap();
         let outside_only = plan_charts(&geo, 0.25, &[outside]).unwrap();
         assert!(
             straddled[0].width_texels < baseline[0].width_texels,
@@ -3461,7 +3461,7 @@ mod tests {
     fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
         let geometry = unit_quad_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![synthetic_chart_leaf(64, 64, 1)];
         let placements = vec![ChartPlacement {
@@ -3511,7 +3511,7 @@ mod tests {
     fn per_layer_parallel_scatter_joins_before_dilation() {
         let geometry = two_disjoint_quads_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![
             synthetic_chart_leaf(32, 64, 0),
@@ -3575,7 +3575,7 @@ mod tests {
     fn layered_cold_encode_retains_degenerate_layer_blob() {
         let geometry = unit_quad_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![synthetic_chart_leaf(64, 64, 0), empty_chart_for_leaf(1)];
         let placements = vec![
@@ -3635,7 +3635,7 @@ mod tests {
         let geometry = unit_quad_geometry();
         let bvh = Bvh { nodes: Vec::new() };
         let primitives = Vec::new();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![empty_chart_for_leaf(0)];
         let placements = vec![ChartPlacement {
@@ -5121,7 +5121,7 @@ mod tests {
         let section = atlas.encode_section(0.25, true, 2);
         assert_eq!(section.layer_count, 2);
         assert_eq!((section.dir_width, section.dir_height), (2, 1));
-        assert_eq!(section.direction.len(), 2 * 2 * 1 * 2);
+        assert_eq!(section.direction.len(), 2 * 2 * 2);
     }
 
     #[test]

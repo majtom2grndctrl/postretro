@@ -560,7 +560,7 @@ mod tests {
         ];
         let mut first_textures = TextureNamesSection { names: Vec::new() };
         let first = encode_kinematic_geometry_section(
-            &[door.clone()],
+            std::slice::from_ref(&door),
             &[],
             &[],
             &portals,

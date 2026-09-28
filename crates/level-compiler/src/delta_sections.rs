@@ -1810,7 +1810,7 @@ mod tests {
             .expect("a non-empty valid set has a brick mean");
 
         // Decode the emitted representative tile and compare to the mean.
-        for texel in 0..tile_texels {
+        for (texel, &golden_rgb) in golden.iter().enumerate().take(tile_texels) {
             let i = texel * DELTA_TILE_TEXEL_F16_COUNT;
             let rgb = glam::Vec3::new(
                 crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i]),
@@ -1818,9 +1818,8 @@ mod tests {
                 crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i + 2]),
             );
             assert!(
-                (rgb - golden[texel]).abs().max_element() < 1e-2,
-                "emitted L2 tile must equal reconstruct_l2_tile: got {rgb:?} expected {:?}",
-                golden[texel]
+                (rgb - golden_rgb).abs().max_element() < 1e-2,
+                "emitted L2 tile must equal reconstruct_l2_tile: got {rgb:?} expected {golden_rgb:?}"
             );
         }
         // The mean [0.4, 0.5, 0.6] is not any single copied probe value.

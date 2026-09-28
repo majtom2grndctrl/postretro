@@ -1126,8 +1126,10 @@ mod tests {
             crouch: None,
             slide: None,
         });
-        let mut evaluator_state = ViewFeelState::default();
-        evaluator_state.tilt_roll = 3.0;
+        let mut evaluator_state = ViewFeelState {
+            tilt_roll: 3.0,
+            ..Default::default()
+        };
         let kicked = evaluate_with_edges(
             &params,
             0.0,

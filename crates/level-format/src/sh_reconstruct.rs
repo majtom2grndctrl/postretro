@@ -556,10 +556,10 @@ mod tests {
         // 8 corners must reproduce it exactly at every interior probe.
         let texels = 4;
         let mut tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
-        for local in 0..PROBES_PER_CELL {
+        for (local, tile) in tiles.iter_mut().enumerate() {
             let (lx, _ly, _lz) = local_xyz(local);
             let val = 10.0 + lx as f32 * 2.0;
-            tiles[local] = Some(vec![Vec3::splat(val); texels]);
+            *tile = Some(vec![Vec3::splat(val); texels]);
         }
         for target in 0..PROBES_PER_CELL {
             let recon = reconstruct_l1_tile(&tiles, target, texels).unwrap();
@@ -583,7 +583,7 @@ mod tests {
         let mut tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
         tiles[0] = Some(vec![Vec3::splat(7.0); texels]);
 
-        let interior = 1 + 1 * AF + 1 * AF * AF; // local (1,1,1)
+        let interior = 1 + AF + AF * AF; // local (1,1,1)
         let recon = reconstruct_l1_tile(&tiles, interior, texels).unwrap();
         for v in &recon {
             assert!((v.x - 7.0).abs() < 1e-6);
@@ -699,7 +699,7 @@ mod tests {
                 .all(|range| range.stored_tile_count == 0 && range.base_slot == 8)
         );
 
-        let l2 = stored_node_prefix_sum(grid, &vec![Level::L2; 8], &scales, &valid).unwrap();
+        let l2 = stored_node_prefix_sum(grid, &[Level::L2; 8], &scales, &valid).unwrap();
         assert_eq!(l2.total_stored_tiles, 1);
         assert_eq!(l2.bricks[0].stored_tile_count, 1);
     }
@@ -715,13 +715,8 @@ mod tests {
         levels.fill(Level::L1);
         scales[7] = 0;
         assert!(stored_node_prefix_sum([8, 8, 8], &levels, &scales, &valid).is_none());
-        assert!(
-            stored_node_prefix_sum([7, 8, 8], &levels, &vec![1; 8], &vec![true; 7 * 8 * 8],)
-                .is_none()
-        );
-        assert!(
-            stored_node_prefix_sum([8, 8, 8], &vec![Level::L0; 8], &vec![1; 8], &valid,).is_none()
-        );
+        assert!(stored_node_prefix_sum([7, 8, 8], &levels, &[1; 8], &[true; 7 * 8 * 8],).is_none());
+        assert!(stored_node_prefix_sum([8, 8, 8], &[Level::L0; 8], &[1; 8], &valid,).is_none());
     }
 
     // Regression: a scaled node with validity only outside its origin brick
@@ -735,7 +730,7 @@ mod tests {
 
         for level in [Level::L1, Level::L2] {
             assert!(
-                stored_node_prefix_sum(grid, &vec![level; 8], &scales, &valid).is_none(),
+                stored_node_prefix_sum(grid, &[level; 8], &scales, &valid).is_none(),
                 "{level:?} must retain a valid word in the elected origin brick"
             );
         }

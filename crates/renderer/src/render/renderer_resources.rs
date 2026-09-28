@@ -101,6 +101,7 @@ impl Renderer {
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,
             kinematic_geometry: None,
+            cells: &[],
             texture_materials: &empty_materials,
         };
         self.install_level_geometry(&empty_geometry, Default::default());
@@ -477,7 +478,7 @@ impl Renderer {
 
         if let Some(manifest) = streaming_manifest {
             full.sh_streaming = Some(
-                sh_streaming::ShResidencyState::from_manifest(manifest)
+                sh_streaming::ShResidencyState::from_manifest(manifest, geometry.cells)
                     .and_then(|mut state| {
                         state.initialize_gpu(
                             device,

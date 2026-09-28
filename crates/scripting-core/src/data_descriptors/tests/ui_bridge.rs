@@ -49,7 +49,7 @@ fn stack_width_crosses_both_runtime_bridges() {
 fn stack_width_rejects_non_positive_values_in_both_runtime_bridges() {
     let js = eval_js(
         r#"({ anchor: "center", offset: [0, 0], root: { kind: "vstack", gap: 0, padding: 0, align: "stretch", width: 0, children: [] } })"#,
-        |ctx, value| anchored_tree_from_js_value(ctx, value),
+        anchored_tree_from_js_value,
     );
     let lua = eval_lua(
         r#"return { anchor = "center", offset = {0, 0}, root = { kind = "vstack", gap = 0, padding = 0, align = "stretch", width = -1, children = {} } }"#,

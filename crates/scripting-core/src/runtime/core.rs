@@ -1129,7 +1129,7 @@ mod tests {
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 
-    fn write_durable_store_manifest(mod_root: &PathBuf, namespace: &str) {
+    fn write_durable_store_manifest(mod_root: &Path, namespace: &str) {
         fs::write(
             mod_root.join("start-script.js"),
             format!(
@@ -1153,7 +1153,7 @@ mod tests {
         .unwrap();
     }
 
-    fn write_empty_mod_manifest(mod_root: &PathBuf) {
+    fn write_empty_mod_manifest(mod_root: &Path) {
         fs::write(
             mod_root.join("start-script.js"),
             r#"

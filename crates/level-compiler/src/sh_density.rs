@@ -1948,7 +1948,7 @@ mod tests {
     fn forced_scale_keeps_delta_protection_and_partial_bricks_at_zero() {
         let base = raw_indirect([21, 8, 8], |_| true);
         let affinity = [6, 2, 2];
-        let mut direct = direct_delta(&vec![Level::L2.to_u8(); 24], &vec![false; 24]);
+        let mut direct = direct_delta(&[Level::L2.to_u8(); 24], &[false; 24]);
         direct.affinity_dims = affinity;
         direct.affinity_offsets = std::iter::once(0)
             .chain(std::iter::repeat_n(1, 24))

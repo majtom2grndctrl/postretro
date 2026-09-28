@@ -626,6 +626,9 @@ mod tests {
         )
     }
 
+    /// (lightmap bytes, shadowmask bytes, layer count), chart total, checkpoint count.
+    type FusedOutputsWithWorkers = ((Vec<u8>, Vec<u8>, u32), Option<usize>, usize);
+
     fn fused_outputs_with_workers(
         workers: usize,
         args: &Args,
@@ -633,7 +636,7 @@ mod tests {
         lights: &[MapLight],
         selection: &EntityShadowLightsSection,
         config: &LightmapConfig,
-    ) -> ((Vec<u8>, Vec<u8>, u32), Option<usize>, usize) {
+    ) -> FusedOutputsWithWorkers {
         let progress = StageProgress::indeterminate();
         let governor = Arc::new(Governor::new(workers, false));
         let output = ThreadPoolBuilder::new()

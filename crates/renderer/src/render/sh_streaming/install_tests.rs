@@ -20,6 +20,8 @@ pub(super) struct SyntheticMap {
     bricks: [u32; 3],
     cluster_bricks: [u32; 3],
     clusters: [u32; 3],
+    /// Sparse families the map bakes, in chunk order.
+    sparse_sections: &'static [u32],
 }
 
 impl SyntheticMap {
@@ -34,7 +36,15 @@ impl SyntheticMap {
             bricks,
             cluster_bricks,
             clusters,
+            sparse_sections: &SPARSE_SECTIONS,
         }
+    }
+
+    /// The same map with an id-35 base but no id-41 or id-45 data, as a level
+    /// with static lights and no entity-shadow selection or animated lights.
+    pub(super) fn direct_base_only(mut self) -> Self {
+        self.sparse_sections = &[INDIRECT_DELTA_ID];
+        self
     }
 
     pub(super) fn cluster_count(&self) -> u32 {
@@ -97,7 +107,7 @@ impl SyntheticMap {
             domain: ClusterResourceDomain::DenseProbe,
             dimensions: self.grid,
         }];
-        for section_id in SPARSE_SECTIONS {
+        for &section_id in self.sparse_sections {
             resources.push(ClusterResourceRecord {
                 section_id,
                 domain: ClusterResourceDomain::AffinityCell,
@@ -126,7 +136,7 @@ impl SyntheticMap {
                     });
                 }
             }
-            for resource_index in 1..=SPARSE_SECTIONS.len() as u32 {
+            for resource_index in 1..=self.sparse_sections.len() as u32 {
                 for z in 0..self.cluster_bricks[2] {
                     for y in 0..self.cluster_bricks[1] {
                         ranges.push(ClusterRangeRecord {
@@ -206,8 +216,9 @@ impl SyntheticMap {
                 animation_descriptor_indices,
             }
         };
+        let bakes = |section_id| self.sparse_sections.contains(&section_id);
         postretro_level_loader::ShStreamSourceMetadata {
-            indirect_delta: Some(sparse(INDIRECT_DELTA_ID, vec![0])),
+            indirect_delta: bakes(INDIRECT_DELTA_ID).then(|| sparse(INDIRECT_DELTA_ID, vec![0])),
             direct: Some(postretro_level_loader::ShStreamDirectMetadata {
                 grid_origin: [0.0; 3],
                 cell_size: [1.0; 3],
@@ -220,16 +231,22 @@ impl SyntheticMap {
                 atlas_tiles_per_row: 1,
                 irradiance_format: 0,
             }),
-            direct_delta: Some(sparse(DIRECT_DELTA_ID, Vec::new())),
-            animated_direct_delta: Some(sparse(ANIMATED_DIRECT_DELTA_ID, vec![0])),
+            direct_delta: bakes(DIRECT_DELTA_ID).then(|| sparse(DIRECT_DELTA_ID, Vec::new())),
+            animated_direct_delta: bakes(ANIMATED_DIRECT_DELTA_ID)
+                .then(|| sparse(ANIMATED_DIRECT_DELTA_ID, vec![0])),
         }
     }
 
     /// A live generation that targets every cluster.
     pub(super) fn state(&self) -> ShResidencyState {
-        let mut state =
-            ShResidencyState::from_parts([5; 32], &self.directory(), &self.base(), &self.sources())
-                .expect("synthetic streamed map is canonical");
+        let mut state = ShResidencyState::from_parts(
+            [5; 32],
+            &self.directory(),
+            &self.base(),
+            &self.sources(),
+            &[],
+        )
+        .expect("synthetic streamed map is canonical");
         state.generation = 1;
         state.generation_has_reset = true;
         state.targets = (0..self.cluster_count()).collect();
@@ -299,7 +316,7 @@ impl SyntheticMap {
 
         let rows = self.cluster_rows(cluster_id);
         let row_count = rows.len() as u32;
-        for section_id in SPARSE_SECTIONS {
+        for &section_id in self.sparse_sections {
             let mut words = vec![row_count, row_count, row_count * ENTRY_TILE_F16, 0];
             for (index, &row) in rows.iter().enumerate() {
                 words.extend_from_slice(&[row, index as u32, 1, 1]);
@@ -351,13 +368,13 @@ struct ResidencyMirror {
     sparse_pools: BTreeMap<u32, SparsePool>,
     dirty_rows: BTreeSet<(u32, u32)>,
     indirect_dirty_rows: BTreeSet<u32>,
-    indirect_resident_rows: BTreeSet<u32>,
+    indirect_resident_rows: RowBitSet,
     indirect_base_row_refs: BTreeMap<u32, u32>,
     indirect_delta_row_refs: BTreeMap<u32, u32>,
     direct_promotion_dirty_rows: BTreeSet<u32>,
     direct_animated_dirty_rows: BTreeSet<u32>,
-    direct_promotion_resident_rows: BTreeSet<u32>,
-    direct_animated_resident_rows: BTreeSet<u32>,
+    direct_promotion_resident_rows: RowBitSet,
+    direct_animated_resident_rows: RowBitSet,
     direct_base_row_refs: BTreeMap<u32, u32>,
     direct_promotion_row_refs: BTreeMap<u32, u32>,
     direct_animated_row_refs: BTreeMap<u32, u32>,
@@ -588,4 +605,123 @@ fn eviction_releases_rows_incrementally_to_what_a_full_rebuild_produces() {
     assert!(state.direct_promotion_row_refs.is_empty());
     assert!(state.direct_animated_row_refs.is_empty());
     assert!(state.installed.is_empty());
+}
+
+/// The compose planner re-observes only touched rows, so every install,
+/// rollback, eviction, and session clear must queue each row whose planner
+/// membership went stale, once; re-observing them must leave the planner's
+/// full membership view exact.
+#[test]
+fn touched_rows_cover_every_compose_membership_change() {
+    use compose_plan::{ComposePass, ComposePlannerFrame, RowMembership};
+
+    let map = two_cluster_map();
+    let mut state = map.state();
+    let [width, height, depth] = state.grid_dimensions();
+    let rows = width.div_ceil(4) * height.div_ceil(4) * depth.div_ceil(4);
+    let planner_view = |state: &ShResidencyState, row: u32| RowMembership {
+        indirect: state
+            .compose_planner
+            .observed_membership(ComposePass::Indirect, row),
+        static_direct: state
+            .compose_planner
+            .observed_membership(ComposePass::StaticDirect, row),
+        animated_direct: state
+            .compose_planner
+            .observed_membership(ComposePass::AnimatedDirect, row),
+    };
+    let observe = |state: &mut ShResidencyState| {
+        let changes: Vec<_> = state
+            .compose_membership_touched
+            .rows()
+            .iter()
+            .map(|&row| (row, state.compose_row_membership(row)))
+            .collect();
+        state.compose_membership_touched.clear();
+        state.compose_planner.plan_frame(ComposePlannerFrame {
+            records_compose: false,
+            force_full_resident: false,
+            gated_rows: &[],
+            membership_changes: &changes,
+            indirect_active: false,
+            animated_direct_active: false,
+            effective_static_weights: &[],
+            effective_animated_weights: &[],
+            controls: compose_plan::ComposeControlSnapshot {
+                light_term_mask: LightTermMask::ALL,
+                promotion_override: DirectShDebugOverride::default(),
+                animated_override: AnimatedDirectShDebugOverride::default(),
+            },
+        });
+        for row in 0..rows {
+            assert_eq!(
+                planner_view(state, row),
+                state.compose_row_membership(row),
+                "row {row}"
+            );
+        }
+    };
+
+    let mut bad_patch = map.prepared(&state, 1);
+    corrupt_last_probe_patch(&mut bad_patch);
+    let operations: [&dyn Fn(&mut ShResidencyState); 7] = [
+        &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
+        &|state| assert!(state.install(None, &bad_patch).is_err()),
+        &|state| state.install(None, &map.prepared(state, 1)).unwrap(),
+        &|state| state.evict(&mut StagedUploads::default(), 1).unwrap(),
+        &|state| state.evict(&mut StagedUploads::default(), 0).unwrap(),
+        &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
+        // A new generation clears the session and installs in one drain.
+        &|state| {
+            state.clear_session_mirrors();
+            state.targets = (0..map.cluster_count()).collect();
+            state.install(None, &map.prepared(state, 1)).unwrap();
+        },
+    ];
+    for (index, operation) in operations.into_iter().enumerate() {
+        operation(&mut state);
+        let queued = state.compose_membership_touched.rows();
+        let touched: BTreeSet<u32> = queued.iter().copied().collect();
+        assert_eq!(
+            touched.len(),
+            queued.len(),
+            "operation {index} queued a row twice"
+        );
+        for row in 0..rows {
+            if planner_view(&state, row) != state.compose_row_membership(row) {
+                assert!(
+                    touched.contains(&row),
+                    "operation {index} changed row {row} without touching it"
+                );
+            }
+        }
+        observe(&mut state);
+    }
+}
+
+/// An id-35 base without id-41 or id-45 is sampled directly, so the direct
+/// passes never dispatch. Installs and evictions must leave them no rows to
+/// track, retry, or re-close every frame.
+#[test]
+fn direct_base_without_direct_deltas_leaves_direct_passes_idle() {
+    use compose_plan::PassMembership;
+
+    let map = two_cluster_map().direct_base_only();
+    let mut state = map.state();
+    assert!(state.direct_required);
+    assert!(!state.direct_compose_required);
+    state.install(None, &map.prepared(&state, 0)).unwrap();
+    state.install(None, &map.prepared(&state, 1)).unwrap();
+    state.evict(&mut StagedUploads::default(), 1).unwrap();
+
+    // The id-35 refs still follow the installed base.
+    assert_eq!(state.direct_promotion_resident_rows, BTreeSet::from([0, 1]));
+    assert!(state.direct_promotion_dirty_rows.is_empty());
+    assert!(state.direct_animated_dirty_rows.is_empty());
+    for row in 0..4 {
+        let membership = state.compose_row_membership(row);
+        assert_eq!(membership.indirect.resident, row < 2, "row {row}");
+        assert_eq!(membership.static_direct, PassMembership::default());
+        assert_eq!(membership.animated_direct, PassMembership::default());
+    }
 }

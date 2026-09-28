@@ -53,66 +53,66 @@ The hub's Brief form sequences substrate → panel → limiter. This plan keeps 
 
 Brief rows are numbered in the brief's order. Hub rows are H1–H13. "GPU test" means an adapter-gated test through the hoisted harness; a skip is not a pass. This Mac has a Metal adapter without `TIMESTAMP_QUERY`.
 
-| AC | Proof | Status |
-|---|---|---|
-| S1 never-set OS-seedable field writes no key; absent loads unset; later OS change moves it | `options` store round-trip tests + resolver test | achievable as stated |
-| S2 cycle from Off returns to System; key gone; follows OS | panel field-action unit test over the store + save round-trip | achievable as stated |
-| S3 "System (On)" label and `reduceMotionFollowsSystem` true; after one cycle "On" and false | panel descriptor + slot projection test (label resolved through the retained tree) | achievable as stated |
-| S4 unrecognised value + unknown key survive a save of another field; player write replaces the value | `toml::Table` round-trip save test | achievable as stated |
-| S5 panel write (limiter included) persists after 250 ms with no menu; immediately on panel close | bridge settled-save test driving the App panel-action path | achievable as stated |
-| S6 same-value write marks player-set; key written; later OS change ignored | bridge + resolver test | achievable as stated |
-| S7 invalid TOML: panel write, mod-menu write, close leave file byte-for-byte; no record; panel shows next launch | `Unavailable`-status save-refusal test + first-launch predicate test | achievable as stated |
-| S8 first launch writes no OS-seedable key and no record until close; OS change still moves each | `Session` options load/write test with a fake reader | achievable as stated |
-| R1 first splash frame presents before reader starts | boot-order test: fake reader records its start against `StartupTimings` marks | achievable as stated |
-| R2 reply within bound applied before splash clears; later reply is a live change | pure OS-wait gate test + boot-state test | achievable as stated |
-| R3 splash keeps presenting while waiting; reply already in adds no frames | boot-state frame-count test with the fake reader | achievable as stated |
-| R4 400 ms mod init + reply 100 ms later → applied before clear (UO9) | OS-wait gate test with injected clock | achievable as stated |
-| R5 OS reply + mod-menu write same frame → player-set at menu value; OS reply on the frame a cycle returns to System → that reply (UO1) | App frame-order test over bridge + resolver | achievable as stated |
-| M1 switch on, sliders 1.0: packed shake and view feel zero; rise spawns full; scatter and fade stay | `pack_effect_uniform` test, `view_feel` test, `PresentationPool` test | achievable as stated |
-| M2 on mid-shake zeroes next pack while `screen.shake` decays; off resumes at decayed amplitude; running tween snaps (UO2) | pack + decay test; `drive_tween_*` snap test | achievable as stated |
-| M3 bus 0 silent, 1.0 unity, 0.5 → −12 dB ±0.1; Master 0 silences all | volume-mapping test + `Audio` bus-volume test (headless kira backend, as existing audio tests) | achievable as stated |
-| M4 mono reversed mid-crossfade: no step larger than untoggled max; stereo returns within elapsed half (UO3) | mono `Effect` test driving `process` on a captured buffer | achievable as stated |
-| M5 Scripting surface example runs as a `content/dev` fixture in TS and Luau; buttons fire reserved actions; `visibleWhen` tracks; type test rejects `accessibilityAction("flashLimiter", "cycle")` | scripting fixture test (TS + Luau) + SDK type test (`tsc` negative fixture) | achievable as stated |
-| L1 below-threshold strobe straddling cells passes; threshold-area strobe limited | GPU test | achievable as stated |
-| L2 5 Hz sine at 240 Hz → ≤ 3 flashes/s, same as 30 Hz | GPU test + independent WCAG counter | achievable as stated |
-| L3 2 s hitch: ≤ 4.0 × 1/30 change; steady 20 fps black→white ≥ 375 ms | GPU test | achievable as stated |
-| L4 limiter action / engine-routed slider step from a mod tree or non-engine tier ignored, warns, unchanged; another field's action from a mod tree writes it | App activation test over a stamped focus export + log capture | achievable as stated |
-| L5 resolve and limiter each report a GPU timing entry; absent, never zero, without timestamp support | timing decode unit test (absent path); timestamped report is manual X2 | achievable as stated (report half on X2) |
-| L6 resolve and measure pass own `TIMING_PAIR_*` + label; prefill test covers both | extended `scene_recording_prefills_timing_queries_before_any_pass_or_resolve` | achievable as stated |
-| L7 both stages: four-flash `screen.flash` strobe presents the same as clamp-bypassed + clamp output fed to the limiter; suppressed onset uses no budget (UO4) | GPU test | achievable as stated |
-| L8 off mid-strobe, on 0.5 s later: a fresh window, nothing from before counts, the first re-enabled frame presents unchanged (UO5; restated by owner decision A) | GPU test | achievable as restated |
-| L9 after 2 s of splash or a 2 s hitch no earlier transition counts; change within one hitch allowance (UO6) | GPU test with splash hand-off | achievable as stated |
-| L10 both stages run when the flag is absent or non-boolean; only explicit `false` passes | pack/flag unit test + GPU test | achievable as stated |
-| L11 capture bytes equal with limiter on/off; capture leaves per-cell history unchanged | capture path test (adapter-gated) | achievable as stated |
-| L12 hub AC 4/5 automated halves as GPU tests with readback every frame, splash hand-offs included | GPU test suite | achievable as stated |
-| L13 equal-brightness red/green 5 Hz → ≤ 3 flashes/s, presents desaturated | GPU test + independent u′v′ counter | achievable as stated |
-| L14 gameplay → splash → gameplay counts two transitions | GPU test with splash hand-off | achievable as stated |
-| L15 measure pass and resolve compose through one WGSL function; shader-source test fails if either applies shake/tonemap/vignette/flash outside it | shader-source test | achievable as stated |
-| P1 panel write at the hold persists after 250 ms with the panel open; quit before close leaves field saved and no record (UO7) | hold boot-state test over the bridge | achievable as stated |
-| P2 `--connect` client with CLI map, host names a different map during the hold → host's map when hold ends | `test_app` level-request test (hold + `follow_relevel_catalog`) | achievable as stated |
-| P3 staged reload retargeting `frontend.menuTree` warns naming the new tree; adding the button silences it (UO8) | staged-commit test + log capture | achievable as stated |
-| G1 F1 held with OS repeat in a text-entry modal toggles once each way; the revealed modal does not reopen it | keyboard intake test | achievable as stated |
-| G2 F1/Select on a Loading frame opens nothing on the first Running frame | intake + boot-state test | achievable as stated |
-| G3 confirm in the same Input stage as the opening F1 activates nothing; F1 + confirm while the panel is active closes it and activates nothing beneath | App frame test | achievable as stated |
-| X1 hub AC 5 and 6 visual and strobe passes on hardware | owner, in-engine | manual |
-| X2 hub AC 6 GPU timing on a timestamp-capable adapter | owner, Windows | manual |
-| X3 hub AC 1 OS reduced-motion toggle on Windows, macOS, Linux (incl. no portal) | owner, per platform | manual |
-| X4 hub AC 12 loopback `--connect` hold; hub AC 13 two-instance co-op | owner, loopback | manual |
-| H1 OS-seedable follows OS / live change / player-set sticks / no OS → default | fake-reader tests (R2, R5, S1); manual half is X3 | achievable as stated |
-| H2 bad value in one accessibility field or `fog_quality` falls back alone with a warning; no group → unset/defaults; save writes unset | store tests + log capture | achievable as stated |
-| H3a `accessibility.*` readable in play; live; script write warns, no change | scripting-core slot test + readonly `setState` log test | achievable as stated |
-| H3b working-copy write updates store and slot in the same frame's snapshot; crossing fires next frame | App frame-order test (O5) | achievable as stated |
-| H3c engine write reseeds working copy that frame without a menu write; OS-changed field stays unset | bridge reseed test (O3, O4) | achievable as stated |
-| H4 limiter counts, rates, resize, stage split, off-passes-unchanged | GPU tests (L-rows) + clamp unit tests | achievable as stated |
-| H5 every source covered; splash load loop | GPU tests (L12, L14); manual half is X1 | achievable as stated |
-| H6 timing and binary-size report; visual pass | manual (X1, X2); binary-size delta measured on this Mac and recorded here, other platforms on handoff | manual |
-| H7 panel limiter toggle under a no-reaction mod; restart persistence; engine sliders step and persist; mod slider warns; verdict table; catalog has no `options.flashLimiter`; review gate on the single store write site | App tests + catalog test + review gate (grep) | achievable as stated |
-| H8 reduce motion snaps tweens and presentation motion; sliders survive toggling; slot semantics | M1/M2 tests + slot test | achievable as stated |
-| H9 bus isolation, Master, mono equal L/R, crossfade | M3/M4 tests + mono equal-channel test | achievable as stated |
-| H10 every open/close path; warnings; theme tokens; every group field in the panel | App input tests + descriptor field-coverage test (derived from the group's field list) | achievable as stated |
-| H11 reserved name rejected at mod, level, staged reload; boot continues; `pauseMenu` still shadows | `modal_stack` registry tests + log capture | achievable as stated |
-| H12 first-launch hold on each path; `--connect`; second launch; crash reshows; manual loopback | boot-state tests (P1, P2); manual half is X4 | achievable as stated |
-| H13 per-machine application (manual); every `accessibility.*` and accessibility `options.*` entry is `ReplicationScope::None`, derived from the catalog | catalog-derived test; manual half is X4 | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| S1 never-set OS-seedable field writes no key; absent loads unset; later OS change moves it | `options` store round-trip tests + resolver test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S2 cycle from Off returns to System; key gone; follows OS | panel field-action unit test over the store + save round-trip | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S3 "System (On)" label and `reduceMotionFollowsSystem` true; after one cycle "On" and false | panel descriptor + slot projection test (label resolved through the retained tree) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S4 unrecognised value + unknown key survive a save of another field; player write replaces the value | `toml::Table` round-trip save test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S5 panel write (limiter included) persists after 250 ms with no menu; immediately on panel close | bridge settled-save test driving the App panel-action path | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S6 same-value write marks player-set; key written; later OS change ignored | bridge + resolver test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S7 invalid TOML: panel write, mod-menu write, close leave file byte-for-byte; no record; panel shows next launch | `Unavailable`-status save-refusal test + first-launch predicate test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| S8 first launch writes no OS-seedable key and no record until close; OS change still moves each | `Session` options load/write test with a fake reader | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| R1 first splash frame presents before reader starts | boot-order test: fake reader records its start against `StartupTimings` marks | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| R2 reply within bound applied before splash clears; later reply is a live change | pure OS-wait gate test + boot-state test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| R3 splash keeps presenting while waiting; reply already in adds no frames | boot-state frame-count test with the fake reader | achievable as stated | pass: `splash_lifecycle::tests::poll_os_wait_gate_opens_immediately_when_a_reply_is_already_queued` and `…waits_for_the_deadline…`. The test is at gate level because a test cannot construct `ActiveEventLoop`. |
+| R4 400 ms mod init + reply 100 ms later → applied before clear (UO9) | OS-wait gate test with injected clock | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| R5 OS reply + mod-menu write same frame → player-set at menu value; OS reply on the frame a cycle returns to System → that reply (UO1) | App frame-order test over bridge + resolver | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| M1 switch on, sliders 1.0: packed shake and view feel zero; rise spawns full; scatter and fade stay | `pack_effect_uniform` test, `view_feel` test, `PresentationPool` test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| M2 on mid-shake zeroes next pack while `screen.shake` decays; off resumes at decayed amplitude; running tween snaps (UO2) | pack + decay test; `drive_tween_*` snap test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| M3 bus 0 silent, 1.0 unity, 0.5 → −12 dB ±0.1; Master 0 silences all | volume-mapping test + `Audio` bus-volume test (headless kira backend, as existing audio tests) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| M4 mono reversed mid-crossfade: no step larger than untoggled max; stereo returns within elapsed half (UO3) | mono `Effect` test driving `process` on a captured buffer | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| M5 Scripting surface example runs as a `content/dev` fixture in TS and Luau; buttons fire reserved actions; `visibleWhen` tracks; type test rejects `accessibilityAction("flashLimiter", "cycle")` | scripting fixture test (TS + Luau) + SDK type test (`tsc` negative fixture) | achievable as stated | pass: `app::accessibility_surface_fixture_tests::*` (TS and Luau) and `sdk/type-tests/accessibility-actions.ts`. |
+| L1 below-threshold strobe straddling cells passes; threshold-area strobe limited | GPU test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L2 5 Hz sine at 240 Hz → ≤ 3 flashes/s, same as 30 Hz | GPU test + independent WCAG counter | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L3 2 s hitch: ≤ 4.0 × 1/30 change; steady 20 fps black→white ≥ 375 ms | GPU test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L4 limiter action / engine-routed slider step from a mod tree or non-engine tier ignored, warns, unchanged; another field's action from a mod tree writes it | App activation test over a stamped focus export + log capture | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L5 resolve and limiter each report a GPU timing entry; absent, never zero, without timestamp support | timing decode unit test (absent path); timestamped report is manual X2 | achievable as stated (report half on X2) | automated half pass (absent decode, with measure/limit/resolve as separate pairs); timestamped report outstanding (X2). |
+| L6 resolve and measure pass own `TIMING_PAIR_*` + label; prefill test covers both | extended `scene_recording_prefills_timing_queries_before_any_pass_or_resolve` | achievable as stated | pass: the prefill and labeled-pairs tests cover `flash_limiter_measure`, `flash_limiter_limit` and `resolve`. |
+| L7 both stages: four-flash `screen.flash` strobe presents the same as clamp-bypassed + clamp output fed to the limiter; suppressed onset uses no budget (UO4) | GPU test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L8 off mid-strobe, on 0.5 s later: a fresh window, nothing from before counts, the first re-enabled frame presents unchanged (UO5; restated by owner decision A) | GPU test | achievable as restated | pass, as restated by owner decision A: `turning_the_limiter_back_on_starts_a_fresh_window_and_presents_that_frame_unchanged`. |
+| L9 after 2 s of splash or a 2 s hitch no earlier transition counts; change within one hitch allowance (UO6) | GPU test with splash hand-off | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L10 both stages run when the flag is absent or non-boolean; only explicit `false` passes | pack/flag unit test + GPU test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L11 capture bytes equal with limiter on/off; capture leaves per-cell history unchanged | capture path test (adapter-gated) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L12 hub AC 4/5 automated halves as GPU tests with readback every frame, splash hand-offs included | GPU test suite | achievable as stated | pass on this Mac's Metal adapter: 29 GPU tests, plus 1 ignored cost test. |
+| L13 equal-brightness red/green 5 Hz → ≤ 3 flashes/s, presents desaturated | GPU test + independent u′v′ counter | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L14 gameplay → splash → gameplay counts two transitions | GPU test with splash hand-off | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| L15 measure pass and resolve compose through one WGSL function; shader-source test fails if either applies shake/tonemap/vignette/flash outside it | shader-source test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| P1 panel write at the hold persists after 250 ms with the panel open; quit before close leaves field saved and no record (UO7) | hold boot-state test over the bridge | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| P2 `--connect` client with CLI map, host names a different map during the hold → host's map when hold ends | `test_app` level-request test (hold + `follow_relevel_catalog`) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| P3 staged reload retargeting `frontend.menuTree` warns naming the new tree; adding the button silences it (UO8) | staged-commit test + log capture | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| G1 F1 held with OS repeat in a text-entry modal toggles once each way; the revealed modal does not reopen it | keyboard intake test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| G2 F1/Select on a Loading frame opens nothing on the first Running frame | intake + boot-state test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| G3 confirm in the same Input stage as the opening F1 activates nothing; F1 + confirm while the panel is active closes it and activates nothing beneath | App frame test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| X1 hub AC 5 and 6 visual and strobe passes on hardware | owner, in-engine | manual | outstanding (manual). Fixtures: `a11y-strobe-test.map`, `a11y-restart-loop.map`. |
+| X2 hub AC 6 GPU timing on a timestamp-capable adapter | owner, Windows | manual | outstanding (manual, Windows). |
+| X3 hub AC 1 OS reduced-motion toggle on Windows, macOS, Linux (incl. no portal) | owner, per platform | manual | outstanding (manual, per platform). The Windows compile of `windows_text_scale.rs` is also unverified. |
+| X4 hub AC 12 loopback `--connect` hold; hub AC 13 two-instance co-op | owner, loopback | manual | outstanding (manual, loopback). |
+| H1 OS-seedable follows OS / live change / player-set sticks / no OS → default | fake-reader tests (R2, R5, S1); manual half is X3 | achievable as stated | automated pass; manual half outstanding (X3). |
+| H2 bad value in one accessibility field or `fog_quality` falls back alone with a warning; no group → unset/defaults; save writes unset | store tests + log capture | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H3a `accessibility.*` readable in play; live; script write warns, no change | scripting-core slot test + readonly `setState` log test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H3b working-copy write updates store and slot in the same frame's snapshot; crossing fires next frame | App frame-order test (O5) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H3c engine write reseeds working copy that frame without a menu write; OS-changed field stays unset | bridge reseed test (O3, O4) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H4 limiter counts, rates, resize, stage split, off-passes-unchanged | GPU tests (L-rows) + clamp unit tests | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H5 every source covered; splash load loop | GPU tests (L12, L14); manual half is X1 | achievable as stated | automated pass; manual half outstanding (X1). |
+| H6 timing and binary-size report; visual pass | manual (X1, X2); binary-size delta measured on this Mac and recorded here, other platforms on handoff | manual | binary size measured: macOS arm64 release `postretro` grew 28,045,620 → 28,192,032 bytes (+146,412 B, +0.52%) against merge-base `b21e81d7c`. Other platforms, timing (X2) and the visual pass (X1) outstanding. |
+| H7 panel limiter toggle under a no-reaction mod; restart persistence; engine sliders step and persist; mod slider warns; verdict table; catalog has no `options.flashLimiter`; review gate on the single store write site | App tests + catalog test + review gate (grep) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H8 reduce motion snaps tweens and presentation motion; sliders survive toggling; slot semantics | M1/M2 tests + slot test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H9 bus isolation, Master, mono equal L/R, crossfade | M3/M4 tests + mono equal-channel test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H10 every open/close path; warnings; theme tokens; every group field in the panel | App input tests + descriptor field-coverage test (derived from the group's field list) | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H11 reserved name rejected at mod, level, staged reload; boot continues; `pauseMenu` still shadows | `modal_stack` registry tests + log capture | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
+| H12 first-launch hold on each path; `--connect`; second launch; crash reshows; manual loopback | boot-state tests (P1, P2); manual half is X4 | achievable as stated | automated pass; manual half outstanding (X4). |
+| H13 per-machine application (manual); every `accessibility.*` and accessibility `options.*` entry is `ReplicationScope::None`, derived from the catalog | catalog-derived test; manual half is X4 | achievable as stated | automated pass; manual half outstanding (X4). |
 
 ## Tasks
 
@@ -179,6 +179,17 @@ Each task lands as its own commit(s) with its `plan.md` row update. Owner is the
 
   Follow-up: `sh_compose.wgsl`, `direct_sh_compose.wgsl` and `animated_direct_sh_compose.wgsl` declare 4.6 KB workgroup arrays with the default fill. Worth measuring after the same audit.
 - **Follow-up noted.** `Ring` is missing from the build-side Luau widget copy list. This predates the branch and is out of scope.
+
+- **Residual limitations** (documented, not blocking):
+  - A one-cell-thin dim edge beside a bright flash undercounts. From cell means it looks like a partly covered edge.
+  - A darkening with no onset before it is always admitted, so it can push the window past six.
+  - The channel clamp keeps a stricter over-budget hold (a 0.02 deadband) than decision B's per-cell rule on the GPU.
+  - Over budget, a step up under the threshold can still show, as decision B allows.
+- **Follow-ups outside this brief:**
+  - `Ring` is missing from the build-side Luau widget list (pre-existing).
+  - `createLocalState` scope ids can collide between a mod tree and a level tree (latent).
+  - SH compose shaders may pay the same workgroup zero-fill.
+  - `input.md` "Console conventions (decided, not yet built)" may be partly built already; to re-check.
 
 ## Stage checkpoints
 

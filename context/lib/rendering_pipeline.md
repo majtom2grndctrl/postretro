@@ -470,7 +470,12 @@ timed loop. CPU samples cover completed GPU work through a renderer-owned submit
 boundary, not command enqueue time. GPU timing reuses the existing timestamp-query gate;
 unsupported or incomplete timing is named as absent, never reported as zero. Warmup timing
 state is discarded before samples. The normal PNG publishes before the staged measurement
-report, so a failed run cannot leave a new valid-looking report.
+report, so a failed run cannot leave a new valid-looking report. The report
+(`postretro.capture.measurement.v3`) also carries `cpu_stages`: the renderer's CPU stages over
+complete post-warmup 120-sample windows, roots as top-level rows, with the same
+`availability`/`reason` shape as `gpu_timing` (`not-requested`/`env-disabled`,
+`not-yet-windowed`/`window-not-complete`) and a trailing partial window only as
+`partial_frames` (§12).
 
 Capture remains VM-free: no script VM, trigger firing, or game tick. Preload and ordinary PNG
 capture render the authored instant at time zero. Measurement mode advances renderer animation
@@ -639,18 +644,21 @@ zero-cost pass.
 
 ### CPU Stage Timing
 
-_Decided, not built yet._ `POSTRETRO_CPU_TIMING=1` enables per-stage CPU timing in every build; unset, the timer accumulates, logs and allocates nothing. Stage labels are engine-closed and hierarchical: a substage's time sits inside its parent's. Each crate owns its stage set and returns its stats upward. A shared leaf crate holds only the mechanism (scope guard, window fold, optional Tracy bridge) and names no stage. The binary owns the top-level frame stages and every window, and folds stages by label, so a new stage in an existing crate's set needs no binary edit.
+`POSTRETRO_CPU_TIMING=1` enables per-stage CPU timing in every build; unset, the timer accumulates, logs and allocates nothing. Stage labels are engine-closed and hierarchical: a substage's time sits inside its parent's. Each crate owns its stage set (`StageSet`) and returns its values upward through its existing outputs: `VisibilityStats::cpu`, `TickEvents::cpu`, `Renderer::cpu_stages()`. The leaf crate `postretro-stage-timing` holds only the mechanism (scope guard, frame record, window fold, optional Tracy bridge), depends on no engine crate and names no stage. The binary (`cpu_timing/`) owns the top-level frame stages and every window, and places each crate's roots under one of its stages by label, so a new stage in an existing crate's set needs no binary edit. Labels are unique across every set the binary folds. Scopes, the per-frame fold and window close are allocation-free; surfaces allocate at most once per window.
 
 | Rule | Contract |
 |---|---|
 | Frame split | Frame total = top-level stages + wait + unattributed. Wait is the vsync block: surface acquire (timed by the renderer, excluding surface reconfigure) plus present. Work CPU = total − wait. |
 | Windows | 120 counted in-level frames. Each stage's avg and max cover only the frames it ran in, and the stage reports that count. Unattributed, work CPU and tick count are per-frame values, then windowed. A stage entered twice in a frame sums. |
 | Excluded frames | Frontend frames, early-returned frames, and frames whose acquire yields no surface never count. |
-| Resets | A vsync toggle, level install, level unload or hot-reload commit discards the partial window; the triggering frame does not count. A new level clears the previous level's window from every surface. |
+| Stage tree | Top-level stages run in frame order (`housekeeping` … `frame_tail`) beside `wait` and `unattributed`; `ticks` counts fixed ticks. Sim roots (`sim_tick`, `predict_*`) sit under `fixed_step`, the walk (`portal_walk`, its counters, `portal_fallback`, `walk_step_limit`) under `visibility`, renderer roots (`render_sh_drain`, `render_record` with one `rec_*` substage per pass, `render_submit`, `render_debug_ui`) under `render`, and `wait_acquire`/`wait_present` under `wait`. `total` and `work` are marked aggregates, not stages. Windows list rows in depth-first order. |
+| Resets | A vsync toggle, level install, level unload or hot-reload commit discards the partial window. The install frame and a reload-commit frame do not count. A new level clears the previous level's window from every surface. |
 | Portal walk | A step-limit trip is a walk frame. A portal-fallback frame adds only to a fallback count. |
 | Absent ≠ zero | A stage that did not run reports absent. Timing off reports unavailable with a reason. Capture reports only complete post-warmup windows, and a partial window only as a count. |
 
-CPU and GPU windows never align: the GPU window counts completed readbacks. Surfaces: a log line per window, the debug UI Performance tab (`dev-tools`), a live-only observe-live dump section (`networking.md` §Not netcode: the live introspection channel), and the capture measurement report. Tracy is an optional cargo feature. The feature alone drives it, and no release, dist or dependency-free diagnostic build enables it.
+CPU and GPU windows never align: the GPU window counts completed readbacks. Surfaces: a `[CpuTiming]` log line per window (`label=avg/max`; `(ran/frames)` on partial rows; markers as a frame count), the debug UI Performance tab (`dev-tools`) beside the GPU block, a live-only observe-live `cpu_timing` section (`networking.md` §Not netcode: the live introspection channel), and the capture measurement report's `cpu_stages`. The `tracy` cargo feature makes every stage scope a Tracy zone, with or without the env var; no release, dist or dependency-free diagnostic build enables it.
+
+**Measurement probes.** `--start-pose x,y,z,yaw_deg,pitch_deg` starts the session's first gameplay install at a pose (pawn origin, engine meters) instead of the map spawn. `walk_reach_probe_search` (`candidate_cull_probes.rs`, on demand) ranks stress-map poses by portals the walk considers; probes and their launch line live in `content/dev/maps/stress-warren.README.md`. The portal-walk parallelization gate (walk > 0.5 ms and ≥ 5% of work CPU, release) was evaluated at the `stress-warren-mini` probe and not met: 0.36 ms, 1.9% of work (`plans/done/cpu-frame-profiling`).
 
 ### Debug-Line Renderer
 

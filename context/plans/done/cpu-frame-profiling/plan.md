@@ -1,7 +1,7 @@
 # CPU Frame Profiling — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 683e363ba
 
 ## Corrections

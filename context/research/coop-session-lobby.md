@@ -35,7 +35,7 @@ stated plainly rather than dressed up: the player id makes *rejoin restores your
 work, and it is not an authentication mechanism.
 
 What remains is the fourth capability: a scripting API for the lobby, including author-decided
-join policy — the **Lobby authoring surface** (open, `roadmap.md` ~line 205).
+join policy — the **Lobby authoring surface** (open, `roadmap.md` Epic 15 Phase 3.75).
 
 ---
 

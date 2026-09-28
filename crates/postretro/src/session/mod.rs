@@ -632,6 +632,8 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
         match getrandom::fill(&mut player_id) {
             Ok(()) => {
                 player_options.player_id = Some(player_id);
+                // An unreadable stored id is useless; the new one replaces it.
+                player_options.mark_written(options::keys::PLAYER_ID);
                 generated_identity = true;
             }
             Err(err) => log::warn!(

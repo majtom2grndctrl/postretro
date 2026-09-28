@@ -8,7 +8,7 @@ use std::path::Path;
 
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
-use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality};
+use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality, keys};
 use crate::input::InputSystem;
 use save_schedule::SaveSchedule;
 
@@ -172,6 +172,7 @@ impl OptionsBridge {
             MOUSE_SENSITIVITY_SLOT,
             &mut self.observed.mouse_sensitivity,
         ) {
+            options.mark_written(keys::MOUSE_SENSITIVITY);
             if options.mouse_sensitivity != *value {
                 options.mouse_sensitivity = *value;
                 input.set_mouse_sensitivity(*value);
@@ -184,6 +185,7 @@ impl OptionsBridge {
         if let Some((generation, SlotValue::Boolean(value))) =
             changed_value(table, INVERT_Y_SLOT, &mut self.observed.invert_y)
         {
+            options.mark_written(keys::INVERT_Y);
             if options.invert_y != *value {
                 options.invert_y = *value;
                 input.set_invert_y(*value);
@@ -198,6 +200,7 @@ impl OptionsBridge {
             VIEW_FEEL_SCALE_SLOT,
             &mut self.observed.view_feel_scale,
         ) {
+            options.mark_written(keys::VIEW_FEEL_SCALE);
             if options.view_feel_scale != *value {
                 options.view_feel_scale = *value;
                 changed = true;
@@ -209,6 +212,7 @@ impl OptionsBridge {
             changed_value(table, CROUCH_MODE_SLOT, &mut self.observed.crouch_mode)
         {
             if let Some(mode) = CrouchMode::from_slot_value(value) {
+                options.mark_written(keys::CROUCH_MODE);
                 if options.crouch_mode != mode {
                     options.crouch_mode = mode;
                     changed = true;
@@ -223,6 +227,7 @@ impl OptionsBridge {
             &mut self.observed.shadow_quality,
         ) {
             if let Some(quality) = ShadowQuality::from_slot_value(value) {
+                options.mark_written(keys::SHADOW_QUALITY);
                 if options.shadow_quality != quality {
                     options.shadow_quality = quality;
                     changed = true;
@@ -235,6 +240,7 @@ impl OptionsBridge {
             changed_value(table, FOG_QUALITY_SLOT, &mut self.observed.fog_quality)
         {
             if let Some(quality) = FogQuality::from_slot_value(value) {
+                options.mark_written(keys::FOG_QUALITY);
                 if options.fog_quality != quality {
                     options.fog_quality = quality;
                     effects.fog_quality = Some(quality);
@@ -250,6 +256,7 @@ impl OptionsBridge {
             &mut self.observed.surface_depth_quality,
         ) {
             if let Some(quality) = SurfaceDepthQuality::from_slot_value(value) {
+                options.mark_written(keys::SURFACE_DEPTH_QUALITY);
                 if options.surface_depth_quality != quality {
                     options.surface_depth_quality = quality;
                     effects.surface_depth_quality = Some(quality);

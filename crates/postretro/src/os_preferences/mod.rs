@@ -9,7 +9,7 @@ mod windows_text_scale;
 
 #[cfg(test)]
 use std::sync::mpsc::Sender;
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 /// Whatever follows mod init waits at most this long for the reader's first
@@ -59,8 +59,10 @@ impl OsPreferenceFeed {
     /// channel.
     pub(crate) fn start() -> Self {
         let (tx, rx) = channel();
-        let mut sources: Vec<Box<dyn std::any::Any>> = Vec::new();
-        sources.push(Box::new(mundy_source::subscribe(tx.clone())));
+        // `mut` only for the Windows text-scale guard below.
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut sources: Vec<Box<dyn std::any::Any>> =
+            vec![Box::new(mundy_source::subscribe(tx.clone()))];
         #[cfg(windows)]
         if let Some(guard) = windows_text_scale::subscribe(tx.clone()) {
             sources.push(Box::new(guard));
@@ -89,23 +91,19 @@ impl OsPreferenceFeed {
     /// Called once per frame at the frame top; allocation-free.
     pub(crate) fn poll(&mut self) -> Option<OsReadings> {
         let mut changed = false;
-        loop {
-            match self.rx.try_recv() {
-                Ok(update) => {
-                    changed = true;
-                    match update {
-                        OsUpdate::Preferences {
-                            reduce_motion,
-                            increased_contrast,
-                        } => {
-                            self.replied = true;
-                            self.readings.reduce_motion = reduce_motion;
-                            self.readings.increased_contrast = increased_contrast;
-                        }
-                        OsUpdate::TextScale(scale) => self.readings.text_scale = Some(scale),
-                    }
+        // Empty and Disconnected both end the drain.
+        while let Ok(update) = self.rx.try_recv() {
+            changed = true;
+            match update {
+                OsUpdate::Preferences {
+                    reduce_motion,
+                    increased_contrast,
+                } => {
+                    self.replied = true;
+                    self.readings.reduce_motion = reduce_motion;
+                    self.readings.increased_contrast = increased_contrast;
                 }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                OsUpdate::TextScale(scale) => self.readings.text_scale = Some(scale),
             }
         }
         changed.then_some(self.readings)

@@ -1215,7 +1215,9 @@ mod tests {
             }
         }
         assert!(
-            !entries.iter().any(|e| e.wire_name == "options.flashLimiter"),
+            !entries
+                .iter()
+                .any(|e| e.wire_name == "options.flashLimiter"),
             "the flash limiter has no script-writable working copy"
         );
     }

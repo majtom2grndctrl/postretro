@@ -12,10 +12,12 @@ read at: 76a6370ac
 - Runtime `WorldVertex.lightmap_layer: u32` → splits into `lightmap_layer: u16` + `animated_block: u16`, read as one `Uint16x2` attribute at location 5, matching the Boundary inventory. Stride stays 36.
 - Static lightmap layers are square power-of-two (`pack_layers` / `choose_layer_dim`), so "the static layer size" is the section-22 layer width, and the identity layout's pages are `page_size × page_size` at that width.
 - `build_pipeline.md` calls the weight-map stage uncached (doc drift, known). Fixed at landing.
+- Brief: "When the static lightmap is the placeholder, the level keeps today's no-animated-light path." → Source: a map with no static baked lights compiles a 1×1 placeholder section 22 and `prepare_atlas` never splits vertices or assigns lightmap UVs, yet sections 24/25 are still written. The vertex guards cannot hold there and the runtime never samples the animated atlas, so the compiler still writes the (repacked) sections but skips the vertex guards and stamps no block ids. The loader and renderer treat a 1×1 single-layer section 22 as the placeholder (`LightmapSection::is_placeholder`); the renderer's static-layer resolver (`usable_static_layers`) now returns `None` for it, so the animated atlas takes the dummy path with a warning instead of today's cross-section error. Same outcome: no animated light.
+- Brief Path: "`DispatchTile.target_slot`". → Renamed `target_page` in Rust and in `animated_lightmap_compose.wgsl`, and the compose rect fields `atlas_x/y` → `compact_x/y`; compose logic is unchanged.
 
 ## Delegated answers
 - Dev panel location and log line format — the Performance tab gets a "Lightmap memory" section with the five rows and their total. Each level install logs one `[Renderer] Lightmap residency:` info line naming the five byte counts. Both read the same `LightmapResidencyReport` the capture report serializes, so the three cannot disagree.
-- Unload proof — no new unload harness. The meter is rebuilt by every `install_level_geometry`, and `release_level_resources` installs the empty geometry. The meter is a pure function of the install decisions, so a GPU-free test feeds it the release path's inputs and a second level's inputs in sequence.
+- Unload proof — no new unload harness. The meter is rebuilt by every `install_level_geometry`, and `release_level_resources` installs the empty geometry. The meter reads the textures actually bound, so the proof is a self-skipping GPU test on `Renderer::new_offscreen`: install level A, release it, install level B.
 
 ## AC-to-proof
 
@@ -73,10 +75,10 @@ occlusion-test and closet-reveal PRLs are stale in section 34 and do not load; t
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Lightmap-family byte meter on today's full-layer atlas (renderer ledger generalization, load log, dev panel, capture JSON) and before readings | integrating executor | — | done: `residency`, `lightmap_residency`, capture `report_serializes_lightmap_family_rows_with_the_meter_bytes`; before readings below |
-| 2 | Section 25 v4 types, shared block cap and page bounds (level-format); vertex pad → `animated_block` | integrating executor | — | |
-| 3 | Compiler: identity-layout bake, cull with blocks, cell-order MaxRects repack, guards, vertex stamping after the SDF key, budget on pages, stage bump, golden rebaseline | integrating executor (may delegate) | 2 | |
-| 4 | Loader / render-cpu: page-size preflight, v4 cross-section validation, block-id cross-check with mismatch policy | integrating executor | 2 | |
-| 5 | Renderer: `Uint16x2` vertex attribute, binding-7 block table, forward remap, page-sized atlas and page-targeted tiles, installed-table fallback | integrating executor | 2, 4 | |
+| 2 | Section 25 v4 types, shared block cap and page bounds (level-format); vertex pad → `animated_block` | integrating executor | — | done: `animated_light_weight_maps::tests`, `animated_lightmap_atlas::tests`, `animated_block_round_trips_in_the_former_pad_bytes` |
+| 3 | Compiler: identity-layout bake, cull with blocks, cell-order MaxRects repack, guards, vertex stamping after the SDF key, budget on pages, stage bump, golden rebaseline | integrating executor | 2 | done except golden rebaseline (task 7): `animated_atlas_layout::tests`, `animated_block_ids::tests`, `animated_light_weight_maps::tests`; full `-p postretro-level-compiler` green |
+| 4 | Loader / render-cpu: page-size preflight, v4 cross-section validation, block-id cross-check with mismatch policy | integrating executor | 2 | done: `prl_animated_atlas::tests`, render-cpu `validate_cross_section_*`; release-build mismatch test runs in task 8 |
+| 5 | Renderer: `Uint16x2` vertex attribute, binding-7 block table, forward remap, page-sized atlas and page-targeted tiles, installed-table fallback | integrating executor | 2, 4 | done: renderer lib 716 green incl. `compose_and_forward_resolve_every_block_to_the_same_page_and_offset`, `block_table_capacity_matches_forward_wgsl_and_the_compiler_cap` |
 | 6 | Identity-vs-packed parity GPU test (riskiest premise: zero gutters give pixel parity) | integrating executor | 5 | |
 | 7 | SDF-cache and warm/cold integration tests; rebuild stale PRLs; after readings and campaign-test capture | integrating executor | 3, 5 | |
 | 8 | Preflight, review panel, fixes | integrating executor | 1–7 | |

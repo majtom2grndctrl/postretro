@@ -2,6 +2,8 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 pub mod affinity_grid;
+pub mod animated_atlas_layout;
+pub mod animated_block_ids;
 pub mod animated_direct_sh_bake;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;

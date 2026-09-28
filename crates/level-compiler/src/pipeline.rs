@@ -26,12 +26,13 @@ mod finalized_publication;
 pub(crate) mod lightmap_stage;
 mod stage_registry;
 use crate::{
-    animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
-    billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
-    chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake, entity_shadow_select,
-    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, map_data,
-    navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
-    sh_density, sh_group, texture_mips, texture_validation, trigger_volumes, visibility,
+    animated_atlas_layout, animated_block_ids, animated_direct_sh_bake, animated_light_chunks,
+    animated_light_weight_maps, billboard_direct_scatter_bake, bvh_build, cache,
+    cell_draw_index_bake, cell_visibility_bake, chunk_light_list_bake, delta_sections,
+    delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks, geometry,
+    kinematic_geometry, light_namespaces, lightmap_bake, map_data, navmesh_bake, pack, parse,
+    partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group,
+    texture_mips, texture_validation, trigger_volumes, visibility,
 };
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
@@ -1915,30 +1916,44 @@ fn run_after_parsing(
 
     // Drop chunks the bake found unlit before sizing the animated atlas: the
     // influence-sphere chunk selection over-includes occluded and back-facing
-    // receivers, and each one would otherwise hold an atlas slot and compose
-    // tiles. The budget is checked on the surviving slot count.
-    let (animated_light_chunks_section, animated_light_weight_maps_section, bvh_chunk_ranges) =
-        match animated_light_weight_maps_section {
-            Some(weight_maps) => {
-                let culled = animated_light_weight_maps::cull_unlit_chunks(
-                    &animated_light_chunks_section,
-                    weight_maps,
-                    &bvh_chunk_ranges,
-                );
-                animated_light_weight_maps::validate_animated_atlas_budget(
+    // receivers, and each one would otherwise hold atlas texels and compose
+    // tiles. The survivors are repacked into the compact paged atlas; the
+    // budget is checked on the pages that layout allocates. Both cache paths
+    // run this, so warm and cold builds write identical sections.
+    let (
+        animated_light_chunks_section,
+        animated_light_weight_maps_section,
+        bvh_chunk_ranges,
+        animated_face_blocks,
+    ) = match animated_light_weight_maps_section {
+        Some(weight_maps) => {
+            let culled = animated_light_weight_maps::cull_unlit_chunks(
+                &animated_light_chunks_section,
+                weight_maps,
+                &bvh_chunk_ranges,
+                atlas_width,
+            );
+            let mut weight_maps = culled.weight_maps;
+            let face_blocks = if weight_maps.chunk_rects.is_empty() {
+                None
+            } else {
+                layout_animated_atlas(
+                    &mut weight_maps,
+                    &culled.chunk_section,
+                    &geo_result,
                     atlas_width,
-                    atlas_height,
-                    culled.weight_maps.slot_to_static_layer.len() as u32,
-                )
-                .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
-                (
-                    culled.chunk_section,
-                    Some(culled.weight_maps),
-                    culled.leaf_chunk_ranges,
-                )
-            }
-            None => (animated_light_chunks_section, None, bvh_chunk_ranges),
-        };
+                    lightmap_section.is_placeholder(),
+                )?
+            };
+            (
+                culled.chunk_section,
+                Some(weight_maps),
+                culled.leaf_chunk_ranges,
+                face_blocks,
+            )
+        }
+        None => (animated_light_chunks_section, None, bvh_chunk_ranges, None),
+    };
 
     let (animated_light_chunks_section, animated_light_weight_maps_section) =
         if animated_light_chunks_section.chunks.is_empty() {
@@ -2013,6 +2028,17 @@ fn run_after_parsing(
     } else {
         None
     };
+
+    // Stamp animated block ids only now: the SDF atlas key above hashes
+    // `geo_result`, and an animated-light edit that moves blocks must not
+    // re-bake the SDF atlas.
+    if let Some(face_blocks) = &animated_face_blocks {
+        animated_block_ids::stamp_animated_block_ids(
+            &mut geo_result.geometry,
+            &geo_result.face_index_ranges,
+            face_blocks,
+        );
+    }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
@@ -2383,6 +2409,68 @@ pub(crate) fn log_direct_sh_delta_stats_for_test(
     verbose: bool,
 ) {
     log_direct_sh_delta_stats(stats, verbose);
+}
+
+/// Repack the culled animated atlas into its compact layout and enforce what
+/// the layout relies on. Returns each face's block for the post-SDF vertex
+/// stamp, or `None` when the static lightmap is the placeholder: its vertices
+/// were never split or given lightmap UVs, and the runtime never samples the
+/// animated atlas without a static one, so there is nothing to guard or stamp.
+fn layout_animated_atlas(
+    weight_maps: &mut postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection,
+    chunk_section: &postretro_level_format::animated_light_chunks::AnimatedLightChunksSection,
+    geo_result: &geometry::GeometryResult,
+    static_layer_size: u32,
+    static_lightmap_is_placeholder: bool,
+) -> anyhow::Result<Option<Vec<Option<u32>>>> {
+    let identity_pages = weight_maps.compact_layers;
+    let chosen = animated_atlas_layout::choose_compact_layout(weight_maps, static_layer_size);
+    if let Some(error) = weight_maps.consistency_error() {
+        anyhow::bail!("Animated lightmap atlas layout is inconsistent: {error}");
+    }
+    animated_light_weight_maps::validate_animated_atlas_budget(
+        weight_maps.page_size,
+        weight_maps.compact_layers,
+    )
+    .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
+    log::info!(
+        "[AnimatedLightWeightMaps] {chosen:?} layout: {} blocks on {} pages of {}² \
+         ({} bytes; identity layout {} pages of {}², {} bytes)",
+        weight_maps.blocks.len(),
+        weight_maps.compact_layers,
+        weight_maps.page_size,
+        postretro_level_format::animated_lightmap_atlas::animated_atlas_byte_estimate(
+            weight_maps.page_size,
+            weight_maps.page_size,
+            weight_maps.compact_layers,
+        ),
+        identity_pages,
+        static_layer_size,
+        postretro_level_format::animated_lightmap_atlas::animated_atlas_byte_estimate(
+            static_layer_size,
+            static_layer_size,
+            identity_pages,
+        ),
+    );
+
+    let face_blocks = animated_block_ids::face_blocks(
+        chunk_section,
+        weight_maps,
+        geo_result.face_index_ranges.len(),
+    )
+    .map_err(|e| anyhow::anyhow!("Animated lightmap block guard failed: {e}"))?;
+    if static_lightmap_is_placeholder {
+        return Ok(None);
+    }
+    animated_block_ids::validate_block_guards(
+        &geo_result.geometry,
+        &geo_result.face_index_ranges,
+        weight_maps,
+        &face_blocks,
+        static_layer_size,
+    )
+    .map_err(|e| anyhow::anyhow!("Animated lightmap block guard failed: {e}"))?;
+    Ok(Some(face_blocks))
 }
 
 #[cfg(test)]

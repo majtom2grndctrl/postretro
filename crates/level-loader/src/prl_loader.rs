@@ -1587,7 +1587,8 @@ pub(crate) fn load_prl_from_container(
             normal_oct: v.normal_oct,
             tangent_packed: v.tangent_packed,
             lightmap_uv: v.lightmap_uv,
-            lightmap_layer: v.lightmap_layer as u32,
+            lightmap_layer: v.lightmap_layer,
+            animated_block: v.animated_block,
         })
         .collect();
 
@@ -2009,21 +2010,31 @@ pub(crate) fn load_prl_from_container(
         };
 
     // Optional — absent → 1×1 zero atlas on animated-contribution slot.
-    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> = match read_section(
-        SectionId::AnimatedLightWeightMaps,
-    )? {
-        Some(data) => {
-            let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
-                section.chunk_rects.len(),
-                section.offset_counts.len(),
-                section.texel_lights.len(),
-            );
-            Some(section)
-        }
-        None => None,
-    };
+    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> =
+        match read_section(SectionId::AnimatedLightWeightMaps)? {
+            Some(data) => {
+                let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] AnimatedLightWeightMaps: {} chunks, {} blocks on {} pages of {}², \
+                 {} covered texels, {} weight entries",
+                    section.chunk_rects.len(),
+                    section.blocks.len(),
+                    section.compact_layers,
+                    section.page_size,
+                    section.offset_counts.len(),
+                    section.texel_lights.len(),
+                );
+                Some(section)
+            }
+            None => None,
+        };
+    // Both sections it depends on have decoded: size its pages against the
+    // static lightmap layer and cross-check every vertex's block id.
+    let animated_light_weight_maps = crate::prl_animated_atlas::check_animated_atlas(
+        animated_light_weight_maps,
+        lightmap.as_ref(),
+        &vertices,
+    )?;
 
     // Optional — absent → SH compose pass falls back to base→total copy.
     let delta_sh_volumes: Option<DeltaShVolumesSection> = if streaming.is_some() {

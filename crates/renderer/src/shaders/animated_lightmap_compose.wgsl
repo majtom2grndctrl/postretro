@@ -43,9 +43,10 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 
+// Chunk rect in compact-atlas coordinates on its block's page.
 struct ChunkAtlasRect {
-    atlas_x: u32,
-    atlas_y: u32,
+    compact_x: u32,
+    compact_y: u32,
     width: u32,
     height: u32,
     texel_offset: u32,
@@ -71,7 +72,7 @@ struct DispatchTile {
     chunk_idx: u32,
     tile_origin_x: u32,
     tile_origin_y: u32,
-    target_slot: u32,
+    target_page: u32,
 };
 
 // `chunk_idx` of a grid-padding record. Mirrors `PADDING_TILE_CHUNK_IDX` in
@@ -178,8 +179,8 @@ fn compose_main(
         let heat = f32(oc.count) / denom;
         textureStore(
             animated_lm_atlas,
-            vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
-            i32(tile.target_slot),
+            vec2<i32>(i32(rect.compact_x + rect_x), i32(rect.compact_y + rect_y)),
+            i32(tile.target_page),
             vec4<f32>(heat, 0.0, 0.0, 1.0),
         );
         return;
@@ -220,8 +221,8 @@ fn compose_main(
     }
     textureStore(
         animated_lm_atlas,
-        vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
-        i32(tile.target_slot),
+        vec2<i32>(i32(rect.compact_x + rect_x), i32(rect.compact_y + rect_y)),
+        i32(tile.target_page),
         vec4<f32>(accum, 1.0),
     );
     // Opposing lights can cancel and uncovered texels stay zero; encode a
@@ -236,8 +237,8 @@ fn compose_main(
     }
     textureStore(
         animated_lm_direction_atlas,
-        vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
-        i32(tile.target_slot),
+        vec2<i32>(i32(rect.compact_x + rect_x), i32(rect.compact_y + rect_y)),
+        i32(tile.target_page),
         vec4<f32>(dir_oct, 0.0, coverage),
     );
 }

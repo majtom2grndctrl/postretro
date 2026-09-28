@@ -10,7 +10,7 @@ pub const NO_TEXTURE: u32 = u32::MAX;
 /// 36-byte vertex: position (f32x3) + base UV (f32x2) + octahedral normal
 /// (u16x2) + octahedral tangent with bitangent sign (u16x2) + lightmap UV
 /// (u16x2, normalized 0..65535 → 0..1 atlas space) + lightmap array layer
-/// (u16) + 2 bytes padding.
+/// (u16) + animated-lightmap block id (u16).
 ///
 /// The bitangent sign is packed into the MSB of `tangent_packed[1]`: the lower
 /// 15 bits hold the octahedral v-component, and bit 15 is 1 for positive
@@ -34,8 +34,10 @@ pub struct Vertex {
     /// Atlas array layer this vertex's lightmap chart lives in. Selects the
     /// `texture_2d_array` slice sampled at `lightmap_uv` in the hot path.
     pub lightmap_layer: u16,
-    /// Explicit padding to keep the on-disk vertex 4-byte aligned at 36 bytes.
-    pub _padding: u16,
+    /// Animated-lightmap block of this vertex's face: 0 means none, `n`
+    /// means section 25 block `n - 1`. Stamped by the compiler after the
+    /// animated atlas repack; occupies the former 36-byte alignment pad.
+    pub animated_block: u16,
 }
 
 impl Vertex {
@@ -68,7 +70,7 @@ impl Vertex {
             tangent_packed,
             lightmap_uv,
             lightmap_layer,
-            _padding: 0,
+            animated_block: 0,
         }
     }
 
@@ -134,7 +136,7 @@ pub struct FaceMeta {
 ///   u16 normal_u, u16 normal_v               (octahedral normal, 4 bytes)
 ///   u16 tangent_u, u16 tangent_v_with_sign   (octahedral tangent + sign, 4 bytes)
 ///   u16 lm_u, u16 lm_v                       (quantized lightmap UV, 4 bytes)
-///   u16 lm_layer, u16 padding                (lightmap array layer + pad, 4 bytes)
+///   u16 lm_layer, u16 animated_block         (lightmap array layer + animated block id, 4 bytes)
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GeometrySection {
@@ -183,7 +185,7 @@ impl GeometrySection {
             buf.extend_from_slice(&v.lightmap_uv[0].to_le_bytes());
             buf.extend_from_slice(&v.lightmap_uv[1].to_le_bytes());
             buf.extend_from_slice(&v.lightmap_layer.to_le_bytes());
-            buf.extend_from_slice(&0u16.to_le_bytes()); // padding
+            buf.extend_from_slice(&v.animated_block.to_le_bytes());
         }
 
         for &idx in &self.indices {
@@ -298,7 +300,7 @@ impl GeometrySection {
             let lm_u = u16::from_le_bytes([data[offset + 28], data[offset + 29]]);
             let lm_v = u16::from_le_bytes([data[offset + 30], data[offset + 31]]);
             let lm_layer = u16::from_le_bytes([data[offset + 32], data[offset + 33]]);
-            // Bytes 34..35 are padding; read and discard.
+            let animated_block = u16::from_le_bytes([data[offset + 34], data[offset + 35]]);
 
             vertices.push(Vertex {
                 position: [x, y, z],
@@ -307,7 +309,7 @@ impl GeometrySection {
                 tangent_packed: [tangent_u, tangent_v_with_sign],
                 lightmap_uv: [lm_u, lm_v],
                 lightmap_layer: lm_layer,
-                _padding: 0,
+                animated_block,
             });
             offset += VERTEX_SIZE;
         }
@@ -479,6 +481,21 @@ mod tests {
         let bytes = section.to_bytes();
         let restored = GeometrySection::from_bytes(&bytes).unwrap();
         assert_eq!(restored.vertices[1].lightmap_layer, 7);
+    }
+
+    #[test]
+    fn animated_block_round_trips_in_the_former_pad_bytes() {
+        let mut section = sample_section();
+        section.vertices[1].lightmap_layer = 7;
+        section.vertices[1].animated_block = 0xBEEF;
+        let bytes = section.to_bytes();
+        // Header (12) + vertex 0 (36) + the block id at bytes 34..36 of vertex 1.
+        let at = 12 + 36 + 34;
+        assert_eq!(&bytes[at..at + 2], &0xBEEF_u16.to_le_bytes());
+        let restored = GeometrySection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.vertices[1].animated_block, 0xBEEF);
+        assert_eq!(restored.vertices[1].lightmap_layer, 7);
+        assert_eq!(restored.vertices[0].animated_block, 0);
     }
 
     #[test]

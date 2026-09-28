@@ -181,31 +181,32 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
     );
     assert_eq!(
         version, ANIMATED_LIGHT_WEIGHT_MAPS_VERSION,
-        "spill fixture must use the v3 layer-aware animated-weight-map section",
+        "spill fixture must use the current compact animated-weight-map section",
     );
     let weight_maps =
         AnimatedLightWeightMapsSection::from_bytes(&weight_map_bytes).expect("weight maps decode");
-    assert!(
-        weight_maps.is_consistent(),
+    assert_eq!(
+        weight_maps.consistency_error(),
+        None,
         "spill fixture weight maps must be internally consistent",
     );
     assert!(
         weight_maps
-            .slot_to_static_layer
+            .chunk_rects
             .iter()
-            .any(|&layer| layer >= 1),
-        "v3 slot table must contain an animated receiver static layer >= 1: {:?}",
-        weight_maps.slot_to_static_layer,
-    );
-    assert!(
-        weight_maps.chunk_rects.iter().any(|rect| {
-            rect.layer >= 1
-                && weight_maps.offset_counts[rect.texel_offset as usize
-                    ..(rect.texel_offset + rect.width * rect.height) as usize]
-                    .iter()
-                    .any(|entry| entry.count > 0)
-        }),
-        "a static layer >= 1 must contain an animated receiver with covered texels",
+            .enumerate()
+            .any(|(index, rect)| {
+                let (static_layer, _, _) = weight_maps
+                    .chunk_static_origin(index)
+                    .expect("every chunk resolves through its block");
+                static_layer >= 1
+                    && weight_maps.offset_counts[rect.texel_offset as usize
+                        ..(rect.texel_offset + rect.width * rect.height) as usize]
+                        .iter()
+                        .any(|entry| entry.count > 0)
+            }),
+        "a static layer >= 1 must contain an animated receiver with covered texels: {:?}",
+        weight_maps.blocks,
     );
 
     let _ = std::fs::remove_file(&output);

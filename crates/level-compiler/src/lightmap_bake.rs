@@ -1254,7 +1254,7 @@ fn place_leaf(
 /// splits it, and prunes any free rects now contained in another. This is the
 /// genuine MaxRects algorithm (Jylänki 2010), not a shelf fallback, so it reaches
 /// the 85–95% density target on mixed chart sets.
-struct MaxRects {
+pub(crate) struct MaxRects {
     free: Vec<Rect>,
 }
 
@@ -1267,7 +1267,7 @@ struct Rect {
 }
 
 impl MaxRects {
-    fn new(width: u32, height: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32) -> Self {
         MaxRects {
             free: vec![Rect {
                 x: 0,
@@ -1282,7 +1282,7 @@ impl MaxRects {
     /// Best-Short-Side-Fit: among free rects that can host it, pick the one
     /// leaving the smallest leftover short side (ties broken by long side, then
     /// position) for a deterministic, dense placement.
-    fn insert(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+    pub(crate) fn insert(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
         let mut best: Option<(usize, u32, u32)> = None; // (free idx, short leftover, long leftover)
         for (idx, r) in self.free.iter().enumerate() {
             if r.w >= w && r.h >= h {

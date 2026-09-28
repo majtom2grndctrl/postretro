@@ -25,11 +25,6 @@ use crate::compute_cull::{MAX_VISIBLE_CELLS, VISIBLE_CELLS_WORDS};
 use postretro_render_data::geometry::BvhLeaf;
 use postretro_visibility::VisibleCells;
 
-use crate::lighting::lightmap::{
-    INVALID_SLOT, StaticLayerToAnimatedSlot, animated_slot_for_static_layer,
-    static_layer_to_animated_slot,
-};
-
 use super::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use super::sh_volume::AnimatedLightBuffers;
 use super::{LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE};
@@ -41,7 +36,7 @@ const PADDING_TILE: DispatchTile = DispatchTile {
     chunk_idx: u32::MAX,
     tile_origin_x: 0,
     tile_origin_y: 0,
-    target_slot: 0,
+    target_page: 0,
 };
 
 /// Row-major 2D workgroup grid `(columns, rows)` for `tile_count` one-tile
@@ -60,9 +55,9 @@ fn pad_tiles_to_grid(tiles: &mut Vec<DispatchTile>, (columns, rows): (u32, u32))
     tiles.resize((columns * rows) as usize, PADDING_TILE);
 }
 
-/// Array-atlas dimensions derived from the static lightmap dimensions and the
-/// section-25 animated slot count. `None` is the no-animated-atlas path: wgpu
-/// rejects a texture whose array depth is zero.
+/// Compact-atlas dimensions: `page_count` square pages of `page_size`. `None`
+/// is the no-animated-atlas path: wgpu rejects a texture whose array depth is
+/// zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AnimatedAtlasExtent {
     width: u32,
@@ -70,21 +65,19 @@ struct AnimatedAtlasExtent {
     depth_or_array_layers: u32,
 }
 
-fn animated_atlas_extent(width: u32, height: u32, slot_count: u32) -> Option<AnimatedAtlasExtent> {
-    (slot_count > 0).then_some(AnimatedAtlasExtent {
-        width,
-        height,
-        depth_or_array_layers: slot_count,
+fn animated_atlas_extent(page_size: u32, page_count: u32) -> Option<AnimatedAtlasExtent> {
+    (page_count > 0).then_some(AnimatedAtlasExtent {
+        width: page_size,
+        height: page_size,
+        depth_or_array_layers: page_count,
     })
 }
 
-fn animated_slot_count_fits_device(slot_count: u32, max_texture_array_layers: u32) -> bool {
-    slot_count <= max_texture_array_layers
-}
-
 fn validate_weight_map_section(section: &AnimatedLightWeightMapsSection) -> Result<(), String> {
-    if !section.is_consistent() {
-        return Err("animated light weight maps section is internally inconsistent".to_owned());
+    if let Some(error) = section.consistency_error() {
+        return Err(format!(
+            "animated light weight maps section is internally inconsistent: {error}"
+        ));
     }
 
     // A zero-area chunk has no offset-count records to reference its nonempty
@@ -102,25 +95,36 @@ fn validate_weight_map_section(section: &AnimatedLightWeightMapsSection) -> Resu
 }
 
 fn animated_atlas_preflight(
-    width: u32,
-    height: u32,
-    slot_count: u32,
+    page_size: u32,
+    page_count: u32,
+    max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
 ) -> Result<AnimatedAtlasExtent, String> {
-    let extent = animated_atlas_extent(width, height, slot_count)
-        .ok_or_else(|| "animated lightmap atlas has zero array layers".to_owned())?;
+    let extent = animated_atlas_extent(page_size, page_count)
+        .ok_or_else(|| "animated lightmap atlas has zero pages".to_owned())?;
 
-    if !animated_slot_count_fits_device(slot_count, max_texture_array_layers) {
+    if page_size > max_texture_dimension_2d {
         return Err(format!(
-            "animated lightmap atlas requires {slot_count} array layers, exceeding device \
+            "animated lightmap page size {page_size} exceeds device maxTextureDimension2D \
+             {max_texture_dimension_2d}",
+        ));
+    }
+    if page_count > max_texture_array_layers {
+        return Err(format!(
+            "animated lightmap atlas requires {page_count} pages, exceeding device \
              maxTextureArrayLayers {max_texture_array_layers}",
         ));
     }
 
-    let atlas_bytes = animated_atlas_byte_estimate(width, height, slot_count);
-    if !animated_atlas_fits_budget(width, height, slot_count, ANIMATED_ATLAS_VRAM_BUDGET_BYTES) {
+    let atlas_bytes = animated_atlas_byte_estimate(page_size, page_size, page_count);
+    if !animated_atlas_fits_budget(
+        page_size,
+        page_size,
+        page_count,
+        ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
+    ) {
         return Err(format!(
-            "animated lightmap atlas {width}x{height}x{slot_count} requires \
+            "animated lightmap atlas {page_size}x{page_size}x{page_count} requires \
              {atlas_bytes} bytes, exceeding the {}-byte VRAM budget",
             ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
         ));
@@ -129,18 +133,15 @@ fn animated_atlas_preflight(
     Ok(extent)
 }
 
-/// The forward lookup must describe the resource actually bound at group 4.
-/// Inactive resources bind a one-layer zero dummy, so every static layer must
-/// resolve to `INVALID_SLOT` even when the decoded section carried real slots.
-pub(crate) fn installed_slot_to_static_layer(
+/// The block table must describe the resource actually bound at group 4.
+/// Inactive resources bind a one-layer zero dummy, so the forward table must
+/// be empty — every vertex resolves to no block — even when the decoded
+/// section carried real blocks.
+pub(crate) fn installed_block_table_section(
     resource_active: bool,
-    decoded_slot_to_static_layer: &[u32],
-) -> &[u32] {
-    if resource_active {
-        decoded_slot_to_static_layer
-    } else {
-        &[]
-    }
+    decoded: Option<&AnimatedLightWeightMapsSection>,
+) -> Option<&AnimatedLightWeightMapsSection> {
+    decoded.filter(|_| resource_active)
 }
 
 fn animated_atlas_view_dimension() -> wgpu::TextureViewDimension {
@@ -155,17 +156,18 @@ struct DispatchTile {
     chunk_idx: u32,
     tile_origin_x: u32,
     tile_origin_y: u32,
-    target_slot: u32,
+    target_page: u32,
 }
 
 /// GPU storage-buffer layout for the compose-relevant prefix of
-/// `ChunkAtlasRect`. The v3 static layer resolves to `DispatchTile.target_slot`
-/// on the CPU, so it intentionally stays out of this buffer and WGSL struct.
+/// `ChunkAtlasRect`, in compact-atlas coordinates. The chunk's block resolves
+/// to `DispatchTile.target_page` on the CPU, so it stays out of this buffer
+/// and WGSL struct.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct GpuChunkRect {
-    atlas_x: u32,
-    atlas_y: u32,
+    compact_x: u32,
+    compact_y: u32,
     width: u32,
     height: u32,
     texel_offset: u32,
@@ -282,13 +284,13 @@ impl AnimatedLightmapResources {
     /// opaque so this cannot be runtime-checked — it must be preserved at the
     /// call site.
     ///
-    /// `atlas_dimensions` — `(width, height)` from `lightmap::usable_atlas_dimensions`.
-    /// The animated irradiance and direction atlases are created at exactly these
-    /// dimensions: compose writes at absolute static-atlas coordinates, and the
-    /// forward pass samples all three atlases with one normalized `lightmap_uv`.
-    /// `None` means the static atlas degraded to a 1×1 placeholder (absent,
-    /// zero-area, or oversize section); the animated path takes the dummy-atlas
-    /// early-out — no valid coordinate space to write into.
+    /// `static_layers` — `(layer size, layer count)` from
+    /// `lightmap::usable_static_layers`. Section 25's blocks must lie inside
+    /// those layers, and its pages may not exceed the layer size; the compact
+    /// atlas itself is `page_size² × compact_layers`. `None` means the static
+    /// atlas is absent, zero-area, oversize, or the 1×1 placeholder; the
+    /// animated path takes the dummy-atlas early-out — the block table has no
+    /// coordinate space to translate from.
     ///
     /// Returns `Err` on validation or allocation preflight failure; callers log
     /// and bind the non-dispatching dummy resource for this level.
@@ -300,7 +302,7 @@ impl AnimatedLightmapResources {
         bvh_leaves: &[BvhLeaf],
         animation: &AnimatedLightBuffers,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
-        atlas_dimensions: Option<(u32, u32)>,
+        static_layers: Option<(u32, u32)>,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
         if let Some(section) = weight_maps {
@@ -344,11 +346,9 @@ impl AnimatedLightmapResources {
             });
         };
 
-        // A v3 empty section has no animated slots. Guard before any atlas
-        // allocation: wgpu rejects a D2 array texture with depth zero.
-        let slot_count = u32::try_from(section.slot_to_static_layer.len())
-            .map_err(|_| "animated lightmap slot count exceeds u32".to_owned())?;
-        if animated_atlas_extent(1, 1, slot_count).is_none() {
+        // An empty section has no pages. Guard before any atlas allocation:
+        // wgpu rejects a D2 array texture with depth zero.
+        if animated_atlas_extent(section.page_size, section.compact_layers).is_none() {
             return Ok(Self {
                 atlas_texture: None,
                 direction_atlas_texture: None,
@@ -361,13 +361,12 @@ impl AnimatedLightmapResources {
             });
         }
 
-        let Some((atlas_width, atlas_height)) = atlas_dimensions else {
-            // The static lightmap atlas degraded to the 1×1 placeholder (absent,
-            // zero-area, or oversize section), so the absolute coordinates the
-            // baked weight maps reference have no valid target. Compose would
-            // write off-atlas and the forward pass would sample the placeholder.
-            // Take the dummy-atlas path: the animated term contributes nothing,
-            // which matches the static term already being neutral.
+        let Some(static_layers) = static_layers else {
+            // The static lightmap atlas is the placeholder (or absent,
+            // zero-area, or oversize), so the static coordinates the block
+            // table translates from have no valid target. Take the dummy-atlas
+            // path: the animated term contributes nothing, which matches the
+            // static term already being neutral.
             log::warn!(
                 "[Renderer] Animated lightmap present but the static lightmap atlas \
                  is unavailable; skipping animated-light compose for this level."
@@ -388,8 +387,7 @@ impl AnimatedLightmapResources {
             section,
             animated_chunks,
             animation.animated_light_count(),
-            &section.slot_to_static_layer,
-            (atlas_width, atlas_height),
+            static_layers,
         )?;
 
         if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
@@ -413,19 +411,22 @@ impl AnimatedLightmapResources {
             });
         }
 
+        let limits = device.limits();
         let atlas_extent = animated_atlas_preflight(
-            atlas_width,
-            atlas_height,
-            slot_count,
-            device.limits().max_texture_array_layers,
+            section.page_size,
+            section.compact_layers,
+            limits.max_texture_dimension_2d,
+            limits.max_texture_array_layers,
         )?;
-        let atlas_bytes = animated_atlas_byte_estimate(atlas_width, atlas_height, slot_count);
+        let atlas_bytes = animated_atlas_byte_estimate(
+            atlas_extent.width,
+            atlas_extent.height,
+            atlas_extent.depth_or_array_layers,
+        );
 
-        let static_layer_to_slot = static_layer_to_animated_slot(&section.slot_to_static_layer);
-        let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects, &static_layer_to_slot);
+        let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects, &section.blocks);
         let compose_workgroup_count = u32::try_from(dispatch_tiles.len())
             .map_err(|_| "animated lightmap dispatch tile count exceeds u32".to_owned())?;
-        let limits = device.limits();
         let max_workgroups_per_dim = limits.max_compute_workgroups_per_dimension;
         let (_, master_rows) = compose_grid(compose_workgroup_count, max_workgroups_per_dim)
             .ok_or_else(|| {
@@ -451,9 +452,7 @@ impl AnimatedLightmapResources {
         // overwrites every texel the forward pass will sample.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Atlas"),
-            // Sized to match the static lightmap atlas (see `atlas_dimensions`
-            // doc on `new`); width and height are independent — the static atlas
-            // is shelf-packed and need not be square.
+            // One array layer per compact page; pages are square.
             size: wgpu::Extent3d {
                 width: atlas_extent.width,
                 height: atlas_extent.height,
@@ -502,7 +501,10 @@ impl AnimatedLightmapResources {
         // VRAM footprint of the two compose-target atlases (irradiance 8 B/texel
         // + direction 4 B/texel).
         log::info!(
-            "[Renderer] Animated lightmap atlases {atlas_width}x{atlas_height}x{slot_count}, ~{} MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)",
+            "[Renderer] Animated lightmap atlases {}x{}x{} pages, ~{} MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)",
+            atlas_extent.width,
+            atlas_extent.height,
+            atlas_extent.depth_or_array_layers,
             atlas_bytes / (1024 * 1024),
         );
 
@@ -945,23 +947,23 @@ fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wg
     })
 }
 
-/// Expand each chunk rect into `ceil(w/8) × ceil(h/8)` 8×8 dispatch tiles.
-/// Tile order is y-major, x-minor; order doesn't affect correctness.
+/// Expand each chunk rect into `ceil(w/8) × ceil(h/8)` 8×8 dispatch tiles on
+/// its block's page — the same page the forward block table names for that
+/// block. Tile order is y-major, x-minor; order doesn't affect correctness.
 fn expand_dispatch_tiles(
     chunk_rects: &[postretro_level_format::animated_light_weight_maps::ChunkAtlasRect],
-    static_layer_to_slot: &StaticLayerToAnimatedSlot,
+    blocks: &[postretro_level_format::animated_light_weight_maps::AnimatedBlock],
 ) -> Vec<DispatchTile> {
     let mut tiles = Vec::new();
     for (chunk_idx, rect) in chunk_rects.iter().enumerate() {
         if rect.width == 0 || rect.height == 0 {
             continue;
         }
-        let target_slot = animated_slot_for_static_layer(static_layer_to_slot, rect.layer);
-        if target_slot == INVALID_SLOT {
+        let Some(block) = blocks.get(rect.block as usize) else {
             // Section-25 validation rejects this malformed record at load, but
-            // never compose it into slot 0 if a caller bypasses that boundary.
+            // never compose it onto page 0 if a caller bypasses that boundary.
             continue;
-        }
+        };
         let tiles_x = rect.width.div_ceil(8);
         let tiles_y = rect.height.div_ceil(8);
         for ty in 0..tiles_y {
@@ -970,7 +972,7 @@ fn expand_dispatch_tiles(
                     chunk_idx: chunk_idx as u32,
                     tile_origin_x: tx * 8,
                     tile_origin_y: ty * 8,
-                    target_slot,
+                    target_page: block.compact_layer,
                 });
             }
         }
@@ -983,8 +985,8 @@ fn pack_chunk_rects(
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(chunk_rects.len() * std::mem::size_of::<GpuChunkRect>());
     for r in chunk_rects {
-        bytes.extend_from_slice(&r.atlas_x.to_ne_bytes());
-        bytes.extend_from_slice(&r.atlas_y.to_ne_bytes());
+        bytes.extend_from_slice(&r.compact_x.to_ne_bytes());
+        bytes.extend_from_slice(&r.compact_y.to_ne_bytes());
         bytes.extend_from_slice(&r.width.to_ne_bytes());
         bytes.extend_from_slice(&r.height.to_ne_bytes());
         bytes.extend_from_slice(&r.texel_offset.to_ne_bytes());
@@ -1029,7 +1031,7 @@ fn pack_dispatch_tiles_into(tiles: &[DispatchTile], bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&t.chunk_idx.to_ne_bytes());
         bytes.extend_from_slice(&t.tile_origin_x.to_ne_bytes());
         bytes.extend_from_slice(&t.tile_origin_y.to_ne_bytes());
-        bytes.extend_from_slice(&t.target_slot.to_ne_bytes());
+        bytes.extend_from_slice(&t.target_page.to_ne_bytes());
     }
 }
 
@@ -1038,27 +1040,46 @@ mod tests {
     use super::*;
     use log::Level;
     use postretro_level_format::animated_light_weight_maps::{
-        AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
+        AnimatedBlock, AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
     };
     use postretro_test_log_capture::LogCapture;
 
     fn mk_rect(w: u32, h: u32, offset: u32) -> ChunkAtlasRect {
         ChunkAtlasRect {
-            atlas_x: 0,
-            atlas_y: 0,
+            compact_x: 0,
+            compact_y: 0,
             width: w,
             height: h,
             texel_offset: offset,
-            layer: 0,
+            block: 0,
         }
     }
 
-    fn two_layer_weight_maps(slot_to_static_layer: Vec<u32>) -> AnimatedLightWeightMapsSection {
-        let mut first = mk_rect(1, 1, 0);
-        first.layer = 2;
-        let mut second = mk_rect(1, 1, 1);
-        second.layer = 9;
+    fn mk_block(static_layer: u32, compact_layer: u32) -> AnimatedBlock {
+        AnimatedBlock {
+            static_layer,
+            static_x: 0,
+            static_y: 0,
+            compact_x: 0,
+            compact_y: 0,
+            compact_layer,
+            width: 16,
+            height: 16,
+        }
+    }
+
+    /// Two 1×1 chunks in two blocks from static layers 2 and 9, packed on
+    /// pages 0 and 1 of a 16² atlas.
+    fn two_page_weight_maps() -> AnimatedLightWeightMapsSection {
+        let first = mk_rect(1, 1, 0);
+        let second = ChunkAtlasRect {
+            block: 1,
+            ..mk_rect(1, 1, 1)
+        };
         AnimatedLightWeightMapsSection {
+            page_size: 16,
+            compact_layers: 2,
+            blocks: vec![mk_block(2, 0), mk_block(9, 1)],
             chunk_rects: vec![first, second],
             offset_counts: vec![
                 TexelLightEntry {
@@ -1068,26 +1089,31 @@ mod tests {
                 2
             ],
             texel_lights: Vec::new(),
-            slot_to_static_layer,
         }
     }
 
     #[test]
-    fn runtime_preflight_rejects_malformed_slot_tables() {
-        for (label, slots) in [
-            ("empty", vec![]),
-            ("unsorted", vec![9, 2]),
-            ("duplicate", vec![2, 2, 9]),
-            ("unoccupied", vec![2, 7, 9]),
+    fn runtime_preflight_rejects_malformed_block_tables() {
+        let mut past_table = two_page_weight_maps();
+        past_table.chunk_rects[1].block = 2;
+        let mut empty_page = two_page_weight_maps();
+        empty_page.compact_layers = 3;
+        let mut overlapping = two_page_weight_maps();
+        overlapping.blocks[1].compact_layer = 0;
+        overlapping.compact_layers = 1;
+        for (label, section) in [
+            ("block past the table", past_table),
+            ("empty page", empty_page),
+            ("overlapping blocks", overlapping),
         ] {
-            let section = two_layer_weight_maps(slots);
             let parsed = AnimatedLightWeightMapsSection::from_bytes(&section.to_bytes())
                 .expect("malformed semantic metadata remains structurally parseable");
             assert!(
                 validate_weight_map_section(&parsed).is_err(),
-                "{label} slot table must fail before renderer allocation",
+                "{label} must fail before renderer allocation",
             );
         }
+        assert_eq!(validate_weight_map_section(&two_page_weight_maps()), Ok(()));
     }
 
     // Regression: a zero-area chunk with an unreferenced weight pool reached
@@ -1095,6 +1121,9 @@ mod tests {
     #[test]
     fn runtime_preflight_rejects_zero_area_chunk_with_unreferenced_weight() {
         let section = AnimatedLightWeightMapsSection {
+            page_size: 16,
+            compact_layers: 1,
+            blocks: vec![mk_block(0, 0)],
             chunk_rects: vec![mk_rect(0, 8, 0)],
             offset_counts: Vec::new(),
             texel_lights: vec![TexelLight {
@@ -1102,7 +1131,6 @@ mod tests {
                 weight: 1.0,
                 direction_oct: [0, 0],
             }],
-            slot_to_static_layer: vec![0],
         };
         let parsed = AnimatedLightWeightMapsSection::from_bytes(&section.to_bytes())
             .expect("malformed geometry remains structurally parseable");
@@ -1211,7 +1239,7 @@ mod tests {
             chunk_idx: 3,
             tile_origin_x: 8,
             tile_origin_y: 16,
-            target_slot: 1,
+            target_page: 1,
         };
         let mut tiles = vec![real; 10];
         let grid = compose_grid(10, 4).expect("10 tiles fit a 4x4 limit");
@@ -1225,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_shader_uses_array_storage_and_slot_indexed_stores() {
+    fn compose_shader_uses_array_storage_and_page_indexed_stores() {
         let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
         assert!(
             src.contains("texture_storage_2d_array<rgba16float, write>"),
@@ -1236,9 +1264,15 @@ mod tests {
             "animated direction compose target must be a storage texture array",
         );
         assert_eq!(
-            src.matches("i32(tile.target_slot)").count(),
+            src.matches("i32(tile.target_page)").count(),
             3,
-            "debug, irradiance, and direction textureStore calls must use the target slot",
+            "debug, irradiance, and direction textureStore calls must use the target page",
+        );
+        assert_eq!(
+            src.matches("i32(rect.compact_x + rect_x), i32(rect.compact_y + rect_y)")
+                .count(),
+            3,
+            "every store writes at the chunk's compact-atlas position",
         );
 
         let entries = compute_bgl_entries();
@@ -1257,12 +1291,19 @@ mod tests {
     }
 
     #[test]
-    fn forward_shader_samples_animated_arrays_by_slot_without_layer_zero_guard() {
+    fn forward_shader_samples_animated_arrays_through_the_block_table() {
         let src = include_str!("../shaders/forward.wgsl");
         assert!(src.contains("animated_lm_atlas: texture_2d_array<f32>"));
         assert!(src.contains("animated_lm_direction: texture_2d_array<f32>"));
-        assert!(src.contains("sample_lightmap_animated(in.lightmap_uv, animated_slot)"));
-        assert!(src.contains("i32(animated_slot)"));
+        assert!(src.contains("@location(7) @interpolate(flat) animated_block: u32"));
+        assert!(src.contains("@location(5) lightmap_layer_block: vec2<u32>"));
+        assert!(src.contains("animated_block_uv(in.lightmap_uv, in.animated_block)"));
+        assert!(src.contains("sample_lightmap_animated(animated.uv, animated.page)"));
+        assert!(src.contains("i32(animated.page)"));
+        assert!(
+            src.contains("block_id == 0u || block_id > animated_block_table.block_count"),
+            "id 0 and ids past an empty (inactive) table must resolve to no block",
+        );
         assert!(
             !src.contains("in.lightmap_layer == 0u"),
             "animated sampling must not be limited to static layer zero",
@@ -1271,19 +1312,17 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_small_rect() {
-        let tiles =
-            expand_dispatch_tiles(&[mk_rect(5, 5, 0)], &static_layer_to_animated_slot(&[0]));
+        let tiles = expand_dispatch_tiles(&[mk_rect(5, 5, 0)], &[mk_block(0, 0)]);
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].chunk_idx, 0);
         assert_eq!(tiles[0].tile_origin_x, 0);
         assert_eq!(tiles[0].tile_origin_y, 0);
-        assert_eq!(tiles[0].target_slot, 0);
+        assert_eq!(tiles[0].target_page, 0);
     }
 
     #[test]
     fn dispatch_tile_expansion_exact_tile_boundary() {
-        let tiles =
-            expand_dispatch_tiles(&[mk_rect(16, 8, 0)], &static_layer_to_animated_slot(&[0]));
+        let tiles = expand_dispatch_tiles(&[mk_rect(16, 8, 0)], &[mk_block(0, 0)]);
         assert_eq!(tiles.len(), 2);
         assert_eq!(tiles[0].tile_origin_x, 0);
         assert_eq!(tiles[1].tile_origin_x, 8);
@@ -1291,17 +1330,14 @@ mod tests {
 
     #[test]
     fn dispatch_tile_expansion_partial_tile() {
-        let tiles =
-            expand_dispatch_tiles(&[mk_rect(9, 9, 0)], &static_layer_to_animated_slot(&[0]));
+        let tiles = expand_dispatch_tiles(&[mk_rect(9, 9, 0)], &[mk_block(0, 0)]);
         assert_eq!(tiles.len(), 4);
     }
 
     #[test]
     fn dispatch_tile_expansion_multiple_chunks_preserves_index() {
-        let tiles = expand_dispatch_tiles(
-            &[mk_rect(8, 8, 0), mk_rect(12, 8, 64)],
-            &static_layer_to_animated_slot(&[0]),
-        );
+        let tiles =
+            expand_dispatch_tiles(&[mk_rect(8, 8, 0), mk_rect(12, 8, 64)], &[mk_block(0, 0)]);
         assert_eq!(tiles.len(), 3);
         assert_eq!(tiles[0].chunk_idx, 0);
         assert_eq!(tiles[1].chunk_idx, 1);
@@ -1309,35 +1345,101 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_tile_expansion_skips_zero_area() {
+    fn dispatch_tile_expansion_skips_zero_area_and_blocks_past_the_table() {
+        let past_table = ChunkAtlasRect {
+            block: 5,
+            ..mk_rect(8, 8, 0)
+        };
         let tiles = expand_dispatch_tiles(
-            &[mk_rect(0, 8, 0), mk_rect(8, 0, 0), mk_rect(8, 8, 0)],
-            &static_layer_to_animated_slot(&[0]),
+            &[
+                mk_rect(0, 8, 0),
+                mk_rect(8, 0, 0),
+                past_table,
+                mk_rect(8, 8, 0),
+            ],
+            &[mk_block(0, 0)],
         );
         assert_eq!(tiles.len(), 1);
-        assert_eq!(tiles[0].chunk_idx, 2);
+        assert_eq!(tiles[0].chunk_idx, 3);
     }
 
+    /// Pin P9: blocks spilled across two pages compose onto the page the
+    /// forward block table names for the same block, at the same offset.
     #[test]
-    fn compose_and_forward_resolve_each_static_layer_to_the_same_slot() {
-        let slot_to_static_layer = [2, 9];
-        let static_layer_to_slot = static_layer_to_animated_slot(&slot_to_static_layer);
-        let mut first = mk_rect(8, 8, 0);
-        first.layer = 2;
-        let mut second = mk_rect(8, 8, 64);
-        second.layer = 9;
+    fn compose_and_forward_resolve_every_block_to_the_same_page_and_offset() {
+        use crate::lighting::lightmap::animated_block_table_bytes;
+        use postretro_level_format::animated_lightmap_atlas::{
+            ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK, ANIMATED_BLOCK_TABLE_HEADER_BYTES,
+        };
+        let block = |static_layer, static_x, compact_x, compact_layer| AnimatedBlock {
+            static_layer,
+            static_x,
+            static_y: 40,
+            compact_x,
+            compact_y: 0,
+            compact_layer,
+            width: 16,
+            height: 16,
+        };
+        let section = AnimatedLightWeightMapsSection {
+            page_size: 64,
+            compact_layers: 2,
+            blocks: vec![block(2, 100, 0, 0), block(9, 7, 16, 0), block(4, 300, 0, 1)],
+            chunk_rects: (0..3)
+                .map(|index| ChunkAtlasRect {
+                    compact_x: [0, 16, 0][index] + 2,
+                    compact_y: 2,
+                    width: 8,
+                    height: 8,
+                    texel_offset: index as u32 * 64,
+                    block: index as u32,
+                })
+                .collect(),
+            offset_counts: vec![
+                TexelLightEntry {
+                    offset: 0,
+                    count: 0,
+                };
+                192
+            ],
+            texel_lights: Vec::new(),
+        };
+        assert_eq!(section.consistency_error(), None);
 
-        let tiles = expand_dispatch_tiles(&[first, second], &static_layer_to_slot);
-        assert_eq!(
-            tiles[0].target_slot,
-            animated_slot_for_static_layer(&static_layer_to_slot, first.layer),
+        let tiles = expand_dispatch_tiles(&section.chunk_rects, &section.blocks);
+        let table = animated_block_table_bytes(Some(&section), 512);
+        let word = |at: usize| u32::from_ne_bytes(table[at..at + 4].try_into().unwrap());
+        for tile in &tiles {
+            let rect = section.chunk_rects[tile.chunk_idx as usize];
+            let block = section.blocks[rect.block as usize];
+            let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
+                + rect.block as usize * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
+            let packed = word(at);
+            let (dx, dy) = (
+                i64::from(packed as u16 as i16),
+                i64::from((packed >> 16) as u16 as i16),
+            );
+            assert_eq!(
+                tile.target_page,
+                word(at + 4),
+                "compose and forward share the page"
+            );
+            // A static texel of this chunk lands where compose wrote it.
+            let (_, static_x, static_y) = section
+                .chunk_static_origin(tile.chunk_idx as usize)
+                .unwrap();
+            assert_eq!(
+                (i64::from(static_x) + dx, i64::from(static_y) + dy),
+                (i64::from(rect.compact_x), i64::from(rect.compact_y)),
+                "block {} offsets agree",
+                rect.block,
+            );
+            assert_eq!(tile.target_page, block.compact_layer);
+        }
+        assert!(
+            tiles.iter().any(|tile| tile.target_page == 1),
+            "page 1 is exercised"
         );
-        assert_eq!(
-            tiles[1].target_slot,
-            animated_slot_for_static_layer(&static_layer_to_slot, second.layer),
-        );
-        assert_eq!(tiles[0].target_slot, 0);
-        assert_eq!(tiles[1].target_slot, 1);
     }
 
     fn mk_leaf(cell_id: u32, chunk_range_start: u32, chunk_range_count: u32) -> BvhLeaf {
@@ -1401,85 +1503,43 @@ mod tests {
         );
     }
 
-    /// The animated irradiance/direction atlases must be created at the same
-    /// dimensions the static lightmap atlas is created at: compose writes at
-    /// absolute static-atlas coordinates and the forward pass samples all three
-    /// atlases with one normalized `lightmap_uv`. The static atlas is
-    /// dynamically sized (shelf-packed, up to 8192 per dimension, width may
-    /// differ from height — it is not the fixed 1024² this code once assumed),
-    /// so the size is sourced from the loaded `LightmapSection` via
-    /// `lightmap::usable_atlas_dimensions` — the same resolver the static
-    /// texture creation uses. This guards that both paths read from one source.
     #[test]
-    fn animated_atlas_dimensions_track_static_lightmap() {
-        use crate::lighting::lightmap::usable_atlas_dimensions;
-        use postretro_level_format::lightmap::{
-            IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
-        };
-
-        // A non-square, non-1024 section — what a real shelf-packed atlas looks
-        // like — resolves to the section's own width/height under a generous
-        // device limit.
-        let section = LightmapSection {
-            layer_count: 1,
-            irr_width: 4096,
-            irr_height: 2048,
-            irr_texel_density: 1.0,
-            irradiance: vec![0u8; 4096 * 2048 * 8],
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: 4096,
-            dir_height: 2048,
-            dir_texel_density: 1.0,
-            direction: vec![0u8; 4096 * 2048 * 4],
-            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RGBA8,
-            mode: LightmapMode::Shadowed,
-        };
-        // Atlas sizing reads the header install keeps after it takes the blobs.
-        let (section, _payloads) = section.into_parts();
-        assert_eq!(
-            usable_atlas_dimensions(Some(&section), 8192, 256),
-            Some((4096, 2048)),
-            "animated atlas size must equal the loaded lightmap dimensions",
-        );
-
-        // Absent / oversize sections resolve to `None`, which drives the
-        // animated path to its dummy-atlas early-out (no valid coordinate space).
-        assert_eq!(usable_atlas_dimensions(None, 8192, 256), None);
-        assert_eq!(usable_atlas_dimensions(Some(&section), 1024, 256), None);
-    }
-
-    #[test]
-    fn animated_atlas_extent_uses_slot_count_for_array_depth() {
-        let extent = animated_atlas_extent(4096, 2048, 3).expect("nonzero slot count allocates");
-        assert_eq!(extent.width, 4096);
-        assert_eq!(extent.height, 2048);
+    fn animated_atlas_extent_is_page_count_square_pages() {
+        let extent = animated_atlas_extent(1024, 3).expect("nonzero page count allocates");
+        assert_eq!(extent.width, 1024);
+        assert_eq!(extent.height, 1024);
         assert_eq!(extent.depth_or_array_layers, 3);
         assert_eq!(
-            animated_atlas_extent(4096, 2048, 0),
+            animated_atlas_extent(1024, 0),
             None,
-            "slot count zero must select the dummy path instead of depth zero",
+            "page count zero must select the dummy path instead of depth zero",
         );
     }
 
     #[test]
-    fn animated_atlas_preflight_rejects_device_layer_overflow() {
-        let err = animated_atlas_preflight(64, 64, 5, 4).unwrap_err();
-        assert!(err.contains("maxTextureArrayLayers 4"));
+    fn animated_atlas_preflight_rejects_device_layer_and_dimension_overflow() {
+        let err = animated_atlas_preflight(64, 5, 8192, 4).unwrap_err();
+        assert!(err.contains("maxTextureArrayLayers 4"), "{err}");
+        let err = animated_atlas_preflight(16384, 1, 8192, 256).unwrap_err();
+        assert!(err.contains("maxTextureDimension2D 8192"), "{err}");
     }
 
+    /// Pin P6: the forward table describes the atlas actually bound. A dummy
+    /// atlas gets no section, so every vertex resolves to no block.
     #[test]
-    fn inactive_resource_uses_empty_forward_lookup_for_valid_multi_slot_section() {
-        let decoded_slots = [2, 9];
+    fn inactive_resource_installs_an_empty_block_table_for_a_valid_section() {
+        let decoded = two_page_weight_maps();
         assert_eq!(
-            installed_slot_to_static_layer(false, &decoded_slots),
-            &[] as &[u32],
-            "a valid no-texel-lights section binds the dummy atlas and must expose no slots",
+            installed_block_table_section(false, Some(&decoded)),
+            None,
+            "a valid no-texel-lights section binds the dummy atlas and must expose no blocks",
         );
         assert_eq!(
-            installed_slot_to_static_layer(true, &decoded_slots),
-            &decoded_slots,
-            "an active atlas must preserve the decoded slot mapping",
+            installed_block_table_section(true, Some(&decoded)),
+            Some(&decoded),
+            "an active atlas keeps the decoded block table",
         );
+        assert_eq!(installed_block_table_section(true, None), None);
     }
 
     #[test]
@@ -1505,16 +1565,17 @@ mod tests {
         assert!(dummy_built);
         assert_eq!(resource.0, "dummy forward view");
         assert_eq!(resource.1, None, "dummy path has no dispatch state");
+        let decoded = two_page_weight_maps();
         assert_eq!(
-            installed_slot_to_static_layer(resource.1.is_some(), &[2, 9]),
-            &[] as &[u32],
-            "an error fallback must not leave the decoded slots bound beside the dummy atlas",
+            installed_block_table_section(resource.1.is_some(), Some(&decoded)),
+            None,
+            "an error fallback must not leave the decoded blocks bound beside the dummy atlas",
         );
     }
 
     #[test]
     fn over_budget_fallback_logs_renderer_error() {
-        let construction = animated_atlas_preflight(8192, 8192, 2, 256);
+        let construction = animated_atlas_preflight(8192, 2, 8192, 256);
         assert!(
             construction.is_err(),
             "fixture must exceed the 1 GiB budget"

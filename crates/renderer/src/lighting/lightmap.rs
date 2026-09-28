@@ -3,6 +3,11 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::SectionId;
+use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::animated_lightmap_atlas::{
+    ANIMATED_BLOCK_CAP, ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK, ANIMATED_BLOCK_TABLE_HEADER_BYTES,
+    ANIMATED_BLOCK_TABLE_UNIFORM_BYTES,
+};
 use postretro_level_format::lightmap::{
     DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapHeader,
 };
@@ -45,49 +50,52 @@ pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 /// twice the lightmap width), layer-matched to the lightmap irradiance atlas.
 /// Sampled by forward union-subtraction and static world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
-/// Packed static-atlas-layer → animated-atlas-slot lookup for the forward
-/// shader. One `vec4<u32>` holds four static layers in WGSL uniform space.
-pub const BIND_ANIMATED_SLOT_TABLE: u32 = 7;
+/// Animated block table for the forward shader: where each animated face's
+/// block sits in the compact atlas. FRAGMENT-only uniform.
+pub const BIND_ANIMATED_BLOCK_TABLE: u32 = 7;
 
-/// Static lightmap atlases are capped at 256 array layers. The forward lookup
-/// mirrors that fixed ceiling instead of tracking a level's static layer count.
-pub(crate) const STATIC_LIGHTMAP_LAYER_CAP: usize = 256;
-/// A static layer absent from section 25 has no animated direct contribution.
-pub(crate) const INVALID_SLOT: u32 = 0xFFFF_FFFF;
-const STATIC_LAYERS_PER_UNIFORM_VEC4: usize = 4;
-pub(crate) const ANIMATED_SLOT_UNIFORM_VEC4_COUNT: usize =
-    STATIC_LIGHTMAP_LAYER_CAP / STATIC_LAYERS_PER_UNIFORM_VEC4;
-pub(crate) type StaticLayerToAnimatedSlot =
-    [[u32; STATIC_LAYERS_PER_UNIFORM_VEC4]; ANIMATED_SLOT_UNIFORM_VEC4_COUNT];
+/// Bytes of the binding-7 uniform, the same for every level: the forward
+/// shader declares a fixed-length table sized to the shared block cap.
+pub(crate) const ANIMATED_BLOCK_TABLE_BYTES: usize = ANIMATED_BLOCK_TABLE_UNIFORM_BYTES as usize;
 
-/// Invert section 25's dense animated-slot table into the fixed static-layer
-/// lookup used by both compose dispatch expansion and forward sampling. The
-/// nested array exactly mirrors WGSL's `array<vec4<u32>, 64>` uniform layout.
-pub(crate) fn static_layer_to_animated_slot(
-    slot_to_static_layer: &[u32],
-) -> StaticLayerToAnimatedSlot {
-    let mut static_layer_to_slot =
-        [[INVALID_SLOT; STATIC_LAYERS_PER_UNIFORM_VEC4]; ANIMATED_SLOT_UNIFORM_VEC4_COUNT];
-    for (slot, &static_layer) in slot_to_static_layer.iter().enumerate() {
-        let static_layer = static_layer as usize;
-        if static_layer < STATIC_LIGHTMAP_LAYER_CAP {
-            static_layer_to_slot[static_layer / STATIC_LAYERS_PER_UNIFORM_VEC4]
-                [static_layer % STATIC_LAYERS_PER_UNIFORM_VEC4] = slot as u32;
-        }
+/// Build the binding-7 block-table uniform for the installed section, or an
+/// empty table when `section` is `None`. An empty table resolves every vertex
+/// to no block, whatever ids the level's vertices carry. Layout (little-end
+/// native u32s, mirroring `AnimatedBlockTable` in forward.wgsl):
+/// `static_layer_size, page_size, block_count, 0`, then per block the packed
+/// `(i16 dx, i16 dy)` static→compact texel offset and the page.
+pub(crate) fn animated_block_table_bytes(
+    section: Option<&AnimatedLightWeightMapsSection>,
+    static_layer_size: u32,
+) -> Vec<u8> {
+    let mut bytes = vec![0_u8; ANIMATED_BLOCK_TABLE_BYTES];
+    let Some(section) = section else {
+        return bytes;
+    };
+    assert!(
+        section.blocks.len() <= ANIMATED_BLOCK_CAP as usize,
+        "section 25 validation bounds the block count to the table cap"
+    );
+    let mut write = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
+    write(0, static_layer_size);
+    write(4, section.page_size);
+    write(8, section.blocks.len() as u32);
+    for (index, block) in section.blocks.iter().enumerate() {
+        let dx = texel_offset(block.static_x, block.compact_x);
+        let dy = texel_offset(block.static_y, block.compact_y);
+        let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
+            + index * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
+        write(at, u32::from(dx as u16) | (u32::from(dy as u16) << 16));
+        write(at + 4, block.compact_layer);
     }
-    static_layer_to_slot
+    bytes
 }
 
-pub(crate) fn animated_slot_for_static_layer(
-    static_layer_to_slot: &StaticLayerToAnimatedSlot,
-    static_layer: u32,
-) -> u32 {
-    let static_layer = static_layer as usize;
-    if static_layer >= STATIC_LIGHTMAP_LAYER_CAP {
-        return INVALID_SLOT;
-    }
-    static_layer_to_slot[static_layer / STATIC_LAYERS_PER_UNIFORM_VEC4]
-        [static_layer % STATIC_LAYERS_PER_UNIFORM_VEC4]
+/// Static→compact translation on one axis. Both coordinates lie inside an
+/// 8192-texel layer, so the difference always fits an `i16`.
+fn texel_offset(static_coord: u32, compact_coord: u32) -> i16 {
+    i16::try_from(i64::from(compact_coord) - i64::from(static_coord))
+        .expect("static and compact coordinates lie within one 8192-texel layer")
 }
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
@@ -148,7 +156,7 @@ impl LightmapResources {
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
         animated_direction_view: &wgpu::TextureView,
-        slot_to_static_layer: &[u32],
+        animated_block_table: &[u8],
     ) -> Self {
         // Nearest sampler for the octahedral direction texture (binding 1):
         // linear interpolation of octahedral-encoded unit vectors does not
@@ -254,11 +262,11 @@ impl LightmapResources {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let animated_slot_lookup = static_layer_to_animated_slot(slot_to_static_layer);
-        let animated_slot_lookup_buffer =
+        debug_assert_eq!(animated_block_table.len(), ANIMATED_BLOCK_TABLE_BYTES);
+        let animated_block_table_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Animated LM Static Layer To Slot"),
-                contents: bytemuck::cast_slice(&animated_slot_lookup),
+                label: Some("Animated LM Block Table"),
+                contents: animated_block_table,
                 usage: wgpu::BufferUsages::UNIFORM,
             });
 
@@ -295,8 +303,8 @@ impl LightmapResources {
                     resource: wgpu::BindingResource::TextureView(&shadowmask_view),
                 },
                 wgpu::BindGroupEntry {
-                    binding: BIND_ANIMATED_SLOT_TABLE,
-                    resource: animated_slot_lookup_buffer.as_entire_binding(),
+                    binding: BIND_ANIMATED_BLOCK_TABLE,
+                    resource: animated_block_table_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -452,7 +460,7 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
             count: None,
         },
         wgpu::BindGroupLayoutEntry {
-            binding: BIND_ANIMATED_SLOT_TABLE,
+            binding: BIND_ANIMATED_BLOCK_TABLE,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
@@ -464,23 +472,23 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
     ]
 }
 
-/// Dimensions the static irradiance/direction atlases are created at, using the
-/// same usability filter as `new()`. Returns `None` when the section is absent,
-/// zero-area, or oversize. `new()` also falls back to the 1×1 placeholder when
-/// a usable header arrives without its payload, so level installs pass the
-/// header only when its payload is present (renderer boot passes no level);
-/// the two then fall back together.
-/// Routing both the static and animated atlas creation through this function
-/// keeps their sizes in lock-step (compose writes at absolute atlas
-/// coordinates; forward samples all three atlases with one normalized
-/// `lightmap_uv`).
-pub(crate) fn usable_atlas_dimensions(
+/// The static lightmap layer the animated atlas lives beside, as
+/// `(layer size, layer count)`, using the same usability filter as `new()`.
+/// Returns `None` when the section is absent, zero-area, oversize, or the 1×1
+/// placeholder: with no real static atlas the animated block table has no
+/// coordinate space, and the level takes the no-animated-light path. `new()`
+/// also falls back to the placeholder when a usable header arrives without its
+/// payload, so level installs pass the header only when its payload is
+/// present (renderer boot passes no level); the two then fall back together.
+/// Static layers are square, so the width is the layer size.
+pub(crate) fn usable_static_layers(
     section: Option<&LightmapHeader>,
     max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
 ) -> Option<(u32, u32)> {
     filter_usable_section(section, max_texture_dimension_2d, max_texture_array_layers)
-        .map(|s| (s.irr_width, s.irr_height))
+        .filter(|s| !s.is_placeholder())
+        .map(|s| (s.irr_width, s.layer_count))
 }
 
 /// Filter out an absent (`None`), invalid, or device-incompatible
@@ -1325,13 +1333,17 @@ mod tests {
             Some(wgpu::TextureViewDimension::D2Array),
             "animated direction must bind as texture_2d_array",
         );
-        let animated_slot_entry = entries
+        let block_table_entry = entries
             .iter()
-            .find(|entry| entry.binding == BIND_ANIMATED_SLOT_TABLE)
-            .expect("animated slot lookup binding must exist");
-        assert_eq!(animated_slot_entry.visibility, wgpu::ShaderStages::FRAGMENT,);
+            .find(|entry| entry.binding == BIND_ANIMATED_BLOCK_TABLE)
+            .expect("animated block table binding must exist");
+        assert_eq!(
+            block_table_entry.visibility,
+            wgpu::ShaderStages::FRAGMENT,
+            "the block table is read in the fragment stage only",
+        );
         assert!(matches!(
-            animated_slot_entry.ty,
+            block_table_entry.ty,
             wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 ..
@@ -1362,22 +1374,93 @@ mod tests {
         );
     }
 
-    #[test]
-    fn static_layer_without_animated_receivers_resolves_to_invalid_slot() {
-        let lookup = static_layer_to_animated_slot(&[1, 7]);
-        assert_eq!(animated_slot_for_static_layer(&lookup, 1), 0);
-        assert_eq!(animated_slot_for_static_layer(&lookup, 7), 1);
-        assert_eq!(animated_slot_for_static_layer(&lookup, 0), INVALID_SLOT);
-        assert_eq!(animated_slot_for_static_layer(&lookup, 2), INVALID_SLOT);
+    /// CPU mirror of forward.wgsl's `animated_block_uv` entry decode.
+    fn decode_block(bytes: &[u8], block: usize) -> (i32, i32, u32) {
+        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
+            + block * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
+        let packed = word(at);
+        (
+            i32::from(packed as u16 as i16),
+            i32::from((packed >> 16) as u16 as i16),
+            word(at + 4),
+        )
     }
 
     #[test]
-    fn static_layer_slot_uniform_layout_matches_forward_wgsl() {
-        assert_eq!(STATIC_LIGHTMAP_LAYER_CAP, 256);
-        assert_eq!(ANIMATED_SLOT_UNIFORM_VEC4_COUNT, 64);
-        assert_eq!(std::mem::size_of::<StaticLayerToAnimatedSlot>(), 256 * 4);
+    fn block_table_packs_header_and_signed_offsets_per_block() {
+        use postretro_level_format::animated_light_weight_maps::AnimatedBlock;
+        let block = |static_x, static_y, compact_x, compact_y, compact_layer| AnimatedBlock {
+            static_layer: 0,
+            static_x,
+            static_y,
+            compact_x,
+            compact_y,
+            compact_layer,
+            width: 4,
+            height: 4,
+        };
+        let section = AnimatedLightWeightMapsSection {
+            page_size: 1024,
+            compact_layers: 2,
+            blocks: vec![block(2000, 10, 0, 1000, 0), block(5, 7000, 900, 20, 1)],
+            ..AnimatedLightWeightMapsSection::empty()
+        };
+        let bytes = animated_block_table_bytes(Some(&section), 8192);
+        assert_eq!(bytes.len(), ANIMATED_BLOCK_TABLE_BYTES);
+        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!((word(0), word(4), word(8)), (8192, 1024, 2));
+        assert_eq!(decode_block(&bytes, 0), (-2000, 990, 0));
+        assert_eq!(decode_block(&bytes, 1), (895, -6980, 1));
+    }
 
+    #[test]
+    fn empty_block_table_names_no_block() {
+        let bytes = animated_block_table_bytes(None, 2048);
+        assert_eq!(bytes.len(), ANIMATED_BLOCK_TABLE_BYTES);
+        assert!(
+            bytes.iter().all(|&b| b == 0),
+            "block_count 0 resolves every id to none"
+        );
+    }
+
+    /// The table the renderer requests, the forward shader's declared array,
+    /// and the compiler's cap are one number (pin P10).
+    #[test]
+    fn block_table_capacity_matches_forward_wgsl_and_the_compiler_cap() {
         let forward = include_str!("../shaders/forward.wgsl");
-        assert!(forward.contains("array<vec4<u32>, 64>"));
+        let declared = forward
+            .split("blocks: array<vec4<u32>, ")
+            .nth(1)
+            .and_then(|rest| rest.split('>').next())
+            .and_then(|len| len.trim().parse::<u32>().ok())
+            .expect("forward.wgsl declares the block table array");
+        let blocks_per_vec4 = 16 / ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK;
+        assert_eq!(declared * blocks_per_vec4, ANIMATED_BLOCK_CAP);
+        let shader_table_bytes = ANIMATED_BLOCK_TABLE_HEADER_BYTES + declared * 16;
+        assert_eq!(shader_table_bytes, ANIMATED_BLOCK_TABLE_UNIFORM_BYTES);
+        assert!(
+            u64::from(ANIMATED_BLOCK_TABLE_UNIFORM_BYTES)
+                <= wgpu::Limits::default().max_uniform_buffer_binding_size,
+            "the renderer requests default limits; the table must fit them",
+        );
+        assert!(ANIMATED_BLOCK_CAP < u32::from(u16::MAX));
+    }
+
+    #[test]
+    fn placeholder_static_lightmap_offers_no_static_layer_to_the_animated_atlas() {
+        let mut header = fake_section_layers(2048, 2048, 3);
+        assert_eq!(
+            usable_static_layers(Some(&header), 8192, 256),
+            Some((2048, 3))
+        );
+        header.irr_width = 1;
+        header.irr_height = 1;
+        header.layer_count = 1;
+        header.dir_width = 1;
+        header.dir_height = 1;
+        assert!(header.is_placeholder());
+        assert_eq!(usable_static_layers(Some(&header), 8192, 256), None);
+        assert_eq!(usable_static_layers(None, 8192, 256), None);
     }
 }

@@ -20,14 +20,17 @@ pub struct WorldVertex {
     /// did not receive a lightmap chart (runtime renders against the
     /// placeholder atlas in that case).
     pub lightmap_uv: [u16; 2],
-    /// Atlas array layer sampled at `lightmap_uv`. Widened from the on-disk
-    /// `u16` so the vertex format is a single `Uint32` attribute.
-    pub lightmap_layer: u32,
+    /// Static lightmap atlas array layer sampled at `lightmap_uv`.
+    pub lightmap_layer: u16,
+    /// Animated-lightmap block of this vertex's face: 0 means none, `n` means
+    /// section 25 block `n - 1`. Read with `lightmap_layer` as one `Uint16x2`
+    /// attribute.
+    pub animated_block: u16,
 }
 
 impl WorldVertex {
     /// Stride in bytes: 12 (pos) + 8 (base uv) + 4 (normal) + 4 (tangent) + 4
-    /// (lightmap uv) + 4 (lightmap layer) = 36 bytes.
+    /// (lightmap uv) + 2 (lightmap layer) + 2 (animated block) = 36 bytes.
     pub const STRIDE: usize = 36;
 }
 

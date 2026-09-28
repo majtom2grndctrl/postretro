@@ -287,18 +287,14 @@ pub(crate) fn build_full_renderer(
     );
 
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
-    // Source the animated atlas size from the same resolver the static
-    // lightmap texture uses, so the two atlases are guaranteed to match (the
-    // compose pass writes at absolute static-atlas coordinates; the forward
-    // pass samples both with one normalized lightmap_uv).
-    let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
+    // Resolve the static layer from the same filter the static lightmap
+    // texture uses, so the block table translates from the layer actually
+    // bound (the forward pass samples both atlases from one lightmap_uv).
+    let static_layers = crate::lighting::lightmap::usable_static_layers(
         geometry.and_then(|g| g.lightmap),
         device.limits().max_texture_dimension_2d,
         device.limits().max_texture_array_layers,
     );
-    let slot_to_static_layer = geometry
-        .and_then(|g| g.animated_light_weight_maps)
-        .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
     let animated_lightmap = animated_lightmap::with_dummy_fallback(
         animated_lightmap::AnimatedLightmapResources::new(
             device,
@@ -307,7 +303,7 @@ pub(crate) fn build_full_renderer(
             &bvh_leaves,
             &sh_volume_resources.animation,
             &uniform_bind_group_layout,
-            lightmap_atlas_dimensions,
+            static_layers,
             animated_lm_debug,
         ),
         || {
@@ -321,9 +317,12 @@ pub(crate) fn build_full_renderer(
         },
         "animated lightmap initialization",
     );
-    let installed_slot_to_static_layer = animated_lightmap::installed_slot_to_static_layer(
-        animated_lightmap.is_active(),
-        slot_to_static_layer,
+    let animated_block_table = crate::lighting::lightmap::animated_block_table_bytes(
+        animated_lightmap::installed_block_table_section(
+            animated_lightmap.is_active(),
+            geometry.and_then(|g| g.animated_light_weight_maps),
+        ),
+        static_layers.map_or(0, |(size, _)| size),
     );
 
     // Group 4: lightmap atlas. Animated-contribution atlas at binding 3 (real or 1×1 zero dummy).
@@ -338,7 +337,7 @@ pub(crate) fn build_full_renderer(
         &lightmap_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
-        installed_slot_to_static_layer,
+        &animated_block_table,
     );
     let shadowmask_present = lightmap_resources.shadowmask_present;
     let lightmap_residency_report = LightmapResidencyReport::new(

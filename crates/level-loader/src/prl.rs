@@ -163,6 +163,10 @@ pub enum PrlLoadError {
         message: String,
     },
     #[error(
+        "AnimatedLightWeightMaps (id 25): {message} — recompile the .prl with the current `prl-build`"
+    )]
+    AnimatedAtlasLayout { message: String },
+    #[error(
         "PRL file is missing the worldspawn `initialGravity` value (carried in the FogVolumes section, required since M7); recompile with `prl-build`"
     )]
     NoWorldspawnGravity,

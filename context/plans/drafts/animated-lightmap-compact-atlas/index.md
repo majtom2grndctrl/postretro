@@ -2,6 +2,8 @@
 
 Brief · compact · reads: `context/lib/rendering_pipeline.md` (animated lightmap), `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache, `context/lib/development_guide.md` §1.4 · read at 0a7352039
 
+**Sequence: 2 of 4.** No dependency on `coop--spawn-placement-occupancy` (1 of 4) or on any other brief in the series; the order is priority only. It touches the compiler, `level-format` and the renderer, not `startup/` or netcode, so it can build before or alongside E23. Later briefs do not depend on it. Lightmap-shaped streaming (`context/plans/large-map-spatial-residency.md` stage 5) will build on its layout.
+
 ## Problem
 The owner wants PostRetro to run well on laptop GPUs. Basis: an anticipated need backed by a measured waste. The animated lightmap atlas pair is the largest lightmap-shaped VRAM consumer: 144 MiB on `campaign-test`. Cause: forward samples it with the static lightmap UV, so each animated slot is a full static-layer-sized array layer, while its chunks cover about a fifth of those texels. Nothing in the dev panel or load log reports lightmap-family bytes, so the waste was found by parsing PRLs by hand. When done: the atlas holds only the texels animated faces use, packed at compile time. `campaign-test` lands near a third of today's bytes (one layer instead of three) and renders identical pixels. The dev panel and load log report resident bytes for each lightmap-family texture.
 

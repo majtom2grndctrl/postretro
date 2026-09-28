@@ -2,7 +2,7 @@
 
 Brief · compact · reads: `context/lib/networking.md` §Slot lifecycle, §Session-state ledger, §Role model; `plans/done/E15--seat-session-identity-roster` AC-SEAT-1, AC-REJOIN-1, Task 6; `plans/done/M7--player-spawn` §Acceptance criteria · read at 3f070e32d (`feat/preferences-comfort-floor`)
 
-Sequenced before `coop--client-spawn-view-handoff`. That brief's manual proof cannot pass for the first client until this lands.
+**Sequence: 1 of 4.** Depends on `E23--preferences-comfort-floor` landing: that branch splits `main.rs` and `startup/lifecycle.rs`, where this brief's install and host-net seams live. No dependency on an earlier brief in this series. `coop--client-spawn-view-handoff` (4 of 4) depends on this one: its manual proof cannot pass for the first client until this lands.
 
 ## Problem
 Found by review while drafting `coop--client-spawn-view-handoff`. Basis: a defect found by reading source, not by running it. It is latent on current content because every map under `content/` has at most one `player_spawn`. Cause: the host's install spawn creates a movement pawn at every `player_spawn`, and placement capture records each one as a live occupant, so on an N-placement map every index is occupied before any remote seat is assigned. The first joining client therefore falls back to the cursor, which is index 0 (the host's own spawn) on a fresh session. E15 AC-SEAT-1 holds only to the letter: the occupants are unseated pawns that no player controls. When this is done, the install creates a movement pawn for the local player only, and a joining seat's pawn materializes at a movement placement no other player's pawn occupies whenever one is free.

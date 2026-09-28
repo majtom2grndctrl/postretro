@@ -119,8 +119,11 @@ pub struct LimiterFrameUniform {
     pub enabled: u32,
     /// 1 on the frame history starts: a fresh limiter's first enabled frame, or
     /// the frame that turns the limiter back on. Both stages start fresh against
-    /// that frame's own values — an empty window, nothing to rate-cap from — so
-    /// it presents unchanged, and no earlier on-period's transitions count.
+    /// that frame's own values — an empty window, nothing to rate-cap from — and
+    /// no earlier on-period's transitions count. Turned back on outside a load,
+    /// that frame presents unchanged. A new renderer's first resolve frame
+    /// always follows the boot splash, so it arrives with `splash_active` too and
+    /// the frame limiter limits it against the splash.
     pub init: u32,
     /// 1 when a splash stretch preceded this frame.
     pub splash_active: u32,

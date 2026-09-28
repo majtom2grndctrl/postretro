@@ -22,10 +22,18 @@ pub(crate) fn srgb8_to_linear(v: u8) -> f32 {
 /// Counts opposing changes in a luminance time series. A change is measured
 /// from the last extremum, peak to valley, so a smooth strobe counts the same
 /// at any sample rate; a transition counts once per excursion.
+///
+/// A reversal ends an excursion only once it reaches the flash threshold
+/// itself. WCAG counts a flash as a pair of opposing changes of at least 10%,
+/// so a smaller dip is not an opposing change: a strobe that climbs in
+/// sub-threshold steps with tiny dips between them is one excursion, not many
+/// uncounted ones.
 #[derive(Default)]
 pub(crate) struct TransitionCounter {
-    last: Option<f32>,
+    started: bool,
     extremum: f32,
+    /// The furthest value reached in `direction` since `extremum`.
+    peak: f32,
     direction: f32,
     counted: bool,
     times: Vec<f32>,
@@ -33,17 +41,24 @@ pub(crate) struct TransitionCounter {
 
 impl TransitionCounter {
     pub(crate) fn push(&mut self, time: f32, luminance: f32) {
-        let Some(last) = self.last else {
-            self.last = Some(luminance);
+        if !self.started {
+            self.started = true;
             self.extremum = luminance;
+            self.peak = luminance;
             return;
-        };
-        let step = luminance - last;
-        if step != 0.0 && step.signum() != self.direction {
-            if self.direction != 0.0 {
-                self.extremum = last;
+        }
+        let beyond = (luminance - self.peak) * self.direction;
+        if self.direction == 0.0 {
+            if luminance != self.peak {
+                self.direction = (luminance - self.peak).signum();
+                self.peak = luminance;
             }
-            self.direction = step.signum();
+        } else if beyond > 0.0 {
+            self.peak = luminance;
+        } else if -beyond >= GENERAL_FLASH_DELTA {
+            self.extremum = self.peak;
+            self.peak = luminance;
+            self.direction = -self.direction;
             self.counted = false;
         }
         let excursion = (luminance - self.extremum).abs();
@@ -52,7 +67,6 @@ impl TransitionCounter {
             self.counted = true;
             self.times.push(time);
         }
-        self.last = Some(luminance);
     }
 
     pub(crate) fn transition_times(&self) -> &[f32] {
@@ -83,7 +97,9 @@ fn saturated_red(rgb: [f32; 3]) -> bool {
 
 /// Counts WCAG 2.2 red transitions in a series of mean presented colors: a
 /// change of more than 0.2 in u′v′ from the last counted state, where one of
-/// the two states is saturated red.
+/// the two states is saturated red. Measured from the last counted state, not
+/// the last reversal, so small dips never restart it and it needs no
+/// hysteresis.
 #[derive(Default)]
 pub(crate) struct RedTransitionCounter {
     reference: Option<[f32; 3]>,
@@ -151,6 +167,31 @@ mod tests {
         }
         assert!(small.transition_times().is_empty());
         assert!(bright.transition_times().is_empty());
+    }
+
+    #[test]
+    fn counter_ignores_sub_threshold_dips_but_resets_on_a_threshold_reversal() {
+        // 0 → 0.3 → 0 in rises of 0.065 with 0.001 dips between them: one
+        // rise and one fall, not a run of uncounted 0.065 excursions.
+        let mut dithered = TransitionCounter::default();
+        let up = [
+            0.0, 0.065, 0.064, 0.129, 0.128, 0.193, 0.192, 0.257, 0.256, 0.3,
+        ];
+        let series = up.iter().chain(up.iter().rev());
+        for (n, &level) in series.enumerate() {
+            dithered.push(n as f32, level);
+        }
+        assert_eq!(dithered.transition_times().len(), 2);
+
+        // A slow reversal that reaches the threshold ends the excursion: each
+        // 0.12 swing of a triangle counts.
+        let mut triangle = TransitionCounter::default();
+        for n in 0..=40 {
+            let phase = (n % 8) as f32 / 4.0;
+            let tri = if phase <= 1.0 { phase } else { 2.0 - phase };
+            triangle.push(n as f32, 0.35 + 0.12 * tri);
+        }
+        assert_eq!(triangle.transition_times().len(), 10);
     }
 
     #[test]

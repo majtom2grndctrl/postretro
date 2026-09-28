@@ -1123,6 +1123,275 @@ fn over_budget_a_sub_threshold_brightening_passes_while_a_flash_is_still_held() 
     assert!(worst(&presented, fps, FULL) <= 6);
 }
 
+/// Five dark frames, then three full-screen flashes (six frames on, nine off)
+/// that spend the whole budget, ending dark.
+fn spend_budget(fps: f32) -> Vec<Frame> {
+    (0..50)
+        .map(|n| {
+            let lit = n >= 5 && (n - 5) % 15 < 6;
+            Frame::scene(scene(FULL, gray(if lit { 1.0 } else { 0.0 })), 1.0 / fps)
+        })
+        .collect()
+}
+
+/// Worst transitions in any one second of `level` over `presented`.
+fn worst_of(presented: &[Presented], fps: f32, level: impl Fn(&Presented) -> f32) -> usize {
+    let mut counter = TransitionCounter::default();
+    for (n, frame) in presented.iter().enumerate() {
+        counter.push(n as f32 / fps, level(frame));
+    }
+    max_transitions_in_any_second(counter.transition_times())
+}
+
+#[test]
+fn over_budget_a_flash_that_lights_in_two_frames_is_held() {
+    // Three full-screen flashes spend the budget. A 20-cell flash (13.9% of
+    // the frame) then strobes at 5 Hz, its left half lighting a frame before
+    // its right and going dark a frame before it. The left alone is under the
+    // flash area and passes. The right completes the flash while the left
+    // holds still, its rise uncounted; weighing only cells rising that frame,
+    // the hold saw 10 cells and let the right through, and the whole flash
+    // showed about ten transitions a second.
+    let fps = 60.0;
+    let left = cells(0, 0, 5, 2);
+    let right = cells(5, 0, 5, 2);
+    let mut frames = spend_budget(fps);
+    let start = frames.len();
+    frames.extend((0..(2.0 * fps) as usize).map(|k| {
+        let phase = k % 12;
+        let lit = |on: bool| gray(if on { 1.0 } else { 0.0 });
+        Frame::scene(
+            scene_of(&[
+                (left, lit(phase <= 5)),
+                (right, lit((1..=6).contains(&phase))),
+            ]),
+            1.0 / fps,
+        )
+    }));
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    let after = &presented[start..];
+    let right_alone = worst(after, fps, right);
+    // Both halves lit together: the 20-cell flash itself.
+    let together = worst_of(after, fps, |p| p.luminance(left).min(p.luminance(right)));
+    assert!(
+        right_alone <= 6,
+        "{right_alone} transitions of the right half"
+    );
+    assert!(together <= 6, "{together} transitions of the whole flash");
+}
+
+#[test]
+fn over_budget_a_red_flash_that_saturates_in_two_frames_stays_held() {
+    // The red counterpart, at equal luminance against gray: three full-screen
+    // red flashes spend the budget, then the right half turns red a frame
+    // after the left and back a frame after it. The held right half must stay
+    // desaturated when the left returns first, not show one red frame.
+    let fps = 60.0;
+    let background = gray(0.2126);
+    let red = [1.0, 0.0, 0.0];
+    let left = cells(0, 0, 5, 2);
+    let right = cells(5, 0, 5, 2);
+    let mut frames: Vec<Frame> = (0..50)
+        .map(|n| {
+            let lit = n >= 5 && (n - 5) % 15 < 6;
+            Frame::scene(scene(FULL, if lit { red } else { background }), 1.0 / fps)
+        })
+        .collect();
+    let start = frames.len();
+    frames.extend((0..(2.0 * fps) as usize).map(|k| {
+        let phase = k % 12;
+        let tint = |on: bool| if on { red } else { background };
+        Frame::scene(
+            scene_of(&[
+                (FULL, background),
+                (left, tint(phase <= 5)),
+                (right, tint((1..=6).contains(&phase))),
+            ]),
+            1.0 / fps,
+        )
+    }));
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    let mut counter = RedTransitionCounter::default();
+    for (n, p) in presented[start..].iter().enumerate() {
+        counter.push(n as f32 / fps, p.mean_rgb(right));
+    }
+    let worst = max_transitions_in_any_second(counter.transition_times());
+    assert!(worst <= 6, "{worst} red transitions of the right half");
+}
+
+#[test]
+fn over_budget_a_held_band_holds_its_partly_covered_edges() {
+    // Three full-screen flashes spend the budget. A full-width band at 0.14
+    // then strobes at 5 Hz: row 4 fully covered, rows 3 and 5 70% covered
+    // (cell means 0.098). Rate-capped, every row's candidate change was the
+    // same, so the edge rows read as fully covered and their 0.098 as under
+    // the threshold: they flashed unheld, 22 cells of 0 ↔ 0.14 pixels.
+    let fps = 60.0;
+    let band = Rect {
+        x: 0,
+        y: 33,
+        w: WIDTH,
+        h: 24,
+    };
+    let edges = [
+        Rect {
+            x: 0,
+            y: 33,
+            w: WIDTH,
+            h: 7,
+        },
+        Rect {
+            x: 0,
+            y: 50,
+            w: WIDTH,
+            h: 7,
+        },
+    ];
+    let mut frames = spend_budget(fps);
+    let start = frames.len();
+    frames.extend(strobe(band, fps, 2.0, |t| 0.14 * square(t, 5.0)));
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    for edge in edges {
+        let edge_worst = worst(&presented[start..], fps, edge);
+        assert!(edge_worst <= 6, "{edge_worst} transitions in {edge:?}");
+    }
+}
+
+#[test]
+fn a_bands_partly_covered_rows_count_at_their_cover() {
+    // In budget, rows 3 and 5 of a band at y 33..57 are 70% covered. Eight
+    // cells wide it covers 8 + 2 × 8 × 0.7 = 19.2 cells and is limited; six
+    // wide, 14.4 cells, it passes unchanged.
+    let fps = 60.0;
+    let band = |cells_wide: u32| Rect {
+        x: 0,
+        y: 33,
+        w: cells_wide * 10,
+        h: 24,
+    };
+    let level = |t: f32| 0.14 * square(t, 5.0);
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(strobe(band(8), fps, 2.0, level));
+    let wide = worst(&presented, fps, band(8));
+    assert!(wide <= 6, "{wide} transitions of the 19.2-cell band");
+
+    let mut limited = rig_or_skip!();
+    let mut unlimited = rig_or_skip!();
+    let on = limited.run(strobe(band(6), fps, 2.0, level));
+    let off = unlimited.run(
+        strobe(band(6), fps, 2.0, level)
+            .into_iter()
+            .map(Frame::limiter_off),
+    );
+    for (n, (a, b)) in on.iter().zip(&off).enumerate() {
+        assert!(
+            a.bytes == b.bytes,
+            "frame {n}: the 14.4-cell band was altered"
+        );
+    }
+}
+
+/// A red square at (5, 5) flickering against an equal-luminance gray at
+/// 5 Hz, straddling 10-pixel cells on all four sides.
+fn red_square_over_gray(side: u32, fps: f32) -> (Rect, Vec<Frame>) {
+    let rect = Rect {
+        x: 5,
+        y: 5,
+        w: side,
+        h: side,
+    };
+    let background = gray(0.2126);
+    let frames = (0..(2.0 * fps) as usize)
+        .map(|n| {
+            let on = square(n as f32 / fps, 5.0) > 0.5;
+            let pixels = if on {
+                scene_of(&[(FULL, background), (rect, [1.0, 0.0, 0.0])])
+            } else {
+                scene(FULL, background)
+            };
+            Frame::scene(pixels, 1.0 / fps)
+        })
+        .collect();
+    (rect, frames)
+}
+
+#[test]
+fn a_threshold_area_red_strobe_straddling_cells_over_gray_is_limited() {
+    // 44×44 is 19.4 cells of area. Judged on cell means, a partly covered
+    // cell over gray never reached saturated red (a half-covered cell reads
+    // 0.61), so only 15.5 cells counted and the strobe passed unlimited.
+    let fps = 60.0;
+    let (rect, frames) = red_square_over_gray(44, fps);
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    let mut counter = RedTransitionCounter::default();
+    for (n, p) in presented.iter().enumerate() {
+        counter.push(n as f32 / fps, p.mean_rgb(rect));
+    }
+    let worst = max_transitions_in_any_second(counter.transition_times());
+    assert!(worst <= 6, "{worst} red transitions in one second");
+}
+
+#[test]
+fn a_below_threshold_red_strobe_straddling_cells_over_gray_passes_unchanged() {
+    // 38×38, 14.4 cells of area: its partly covered cells count at their
+    // cover, so it stays under the threshold.
+    let fps = 60.0;
+    let (_, frames) = red_square_over_gray(38, fps);
+    let (_, unlimited_frames) = red_square_over_gray(38, fps);
+    let mut limited = rig_or_skip!();
+    let mut unlimited = rig_or_skip!();
+    let on = limited.run(frames);
+    let off = unlimited.run(unlimited_frames.into_iter().map(Frame::limiter_off));
+    for (n, (a, b)) in on.iter().zip(&off).enumerate() {
+        assert!(
+            a.bytes == b.bytes,
+            "frame {n}: below-threshold red strobe was altered"
+        );
+    }
+}
+
+#[test]
+fn a_strobe_that_dips_slightly_on_the_way_is_still_held_to_three_flashes() {
+    // 0 ↔ 0.19 at 6 Hz, climbing in 0.065 steps (under the rate cap) with a
+    // 0.001 dip between them. Each dip restarted the excursion, so no 0.065
+    // step ever reached the threshold, and twelve transitions a second passed.
+    let fps = 60.0;
+    let cycle = [
+        0.0, 0.065, 0.064, 0.129, 0.128, 0.193, 0.128, 0.129, 0.064, 0.065,
+    ];
+    let frames: Vec<Frame> = (0..(2.0 * fps) as usize)
+        .map(|n| Frame::scene(scene(FULL, gray(cycle[n % cycle.len()])), 1.0 / fps))
+        .collect();
+    let mut rig = rig_or_skip!();
+    let presented = rig.run(frames);
+    let worst = worst(&presented, fps, FULL);
+    assert!(worst <= 6, "{worst} transitions in one second");
+}
+
+#[test]
+fn a_slow_strobe_whose_reversals_reach_the_threshold_is_counted() {
+    // A triangle between 0.35 and 0.47 at 5 Hz, well under the rate cap. Each
+    // 0.12 reversal reaches the threshold, so it ends the excursion and
+    // counts: the strobe is limited, and still shows its first flashes.
+    let fps = 60.0;
+    let presented = {
+        let mut rig = rig_or_skip!();
+        rig.run(strobe(FULL, fps, 2.0, |t| {
+            let phase = (t * 5.0).fract() * 2.0;
+            0.35 + 0.12 * if phase <= 1.0 { phase } else { 2.0 - phase }
+        }))
+    };
+    let worst = worst(&presented, fps, FULL);
+    assert!(
+        (4..=6).contains(&worst),
+        "{worst} transitions in one second"
+    );
+}
+
 /// Wall-clock cost of the resolve with the frame limiter on, off (the measure
 /// pass skipped, the limit pass writing identity) and bypassed (the test-only
 /// switch, which also skips the measure pass), at 1920×1080 and 3840×2160. A

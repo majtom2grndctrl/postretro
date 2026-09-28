@@ -62,14 +62,23 @@ fn unit_strength(strength: f32) -> f32 {
     }
 }
 
-/// One tracked value: what was presented, its last extremum and direction.
+/// One tracked value: what was presented, its last extremum, its direction
+/// and the furthest value reached in that direction since the extremum.
 #[derive(Clone, Copy, Debug, Default)]
 struct Tracker {
     out: f32,
     ext: f32,
     dir: f32,
+    peak: f32,
     last_sign: i8,
     suppressing: bool,
+}
+
+/// Where a tracked value's excursion stands after moving to a level.
+struct Step {
+    ext: f32,
+    dir: f32,
+    peak: f32,
 }
 
 impl Tracker {
@@ -77,26 +86,50 @@ impl Tracker {
         *self = Self {
             out: level,
             ext: level,
+            peak: level,
             ..Self::default()
         };
     }
 
-    /// Excursion from the last extremum if the value moved to `next`.
-    fn excursion(&self, next: f32) -> (f32, f32) {
-        let step = next - self.out;
-        let reverses = (step > 0.0 && self.dir < 0.0) || (step < 0.0 && self.dir > 0.0);
-        let ext = if reverses { self.out } else { self.ext };
+    /// The excursion after moving to `next`, as the frame limiter's `track`
+    /// follows it: moving back from the peak by `reversal` or more makes the
+    /// peak the new extremum; a smaller dip leaves the excursion running. WCAG
+    /// counts a flash as a pair of opposing changes of at least the threshold,
+    /// so a smaller dip is not an opposing change.
+    fn step(&self, next: f32, reversal: f32) -> Step {
+        let mut step = Step {
+            ext: self.ext,
+            dir: self.dir,
+            peak: self.peak,
+        };
+        let beyond = (next - self.peak) * self.dir;
+        if self.dir == 0.0 {
+            if next != self.peak {
+                step.dir = (next - self.peak).signum();
+                step.peak = next;
+            }
+        } else if beyond > 0.0 {
+            step.peak = next;
+        } else if -beyond >= reversal {
+            step.ext = self.peak;
+            step.dir = -self.dir;
+            step.peak = next;
+        }
+        step
+    }
+
+    /// Excursion from the last extremum if the value moved to `next`, and that
+    /// extremum.
+    fn excursion(&self, next: f32, reversal: f32) -> (f32, f32) {
+        let ext = self.step(next, reversal).ext;
         (next - ext, ext)
     }
 
-    fn present(&mut self, next: f32) {
-        let step = next - self.out;
-        if (step > 0.0 && self.dir < 0.0) || (step < 0.0 && self.dir > 0.0) {
-            self.ext = self.out;
-            self.dir = step.signum();
-        } else if self.dir == 0.0 && step != 0.0 {
-            self.dir = step.signum();
-        }
+    fn present(&mut self, next: f32, reversal: f32) {
+        let step = self.step(next, reversal);
+        self.ext = step.ext;
+        self.dir = step.dir;
+        self.peak = step.peak;
         self.out = next;
     }
 }
@@ -178,7 +211,7 @@ fn decide(
     if fits {
         tracker.suppressing = false;
     }
-    let (excursion, _) = tracker.excursion(target);
+    let (excursion, _) = tracker.excursion(target, threshold);
     let sign: i8 = if excursion > 0.0 { 1 } else { -1 };
     let onset = sign > 0;
     if counts && sign != tracker.last_sign && excursion.abs() >= threshold {
@@ -227,7 +260,8 @@ impl EffectChannel {
         let cap = INTENSITY_RATE_PER_SECOND * frame.dt_rate;
         let capped = strength.clamp(self.level.out - cap, self.level.out + cap);
         // The overlay's darker state is its weaker blend.
-        let dark_ok = capped.min(self.level.excursion(capped).1) < FLASH_DARK_LIMIT;
+        let dark_ok = capped.min(self.level.excursion(capped, FLASH_LUMINANCE_THRESHOLD).1)
+            < FLASH_DARK_LIMIT;
         let level = decide(
             &mut self.level,
             &mut self.window,
@@ -237,7 +271,7 @@ impl EffectChannel {
             SUPPRESSION_DEADBAND,
             dark_ok,
         );
-        self.level.present(level);
+        self.level.present(level, FLASH_LUMINANCE_THRESHOLD);
 
         // Red: the overlay's redness, weighted by how strongly it blends.
         let color_red = redness(rgb);
@@ -253,7 +287,7 @@ impl EffectChannel {
             RED_SUPPRESSION_DEADBAND,
             saturated,
         );
-        self.red.present(red);
+        self.red.present(red, RED_TRANSITION_THRESHOLD);
         let rgb = if red < red_target && red_target > 0.0 {
             // Hold the presented redness (strength × tint redness) by
             // desaturating the tint toward its own luminance; `red_target > 0`
@@ -282,8 +316,9 @@ impl EffectChannel {
 /// The channel clamp's state across frames. Off, it passes the uniform through
 /// and keeps no history. The frame that turns it on (`init`) starts fresh
 /// against its own values — an empty window, nothing to rate-cap from — so
-/// that frame packs unchanged, exactly as the frame limiter presents it
-/// unchanged, and nothing from before the off counts.
+/// that frame packs unchanged and nothing from before the off counts. The
+/// frame limiter still limits the composite of a first frame after a splash
+/// stretch against the splash.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ChannelClamp {
     flash: EffectChannel,
@@ -346,25 +381,30 @@ mod tests {
     }
 
     /// Count transitions of `series` (one value per frame at `dt`) in any one
-    /// second, WCAG-style, from the last extremum.
+    /// second, WCAG-style, from the last extremum. A reversal ends an
+    /// excursion only once it reaches the 0.1 threshold itself.
     fn worst_transitions(series: &[f32], dt: f32) -> usize {
         let mut times = Vec::new();
-        let (mut ext, mut dir, mut counted) = (series[0], 0.0f32, false);
-        let mut last = series[0];
+        let (mut ext, mut peak, mut dir, mut counted) = (series[0], series[0], 0.0f32, false);
         for (n, &v) in series.iter().enumerate().skip(1) {
-            let step = v - last;
-            if step != 0.0 && step.signum() != dir {
-                if dir != 0.0 {
-                    ext = last;
+            let beyond = (v - peak) * dir;
+            if dir == 0.0 {
+                if v != peak {
+                    dir = (v - peak).signum();
+                    peak = v;
                 }
-                dir = step.signum();
+            } else if beyond > 0.0 {
+                peak = v;
+            } else if -beyond >= 0.1 {
+                ext = peak;
+                peak = v;
+                dir = -dir;
                 counted = false;
             }
             if !counted && (v - ext).abs() >= 0.1 && v.min(ext) < 0.8 {
                 counted = true;
                 times.push(n as f32 * dt);
             }
-            last = v;
         }
         (0..times.len())
             .map(|i| {
@@ -402,6 +442,27 @@ mod tests {
         );
         // Limited, it rests at its pre-flash level.
         assert!(alphas.windows(8).any(|w| w.iter().all(|&a| a < 0.02)));
+    }
+
+    #[test]
+    fn a_flash_strobe_that_dips_slightly_on_the_way_packs_at_most_three_flashes() {
+        // 0 ↔ 0.19 at 6 Hz in 0.065 steps (under the rate cap) with a 0.001
+        // dip between them. Restarting the excursion on each dip, no step
+        // reached the threshold and twelve transitions a second packed.
+        let cycle = [
+            0.0, 0.065, 0.064, 0.129, 0.128, 0.193, 0.128, 0.129, 0.064, 0.065,
+        ];
+        let dt = 1.0 / 60.0;
+        let mut clamp = ChannelClamp::default();
+        let alphas: Vec<f32> = (0..120)
+            .map(|n| {
+                let mut uniform = flash([1.0; 3], cycle[n % cycle.len()]);
+                clamp.apply(&mut uniform, &frame(dt, true));
+                uniform.flash[3]
+            })
+            .collect();
+        let worst = worst_transitions(&alphas, dt);
+        assert!(worst <= 6, "{worst} transitions in one second");
     }
 
     #[test]

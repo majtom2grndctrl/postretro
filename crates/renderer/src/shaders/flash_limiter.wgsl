@@ -9,8 +9,10 @@
 // its luminance and redness extrema, its luminance floor, and the global
 // flash window. Nothing reads back.
 //
-// Both pipelines skip workgroup-memory zero-fill (see `FlashLimiter::new`):
-// every `var<workgroup>` here must be written before any invocation reads it.
+// Both pipelines skip workgroup-memory zero-fill (see `FlashLimiter::new`), so
+// workgroup memory starts arbitrary: every `var<workgroup>` element a phase
+// reads must be written earlier in that same phase, behind a barrier. Nothing
+// written by an earlier dispatch survives.
 //
 // See context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter).
 
@@ -21,7 +23,10 @@ struct LimiterFrame {
     enabled: u32,
     // 1 on the frame history starts: a fresh limiter's first enabled frame, or
     // the frame that turns it back on. That frame adopts its own measure as the
-    // last presented one and empties the window, so it presents unchanged.
+    // last presented one and empties the window. Turned back on outside a load,
+    // it presents unchanged. A new renderer's first resolve frame always
+    // follows the boot splash, so it arrives with `splash_active` too and is
+    // limited against the splash.
     init: u32,
     // 1 when splash frames presented since the previous resolve frame.
     splash_active: u32,
@@ -49,7 +54,7 @@ struct LimiterCellState {
     // transition; a reversal of direction clears it (IRIS's accumulator).
     counted: f32,
     red_counted: f32,
-    // Share of the cell the current luminance / redness excursion covers
+    // Share of the cell the current luminance / red excursion covers
     // (`fresh_cover`), kept from the last frame the cell moved.
     lum_cover: f32,
     red_cover: f32,
@@ -58,9 +63,19 @@ struct LimiterCellState {
     // from. Below the presented trough when the rate cap kept the presented
     // fall from following the content all the way down.
     lum_floor: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    // The furthest presented luminance / redness reached in the current
+    // direction since the extremum; a reversal is measured back from it.
+    lum_peak: f32,
+    red_peak: f32,
+    // Red excess (`red_excess`) presented at the redness extremum and peak.
+    red_ext_excess: f32,
+    red_peak_excess: f32,
+    // The redness change the current red excursion's flash reaches, as a
+    // share: the cell's own change over it. Kept like `red_cover`.
+    red_level_cover: f32,
+    // 1 while the cell holds an over-budget luminance / red onset.
+    lum_holding: f32,
+    red_holding: f32,
 }
 
 const FLASH_WINDOW_SLOTS: u32 = 8u;
@@ -109,6 +124,14 @@ const INTENSITY_RATE_PER_SECOND: f32 = 4.0;
 // 0.2 accumulated from the last extremum.
 const RED_SATURATED: f32 = 0.7;
 const RED_TRANSITION_THRESHOLD: f32 = 0.2;
+// A reversal ends an excursion only once it reaches the transition threshold,
+// at the cell's cover (a partly covered cell sees every change diluted by its
+// cover). WCAG counts a flash as a pair of opposing changes of at least the
+// threshold, so a smaller dip is not an opposing change; restarting on it
+// would let a strobe climb in sub-threshold steps with tiny dips between them
+// and never count.
+const LUM_REVERSAL: f32 = FLASH_LUMINANCE_THRESHOLD;
+const RED_REVERSAL: f32 = RED_TRANSITION_THRESHOLD;
 // A per-frame change smaller than this is a cell holding still.
 const STILL_STEP: f32 = 1e-5;
 
@@ -120,6 +143,13 @@ fn redness(rgb: vec3<f32>) -> f32 {
         return 0.0;
     }
     return clamp((rgb.r / total - 1.0 / 3.0) * 1.5, 0.0, 1.0);
+}
+
+// Red excess: red above the mean of green and blue. Linear in the color, so a
+// cell a red change only partly covers changes by exactly that share of the
+// change a covered cell makes; redness, a ratio, does not.
+fn red_excess(rgb: vec3<f32>) -> f32 {
+    return rgb.r - 0.5 * (rgb.g + rgb.b);
 }
 
 // How far to mix `rgb` toward its own luminance so its redness falls to
@@ -143,7 +173,9 @@ fn desaturation_to_redness(rgb: vec3<f32>, held: f32) -> f32 {
 
 // ---- Measure: mean presented color per cell --------------------------------
 
-var<workgroup> wg_sum: array<vec3<f32>, 256>;
+// Invocations per measure workgroup: `@workgroup_size(16, 16)` below.
+const MEASURE_THREADS: u32 = 256u;
+var<workgroup> wg_sum: array<vec3<f32>, MEASURE_THREADS>;
 
 // One workgroup per cell. Every pixel is sampled through `compose_presented`,
 // the resolve's own composite, so screen-effect and scene flashes are measured
@@ -171,7 +203,7 @@ fn cs_measure_cells(
     }
     wg_sum[li] = sum;
     workgroupBarrier();
-    for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
+    for (var stride = MEASURE_THREADS / 2u; stride > 0u; stride = stride >> 1u) {
         if li < stride {
             wg_sum[li] += wg_sum[li + stride];
         }
@@ -185,13 +217,16 @@ fn cs_measure_cells(
 
 // ---- Limit: the rules over the whole grid ----------------------------------
 
-// Area inputs, one block of 144 per quantity: luminance at `BLOCK_LUM`,
-// redness at `BLOCK_RED`. `wg_change` is the signed change being weighed,
-// `wg_step` the cell's signed step this frame.
+// Coverage inputs, one block of 144 per quantity: `wg_change` is each cell's
+// signed change being weighed, `wg_step` its signed step this frame, both on
+// the content. Luminance at `BLOCK_LUM`; redness at `BLOCK_RED`, which sets
+// the level a partly covered cell's red flash reaches; red excess at
+// `BLOCK_RED_EXCESS`, which sets its red coverage.
 const BLOCK_LUM: u32 = 0u;
 const BLOCK_RED: u32 = 144u;
-var<workgroup> wg_change: array<f32, 288>;
-var<workgroup> wg_step: array<f32, 288>;
+const BLOCK_RED_EXCESS: u32 = 288u;
+var<workgroup> wg_change: array<f32, 432>;
+var<workgroup> wg_step: array<f32, 432>;
 // Each cell's share of the area of each transition kind, 144 per kind, then
 // its share of the area of luminance onsets the budget has to hold
 // (`WEIGHT_LUM_HOLD`).
@@ -202,37 +237,58 @@ var<workgroup> wg_cap_sign_mask: u32;
 var<workgroup> wg_event_mask: u32;
 // Bit `1 << kind` for each onset held back over budget this frame.
 var<workgroup> wg_held_mask: u32;
-// 1 when no luminance onset is admitted this frame, none would fit, and the
-// cells that would flash from their floor reach the flash area.
-var<workgroup> wg_lum_hold: u32;
+// `BLOCKED_*` bits: which onsets the budget has no room for this frame.
+var<workgroup> wg_blocked: u32;
+// No luminance onset was admitted and none would fit.
+const BLOCKED_LUM: u32 = 1u;
+// No red onset was admitted and none would fit.
+const BLOCKED_RED: u32 = 2u;
+// Luminance onsets are blocked and the cells that would flash from their
+// floor reach the flash area.
+const BLOCKED_LUM_AREA: u32 = 4u;
 
 struct Track {
     ext: f32,
     dir: f32,
+    peak: f32,
     // The direction reversed: a new excursion starts, not yet counted.
     reversed: bool,
 }
 
-// Follow a presented value from `prev` to `next`: a reversal of direction makes
-// `prev` the new extremum, so a transition is the same-sign change accumulated
-// from the last extremum (IRIS's model). A smooth strobe therefore counts at
-// any refresh rate.
-fn track(prev: f32, ext: f32, dir: f32, next: f32) -> Track {
-    let step = next - prev;
-    var t = Track(ext, dir, false);
-    if (step > 0.0 && dir < 0.0) || (step < 0.0 && dir > 0.0) {
-        t.ext = prev;
-        t.dir = sign(step);
+// Follow a presented value to `next` (IRIS's model): a transition is the
+// same-sign change accumulated from the last extremum, so a smooth strobe
+// counts at any refresh rate. `peak` is the furthest value reached in `dir`
+// since the extremum `ext`. Moving back from it by `reversal` or more makes it
+// the new extremum; a smaller dip leaves the excursion running.
+fn track(ext: f32, dir: f32, peak: f32, next: f32, reversal: f32) -> Track {
+    var t = Track(ext, dir, peak, false);
+    let beyond = (next - peak) * dir;
+    if dir == 0.0 {
+        if next != peak {
+            t.dir = sign(next - peak);
+            t.peak = next;
+        }
+    } else if beyond > 0.0 {
+        t.peak = next;
+    } else if -beyond >= reversal {
+        t.ext = peak;
+        t.dir = -dir;
+        t.peak = next;
         t.reversed = true;
-    } else if dir == 0.0 && step != 0.0 {
-        t.dir = sign(step);
     }
     return t;
 }
 
+// Where the content's current movement started: the extremum, or the peak
+// once the content has turned back past it by less than the reversal (a
+// reversal still pending under the hysteresis).
+fn movement_origin(t: Track, content: f32) -> f32 {
+    return select(t.ext, t.peak, (content - t.peak) * t.dir < 0.0);
+}
+
 // A cell's floor after a frame that presented `presented` over content
-// `measured`, tracked as `t`: restarted when the presented luminance starts
-// falling, lowered while it falls or holds, kept while it rises.
+// `measured`, tracked as `t`: restarted when the presented luminance reverses
+// into a fall, lowered while it falls or holds, kept while it rises.
 fn next_floor(floor: f32, t: Track, presented: f32, measured: f32) -> f32 {
     let low = min(presented, measured);
     if t.reversed && t.dir < 0.0 {
@@ -256,30 +312,31 @@ fn neighbour(base: u32, x: i32, y: i32, sign_v: f32) -> vec2<f32> {
 
 // The change level a cell of change `e` sees along axis (dx, dy) when it sits
 // on a ramp there: one side changed more and is moving with it this frame,
-// the other changed less. 0 when the cell is not on a ramp along that axis.
+// the other changed less or is not moving with it (a still neighbour's
+// excursion may be an old one, not part of this change). 0 when the cell is
+// not on a ramp along that axis.
 fn ramp_level(base: u32, x: i32, y: i32, dx: i32, dy: i32, sign_v: f32, e: f32) -> f32 {
     let a = neighbour(base, x + dx, y + dy, sign_v);
     let b = neighbour(base, x - dx, y - dy, sign_v);
+    let a_with = a.y > STILL_STEP;
+    let b_with = b.y > STILL_STEP;
     var level = 0.0;
-    if a.x > e && a.y > STILL_STEP && b.x < e {
+    if a.x > e && a_with && (b.x < e || !b_with) {
         level = a.x;
     }
-    if b.x > e && b.y > STILL_STEP && a.x < e {
+    if b.x > e && b_with && (a.x < e || !a_with) {
         level = max(level, b.x);
     }
     return level;
 }
 
-// Share of cell `i` a change of `sign_v` and size `e` (> 0) covers. A cell the
+// The change a cell of change `sign_v`·`e` (e > 0) belongs to. A cell the
 // change only partly covers sits on a ramp between a cell it covers and one it
-// does not, and its mean holds the change diluted by coverage; its coverage is
-// its change over the ramp's larger side. A cell on no ramp is covered. So a
-// uniform change weighs by the area it covers, not the cells it touches, and a
-// dimmer change beside a brighter one is not shrunk by it unless the two meet
-// on a one-cell-thin edge (there the cell means cannot tell a dim covered cell
-// from a bright partly covered one). Only neighbours moving this frame set the
-// level, so a still cell holding an old excursion shrinks nothing.
-fn fresh_cover(base: u32, i: u32, sign_v: f32, e: f32) -> f32 {
+// does not, and its mean holds the change diluted by coverage; the change it
+// belongs to is the ramp's larger side. A cell on no ramp belongs to its own.
+// Only neighbours moving this frame set the level, so a still cell holding an
+// old excursion shrinks nothing.
+fn change_level(base: u32, i: u32, sign_v: f32, e: f32) -> f32 {
     let x = i32(i % LIMITER_CELLS_X);
     let y = i32(i / LIMITER_CELLS_X);
     var level = e;
@@ -287,7 +344,17 @@ fn fresh_cover(base: u32, i: u32, sign_v: f32, e: f32) -> f32 {
     level = max(level, ramp_level(base, x, y, 0, 1, sign_v, e));
     level = max(level, ramp_level(base, x, y, 1, 1, sign_v, e));
     level = max(level, ramp_level(base, x, y, 1, -1, sign_v, e));
-    return e / level;
+    return level;
+}
+
+// Share of cell `i` a change of `sign_v` and size `e` (> 0) covers: its change
+// over the change it belongs to. So a uniform change weighs by the area it
+// covers, not the cells it touches, and a dimmer change beside a brighter one
+// is not shrunk by it unless the two meet on a one-cell-thin edge (there the
+// cell means cannot tell a dim covered cell from a bright partly covered one).
+// Exact only for a quantity linear in the color, such as luminance.
+fn fresh_cover(base: u32, i: u32, sign_v: f32, e: f32) -> f32 {
+    return e / change_level(base, i, sign_v, e);
 }
 
 // Cell `i`'s cover for its own `change` in `base`'s block: estimated afresh on
@@ -300,18 +367,23 @@ fn cover_of(base: u32, i: u32, change: f32, fresh: bool, kept: f32) -> f32 {
     return fresh_cover(base, i, sign(change), abs(change));
 }
 
-// Publish cell `i`'s share of the area of each sign's change in `base`'s block:
-// its cover, when it `counts` and the change it belongs to (its own change
-// over its cover) reaches `level`.
-fn publish_weight(base: u32, i: u32, change: f32, cover: f32, counts: bool, level: f32) {
-    let kind = (base / LIMITER_CELL_COUNT) * 2u;
-    let w = select(0.0, cover, counts && abs(change) >= level * cover);
-    wg_weight[kind * LIMITER_CELL_COUNT + i] = select(0.0, w, change > 0.0);
-    wg_weight[(kind + 1u) * LIMITER_CELL_COUNT + i] = select(0.0, w, change < 0.0);
+// A luminance change's area weight: its cover, when it `counts` and the
+// change it belongs to (its own change over its cover) reaches `level`.
+fn lum_weight(change: f32, cover: f32, counts: bool, level: f32) -> f32 {
+    return select(0.0, cover, counts && abs(change) >= level * cover);
 }
 
-// Thread 0: area, in cells, of the change of transition `kind` published this
-// phase.
+// Publish cell `i`'s area `weight` under the onset `kind` (`TRANSITION_*_UP`)
+// or its return, by the sign of `change`.
+fn publish_weight(kind: u32, i: u32, change: f32, weight: f32) {
+    wg_weight[kind * LIMITER_CELL_COUNT + i] = select(0.0, weight, change > 0.0);
+    wg_weight[(kind + 1u) * LIMITER_CELL_COUNT + i] = select(0.0, weight, change < 0.0);
+}
+
+// Thread 0: area, in cells, of the change of transition `kind`. Reads only
+// weight blocks published in the caller's own phase: with zero-fill off, a
+// block this phase did not write holds whatever an earlier phase or dispatch
+// left there.
 fn area(kind: u32) -> f32 {
     var total = 0.0;
     for (var c = 0u; c < LIMITER_CELL_COUNT; c++) {
@@ -388,7 +460,8 @@ fn age_window(g: ptr<function, LimiterGlobal>) {
 // Thread 0, after a splash stretch: the drop from the last resolve frame into
 // the splash happened when the stretch began. The splash path wrote it
 // straight to the swapchain, so it cannot be suppressed; it is recorded at its
-// true age so both edges of a load count against the budget.
+// true age so both edges of a load count against the budget. Reads the
+// luminance weight blocks the splash phase just published, nothing older.
 fn record_splash_edge() {
     var g = limiter_global;
     age_window(&g);
@@ -438,15 +511,21 @@ fn decide_transitions(aged: bool) {
     admit_transition(&g, TRANSITION_RED_DOWN, &events, &held);
     admit_transition(&g, TRANSITION_LUM_UP, &events, &held);
     admit_transition(&g, TRANSITION_RED_UP, &events, &held);
-    var lum_hold = 0u;
-    if (events & (1u << TRANSITION_LUM_UP)) == 0u && !onset_fits(g)
-        && area(WEIGHT_LUM_HOLD) >= FLASH_AREA_CELLS {
-        lum_hold = 1u;
+    let full = !onset_fits(g);
+    var blocked = 0u;
+    if full && (events & (1u << TRANSITION_LUM_UP)) == 0u {
+        blocked |= BLOCKED_LUM;
+        if area(WEIGHT_LUM_HOLD) >= FLASH_AREA_CELLS {
+            blocked |= BLOCKED_LUM_AREA;
+        }
+    }
+    if full && (events & (1u << TRANSITION_RED_UP)) == 0u {
+        blocked |= BLOCKED_RED;
     }
     limiter_global = g;
     wg_event_mask = events;
     wg_held_mask = held;
-    wg_lum_hold = lum_hold;
+    wg_blocked = blocked;
 }
 
 // Thread 0: count this frame's transition of `kind` when its area reaches the
@@ -484,6 +563,7 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
     let measured_rgb = cell_measure[i].rgb;
     let measured = dot(measured_rgb, LUMA);
     let measured_red = redness(measured_rgb);
+    let measured_excess = red_excess(measured_rgb);
     var st = cell_state[i];
 
     if limiter.init != 0u {
@@ -493,13 +573,20 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
         st.out_lum = measured;
         st.ext_lum = measured;
         st.dir = 0.0;
+        st.lum_peak = measured;
         st.red_ext = measured_red;
         st.red_dir = 0.0;
+        st.red_peak = measured_red;
+        st.red_ext_excess = measured_excess;
+        st.red_peak_excess = measured_excess;
         st.counted = 0.0;
         st.red_counted = 0.0;
         st.lum_cover = 1.0;
         st.red_cover = 1.0;
+        st.red_level_cover = 1.0;
         st.lum_floor = measured;
+        st.lum_holding = 0.0;
+        st.red_holding = 0.0;
     }
 
     // Splash hand-off: the player last saw the splash, not this cell's last
@@ -508,7 +595,8 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
     if limiter.splash_active != 0u {
         let splash_rgb = limiter.splash_rgb.rgb;
         let splash_lum = dot(splash_rgb, LUMA);
-        let drop = track(st.out_lum, st.ext_lum, st.dir, splash_lum);
+        let drop_reversal = LUM_REVERSAL * st.lum_cover;
+        let drop = track(st.ext_lum, st.dir, st.lum_peak, splash_lum, drop_reversal);
         let drop_change = splash_lum - drop.ext;
         let drop_step = splash_lum - st.out_lum;
         let drop_prior = select(st.counted, 0.0, drop.reversed) > 0.5;
@@ -518,7 +606,12 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
         let drop_fresh = drop.reversed || abs(drop_step) > STILL_STEP;
         let drop_cover = cover_of(BLOCK_LUM, i, drop_change, drop_fresh, st.lum_cover);
         let drop_counts = min(splash_lum, drop.ext) < FLASH_DARK_LIMIT && !drop_prior;
-        publish_weight(BLOCK_LUM, i, drop_change, drop_cover, drop_counts, FLASH_LUMINANCE_THRESHOLD);
+        publish_weight(
+            TRANSITION_LUM_UP,
+            i,
+            drop_change,
+            lum_weight(drop_change, drop_cover, drop_counts, FLASH_LUMINANCE_THRESHOLD),
+        );
         workgroupBarrier();
         if i == 0u {
             record_splash_edge();
@@ -539,10 +632,17 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
         st.out_lum = splash_lum;
         st.ext_lum = drop.ext;
         st.dir = drop.dir;
+        st.lum_peak = drop.peak;
         st.red_ext = redness(splash_rgb);
         st.red_dir = 0.0;
+        st.red_peak = st.red_ext;
+        st.red_ext_excess = red_excess(splash_rgb);
+        st.red_peak_excess = st.red_ext_excess;
         st.red_counted = 0.0;
         st.red_cover = 1.0;
+        st.red_level_cover = 1.0;
+        st.lum_holding = 0.0;
+        st.red_holding = 0.0;
         aged = true;
     }
 
@@ -554,7 +654,8 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
     wg_step[BLOCK_LUM + i] = delta;
     workgroupBarrier();
     let rate_cover = cover_of(BLOCK_LUM, i, delta, true, 1.0);
-    publish_weight(BLOCK_LUM, i, delta, rate_cover, abs(delta) > cap * rate_cover, 0.0);
+    let rate_counts = abs(delta) > cap * rate_cover;
+    publish_weight(TRANSITION_LUM_UP, i, delta, lum_weight(delta, rate_cover, rate_counts, 0.0));
     workgroupBarrier();
     if i == 0u {
         var mask = 0u;
@@ -576,31 +677,71 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
 
     // Stage 2 — flash budget over the rate-capped candidate, luminance and red.
     let out_red = redness(st.out_rgb);
-    let candidate = track(st.out_lum, st.ext_lum, st.dir, target_lum);
-    let red_candidate = track(out_red, st.red_ext, st.red_dir, measured_red);
+    let out_excess = red_excess(st.out_rgb);
+    let lum_reversal = LUM_REVERSAL * st.lum_cover;
+    let red_reversal = RED_REVERSAL * st.red_level_cover;
+    let candidate = track(st.ext_lum, st.dir, st.lum_peak, target_lum, lum_reversal);
+    let red_candidate = track(st.red_ext, st.red_dir, st.red_peak, measured_red, red_reversal);
     let lum_change = target_lum - candidate.ext;
     let red_change = measured_red - red_candidate.ext;
-    let lum_step = target_lum - st.out_lum;
+    let red_ext_excess = select(st.red_ext_excess, st.red_peak_excess, red_candidate.reversed);
     let red_step = measured_red - out_red;
     // A reversal starts a new excursion that has not been counted yet.
     let lum_counted = select(st.counted, 0.0, candidate.reversed) > 0.5;
     let red_counted = select(st.red_counted, 0.0, red_candidate.reversed) > 0.5;
-    // An uncounted excursion counts toward a luminance flash while its darker
-    // state is below the WCAG limit, toward a red flash while one of its states
-    // is saturated red.
-    let lum_counts = min(target_lum, candidate.ext) < FLASH_DARK_LIMIT && !lum_counted;
-    let red_counts = max(measured_red, red_candidate.ext) >= RED_SATURATED && !red_counted;
-    wg_change[BLOCK_LUM + i] = lum_change;
-    wg_step[BLOCK_LUM + i] = lum_step;
-    wg_change[BLOCK_RED + i] = red_change;
+    // Coverage is estimated on the content, not the candidate. The rate cap
+    // gives every capped cell the same candidate step, so a partly covered
+    // cell beside a covered one would read as covered; and a held cell's
+    // candidate does not move, though its content, which its partly covered
+    // neighbours dilute, still has. Each is measured from where the content's
+    // current movement started, so a movement whose reversal is still pending
+    // is weighed as itself.
+    let lum_content_change = measured - movement_origin(candidate, measured);
+    let lum_content_step = measured - st.out_lum;
+    let red_back = (measured_red - red_candidate.peak) * red_candidate.dir < 0.0;
+    let red_content_change = measured_red - select(red_candidate.ext, red_candidate.peak, red_back);
+    let excess_change = measured_excess - select(red_ext_excess, st.red_peak_excess, red_back);
+    let excess_step = measured_excess - out_excess;
+    wg_change[BLOCK_LUM + i] = lum_content_change;
+    wg_step[BLOCK_LUM + i] = lum_content_step;
+    wg_change[BLOCK_RED + i] = red_content_change;
     wg_step[BLOCK_RED + i] = red_step;
+    wg_change[BLOCK_RED_EXCESS + i] = excess_change;
+    wg_step[BLOCK_RED_EXCESS + i] = excess_step;
     workgroupBarrier();
-    let lum_fresh = candidate.reversed || abs(lum_step) > STILL_STEP;
-    let red_fresh = red_candidate.reversed || abs(red_step) > STILL_STEP;
-    let lum_cover = cover_of(BLOCK_LUM, i, lum_change, lum_fresh, st.lum_cover);
-    let red_cover = cover_of(BLOCK_RED, i, red_change, red_fresh, st.red_cover);
-    publish_weight(BLOCK_LUM, i, lum_change, lum_cover, lum_counts, FLASH_LUMINANCE_THRESHOLD);
-    publish_weight(BLOCK_RED, i, red_change, red_cover, red_counts, RED_TRANSITION_THRESHOLD);
+    let lum_fresh = candidate.reversed || abs(lum_content_step) > STILL_STEP;
+    let red_fresh = red_candidate.reversed || abs(red_step) > STILL_STEP
+        || abs(excess_step) > STILL_STEP;
+    let lum_cover = cover_of(BLOCK_LUM, i, lum_content_change, lum_fresh, st.lum_cover);
+    // Red coverage comes from the red excess, which dilutes linearly; redness
+    // does not (half a red cell over gray reads 0.61 red, over black 1.0). A
+    // change the red excess does not see is taken as covering its cell.
+    var red_cover = st.red_cover;
+    if red_fresh {
+        red_cover = 1.0;
+        if abs(excess_change) > STILL_STEP {
+            red_cover = fresh_cover(BLOCK_RED_EXCESS, i, sign(excess_change), abs(excess_change));
+        }
+    }
+    // The redness change the cell's red flash reaches: a partly covered
+    // cell's own redness is diluted by what it does not cover, so the flash's
+    // is the redness level of the ramp it sits on.
+    let red_level_cover = cover_of(BLOCK_RED, i, red_content_change, red_fresh, st.red_level_cover);
+    let red_level = abs(red_change) / red_level_cover;
+    // An uncounted excursion counts toward a luminance flash while its darker
+    // state is below the WCAG limit, toward a red flash while its flash's
+    // redder state is saturated red.
+    let lum_counts = min(target_lum, candidate.ext) < FLASH_DARK_LIMIT && !lum_counted;
+    let red_counts = min(measured_red, red_candidate.ext) + red_level >= RED_SATURATED
+        && !red_counted;
+    let red_flashing = red_counts && red_level >= RED_TRANSITION_THRESHOLD;
+    publish_weight(
+        TRANSITION_LUM_UP,
+        i,
+        lum_change,
+        lum_weight(lum_change, lum_cover, lum_counts, FLASH_LUMINANCE_THRESHOLD),
+    );
+    publish_weight(TRANSITION_RED_UP, i, red_change, select(0.0, red_cover, red_flashing));
     // Over budget, a luminance onset is weighed on the content from the
     // cell's floor, not on the rate-capped candidate from the presented
     // trough. A capped step starts below the threshold, so the candidate
@@ -608,29 +749,37 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
     // capped fall stopped above the content's trough would rise from there,
     // so its next fall would start a new, uncounted return. Weighed from the
     // floor, a strobing cell is held from its first step, and no cell rises
-    // from a stranded level into a return the window never admitted.
+    // from a stranded level into a return the window never admitted. A cell
+    // already lit by an uncounted rise weighs too, rising this frame or not:
+    // a flash whose parts light on different frames is one flash.
     let lum_origin = min(candidate.ext, st.lum_floor);
     let hold_change = measured - lum_origin;
-    let hold_counts = target_lum > st.out_lum && !lum_counted && lum_origin < FLASH_DARK_LIMIT;
-    wg_weight[WEIGHT_LUM_HOLD * LIMITER_CELL_COUNT + i] = select(
-        0.0,
-        lum_cover,
-        hold_counts && hold_change >= FLASH_LUMINANCE_THRESHOLD * lum_cover,
-    );
+    // A cell whose current excursion runs down has no counted rise, though
+    // its rise back is still under the reversal.
+    let rise_counted = lum_counted && candidate.dir > 0.0;
+    let hold_counts = !rise_counted && lum_origin < FLASH_DARK_LIMIT
+        && hold_change >= FLASH_LUMINANCE_THRESHOLD * lum_cover;
+    wg_weight[WEIGHT_LUM_HOLD * LIMITER_CELL_COUNT + i] = select(0.0, lum_cover, hold_counts);
     workgroupBarrier();
     if i == 0u {
         decide_transitions(aged);
     }
     let events = workgroupUniformLoad(&wg_event_mask);
     let held = workgroupUniformLoad(&wg_held_mask);
-    let lum_hold = workgroupUniformLoad(&wg_lum_hold);
+    let blocked = workgroupUniformLoad(&wg_blocked);
 
     // Over budget, only the cells that are themselves flashing are held:
-    // those whose own excursion from their floor reaches the threshold. A
-    // smaller brightening, such as a camera pan's drift, passes, and a strobe
-    // that moves to new cells is held there too, since those cells cross the
-    // threshold. Every cell a held candidate onset would flash is among them.
-    let lum_held = lum_hold != 0u && hold_counts && hold_change >= FLASH_LUMINANCE_THRESHOLD;
+    // those whose own excursion from their floor reaches the threshold, at
+    // their cover. A smaller brightening, such as a camera pan's drift,
+    // passes, and a strobe that moves to new cells is held there too, since
+    // those cells cross the threshold. Every rising cell a held candidate
+    // onset weighs is among them: its content change from its floor is at
+    // least its candidate change, at the same cover. A held cell stays held
+    // while its own flash lasts and the budget stays full, so a flash is not
+    // released when another part of it goes dark first.
+    let lum_blocked = (blocked & BLOCKED_LUM) != 0u;
+    let lum_hold_start = (blocked & BLOCKED_LUM_AREA) != 0u || st.lum_holding > 0.5;
+    let lum_held = lum_blocked && lum_hold_start && hold_counts && target_lum > st.out_lum;
     let final_lum = select(target_lum, st.out_lum, lum_held);
 
     // Reach the final luminance exactly: scale the frame down, or mix toward
@@ -649,12 +798,14 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
 
     // Red: a held red onset keeps each flashing cell's redness where it was by
     // desaturating toward each pixel's own luminance, which leaves luminance
-    // untouched.
+    // untouched. Like luminance, a held cell stays held while its own red
+    // flash lasts and the budget stays full.
     var desaturate = 0.0;
     let shown_red = redness(luminance_rgb);
-    let red_flashing = red_counts && red_change >= RED_TRANSITION_THRESHOLD;
-    let red_held = (held & (1u << TRANSITION_RED_UP)) != 0u && red_flashing
-        && shown_red > out_red;
+    let red_rising = red_flashing && red_change > 0.0;
+    let red_hold_start = (held & (1u << TRANSITION_RED_UP)) != 0u
+        || ((blocked & BLOCKED_RED) != 0u && st.red_holding > 0.5);
+    let red_held = red_hold_start && red_rising && shown_red > out_red;
     if red_held {
         desaturate = desaturation_to_redness(luminance_rgb, out_red);
     }
@@ -662,15 +813,13 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
 
     // A held cell presents exactly what it last presented, and is recorded
     // so. Recomputed from the scaled or desaturated color it would differ by
-    // rounding, and a rounding step against its direction of travel would
-    // read as a reversal: its excursion would restart at the held level, and
-    // the rate-capped onset behind it would pass a sub-threshold step at a
-    // time, a whole flash in a few frames.
+    // rounding; kept exact, the held excursion carries no drift.
     let presented_rgb = mix(luminance_rgb, vec3<f32>(dot(luminance_rgb, LUMA)), desaturate);
     let presented_lum = select(dot(presented_rgb, LUMA), st.out_lum, lum_held);
     let presented_red = select(redness(presented_rgb), out_red, red_held);
-    let tracked = track(st.out_lum, st.ext_lum, st.dir, presented_lum);
-    let red_tracked = track(out_red, st.red_ext, st.red_dir, presented_red);
+    let presented_excess = red_excess(presented_rgb);
+    let tracked = track(st.ext_lum, st.dir, st.lum_peak, presented_lum, lum_reversal);
+    let red_tracked = track(st.red_ext, st.red_dir, st.red_peak, presented_red, red_reversal);
     // A counted event marks every cell moving its way, so the rest of that
     // excursion never counts again; a presented reversal starts a new one.
     let lum_exc = presented_lum - tracked.ext;
@@ -683,19 +832,38 @@ fn cs_limit_cells(@builtin(local_invocation_index) i: u32) {
     let red_prior = select(st.red_counted, 0.0, red_tracked.reversed) > 0.5;
     st.counted = select(0.0, 1.0, lum_prior || lum_marked);
     st.red_counted = select(0.0, 1.0, red_prior || red_marked);
+    st.lum_holding = select(
+        0.0,
+        1.0,
+        lum_blocked && hold_counts && (lum_held || st.lum_holding > 0.5),
+    );
+    st.red_holding = select(
+        0.0,
+        1.0,
+        (blocked & BLOCKED_RED) != 0u && red_rising && (red_held || st.red_holding > 0.5),
+    );
     // A held cell did not move: it keeps the cover of the excursion it holds.
     if tracked.reversed || abs(presented_lum - st.out_lum) > STILL_STEP {
         st.lum_cover = lum_cover;
     }
     if red_tracked.reversed || abs(presented_red - out_red) > STILL_STEP {
         st.red_cover = red_cover;
+        st.red_level_cover = red_level_cover;
+    }
+    if red_tracked.reversed {
+        st.red_ext_excess = st.red_peak_excess;
+    }
+    if red_tracked.peak != st.red_peak {
+        st.red_peak_excess = presented_excess;
     }
     st.lum_floor = next_floor(st.lum_floor, tracked, presented_lum, measured);
     st.out_rgb = presented_rgb;
     st.out_lum = presented_lum;
     st.ext_lum = tracked.ext;
     st.dir = tracked.dir;
+    st.lum_peak = tracked.peak;
     st.red_ext = red_tracked.ext;
     st.red_dir = red_tracked.dir;
+    st.red_peak = red_tracked.peak;
     cell_state[i] = st;
 }

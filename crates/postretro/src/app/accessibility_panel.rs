@@ -139,9 +139,13 @@ impl App {
         if !engine_owned || !options::is_numeric_field(field) {
             return false;
         }
+        // Name and tier both, as `press_is_from_active_panel` checks: a
+        // same-named tree at another tier is not the tree that exported it.
         let owner_is_active = self.session.as_ref().is_some_and(|session| {
-            owner
-                .is_some_and(|owner| session.modal_stack.active_name() == Some(owner.name.as_str()))
+            owner.is_some_and(|owner| {
+                session.modal_stack.active_name() == Some(owner.name.as_str())
+                    && session.modal_stack.active_tier() == Some(owner.tier)
+            })
         });
         if !owner_is_active {
             log::warn!(

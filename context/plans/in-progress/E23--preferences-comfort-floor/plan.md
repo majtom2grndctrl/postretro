@@ -180,6 +180,19 @@ Each task lands as its own commit(s) with its `plan.md` row update. Owner is the
   Follow-up: `sh_compose.wgsl`, `direct_sh_compose.wgsl` and `animated_direct_sh_compose.wgsl` declare 4.6 KB workgroup arrays with the default fill. Worth measuring after the same audit.
 - **Follow-up noted.** `Ring` is missing from the build-side Luau widget copy list. This predates the branch and is out of scope.
 
+- **Targeted limiter pass** (3 read-only agents over the rewrite since `3f070e32d`):
+  - The workgroup-memory audit was clean.
+  - The tracer and adversarial tester found five limiter issues, all fixed:
+    - 🔴 a flash whose parts light on different frames escaped the over-budget hold. The hold area now counts cells already lit by an uncounted rise, and held cells stay held while their flash lasts and the budget is full.
+    - Edge cells of a held flash kept flashing. Holds now use a cover-scaled threshold, and cover is estimated on the content.
+    - Red saturation was judged on cell means. Red cover now comes from the linear red excess R − (G+B)/2.
+    - Small dips reset the accumulator. Reversals now need hysteresis equal to the transition threshold (0.1 luminance, 0.2 redness), in the GPU limiter, the channel clamp and the independent counter.
+    - Sub-cell patterns are invisible to cell means. This is documented as a limit in §7.8.
+  - The slider route now checks the active tree's tier as well as its name.
+  - Proofs: 37 GPU limiter tests (8 new), the counter tests, and render-cpu (206). Full `cargo test`: 8,545 passed, 0 failed. The measured cost is unchanged: about 0.63 ms at 1080p and 1.69 ms at 4K with the limiter on.
+  - New residuals:
+    - A dimmer red flash beside a brighter one undercounts.
+    - Over budget, a noisy brightening whose net rise reaches 0.1 is held.
 - **Residual limitations** (documented, not blocking):
   - A one-cell-thin dim edge beside a bright flash undercounts. From cell means it looks like a partly covered edge.
   - A darkening with no onset before it is always admitted, so it can push the window past six.

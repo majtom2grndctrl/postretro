@@ -13,7 +13,7 @@ use postretro_render_cpu::flash_limiter::{
 /// `screen_effects.wgsl`. Buffers are sized from these; the shader declares the
 /// fixed-length arrays.
 const CELL_MEASURE_BYTES: u64 = 16;
-const CELL_STATE_BYTES: u64 = 64;
+const CELL_STATE_BYTES: u64 = 80;
 const CELL_PARAMS_BYTES: u64 = 32;
 const GLOBAL_BYTES: u64 = 8 * 4 + 6 * 4;
 
@@ -151,12 +151,15 @@ impl FlashLimiter {
             bind_group_layouts: &[Some(effects_layout), Some(&compute_layout)],
             immediate_size: 0,
         });
-        // No workgroup-memory zero-fill: both entry points write every
-        // workgroup variable before any invocation reads it (behind a barrier),
-        // so the fill is dead work, and not cheap — the backend emits it as one
-        // invocation clearing each whole array behind an extra barrier, which
-        // on Metal cost more than the measure pass's own sampling. A new
-        // workgroup variable must keep that write-before-read rule.
+        // No workgroup-memory zero-fill: in both entry points every phase
+        // writes each workgroup element it reads earlier in that same phase,
+        // behind a barrier, so the fill is dead work. Where naga polyfills it
+        // (Metal here) it is not cheap: one invocation clears each whole
+        // array behind an extra barrier, which cost more than the measure
+        // pass's own sampling. Vulkan may zero through the driver instead.
+        // With the fill off, workgroup memory starts arbitrary, so a new
+        // workgroup variable, or a phase reading a block an earlier phase
+        // wrote, must keep that same-phase write-before-read rule.
         let compute_pipeline = |entry: &'static str, label: &'static str| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
@@ -196,8 +199,10 @@ impl FlashLimiter {
     /// Decide this frame's limiter uniform: the enable flag read once for both
     /// stages, presented-frame time, and whether history starts fresh. The
     /// frame that turns the limiter on starts fresh (`init`) against its own
-    /// measure: an empty window and nothing to rate-cap from, so it presents
-    /// unchanged.
+    /// measure: an empty window and nothing to rate-cap from. Turned back on
+    /// outside a load, it presents unchanged. A new limiter's first frame
+    /// follows the boot splash, so it also carries the splash hand-off and is
+    /// limited against the splash.
     pub(super) fn begin_frame(
         &mut self,
         input: LimiterFrameInput,

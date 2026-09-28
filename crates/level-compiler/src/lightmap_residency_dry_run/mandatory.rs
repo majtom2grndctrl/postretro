@@ -154,6 +154,7 @@ impl MandatoryContext {
             }
         };
         let own_cluster = self.cell_cluster[camera as usize] as usize;
+        self.cluster_stamp[own_cluster] = generation;
         for &cell in &self.cluster_members[own_cluster] {
             add(cell);
         }

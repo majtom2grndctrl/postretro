@@ -113,16 +113,16 @@ Leanings come from a read-only dry run (research below). None is decided.
   3. Id 25 weight maps by chunk range.
 - Packing granularity. Earlier lean: soft, cluster-ordered packing with a capped layer
   size. Measured hard per-cluster boundaries cost 2.1–5.5× the texels. The per-cell
-  mandatory dry run (below) weakens this lean. On the hallway map, cluster-ordered 2048²
-  beats today's packing only below 32 m. Cluster-ordered 1024² gives the lowest layer
-  bytes at 64 and 128 m, but needs 344 layers against the 256-layer runtime limit.
-  At 64 m, whole-layer residency's worst cell needs 2.6–4.6× the texel-exact worst,
-  depending on layout and granularity. Lean
-  now: residency finer than a whole layer, such as pages or a virtual-layer table, over
-  a packer change alone.
+  mandatory dry run (below) tests it. Under cluster closure on the hallway map,
+  cluster-ordered 2048² beats today's packing at every bounded D, but only by 7–33%.
+  Cluster-ordered 1024² gives the lowest layer bytes at 64 and 128 m, but needs 344
+  layers against the 256-layer runtime limit. At 64 m, whole-layer residency's worst cell
+  needs 2.6–5.3× the texel-exact worst, depending on layout and granularity. Lean now:
+  residency finer than a whole layer, such as pages or a virtual-layer table, matters
+  more than a packer change alone.
 - Reach bound. The portal-path distance whose cells are mandatory. It is the design's
-  largest lever: on the hallway map, Low fits at 64 m but not at 128 m at full
-  resolution. Open for the owner.
+  largest lever. On the hallway map under cluster closure, Low fits at 64 m but not at
+  128 m at full resolution, even texel-exact. Open for the owner.
 - Miss policy. Lean:
   - Visible-cluster layers are mandatory. The pool grows rather than refusing them.
   - A transient miss drops static direct light and keeps SH indirect.
@@ -223,9 +223,9 @@ run command.
     stored-order repack reproduces every placement, and the untruncated distance
     recompute matches all 46,564 stored id 46 pairs.
 
-Worst camera cell, in MiB, under cluster closure; brackets count cells over Low's
-256 MiB. Texel-exact counts the needed chart texels alone. The layout columns count whole
-layers.
+Worst camera cell, in MiB, under cluster closure and the untruncated distance recompute.
+Brackets count cells over Low's 256 MiB. Texel-exact counts the needed chart texels
+alone. The layout columns count whole layers.
 
 | D | Texel-exact | Half-res | Today's packing (2048²) | Cluster-ordered 1024² | Cluster-ordered 2048² |
 |---|---|---|---|---|---|
@@ -233,19 +233,25 @@ layers.
 | 32 m | 62 | 16 | 224 | 200 | 168 |
 | 64 m | 112 | 29 | 378 [261] | 287 [10] | 336 [41] |
 | 128 m | 321 [144] | 84 | 770 [1,849] | 578 [1,487] | 714 [1,801] |
-| Reach | 820 | 215 | 1,022 | 1,372 | 1,036 |
+| Reach | 820 [2,081] | 215 | 1,022 [2,081] | 1,372 [2,081] | 1,036 [2,081] |
 
 Findings:
 - **Cell-granular sets are smaller.** They fit Low at 128 m even texel-exact: 227 MiB
   worst, 187 MiB p95.
-- **At full resolution, only sub-layer residency fits Low, and only to about 64 m.** At
-  128 m, half resolution is the only figure that fits.
+- **Under cluster closure at full resolution, whole layers fit Low through 32 m.** At
+  64 m only sub-layer residency fits, and at 128 m only half resolution fits.
 - **Cluster-ordered 1024² exceeds the runtime limit.** It needs 344 layers plus 12
   oversize cells, 1.34× the texels. Cluster-ordered 2048² needs 74 layers, 1.01×.
 - **Id 46 caps each source cell at its 32 nearest partners**
-  (`CELL_VISIBILITY_FANOUT_K`). At 128 m, a cell's stored set averages 42 cells against
-  305 recomputed. Any consumer that reads id 46 as "everything within D" undercounts past
-  about 32 m. The SH warm set's use of id 46 is unchecked.
+  (`CELL_VISIBILITY_FANOUT_K`).
+  - A cell's stored set counts pairs kept from either end, so at 128 m it averages 42
+    cells, against 305 recomputed.
+  - The cap already binds at 16 m, where 178 cells hit it, and the stored and recomputed
+    sets diverge from 32 m.
+  - The error is large. At 128 m, stored pairs would put today's packing at 280 MiB,
+    with 8 cells over; the recompute gives 770 MiB, with 1,849 over.
+  - Any consumer that reads id 46 as "everything within D" undercounts. The SH warm set's
+    use of id 46 is unchecked.
 - **`campaign-test` never nears the limit.** Its whole lightmap plus shadowmask is 56 MiB.
 
 Still needed:

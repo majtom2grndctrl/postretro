@@ -596,7 +596,9 @@ fn omitted_for_width_shadowmask_adds_a_restored_floor_column() {
     }
     let rendered = report.render();
     assert!(rendered.contains("texel-exact + omitted id42"));
+    assert!(rendered.contains("half-res + omitted id42"));
     assert!(report.csv().contains("texel_exact_with_omitted_id42_bytes"));
+    assert!(report.csv().contains("half_res_with_omitted_id42_bytes"));
 }
 
 /// Two portal components: cells 0–3 are 20 m cubes chained along X, cells 4

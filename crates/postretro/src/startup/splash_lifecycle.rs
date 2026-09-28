@@ -18,6 +18,14 @@ use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, Startup
 /// boot waits for the OS preference reader.
 const SPLASH_FRAME_OS_WAIT: u32 = 2;
 
+/// Where boot goes once the splash clears, directly or after the first-launch
+/// hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BootDestination {
+    Frontend,
+    BootMap(std::path::PathBuf),
+}
+
 impl App {
     /// Drive one Splash-state frame. Returns `false` when the splash frame was
     /// painted and the redraw should otherwise short-circuit. A boot map exits
@@ -204,41 +212,72 @@ impl App {
         self.leave_splash(event_loop)
     }
 
-    /// Exit Splash: to Frontend with no boot map, or to Loading with one.
+    /// Exit Splash: to the first-launch hold when the accessibility panel has
+    /// never been closed on this profile, else straight to the boot
+    /// destination (Frontend with no boot map, Loading with one).
     fn leave_splash(&mut self, _event_loop: &ActiveEventLoop) -> bool {
-        let Some(map_path) = self.map_path.clone() else {
-            if let Some(renderer) = self.renderer.as_mut() {
-                renderer.clear_splash();
-            }
-            self.boot_state = BootState::Frontend;
-            self.populate_frontend();
-            self.drain_level_requests();
-            self.splash_frame += 1;
-            // Final boot summary: the post-logo marks (session/audio/net/full-init)
-            // append after the `first_splash_frame` line, so this logs the full
-            // auditable boot order in one place. See: boot_sequence §1.
-            log::info!("{}", self.boot_timings.summary());
-            log::info!("[Engine] no boot map supplied; entering frontend");
-            self.request_redraw();
-            return false;
+        let destination = match self.map_path.clone() {
+            Some(map_path) => BootDestination::BootMap(map_path),
+            None => BootDestination::Frontend,
         };
-
-        // Route boot-map loading through the same request queue runtime
-        // transitions use. PRL parse still runs off the main thread, and
-        // `Loading` keeps painting while it waits. The boot worker dispatch is
-        // recorded into `boot_timings` so the boot order line proves first
-        // pixels precede the level-worker spawn. See: boot_sequence §1.
-        self.boot_load = true;
-        self.boot_timings.record("boot_worker_dispatch");
-        self.enqueue_level_request(LevelRequest::Load(LevelSource::Path(map_path)));
-        self.boot_state = BootState::Loading;
-        self.drain_level_requests();
-
         self.splash_frame += 1;
-        // Final boot summary with the full mark set (see the no-map branch above).
+        if self.first_launch_hold_required() {
+            self.enter_first_launch_hold(destination);
+        } else {
+            self.start_boot_destination(destination);
+        }
+        // Final boot summary: the post-logo marks (session/audio/net/full-init,
+        // and the boot-map worker dispatch) append after the
+        // `first_splash_frame` line, so this logs the full auditable boot order
+        // in one place. See: boot_sequence §1.
         log::info!("{}", self.boot_timings.summary());
         self.request_redraw();
         false
+    }
+
+    /// Leave boot for its destination. A level the host named — during the
+    /// splash's OS-preference wait or the first-launch hold — is already queued
+    /// and outranks both the frontend backdrop and a CLI boot map.
+    pub(crate) fn start_boot_destination(&mut self, destination: BootDestination) {
+        let host_load_queued = self
+            .level_requests
+            .iter()
+            .any(|request| matches!(request, LevelRequest::Load(_)));
+        match destination {
+            BootDestination::Frontend => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.clear_splash();
+                }
+                self.boot_state = BootState::Frontend;
+                if host_load_queued {
+                    self.present_frontend_menu();
+                } else {
+                    self.populate_frontend();
+                }
+                self.drain_level_requests();
+                log::info!("[Engine] no boot map supplied; entering frontend");
+            }
+            BootDestination::BootMap(_) if host_load_queued => {
+                // The host's map replaces the CLI boot map; it loads as an
+                // ordinary runtime request, so a failure returns to Frontend.
+                self.boot_state = BootState::Frontend;
+                self.drain_level_requests();
+                log::info!("[Engine] loading the host's map instead of the CLI boot map");
+            }
+            BootDestination::BootMap(map_path) => {
+                // Route boot-map loading through the same request queue runtime
+                // transitions use. PRL parse still runs off the main thread, and
+                // `Loading` keeps painting while it waits. The boot worker
+                // dispatch is recorded into `boot_timings` so the boot order line
+                // proves first pixels precede the level-worker spawn. See:
+                // boot_sequence §1.
+                self.boot_load = true;
+                self.boot_timings.record("boot_worker_dispatch");
+                self.enqueue_level_request(LevelRequest::Load(LevelSource::Path(map_path)));
+                self.boot_state = BootState::Loading;
+                self.drain_level_requests();
+            }
+        }
     }
 
     /// Complete full renderer initialization (idempotent / restartable across

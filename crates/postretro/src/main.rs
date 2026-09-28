@@ -874,6 +874,10 @@ pub(crate) struct App {
     /// `os_preferences::OS_REPLY_WAIT` from here. `None` outside that wait.
     os_wait_from: Option<Instant>,
 
+    /// Where boot continues when the first-launch hold ends. `Some` only
+    /// during the hold.
+    boot_destination: Option<crate::startup::BootDestination>,
+
     /// Set when `Loading → Running` transitions; consumed at the bottom of the
     /// first `Running` frame after `render_frame_indirect` returns. Ensures
     /// log line C ends with `first_level_frame` covering the cost of the
@@ -2070,14 +2074,20 @@ impl ApplicationHandler for App {
                 }
                 let options_menu_was_open = self.options_menu_is_top();
 
-                if self.boot_state == BootState::Frontend {
+                if matches!(
+                    self.boot_state,
+                    BootState::Frontend | BootState::FirstLaunchHold
+                ) {
                     // Frontend has no world but is not a peerless state: keep an
                     // installed endpoint alive before frontend-only game logic.
+                    // The first-launch hold runs the same world-less frame with
+                    // only the accessibility panel on the stack.
                     let _ = self.poll_world_less_transport(frame_dt);
                     if !self.run_frontend_ui_logic(event_loop, frame_dt, options_menu_was_open) {
                         return;
                     }
                     self.render_frontend_frame(event_loop, now, frame_dt);
+                    self.finish_first_launch_hold_if_closed();
                     return;
                 }
 
@@ -5553,7 +5563,9 @@ impl App {
     ) {
         self.apply_frontend_menu_camera_pose_if_present();
         self.reconcile_ui_focus();
-        let frontend_menu_is_present = self.frontend_menu_is_present();
+        // The first-launch hold shows the panel alone: no HUD beneath it.
+        let frontend_menu_is_present =
+            self.frontend_menu_is_present() || self.boot_state == BootState::FirstLaunchHold;
         let Some(session) = self.session.as_mut() else {
             return;
         };

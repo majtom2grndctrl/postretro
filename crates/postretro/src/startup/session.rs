@@ -326,6 +326,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         boot_state: App::initial_boot_state(),
         splash_frame: 0,
         os_wait_from: None,
+        boot_destination: None,
         pending_level_log: false,
         pending_splash_override: None,
         boot_timings,

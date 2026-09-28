@@ -57,6 +57,7 @@ impl App {
             session
                 .modal_stack
                 .push_named(ACCESSIBILITY_PANEL_NAME, None);
+            self.accessibility_panel_was_open = true;
         }
     }
 

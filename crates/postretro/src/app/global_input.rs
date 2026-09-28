@@ -41,7 +41,10 @@ impl App {
     /// Only frames that draw UI take UI input. Splash and Loading frames draw
     /// none, so input pressed on them is dropped, never delivered later.
     pub(crate) fn boot_state_accepts_ui_input(&self) -> bool {
-        matches!(self.boot_state, BootState::Frontend | BootState::Running)
+        matches!(
+            self.boot_state,
+            BootState::Frontend | BootState::FirstLaunchHold | BootState::Running
+        )
     }
 
     /// The global input was pressed (F1 press edge, or a gamepad Select). It
@@ -79,9 +82,14 @@ impl App {
             return false;
         };
         match panel_toggle_for(&session.modal_stack) {
-            PanelToggle::Open => session
-                .modal_stack
-                .push_named(ACCESSIBILITY_PANEL_NAME, None),
+            PanelToggle::Open => {
+                session
+                    .modal_stack
+                    .push_named(ACCESSIBILITY_PANEL_NAME, None);
+                // Noticed as open even if a close lands before the next
+                // options update, so that close still writes the record.
+                self.accessibility_panel_was_open = true;
+            }
             PanelToggle::Close => session.modal_stack.pop(),
             PanelToggle::Nothing => return false,
         }

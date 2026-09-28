@@ -34,6 +34,7 @@ impl App {
         self.active_level_source = None;
         self.level_requests.clear();
         self.boot_load = false;
+        self.boot_destination = None;
     }
 
     pub(crate) fn drive_boot_state_for_redraw(
@@ -67,7 +68,7 @@ impl App {
             }
             BootState::Splash => self.run_splash_frame(event_loop, frame_dt),
             BootState::Loading => self.run_loading_frame(event_loop, frame_dt),
-            BootState::Frontend => {
+            BootState::Frontend | BootState::FirstLaunchHold => {
                 // No level is installed. Let the normal redraw handler render a
                 // frontend-safe frame that skips gameplay/world work.
                 true

@@ -1657,6 +1657,7 @@ pub(crate) mod tests {
             boot_state: BootState::Running,
             splash_frame: 0,
             os_wait_from: None,
+            boot_destination: None,
             pending_level_log: false,
             pending_splash_override: None,
             host_spawn_points: Vec::new(),

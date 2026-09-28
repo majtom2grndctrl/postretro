@@ -14,8 +14,8 @@ use super::super::theme::UiTheme;
 use postretro_entities::SlotValue;
 
 use super::bindings::{
-    BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_ring_scalar_binding,
-    drive_text_binding,
+    BindingDiff, TweenClock, drive_bar_binding, drive_bar_max, drive_panel_binding,
+    drive_ring_scalar_binding, drive_text_binding,
 };
 use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
@@ -301,7 +301,7 @@ impl UiTree {
             0,
             slot_values,
             cell_values,
-            time_seconds,
+            TweenClock::easing(time_seconds),
         )
     }
 
@@ -320,11 +320,13 @@ impl UiTree {
         // against this the same way `{ slot }` binds resolve against `slot_values`;
         // it rides the snapshot, so a cell write never forces a rebuild.
         cell_values: &CellValues,
-        // Deterministic, dt-accumulated frame time (seconds). The tween driver
-        // (`resolve_bindings`) reads it to advance eased display values: a tween's
-        // normalized progress is `(time_seconds - start_time) / duration`.
-        time_seconds: f64,
+        // Deterministic, dt-accumulated frame time (seconds) plus the reduce-
+        // motion switch. The tween driver (`resolve_bindings`) advances eased
+        // display values on it: a tween's normalized progress is
+        // `(now - start_time) / duration`, and snapping makes every duration 0.
+        clock: TweenClock,
     ) -> UiDrawData {
+        let time_seconds = clock.now;
         // Subscriber-aware diff + tween driver: resolve bound nodes against the
         // new snapshot at this frame's time, easing tweened display values and
         // classifying each change. Runs before the gate so its `mark_dirty` is
@@ -332,7 +334,7 @@ impl UiTree {
         let BindingDiff {
             content_changed,
             appearance_changed,
-        } = self.resolve_bindings(slot_values, cell_values, time_seconds);
+        } = self.resolve_bindings(slot_values, cell_values, clock);
 
         let viewport_changed = self.last_viewport != Some(device_size);
         let image_sizes_changed = self.last_image_sizes_generation != Some(image_sizes_generation);
@@ -443,8 +445,9 @@ impl UiTree {
         &mut self,
         slot_values: &HashMap<String, SlotValue>,
         cell_values: &CellValues,
-        time_seconds: f64,
+        clock: TweenClock,
     ) -> BindingDiff {
+        let time_seconds = clock.now;
         // Collect node ids first (depth-first from the root) to avoid borrowing
         // the taffy tree while mutating node contexts / marking dirty in the loop.
         let mut nodes: Vec<NodeId> = Vec::new();
@@ -482,7 +485,7 @@ impl UiTree {
                             number_presentation.as_ref(),
                             slot_values,
                             cell_values,
-                            time_seconds,
+                            clock,
                         ) {
                             diff.content_changed = true;
                             dirty_text.push(node);
@@ -520,7 +523,7 @@ impl UiTree {
                         tween,
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     ) {
                         diff.appearance_changed = true;
                         // Appearance-only: no mark_dirty, no relayout.
@@ -542,7 +545,7 @@ impl UiTree {
                         tween,
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     );
                     let max_changed = drive_bar_max(max, last_max_resolved, slot_values);
                     if value_changed || max_changed {
@@ -562,21 +565,13 @@ impl UiTree {
                     // four even when an earlier property changes: `||` would
                     // short-circuit and freeze later arcs while another one moves.
                     let radius_changed =
-                        drive_ring_scalar_binding(radius, slot_values, cell_values, time_seconds);
-                    let thickness_changed = drive_ring_scalar_binding(
-                        thickness,
-                        slot_values,
-                        cell_values,
-                        time_seconds,
-                    );
-                    let start_angle_changed = drive_ring_scalar_binding(
-                        start_angle,
-                        slot_values,
-                        cell_values,
-                        time_seconds,
-                    );
+                        drive_ring_scalar_binding(radius, slot_values, cell_values, clock);
+                    let thickness_changed =
+                        drive_ring_scalar_binding(thickness, slot_values, cell_values, clock);
+                    let start_angle_changed =
+                        drive_ring_scalar_binding(start_angle, slot_values, cell_values, clock);
                     let sweep_changed =
-                        drive_ring_scalar_binding(sweep, slot_values, cell_values, time_seconds);
+                        drive_ring_scalar_binding(sweep, slot_values, cell_values, clock);
                     if radius_changed | thickness_changed | start_angle_changed | sweep_changed {
                         // A Ring's explicit diameter is its entire layout
                         // contract. Scalar values only alter its SDF draw data.

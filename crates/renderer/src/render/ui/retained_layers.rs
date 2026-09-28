@@ -83,7 +83,8 @@ impl UiPass {
     /// their retained state. The boot splash never calls this — it renders through
     /// `BootSplashPass`, outside gameplay UI and the retained tree stack.
     ///
-    /// `time_seconds` is the deterministic, dt-accumulated frame time threaded
+    /// `clock` is the deterministic, dt-accumulated frame time (plus the
+    /// reduce-motion switch) threaded
     /// down to the retained build for the tween runtime to ease bound values over
     /// time.
     // Wide by necessity: layer + viewport + image sizes + slot values + theme +
@@ -102,7 +103,7 @@ impl UiPass {
         cell_values: &tree::CellValues,
         theme: &theme::UiTheme,
         theme_generation: u64,
-        time_seconds: f64,
+        clock: tree::TweenClock,
     ) -> tree::UiDrawData {
         debug_assert!(
             layer <= self.gameplay_trees.len(),
@@ -143,7 +144,7 @@ impl UiPass {
                 image_sizes_generation,
                 slot_values,
                 cell_values,
-                time_seconds,
+                clock,
             )
     }
 
@@ -161,7 +162,7 @@ impl UiPass {
         image_sizes_generation: u64,
         theme: &theme::UiTheme,
         theme_generation: u64,
-        time_seconds: f64,
+        clock: tree::TweenClock,
     ) -> tree::UiDrawData {
         self.presentation_layout_generation = self.presentation_layout_generation.wrapping_add(1);
         if self.presentation_layout_generation == 0 {
@@ -232,7 +233,7 @@ impl UiPass {
                 image_sizes,
                 image_sizes_generation,
                 &cached.fact_cells,
-                time_seconds,
+                clock,
                 &mut cached.relative_draw,
             );
             if input.visible {

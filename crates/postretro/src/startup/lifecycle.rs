@@ -2500,6 +2500,7 @@ mod tests {
                 0.0,
                 glam::Mat4::IDENTITY,
                 [800, 600],
+                crate::presentation_pool::MotionPreference::Full,
             );
             session.presentation_pool.refresh_overlay(
                 presentation_target,

@@ -927,6 +927,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::presentation_pool::MotionPreference;
     use glam::Vec3;
     use log::Level;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -2025,7 +2026,13 @@ mod tests {
             Some(Vec3::ZERO),
             Some(&config),
         );
-        pool.advance_and_collect_inputs(&mut registry, 2.0, glam::Mat4::IDENTITY, [100, 100]);
+        pool.advance_and_collect_inputs(
+            &mut registry,
+            2.0,
+            glam::Mat4::IDENTITY,
+            [100, 100],
+            MotionPreference::Full,
+        );
 
         ingest_client_overlay_fact(
             &mut state,
@@ -2046,7 +2053,13 @@ mod tests {
             .and_then(|facts| facts.get("shieldFraction"));
         assert_eq!(shield, Some(&PresentationFact::Number(0.8)));
 
-        pool.advance_and_collect_inputs(&mut registry, 0.6, glam::Mat4::IDENTITY, [100, 100]);
+        pool.advance_and_collect_inputs(
+            &mut registry,
+            0.6,
+            glam::Mat4::IDENTITY,
+            [100, 100],
+            MotionPreference::Full,
+        );
         assert!(!pool.has_overlay(entity));
     }
 
@@ -2066,7 +2079,13 @@ mod tests {
             Some(Vec3::ZERO),
             Some(&config),
         );
-        pool.advance_and_collect_inputs(&mut registry, 2.0, glam::Mat4::IDENTITY, [100, 100]);
+        pool.advance_and_collect_inputs(
+            &mut registry,
+            2.0,
+            glam::Mat4::IDENTITY,
+            [100, 100],
+            MotionPreference::Full,
+        );
         ingest_client_overlay_fact(
             &mut state,
             &mut pool,
@@ -2075,7 +2094,13 @@ mod tests {
             Some(Vec3::ZERO),
             Some(&config),
         );
-        pool.advance_and_collect_inputs(&mut registry, 0.6, glam::Mat4::IDENTITY, [100, 100]);
+        pool.advance_and_collect_inputs(
+            &mut registry,
+            0.6,
+            glam::Mat4::IDENTITY,
+            [100, 100],
+            MotionPreference::Full,
+        );
 
         assert!(pool.has_overlay(entity));
     }

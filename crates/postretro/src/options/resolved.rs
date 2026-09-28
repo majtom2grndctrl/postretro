@@ -32,6 +32,17 @@ pub(crate) struct ResolvedAccessibility {
 }
 
 impl ResolvedAccessibility {
+    /// The view-feel scale presentation applies: zero while reduce motion is
+    /// on, the player's slider otherwise. The slider value itself is untouched,
+    /// so it returns when the switch turns off.
+    pub(crate) fn presented_view_feel_scale(&self) -> f32 {
+        if self.reduce_motion {
+            0.0
+        } else {
+            self.view_feel_scale
+        }
+    }
+
     pub(crate) fn resolve(options: &PlayerOptions, os: &OsPreferences) -> Self {
         let a = &options.accessibility;
         Self {
@@ -50,6 +61,18 @@ impl ResolvedAccessibility {
             mono_audio: a.mono_audio,
         }
     }
+}
+
+/// The resolved reduce-motion switch as projected into the frame's slot
+/// snapshot. Presentation that reads the snapshot rather than the store uses
+/// this.
+pub(crate) fn reduce_motion_from_slots(
+    slots: &std::collections::HashMap<String, postretro_entities::SlotValue>,
+) -> bool {
+    matches!(
+        slots.get("accessibility.reduceMotion"),
+        Some(postretro_entities::SlotValue::Boolean(true))
+    )
 }
 
 #[cfg(test)]
@@ -87,5 +110,21 @@ mod tests {
 
         let resolved = ResolvedAccessibility::resolve(&unset, &OsPreferences::default());
         assert_eq!(resolved.reduce_motion, DEFAULT_REDUCE_MOTION);
+    }
+
+    #[test]
+    fn reduce_motion_presents_zero_view_feel_and_keeps_the_slider() {
+        let mut options = with_reduce_motion(Some(true));
+        options.view_feel_scale = 0.7;
+        options.accessibility.screen_shake_scale = 0.4;
+        let on = ResolvedAccessibility::resolve(&options, &OsPreferences::default());
+        assert_eq!(on.presented_view_feel_scale(), 0.0);
+        // Each per-effect slot still carries its slider's own value.
+        assert!((on.view_feel_scale - 0.7).abs() < 1e-6);
+        assert!((on.screen_shake_scale - 0.4).abs() < 1e-6);
+
+        options.accessibility.reduce_motion = Some(false);
+        let off = ResolvedAccessibility::resolve(&options, &OsPreferences::default());
+        assert!((off.presented_view_feel_scale() - 0.7).abs() < 1e-6);
     }
 }

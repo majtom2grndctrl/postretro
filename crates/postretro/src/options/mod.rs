@@ -19,7 +19,7 @@ mod resolved;
 pub use accessibility::AccessibilityOptions;
 pub(crate) use bridge::OptionsBridge;
 use document::{DocumentWriter, FieldReader, StoredDocument};
-pub(crate) use resolved::{OsPreferences, ResolvedAccessibility};
+pub(crate) use resolved::{OsPreferences, ResolvedAccessibility, reduce_motion_from_slots};
 
 /// Registered dev-mod options tree whose open/close boundaries seed and flush
 /// the session-owned settings bridge.

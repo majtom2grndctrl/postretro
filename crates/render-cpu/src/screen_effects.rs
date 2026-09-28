@@ -9,6 +9,12 @@ use postretro_entities::SlotValue;
 const SHAKE_REFERENCE_WIDTH: f32 = 1280.0;
 const SHAKE_REFERENCE_HEIGHT: f32 = 720.0;
 
+/// The player's resolved accessibility slots the pack step honors. Scaling
+/// happens here, on the presenting machine, and never writes `screen.shake`,
+/// which keeps its authored decay.
+const REDUCE_MOTION_SLOT: &str = "accessibility.reduceMotion";
+const SCREEN_SHAKE_SCALE_SLOT: &str = "accessibility.screenShakeScale";
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct EffectUniform {
@@ -28,13 +34,29 @@ pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUn
     }
     if let Some(shake) = read_array(slot_values, "screen.shake") {
         if shake.len() >= 2 {
+            let scale = presented_shake_scale(slot_values);
             uniform.shake = [
-                shake[0] / SHAKE_REFERENCE_WIDTH,
-                shake[1] / SHAKE_REFERENCE_HEIGHT,
+                shake[0] * scale / SHAKE_REFERENCE_WIDTH,
+                shake[1] * scale / SHAKE_REFERENCE_HEIGHT,
             ];
         }
     }
     uniform
+}
+
+/// Reduce motion suppresses shake fully; otherwise the screen-shake slider
+/// scales it. An absent or malformed slider reads as unscaled.
+fn presented_shake_scale(slot_values: &HashMap<String, SlotValue>) -> f32 {
+    if matches!(
+        slot_values.get(REDUCE_MOTION_SLOT),
+        Some(SlotValue::Boolean(true))
+    ) {
+        return 0.0;
+    }
+    match slot_values.get(SCREEN_SHAKE_SCALE_SLOT) {
+        Some(SlotValue::Number(scale)) if scale.is_finite() => scale.clamp(0.0, 1.0),
+        _ => 1.0,
+    }
 }
 
 fn slot_vec4(value: Option<&SlotValue>) -> Option<[f32; 4]> {
@@ -108,6 +130,35 @@ mod tests {
         assert_eq!(uniform.vignette, [0.1, 0.0, 0.4, 0.8]);
         assert!((uniform.shake[0] - 0.1).abs() < 1e-6);
         assert!((uniform.shake[1] - 0.1).abs() < 1e-6);
+    }
+
+    // UO2: the switch scales only the packed offset. `screen.shake` keeps its
+    // authored decay, so turning reduce motion off mid-decay resumes at the
+    // remaining amplitude.
+    #[test]
+    fn reduce_motion_zeroes_packed_shake_and_the_slider_scales_it() {
+        let shaking = |extra: &[(&str, SlotValue)]| {
+            let mut snapshot = slots(&[("screen.shake", SlotValue::Array(vec![128.0, 72.0]))]);
+            for (name, value) in extra {
+                snapshot.insert(name.to_string(), value.clone());
+            }
+            pack_effect_uniform(&snapshot).shake
+        };
+        let full = shaking(&[]);
+        assert!((full[0] - 0.1).abs() < 1e-6);
+
+        let reduced = shaking(&[
+            (REDUCE_MOTION_SLOT, SlotValue::Boolean(true)),
+            (SCREEN_SHAKE_SCALE_SLOT, SlotValue::Number(1.0)),
+        ]);
+        assert_eq!(reduced, [0.0, 0.0]);
+
+        let halved = shaking(&[
+            (REDUCE_MOTION_SLOT, SlotValue::Boolean(false)),
+            (SCREEN_SHAKE_SCALE_SLOT, SlotValue::Number(0.5)),
+        ]);
+        assert!((halved[0] - 0.05).abs() < 1e-6);
+        assert!((halved[1] - 0.05).abs() < 1e-6);
     }
 
     #[test]

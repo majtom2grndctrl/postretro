@@ -3494,7 +3494,8 @@ impl ApplicationHandler for App {
                 let view_feel_scale = self
                     .session
                     .as_ref()
-                    .map(|session| session.player_options.view_feel_scale)
+                    .and_then(|session| session.options_bridge.resolved())
+                    .map(|resolved| resolved.presented_view_feel_scale())
                     .unwrap_or(1.0);
                 let eye = frame_eye::assemble_frame_eye(
                     frame_eye::FrameEyeInputs {
@@ -3680,6 +3681,17 @@ impl ApplicationHandler for App {
                     // borrow it once here (disjoint from the `renderer` borrow of
                     // `self.renderer` and from the other `self` fields read below).
                     let session = self.session.as_mut().expect("running session installed");
+                    // The player's reduce-motion switch reaches presentation
+                    // here, at the frame-time call site; simulation never reads it.
+                    let motion = if session
+                        .options_bridge
+                        .resolved()
+                        .is_some_and(|resolved| resolved.reduce_motion)
+                    {
+                        crate::presentation_pool::MotionPreference::Reduced
+                    } else {
+                        crate::presentation_pool::MotionPreference::Full
+                    };
                     let presentation_inputs = {
                         let mut registry = script_ctx.registry.borrow_mut();
                         session.presentation_pool.advance_and_collect_inputs(
@@ -3687,6 +3699,7 @@ impl ApplicationHandler for App {
                             frame_dt,
                             view_proj,
                             presentation_viewport,
+                            motion,
                         )
                     };
                     let recycled_inputs =
@@ -5260,13 +5273,16 @@ impl App {
             ui_focused_id
         };
 
-        postretro_ui::UiReadSnapshot::with_trees(
+        let reduce_motion = options::reduce_motion_from_slots(&slot_values);
+        let mut snapshot = postretro_ui::UiReadSnapshot::with_trees(
             trees,
             slot_values,
             cell_values,
             script_time,
             ring_id,
-        )
+        );
+        snapshot.reduce_motion = reduce_motion;
+        snapshot
     }
 
     /// Install a mod manifest's theme tokens and font assets into the live UI

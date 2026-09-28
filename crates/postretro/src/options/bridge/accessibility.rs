@@ -139,6 +139,10 @@ pub(super) struct AccessibilitySync {
 }
 
 impl AccessibilitySync {
+    pub(super) fn resolved(&self) -> Option<ResolvedAccessibility> {
+        self.last_resolved
+    }
+
     /// Apply menu writes observed since the last frame. Returns whether a
     /// stored field changed.
     pub(super) fn observe(&mut self, table: &SlotTable, options: &mut PlayerOptions) -> bool {

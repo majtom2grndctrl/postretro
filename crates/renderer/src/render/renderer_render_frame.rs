@@ -902,7 +902,10 @@ impl Renderer {
             full.ui_images.image_sizes_generation(),
             &full.ui_theme,
             full.ui_theme_generation,
-            full.ui_snapshot.time_seconds,
+            ui::tree::TweenClock {
+                now: full.ui_snapshot.time_seconds,
+                snap: full.ui_snapshot.reduce_motion,
+            },
         );
         layer_draws.push(presentation_draw);
         for (layer, tree) in stack.iter().enumerate() {
@@ -923,7 +926,10 @@ impl Renderer {
                 &full.ui_snapshot.cell_values,
                 &full.ui_theme,
                 full.ui_theme_generation,
-                full.ui_snapshot.time_seconds,
+                ui::tree::TweenClock {
+                    now: full.ui_snapshot.time_seconds,
+                    snap: full.ui_snapshot.reduce_motion,
+                },
             );
             // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
             // draw the engine ring around the focused node's rect on it. The

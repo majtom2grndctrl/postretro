@@ -110,6 +110,12 @@ impl OptionsBridge {
         self.accessibility.seed_all(table, options, &self.os)
     }
 
+    /// The current resolution, as last projected into `accessibility.*`.
+    /// `None` only before the session-build seed.
+    pub(crate) fn resolved(&self) -> Option<ResolvedAccessibility> {
+        self.accessibility.resolved()
+    }
+
     /// Record the OS's latest accessibility readings. Unset fields follow them
     /// from the next `update`, which reseeds their working copies.
     pub(crate) fn set_os_preferences(&mut self, os: OsPreferences) {

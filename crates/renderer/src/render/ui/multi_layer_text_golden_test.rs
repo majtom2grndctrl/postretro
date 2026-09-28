@@ -128,7 +128,7 @@ fn layout_two_layers(
         &cells,
         &theme,
         0,
-        0.0,
+        postretro_ui::tree::TweenClock::easing(0.0),
     );
     let upper = pass.layout_gameplay_tree(
         font_system,
@@ -141,7 +141,7 @@ fn layout_two_layers(
         &cells,
         &theme,
         0,
-        0.0,
+        postretro_ui::tree::TweenClock::easing(0.0),
     );
     [lower, upper]
 }

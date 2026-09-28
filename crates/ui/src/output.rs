@@ -248,6 +248,11 @@ pub struct UiReadSnapshot {
     /// on the splash/fresh path, where inertness is structural - that path takes
     /// no time at all.
     pub time_seconds: f64,
+    /// The player's resolved reduce-motion switch. While on, UI and
+    /// presentation-template tweens reach their targets the frame they start.
+    /// Set by the App from the resolved `accessibility.reduceMotion`; `false`
+    /// (the default) on the splash path.
+    pub reduce_motion: bool,
     /// The focused node id in the active (top) stack tree, resolved app-side by
     /// the focus engine the previous frame. The UI pass draws the focus ring around
     /// this node's rect on the top layer. `None` (the default) when nothing is
@@ -274,6 +279,7 @@ impl UiReadSnapshot {
             slot_values,
             cell_values,
             time_seconds,
+            reduce_motion: false,
             focused_id,
         }
     }

@@ -27,11 +27,11 @@
 // See: context/lib/testing_guide.md §3, context/lib/ui.md
 
 use super::descriptor::{AnchoredTree, ColorValue, TextWidget, Widget};
-use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::layout::Anchor;
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData};
 use super::{UiComposition, UiInstance, UiPass, UiText};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 
 /// Offscreen target = the EXACT 1280x720 logical-reference canvas. At this size
 /// `layout::device_scale` is 1.0 with a zero letterbox origin, so a `TopLeft`

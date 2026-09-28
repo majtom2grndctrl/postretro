@@ -16,8 +16,8 @@
 // precedent); self-skips when no GPU adapter is present so it can never be the
 // thing that fails CI.
 
-use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::{UiBatch, UiComposition, UiDrawList, UiInstance, UiPass};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 
 /// Offscreen target size. Even width so the left/right halves split cleanly at
 /// `width / 2`. 64*4 = 256 bytes/row already meets `COPY_BYTES_PER_ROW_ALIGNMENT`,

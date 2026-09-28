@@ -2307,7 +2307,7 @@ impl ApplicationHandler for App {
                     if !self.run_frontend_ui_logic(event_loop, frame_dt, options_menu_was_open) {
                         return;
                     }
-                    self.render_frontend_frame(event_loop, now);
+                    self.render_frontend_frame(event_loop, now, frame_dt);
                     return;
                 }
 
@@ -4528,6 +4528,11 @@ impl ApplicationHandler for App {
                         frontend_menu_is_present,
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
+                    renderer.set_limiter_frame(
+                        postretro_render_cpu::flash_limiter::LimiterFrameInput {
+                            elapsed_seconds: frame_dt,
+                        },
+                    );
 
                     drop(stage_scope.take());
                     let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);
@@ -5791,7 +5796,12 @@ impl App {
         true
     }
 
-    fn render_frontend_frame(&mut self, event_loop: &ActiveEventLoop, frame_start: Instant) {
+    fn render_frontend_frame(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame_start: Instant,
+        frame_dt: f32,
+    ) {
         self.apply_frontend_menu_camera_pose_if_present();
         self.reconcile_ui_focus();
         let frontend_menu_is_present = self.frontend_menu_is_present();
@@ -5820,6 +5830,9 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
+        renderer.set_limiter_frame(postretro_render_cpu::flash_limiter::LimiterFrameInput {
+            elapsed_seconds: frame_dt,
+        });
         let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
         session
             .presentation_pool

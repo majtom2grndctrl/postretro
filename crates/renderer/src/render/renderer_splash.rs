@@ -74,6 +74,15 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
+    /// Store the elapsed presented-frame time the flash limiter ages its window
+    /// and rate allowance by. The App calls this beside `set_ui_snapshot`.
+    pub fn set_limiter_frame(
+        &mut self,
+        frame: postretro_render_cpu::flash_limiter::LimiterFrameInput,
+    ) {
+        self.full_mut().limiter_frame = frame;
+    }
+
     /// Store this frame's app-produced passive presentation instances. The
     /// renderer resolves their template draw data later, where it owns the
     /// `FontSystem`, UI theme, and image registry. They never enter the retained

@@ -991,8 +991,13 @@ impl Renderer {
         // rest; timing query resolution follows it.
         drop(ui_scope);
         let _resolve_scope = cpu.scope(RenderStage::Resolve);
-        full.screen_effects
-            .encode_resolve(queue, encoder, view, &full.ui_snapshot.slot_values);
+        full.screen_effects.encode_resolve(
+            queue,
+            encoder,
+            view,
+            &full.ui_snapshot.slot_values,
+            full.limiter_frame,
+        );
 
         if let Some(timing) = &mut full.frame_timing {
             timing.encode_resolve(encoder);

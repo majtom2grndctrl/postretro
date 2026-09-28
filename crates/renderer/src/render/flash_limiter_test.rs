@@ -1521,3 +1521,6 @@ fn flash_limiter_resolve_cost() {
         );
     }
 }
+
+#[path = "flash_limiter_motion_test.rs"]
+mod motion;

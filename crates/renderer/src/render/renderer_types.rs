@@ -1293,8 +1293,8 @@ impl Renderer {
     }
 
     /// Resident bytes of every lightmap-family texture currently bound.
-    pub fn lightmap_residency_report(&self) -> Option<LightmapResidencyReport> {
-        Some(self.full.as_ref()?.lightmap_residency_report.clone())
+    pub fn lightmap_residency_report(&self) -> Option<&LightmapResidencyReport> {
+        Some(&self.full.as_ref()?.lightmap_residency_report)
     }
 
     /// Borrow the full-phase state. Panics if called before `finish_full_init`

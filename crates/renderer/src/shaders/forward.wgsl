@@ -291,8 +291,9 @@ struct AnimatedBlockUv {
 // static lightmap UV lands in the compact atlas: a texel translation plus a
 // page. Ids past the table resolve to none, so an inactive atlas (empty
 // table) never samples. Static and page sizes are powers of two, so the
-// scale, integer offset and divide are exact in f32 and the bilinear
-// footprint lands on the same texels as in the static layer.
+// scale and divide are exact in f32; the integer offset can round the
+// sub-texel fraction by at most ~2^-11 texel, far below one 8-bit step, so
+// the bilinear footprint lands on the same texels as in the static layer.
 fn animated_block_uv(static_uv: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
     var out: AnimatedBlockUv;
     out.uv = vec2<f32>(0.0);

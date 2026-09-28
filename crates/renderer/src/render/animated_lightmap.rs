@@ -197,21 +197,20 @@ struct GpuTexelLight {
 /// per-frame dispatch.
 pub struct AnimatedLightmapResources {
     /// `None` when no weight-map section is present; the dummy view is bound instead.
-    #[allow(dead_code)]
     atlas_texture: Option<wgpu::Texture>,
     /// Per-texel fused dominant-direction atlas. `None` on the no-weight-maps
     /// path; the direction dummy view is bound instead.
-    #[allow(dead_code)]
     direction_atlas_texture: Option<wgpu::Texture>,
-    #[allow(dead_code)]
     dummy_texture: wgpu::Texture,
     /// 1×1 zero direction placeholder, its own texture so the meter reports
     /// the direction slot's placeholder bytes apart from the irradiance one.
-    #[allow(dead_code)]
     dummy_direction_texture: wgpu::Texture,
-    /// Meter state of the bound pair: Data with a real atlas, Fallback after a
-    /// failed construction, Dummy otherwise.
+    /// Meter state of the bound pair, on the SH ledger's conventions: Data for
+    /// a real atlas or an accepted section with nothing to compose, Fallback
+    /// when a supplied section could not be used, Dummy when none was supplied.
     residency_state: ResidencyAllocationState,
+    /// Whether the level supplied section 25; the rows then cite it.
+    section_supplied: bool,
     /// Bound to the forward-pass lightmap bind group. Points at `atlas_texture`
     /// when present, otherwise at `dummy_texture` — keeps the bind-group layout constant.
     pub forward_view: wgpu::TextureView,
@@ -340,6 +339,7 @@ impl AnimatedLightmapResources {
                 dummy_texture,
                 dummy_direction_texture,
                 residency_state: ResidencyAllocationState::Dummy,
+                section_supplied: false,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -354,7 +354,8 @@ impl AnimatedLightmapResources {
                 direction_atlas_texture: None,
                 dummy_texture,
                 dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Dummy,
+                residency_state: ResidencyAllocationState::Data,
+                section_supplied: true,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -376,7 +377,8 @@ impl AnimatedLightmapResources {
                 direction_atlas_texture: None,
                 dummy_texture,
                 dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Dummy,
+                residency_state: ResidencyAllocationState::Fallback,
+                section_supplied: true,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -404,7 +406,8 @@ impl AnimatedLightmapResources {
                 direction_atlas_texture: None,
                 dummy_texture,
                 dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Dummy,
+                residency_state: ResidencyAllocationState::Data,
+                section_supplied: true,
                 forward_view: dummy_view,
                 direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
@@ -645,6 +648,7 @@ impl AnimatedLightmapResources {
             dummy_texture,
             dummy_direction_texture,
             residency_state: ResidencyAllocationState::Data,
+            section_supplied: true,
             forward_view,
             direction_forward_view,
             dispatch_state: Some(DispatchState {
@@ -663,17 +667,19 @@ impl AnimatedLightmapResources {
         })
     }
 
-    /// Mark a dummy installed because construction failed, so the meter
-    /// reports the placeholder as a fallback rather than an absent section.
+    /// Mark a dummy installed because construction of a supplied section
+    /// failed, so the meter reports the placeholder as that section's
+    /// fallback rather than an absent section.
     pub(crate) fn into_fallback(mut self) -> Self {
         self.residency_state = ResidencyAllocationState::Fallback;
+        self.section_supplied = true;
         self
     }
 
     /// Animated irradiance and direction meter rows for the pair actually
     /// bound: the real atlases when present, otherwise their placeholders.
     pub(crate) fn residency_rows(&self) -> [ResidencyAllocation; 2] {
-        let sources: &[u16] = if self.atlas_texture.is_some() {
+        let sources: &[u16] = if self.section_supplied {
             &[SectionId::AnimatedLightWeightMaps as u16]
         } else {
             &[]
@@ -1114,6 +1120,21 @@ mod tests {
             );
         }
         assert_eq!(validate_weight_map_section(&two_page_weight_maps()), Ok(()));
+    }
+
+    // Regression: a section over the block cap passed every load check and
+    // then panicked the binding-7 table builder at level install.
+    #[test]
+    fn runtime_preflight_rejects_a_block_count_over_the_table_cap() {
+        use postretro_level_format::animated_lightmap_atlas::ANIMATED_BLOCK_CAP;
+        let mut section = two_page_weight_maps();
+        let extra = section.blocks[1];
+        section
+            .blocks
+            .resize(ANIMATED_BLOCK_CAP as usize + 1, extra);
+        let error = validate_weight_map_section(&section)
+            .expect_err("an over-cap section must fail before the block table is built");
+        assert!(error.contains("block-table cap"), "{error}");
     }
 
     // Regression: a zero-area chunk with an unreferenced weight pool reached

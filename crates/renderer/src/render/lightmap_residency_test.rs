@@ -207,7 +207,7 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
         Err(error) if error.to_string().contains("requires a GPU adapter") => return,
         Err(error) => panic!("offscreen renderer must initialize: {error:#}"),
     };
-    let boot = renderer.lightmap_residency_report().expect("full renderer");
+    let boot = renderer.lightmap_residency_report().cloned().expect("full renderer");
     assert_eq!(boot.allocations.len(), 5);
 
     // A 64² two-layer static lightmap and no animated sections.
@@ -268,7 +268,7 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
             shadowmask: None,
         },
     );
-    let level_a = renderer.lightmap_residency_report().unwrap();
+    let level_a = renderer.lightmap_residency_report().cloned().unwrap();
     assert_eq!(
         level_a.bytes(super::LIGHTMAP_STATIC_IRRADIANCE),
         Some(u64::from(static_size * static_size * 2 * 8))
@@ -282,7 +282,7 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
     }
 
     renderer.release_level_resources();
-    let unloaded = renderer.lightmap_residency_report().unwrap();
+    let unloaded = renderer.lightmap_residency_report().cloned().unwrap();
     for (row, boot_row) in unloaded.allocations.iter().zip(&boot.allocations) {
         assert_eq!(row.name, boot_row.name);
         assert_eq!(
@@ -313,7 +313,7 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
             shadowmask: None,
         },
     );
-    let level_b = renderer.lightmap_residency_report().unwrap();
+    let level_b = renderer.lightmap_residency_report().cloned().unwrap();
     assert_eq!(
         level_b.bytes(super::LIGHTMAP_STATIC_IRRADIANCE),
         Some(u64::from(static_size * static_size * 8))

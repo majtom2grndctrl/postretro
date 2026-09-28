@@ -60,8 +60,8 @@ pub(crate) const ANIMATED_BLOCK_TABLE_BYTES: usize = ANIMATED_BLOCK_TABLE_UNIFOR
 
 /// Build the binding-7 block-table uniform for the installed section, or an
 /// empty table when `section` is `None`. An empty table resolves every vertex
-/// to no block, whatever ids the level's vertices carry. Layout (little-end
-/// native u32s, mirroring `AnimatedBlockTable` in forward.wgsl):
+/// to no block, whatever ids the level's vertices carry. Layout (native-endian
+/// u32s, as the GPU reads them, mirroring `AnimatedBlockTable` in forward.wgsl):
 /// `static_layer_size, page_size, block_count, 0`, then per block the packed
 /// `(i16 dx, i16 dy)` static→compact texel offset and the page.
 pub(crate) fn animated_block_table_bytes(
@@ -74,7 +74,7 @@ pub(crate) fn animated_block_table_bytes(
     };
     assert!(
         section.blocks.len() <= ANIMATED_BLOCK_CAP as usize,
-        "section 25 validation bounds the block count to the table cap"
+        "section 25 consistency validation bounds the block count to the table cap"
     );
     let mut write = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
     write(0, static_layer_size);
@@ -225,23 +225,26 @@ impl LightmapResources {
             None => upload_placeholder_shadowmask(device, queue),
         };
         let lightmap_state = residency_state(section.is_some(), present);
+        let lightmap_sources = section_source(SectionId::Lightmap, section.is_some());
+        let shadowmask_sources =
+            section_source(SectionId::ShadowmaskAtlas, shadowmask_section.is_some());
         let residency = [
             texture_row(
                 LIGHTMAP_STATIC_IRRADIANCE,
                 &irradiance_tex,
-                &section_source(SectionId::Lightmap, present),
+                &lightmap_sources,
                 lightmap_state,
             ),
             texture_row(
                 LIGHTMAP_STATIC_DIRECTION,
                 &direction_tex,
-                &section_source(SectionId::Lightmap, present),
+                &lightmap_sources,
                 lightmap_state,
             ),
             texture_row(
                 LIGHTMAP_SHADOWMASK,
                 &shadowmask_tex,
-                &section_source(SectionId::ShadowmaskAtlas, shadowmask_present),
+                &shadowmask_sources,
                 residency_state(shadowmask_section.is_some(), shadowmask_present),
             ),
         ];
@@ -329,8 +332,10 @@ fn residency_state(section_present: bool, texture_present: bool) -> ResidencyAll
     }
 }
 
-fn section_source(section: SectionId, texture_present: bool) -> Vec<u16> {
-    if texture_present {
+/// A row cites its section whenever the level supplied it, as the SH ledger's
+/// rows do — including a Fallback row whose section was rejected.
+fn section_source(section: SectionId, section_present: bool) -> Vec<u16> {
+    if section_present {
         vec![section as u16]
     } else {
         Vec::new()
@@ -474,20 +479,20 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
 
 /// The static lightmap layer the animated atlas lives beside, as
 /// `(layer size, layer count)`, using the same usability filter as `new()`.
-/// Returns `None` when the section is absent, zero-area, oversize, or the 1×1
-/// placeholder: with no real static atlas the animated block table has no
-/// coordinate space, and the level takes the no-animated-light path. `new()`
+/// Returns `None` when the section is absent, zero-area, oversize, non-square,
+/// or the 1×1 placeholder: the block table translates both UV axes by one
+/// layer size, so without a real square static atlas it has no coordinate
+/// space, and the level takes the no-animated-light path. `new()`
 /// also falls back to the placeholder when a usable header arrives without its
 /// payload, so level installs pass the header only when its payload is
 /// present (renderer boot passes no level); the two then fall back together.
-/// Static layers are square, so the width is the layer size.
 pub(crate) fn usable_static_layers(
     section: Option<&LightmapHeader>,
     max_texture_dimension_2d: u32,
     max_texture_array_layers: u32,
 ) -> Option<(u32, u32)> {
     filter_usable_section(section, max_texture_dimension_2d, max_texture_array_layers)
-        .filter(|s| !s.is_placeholder())
+        .filter(|s| !s.is_placeholder() && s.irr_width == s.irr_height)
         .map(|s| (s.irr_width, s.layer_count))
 }
 

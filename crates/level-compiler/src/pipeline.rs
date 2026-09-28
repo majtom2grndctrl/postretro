@@ -1880,6 +1880,11 @@ fn run_after_parsing(
         let cached = stage_cache.as_ref().and_then(|c| c.get(&wm_key));
         let cached_wm_section = cached.and_then(|bytes| {
             postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection::from_bytes(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(|section| match section.consistency_error() {
+                    None => Ok(section),
+                    Some(error) => Err(error),
+                })
                 .map_err(|e| {
                     log::warn!("[cache] corrupt animated_lm_weight_maps entry, re-baking: {e}")
                 })
@@ -2453,6 +2458,8 @@ fn layout_animated_atlas(
         ),
     );
 
+    // One face, one block holds on every path — it is a compiler invariant,
+    // not a vertex guard — so this runs before the placeholder early return.
     let face_blocks = animated_block_ids::face_blocks(
         chunk_section,
         weight_maps,

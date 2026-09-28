@@ -3,9 +3,10 @@
 // PRL loader preserves the baked geometry and BVH ordering emitted by prl-build.
 
 /// World-geometry vertex: position + base UV + octahedral normal + octahedral
-/// tangent + lightmap UV. Matches the `Geometry` on-disk layout. Normal and
-/// tangent decode in the vertex shader; lightmap UV is passed through to the
-/// fragment shader for atlas sampling.
+/// tangent + lightmap UV + lightmap layer + animated-lightmap block id.
+/// Matches the `Geometry` on-disk layout. Normal and tangent decode in the
+/// vertex shader; lightmap UV, layer and block id pass through to the fragment
+/// shader for atlas sampling.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldVertex {

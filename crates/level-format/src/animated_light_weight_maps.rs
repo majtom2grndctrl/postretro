@@ -7,6 +7,7 @@
 // Format inventory: context/lib/build_pipeline.md §PRL section IDs.
 
 use crate::FormatError;
+use crate::animated_lightmap_atlas::ANIMATED_BLOCK_CAP;
 
 /// Current section version. Version 4 moves chunk rects into compact-atlas
 /// coordinates and adds the block table; v3's slot table is gone. Loaders
@@ -150,20 +151,33 @@ impl AnimatedLightWeightMapsSection {
 
     /// Static-atlas origin `(layer, x, y)` of chunk `index`: its compact
     /// position translated back through its block. `None` when the chunk
-    /// names a block past the table or sits outside its block.
+    /// names a block past the table or does not lie inside its block.
     pub fn chunk_static_origin(&self, index: usize) -> Option<(u32, u32, u32)> {
         let chunk = self.chunk_rects.get(index)?;
         let block = self.blocks.get(chunk.block as usize)?;
-        let dx = chunk.compact_x.checked_sub(block.compact_x)?;
-        let dy = chunk.compact_y.checked_sub(block.compact_y)?;
-        Some((block.static_layer, block.static_x + dx, block.static_y + dy))
+        if !rect_within(
+            (chunk.compact_x, chunk.compact_y, chunk.width, chunk.height),
+            (block.compact_x, block.compact_y, block.width, block.height),
+        ) {
+            return None;
+        }
+        let dx = chunk.compact_x - block.compact_x;
+        let dy = chunk.compact_y - block.compact_y;
+        Some((
+            block.static_layer,
+            block.static_x.checked_add(dx)?,
+            block.static_y.checked_add(dy)?,
+        ))
     }
 
     /// Verify internal consistency:
     ///   - chunk texel offsets partition `offset_counts`, and every
     ///     `(offset, count)` pair lies inside `texel_lights`;
     ///   - a non-empty section has a power-of-two page size and at least one
-    ///     page; an empty one has neither;
+    ///     page; an empty one has no blocks and no pages;
+    ///   - the block count fits the shared block-table cap, and the page count
+    ///     does not exceed the block count (checked before anything is sized
+    ///     from these header values);
     ///   - every chunk names a block and lies inside it;
     ///   - every block owns a chunk, lies inside its page, and overlaps no
     ///     other block on that page; no page is empty.
@@ -212,6 +226,22 @@ impl AnimatedLightWeightMapsSection {
         }
         if self.compact_layers == 0 {
             return Some("non-empty section has no pages".to_owned());
+        }
+        if self.blocks.len() > ANIMATED_BLOCK_CAP as usize {
+            return Some(format!(
+                "animated block count {} exceeds the block-table cap {ANIMATED_BLOCK_CAP}",
+                self.blocks.len()
+            ));
+        }
+        // Every page holds a block, so a page count past the block count is
+        // invalid — and rejecting it here keeps the header value from sizing
+        // the page-occupancy table below.
+        if self.compact_layers as usize > self.blocks.len() {
+            return Some(format!(
+                "{} pages for {} blocks: a page holds no block",
+                self.compact_layers,
+                self.blocks.len()
+            ));
         }
 
         let mut block_has_chunk = vec![false; self.blocks.len()];
@@ -466,7 +496,8 @@ fn rect_within(inner: (u32, u32, u32, u32), outer: (u32, u32, u32, u32)) -> bool
 }
 
 /// First pair of blocks sharing a page whose rects intersect. Sort-and-sweep
-/// on x per page, so large block counts stay near-linear.
+/// on x per page; worst case is quadratic in blocks sharing an x column,
+/// which the block cap bounds.
 fn first_overlapping_blocks(blocks: &[AnimatedBlock]) -> Option<(usize, usize)> {
     let mut order: Vec<usize> = (0..blocks.len()).collect();
     order.sort_by_key(|&i| (blocks[i].compact_layer, blocks[i].compact_x, i));
@@ -794,6 +825,38 @@ mod tests {
             ..section.blocks[0]
         });
         assert!(!section.is_consistent());
+    }
+
+    #[test]
+    fn consistency_check_rejects_a_block_count_over_the_cap_naming_both() {
+        let mut section = sample_section();
+        let extra = section.blocks[1];
+        section
+            .blocks
+            .resize(ANIMATED_BLOCK_CAP as usize + 1, extra);
+        let error = section
+            .consistency_error()
+            .expect("over-cap section is rejected");
+        assert!(
+            error.contains(&(ANIMATED_BLOCK_CAP + 1).to_string()),
+            "{error}"
+        );
+        assert!(error.contains(&ANIMATED_BLOCK_CAP.to_string()), "{error}");
+    }
+
+    #[test]
+    fn consistency_check_rejects_more_pages_than_blocks_before_sizing_from_them() {
+        let mut section = sample_section();
+        section.compact_layers = u32::MAX;
+        let error = section.consistency_error().expect("page count is bounded");
+        assert!(error.contains("a page holds no block"), "{error}");
+    }
+
+    #[test]
+    fn chunk_static_origin_is_none_for_a_chunk_leaving_its_block() {
+        let mut section = sample_section();
+        section.chunk_rects[0].compact_x = 7; // 2 wide from x 7 passes the 8-wide block
+        assert_eq!(section.chunk_static_origin(0), None);
     }
 
     #[test]

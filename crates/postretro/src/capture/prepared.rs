@@ -396,7 +396,7 @@ impl PreparedCapture {
     }
 
     pub(super) fn lightmap_residency_report(&self) -> Option<LightmapResidencyReport> {
-        self.renderer.lightmap_residency_report()
+        self.renderer.lightmap_residency_report().cloned()
     }
 
     pub(super) const fn resolution(&self) -> [u32; 2] {

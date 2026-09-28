@@ -337,7 +337,7 @@ pub fn draw_diagnostics_panel(
                 ui,
                 frame_timing,
                 cpu_timing,
-                renderer.lightmap_residency_report().as_ref(),
+                renderer.lightmap_residency_report(),
             ),
             DiagnosticsTab::Spatial => draw_spatial_tab(ui, state, renderer),
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),

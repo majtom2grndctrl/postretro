@@ -30,11 +30,12 @@ pub(crate) fn check_animated_atlas(
     }
 }
 
-/// The real static layer size, or `None` for an absent or placeholder
-/// section 22, whose static-relative checks are skipped.
+/// The real static layer size, or `None` for an absent, placeholder or
+/// non-square section 22, whose static-relative checks are skipped — the
+/// renderer takes the no-animated-light path for all three.
 fn usable_static_layer_size(lightmap: Option<&LightmapSection>) -> Option<u32> {
     lightmap
-        .filter(|lightmap| !lightmap.is_placeholder())
+        .filter(|lightmap| !lightmap.is_placeholder() && lightmap.irr_width == lightmap.irr_height)
         .map(|lightmap| lightmap.irr_width)
 }
 

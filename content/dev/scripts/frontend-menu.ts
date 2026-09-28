@@ -9,6 +9,7 @@ import {
   CLOSE_DIALOG_ACTION,
   EXIT_TO_DESKTOP_ACTION,
   Grid,
+  OPEN_ACCESSIBILITY_ACTION,
   HStack,
   Slider,
   Text,
@@ -162,6 +163,11 @@ export const frontendMenu = defineUiTree({
         Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
         Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
+        Button({
+          id: "frontendAccessibility",
+          label: "ACCESSIBILITY",
+          onPress: OPEN_ACCESSIBILITY_ACTION,
+        }),
         Button({ id: "frontendExit", label: "EXIT", onPress: EXIT_TO_DESKTOP_ACTION }),
       ],
     ),
@@ -195,7 +201,29 @@ const optionReactions: NamedReactionDescriptor[] = [
     "frontend.options.surfaceDepthQuality.on",
     updateState(options.surfaceDepthQuality, "on"),
   ),
+  defineReaction("frontend.options.reduceMotion.off", updateState(options.reduceMotion, false)),
+  defineReaction("frontend.options.reduceMotion.on", updateState(options.reduceMotion, true)),
+  defineReaction("frontend.options.monoAudio.off", updateState(options.monoAudio, false)),
+  defineReaction("frontend.options.monoAudio.on", updateState(options.monoAudio, true)),
 ];
+
+const accessibility = getGameState().accessibility;
+
+/// A `[0, 1]` accessibility slider bound to its working copy.
+function unitSlider(id: string, labelledBy: string, bind: typeof options.screenShakeScale, step: number) {
+  return optionValue(
+    Slider({
+      id,
+      labelledBy,
+      bind,
+      min: 0,
+      max: 1,
+      step,
+      valueDisplay: { min: 0, max: 100, suffix: "%", decimalPlaces: 0 },
+      capturesNav: ["nav.left", "nav.right"],
+    }),
+  );
+}
 
 function radioChoice(id: string, label: string, checked: Predicate, onPress: string) {
   return Button({
@@ -244,132 +272,197 @@ export const optionsMenu = defineUiTree({
         gap: 20,
         padding: 24,
         align: "stretch",
-        width: 640,
+        width: 1180,
         fill: COLOR_PANEL,
         focus: { policy: "linear", wrap: true },
       },
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),
-        VStack({ gap: 10, align: "stretch", role: "group" }, [
-          Text({ content: "CONTROLS", fontSize: 12, color: COLOR_MUTED }),
-          Grid({ gap: 12, align: "stretch", cols: 2 }, [
-            optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
-            optionValue(
-              Slider({
-                id: "optionsMouseSensitivity",
-                labelledBy: "optionsMouseSensitivityLabel",
-                bind: options.mouseSensitivity,
-                min: 0.0005,
-                max: 0.01,
-                step: 0.0005,
-                valueDisplay: { min: 1, max: 100, suffix: "%", decimalPlaces: 0 },
-                capturesNav: ["nav.left", "nav.right"],
-              }),
-            ),
-            optionLabel("optionsInvertYLabel", "INVERT Y"),
-            optionChoices([
-              radioChoice(
-                "optionsInvertYOff",
-                "OFF",
-                stateEquals(options.invertY, false),
-                "frontend.options.invertY.off",
-              ),
-              radioChoice(
-                "optionsInvertYOn",
-                "ON",
-                stateEquals(options.invertY, true),
-                "frontend.options.invertY.on",
-              ),
+        HStack({ gap: 32, align: "start" }, [
+          VStack({ gap: 20, align: "stretch", width: 560 }, [
+            VStack({ gap: 10, align: "stretch", role: "group" }, [
+              Text({ content: "CONTROLS", fontSize: 12, color: COLOR_MUTED }),
+              Grid({ gap: 12, align: "stretch", cols: 2 }, [
+                optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
+                optionValue(
+                  Slider({
+                    id: "optionsMouseSensitivity",
+                    labelledBy: "optionsMouseSensitivityLabel",
+                    bind: options.mouseSensitivity,
+                    min: 0.0005,
+                    max: 0.01,
+                    step: 0.0005,
+                    valueDisplay: { min: 1, max: 100, suffix: "%", decimalPlaces: 0 },
+                    capturesNav: ["nav.left", "nav.right"],
+                  }),
+                ),
+                optionLabel("optionsInvertYLabel", "INVERT Y"),
+                optionChoices([
+                  radioChoice(
+                    "optionsInvertYOff",
+                    "OFF",
+                    stateEquals(options.invertY, false),
+                    "frontend.options.invertY.off",
+                  ),
+                  radioChoice(
+                    "optionsInvertYOn",
+                    "ON",
+                    stateEquals(options.invertY, true),
+                    "frontend.options.invertY.on",
+                  ),
+                ]),
+                optionLabel("optionsViewFeelScaleLabel", "VIEW FEEL"),
+                optionValue(
+                  Slider({
+                    id: "optionsViewFeelScale",
+                    labelledBy: "optionsViewFeelScaleLabel",
+                    bind: options.viewFeelScale,
+                    min: 0,
+                    max: 1,
+                    step: 0.1,
+                    capturesNav: ["nav.left", "nav.right"],
+                  }),
+                ),
+                optionLabel("optionsCrouchModeLabel", "CROUCH MODE"),
+                optionChoices([
+                  radioChoice(
+                    "optionsCrouchHold",
+                    "HOLD",
+                    stateEquals(options.crouchMode, "hold"),
+                    "frontend.options.crouchMode.hold",
+                  ),
+                  radioChoice(
+                    "optionsCrouchToggle",
+                    "TOGGLE",
+                    stateEquals(options.crouchMode, "toggle"),
+                    "frontend.options.crouchMode.toggle",
+                  ),
+                ]),
+              ]),
             ]),
-            optionLabel("optionsViewFeelScaleLabel", "VIEW FEEL"),
-            optionValue(
-              Slider({
-                id: "optionsViewFeelScale",
-                labelledBy: "optionsViewFeelScaleLabel",
-                bind: options.viewFeelScale,
-                min: 0,
-                max: 1,
-                step: 0.1,
-                capturesNav: ["nav.left", "nav.right"],
-              }),
-            ),
-            optionLabel("optionsCrouchModeLabel", "CROUCH MODE"),
-            optionChoices([
-              radioChoice(
-                "optionsCrouchHold",
-                "HOLD",
-                stateEquals(options.crouchMode, "hold"),
-                "frontend.options.crouchMode.hold",
-              ),
-              radioChoice(
-                "optionsCrouchToggle",
-                "TOGGLE",
-                stateEquals(options.crouchMode, "toggle"),
-                "frontend.options.crouchMode.toggle",
-              ),
+            VStack({ gap: 10, align: "stretch", role: "group" }, [
+              Text({ content: "GRAPHICS", fontSize: 12, color: COLOR_MUTED }),
+              Grid({ gap: 12, align: "stretch", cols: 2 }, [
+                optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
+                optionChoices([
+                  radioChoice(
+                    "optionsShadowLow",
+                    "LOW",
+                    stateEquals(options.shadowQuality, "low"),
+                    "frontend.options.shadowQuality.low",
+                  ),
+                  radioChoice(
+                    "optionsShadowMedium",
+                    "MEDIUM",
+                    stateEquals(options.shadowQuality, "medium"),
+                    "frontend.options.shadowQuality.medium",
+                  ),
+                  radioChoice(
+                    "optionsShadowHigh",
+                    "HIGH",
+                    stateEquals(options.shadowQuality, "high"),
+                    "frontend.options.shadowQuality.high",
+                  ),
+                ]),
+                optionLabel("optionsFogQualityLabel", "FOG QUALITY"),
+                optionChoices([
+                  radioChoice(
+                    "optionsFogLow",
+                    "LOW",
+                    stateEquals(options.fogQuality, "low"),
+                    "frontend.options.fogQuality.low",
+                  ),
+                  radioChoice(
+                    "optionsFogMedium",
+                    "MEDIUM",
+                    stateEquals(options.fogQuality, "medium"),
+                    "frontend.options.fogQuality.medium",
+                  ),
+                  radioChoice(
+                    "optionsFogHigh",
+                    "HIGH",
+                    stateEquals(options.fogQuality, "high"),
+                    "frontend.options.fogQuality.high",
+                  ),
+                ]),
+                optionLabel("optionsSurfaceDepthQualityLabel", "SURFACE DEPTH"),
+                optionChoices([
+                  radioChoice(
+                    "optionsSurfaceDepthOff",
+                    "OFF",
+                    stateEquals(options.surfaceDepthQuality, "off"),
+                    "frontend.options.surfaceDepthQuality.off",
+                  ),
+                  radioChoice(
+                    "optionsSurfaceDepthOn",
+                    "ON",
+                    stateEquals(options.surfaceDepthQuality, "on"),
+                    "frontend.options.surfaceDepthQuality.on",
+                  ),
+                ]),
+              ]),
             ]),
           ]),
-        ]),
-        VStack({ gap: 10, align: "stretch", role: "group" }, [
-          Text({ content: "GRAPHICS", fontSize: 12, color: COLOR_MUTED }),
-          Grid({ gap: 12, align: "stretch", cols: 2 }, [
-            optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
-            optionChoices([
-              radioChoice(
-                "optionsShadowLow",
-                "LOW",
-                stateEquals(options.shadowQuality, "low"),
-                "frontend.options.shadowQuality.low",
+          VStack({ gap: 10, align: "stretch", width: 560, role: "group" }, [
+            Text({ content: "ACCESSIBILITY", fontSize: 12, color: COLOR_MUTED }),
+            Grid({ gap: 12, align: "stretch", cols: 2 }, [
+              optionLabel("optionsReduceMotionLabel", "REDUCE MOTION"),
+              optionChoices([
+                radioChoice(
+                  "optionsReduceMotionOff",
+                  "OFF",
+                  stateEquals(accessibility.reduceMotion, false),
+                  "frontend.options.reduceMotion.off",
+                ),
+                radioChoice(
+                  "optionsReduceMotionOn",
+                  "ON",
+                  stateEquals(accessibility.reduceMotion, true),
+                  "frontend.options.reduceMotion.on",
+                ),
+              ]),
+              optionLabel("optionsScreenShakeScaleLabel", "SCREEN SHAKE"),
+              unitSlider(
+                "optionsScreenShakeScale",
+                "optionsScreenShakeScaleLabel",
+                options.screenShakeScale,
+                0.1,
               ),
-              radioChoice(
-                "optionsShadowMedium",
-                "MEDIUM",
-                stateEquals(options.shadowQuality, "medium"),
-                "frontend.options.shadowQuality.medium",
-              ),
-              radioChoice(
-                "optionsShadowHigh",
-                "HIGH",
-                stateEquals(options.shadowQuality, "high"),
-                "frontend.options.shadowQuality.high",
-              ),
+              optionLabel("optionsMasterVolumeLabel", "MASTER VOLUME"),
+              unitSlider("optionsMasterVolume", "optionsMasterVolumeLabel", options.masterVolume, 0.05),
+              optionLabel("optionsSfxVolumeLabel", "SFX VOLUME"),
+              unitSlider("optionsSfxVolume", "optionsSfxVolumeLabel", options.sfxVolume, 0.05),
+              optionLabel("optionsMusicVolumeLabel", "MUSIC VOLUME"),
+              unitSlider("optionsMusicVolume", "optionsMusicVolumeLabel", options.musicVolume, 0.05),
+              optionLabel("optionsUiVolumeLabel", "UI VOLUME"),
+              unitSlider("optionsUiVolume", "optionsUiVolumeLabel", options.uiVolume, 0.05),
+              optionLabel("optionsMonoAudioLabel", "MONO AUDIO"),
+              optionChoices([
+                radioChoice(
+                  "optionsMonoAudioOff",
+                  "OFF",
+                  stateEquals(accessibility.monoAudio, false),
+                  "frontend.options.monoAudio.off",
+                ),
+                radioChoice(
+                  "optionsMonoAudioOn",
+                  "ON",
+                  stateEquals(accessibility.monoAudio, true),
+                  "frontend.options.monoAudio.on",
+                ),
+              ]),
             ]),
-            optionLabel("optionsFogQualityLabel", "FOG QUALITY"),
-            optionChoices([
-              radioChoice(
-                "optionsFogLow",
-                "LOW",
-                stateEquals(options.fogQuality, "low"),
-                "frontend.options.fogQuality.low",
-              ),
-              radioChoice(
-                "optionsFogMedium",
-                "MEDIUM",
-                stateEquals(options.fogQuality, "medium"),
-                "frontend.options.fogQuality.medium",
-              ),
-              radioChoice(
-                "optionsFogHigh",
-                "HIGH",
-                stateEquals(options.fogQuality, "high"),
-                "frontend.options.fogQuality.high",
-              ),
-            ]),
-            optionLabel("optionsSurfaceDepthQualityLabel", "SURFACE DEPTH"),
-            optionChoices([
-              radioChoice(
-                "optionsSurfaceDepthOff",
-                "OFF",
-                stateEquals(options.surfaceDepthQuality, "off"),
-                "frontend.options.surfaceDepthQuality.off",
-              ),
-              radioChoice(
-                "optionsSurfaceDepthOn",
-                "ON",
-                stateEquals(options.surfaceDepthQuality, "on"),
-                "frontend.options.surfaceDepthQuality.on",
-              ),
-            ]),
+            Text({
+              content: "REDUCE MOTION IS FOLLOWING THE SYSTEM SETTING",
+              fontSize: 11,
+              color: COLOR_MUTED,
+              visibleWhen: stateEquals(accessibility.reduceMotionFollowsSystem, true),
+            }),
+            Button({
+              id: "optionsAccessibilityPanel",
+              label: "ALL ACCESSIBILITY SETTINGS",
+              onPress: OPEN_ACCESSIBILITY_ACTION,
+            }),
           ]),
         ]),
         Button({ id: "optionsBack", label: "BACK", onPress: CLOSE_DIALOG_ACTION }),

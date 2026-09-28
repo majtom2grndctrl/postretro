@@ -5,6 +5,8 @@
 pub(crate) mod accessibility_panel;
 #[cfg(test)]
 mod accessibility_panel_tests;
+#[cfg(test)]
+mod accessibility_surface_fixture_tests;
 pub(crate) mod global_input;
 #[cfg(test)]
 mod global_input_tests;

@@ -1,0 +1,224 @@
+// Game: Postretro
+// Format: Standard
+// Flash-limiter strobe fixture (E23 U1, X1). Uncatalogued: no payload ships it.
+// Walk onto a pad to play its three-second strobe; see ../scripts/a11y-strobe-test.ts.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/a11y-strobe-test.map -o content/dev/maps/a11y-strobe-test.prl
+// Run: cargo run -p xtask -- run content/dev/maps/a11y-strobe-test.prl
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/a11y-strobe-test.ts"
+"_tb_mod" "dev"
+{
+( -16 -16 -16 ) ( -15 -16 -16 ) ( -16 -15 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 0 ) ( -16 -15 0 ) ( -15 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( -16 -15 -16 ) ( -16 -16 -15 ) debug_ceiling_grey 0 0 0 1 1
+( 1168 -16 -16 ) ( 1168 -16 -15 ) ( 1168 -15 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( -16 -16 -15 ) ( -15 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 -16 ) ( -15 272 -16 ) ( -16 272 -15 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( -16 -16 192 ) ( -15 -16 192 ) ( -16 -15 192 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 208 ) ( -16 -15 208 ) ( -15 -16 208 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 192 ) ( -16 -15 192 ) ( -16 -16 193 ) debug_ceiling_grey 0 0 0 1 1
+( 1168 -16 192 ) ( 1168 -16 193 ) ( 1168 -15 192 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 192 ) ( -16 -16 193 ) ( -15 -16 192 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 192 ) ( -15 272 192 ) ( -16 272 193 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( -16 -16 0 ) ( -15 -16 0 ) ( -16 -15 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 192 ) ( -16 -15 192 ) ( -15 -16 192 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 0 ) ( -16 -15 0 ) ( -16 -16 1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 0 -15 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 0 ) ( -16 -16 1 ) ( -15 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 0 ) ( -15 272 0 ) ( -16 272 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( 1152 -16 0 ) ( 1153 -16 0 ) ( 1152 -15 0 ) debug_ceiling_grey 0 0 0 1 1
+( 1152 -16 192 ) ( 1152 -15 192 ) ( 1153 -16 192 ) debug_ceiling_grey 0 0 0 1 1
+( 1152 -16 0 ) ( 1152 -15 0 ) ( 1152 -16 1 ) debug_ceiling_grey 0 0 0 1 1
+( 1168 -16 0 ) ( 1168 -16 1 ) ( 1168 -15 0 ) debug_ceiling_grey 0 0 0 1 1
+( 1152 -16 0 ) ( 1152 -16 1 ) ( 1153 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( 1152 272 0 ) ( 1153 272 0 ) ( 1152 272 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( 0 -16 0 ) ( 1 -16 0 ) ( 0 -15 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -16 192 ) ( 0 -15 192 ) ( 1 -16 192 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -16 0 ) ( 0 -15 0 ) ( 0 -16 1 ) debug_ceiling_grey 0 0 0 1 1
+( 1152 -16 0 ) ( 1152 -16 1 ) ( 1152 -15 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( 0 256 0 ) ( 1 256 0 ) ( 0 257 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 256 192 ) ( 0 257 192 ) ( 1 256 192 ) debug_ceiling_grey 0 0 0 1 1
+( 0 256 0 ) ( 0 257 0 ) ( 0 256 1 ) debug_ceiling_grey 0 0 0 1 1
+( 1152 256 0 ) ( 1152 256 1 ) ( 1152 257 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 256 0 ) ( 0 256 1 ) ( 1 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 272 0 ) ( 1 272 0 ) ( 0 272 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "64 128 24"
+"angles" "0 0 0"
+}
+{
+"classname" "light"
+"origin" "96 128 160"
+"light" "220"
+"_falloff_range" "420"
+"_color" "255 255 255"
+"style" "0"
+}
+{
+"classname" "light"
+"origin" "576 128 160"
+"light" "220"
+"_falloff_range" "420"
+"_color" "255 255 255"
+"style" "0"
+}
+// pad 1: strobe_white
+{
+"classname" "trigger_volume"
+"name" "strobe_white"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "strobe_white"
+{
+( 160 64 0 ) ( 161 64 0 ) ( 160 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 64 16 ) ( 160 65 16 ) ( 161 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 160 64 0 ) ( 160 65 0 ) ( 160 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 224 64 0 ) ( 224 64 1 ) ( 224 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 64 0 ) ( 160 64 1 ) ( 161 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 192 0 ) ( 161 192 0 ) ( 160 192 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// pad 2: strobe_red
+{
+"classname" "trigger_volume"
+"name" "strobe_red"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "strobe_red"
+{
+( 320 64 0 ) ( 321 64 0 ) ( 320 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 320 64 16 ) ( 320 65 16 ) ( 321 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 320 64 0 ) ( 320 65 0 ) ( 320 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 384 64 0 ) ( 384 64 1 ) ( 384 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 320 64 0 ) ( 320 64 1 ) ( 321 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 320 192 0 ) ( 321 192 0 ) ( 320 192 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// pad 3: strobe_small_panel
+{
+"classname" "trigger_volume"
+"name" "strobe_small_panel"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "strobe_small_panel"
+{
+( 480 64 0 ) ( 481 64 0 ) ( 480 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 480 64 16 ) ( 480 65 16 ) ( 481 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 480 64 0 ) ( 480 65 0 ) ( 480 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 544 64 0 ) ( 544 64 1 ) ( 544 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 480 64 0 ) ( 480 64 1 ) ( 481 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 480 192 0 ) ( 481 192 0 ) ( 480 192 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// pad 4: strobe_large_panel
+{
+"classname" "trigger_volume"
+"name" "strobe_large_panel"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "strobe_large_panel"
+{
+( 640 64 0 ) ( 641 64 0 ) ( 640 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 640 64 16 ) ( 640 65 16 ) ( 641 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 640 64 0 ) ( 640 65 0 ) ( 640 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 704 64 0 ) ( 704 64 1 ) ( 704 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 640 64 0 ) ( 640 64 1 ) ( 641 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 640 192 0 ) ( 641 192 0 ) ( 640 192 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// pad 5: strobe_light_square
+{
+"classname" "trigger_volume"
+"name" "strobe_light_square"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "strobe_light_square"
+{
+( 800 64 0 ) ( 801 64 0 ) ( 800 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 800 64 16 ) ( 800 65 16 ) ( 801 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 800 64 0 ) ( 800 65 0 ) ( 800 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 864 64 0 ) ( 864 64 1 ) ( 864 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 800 64 0 ) ( 800 64 1 ) ( 801 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 800 192 0 ) ( 801 192 0 ) ( 800 192 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// pad 6: strobe_light_sine
+{
+"classname" "trigger_volume"
+"name" "strobe_light_sine"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "strobe_light_sine"
+{
+( 960 64 0 ) ( 961 64 0 ) ( 960 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 960 64 16 ) ( 960 65 16 ) ( 961 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 960 64 0 ) ( 960 65 0 ) ( 960 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 1024 64 0 ) ( 1024 64 1 ) ( 1024 65 0 ) debug_ceiling_grey 0 0 0 1 1
+( 960 64 0 ) ( 960 64 1 ) ( 961 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 960 192 0 ) ( 961 192 0 ) ( 960 192 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "light"
+"origin" "832 128 150"
+"light" "220"
+"_falloff_range" "420"
+"_color" "255 255 255"
+"style" "0"
+"_tags" "a11y_light_square"
+"_start_inactive" "1"
+"light" "400"
+}
+{
+"classname" "light"
+"origin" "992 128 150"
+"light" "220"
+"_falloff_range" "420"
+"_color" "255 255 255"
+"style" "0"
+"_tags" "a11y_light_sine"
+"_start_inactive" "1"
+"light" "400"
+}

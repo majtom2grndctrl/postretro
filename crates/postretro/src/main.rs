@@ -12599,26 +12599,51 @@ mod tests {
         let Widget::VStack(options_root) = &options_tree.root else {
             panic!("options root is a vstack")
         };
-        assert_eq!(options_root.width, Some(640.0));
-        let options_grids: Vec<_> = options_root
-            .children
-            .iter()
-            .filter_map(|section| match section {
-                Widget::VStack(section) => section.children.iter().find_map(|child| match child {
-                    Widget::Grid(grid) => Some(grid),
-                    _ => None,
-                }),
-                _ => None,
-            })
-            .collect();
+        assert_eq!(options_root.width, Some(1180.0));
+        fn collect_grids<'a>(
+            widget: &'a Widget,
+            out: &mut Vec<&'a postretro_ui::descriptor::GridWidget>,
+        ) {
+            match widget {
+                Widget::Grid(grid) => out.push(grid),
+                Widget::VStack(container) | Widget::HStack(container) => {
+                    for child in &container.children {
+                        collect_grids(child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut options_grids = Vec::new();
+        collect_grids(&options_tree.root, &mut options_grids);
         assert_eq!(
             options_grids.len(),
-            2,
-            "controls and graphics use separate visual groups"
+            3,
+            "controls, graphics and accessibility use separate visual groups"
         );
         assert!(options_grids.iter().all(|grid| grid.cols == 2));
         assert_eq!(options_grids[0].children.len(), 8);
         assert_eq!(options_grids[1].children.len(), 6);
+        assert_eq!(options_grids[2].children.len(), 14);
+        for (slider, slot) in [
+            ("optionsScreenShakeScale", "options.screenShakeScale"),
+            ("optionsMasterVolume", "options.masterVolume"),
+            ("optionsSfxVolume", "options.sfxVolume"),
+            ("optionsMusicVolume", "options.musicVolume"),
+            ("optionsUiVolume", "options.uiVolume"),
+        ] {
+            let slider = find_slider(&options_tree.root, slider)
+                .unwrap_or_else(|| panic!("{slider} is reachable in the options tree"));
+            assert_eq!(slider.bind.source, BindSource::Slot { slot: slot.into() });
+        }
+        assert_eq!(
+            button_action(&options_tree.root, "optionsAccessibilityPanel"),
+            Some(postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION)
+        );
+        assert_eq!(
+            button_action(&title.root, "frontendAccessibility"),
+            Some(postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION)
+        );
         assert!(
             options_grids
                 .iter()

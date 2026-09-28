@@ -2,6 +2,7 @@ import {
   Button,
   CLOSE_DIALOG_ACTION,
   EXIT_TO_DESKTOP_ACTION,
+  OPEN_ACCESSIBILITY_ACTION,
   QUIT_TO_MENU_ACTION,
   Text,
   Tree,
@@ -59,6 +60,11 @@ export const pauseMenu = defineUiTree({
           id: "pauseResume",
           label: "RESUME",
           onPress: CLOSE_DIALOG_ACTION,
+        }),
+        Button({
+          id: "pauseAccessibility",
+          label: "ACCESSIBILITY",
+          onPress: OPEN_ACCESSIBILITY_ACTION,
         }),
         Button({
           id: "pauseQuitToMenu",

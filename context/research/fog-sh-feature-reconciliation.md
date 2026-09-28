@@ -13,10 +13,10 @@ surface* and *real content usage*.
 - **Product definition** (`context/lib/index.md` §1): "baked volumetric indirect
   lighting (SH irradiance volumes)" and "billboard sprite volumetrics that react
   to light." Fog is cyberpunk atmosphere, not a simulation.
-- **M9 scope** (`roadmap.md` lines 162–179): kill light-leak through walls
+- **M9 scope** (`roadmap-q1-archive.md` Epic 9): kill light-leak through walls
   (depth-aware probes), then add one *directional* fog term on top of the
   existing volumetric pass. Back-scatter (negative `g`) is explicitly **optional**.
-- **Stated SH intent** (roadmap line 174): the depth-aware interpolant
+- **Stated SH intent** (`roadmap-q1-archive.md` Epic 9): the depth-aware interpolant
   *"replaces the trilinear SH sample entirely — one runtime path."*
 
 ## Actual surface vs. real content usage

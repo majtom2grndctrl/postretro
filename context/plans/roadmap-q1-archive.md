@@ -1,7 +1,7 @@
 # Roadmap Q1 Archive
 
 > **Scope:** shipped foundation epics 1-9.
-> **Purpose:** historical reference for the first roadmap quarter. Active planning now starts at Epic 10 in `roadmap.md`.
+> **Purpose:** historical reference for the first roadmap quarter. Epics 10-23 as of Q3 close are in `roadmap-q3-archive.md`; open work lives in `roadmap.md`.
 > **Sequencing:** Epics 1-9 built in order, each on the last.
 > **Related:** `context/lib/index.md`, `context/lib/rendering_pipeline.md`
 > **Status markers:** `[x]` shipped and in the tree · `[ ]` not yet built · cut-after-build items keep `[x]`, strike the description, and append **✂ Cut (YYYY-MM):** with the reason — so a "done" item that no longer exists in the tree reads as such · a later-revived cut item appends **↩ Revived (YYYY-MM):** pointing to the active work.

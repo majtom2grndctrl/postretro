@@ -1,5 +1,5 @@
 > **⚠️ ARCHIVED 2026-07-05 — not an active plan. Do not implement from this.**
-> The premise shifted after review: animated-light weight maps + the static-light shadowmask make *stationary* dynamic lights vestigial (author them static), so the primary depth-cache fix (a) targets a case good authoring eliminates. The idle-mover variant of that cache belongs to the kinematic movers epic (reuse `promoted_depth_cache.rs` + a mover at-rest signal). The parallel-BVH-walk technique (c) is measure-gated — resurrect only if a GPU capture shows a cull hot at production scale. Live disposition: `context/plans/roadmap.md` Epic 17 bullet E. Kept here for the research/reasoning only.
+> The premise shifted after review: animated-light weight maps + the static-light shadowmask make *stationary* dynamic lights vestigial (author them static), so the primary depth-cache fix (a) targets a case good authoring eliminates. The idle-mover variant of that cache belongs to the kinematic movers epic (reuse `promoted_depth_cache.rs` + a mover at-rest signal). The parallel-BVH-walk technique (c) is measure-gated — resurrect only if a GPU capture shows a cull hot at production scale. Live disposition: `context/plans/roadmap.md` Epic 17 bullet F. Kept here for the research/reasoning only.
 
 # Shadow Caster Culling
 

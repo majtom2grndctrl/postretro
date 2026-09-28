@@ -14,6 +14,7 @@ use super::animated_direct_sh_compose::{
 use super::direct_sh_compose_carrier::DirectPromotionStorage;
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
 use super::renderer_types::PromotedBakedLightState;
+use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, probe_indirection_storage_payload,
 };
@@ -23,7 +24,7 @@ use super::sh_compose_dispatch::{
     DynamicComposeDispatch, build_dynamic_compose_grid_upload, should_dispatch,
 };
 use super::sh_indirection::WGSL_DECODE_HELPER;
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
@@ -420,9 +421,9 @@ fn build_promotion_pass(
         &delta_sources,
         !direct_delta_present,
         if direct_delta_present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else {
-            ShResidencyAllocationState::Dummy
+            ResidencyAllocationState::Dummy
         },
     );
     ledger.record_buffer(
@@ -430,9 +431,9 @@ fn build_promotion_pass(
         &delta_sources,
         !direct_delta_present,
         if direct_delta_present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else {
-            ShResidencyAllocationState::Dummy
+            ResidencyAllocationState::Dummy
         },
     );
     ledger.record_buffer(
@@ -440,9 +441,9 @@ fn build_promotion_pass(
         &delta_sources,
         !direct_delta_present,
         if direct_delta_present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else {
-            ShResidencyAllocationState::Dummy
+            ResidencyAllocationState::Dummy
         },
     );
     ledger.record_buffer(
@@ -450,9 +451,9 @@ fn build_promotion_pass(
         &delta_sources,
         !direct_delta_present,
         if direct_delta_present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else {
-            ShResidencyAllocationState::Dummy
+            ResidencyAllocationState::Dummy
         },
     );
     ledger.record_buffer(
@@ -460,9 +461,9 @@ fn build_promotion_pass(
         &probe_sources,
         true,
         if sh_section_present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else {
-            ShResidencyAllocationState::Dummy
+            ResidencyAllocationState::Dummy
         },
     );
     let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -502,7 +503,7 @@ fn build_promotion_pass(
         grid_allocation,
         &grid_sources,
         grid_sources.is_empty(),
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Grid Dims"),
@@ -519,7 +520,7 @@ fn build_promotion_pass(
         debug_override_allocation,
         &[],
         true,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     let debug_override_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Debug Override"),
@@ -536,7 +537,7 @@ fn build_promotion_pass(
         light_term_mask_allocation,
         &[],
         true,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     let light_term_mask_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Frame Light-Term Mask"),

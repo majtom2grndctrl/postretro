@@ -22,6 +22,7 @@ fn cast_world_vertices_roundtrips() {
             tangent_packed: [65535, 32768],
             lightmap_uv: [100, 200],
             lightmap_layer: 0,
+            animated_block: 0,
         },
         postretro_render_data::geometry::WorldVertex {
             position: [4.0, 5.0, 6.0],
@@ -30,6 +31,7 @@ fn cast_world_vertices_roundtrips() {
             tangent_packed: [32768, 0],
             lightmap_uv: [0, 0],
             lightmap_layer: 0,
+            animated_block: 0,
         },
     ];
     let bytes = cast_world_vertices_to_bytes(&input);

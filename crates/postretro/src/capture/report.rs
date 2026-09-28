@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use super::prepared::measurement_animation_time_seconds;
 use super::scene::{CameraPose, CaptureScene};
 use crate::render::{
-    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ShResidencyAllocation,
-    ShResidencyAllocationShape, ShResidencyAllocationState, ShResidencyReport, ShResidencySource,
-    ShStreamingLifecycleSummary,
+    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, LightmapResidencyReport,
+    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
+    ShResidencyReport, ShStreamingLifecycleSummary,
 };
 
 const MEASUREMENT_SCHEMA: &str = "postretro.capture.measurement.v3";
@@ -28,6 +28,7 @@ pub(super) fn measurement_report(
     revision: Option<String>,
     adapter: CaptureAdapterIdentity,
     sh_residency: Option<ShResidencyReport>,
+    lightmap_residency: Option<LightmapResidencyReport>,
     cpu_samples_ms: Vec<f64>,
     timing_state: CaptureGpuTimingState,
     gpu_partial_frames: u32,
@@ -67,6 +68,7 @@ pub(super) fn measurement_report(
         },
         adapter: AdapterReport::from(adapter),
         renderer_accounted_sh: sh_residency.map(ShResidencyReportJson::from),
+        renderer_accounted_lightmap: lightmap_residency.map(LightmapResidencyReportJson::from),
         cpu_completion: CpuCompletionReport {
             unit: "milliseconds".into(),
             strategy: CPU_COMPLETION_STRATEGY.into(),
@@ -156,6 +158,8 @@ pub(super) struct MeasurementReport {
     adapter: AdapterReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     renderer_accounted_sh: Option<ShResidencyReportJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    renderer_accounted_lightmap: Option<LightmapResidencyReportJson>,
     cpu_completion: CpuCompletionReport,
     gpu_timing: GpuTimingReport,
     /// Renderer recording stages over complete post-warmup windows. Capture
@@ -305,7 +309,7 @@ struct GpuTimingPassReport {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShResidencyReportJson {
-    rows: Vec<ShResidencyAllocationJson>,
+    rows: Vec<ResidencyAllocationJson>,
     total_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     streaming: Option<ShStreamingAllocationSummaryJson>,
@@ -324,7 +328,7 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
         Self {
             rows: allocations
                 .into_iter()
-                .map(ShResidencyAllocationJson::from)
+                .map(ResidencyAllocationJson::from)
                 .collect(),
             total_bytes,
             streaming: streaming.map(|summary| ShStreamingAllocationSummaryJson {
@@ -336,6 +340,26 @@ impl From<ShResidencyReport> for ShResidencyReportJson {
                 replacement_peak_bytes: summary.replacement_peak_bytes,
             }),
             streaming_lifecycle: streaming_lifecycle.map(ShStreamingLifecycleSummaryJson::from),
+        }
+    }
+}
+
+/// Lightmap-family rows, the same bytes the load log and dev panel print.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct LightmapResidencyReportJson {
+    rows: Vec<ResidencyAllocationJson>,
+    total_bytes: u64,
+}
+
+impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
+    fn from(report: LightmapResidencyReport) -> Self {
+        Self {
+            rows: report
+                .allocations
+                .into_iter()
+                .map(ResidencyAllocationJson::from)
+                .collect(),
+            total_bytes: report.total_bytes,
         }
     }
 }
@@ -475,67 +499,67 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-struct ShResidencyAllocationJson {
+struct ResidencyAllocationJson {
     name: Cow<'static, str>,
-    sources: Vec<ShResidencySourceJson>,
+    sources: Vec<ResidencySourceJson>,
     bytes: u64,
-    state: ShResidencyStateJson,
-    shape: ShResidencyShapeJson,
+    state: ResidencyStateJson,
+    shape: ResidencyShapeJson,
 }
 
-impl From<ShResidencyAllocation> for ShResidencyAllocationJson {
-    fn from(row: ShResidencyAllocation) -> Self {
+impl From<ResidencyAllocation> for ResidencyAllocationJson {
+    fn from(row: ResidencyAllocation) -> Self {
         Self {
             name: row.name.into(),
             sources: row
                 .sources
                 .into_iter()
-                .map(ShResidencySourceJson::from)
+                .map(ResidencySourceJson::from)
                 .collect(),
             bytes: row.bytes,
-            state: ShResidencyStateJson::from(row.state),
-            shape: ShResidencyShapeJson::from(row.shape),
+            state: ResidencyStateJson::from(row.state),
+            shape: ResidencyShapeJson::from(row.shape),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ShResidencySourceJson {
+enum ResidencySourceJson {
     Section { id: u16 },
     Derived,
 }
 
-impl From<ShResidencySource> for ShResidencySourceJson {
-    fn from(source: ShResidencySource) -> Self {
+impl From<ResidencySource> for ResidencySourceJson {
+    fn from(source: ResidencySource) -> Self {
         match source {
-            ShResidencySource::Section(id) => Self::Section { id },
-            ShResidencySource::Derived => Self::Derived,
+            ResidencySource::Section(id) => Self::Section { id },
+            ResidencySource::Derived => Self::Derived,
         }
     }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ShResidencyStateJson {
+enum ResidencyStateJson {
     Data,
     Dummy,
     Fallback,
 }
 
-impl From<ShResidencyAllocationState> for ShResidencyStateJson {
-    fn from(state: ShResidencyAllocationState) -> Self {
+impl From<ResidencyAllocationState> for ResidencyStateJson {
+    fn from(state: ResidencyAllocationState) -> Self {
         match state {
-            ShResidencyAllocationState::Data => Self::Data,
-            ShResidencyAllocationState::Dummy => Self::Dummy,
-            ShResidencyAllocationState::Fallback => Self::Fallback,
+            ResidencyAllocationState::Data => Self::Data,
+            ResidencyAllocationState::Dummy => Self::Dummy,
+            ResidencyAllocationState::Fallback => Self::Fallback,
         }
     }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ShResidencyShapeJson {
+enum ResidencyShapeJson {
     Texture {
         format: Cow<'static, str>,
         dimension: Cow<'static, str>,
@@ -546,10 +570,10 @@ enum ShResidencyShapeJson {
     },
 }
 
-impl From<ShResidencyAllocationShape> for ShResidencyShapeJson {
-    fn from(shape: ShResidencyAllocationShape) -> Self {
+impl From<ResidencyAllocationShape> for ResidencyShapeJson {
+    fn from(shape: ResidencyAllocationShape) -> Self {
         match shape {
-            ShResidencyAllocationShape::Texture {
+            ResidencyAllocationShape::Texture {
                 format,
                 dimension,
                 extent,
@@ -558,7 +582,7 @@ impl From<ShResidencyAllocationShape> for ShResidencyShapeJson {
                 dimension: dimension.into(),
                 extent,
             },
-            ShResidencyAllocationShape::Buffer { binding_bytes } => Self::Buffer { binding_bytes },
+            ResidencyAllocationShape::Buffer { binding_bytes } => Self::Buffer { binding_bytes },
         }
     }
 }
@@ -622,6 +646,7 @@ mod tests {
             None,
             adapter(),
             None,
+            None,
             vec![1.0],
             CaptureGpuTimingState::NotRequested,
             0,
@@ -635,9 +660,57 @@ mod tests {
 
         assert_eq!(json["schema"], MEASUREMENT_SCHEMA);
         assert!(json.get("renderer_accounted_sh").is_none());
+        assert!(json.get("renderer_accounted_lightmap").is_none());
         assert_eq!(json["gpu_timing"]["availability"], "not-requested");
         assert_eq!(json["gpu_timing"]["reason"], "env-disabled");
         assert!(json["gpu_timing"].get("windows").is_none());
+    }
+
+    #[test]
+    fn report_serializes_lightmap_family_rows_with_the_meter_bytes() {
+        let row = |name: &'static str, bytes: u64| ResidencyAllocation {
+            name,
+            sources: vec![ResidencySource::Section(25)],
+            bytes,
+            state: ResidencyAllocationState::Data,
+            shape: ResidencyAllocationShape::Texture {
+                format: "Rgba16Float",
+                dimension: "D2",
+                extent: [1024, 1024, 3],
+            },
+        };
+        let meter = LightmapResidencyReport {
+            allocations: vec![
+                row("animated_irradiance", 25_165_824),
+                row("animated_direction", 12_582_912),
+            ],
+            total_bytes: 37_748_736,
+        };
+        let json = as_json(measurement_report(
+            &scene_with_measurement(),
+            99,
+            None,
+            adapter(),
+            None,
+            Some(meter),
+            vec![1.0],
+            CaptureGpuTimingState::NotRequested,
+            0,
+            Vec::new(),
+            crate::cpu_timing::capture_stages_report(
+                postretro_stage_timing::TimingGate::OFF,
+                &[],
+                0,
+            ),
+        ));
+
+        let lightmap = &json["renderer_accounted_lightmap"];
+        assert_eq!(lightmap["total_bytes"], 37_748_736);
+        assert_eq!(lightmap["rows"][0]["name"], "animated_irradiance");
+        assert_eq!(lightmap["rows"][0]["bytes"], 25_165_824);
+        assert_eq!(lightmap["rows"][1]["name"], "animated_direction");
+        assert_eq!(lightmap["rows"][1]["bytes"], 12_582_912);
+        assert_eq!(lightmap["rows"][0]["shape"]["extent"][2], 3);
     }
 
     #[test]
@@ -649,6 +722,7 @@ mod tests {
             99,
             None,
             adapter(),
+            None,
             None,
             vec![1.0],
             CaptureGpuTimingState::NotRequested,
@@ -672,12 +746,12 @@ mod tests {
     #[test]
     fn report_preserves_real_zero_byte_sh_rows_without_inventing_absent_rows() {
         let accounting = ShResidencyReport {
-            allocations: vec![ShResidencyAllocation {
+            allocations: vec![ResidencyAllocation {
                 name: "real_zero_byte_buffer",
-                sources: vec![ShResidencySource::Section(34)],
+                sources: vec![ResidencySource::Section(34)],
                 bytes: 0,
-                state: ShResidencyAllocationState::Data,
-                shape: ShResidencyAllocationShape::Buffer { binding_bytes: 0 },
+                state: ResidencyAllocationState::Data,
+                shape: ResidencyAllocationShape::Buffer { binding_bytes: 0 },
             }],
             total_bytes: 0,
             streaming: None,
@@ -689,6 +763,7 @@ mod tests {
             Some("abc123".into()),
             adapter(),
             Some(accounting),
+            None,
             vec![1.0],
             CaptureGpuTimingState::PlainBuildUnavailable,
             0,
@@ -740,6 +815,7 @@ mod tests {
             Some("abc123".into()),
             adapter(),
             Some(accounting),
+            None,
             vec![1.0],
             CaptureGpuTimingState::PlainBuildUnavailable,
             0,
@@ -824,6 +900,7 @@ mod tests {
             Some("abc123".into()),
             adapter(),
             Some(accounting),
+            None,
             vec![1.0],
             CaptureGpuTimingState::PlainBuildUnavailable,
             0,
@@ -894,6 +971,7 @@ mod tests {
                 None,
                 adapter(),
                 None,
+                None,
                 vec![1.0],
                 state,
                 0,
@@ -916,6 +994,7 @@ mod tests {
             99,
             None,
             adapter(),
+            None,
             None,
             vec![1.0],
             CaptureGpuTimingState::Active,
@@ -949,6 +1028,7 @@ mod tests {
             99,
             None,
             adapter(),
+            None,
             None,
             vec![1.0],
             CaptureGpuTimingState::Active,
@@ -1002,6 +1082,7 @@ mod tests {
             None,
             adapter(),
             None,
+            None,
             vec![1.0],
             CaptureGpuTimingState::Active,
             0,
@@ -1026,6 +1107,7 @@ mod tests {
             99,
             Some("abc123".to_string()),
             adapter(),
+            None,
             None,
             vec![1.0, 2.0],
             CaptureGpuTimingState::NotRequested,

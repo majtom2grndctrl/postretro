@@ -181,31 +181,32 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
     );
     assert_eq!(
         version, ANIMATED_LIGHT_WEIGHT_MAPS_VERSION,
-        "spill fixture must use the v3 layer-aware animated-weight-map section",
+        "spill fixture must use the current compact animated-weight-map section",
     );
     let weight_maps =
         AnimatedLightWeightMapsSection::from_bytes(&weight_map_bytes).expect("weight maps decode");
-    assert!(
-        weight_maps.is_consistent(),
+    assert_eq!(
+        weight_maps.consistency_error(),
+        None,
         "spill fixture weight maps must be internally consistent",
     );
     assert!(
         weight_maps
-            .slot_to_static_layer
+            .chunk_rects
             .iter()
-            .any(|&layer| layer >= 1),
-        "v3 slot table must contain an animated receiver static layer >= 1: {:?}",
-        weight_maps.slot_to_static_layer,
-    );
-    assert!(
-        weight_maps.chunk_rects.iter().any(|rect| {
-            rect.layer >= 1
-                && weight_maps.offset_counts[rect.texel_offset as usize
-                    ..(rect.texel_offset + rect.width * rect.height) as usize]
-                    .iter()
-                    .any(|entry| entry.count > 0)
-        }),
-        "a static layer >= 1 must contain an animated receiver with covered texels",
+            .enumerate()
+            .any(|(index, rect)| {
+                let (static_layer, _, _) = weight_maps
+                    .chunk_static_origin(index)
+                    .expect("every chunk resolves through its block");
+                static_layer >= 1
+                    && weight_maps.offset_counts[rect.texel_offset as usize
+                        ..(rect.texel_offset + rect.width * rect.height) as usize]
+                        .iter()
+                        .any(|entry| entry.count > 0)
+            }),
+        "a static layer >= 1 must contain an animated receiver with covered texels: {:?}",
+        weight_maps.blocks,
     );
 
     let _ = std::fs::remove_file(&output);
@@ -463,11 +464,16 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
 /// Golden regression for the script-light-membership seam: an unflagged static
 /// light in a map with no data script must keep its pre-feature baked output.
 ///
-/// The checked-in baseline was regenerated from commit `19d0bd3` with
-/// `prl-build --no-cache` on this exact map. Its SHA-256 is
-/// `d4cb2750c74c58e1357d6dd98cde8f8d0bb73f0222aa45beab53299d81963b80`.
+/// The checked-in baseline was regenerated on the compact-animated-atlas
+/// branch with `prl-build --no-cache` on this exact map. Its SHA-256 is
+/// `4debe70dcc2f4538b2dc36d488044332243dd7938fd609b5563a6f2f242d1df5`.
 /// Byte-for-byte comparison prevents script-membership plumbing from changing
 /// the output for static lights that it does not target.
+///
+/// That regeneration moved section 25 to v4 (compact block table) and stamped
+/// block ids into section 17's vertex pad by design. The previous baseline
+/// (`19d0bd3`, SHA `d4cb2750…`) still carried a v2 section 25 and had gone
+/// stale in unrelated sections, so it no longer loaded.
 ///
 /// The prior baseline (`33e3a152`, SHA `9264a3b2…`) went stale from engine
 /// evolution unrelated to script membership — a newly-emitted
@@ -595,4 +601,163 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
 
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// Run `prl-build` on `input` with `extra` flags, returning its combined log.
+fn prl_build_logged(input: &std::path::Path, output: &std::path::Path, extra: &[&str]) -> String {
+    let ws = workspace_root();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let result = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .args(extra)
+        .env("RUST_LOG", "info")
+        .current_dir(&ws)
+        .output()
+        .expect("spawn prl-build");
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(result.status.success(), "prl-build failed: {log}");
+    log
+}
+
+fn section_bytes(prl: &std::path::Path, id: SectionId) -> Vec<u8> {
+    let bytes = std::fs::read(prl).expect("read compiled .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+    read_section_data(&mut cursor, &meta, id as u32)
+        .expect("read section")
+        .unwrap_or_else(|| panic!("section {id:?} present"))
+}
+
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir temp");
+    dir
+}
+
+/// Pin P2: the weight-map cache stores the pre-cull identity layout, and the
+/// cull, compact repack and vertex stamping run after both a hit and a miss,
+/// so a warm cache-hit build writes sections 25 and 17 byte-identical to a
+/// cold build.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn warm_weight_map_cache_hit_writes_the_cold_sections_25_and_17() {
+    let ws = workspace_root();
+    let input = ws.join("content/dev/maps/test_animated_weight_maps_mixed.map");
+    let dir = fresh_dir("postretro_compact_atlas_warm_cold");
+    let cache = dir.join("cache");
+    let cache_arg = cache.to_str().expect("utf-8 temp path");
+
+    let cold = dir.join("cold.prl");
+    prl_build_logged(&input, &cold, &["--no-cache"]);
+    let warm_first = dir.join("warm-first.prl");
+    let first_log = prl_build_logged(&input, &warm_first, &["--cache-dir", cache_arg]);
+    assert!(
+        first_log.contains("[cache] animated_lm_weight_maps miss"),
+        "{first_log}"
+    );
+    let warm = dir.join("warm.prl");
+    let warm_log = prl_build_logged(&input, &warm, &["--cache-dir", cache_arg]);
+    assert!(
+        warm_log.contains("[cache] animated_lm_weight_maps hit"),
+        "the second warm build must hit the weight-map stage: {warm_log}"
+    );
+
+    for id in [SectionId::AnimatedLightWeightMaps, SectionId::Geometry] {
+        assert_eq!(
+            section_bytes(&warm, id),
+            section_bytes(&cold, id),
+            "section {id:?} differs between the warm cache-hit and cold builds",
+        );
+    }
+    let weights = AnimatedLightWeightMapsSection::from_bytes(&section_bytes(
+        &cold,
+        SectionId::AnimatedLightWeightMaps,
+    ))
+    .expect("weight maps decode");
+    assert!(
+        !weights.blocks.is_empty(),
+        "the fixture must carry animated blocks"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pin P1: block ids are stamped on vertices only after the SDF atlas key
+/// hashes the geometry, so editing only an animated light — here its range,
+/// which changes which faces own a block — leaves the SDF atlas stage cached.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn editing_only_an_animated_light_keeps_the_sdf_atlas_cached() {
+    let ws = workspace_root();
+    let base = std::fs::read_to_string(ws.join("content/dev/maps/sdf-shadow-test.map"))
+        .expect("read sdf-shadow-test.map");
+    // Inserted before the SDF light's entity: the map parser drops an entity
+    // appended after the file's generated trailer.
+    let (head, tail) = base
+        .split_once("// entity 2")
+        .expect("sdf-shadow-test.map numbers its SDF light entity 2");
+    let with_animated_light = |range: &str| {
+        format!(
+            "{head}// entity 3 -- animated light added by the compact-atlas cache test\n{{\n\
+             \"classname\" \"light\"\n\"origin\" \"416 256 120\"\n\"light\" \"200\"\n\
+             \"style\" \"2\"\n\"_falloff_range\" \"{range}\"\n}}\n// entity 2{tail}"
+        )
+    };
+    let dir = fresh_dir("postretro_compact_atlas_sdf_cache");
+    let cache = dir.join("cache");
+    let cache_arg = cache.to_str().expect("utf-8 temp path");
+
+    let near_map = dir.join("near.map");
+    std::fs::write(&near_map, with_animated_light("160")).expect("write near map");
+    let near = dir.join("near.prl");
+    let near_log = prl_build_logged(&near_map, &near, &["--cache-dir", cache_arg]);
+    assert!(near_log.contains("[cache] sdf_atlas miss"), "{near_log}");
+
+    let far_map = dir.join("far.map");
+    std::fs::write(&far_map, with_animated_light("900")).expect("write far map");
+    let far = dir.join("far.prl");
+    let far_log = prl_build_logged(&far_map, &far, &["--cache-dir", cache_arg]);
+
+    // The edit must actually move blocks, or the cache assertion is vacuous.
+    let blocks = |prl: &std::path::Path| {
+        AnimatedLightWeightMapsSection::from_bytes(&section_bytes(
+            prl,
+            SectionId::AnimatedLightWeightMaps,
+        ))
+        .expect("weight maps decode")
+        .blocks
+        .len()
+    };
+    assert_ne!(
+        blocks(&near),
+        blocks(&far),
+        "the range edit must change the animated blocks"
+    );
+    assert_ne!(
+        section_bytes(&near, SectionId::Geometry),
+        section_bytes(&far, SectionId::Geometry),
+        "the stamped block ids must differ between the two builds",
+    );
+    assert!(
+        far_log.contains("[cache] sdf_atlas hit"),
+        "an animated-light edit must leave the SDF atlas cached: {far_log}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

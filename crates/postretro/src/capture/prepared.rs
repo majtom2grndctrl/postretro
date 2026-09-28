@@ -10,8 +10,8 @@ use postretro_level_loader::requested_streaming_mode;
 use postretro_visibility::VisibleCells;
 
 use crate::render::{
-    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor, Renderer,
-    ShResidencyReport, ShSampleRegion,
+    CaptureAdapterIdentity, CaptureGpuTimingState, CaptureGpuTimingWindow, ClearColor,
+    LightmapResidencyReport, Renderer, ShResidencyReport, ShSampleRegion,
 };
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::runtime_movers::{
@@ -393,6 +393,10 @@ impl PreparedCapture {
         };
         let lifecycle = streaming.residency_lifecycle_summary()?;
         Ok(report.map(|report| report.with_streaming_lifecycle_summary(lifecycle)))
+    }
+
+    pub(super) fn lightmap_residency_report(&self) -> Option<LightmapResidencyReport> {
+        self.renderer.lightmap_residency_report().cloned()
     }
 
     pub(super) const fn resolution(&self) -> [u32; 2] {

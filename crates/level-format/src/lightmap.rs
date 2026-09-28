@@ -193,6 +193,19 @@ impl LightmapMode {
     }
 }
 
+fn is_placeholder_extent(width: u32, height: u32, layers: u32) -> bool {
+    width == 1 && height == 1 && layers == 1
+}
+
+impl LightmapHeader {
+    /// Whether this header describes the 1×1 placeholder section. Without a
+    /// real static atlas the animated lightmap has no coordinate space, so the
+    /// level takes the no-animated-light path.
+    pub fn is_placeholder(&self) -> bool {
+        is_placeholder_extent(self.irr_width, self.irr_height, self.layer_count)
+    }
+}
+
 /// A `LightmapSection` without its payload blobs: the dimensions and formats
 /// install-time atlas sizing and the renderer's usability filter read. The
 /// blobs live in [`LightmapPayloads`] so the GPU upload can own and drop them.
@@ -253,6 +266,12 @@ impl LightmapSection {
                 direction,
             },
         )
+    }
+
+    /// Whether this is the 1×1 [`Self::placeholder`] a map without static
+    /// baked lights carries. A real bake is never smaller than 64².
+    pub fn is_placeholder(&self) -> bool {
+        is_placeholder_extent(self.irr_width, self.irr_height, self.layer_count)
     }
 
     /// Build an empty placeholder section: 1×1 white irradiance + neutral

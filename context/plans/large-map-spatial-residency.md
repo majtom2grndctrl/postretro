@@ -104,9 +104,9 @@ Leanings come from a read-only dry run (research below). None is decided.
   bound by pre-pack chart texel area, and have the packer consume the partition. The
   partition would then run before the lightmap bake.
 - First lightmap-shaped work. Lean, in order:
-  1. Compact the animated atlas (`drafts/animated-lightmap-compact-atlas`). Per-face
+  1. Compact the animated atlas (done: `done/animated-lightmap-compact-atlas`). Per-face
      blocks resolved in the fragment stage from the binding-7 table replace the pooled
-     animated-slot idea. No I/O, and it covers the largest byte class. A virtual-layer
+     animated-slot idea; pages are the load-and-evict unit for stage 5. No I/O, and it covers the largest byte class. A virtual-layer
      table for static layers remains open.
   2. Ids 22 and 42 as one layer-keyed unit through the issuer. Existing layer-major
      payloads give per-layer file ranges, so there is no new section.

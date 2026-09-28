@@ -5,7 +5,7 @@ use bvh::bvh::Bvh;
 use glam::Vec3;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::{
-    AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
+    AnimatedBlock, AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
 };
 use postretro_level_format::animated_lightmap_atlas::{
     ANIMATED_ATLAS_VRAM_BUDGET_BYTES, animated_atlas_byte_estimate, animated_atlas_fits_budget,
@@ -13,6 +13,7 @@ use postretro_level_format::animated_lightmap_atlas::{
 use rayon::prelude::*;
 use thiserror::Error;
 
+use crate::animated_atlas_layout::apply_identity_layout;
 use crate::bake_control::BakeControl;
 
 use crate::bvh_build::BvhPrimitive;
@@ -51,6 +52,9 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// v6 adds the static-atlas-layer slot table and bakes animated weights for
 /// every packed static layer, replacing the former layer-0 skip sentinel.
 ///
+/// v7 caches section 25 v4 in the identity layout: one block per animated
+/// face, chunk rects in compact coordinates equal to their static ones.
+///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
 /// per-stage version-constant pattern every cached stage uses. Bumping this
@@ -58,7 +62,7 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 6;
+pub const STAGE_VERSION: u32 = 7;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -70,11 +74,11 @@ pub struct WeightMapInputs<'a> {
     pub lights: &'a [MapLight],
     pub face_charts: &'a [Chart],
     pub face_placements: &'a [ChartPlacement],
+    /// Static lightmap layer size; layers are square, so this is also the
+    /// identity layout's page size.
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Total depth of the static lightmap atlas. This may exceed the number of
-    /// animated slots because layers without animated receivers do not need an
-    /// animated compose target.
+    /// Total depth of the static lightmap atlas, for the bake log.
     pub static_atlas_layer_count: u32,
     /// Area-sample count for soft-shadow penumbra visibility.
     /// `pipeline.rs` folds this value into the `animated_lm_weight_maps` cache
@@ -93,34 +97,26 @@ pub enum AnimatedWeightMapBakeError {
 }
 
 /// Reject an animated atlas whose combined irradiance and direction targets do
-/// not fit the production VRAM budget. Checked after [`cull_unlit_chunks`] on
-/// both cache paths, so the slot count is the one the renderer will allocate.
+/// not fit the production VRAM budget. Checked after the compact repack on
+/// both cache paths, so the page count is the one the renderer will allocate.
 pub(crate) fn validate_animated_atlas_budget(
-    atlas_width: u32,
-    atlas_height: u32,
-    animated_slot_count: u32,
+    page_size: u32,
+    page_count: u32,
 ) -> Result<(), AnimatedWeightMapBakeError> {
     validate_animated_atlas_budget_with_limit(
-        atlas_width,
-        atlas_height,
-        animated_slot_count,
+        page_size,
+        page_count,
         ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
     )
 }
 
 fn validate_animated_atlas_budget_with_limit(
-    atlas_width: u32,
-    atlas_height: u32,
-    animated_slot_count: u32,
+    page_size: u32,
+    page_count: u32,
     atlas_budget_bytes: u64,
 ) -> Result<(), AnimatedWeightMapBakeError> {
-    let found_bytes = animated_atlas_byte_estimate(atlas_width, atlas_height, animated_slot_count);
-    if animated_atlas_fits_budget(
-        atlas_width,
-        atlas_height,
-        animated_slot_count,
-        atlas_budget_bytes,
-    ) {
+    let found_bytes = animated_atlas_byte_estimate(page_size, page_size, page_count);
+    if animated_atlas_fits_budget(page_size, page_size, page_count, atlas_budget_bytes) {
         Ok(())
     } else {
         Err(AnimatedWeightMapBakeError::AtlasOverBudget {
@@ -131,7 +127,10 @@ fn validate_animated_atlas_budget_with_limit(
 }
 
 struct ChunkBakeResult {
-    rect: ChunkAtlasRect, // texel_offset filled by concatenation
+    /// Static-atlas rect; `block` and `texel_offset` are filled by concatenation.
+    rect: ChunkAtlasRect,
+    /// Static-atlas layer of `rect`.
+    layer: u32,
     /// chunk-local offsets; concatenation pass rewrites to global offsets.
     offset_counts: Vec<TexelLightEntry>,
     texel_lights: Vec<TexelLight>,
@@ -152,19 +151,22 @@ pub struct CulledAnimatedChunks {
 /// The chunk builder selects receivers by influence-sphere overlap alone — no
 /// occlusion, facing, or cone test — so on maps with long-range animated lights
 /// most chunks sit behind walls or face away and bake all-zero weights. Kept,
-/// they still cost an atlas rect, compose dispatch tiles every frame, and an
-/// animated array slot for their static layer; dropped, their texels are never
-/// written and stay at the atlas's zero initialization, which is exactly what
-/// compose would have written.
+/// they still cost atlas texels and compose dispatch tiles every frame;
+/// dropped, their texels are never written and stay at the atlas's zero
+/// initialization, which is exactly what compose would have written.
 ///
-/// Runs outside the weight-map cache so hit and miss paths cull identically.
-/// Unlit chunks own no `texel_lights` entries, so that pool and every surviving
-/// `offset_counts.offset` carry over unchanged; only rect texel offsets, the
-/// chunk light-index pool, the slot table, and leaf ranges are rebased.
+/// A block whose every chunk drops is dropped too, and the survivors are laid
+/// out again in the identity layout over the static layers still holding a
+/// chunk; the compact repack runs afterwards. Runs outside the weight-map
+/// cache so hit and miss paths cull identically. Unlit chunks own no
+/// `texel_lights` entries, so that pool and every surviving
+/// `offset_counts.offset` carry over unchanged; only rect texel offsets and
+/// block indices, the chunk light-index pool, and leaf ranges are rebased.
 pub fn cull_unlit_chunks(
     chunk_section: &AnimatedLightChunksSection,
     weight_maps: AnimatedLightWeightMapsSection,
     leaf_chunk_ranges: &[(u32, u32)],
+    static_layer_size: u32,
 ) -> CulledAnimatedChunks {
     assert_eq!(
         chunk_section.chunks.len(),
@@ -185,6 +187,22 @@ pub fn cull_unlit_chunks(
                 .any(|entry| entry.count > 0)
         })
         .collect();
+
+    // New index of each block that keeps at least one lit chunk.
+    let mut block_kept = vec![false; weight_maps.blocks.len()];
+    for (rect, &is_lit) in weight_maps.chunk_rects.iter().zip(&lit) {
+        if is_lit {
+            block_kept[rect.block as usize] = true;
+        }
+    }
+    let mut block_remap = vec![u32::MAX; weight_maps.blocks.len()];
+    let mut blocks = Vec::new();
+    for (index, block) in weight_maps.blocks.iter().enumerate() {
+        if block_kept[index] {
+            block_remap[index] = blocks.len() as u32;
+            blocks.push(*block);
+        }
+    }
 
     let mut chunks = Vec::new();
     let mut light_indices = Vec::new();
@@ -215,14 +233,11 @@ pub fn cull_unlit_chunks(
         offset_counts.extend_from_slice(&weight_maps.offset_counts[rect_texels(rect)]);
         chunk_rects.push(ChunkAtlasRect {
             texel_offset: running_texel_offset,
+            block: block_remap[rect.block as usize],
             ..*rect
         });
         running_texel_offset += rect.width * rect.height;
     }
-
-    let mut slot_to_static_layer: Vec<u32> = chunk_rects.iter().map(|rect| rect.layer).collect();
-    slot_to_static_layer.sort_unstable();
-    slot_to_static_layer.dedup();
 
     // `kept_before[i]` = surviving chunks among the first `i` originals. Leaves
     // own contiguous chunk ranges, so each range maps to a contiguous prefix
@@ -241,14 +256,34 @@ pub fn cull_unlit_chunks(
         })
         .collect();
 
+    let pages_before = weight_maps.compact_layers;
+    let mut culled = AnimatedLightWeightMapsSection {
+        page_size: weight_maps.page_size,
+        compact_layers: weight_maps.compact_layers,
+        blocks,
+        chunk_rects,
+        offset_counts,
+        texel_lights: weight_maps.texel_lights,
+    };
+    if culled.chunk_rects.is_empty() {
+        culled = AnimatedLightWeightMapsSection {
+            texel_lights: culled.texel_lights,
+            ..AnimatedLightWeightMapsSection::empty()
+        };
+    } else {
+        apply_identity_layout(&mut culled, static_layer_size);
+    }
+
     let dropped = lit.len() - chunks.len();
     if dropped > 0 {
         log::info!(
             "[AnimatedLightWeightMaps] culled {dropped} of {} chunks with no lit texel \
-             ({dropped_texels} texels); animated slots {} -> {}",
+             ({dropped_texels} texels); animated blocks {} -> {}, identity pages {} -> {}",
             lit.len(),
-            weight_maps.slot_to_static_layer.len(),
-            slot_to_static_layer.len(),
+            weight_maps.blocks.len(),
+            culled.blocks.len(),
+            pages_before,
+            culled.compact_layers,
         );
     }
 
@@ -257,19 +292,14 @@ pub fn cull_unlit_chunks(
             chunks,
             light_indices,
         },
-        weight_maps: AnimatedLightWeightMapsSection {
-            chunk_rects,
-            offset_counts,
-            texel_lights: weight_maps.texel_lights,
-            slot_to_static_layer,
-        },
+        weight_maps: culled,
         leaf_chunk_ranges,
     }
 }
 
-/// Bake per-texel animated-light weights for every chunk. The atlas budget is
-/// not checked here: it depends on the slot count left after
-/// [`cull_unlit_chunks`], which only the finished bake can determine.
+/// Bake per-texel animated-light weights for every chunk, in the identity
+/// layout. The atlas budget is not checked here: it depends on the page count
+/// the compact repack reaches after [`cull_unlit_chunks`].
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
 ) -> AnimatedLightWeightMapsSection {
@@ -285,16 +315,35 @@ pub fn bake_animated_light_weight_maps_controlled(
     }
 
     let chunks = &inputs.chunk_section.chunks;
-    // `AnimatedLightChunk`s are the compiler's candidate animated receivers.
-    // Keep their original order for baking/serialization; only this derived
-    // slot table is sorted so its index is a deterministic dense slot.
-    let mut slot_to_static_layer: Vec<u32> = chunks
+    assert_eq!(
+        inputs.atlas_width, inputs.atlas_height,
+        "static lightmap layers are square",
+    );
+    // One block per face with a chunk: its whole chart placement, padding
+    // included, so the zero gutter travels with it. Blocks are indexed in
+    // ascending face order, which is cell order (faces are emitted grouped
+    // by cell), the order the compact repack packs them in. `AnimatedLightChunk`s
+    // keep their original order for baking and serialization.
+    let mut block_faces: Vec<u32> = chunks.iter().map(|chunk| chunk.face_index).collect();
+    block_faces.sort_unstable();
+    block_faces.dedup();
+    let blocks: Vec<AnimatedBlock> = block_faces
         .iter()
-        .map(|chunk| inputs.face_placements[chunk.face_index as usize].layer)
+        .map(|&face| {
+            let placement = inputs.face_placements[face as usize];
+            let chart = &inputs.face_charts[face as usize];
+            AnimatedBlock {
+                static_layer: placement.layer,
+                static_x: placement.x,
+                static_y: placement.y,
+                compact_x: placement.x,
+                compact_y: placement.y,
+                compact_layer: 0,
+                width: chart.width_texels,
+                height: chart.height_texels,
+            }
+        })
         .collect();
-    slot_to_static_layer.sort_unstable();
-    slot_to_static_layer.dedup();
-    let animated_slot_count = slot_to_static_layer.len() as u32;
 
     control.publish_total(chunks.len());
     let light_indices_pool = &inputs.chunk_section.light_indices;
@@ -316,13 +365,17 @@ pub fn bake_animated_light_weight_maps_controlled(
     let mut texel_lights: Vec<TexelLight> = Vec::new();
 
     let mut running_texel_offset: u32 = 0;
-    for result in per_chunk {
+    for (chunk, result) in chunks.iter().zip(per_chunk) {
         let ChunkBakeResult {
             mut rect,
+            layer: _,
             offset_counts: chunk_oc,
             texel_lights: chunk_tl,
         } = result;
 
+        rect.block = block_faces
+            .binary_search(&chunk.face_index)
+            .expect("every chunk face owns a block") as u32;
         rect.texel_offset = running_texel_offset;
         running_texel_offset += rect.width * rect.height;
 
@@ -337,50 +390,47 @@ pub fn bake_animated_light_weight_maps_controlled(
         chunk_rects.push(rect);
     }
 
-    // Byte formula mirrors the section encoder. TexelLight grew to 12 bytes
-    // when the per-texel direction was added (Task 2b).
-    const HEADER_SIZE: usize = 20;
-    const CHUNK_RECT_SIZE: usize = 24;
-    const OFFSET_ENTRY_SIZE: usize = 8;
-    const TEXEL_LIGHT_SIZE: usize = 12;
-    const SLOT_STATIC_LAYER_SIZE: usize = 4;
-    let byte_size = HEADER_SIZE
-        + chunk_rects.len() * CHUNK_RECT_SIZE
-        + offset_counts.len() * OFFSET_ENTRY_SIZE
-        + texel_lights.len() * TEXEL_LIGHT_SIZE
-        + slot_to_static_layer.len() * SLOT_STATIC_LAYER_SIZE;
+    let mut section = AnimatedLightWeightMapsSection {
+        page_size: 0,
+        compact_layers: 0,
+        blocks,
+        chunk_rects,
+        offset_counts,
+        texel_lights,
+    };
+    // Chunk rects hold static coordinates and every block sits at its static
+    // placement, so this only assigns pages: the identity layout, which the
+    // stage cache stores.
+    apply_identity_layout(&mut section, inputs.atlas_width);
 
-    let covered_texels: u32 = offset_counts.iter().filter(|e| e.count > 0).count() as u32;
+    let covered_texels: u32 = section.offset_counts.iter().filter(|e| e.count > 0).count() as u32;
     let mean_lights_per_covered = if covered_texels == 0 {
         0.0
     } else {
-        texel_lights.len() as f64 / covered_texels as f64
+        section.texel_lights.len() as f64 / covered_texels as f64
     };
-    let peak_texels_per_chunk = chunk_rects
+    let peak_texels_per_chunk = section
+        .chunk_rects
         .iter()
         .map(|r| r.width * r.height)
         .max()
         .unwrap_or(0);
 
     log::info!(
-        "[AnimatedLightWeightMaps] {} static atlas layers, {} animated slots, {} chunks, \
-         {} byte section, {} covered texels, \
+        "[AnimatedLightWeightMaps] {} static atlas layers, {} animated blocks on {} identity \
+         pages, {} chunks, {} byte section, {} covered texels, \
          mean {:.2} lights / covered texel, peak {} texels / chunk",
         inputs.static_atlas_layer_count,
-        animated_slot_count,
-        chunk_rects.len(),
-        byte_size,
+        section.blocks.len(),
+        section.compact_layers,
+        section.chunk_rects.len(),
+        section.byte_len(),
         covered_texels,
         mean_lights_per_covered,
         peak_texels_per_chunk,
     );
 
-    AnimatedLightWeightMapsSection {
-        chunk_rects,
-        offset_counts,
-        texel_lights,
-        slot_to_static_layer,
-    }
+    section
 }
 
 fn bake_one_chunk(
@@ -408,12 +458,12 @@ fn bake_one_chunk(
     let chunk_light_indices: &[u32] = &light_indices_pool[list_start..list_end];
 
     let rect = ChunkAtlasRect {
-        atlas_x,
-        atlas_y,
+        compact_x: atlas_x,
+        compact_y: atlas_y,
         width,
         height,
         texel_offset: 0, // filled by caller
-        layer: placement.layer,
+        block: 0,        // filled by caller
     };
 
     let texel_count = (width * height) as usize;
@@ -531,6 +581,7 @@ fn bake_one_chunk(
 
     ChunkBakeResult {
         rect,
+        layer: placement.layer,
         offset_counts,
         texel_lights,
     }
@@ -672,16 +723,17 @@ fn assert_no_overlapping_rects_per_layer(
 
     let mut by_layer: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for (index, result) in per_chunk.iter().enumerate() {
-        by_layer.entry(result.rect.layer).or_default().push(index);
+        by_layer.entry(result.layer).or_default().push(index);
     }
     for (layer, indices) in by_layer {
         for (i_idx, &i) in indices.iter().enumerate() {
             let a = &per_chunk[i].rect;
             for &j in &indices[i_idx + 1..] {
                 let b = &per_chunk[j].rect;
-                let overlap_x = a.atlas_x < b.atlas_x + b.width && b.atlas_x < a.atlas_x + a.width;
+                let overlap_x =
+                    a.compact_x < b.compact_x + b.width && b.compact_x < a.compact_x + a.width;
                 let overlap_y =
-                    a.atlas_y < b.atlas_y + b.height && b.atlas_y < a.atlas_y + a.height;
+                    a.compact_y < b.compact_y + b.height && b.compact_y < a.compact_y + a.height;
                 if overlap_x && overlap_y {
                     let ca = &chunks[i];
                     let cb = &chunks[j];
@@ -697,12 +749,12 @@ fn assert_no_overlapping_rects_per_layer(
                         cb.face_index,
                         a.width,
                         a.height,
-                        a.atlas_x,
-                        a.atlas_y,
+                        a.compact_x,
+                        a.compact_y,
                         b.width,
                         b.height,
-                        b.atlas_x,
-                        b.atlas_y,
+                        b.compact_x,
+                        b.compact_y,
                         ca.uv_min,
                         ca.uv_max,
                         cb.uv_min,
@@ -1178,39 +1230,64 @@ mod tests {
     }
 
     #[test]
-    fn real_multi_layer_pack_bakes_dense_slots_for_every_covered_layer() {
+    fn real_multi_layer_pack_bakes_one_identity_page_per_covered_layer() {
         let (_, section) = bake_real_multi_layer_fixture(glam::Vec3::Y);
 
-        assert_eq!(section.slot_to_static_layer, vec![0, 1]);
+        let block_layers: Vec<u32> = section.blocks.iter().map(|b| b.static_layer).collect();
         assert_eq!(
-            section
-                .chunk_rects
-                .iter()
-                .map(|rect| rect.layer)
-                .collect::<Vec<_>>(),
+            block_layers,
             vec![0, 1],
-            "real pack layers must survive into section-25 rects",
+            "one block per face, in face order"
         );
-        for rect in &section.chunk_rects {
+        assert_eq!(
+            section.compact_layers, 2,
+            "one identity page per covered layer"
+        );
+        assert_eq!(
+            section.page_size, 64,
+            "identity pages are the static layer size"
+        );
+        for (index, block) in section.blocks.iter().enumerate() {
+            assert_eq!(block.compact_layer, index as u32);
+            assert_eq!(
+                (block.compact_x, block.compact_y),
+                (block.static_x, block.static_y)
+            );
+            assert_eq!(
+                (block.width, block.height),
+                (64, 64),
+                "block is the whole placement"
+            );
+        }
+        for (index, rect) in section.chunk_rects.iter().enumerate() {
             assert!(rect.width > 1 && rect.height > 1, "no skip sentinel rect");
+            let (layer, x, y) = section.chunk_static_origin(index).unwrap();
+            assert_eq!(
+                layer, index as u32,
+                "real pack layers survive into section 25"
+            );
+            assert_eq!(
+                (x, y),
+                (rect.compact_x, rect.compact_y),
+                "identity keeps static coords"
+            );
             let start = rect.texel_offset as usize;
             let end = start + (rect.width * rect.height) as usize;
             assert!(
                 section.offset_counts[start..end]
                     .iter()
                     .any(|entry| entry.count > 0),
-                "static layer {} must retain covered animated texels",
-                rect.layer,
+                "static layer {layer} must retain covered animated texels",
             );
         }
-        assert!(section.is_consistent());
+        assert_eq!(section.consistency_error(), None);
 
         let (_, repeated) = bake_real_multi_layer_fixture(glam::Vec3::Y);
         assert_eq!(section.to_bytes(), repeated.to_bytes());
     }
 
     #[test]
-    fn real_multi_layer_bake_logs_static_layer_and_animated_slot_counts() {
+    fn real_multi_layer_bake_logs_static_layer_and_block_counts() {
         let capture = LogCapture::start();
 
         bake_real_multi_layer_fixture(glam::Vec3::Y);
@@ -1219,7 +1296,7 @@ mod tests {
             Level::Info,
             "[AnimatedLightWeightMaps] 2 static atlas layers",
         );
-        capture.assert_logged_once(Level::Info, "2 animated slots");
+        capture.assert_logged_once(Level::Info, "2 animated blocks on 2 identity pages");
     }
 
     #[test]
@@ -1227,7 +1304,7 @@ mod tests {
         let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::Y);
         let leaf_ranges = vec![(0, 1), (1, 1)];
 
-        let culled = cull_unlit_chunks(&chunks, section.clone(), &leaf_ranges);
+        let culled = cull_unlit_chunks(&chunks, section.clone(), &leaf_ranges, 64);
 
         assert_eq!(culled.chunk_section, chunks);
         assert_eq!(culled.weight_maps, section);
@@ -1248,10 +1325,10 @@ mod tests {
             rect_entries(&section, 0).iter().all(|e| e.count == 0),
             "fixture precondition: face 0 must bake unlit",
         );
-        assert_eq!(section.slot_to_static_layer, vec![0, 1]);
+        assert_eq!(section.compact_layers, 2);
 
         let capture = LogCapture::start();
-        let culled = cull_unlit_chunks(&chunks, section.clone(), &[(0, 1), (1, 1), (2, 0)]);
+        let culled = cull_unlit_chunks(&chunks, section.clone(), &[(0, 1), (1, 1), (2, 0)], 64);
 
         capture.assert_logged_once(Level::Info, "culled 1 of 2 chunks with no lit texel");
         assert_eq!(culled.chunk_section.chunks.len(), 1);
@@ -1259,21 +1336,31 @@ mod tests {
         assert_eq!(culled.chunk_section.chunks[0].index_offset, 0);
         assert_eq!(culled.chunk_section.light_indices, vec![1]);
 
+        // Face 0 lost its only chunk, so it owns no block; face 1's block is
+        // renumbered 0 and its identity page is the only one left.
         let rect = culled.weight_maps.chunk_rects[0];
         assert_eq!(
             rect,
             ChunkAtlasRect {
                 texel_offset: 0,
+                block: 0,
                 ..section.chunk_rects[1]
             },
         );
+        assert_eq!(
+            culled.weight_maps.blocks,
+            vec![AnimatedBlock {
+                compact_layer: 0,
+                ..section.blocks[1]
+            }]
+        );
+        assert_eq!(culled.weight_maps.compact_layers, 1);
         assert_eq!(
             rect_entries(&culled.weight_maps, 0),
             rect_entries(&section, 1)
         );
         assert_eq!(culled.weight_maps.texel_lights, section.texel_lights);
-        assert_eq!(culled.weight_maps.slot_to_static_layer, vec![1]);
-        assert!(culled.weight_maps.is_consistent());
+        assert_eq!(culled.weight_maps.consistency_error(), None);
 
         // Leaf 0 lost its only chunk; leaf 1's chunk moved to index 0; the
         // trailing empty leaf stays empty at the end of the chunk array.
@@ -1289,25 +1376,124 @@ mod tests {
         };
         let rect = section.chunk_rects[0];
         let unlit_section = AnimatedLightWeightMapsSection {
+            page_size: 64,
+            compact_layers: 1,
+            blocks: vec![section.blocks[0]],
             chunk_rects: vec![rect],
             offset_counts: section.offset_counts[..(rect.width * rect.height) as usize].to_vec(),
             texel_lights: Vec::new(),
-            slot_to_static_layer: vec![rect.layer],
         };
 
-        let culled = cull_unlit_chunks(&only_unlit, unlit_section, &[(0, 1)]);
+        let culled = cull_unlit_chunks(&only_unlit, unlit_section, &[(0, 1)], 64);
 
         assert!(culled.chunk_section.chunks.is_empty());
         assert!(culled.chunk_section.light_indices.is_empty());
         assert!(culled.weight_maps.chunk_rects.is_empty());
         assert!(culled.weight_maps.offset_counts.is_empty());
-        assert!(culled.weight_maps.slot_to_static_layer.is_empty());
+        assert!(culled.weight_maps.blocks.is_empty());
+        assert_eq!(culled.weight_maps.compact_layers, 0);
         assert_eq!(culled.leaf_chunk_ranges, vec![(0, 0)]);
+    }
+
+    /// One face with three chunks, the middle one unlit: the face keeps one
+    /// block spanning its whole placement, the surviving chunks keep their
+    /// offsets inside it, and no surviving rect covers the culled chunk's
+    /// texels, so compose never writes them and they stay zero.
+    #[test]
+    fn cull_keeps_one_block_for_a_face_with_some_culled_chunks() {
+        let chunk = |index_offset: u32| AnimatedLightChunk {
+            aabb_min: [0.0; 3],
+            face_index: 0,
+            aabb_max: [1.0; 3],
+            index_offset,
+            uv_min: [0.0; 2],
+            uv_max: [1.0; 2],
+            index_count: 1,
+            _padding: 0,
+        };
+        let chunk_section = AnimatedLightChunksSection {
+            chunks: vec![chunk(0), chunk(1), chunk(2)],
+            light_indices: vec![0, 0, 0],
+        };
+        let rect = |x: u32, texel_offset: u32| ChunkAtlasRect {
+            compact_x: x,
+            compact_y: 12,
+            width: 4,
+            height: 2,
+            texel_offset,
+            block: 0,
+        };
+        let lit = TexelLightEntry {
+            offset: 0,
+            count: 1,
+        };
+        let unlit = TexelLightEntry {
+            offset: 1,
+            count: 0,
+        };
+        let mut offset_counts = vec![lit; 8];
+        offset_counts.extend([unlit; 8]);
+        offset_counts.extend([lit; 8]);
+        let placement = AnimatedBlock {
+            static_layer: 2,
+            static_x: 8,
+            static_y: 10,
+            compact_x: 8,
+            compact_y: 10,
+            compact_layer: 0,
+            width: 16,
+            height: 6,
+        };
+        let section = AnimatedLightWeightMapsSection {
+            page_size: 256,
+            compact_layers: 1,
+            blocks: vec![placement],
+            chunk_rects: vec![rect(10, 0), rect(14, 8), rect(18, 16)],
+            offset_counts,
+            texel_lights: vec![TexelLight {
+                light_index: 0,
+                weight: 1.0,
+                direction_oct: [0, 0],
+            }],
+        };
+        assert_eq!(section.consistency_error(), None);
+
+        let culled = cull_unlit_chunks(&chunk_section, section.clone(), &[(0, 3)], 256);
+        let weight_maps = &culled.weight_maps;
+
+        assert_eq!(
+            weight_maps.blocks,
+            vec![placement],
+            "one block, whole placement"
+        );
+        assert_eq!(weight_maps.chunk_rects.len(), 2);
+        for (rect, original) in weight_maps.chunk_rects.iter().zip([0, 2]) {
+            let original = section.chunk_rects[original];
+            assert_eq!(rect.block, 0);
+            assert_eq!(
+                (
+                    rect.compact_x - placement.compact_x,
+                    rect.compact_y - placement.compact_y
+                ),
+                (
+                    original.compact_x - placement.compact_x,
+                    original.compact_y - placement.compact_y
+                ),
+            );
+            let culled_rect = section.chunk_rects[1];
+            let overlap = rect.compact_x < culled_rect.compact_x + culled_rect.width
+                && culled_rect.compact_x < rect.compact_x + rect.width;
+            assert!(
+                !overlap,
+                "no surviving chunk writes the culled chunk's texels"
+            );
+        }
+        assert_eq!(weight_maps.consistency_error(), None);
     }
 
     #[test]
     fn animated_atlas_over_budget_names_budget_and_found_bytes() {
-        let err = validate_animated_atlas_budget_with_limit(64, 64, 2, 1)
+        let err = validate_animated_atlas_budget_with_limit(64, 2, 1)
             .expect_err("injected low budget must reject the atlas");
         let AnimatedWeightMapBakeError::AtlasOverBudget {
             budget_bytes,
@@ -1349,32 +1535,20 @@ mod tests {
                 _padding: 0,
             },
         ];
-        let results = vec![
-            ChunkBakeResult {
-                rect: ChunkAtlasRect {
-                    atlas_x: 3,
-                    atlas_y: 4,
-                    width: 2,
-                    height: 2,
-                    texel_offset: 0,
-                    layer: 1,
-                },
-                offset_counts: Vec::new(),
-                texel_lights: Vec::new(),
+        let result = || ChunkBakeResult {
+            rect: ChunkAtlasRect {
+                compact_x: 3,
+                compact_y: 4,
+                width: 2,
+                height: 2,
+                texel_offset: 0,
+                block: 0,
             },
-            ChunkBakeResult {
-                rect: ChunkAtlasRect {
-                    atlas_x: 3,
-                    atlas_y: 4,
-                    width: 2,
-                    height: 2,
-                    texel_offset: 0,
-                    layer: 1,
-                },
-                offset_counts: Vec::new(),
-                texel_lights: Vec::new(),
-            },
-        ];
+            layer: 1,
+            offset_counts: Vec::new(),
+            texel_lights: Vec::new(),
+        };
+        let results = vec![result(), result()];
 
         assert_no_overlapping_rects_per_layer(&chunks, &results);
     }

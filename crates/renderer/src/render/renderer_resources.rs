@@ -618,23 +618,21 @@ impl Renderer {
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
-        // Match the animated atlas to the static lightmap atlas the same way the
-        // constructor does — one resolver, one device limit, guaranteed-equal
-        // dimensions (see `usable_atlas_dimensions`). The constructor also
-        // falls back when the header's payload is missing, so sizing sees the
-        // header only when its payload is present. The constructor still gets
-        // the header itself, so that fallback logs its error.
+        // Resolve the static layer the animated block table translates from
+        // the same way the lightmap constructor filters its atlas — one
+        // resolver, one device limit (see `usable_static_layers`). The
+        // constructor also falls back when the header's payload is missing,
+        // so this sees the header only when its payload is present. The
+        // constructor still gets the header itself, so that fallback logs its
+        // error.
         let sized_lightmap = geometry
             .lightmap
             .filter(|_| gpu_lighting_payloads.lightmap.is_some());
-        let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
+        let static_layers = crate::lighting::lightmap::usable_static_layers(
             sized_lightmap,
             device.limits().max_texture_dimension_2d,
             device.limits().max_texture_array_layers,
         );
-        let slot_to_static_layer = geometry
-            .animated_light_weight_maps
-            .map_or(&[][..], |section| section.slot_to_static_layer.as_slice());
 
         let animated_lightmap = animated_lightmap::with_dummy_fallback(
             animated_lightmap::AnimatedLightmapResources::new(
@@ -644,7 +642,7 @@ impl Renderer {
                 &bvh_leaves,
                 &full.sh_volume_resources.animation,
                 &full.uniform_bind_group_layout,
-                lightmap_atlas_dimensions,
+                static_layers,
                 animated_lm_debug,
             ),
             || {
@@ -654,12 +652,18 @@ impl Renderer {
                     &full.uniform_bind_group_layout,
                     animated_lm_debug,
                 )
+                .into_fallback()
             },
             "animated lightmap install",
         );
-        let installed_slot_to_static_layer = animated_lightmap::installed_slot_to_static_layer(
-            animated_lightmap.is_active(),
-            slot_to_static_layer,
+        // Built from the installed resource state: a dummy atlas gets an
+        // empty table, so no vertex applies a compact offset against it.
+        let animated_block_table = crate::lighting::lightmap::animated_block_table_bytes(
+            animated_lightmap::installed_block_table_section(
+                animated_lightmap.is_active(),
+                geometry.animated_light_weight_maps,
+            ),
+            static_layers.map_or(0, |(size, _)| size),
         );
         full.lightmap_resources = LightmapResources::new(
             device,
@@ -670,9 +674,14 @@ impl Renderer {
             &lightmap_bgl,
             &animated_lightmap.forward_view,
             &animated_lightmap.direction_forward_view,
-            installed_slot_to_static_layer,
+            &animated_block_table,
         );
         full.shadowmask_present = full.lightmap_resources.shadowmask_present;
+        full.lightmap_residency_report = LightmapResidencyReport::new(
+            full.lightmap_resources.residency.clone(),
+            animated_lightmap.residency_rows(),
+        );
+        log::info!("{}", full.lightmap_residency_report.log_line());
         full.animated_lightmap = animated_lightmap;
 
         // SDF half-res shadow pass — rebind to the freshly-loaded SH

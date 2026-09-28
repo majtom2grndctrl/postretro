@@ -507,6 +507,7 @@ mod tests {
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
             lightmap_layer: 0,
+            animated_block: 0,
         }
     }
 

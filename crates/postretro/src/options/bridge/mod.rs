@@ -1,6 +1,8 @@
 // App-side bridge from writable option slots to session-owned player settings.
 // See: context/lib/player_options.md §4
 
+mod save_schedule;
+
 use std::io;
 use std::path::Path;
 
@@ -8,6 +10,7 @@ use postretro_entities::slot_table::{SlotTable, SlotValue};
 
 use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality};
 use crate::input::InputSystem;
+use save_schedule::SaveSchedule;
 
 pub(crate) const MOUSE_SENSITIVITY_SLOT: &str = "options.mouseSensitivity";
 pub(crate) const INVERT_Y_SLOT: &str = "options.invertY";
@@ -16,8 +19,6 @@ pub(crate) const CROUCH_MODE_SLOT: &str = "options.crouchMode";
 pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
 pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
 pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
-
-const SAVE_DEBOUNCE_SECONDS: f32 = 0.250;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ObservedGenerations {
@@ -48,7 +49,7 @@ pub(crate) struct OptionsApplyEffects {
 #[derive(Default)]
 pub(crate) struct OptionsBridge {
     observed: ObservedGenerations,
-    save_remaining_seconds: Option<f32>,
+    save: SaveSchedule,
 }
 
 impl OptionsBridge {
@@ -148,17 +149,10 @@ impl OptionsBridge {
         let changed = self.observe_changes(table, options, input, &mut effects);
 
         if changed {
-            self.save_remaining_seconds = settings_path.map(|_| SAVE_DEBOUNCE_SECONDS);
-        } else if let Some(remaining) = self.save_remaining_seconds.as_mut() {
-            let elapsed = if frame_dt_seconds.is_finite() {
-                frame_dt_seconds.max(0.0)
-            } else {
-                0.0
-            };
-            *remaining -= elapsed;
-            if *remaining <= 0.0 {
-                self.attempt_save(options, settings_path, &mut save);
-            }
+            self.save.arm(settings_path);
+        } else {
+            self.save
+                .tick(frame_dt_seconds, options, settings_path, &mut save);
         }
 
         effects
@@ -276,29 +270,7 @@ impl OptionsBridge {
     ) where
         F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
     {
-        if self.save_remaining_seconds.is_some() {
-            self.attempt_save(options, settings_path, &mut save);
-        }
-    }
-
-    fn attempt_save<F>(
-        &mut self,
-        options: &PlayerOptions,
-        settings_path: Option<&Path>,
-        save: &mut F,
-    ) where
-        F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
-    {
-        self.save_remaining_seconds = None;
-        let Some(path) = settings_path else {
-            return;
-        };
-        if let Err(error) = save(options, path) {
-            log::warn!(
-                "[Options] failed to save changed settings to {}: {error}; keeping the in-memory value",
-                path.display()
-            );
-        }
+        self.save.flush(options, settings_path, &mut save);
     }
 }
 

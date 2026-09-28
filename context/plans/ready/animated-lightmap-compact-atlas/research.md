@@ -30,7 +30,7 @@ These were observed in the data. The compiler does not enforce them, which is wh
 - Vertices are emitted per face and never shared (`extract_geometry`).
 - No animated leaf spans two layers.
 - Chunk rect ⊆ leaf vertex-UV box + 1 texel. Worst excess: 0.873 texel against the UV box, 0.015 on campaign-test, and 0.001 on stress-warren-mini against the placement.
-- Chunk count ≤ 977 across content, and block count reaches 977 on stress-warren-mini. Cap figures: P16.
+- Block count reaches 977 on stress-warren-mini and no content exceeds it. Chunk count is much higher: stress-warren-hallway-inspection has 40187 chunks over 47 faces. The cap binds blocks, not chunks. Cap figures: P16.
 - `CHART_PADDING_TEXELS = 2`. A 2-texel gutter holds while overrun stays below 1.5 texels.
 
 ## Formats
@@ -44,7 +44,7 @@ These were observed in the data. The compiler does not enforce them, which is wh
 
 ## Stale content
 
-These PRLs carry section 25 and must be rebuilt after the version bump: campaign-test (and its -id41-coarsened and -bakeonly variants), closet-reveal, occlusion-test, spawner-test and stress-warren-mini. The golden `test_animated_weight_maps_mixed.pre-script-light-membership.prl` is already v2 and needs a new baseline.
+These PRLs carry section 25 and must be rebuilt after the version bump: campaign-test (and its -id41-coarsened and -bakeonly variants), closet-reveal, occlusion-test, spawner-test, stress-warren-mini, stress-warren-hallway-inspection, and a11y-strobe-test (from the E23 branch). The golden `test_animated_weight_maps_mixed.pre-script-light-membership.prl` is already v2 and needs a new baseline.
 
 ## Tests pinning today's shape
 
@@ -70,9 +70,11 @@ These PRLs carry section 25 and must be rebuilt after the version bump: campaign
 | P11 | Vertex names a block past the table, or a block on another static layer | Checked after both sections decode | Debug or `dev-tools` build: load fails with a recompile error. Player release build: level loads with no animated light and one logged error |
 | P12 | Load level A, unload, load level B | Meter rebuilt per install; block table rewritten at install | After unload each count is placeholder; after B, counts are B's alone |
 | P13 | "Before" resource reading | Meter must exist while the atlas is still full-layer | Before numbers come from the meter, not hand-parsed PRLs (F15) |
-| P14 | Section 25 whose page size is not a power of two, is below the largest block or the lower bound, or exceeds the static layer size | Page-size preflight after both sections decode | Level rejected |
+| P14 | Section 25 whose page size is not a power of two, is below the largest block or the lower bound, or exceeds the static layer size (section 22's layer width) | Page-size preflight after both sections decode | Level rejected; when section 22 is the placeholder, the upper bound is skipped and the level keeps today's no-animated-light path |
 
 Additional research pins (subtract lens), literal text:
 
 - **P15** — supersedes the Data invariants bullet "No animated leaf spans two layers.": No animated leaf spans two layers. Enforced by type: one face has one `ChartPlacement` with a single `layer`, and one leaf is one face.
-- **P16** — supersedes the Data invariants cap figure ("2040 blocks"): Chunk count ≤ 977 across content. The cap derives from the requested `max_uniform_buffer_binding_size` (64 KiB under `Limits::default()` in wgpu 29). Blocks pack into 16-byte uniform array elements, so the cap is (limit − header) / per-block bytes after packing: 8190 blocks at 8 B per block behind a 16 B header, 4095 at 16 B. Current content (≤ 977 blocks) uses about 12% or 24% of it. Both caps sit under the 16-bit vertex id's 65535.
+- **P16** — supersedes the Data invariants cap figure ("2040 blocks"): block count ≤ 977 across content (chunk count reaches 40187). The cap derives from the requested `max_uniform_buffer_binding_size` (64 KiB under `Limits::default()` in wgpu 29). Blocks pack into 16-byte uniform array elements, so the cap is (limit − header) / per-block bytes after packing: 8190 blocks at 8 B per block behind a 16 B header, 4095 at 16 B. Current content (≤ 977 blocks) uses about 12% or 24% of it. Both caps sit under the 16-bit vertex id's 65535.
+
+- **P17** — The identity layout is one page per static layer holding a chunk after the cull, ascending, compact layer = today's slot index. One page per static layer would exceed today (campaign-test 192 vs 144 MiB; occlusion-test 144 vs 84 MiB; stress-warren-hallway-inspection ≈3.4 GiB vs 144 MiB, over the 1 GiB animated-atlas budget).

@@ -1,6 +1,7 @@
 // Pre-scene cull and compose orchestration before depth and forward passes.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use super::cpu_stages::RenderStage;
 use super::*;
 
 /// Whether a leaf AABB survives the frustum, mirroring `is_aabb_outside_frustum`
@@ -335,6 +336,7 @@ impl Renderer {
         frame_light_term_mask: LightTermMask,
     ) -> bool {
         let visible: &VisibleCells = cam_vis.cells;
+        let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let Self {
             device,
             queue,
@@ -347,12 +349,14 @@ impl Renderer {
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
+            let _cull_scope = cpu.scope(RenderStage::Cull);
             // Keep the pre-UI tree-walk baseline mirrored after pass recording
             // for non-egui diagnostic readers. This remains independent of the
             // active GPU cull strategy, so candidate frames never starve the
             // baseline to zero.
             #[cfg(feature = "dev-tools")]
             {
+                let _diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
                 full.bvh_cull_diagnostics = full
                     .compute_cull
                     .as_ref()
@@ -427,8 +431,10 @@ impl Renderer {
                     // (`candidate.candidates()`); read immutably here before the
                     // mutable `dispatch` borrow below.
                     let candidates = candidate.candidates();
+                    let diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
                     let submitted_leaves =
                         count_submitted_candidates(&full.bvh_leaves, candidates, &view_proj);
+                    drop(diagnostics_scope);
                     full.camera_cull_diagnostics = CameraCullDiagnostics {
                         path: CameraCullPath::Candidate {
                             candidate_leaves: candidates.len() as u32,
@@ -457,6 +463,7 @@ impl Renderer {
                     // Tree-walk diagnostics: submitted = drawable, visible-cell,
                     // frustum-passing leaves over the WHOLE leaf array.
                     if let Some(cull) = full.compute_cull.as_ref() {
+                        let _diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
                         full.camera_cull_diagnostics = CameraCullDiagnostics {
                             path: CameraCullPath::TreeWalk,
                             total_leaves: cull.total_leaves(),
@@ -519,6 +526,7 @@ impl Renderer {
 
         // Before depth pre-pass: storage→sampled barrier must resolve before forward sampling.
         if render_world && full.animated_lightmap.is_active() {
+            let _animated_scope = cpu.scope(RenderStage::AnimatedLightmapCompose);
             let animated_ts = full
                 .frame_timing
                 .as_ref()
@@ -534,6 +542,7 @@ impl Renderer {
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
         if render_world {
+            let _sh_compose_scope = cpu.scope(RenderStage::ShCompose);
             let sh_compose_ts = full
                 .frame_timing
                 .as_ref()

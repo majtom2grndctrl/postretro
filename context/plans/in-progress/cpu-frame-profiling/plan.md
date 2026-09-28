@@ -35,6 +35,11 @@ read at: 683e363ba
 ## Measurements
 
 - 2026-09-27, task 2, `campaign-test` at spawn, dev profile (`opt-level` per workspace dev profile, debuginfo), Apple Metal, vsync on, cache warm, 120-frame windows: total 35.5–36.5 ms avg; work 22.0 ms; wait 13.4–14.5 ms, of which `wait_acquire` 13.4–14.5 ms and `wait_present` 0.05 ms; unattributed 0.004 ms avg (≈0.02% of work CPU). Largest stages: render 17.0 ms, render_prep 3.0 ms, fixed_step 1.4–1.5 ms (2.1–2.2 ticks/frame), visibility 0.34 ms with portal_walk 0.30 ms (1110 considered, 150 accepted, 810 clipped, 150 cycle). **Vsync blocks in surface acquire on this platform**; present is negligible. Machine class and release numbers are recorded with the baselines in task 8.
+- 2026-09-27, owner, Windows, GTX 1660 Super, dev profile with `dev-tools` (panel open), `stress-warren-hallway-inspection`, cache warm. Not a release baseline.
+  - Player spawn, vsync on: total 21.0 ms, work 20.8 ms, wait 0.18 ms (acquire 0.05, present 0.14), unattributed 0.016 ms. `rec_pre_scene` 13.8 ms (66% of work); render 17.3, render_prep 2.1, fixed_step 1.2 (`sim_steering` 0.86); portal_walk 0.037 ms at 136 considered.
+  - Big arena under the purple light, vsync off: total 26.0 ms, work 25.9 ms, unattributed 0.016 ms. `rec_pre_scene` 18.1 ms (70% of work); fixed_step 1.4 (`sim_steering` 1.05); portal_walk 0.185 ms at 950 considered (≈0.2 µs/portal).
+  - Provisional gate reading: walk 0.185 ms < 0.5 ms and 0.7% of work < 5%, in a dev build; a release run can only lower it. Formal verdict still at the `stress-warren-mini` probe in release.
+  - `rec_pre_scene` was one scope over several passes, against the brief's one-scope-per-pass Decision; split into `rec_sh_compose_prep`, `rec_cull` (with `rec_cull_diagnostics`: CPU leaf walks that only feed diagnostics — `count_submitted_*` run in every build), `rec_animated_lm`, `rec_sh_compose`, `rec_direct_sh`.
 
 ## Delegated answers
 

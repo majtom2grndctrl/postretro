@@ -19,6 +19,18 @@ pub enum RenderStage {
     /// Streamed SH compose preparation and pre-scene compute (cull,
     /// animated lightmap, SH and direct SH compose).
     PreScene,
+    /// Streamed SH compose planning for this frame's sample regions.
+    ShComposePrep,
+    /// Candidate gather and BVH cull dispatch, diagnostics included.
+    Cull,
+    /// CPU leaf walks that only feed cull diagnostics (submitted-leaf counts,
+    /// the dev-tools tree-walk estimate), not the GPU cull itself.
+    CullDiagnostics,
+    AnimatedLightmapCompose,
+    /// Indirect SH compose dispatch.
+    ShCompose,
+    /// Direct SH and billboard-scatter compose dispatch.
+    DirectShCompose,
     /// Skinned-mesh pose sampling and palette/instance upload.
     MeshUpload,
     /// CPU inside `sample_instance`, summed over every resampled instance.
@@ -54,6 +66,12 @@ impl StageSet for RenderStage {
         Self::MeshPlan,
         Self::LightSlots,
         Self::PreScene,
+        Self::ShComposePrep,
+        Self::Cull,
+        Self::CullDiagnostics,
+        Self::AnimatedLightmapCompose,
+        Self::ShCompose,
+        Self::DirectShCompose,
         Self::MeshUpload,
         Self::MeshPoseSampling,
         Self::MeshPoseSamples,
@@ -84,6 +102,12 @@ impl StageSet for RenderStage {
             Self::MeshPlan => "rec_mesh_plan",
             Self::LightSlots => "rec_light_slots",
             Self::PreScene => "rec_pre_scene",
+            Self::ShComposePrep => "rec_sh_compose_prep",
+            Self::Cull => "rec_cull",
+            Self::CullDiagnostics => "rec_cull_diagnostics",
+            Self::AnimatedLightmapCompose => "rec_animated_lm",
+            Self::ShCompose => "rec_sh_compose",
+            Self::DirectShCompose => "rec_direct_sh",
             Self::MeshUpload => "rec_mesh_upload",
             Self::MeshPoseSampling => "mesh_pose_sampling",
             Self::MeshPoseSamples => "mesh_pose_samples",
@@ -109,6 +133,12 @@ impl StageSet for RenderStage {
             Self::ShDrain | Self::Record | Self::Submit | Self::DebugUi => None,
             Self::MeshPoseSampling => Some(Self::MeshUpload),
             Self::MeshPoseSamples => Some(Self::MeshPoseSampling),
+            Self::ShComposePrep
+            | Self::Cull
+            | Self::AnimatedLightmapCompose
+            | Self::ShCompose
+            | Self::DirectShCompose => Some(Self::PreScene),
+            Self::CullDiagnostics => Some(Self::Cull),
             _ => Some(Self::Record),
         }
     }

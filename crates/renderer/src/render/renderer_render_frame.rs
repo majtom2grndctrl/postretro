@@ -251,13 +251,16 @@ impl Renderer {
             drop(light_slots_scope);
 
             let _pre_scene_scope = cpu.scope(RenderStage::PreScene);
-            self.prepare_streamed_sh_compose(
-                sh_sample_regions,
-                mesh_frame_plans.as_ref(),
-                swapchain_view.is_some(),
-                fog_reachable.is_empty(),
-                true,
-            )?;
+            {
+                let _prep_scope = cpu.scope(RenderStage::ShComposePrep);
+                self.prepare_streamed_sh_compose(
+                    sh_sample_regions,
+                    mesh_frame_plans.as_ref(),
+                    swapchain_view.is_some(),
+                    fog_reachable.is_empty(),
+                    true,
+                )?;
+            }
             compose_succeeded &= self.record_pre_scene_compute(
                 encoder,
                 cam_vis,
@@ -265,7 +268,9 @@ impl Renderer {
                 true,
                 frame_light_term_mask,
             );
+            let direct_scope = cpu.scope(RenderStage::DirectShCompose);
             compose_succeeded &= self.record_direct_sh_pre_scene_compute(encoder);
+            drop(direct_scope);
         } else {
             let _pre_scene_scope = cpu.scope(RenderStage::PreScene);
             compose_succeeded &= self.record_pre_scene_compute(

@@ -221,6 +221,34 @@ pub struct AnimatedLightBuffers {
 }
 
 impl AnimatedLightBuffers {
+    /// Buffers over caller-packed descriptor records, for GPU tests that run
+    /// the animated compose pass without a whole SH volume. The sample pool is
+    /// one zeroed record: descriptors with zero-count curves never read it.
+    #[cfg(test)]
+    pub(crate) fn for_test(device: &wgpu::Device, descriptor_mirror: Vec<u8>) -> Self {
+        use wgpu::util::DeviceExt;
+        assert_eq!(descriptor_mirror.len() % ANIMATION_DESCRIPTOR_SIZE, 0);
+        let animated_light_count = (descriptor_mirror.len() / ANIMATION_DESCRIPTOR_SIZE) as u32;
+        let descriptors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test animation descriptors"),
+            contents: &descriptor_mirror,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let anim_samples = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test animation samples"),
+            contents: &[0u8; ANIMATION_DESCRIPTOR_SIZE],
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        Self {
+            descriptors,
+            anim_samples,
+            descriptor_mirror,
+            animated_light_count,
+            dirty: false,
+            oor_warned: false,
+        }
+    }
+
     /// 0 when the map has no animated lights (buffers still hold a single dummy record so wgpu accepts the binding).
     #[allow(dead_code)]
     pub fn animated_light_count(&self) -> u32 {

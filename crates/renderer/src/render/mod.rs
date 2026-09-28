@@ -47,7 +47,11 @@ mod splash_pass;
 mod ui;
 
 #[cfg(test)]
+mod animated_atlas_parity_test;
+#[cfg(test)]
 mod curve_eval_test;
+#[cfg(test)]
+mod lightmap_residency_test;
 #[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]

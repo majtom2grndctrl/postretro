@@ -1,8 +1,8 @@
 # coop--spawn-placement-occupancy — research
 
-Read at 05ab2d3da (`feat/preferences-comfort-floor`). The placement code is identical on `main` (0170b20b9). Everything is cited by symbol. **V** means read in source this session. **I** means inferred from reading and not executed. Nothing here was run.
+Read at 3f070e32d (`feat/preferences-comfort-floor`). The placement code is unchanged since 05ab2d3da. The seat table lives in `crates/netcode` (`postretro-netcode`). Everything is cited by symbol. **V** means read in source. **I** means inferred from reading and not executed. Nothing here was run.
 
-## Trace: two-placement map, host plus one client, fresh session
+## Trace: two-placement map, host plus one client, fresh session (today)
 
 | Step | Effect | Mark |
 |---|---|---|
@@ -17,17 +17,36 @@ Read at 05ab2d3da (`feat/preferences-comfort-floor`). The placement code is iden
 
 Confidence: high. Every step was read. The composed outcome is inferred, because no existing test covers it. `live_placement_occupancy_survives_pawn_movement` binds a single placement, and `placement_assignment_persists_by_seat_and_skips_live_and_held_occupants` passes occupancy in by hand.
 
-## Why E15's letter holds
+## Prior commitments this brief touches
 
-AC-SEAT-1 bounds itself to "whenever a free one exists". The unseated install pawns are live, so there is never a free one. The doc comment on `assign_placement` says map installation "may leave live player pawns that are not currently represented by a remote connection binding", so counting them was deliberate. E15's "Live pawns outnumber placements" edge frames the overflow as seats promoting in, not as leftovers from install.
+- **E15 AC-SEAT-1.** It bounds itself to "whenever a free one exists". The unseated install pawns are live, so today a free placement never exists. The doc comment on `assign_placement` says map installation "may leave live player pawns that are not currently represented by a remote connection binding", so counting them was deliberate. **V.**
+- **E15 Task 6.** It says "occupancy is measured in pawns, not seats", because `spawn_from_player_starts` spawns one pawn per `player_spawn`, and a scan over seats alone would drop a joiner on a level-spawned pawn. Once the install spawns only seat 0's movement pawn, every live movement pawn is seat-bound, so the two measures agree. **V** for the text. **I** for the equivalence.
+- **E15's "N player-start entities" edge.** Seat 0 seeds only the pawn `mark_local_player_pawn` selects. That still holds: the pawn is now the only movement pawn. **V.**
+- **M7 acceptance.** It requires one entity per spawn entry, and one of each classname when `entity_class` values differ. The existing tests that pin this use non-movement stub descriptors, `multiple_spawn_points_spawn_one_entity_each` among them, so they survive. `carried_health_restores_only_the_first_local_player_start` is the only test that asserts a second movement pawn. **V.**
 
-## Unseated install pawns: side effects
+## Unseated install pawns: side effects today
 
-- **V.** `carried_health_restores_only_the_first_local_player_start` asserts that a second pawn exists at the second start, with descriptor health. The extra pawns are therefore tested behavior, not an accident of the loop.
-- **I.** Enemy targeting in `crates/ai/src/targeting.rs` builds its candidates from every holder of `PlayerMovement`, so unseated pawns are probably target candidates. Not confirmed downstream.
+- **V.** Enemy targeting: `target_candidates` in `crates/ai/src/targeting.rs` chains every `PlayerMovement` holder into the candidate set. Unseated pawns are therefore target candidates. Whether one wins selection depends on distance and faction; that part is not traced.
 - **V.** Only the local pawn goes through `host_register_own_pawn`. The unseated pawns are therefore not in the replicable set, and clients never see them.
 - **V.** `hold_disconnected_client` unbinds the held seat's pawn. `release_seat` removes the seat's placement assignment. Neither touches `level_spawn_placements`, so an unseated pawn's occupancy lasts for the whole level.
 
+## Non-movement placements
+
+- **V.** `capture_player_spawn_placements` walks only `PlayerMovement` holders, so a non-movement placement is never recorded as occupied.
+- **V.** The `Participating` arm passes `host_spawn_points.len()`, which counts every placement, as the placement count. So a non-movement index is in the scan range.
+- **V.** `host_handle_accept_descriptor_at_placement` spawns the placement's own `entity_class`. Assigning a non-movement index would hand the client a pawn it cannot drive.
+- **I.** This is latent today, because every index is occupied. Once unseated pawns stop counting, the scan would reach non-movement indices first. Hence the movement-only assignable set.
+- **V.** A movement descriptor is one with `movement` set. `attach_descriptor_components` attaches `PlayerMovementComponent` from it, so the check can run before spawn.
+
+## Installs without a seat table
+
+- **V.** `session.seat_table` is `None` only on a connected client, which suppresses the boot pawn.
+- **V.** The observe driver and the lifecycle test fixtures call `install_world_cpu` with a no-op hook. Those that leave `suppress_boot_pawn` false still spawn a local pawn, so they need the pin rule without a seat table.
+
+## Content survey
+
+- **V.** Every `.map` under `content/` has exactly one `player_spawn`, and none sets `entity_class`. The only `entity_class` reference is its FGD definition in `sdk/TrenchBroom/postretro.fgd`.
+
 ## Ordering note for `coop--client-spawn-view-handoff`
 
-That brief assigns placements at host install for every seat already admitted. If an assignment runs in the install hook before `capture_player_spawn_placements` records seat 0's placement, the assignment cannot see the host's occupancy. The same-frame Acceptance row pins this. **I.**
+That brief pre-assigns placements in the install hook for every seat already admitted. Its Path says to do so after `capture_player_spawn_placements`, and this brief deletes that helper. Seat 0 is now assigned before the install spawns. A remote assignment anywhere later in the install therefore sees the host's placement. The Regression-guard row pins this. **I.**

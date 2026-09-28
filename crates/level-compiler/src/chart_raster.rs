@@ -24,7 +24,7 @@ pub const CHART_PADDING_TEXELS: u32 = 2;
 /// The interior (covered) rectangle of the chart is:
 ///   `[x + CHART_PADDING_TEXELS, x + width_texels - CHART_PADDING_TEXELS)` on X
 ///   `[y + CHART_PADDING_TEXELS, y + height_texels - CHART_PADDING_TEXELS)` on Y
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChartPlacement {
     pub x: u32,
     pub y: u32,

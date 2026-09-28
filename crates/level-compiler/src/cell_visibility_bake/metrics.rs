@@ -1,12 +1,12 @@
 use glam::DVec3;
 
 #[derive(Clone, Copy)]
-pub(super) struct PortalMetrics {
-    pub(super) centroid: Option<DVec3>,
-    pub(super) minimum_width: f64,
+pub(crate) struct PortalMetrics {
+    pub(crate) centroid: Option<DVec3>,
+    pub(crate) minimum_width: f64,
 }
 
-pub(super) fn portal_metrics(vertices: &[DVec3]) -> PortalMetrics {
+pub(crate) fn portal_metrics(vertices: &[DVec3]) -> PortalMetrics {
     if vertices.len() < 3 || vertices.iter().any(|vertex| !vertex.is_finite()) {
         return PortalMetrics {
             centroid: None,
@@ -61,7 +61,7 @@ pub(super) fn portal_metrics(vertices: &[DVec3]) -> PortalMetrics {
 }
 
 /// Returns the wire value and whether the upper fixed-point range clamped.
-pub(super) fn fixed_point_value(value: f64, scale: u32) -> (u32, bool) {
+pub(crate) fn fixed_point_value(value: f64, scale: u32) -> (u32, bool) {
     let scaled = value * f64::from(scale);
     if !scaled.is_finite() || scaled > f64::from(u32::MAX) {
         return (u32::MAX, true);

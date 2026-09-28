@@ -58,8 +58,8 @@ read at: 76a6370ac
 | Load log reports five rows; dev panel and capture show the same numbers | meter tests + capture JSON test | achievable as stated | pass — `report_keeps_the_five_family_rows_in_order_and_totals_them`, `report_serializes_lightmap_family_rows_with_the_meter_bytes`; one stored report feeds log, dev panel, capture |
 | After unload every count returns to placeholder (P12) | meter test | achievable as stated | pass — on-demand `offscreen_renderer_meter_returns_to_placeholders_after_unload` (static rows exercised; the animated pair was already placeholder in level A) |
 | Fallback reports placeholder bytes, not the rejected atlas's (P7) | meter test on construction-failure path | achievable as stated | pass — `a_rejected_atlas_meters_its_placeholder_not_the_rejected_size` |
-| Visual: animated lights unchanged on campaign-test, occlusion-test, closet-reveal | owner, in-engine | manual | outstanding — owner, in-engine (rebuild occlusion-test and closet-reveal first) |
-| Resource: meter bytes before/after on campaign-test, occlusion-test, stress-warren-mini | owner, in-engine (builder records its own readings too) | manual | outstanding — owner; builder readings below (stress-warren-mini before reading is not comparable: the map now bakes 2048² static layers) |
+| Visual: animated lights unchanged on campaign-test, occlusion-test, closet-reveal | owner, in-engine | manual | pass (owner, 2026-09-28): animated lights look unchanged in play; stale v3 PRLs refuse to load with the recompile error |
+| Resource: meter bytes before/after on campaign-test, occlusion-test, stress-warren-mini | owner, in-engine (builder records its own readings too) | manual | pass for campaign-test (owner dev-panel reading 32.00 / 16.00 MiB animated, total 104.00 MiB, matches the capture); builder readings below (stress-warren-mini before reading is not comparable: the map now bakes 2048² static layers) |
 
 ## Before readings (meter, full-layer build, main-tree PRLs of 2026-09-28)
 

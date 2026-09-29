@@ -17,14 +17,13 @@ pub use storage::LightmapStorage;
 
 use crate::prl::PrlLoadError;
 
-/// Resolve the developer/test gate for lightmap residency. Unset means
-/// `AllResident` until the streaming runtime (controller and renderer
-/// streaming) lands; Task 9b of `spatial-residency--lightmap-cell-blocks`
-/// flips the unset default to `Stream`. `stream` opts in; a level without a
-/// usable id-51 set runs all-resident regardless.
+/// Resolve the developer/test gate for lightmap residency. Unset, or
+/// `stream`, streams a level with a usable id-51 set; a level without one
+/// runs all-resident regardless. `all-resident` loads every block at install:
+/// the parity baseline, mirroring SH's `off`.
 pub fn requested_lightmap_streaming_mode() -> Result<LightmapStreamingMode, PrlLoadError> {
     match std::env::var("POSTRETRO_LIGHTMAP_STREAMING") {
-        Err(std::env::VarError::NotPresent) => Ok(LightmapStreamingMode::AllResident),
+        Err(std::env::VarError::NotPresent) => Ok(LightmapStreamingMode::Stream),
         Ok(value) if value == "all-resident" => Ok(LightmapStreamingMode::AllResident),
         Ok(value) if value == "stream" => Ok(LightmapStreamingMode::Stream),
         Ok(value) => Err(lightmap_stream_error(format!(

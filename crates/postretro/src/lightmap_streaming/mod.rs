@@ -27,4 +27,6 @@ pub(crate) enum LightmapResidencyError {
     Submit(&'static str),
     #[error("lightmap streaming block source failed: {0}")]
     Source(#[source] PrlLoadError),
+    #[error("lightmap preload must run before any streaming read or drain")]
+    PreloadAfterStart,
 }

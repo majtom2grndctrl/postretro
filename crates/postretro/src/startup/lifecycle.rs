@@ -5,6 +5,8 @@
 mod lifecycle_boot_state;
 #[path = "lifecycle_net.rs"]
 mod lifecycle_net;
+#[path = "lifecycle_spawn_residency.rs"]
+mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
 mod lifecycle_sprite_collections;
 #[path = "lifecycle_world_cpu.rs"]
@@ -382,6 +384,14 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                // The spawn cell's lightmap blocks are resident before the
+                // first level frame renders.
+                if let Err(err) = self.install_spawn_streaming() {
+                    log::error!("[Loader] level streaming install failed: {err:#}");
+                    self.exit_result = Err(err);
+                    event_loop.exit();
+                    return false;
+                }
                 // The install frame never counts, and no CPU timing surface may
                 // show a window from the previous level.
                 self.cpu_timer.level_changed();

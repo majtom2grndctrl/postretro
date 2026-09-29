@@ -1555,18 +1555,31 @@ fn follow_camera_to_local_pawn(
     registry: &postretro_entities::EntityRegistry,
     presentation_offset: Vec3,
 ) {
+    if let Some(eye) = local_pawn_eye_position(registry, presentation_offset) {
+        camera.position = eye;
+    }
+}
+
+/// The followed local pawn's eye: its registry position, plus the presentation
+/// offset, plus the capsule's eye height. The one place the eye offset is
+/// applied, so level install derives the spawn camera cell from the same
+/// point the first tick moves the camera to.
+fn local_pawn_eye_position(
+    registry: &postretro_entities::EntityRegistry,
+    presentation_offset: Vec3,
+) -> Option<Vec3> {
     use postretro_entities::Transform;
 
-    if let Some(id) = followed_player_pawn(registry) {
-        if let (Ok(component), Ok(transform)) = (
-            registry.get_component::<postretro_foundation::PlayerMovementComponent>(id),
-            registry.get_component::<Transform>(id),
-        ) {
-            camera.position = transform.position
-                + presentation_offset
-                + Vec3::new(0.0, component.capsule.eye_height, 0.0);
-        }
-    }
+    let id = followed_player_pawn(registry)?;
+    let component = registry
+        .get_component::<postretro_foundation::PlayerMovementComponent>(id)
+        .ok()?;
+    let transform = registry.get_component::<Transform>(id).ok()?;
+    Some(
+        transform.position
+            + presentation_offset
+            + Vec3::new(0.0, component.capsule.eye_height, 0.0),
+    )
 }
 
 #[cfg(feature = "dev-tools")]

@@ -65,9 +65,17 @@ fn lightmap_block_missing(layer_flags: u32) -> bool {
 // neighbouring block. The direction pool sits at edge / scale with offsets at
 // offset / scale, so this UV addresses it too; nearest sampling inside the
 // clamped rect stays on the block's own direction texels.
+//
+// The local texel is snapped to 1/256 texel, the subtexel precision bilinear
+// filtering guarantees, before the offset is added. The sum then fits f32
+// exactly at any offset in the layer, so a block samples the same weights
+// wherever the pool places it. Without the snap, the rounding of `offset +
+// local` depended on the offset, and a streamed pool (partial, placed in drain
+// order) differed from the all-resident pool by 1 LSB on a few pixels.
 fn lightmap_pool_uv(texel: vec2<f32>, rect: vec4<u32>) -> vec2<f32> {
     let extent = vec2<f32>(rect.zw);
-    let local = clamp(texel, vec2<f32>(0.5), extent - vec2<f32>(0.5));
+    let clamped = clamp(texel, vec2<f32>(0.5), extent - vec2<f32>(0.5));
+    let local = round(clamped * 256.0) / 256.0;
     return (vec2<f32>(rect.xy) + local) / LIGHTMAP_POOL_LAYER_EDGE;
 }
 

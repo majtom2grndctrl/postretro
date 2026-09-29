@@ -3,6 +3,7 @@
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
@@ -11,7 +12,7 @@ use postretro_level_loader::{
     LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest,
 };
 
-use crate::lightmap_streaming::controller::LightmapResidencyController;
+use crate::lightmap_streaming::controller::{LightmapPreloadReads, LightmapResidencyController};
 use crate::lightmap_streaming::demand::DemandFrame;
 use crate::lightmap_streaming::route::{
     LightmapCompletion, LightmapReadRoute, LightmapRouteLedger, lightmap_route,
@@ -42,6 +43,19 @@ impl<'a> LightmapLevelView<'a> {
             cluster_directory: world.cluster_directory(),
         })
     }
+}
+
+/// What a synchronous preload read and the renderer installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LightmapPreloadSummary {
+    pub(crate) reads: LightmapPreloadReads,
+    pub(crate) installed: u32,
+    /// Pairs the renderer handed back unplaced. One preload batch into a
+    /// fresh pool cannot defer; a nonzero count is a contract break.
+    pub(crate) deferred: u32,
+    /// Pairs whose payload could not fill their block.
+    pub(crate) failed_installs: u32,
+    pub(crate) elapsed: Duration,
 }
 
 /// Lightmap residency for one loaded level generation. Its reads go through
@@ -114,6 +128,61 @@ impl LightmapStreamingSession {
         self.manifest
             .as_ref()
             .is_some_and(|streamed| std::ptr::eq(streamed.as_ptr(), Arc::as_ptr(manifest)))
+    }
+
+    /// Demand from the camera cell's baked set and the pins alone: the spawn
+    /// camera cell at level install.
+    pub(crate) fn update_camera_set(
+        &mut self,
+        residency_set: &CellResidencySetSection,
+        camera_cell: u32,
+    ) {
+        self.controller
+            .update_camera_set(residency_set, camera_cell);
+    }
+
+    /// Demand from one frame's visibility without draining: capture's fixed
+    /// view, before its preload.
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "capture's preload reads its view's demand")
+    )]
+    pub(crate) fn update_demand(&mut self, frame: DemandFrame<'_>) {
+        self.controller.update(frame);
+    }
+
+    /// Makes the current mandatory and visible targets resident before a
+    /// first frame: reads them synchronously through the level's positional
+    /// reader, hands them to `install` (the renderer's lightmap drain) as one
+    /// batch, and applies its outcome. Blocks in `keep_missing` stay
+    /// targeted but unread. Call after a demand update and before this
+    /// session's first drain or read.
+    pub(crate) fn preload(
+        &mut self,
+        keep_missing: &[u32],
+        install: impl FnOnce(LightmapDrainBatch) -> Result<LightmapDrainOutcome>,
+    ) -> Result<LightmapPreloadSummary> {
+        if self.awaiting_renderer.is_some() {
+            bail!("[Lightmap streaming] preload found a parked drain batch");
+        }
+        let started = Instant::now();
+        let (batch, reads) = self.controller.preload_batch(keep_missing)?;
+        let outcome = install(batch)?;
+        let summary = LightmapPreloadSummary {
+            reads,
+            installed: outcome.installed.len() as u32,
+            deferred: outcome.deferred.len() as u32,
+            failed_installs: outcome.failed.len() as u32,
+            elapsed: started.elapsed(),
+        };
+        self.controller.apply_outcome(outcome)?;
+        Ok(summary)
+    }
+
+    /// Whether the camera cell's mandatory set is resident, as of the latest
+    /// demand update. See [`LightmapResidencyController::settled`].
+    pub(crate) fn settled(&self) -> bool {
+        self.controller.settled()
     }
 
     /// The route for the level-scope issuer; `None` once taken.

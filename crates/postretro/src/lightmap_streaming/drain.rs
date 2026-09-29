@@ -48,6 +48,16 @@ impl LightmapResidencyController {
         if self.drain_outstanding {
             return Ok(None);
         }
+        self.build_batch(drain.admitted_keys(StreamResource::LightmapBlock))
+            .map(Some)
+    }
+
+    /// The batch carrying `admitted` ready pairs, plus the target reset or
+    /// deltas. Marks the batch outstanding until [`Self::apply_outcome`].
+    pub(super) fn build_batch(
+        &mut self,
+        admitted: impl IntoIterator<Item = u32>,
+    ) -> Result<LightmapDrainBatch, LightmapResidencyError> {
         let mut batch = LightmapDrainBatch {
             generation: self.generation,
             content_tag: self.content_tag,
@@ -84,7 +94,7 @@ impl LightmapResidencyController {
             self.counters.target_deltas +=
                 (batch.target_set.len() + batch.target_remove.len()) as u64;
         }
-        for block in drain.admitted_keys(StreamResource::LightmapBlock) {
+        for block in admitted {
             let Some(prepared) = self.ready.remove(&block) else {
                 return Err(LightmapResidencyError::InvalidDrainOutcome(format!(
                     "admitted block {block} is not ready"
@@ -96,7 +106,7 @@ impl LightmapResidencyController {
         }
         self.drain_outstanding = true;
         self.counters.drains += 1;
-        Ok(Some(batch))
+        Ok(batch)
     }
 
     /// Takes back ownership after the renderer consumed the outstanding

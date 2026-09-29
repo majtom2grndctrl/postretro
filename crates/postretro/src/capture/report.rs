@@ -7,6 +7,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
+use super::lightmap::CaptureLightmapResidency;
 use super::prepared::measurement_animation_time_seconds;
 use super::scene::{CameraPose, CaptureScene};
 use crate::render::{
@@ -69,6 +70,7 @@ pub(super) fn measurement_report(
         adapter: AdapterReport::from(adapter),
         renderer_accounted_sh: sh_residency.map(ShResidencyReportJson::from),
         renderer_accounted_lightmap: lightmap_residency.map(LightmapResidencyReportJson::from),
+        lightmap_streaming: None,
         cpu_completion: CpuCompletionReport {
             unit: "milliseconds".into(),
             strategy: CPU_COMPLETION_STRATEGY.into(),
@@ -84,6 +86,13 @@ pub(super) fn measurement_report(
             partial_frames,
         },
         cpu_stages,
+    }
+}
+
+impl MeasurementReport {
+    pub(super) fn with_lightmap_streaming(mut self, residency: CaptureLightmapResidency) -> Self {
+        self.lightmap_streaming = Some(LightmapStreamingReportJson::from(residency));
+        self
     }
 }
 
@@ -160,6 +169,9 @@ pub(super) struct MeasurementReport {
     renderer_accounted_sh: Option<ShResidencyReportJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     renderer_accounted_lightmap: Option<LightmapResidencyReportJson>,
+    /// How the capture owned its lightmap blocks and how many were resident.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lightmap_streaming: Option<LightmapStreamingReportJson>,
     cpu_completion: CpuCompletionReport,
     gpu_timing: GpuTimingReport,
     /// Renderer recording stages over complete post-warmup windows. Capture
@@ -360,6 +372,31 @@ impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
                 .map(ResidencyAllocationJson::from)
                 .collect(),
             total_bytes: report.total_bytes,
+        }
+    }
+}
+
+/// Lightmap block residency at the captured instant: the mode, blocks
+/// resident of the level's total, and the streamed pool's layers and cap.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct LightmapStreamingReportJson {
+    mode: Cow<'static, str>,
+    block_count: u32,
+    resident_blocks: u32,
+    forced_missing_blocks: u32,
+    pool_layers: Option<u32>,
+    pool_cap_layers: Option<u32>,
+}
+
+impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
+    fn from(residency: CaptureLightmapResidency) -> Self {
+        Self {
+            mode: residency.mode.label().into(),
+            block_count: residency.block_count,
+            resident_blocks: residency.resident_blocks,
+            forced_missing_blocks: residency.forced_missing_blocks,
+            pool_layers: residency.pool_layers,
+            pool_cap_layers: residency.pool_cap_layers,
         }
     }
 }
@@ -607,6 +644,9 @@ mod tests {
             force_active: None,
             force_promotion: None,
             force_full_resident_sh_compose: false,
+            light_term_mask: None,
+            force_missing_lightmap_blocks: Vec::new(),
+            lightmap_pool_cap_layers: None,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,
@@ -712,6 +752,46 @@ mod tests {
         assert_eq!(lightmap["rows"][1]["name"], "animated_direction");
         assert_eq!(lightmap["rows"][1]["bytes"], 12_582_912);
         assert_eq!(lightmap["rows"][0]["shape"]["extent"][2], 3);
+    }
+
+    #[test]
+    fn report_carries_lightmap_streaming_residency_when_attached() {
+        let report = || {
+            measurement_report(
+                &scene_with_measurement(),
+                99,
+                None,
+                adapter(),
+                None,
+                None,
+                vec![1.0],
+                CaptureGpuTimingState::NotRequested,
+                0,
+                Vec::new(),
+                crate::cpu_timing::capture_stages_report(
+                    postretro_stage_timing::TimingGate::OFF,
+                    &[],
+                    0,
+                ),
+            )
+        };
+        assert!(as_json(report()).get("lightmap_streaming").is_none());
+
+        let json = as_json(report().with_lightmap_streaming(CaptureLightmapResidency {
+            mode: super::super::lightmap::CaptureLightmapMode::Stream,
+            block_count: 198,
+            resident_blocks: 41,
+            forced_missing_blocks: 1,
+            pool_layers: Some(3),
+            pool_cap_layers: Some(15),
+        }));
+        let lightmap = &json["lightmap_streaming"];
+        assert_eq!(lightmap["mode"], "stream");
+        assert_eq!(lightmap["block_count"], 198);
+        assert_eq!(lightmap["resident_blocks"], 41);
+        assert_eq!(lightmap["forced_missing_blocks"], 1);
+        assert_eq!(lightmap["pool_layers"], 3);
+        assert_eq!(lightmap["pool_cap_layers"], 15);
     }
 
     #[test]

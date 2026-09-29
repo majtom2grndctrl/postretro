@@ -22,7 +22,8 @@ pub(crate) struct BlockSummary {
 /// Contract: `block_file_ranges` returns the same ranges for a block for the
 /// source's lifetime; `read_file_span` returns exactly the span's length or
 /// an error, may cover several blocks and the gaps between them across the
-/// id-22/42 boundary, and is called only on the issuer thread;
+/// id-22/42 boundary, and is called on the issuer thread, or by a
+/// synchronous preload that runs before the issuer starts;
 /// `payload_from_pair_bytes` rejects buffers whose lengths disagree with the
 /// block's ranges.
 pub(crate) trait LightmapBlockSource: Send + Sync {
@@ -38,6 +39,18 @@ pub(crate) trait LightmapBlockSource: Send + Sync {
     ) -> Result<LightmapBlockPayload, PrlLoadError>;
     /// The level's content identity for stale-completion checks.
     fn content_tag(&self) -> [u8; 32];
+
+    /// One pair read synchronously on the calling thread: install preload and
+    /// capture, never the frame path.
+    fn read_block_pair(&self, block: u32) -> Result<LightmapBlockPayload, PrlLoadError> {
+        let ranges = self.block_file_ranges(block)?;
+        let lightmap = self.read_file_span(ranges.lightmap)?;
+        let shadowmask = ranges
+            .shadowmask
+            .map(|range| self.read_file_span(range))
+            .transpose()?;
+        self.payload_from_pair_bytes(block, lightmap, shadowmask)
+    }
 }
 
 impl std::fmt::Debug for dyn LightmapBlockSource {
@@ -97,5 +110,10 @@ impl LightmapBlockSource for ManifestBlockSource {
 
     fn content_tag(&self) -> [u8; 32] {
         self.manifest.content_tag()
+    }
+
+    /// The manifest's own counted positional pair read.
+    fn read_block_pair(&self, block: u32) -> Result<LightmapBlockPayload, PrlLoadError> {
+        self.manifest.read_block_pair(block)
     }
 }

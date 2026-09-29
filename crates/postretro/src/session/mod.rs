@@ -190,9 +190,9 @@ pub(crate) struct Session {
     /// CPU-only — no wgpu. See: context/lib/entity_model.md §7.
     pub(crate) hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
-    /// Session-owned streamed-SH controller. `None` for a legacy level and
-    /// until the first streaming frame can observe the renderer's real pool
-    /// allocation snapshot.
+    /// Session-owned streamed-SH controller. `None` for a legacy level; a
+    /// streamed level creates it at install, after the renderer's pool
+    /// allocation snapshot exists.
     ///
     /// Declared before `level_streaming`: fields drop in order, and SH's
     /// workers must drop their handle on the level's shared issuer before

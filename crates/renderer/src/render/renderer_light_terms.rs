@@ -11,8 +11,8 @@ impl Renderer {
         self.full().light_term_mask
     }
 
-    /// Sets the UI-owned mask for the next render frame.
-    #[cfg(feature = "dev-tools")]
+    /// Sets the mask for the next render frame: the dev-tools panel's
+    /// checkboxes, or a capture scene's `light_term_mask` in any build.
     pub fn set_light_term_mask(&mut self, mask: LightTermMask) {
         if self.full().light_term_mask != mask {
             self.full_mut().light_term_mask = mask;

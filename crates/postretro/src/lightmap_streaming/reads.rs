@@ -70,7 +70,7 @@ impl LightmapResidencyController {
         Ok(())
     }
 
-    fn rebuild_request_order(&mut self) {
+    pub(super) fn rebuild_request_order(&mut self) {
         let mut order = std::mem::take(&mut self.request_order);
         order.clear();
         order.extend(self.demand.demanded_blocks(&self.map));

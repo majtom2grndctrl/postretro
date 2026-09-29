@@ -8,11 +8,12 @@ use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use postretro_level_format::cell_residency_set::{CellResidencySetSection, ResidencyEntry};
-use postretro_level_format::lightmap::LightmapBlockPayload;
+use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload};
 use postretro_level_loader::{
     LightmapBlockFileRanges, LightmapDrainBatch, LightmapDrainOutcome, LightmapPoolReport,
     PrlLoadError,
 };
+use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::controller::LightmapResidencyController;
@@ -412,6 +413,47 @@ impl Rig {
         }
         let batch = self.portal(camera_cell, drawn).unwrap();
         self.install_all(&batch, pool);
+    }
+}
+
+/// The renderer's placement policy over `source`'s blocks, standing in for
+/// the GPU pool: the same wgpu-free model the renderer drains through.
+pub(crate) fn pool_model(source: &TestBlockSource) -> LightmapPoolModel {
+    let extents = (0..source.block_count())
+        .map(|block| {
+            let spec = source.spec(block);
+            (u32::from(spec.width), u32::from(spec.height))
+        })
+        .collect();
+    LightmapPoolModel::new(extents, 4, LIGHTMAP_POOL_LAYER_EDGE, 15).expect("test blocks fit")
+}
+
+/// One renderer drain through `model`: its plan becomes the outcome, the
+/// deferred payloads handed back owned.
+pub(crate) fn model_drain(
+    model: &mut LightmapPoolModel,
+    batch: LightmapDrainBatch,
+) -> LightmapDrainOutcome {
+    let plan = model.plan_batch(&batch);
+    let (installed, refused, failed, deferred_blocks, evicted, pool) = (
+        plan.installed.clone(),
+        plan.refused.clone(),
+        plan.failed.clone(),
+        plan.deferred.clone(),
+        plan.evicted.iter().map(|eviction| eviction.block).collect(),
+        plan.report,
+    );
+    LightmapDrainOutcome {
+        installed,
+        refused,
+        failed,
+        deferred: batch
+            .ready
+            .into_iter()
+            .filter(|prepared| deferred_blocks.contains(&prepared.block))
+            .collect(),
+        evicted,
+        pool,
     }
 }
 

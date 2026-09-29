@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use glam::Vec3;
 use postretro_level_loader::{
     LevelWorld, ShDrainBatch, ShStreamManifest, requested_streaming_mode,
 };
@@ -29,10 +30,9 @@ impl crate::session::Session {
     /// [`Self::drain_lightmap_streaming`].
     ///
     /// SH streams when `sh_manifest` is present; lightmaps when the level's
-    /// storage is streaming. Either session changing identity or SH changing
-    /// mode replaces both, because they share one issuer. `level` supplies id
-    /// 46 (read only when an SH session is created), id 49 and id 51, all from
-    /// the same load as `sh_manifest`.
+    /// storage is streaming. `level` supplies id 46 (read only when an SH
+    /// session is created), id 49 and id 51, all from the same load as
+    /// `sh_manifest`.
     pub(crate) fn prepare_streaming_drains(
         &mut self,
         sh_manifest: Option<&Arc<ShStreamManifest>>,
@@ -42,9 +42,91 @@ impl crate::session::Session {
     ) -> Result<ShDrainBatch> {
         self.level_streaming.poll_retirement();
         let lightmap = level.and_then(LightmapLevelView::of);
+        if !self.ensure_level_streaming_sessions(sh_manifest, level, lightmap, renderer)? {
+            return Ok(ShDrainBatch::default());
+        }
+        self.level_streaming.prepare_drains(
+            &mut self.sh_streaming,
+            lightmap.map(|view| view.residency_set),
+            frame,
+        )
+    }
+
+    /// Level install: creates the level's streaming sessions, then makes the
+    /// spawn camera cell's mandatory lightmap set resident before the first
+    /// frame renders. `spawn_eye` is the eye the first frame presents; its
+    /// cell's baked set within lead L, plus the pinned blocks, is read
+    /// synchronously through the level's positional reader and installed
+    /// through the renderer's lightmap drain. An empty spawn range installs
+    /// nothing (P10), and play never waits on a block afterwards.
+    pub(crate) fn install_level_streaming(
+        &mut self,
+        level: &LevelWorld,
+        renderer: &mut Renderer,
+        spawn_eye: Vec3,
+    ) -> Result<()> {
+        self.level_streaming.poll_retirement();
+        let lightmap = LightmapLevelView::of(level);
+        if !self.ensure_level_streaming_sessions(
+            level.sh_stream_manifest(),
+            Some(level),
+            lightmap,
+            renderer,
+        )? {
+            return Ok(());
+        }
+        let (Some(view), Some(session)) = (lightmap, self.level_streaming.lightmap_mut()) else {
+            return Ok(());
+        };
+        let camera_cell = level.locate_cell(spawn_eye) as u32;
+        session.update_camera_set(view.residency_set, camera_cell);
+        let summary = session.preload(&[], |batch| {
+            renderer
+                .drain_lightmap_residency(batch)
+                .context("[Lightmap streaming] spawn preload drain")
+        })?;
+        log::info!(
+            "[Lightmap streaming] spawn preload: camera cell {camera_cell}, {} of {} pair(s) \
+             installed, {:.1} MiB read in {:.1} ms",
+            summary.installed,
+            summary.reads.pairs + summary.reads.failed,
+            summary.reads.bytes as f64 / (1024.0 * 1024.0),
+            summary.elapsed.as_secs_f64() * 1000.0,
+        );
+        if !self.lightmap_residency_settled() {
+            // A failed read already warned; its block renders SH-only.
+            log::warn!(
+                "[Lightmap streaming] spawn cell {camera_cell}'s mandatory set is not fully \
+                 resident after preload"
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether the camera cell's mandatory lightmap set is resident, as of
+    /// the latest demand update. True when the level does not stream its
+    /// lightmap. This is the lightmap answer a settle chokepoint asks
+    /// (`drafts/sh-streaming--reveal-gate-and-warm-horizon`).
+    pub(crate) fn lightmap_residency_settled(&self) -> bool {
+        self.level_streaming
+            .lightmap()
+            .is_none_or(LightmapStreamingSession::settled)
+    }
+
+    /// Makes the streaming sessions match the loaded level. Either session
+    /// changing identity or SH changing mode replaces both, because they
+    /// share one issuer. Returns whether anything streams; when nothing
+    /// does, every session is released.
+    fn ensure_level_streaming_sessions(
+        &mut self,
+        sh_manifest: Option<&Arc<ShStreamManifest>>,
+        level: Option<&LevelWorld>,
+        lightmap: Option<LightmapLevelView<'_>>,
+        renderer: &Renderer,
+    ) -> Result<bool> {
         if sh_manifest.is_none() && lightmap.is_none() {
             self.clear_level_streaming();
-            return Ok(ShDrainBatch::default());
+            return Ok(false);
         }
         let sh_mode = match sh_manifest {
             Some(_) => {
@@ -81,11 +163,7 @@ impl crate::session::Session {
                     .install_lightmap(LightmapStreamingSession::new(view)?);
             }
         }
-        self.level_streaming.prepare_drains(
-            &mut self.sh_streaming,
-            lightmap.map(|view| view.residency_set),
-            frame,
-        )
+        Ok(true)
     }
 
     /// Hands this frame's lightmap batch to the renderer's lightmap drain and

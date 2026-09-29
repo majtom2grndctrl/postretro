@@ -22,8 +22,15 @@ use crate::streaming::target_bitset::TargetBitset;
 
 #[path = "drain.rs"]
 mod drain;
+#[path = "preload.rs"]
+mod preload;
 #[path = "reads.rs"]
 mod reads;
+
+pub(crate) use preload::LightmapPreloadReads;
+#[cfg(test)]
+#[path = "preload_tests.rs"]
+mod preload_tests;
 #[cfg(test)]
 #[path = "controller_tests.rs"]
 mod tests;
@@ -319,15 +326,48 @@ impl LightmapResidencyController {
     /// retargets every changed block, and counts visible misses.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
         self.may_request = self.demand.update(&self.map, self.levers.lead(), frame);
+        self.retarget_dirty();
+        if frame.is_portal_walk() {
+            self.count_visible_misses();
+        }
+    }
+
+    /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
+    /// no drawn cells: the spawn camera cell at level install, before any
+    /// frame has walked its portals.
+    pub(crate) fn update_camera_set(
+        &mut self,
+        residency_set: &CellResidencySetSection,
+        camera_cell: u32,
+    ) {
+        self.demand
+            .update_camera_set(&self.map, self.levers.lead(), residency_set, camera_cell);
+        self.may_request = true;
+        self.retarget_dirty();
+    }
+
+    /// Whether the camera cell's mandatory set (every block within lead L of
+    /// it, plus the pinned blocks) is installed, as of the latest demand
+    /// update. Visible and band blocks do not count. A mandatory block whose
+    /// pair failed stays unsettled: it cannot become resident this
+    /// generation. This is the lightmap answer a settle chokepoint asks.
+    pub(crate) fn settled(&self) -> bool {
+        self.demand.demanded_blocks(&self.map).all(|block| {
+            let slot = &self.slots[block as usize];
+            !slot
+                .target
+                .is_some_and(|target| target.class == LightmapBlockClass::Mandatory)
+                || slot.phase == BlockPhase::Installed
+        })
+    }
+
+    fn retarget_dirty(&mut self) {
         for index in 0..self.demand.dirty_len() {
             let block = self.demand.dirty_at(index);
             let next = self.demand.target(&self.map, block);
             self.retarget(block, next);
         }
         self.demand.clear_dirty();
-        if frame.is_portal_walk() {
-            self.count_visible_misses();
-        }
     }
 
     fn count_visible_misses(&mut self) {

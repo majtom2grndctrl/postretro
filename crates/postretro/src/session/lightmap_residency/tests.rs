@@ -87,3 +87,45 @@ fn parked_batch_holds_later_batches_until_the_renderer_returns_its_outcome() {
     );
     assert_eq!(session.ledger().in_memory_bytes(), 0);
 }
+
+// Level install's preload through the session: the renderer's drain installs
+// the spawn cell's mandatory set in one batch, the outcome is applied, and the
+// session then drains frames as usual.
+#[test]
+fn session_preload_installs_the_spawn_set_through_one_renderer_drain() {
+    let source = TestBlockSource::new(corridor_blocks(64, true));
+    let set = corridor_set();
+    let mut session = LightmapStreamingSession::with_source(
+        Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
+        &set,
+        None,
+    )
+    .unwrap();
+    let mut model = pool_model(&source);
+    session.update_camera_set(&set, 2);
+    let mut drains = 0;
+
+    let summary = session
+        .preload(&[], |batch| {
+            drains += 1;
+            Ok(model_drain(&mut model, batch))
+        })
+        .unwrap();
+
+    assert_eq!(drains, 1, "install time is not frame time: one batch");
+    assert_eq!((summary.reads.pairs, summary.installed), (5, 5));
+    assert_eq!((summary.deferred, summary.failed_installs), (0, 0));
+    assert_eq!(
+        summary.reads.bytes,
+        5 * 2 * 64,
+        "both 64-byte halves of five pairs"
+    );
+    assert!(session.settled());
+    assert!((0..5).all(|block| model.is_resident(block)));
+
+    drain_once(&mut session, &set);
+    assert!(
+        session.parked_batch().is_some(),
+        "the first frame drains after the preload's outcome"
+    );
+}

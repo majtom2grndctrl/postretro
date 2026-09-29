@@ -201,6 +201,20 @@ impl BlockDemand {
         }
     }
 
+    /// Demand from `camera_cell`'s baked set and the pins alone, with no drawn
+    /// cells: level install knows the spawn camera cell before any frame has
+    /// walked its portals. An empty range leaves only the pins.
+    pub(crate) fn update_camera_set(
+        &mut self,
+        map: &LevelBlockMap,
+        lead: u32,
+        residency_set: &CellResidencySetSection,
+        camera_cell: u32,
+    ) {
+        self.recompute_if_changed(map, residency_set, camera_cell, lead);
+        self.clear_drawn();
+    }
+
     /// The block's current target, or `None` when nothing demands it.
     pub(crate) fn target(&self, map: &LevelBlockMap, block: u32) -> Option<BlockTarget> {
         let facts = map.facts(block);

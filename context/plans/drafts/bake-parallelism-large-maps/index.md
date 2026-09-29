@@ -47,7 +47,7 @@ First slice: lever 1 on the lightmap bake alone, proven byte-identical, then one
 
 ## Open questions
 - Cache durability: drop the per-entry fsync (the cache is disposable, and `get` already verifies blake3), batch it once per stage, or keep it? — owner — **blocks build** (lever 2)
-- Cache budget: the default 2 GiB is smaller than the hallway's live set, so the next build's prune evicts it and every hallway rebake runs all-miss. Should the default scale, grow, or stay while the warning gets louder? — owner — **blocks build** for any warm-path claim
+- Cache budget: the default 2 GiB is smaller than the hallway's live set. The next build's LRU prune evicts the oldest entries, which are the SH groups and delta entries, so every hallway rebake re-bakes the SH family (about 3.6 h) while later-written lightmap and weight-map entries can still hit. Should the default scale, grow, or stay while the warning gets louder? — owner — **blocks build** for any warm-path claim
 - Stage overlap: is concurrent execution of two stages acceptable under a TUI that highlights one foreground stage, and does its progress stay honest? — owner — **blocks build** (lever 3)
 - BVH traversal: every ray uses the unordered, unbounded `traverse_iterator`. That is the base SH bake's largest per-ray cost, and it cannot be parallelized away. Own it here, or in its own brief? — owner — **blocks build** only if folded in
 - Bake binary profile: the dev profile builds the compiler crate at `opt-level = 1`, and the live rebake ran `target/debug/prl-build`. Pin the yardstick to a release binary, raise the compiler's dev opt-level, or both? — owner — **blocks build** (measurement conditions)

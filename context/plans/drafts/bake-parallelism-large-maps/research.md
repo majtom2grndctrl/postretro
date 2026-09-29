@@ -8,7 +8,7 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 |---|---|
 | Map | `content/dev/maps/stress-warren-hallway-inspection.map` |
 | Machine | Intel i9-9980HK: 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD |
-| Cache mode | Warm (cache enabled), with every entry missing. The default 2 GiB `--cache-max-size` is smaller than the hallway's live set, so the start-of-build prune evicts it. Base SH therefore runs the approximate grouped path. |
+| Cache mode | Warm (cache enabled), with every entry missing in the first build. The default 2 GiB `--cache-max-size` is smaller than the hallway's live set, so the start-of-build prune evicts it. Base SH therefore runs the approximate grouped path. |
 | Permits | Default `-j`, which is `logical − 2` = 14 (`cli.rs:39-45`). Rayon uses its default global pool of 16 threads, and nothing configures it. |
 | Binary | The live rebake ran `target/debug/prl-build`. `[profile.dev]` gives workspace crates `opt-level = 1` (`Cargo.toml`). The first build's profile was not recorded. Pin this before any before/after comparison. |
 
@@ -90,7 +90,13 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 
 - The cache directory reached **5.2 GB and about 142k entries** mid-build, against a 2 GiB budget.
 - The prune runs only at build start, so the next build evicts most of this build's entries (`cache.rs` `prune_to_budget`).
-- Result: every hallway rebake is all-miss, yet still runs the approximate warm SH path. It pays cold cost and gets warm quality.
+- Result: every hallway rebake re-bakes the SH family, yet still runs the approximate warm SH path. It pays cold SH cost and gets warm SH quality.
+- The prune is LRU by mtime, so what survives depends on write order. In the second hallway build (feat/lightmap-cell-blocks, 2026-09-29, the same `target/debug` binary family), stages written last in the first build hit:
+  - Lightmap Bake 388.7 s against 7,395.4 s, and AnimWeightMaps 1.0 s against 993.9 s.
+  - SH Bake (11,033.4 s), Delta SH Bake (352.1 s) and Direct SH Delta Bake (1,687.5 s) missed.
+  - Total 13,966 s (3 h 53 m), about 11.1 cores busy on average.
+
+  The Lightmap Bake and AnimWeightMaps figures in the table above are all-miss numbers from the first build.
 - `plans/done/lighting-scale--sparse-layer-cache-and-fused-walk` sized the 2 GiB budget against campaign-test layers (≤0.91 GB).
 
 ## Prior deferrals

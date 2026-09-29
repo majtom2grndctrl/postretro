@@ -37,20 +37,22 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 - Even if the Lightmap Bake got every one of those CPU-s, it would average **no more than 4.4 of 14 permits** over its 7,395 s.
 - This is the parallelism headline: the lightmap bake uses at most about a third of the cores it is allowed.
 
-**Live sampler.** It took a sample every 10 s: `ps` %CPU (100 = one core), RSS and thread count. Samples, a snapshot taken while the rebake was still running, are in `evidence/cpu-samples.tsv`.
+**Live sampler.** It took a sample every 10 s: `ps` %CPU (100 = one core), RSS and thread count. Samples, covering 12,798 s to the build's exit at 13,967 s, are in `evidence/cpu-samples.tsv`.
 
 | Stage | Samples | Mean %CPU | p10 | p50 | p90 | Threads |
 |---|---|---|---|---|---|---|
 | Direct SH Delta Bake (last ~580 s of 1,717 s) | 58 | 20 | 12 | 14 | 18 | 17–19 |
 | Billboard direct scatter bake | 1 | 1402 | — | — | — | 18 |
 | Chunk light list bake | 1 | 108 | — | — | — | 18 |
-| Lightmap Bake, first ~90 s (logged as "Shadowmask atlas bake"; both stages start at 13,371 s) | 9 | 101 | 99 | 100 | 110 | 19 |
+| Lightmap Bake + ShadowmaskAtlas, warm hit, whole 557 s window (logged as "Shadowmask atlas bake" / "ShadowmaskAtlas"; both start at 13,371 s) | 56 | 100 | 99 | 100 | 100 | 19 |
+| Packing and writing | 4 | 84 | 43 | 98 | 100 | 18 |
 
 - The 1402% Billboard sample is 14 cores, so that stage saturates the cap.
-- For its first ~90 s the lightmap bake runs on exactly one core. A 2 s stack sample shows the main thread in `lightmap_layer::cache_keys::layer_input_hash` → `atlas_layout_fingerprint`: blake3 over every chart and placement, fed 4–8 bytes per `update` call. That hash does not depend on the light or layer, but the serial pre-pass runs it for every (layer, light) pair (`pipeline/lightmap_stage.rs:119-133`). Meanwhile all rayon workers wait on a condvar. The raw stack sample was not retained; the frames above are its content. The sampler stopped being read at this point, so this phase's full length is unknown.
+- For its first ~90 s the lightmap bake runs on exactly one core. A 2 s stack sample shows the main thread in `lightmap_layer::cache_keys::layer_input_hash` → `atlas_layout_fingerprint`: blake3 over every chart and placement, fed 4–8 bytes per `update` call. That hash does not depend on the light or layer, but the serial pre-pass runs it for every (layer, light) pair (`pipeline/lightmap_stage.rs:119-133`). Meanwhile all rayon workers wait on a condvar. The raw stack sample was not retained; the frames above are its content.
+- **Even a warm lightmap hit is single-threaded.** In the second build the lightmap layers hit the cache. Lightmap Bake (388.7 s) and ShadowmaskAtlas (168.2 s) together sat at exactly one core for the whole window. That time is the serial pre-pass hash plus the per-partition work: `get` with its blake3 verify, fold, shadowmask fill, dilate, and BC6H. So about 9 minutes of every warm hallway rebake uses 1 of 14 permits. Only lever 1's serial-tail and hash-hoisting parts would change that; its light-axis ray parallelism would not.
 - In this rebake, Direct SH Delta took 1,717 s. In the first build it took 296 s. The compute is the same, so the difference is cache I/O. The cache directory had grown to 5.2 GB across about 142k flat entries.
 - Missed: every stage before Direct SH Delta, including all of SH Bake. The sampler started at 12,798 s elapsed.
-- Not waited for: all of Lightmap Bake after its first ~90 s, ShadowmaskAtlas, AnimLightChunks, AnimWeightMaps and Packing. The sampler keeps running passively until the build exits. Run `evidence/stats.sh` over `evidence/cpu-samples.tsv` for per-stage averages and percentiles.
+- Also missed: Atlas Preparation, Cell Residency Set, AnimLightChunks and AnimWeightMaps. Each ran for under 10 s, which is less than one sample interval. The sampler ran until the build exited at 13,967 s. Run `evidence/stats.sh` over `evidence/cpu-samples.tsv` for per-stage averages and percentiles.
 
 **Stack sample of Direct SH Delta.** A 3 s `sample` run shows all 16 workers inside cache syscalls, under `delta_sh_cache::bake_or_load_delta_subblocks` → `StageCache::put_streamed` / `get`:
 

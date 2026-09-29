@@ -9,6 +9,8 @@ mod prl_container;
 #[cfg(feature = "load-prl")]
 mod prl_lighting;
 #[cfg(feature = "load-prl")]
+mod prl_lightmap;
+#[cfg(feature = "load-prl")]
 mod prl_loader;
 mod prl_queries;
 #[cfg(feature = "load-prl")]
@@ -29,7 +31,9 @@ pub use prl::{
     LoadedKinematicWaypoint, LoadedMemberLight, PrlLoadError,
 };
 #[cfg(feature = "load-prl")]
-pub use prl_lighting::{GpuLightingPayloads, LevelWorldLighting};
+pub use prl_lighting::LevelWorldLighting;
+#[cfg(feature = "load-prl")]
+pub use prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
 pub use prl_streaming::load_prl;
 #[cfg(feature = "load-prl")]

@@ -14,7 +14,7 @@ use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::{LightmapHeader, LightmapPayloads, LightmapSection};
+use postretro_level_format::lightmap::{LightmapHeader, LightmapSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::{
     OctahedralShVolumeSection, validate_storage_levels_against_delta,
@@ -24,6 +24,7 @@ use postretro_level_format::{self as prl_format, SectionId};
 use postretro_render_data::influence::LightInfluence;
 
 use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, ShadowType};
+use crate::prl_lightmap::GpuLightingPayloads;
 #[cfg(test)]
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
 use crate::prl_loader::{section_validation, section_validation_from_error};
@@ -81,39 +82,6 @@ impl Default for LoadedLighting {
             cluster_directory: None,
         }
     }
-}
-
-/// Lightmap (id 22) and shadowmask (id 42) payloads that only the GPU upload
-/// reads. A loaded level holds them until install moves them into the upload,
-/// which drops them once the textures exist; the level keeps only the headers.
-/// An install that uploads nothing leaves them here.
-#[derive(Debug, Default, PartialEq)]
-pub struct GpuLightingPayloads {
-    pub lightmap: Option<LightmapPayloads>,
-    pub shadowmask: Option<Vec<u8>>,
-}
-
-/// The headers a loaded level keeps for ids 22 and 42, and their payloads.
-pub(crate) fn split_gpu_lighting(
-    lightmap: Option<LightmapSection>,
-    shadowmask_atlas: Option<ShadowmaskAtlasSection>,
-) -> (
-    Option<LightmapHeader>,
-    Option<ShadowmaskAtlasHeader>,
-    GpuLightingPayloads,
-) {
-    let (lightmap_header, lightmap_payloads) = lightmap.map(LightmapSection::into_parts).unzip();
-    let (shadowmask_header, shadowmask_payload) = shadowmask_atlas
-        .map(ShadowmaskAtlasSection::into_parts)
-        .unzip();
-    (
-        lightmap_header,
-        shadowmask_header,
-        GpuLightingPayloads {
-            lightmap: lightmap_payloads,
-            shadowmask: shadowmask_payload,
-        },
-    )
 }
 
 /// Borrowed legacy lighting view. It is an additive access seam: existing

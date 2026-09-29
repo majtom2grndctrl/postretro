@@ -62,7 +62,9 @@ use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
-use crate::prl_lighting::{GpuLightingPayloads, LoadedLighting};
+use crate::prl_lighting::LoadedLighting;
+#[cfg(feature = "load-prl")]
+use crate::prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
 use crate::sh_stream::ShStorage;
 #[cfg(feature = "load-prl")]
@@ -6540,12 +6542,12 @@ mod tests {
         )
         .expect("fixture lightmap parses");
         let (lightmap_header, shadowmask_header, payloads) =
-            crate::prl_lighting::split_gpu_lighting(Some(lightmap), None);
+            crate::prl_lightmap::split_gpu_lighting(Some(lightmap), None);
         assert!(lightmap_header.is_some() && shadowmask_header.is_none());
         assert!(payloads.lightmap.is_some() && payloads.shadowmask.is_none());
 
         let (lightmap_header, shadowmask_header, payloads) =
-            crate::prl_lighting::split_gpu_lighting(None, None);
+            crate::prl_lightmap::split_gpu_lighting(None, None);
         assert!(lightmap_header.is_none() && shadowmask_header.is_none());
         assert_eq!(payloads, GpuLightingPayloads::default());
     }

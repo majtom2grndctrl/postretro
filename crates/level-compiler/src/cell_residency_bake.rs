@@ -177,8 +177,9 @@ fn log_sampling(stats: &SamplingStats) {
     );
 }
 
-/// Whole-section key over every byte the bake reads: the encoded Cells,
-/// Portals and CellLocator sections, plus the maximum lead. Lights, charts and
+/// Whole-section key over every input the bake reads: the encoded Cells,
+/// Portals and CellLocator sections, the maximum lead, and the runtime portal
+/// walk's epoch (the sampled sets are that walk's output). Lights, charts and
 /// hints never participate, so a lighting-only edit hits.
 pub(crate) fn cell_residency_set_cache_key(
     cells: &CellsSection,
@@ -191,6 +192,7 @@ pub(crate) fn cell_residency_set_cache_key(
         hasher.update(&bytes);
     }
     hasher.update(&meters_fixed(BRIEF_MAX_LEAD_METERS).to_le_bytes());
+    hasher.update(&postretro_visibility::PORTAL_WALK_EPOCH.to_le_bytes());
     CacheKey::new(
         CELL_RESIDENCY_SET_STAGE_ID,
         CELL_RESIDENCY_SET_STAGE_VERSION,

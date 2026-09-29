@@ -188,6 +188,11 @@ Raw measurements for the findings note (AC 22–25), recorded as they arrive.
   - 198 cell blocks: 18.6 MB irradiance blobs, 9.3 MB direction, 37.2 MB shadowmask.
   - Pool: 7 layers of 2048². Meter: static irradiance 28.0 MiB, direction 14.0 MiB, shadowmask 56.0 MiB; the animated pair adds 48.0 MiB.
 - The hallway rebake started before Task 5 landed, so its PRL has no id 51. Rebake it (warm) before any streaming measurement.
+- Tasks 1–3, all-resident `stress-warren-hallway-inspection` (warm build started before Task 5, so no id 51; 5 h 54 min, dominated by the SH bake):
+  - PRL 1,672,103,144 B, +5.8%.
+  - 2,080 cell blocks (of 5,671 cells): 303.3 MB irradiance blobs, 151.6 MB direction, 606.6 MB shadowmask, with 338 selected shadowmask channels.
+  - All-resident pool: 101 layers of 2048². Meter: static irradiance 404 MiB, direction 202 MiB, shadowmask 808 MiB, 1.38 GiB in all (shelf fill about 72%). This is the all-resident baseline that streaming replaces.
+  - Headless spawn captures render lit, with baked shadow edges.
 
 ## Follow-ups at landing
 

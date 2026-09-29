@@ -419,6 +419,18 @@ pub enum LevelGeometryShStorage<'a> {
     Streaming(&'a postretro_level_loader::ShStreamManifest),
 }
 
+/// A level whose lightmap cell blocks (ids 22/42) stream. Install builds an
+/// empty pool; blocks arrive through `Renderer::drain_lightmap_residency`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelGeometryLightmapStreaming {
+    /// The level's content identity, which every drain batch must carry
+    /// (`LightmapStreamManifest::content_tag`).
+    pub content_tag: [u8; 32],
+    /// The first pool generation's layer cap. Later drains carry the live
+    /// cap; raising it past this takes effect at the next growth.
+    pub pool_cap_layers: u32,
+}
+
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
     pub indices: &'a [u32],
@@ -433,6 +445,10 @@ pub struct LevelGeometry<'a> {
     /// 1×1 white placeholder, and bumped-Lambert falls back to flat white.
     /// The index only; install hands the blobs to `install_level_geometry`.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapBlockIndex>,
+    /// `Some` when the level streams its cell blocks: install hands no
+    /// payloads and builds an empty streamed pool over `lightmap` and
+    /// `shadowmask_atlas`. `None` installs every block at once.
+    pub lightmap_streaming: Option<LevelGeometryLightmapStreaming>,
     /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
     pub chunk_light_list:
         Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,

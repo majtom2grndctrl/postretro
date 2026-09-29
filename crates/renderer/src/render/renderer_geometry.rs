@@ -86,6 +86,12 @@ pub fn level_world_to_geometry<'a>(
         sh_volume: world.sh_volume(),
         sh_storage,
         lightmap: world.lightmap.as_ref(),
+        lightmap_streaming: world.lightmap_stream_manifest().map(|manifest| {
+            LevelGeometryLightmapStreaming {
+                content_tag: manifest.content_tag(),
+                pool_cap_layers: DEFAULT_LIGHTMAP_POOL_CAP_LAYERS,
+            }
+        }),
         chunk_light_list: world.chunk_light_list.as_ref(),
         animated_light_chunks: world.animated_light_chunks.as_ref(),
         animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),

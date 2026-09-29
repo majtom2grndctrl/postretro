@@ -20,7 +20,7 @@ const LARGE_STAGING_STEP_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_POOLED_STAGING_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Default)]
-pub(in crate::render::sh_streaming) struct StagingPool {
+pub(crate) struct StagingPool {
     free: Vec<wgpu::Buffer>,
     /// Buffers whose remap completed; filled from wgpu's map callback.
     returned: Arc<Mutex<Vec<wgpu::Buffer>>>,
@@ -28,11 +28,7 @@ pub(in crate::render::sh_streaming) struct StagingPool {
 
 impl StagingPool {
     /// A mapped `MAP_WRITE | COPY_SRC` buffer of at least `len` bytes.
-    pub(in crate::render::sh_streaming) fn acquire(
-        &mut self,
-        device: &wgpu::Device,
-        len: u64,
-    ) -> wgpu::Buffer {
+    pub(crate) fn acquire(&mut self, device: &wgpu::Device, len: u64) -> wgpu::Buffer {
         self.collect_returned();
         let sizes: Vec<u64> = self.free.iter().map(wgpu::Buffer::size).collect();
         if let Some(index) = best_fit(&sizes, len) {
@@ -49,7 +45,7 @@ impl StagingPool {
     /// Return an unmapped buffer after the submission that reads it. It
     /// rejoins the pool once its remap completes, which wgpu reports only
     /// after that submission has finished on the GPU.
-    pub(in crate::render::sh_streaming) fn recycle(&self, buffer: wgpu::Buffer) {
+    pub(crate) fn recycle(&self, buffer: wgpu::Buffer) {
         let returned = Arc::clone(&self.returned);
         let remapped = buffer.clone();
         buffer

@@ -6,6 +6,8 @@
 // lightmap_sample.wgsl and forward.wgsl.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 //
+// The streamed-pool tests (`stream/tests.rs`) reuse this harness.
+//
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
 // helpers are WGSL, so verifying them means running them. Each probe renders
 // two pixels of a one-row target. The harness self-skips without a BC-capable
@@ -57,11 +59,11 @@ const PLACEMENTS: [BlockPlacement; 4] = [
     },
 ];
 const MISSING_BLOCK: u32 = 4;
-const SCALE: u32 = 2;
+pub(super) const SCALE: u32 = 2;
 
-struct GpuCtx {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+pub(super) struct GpuCtx {
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
 }
 
 fn try_init_gpu() -> Option<GpuCtx> {
@@ -95,7 +97,7 @@ fn try_init_gpu() -> Option<GpuCtx> {
     Some(GpuCtx { device, queue })
 }
 
-fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
+pub(super) fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
     if let Some(ctx) = try_init_gpu() {
         return Some(ctx);
     }
@@ -248,14 +250,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Probe {
+pub(super) struct Probe {
     /// Block-local unorm UV, as the vertex attribute carries it.
-    uv: [f32; 2],
+    pub(super) uv: [f32; 2],
     /// Cell block id + 1, as `WorldVertex::lightmap_block` names it.
-    block: u32,
+    pub(super) block: u32,
     /// Mask slot of the specular light the probe selects for, or the dropped
     /// sentinel.
-    spec_channel: f32,
+    pub(super) spec_channel: f32,
 }
 
 impl Probe {
@@ -275,34 +277,34 @@ impl Probe {
 }
 
 #[derive(Debug)]
-struct ProbeResult {
-    irradiance: [f32; 4],
-    direction: [f32; 4],
-    mask: [f32; 4],
-    spec_visibility: f32,
-    union_slot0_visibility: f32,
-    missing: bool,
+pub(super) struct ProbeResult {
+    pub(super) irradiance: [f32; 4],
+    pub(super) direction: [f32; 4],
+    pub(super) mask: [f32; 4],
+    pub(super) spec_visibility: f32,
+    pub(super) union_slot0_visibility: f32,
+    pub(super) missing: bool,
 }
 
-struct BoundLightmap {
-    irradiance: wgpu::Texture,
-    direction: wgpu::Texture,
-    shadowmask: wgpu::Texture,
-    table: Vec<u8>,
+pub(super) struct BoundLightmap {
+    pub(super) irradiance: wgpu::Texture,
+    pub(super) direction: wgpu::Texture,
+    pub(super) shadowmask: wgpu::Texture,
+    pub(super) table: Vec<u8>,
 }
 
-fn irradiance_texel(block: usize, x: u32, y: u32) -> [f32; 4] {
+pub(super) fn irradiance_texel(block: usize, x: u32, y: u32) -> [f32; 4] {
     [block as f32 + 1.0, x as f32, y as f32, 0.5]
 }
 
-fn direction_texel(block: usize, x: u32, y: u32) -> [u8; 2] {
+pub(super) fn direction_texel(block: usize, x: u32, y: u32) -> [u8; 2] {
     [
         (10 + 40 * block as u32 + 3 * x) as u8,
         (7 + 5 * y + 50 * block as u32) as u8,
     ]
 }
 
-fn mask_byte(block: usize, slot: u32, bx: u32, by: u32) -> u8 {
+pub(super) fn mask_byte(block: usize, slot: u32, bx: u32, by: u32) -> u8 {
     (10 + slot * 50 + bx * 20 + by * 7 + block as u32 * 3) as u8
 }
 
@@ -339,7 +341,11 @@ fn fixture_pool(ctx: &GpuCtx) -> BoundLightmap {
     }
 }
 
-fn run_probes(ctx: &GpuCtx, bound: &BoundLightmap, probes: &[Probe]) -> Vec<ProbeResult> {
+pub(super) fn run_probes(
+    ctx: &GpuCtx,
+    bound: &BoundLightmap,
+    probes: &[Probe],
+) -> Vec<ProbeResult> {
     use wgpu::util::DeviceExt;
 
     let device = &ctx.device;
@@ -615,7 +621,7 @@ fn run_probes(ctx: &GpuCtx, bound: &BoundLightmap, probes: &[Probe]) -> Vec<Prob
         .collect()
 }
 
-fn assert_near(actual: &[f32], expected: &[f32], tolerance: f32, what: &str) {
+pub(super) fn assert_near(actual: &[f32], expected: &[f32], tolerance: f32, what: &str) {
     for (component, (&a, &e)) in actual.iter().zip(expected).enumerate() {
         assert!(
             (a - e).abs() <= tolerance,
@@ -625,7 +631,7 @@ fn assert_near(actual: &[f32], expected: &[f32], tolerance: f32, what: &str) {
 }
 
 /// The texels block `block`'s own local texel `(x, y)` holds.
-fn expected_texel(block: usize, x: u32, y: u32) -> ([f32; 3], [f32; 2], [f32; 4]) {
+pub(super) fn expected_texel(block: usize, x: u32, y: u32) -> ([f32; 3], [f32; 2], [f32; 4]) {
     let [r, g, b, _] = irradiance_texel(block, x, y);
     let direction = direction_texel(block, x / SCALE, y / SCALE).map(|c| f32::from(c) / 255.0);
     let mask =
@@ -633,7 +639,7 @@ fn expected_texel(block: usize, x: u32, y: u32) -> ([f32; 3], [f32; 2], [f32; 4]
     ([r, g, b], direction, mask)
 }
 
-fn resident_probe(uv: [f32; 2], block: u32) -> Probe {
+pub(super) fn resident_probe(uv: [f32; 2], block: u32) -> Probe {
     Probe {
         uv,
         block: block + 1,

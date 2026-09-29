@@ -258,6 +258,7 @@ mod tests {
             sh_volume: None,
             sh_storage: LevelGeometryShStorage::Legacy,
             lightmap: None,
+            lightmap_streaming: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,

@@ -47,10 +47,10 @@ pub(in crate::render::sh_streaming) use capacity::{
 
 use indirect::{RetiredIndirectSparseResources, StreamingIndirectCompose};
 use isolated_tiles::{pack_isolated_upload_span, plan_isolated_uploads};
-pub(in crate::render::sh_streaming) use staged_uploads::StagedUploads;
+pub(crate) use staged_uploads::StagedUploads;
 #[cfg(test)]
 pub(in crate::render::sh_streaming) use staged_uploads::append_f16_words;
-use staging_pool::StagingPool;
+pub(crate) use staging_pool::StagingPool;
 
 const PHYSICAL_TILE_DIMENSION: u32 = 8;
 const BIND_DELTA_SUBBLOCKS: u32 = 20;

@@ -235,6 +235,7 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
             sh_volume: None,
             sh_storage: crate::render::LevelGeometryShStorage::Legacy,
             lightmap: index,
+            lightmap_streaming: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,

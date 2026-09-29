@@ -153,6 +153,11 @@ pub struct LightmapDrainOutcome {
     /// Pairs the renderer could not place yet (a mandatory block waiting on a
     /// retiring pool: a counted transient miss). Returned owned.
     pub deferred: Vec<PreparedLightmapBlock>,
+    /// Pairs whose payload could not fill their block at install (a contract
+    /// violation, not pressure). Payloads are dropped and entries stay
+    /// non-resident; any class may land here. The controller treats them as
+    /// failed reads.
+    pub failed: Vec<u32>,
     /// Blocks actually released: removed targets, and band blocks evicted for
     /// cap pressure or to make room for mandatory work.
     pub evicted: Vec<u32>,

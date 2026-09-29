@@ -2,6 +2,10 @@
 // the pool texture shapes and the animated block table.
 // See: context/lib/testing_guide.md
 
+use super::bindings::{
+    BIND_ANIMATED_ATLAS, BIND_ANIMATED_BLOCK_TABLE, BIND_ANIMATED_DIRECTION, BIND_DIRECTION,
+    BIND_FILTERING_SAMPLER, BIND_IRRADIANCE, BIND_SAMPLER, BIND_SHADOWMASK_ATLAS,
+};
 use super::pool::{
     direction_pool_descriptor, irradiance_pool_descriptor, shadowmask_pool_descriptor,
 };
@@ -114,6 +118,78 @@ fn payloads_that_disagree_with_the_index_degrade_with_a_renderer_error() {
         errors.iter().all(|e| e.contains("neutral placeholder")),
         "{errors:?}"
     );
+}
+
+fn streaming_plan_for(fixture: &BlockFixture, max_dimension: u32, max_layers: u32) -> StaticPool {
+    plan_streaming_pool(
+        Some(&fixture.index),
+        fixture.shadowmask.as_ref(),
+        [3; 32],
+        15,
+        max_dimension,
+        max_layers,
+    )
+}
+
+// A streamed level needs no payloads at install: its plan keeps the extents
+// the animated atlas keys on, the level's identity, and a cap bounded so the
+// pool plus its spare layer fit the device.
+#[test]
+fn a_streamed_level_plans_its_pool_shape_without_payloads() {
+    assert_eq!(
+        plan_streaming_pool(None, None, [0; 32], 15, 8192, 256),
+        StaticPool::Absent
+    );
+    assert_eq!(
+        streaming_plan_for(&fixture(&[]), 8192, 256),
+        StaticPool::Empty
+    );
+
+    let extents = [(8, 8), (12, 4)];
+    let fixture = fixture(&extents);
+    let pool = streaming_plan_for(&fixture, 8192, 256);
+    assert_eq!(pool.static_block_extents(), Some(&extents[..]));
+    let StaticPool::Streaming(plan) = pool else {
+        panic!("expected a streamed pool, got {pool:?}");
+    };
+    assert_eq!(plan.content_tag, [3; 32]);
+    assert!(plan.with_shadowmask);
+    assert_eq!((plan.pool_cap_layers, plan.max_array_layers), (15, 256));
+
+    let StaticPool::Streaming(tight) = streaming_plan_for(&fixture, 8192, 8) else {
+        panic!("eight array layers still hold a pool");
+    };
+    assert_eq!(
+        tight.pool_cap_layers, 7,
+        "the cap leaves room for the spare layer"
+    );
+}
+
+#[test]
+fn a_device_that_cannot_hold_a_streamed_pool_or_its_shadowmask_degrades_with_an_error() {
+    let fixture = fixture(&[(8, 8)]);
+    let logs = capture_logs(|| {
+        assert_eq!(
+            streaming_plan_for(&fixture, 1024, 256),
+            StaticPool::Rejected
+        );
+        assert_eq!(streaming_plan_for(&fixture, 8192, 1), StaticPool::Rejected);
+        let StaticPool::Streaming(plan) = streaming_plan_for(&fixture, 2048, 256) else {
+            panic!("a 2048² layer fits; only the two-group shadowmask does not");
+        };
+        assert!(!plan.with_shadowmask);
+    });
+    let errors = renderer_errors(&logs);
+    assert_eq!(errors.len(), 3, "{logs:?}");
+    assert!(
+        errors[0].contains("maxTextureDimension2D 1024"),
+        "{errors:?}"
+    );
+    assert!(
+        errors[1].contains("maxTextureArrayLayers is 1"),
+        "{errors:?}"
+    );
+    assert!(errors[2].contains("ShadowmaskAtlas rejected"), "{errors:?}");
 }
 
 #[test]

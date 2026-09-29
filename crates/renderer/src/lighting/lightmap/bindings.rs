@@ -1,6 +1,6 @@
 // Group-4 lightmap binding layout (binding numbers, BGL entries, the linear
-// sampler, the animated block-table uniform bytes) and the group-6 vertex
-// block-table layout.
+// sampler, the animated block-table uniform bytes, the bind group builder)
+// and the group-6 vertex block-table layout.
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -219,4 +219,78 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
             count: None,
         },
     ]
+}
+
+/// Everything group 4 binds besides the three static pool textures, kept so
+/// a streamed pool's growth can rebind its new generation.
+pub(crate) struct Group4Bindings {
+    pub(crate) layout: wgpu::BindGroupLayout,
+    /// Nearest, for the octahedral direction textures.
+    pub(crate) sampler: wgpu::Sampler,
+    /// Linear, for irradiance, the animated atlas and the shadowmask.
+    pub(crate) filtering_sampler: wgpu::Sampler,
+    pub(crate) animated_atlas_view: wgpu::TextureView,
+    pub(crate) animated_direction_view: wgpu::TextureView,
+    pub(crate) animated_block_table: wgpu::Buffer,
+}
+
+impl Group4Bindings {
+    /// Group 4 over the static irradiance, direction and shadowmask textures.
+    /// Bindings 0/1/6 declare `D2Array`; pinning the view dimension keeps a
+    /// one-layer pool or placeholder aligned with the BGL.
+    pub(crate) fn bind(
+        &self,
+        device: &wgpu::Device,
+        irradiance: &wgpu::Texture,
+        direction: &wgpu::Texture,
+        shadowmask: &wgpu::Texture,
+    ) -> wgpu::BindGroup {
+        let array_view = |texture: &wgpu::Texture| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
+        };
+        let irr_view = array_view(irradiance);
+        let dir_view = array_view(direction);
+        let shadowmask_view = array_view(shadowmask);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Lightmap Bind Group"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: BIND_IRRADIANCE,
+                    resource: wgpu::BindingResource::TextureView(&irr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_DIRECTION,
+                    resource: wgpu::BindingResource::TextureView(&dir_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_SAMPLER,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_ATLAS,
+                    resource: wgpu::BindingResource::TextureView(&self.animated_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_FILTERING_SAMPLER,
+                    resource: wgpu::BindingResource::Sampler(&self.filtering_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_DIRECTION,
+                    resource: wgpu::BindingResource::TextureView(&self.animated_direction_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_SHADOWMASK_ATLAS,
+                    resource: wgpu::BindingResource::TextureView(&shadowmask_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_BLOCK_TABLE,
+                    resource: self.animated_block_table.as_entire_binding(),
+                },
+            ],
+        })
+    }
 }

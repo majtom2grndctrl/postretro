@@ -343,6 +343,7 @@ pub(crate) fn build_full_renderer(
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
         &animated_block_table,
+        0,
     );
     let shadowmask_present = lightmap_resources.shadowmask_present;
     let lightmap_residency_report = LightmapResidencyReport::new(

@@ -1,6 +1,7 @@
 // Static lightmap pool plan: whether a level's id-22/42 cell blocks can bind
-// as an all-resident pool on this device, and where each block goes. Pure
-// data logic; `pool.rs` turns a plan into textures.
+// as an all-resident or streamed pool on this device, and where each
+// all-resident block goes. Pure data logic; `pool.rs` turns a plan into
+// textures.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_format::lightmap::{
@@ -35,6 +36,26 @@ pub(crate) enum StaticPool {
     Rejected,
     /// The all-resident block pool.
     Blocks(StaticPoolPlan),
+    /// A streamed pool: blocks install through drains.
+    Streaming(StreamingPoolPlan),
+}
+
+/// A level whose blocks stream: what install needs to build the pool model
+/// and its first texture set. Payloads arrive later, through drains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamingPoolPlan {
+    pub(crate) header: LightmapHeader,
+    /// `(width, height)` per block id.
+    pub(crate) extents: Vec<(u32, u32)>,
+    /// Id 42 is present and the device holds its two-group pool width.
+    pub(crate) with_shadowmask: bool,
+    /// The level's content identity, which every drain batch must carry.
+    pub(crate) content_tag: [u8; 32],
+    /// The first generation's layer cap, already bounded so the pool plus
+    /// its spare layer fit the device's array-layer limit.
+    pub(crate) pool_cap_layers: u32,
+    /// Device `maxTextureArrayLayers`: growth stops here.
+    pub(crate) max_array_layers: u32,
 }
 
 impl StaticPool {
@@ -43,6 +64,7 @@ impl StaticPool {
     pub(crate) fn static_block_extents(&self) -> Option<&[(u32, u32)]> {
         match self {
             Self::Blocks(plan) => Some(&plan.extents),
+            Self::Streaming(plan) => Some(&plan.extents),
             _ => None,
         }
     }
@@ -132,6 +154,101 @@ pub(crate) fn plan_static_pool(
         pool,
         with_shadowmask,
     })
+}
+
+/// Plan a streamed pool for `index`: the level's blocks install later, per
+/// drain, so only the pool shape is checked here. Degrades to placeholder
+/// mode, logging once, when the device cannot hold a pool layer; the
+/// shadowmask drops to its all-visible placeholder alone when the device
+/// cannot hold its two-group width.
+pub(crate) fn plan_streaming_pool(
+    index: Option<&LightmapBlockIndex>,
+    shadowmask: Option<&ShadowmaskBlockIndex>,
+    content_tag: [u8; 32],
+    pool_cap_layers: u32,
+    max_texture_dimension_2d: u32,
+    max_texture_array_layers: u32,
+) -> StaticPool {
+    let Some(index) = index else {
+        return StaticPool::Absent;
+    };
+    if index.records.is_empty() {
+        return StaticPool::Empty;
+    }
+    let header = index.header;
+    let extents = block_extents(index);
+    if let Err(reason) = pool_shape_fits(&header, &extents, max_texture_dimension_2d) {
+        log::error!(
+            "[Renderer] Streamed lightmap pool rejected: {reason}; degrading to the neutral \
+             placeholder for this level"
+        );
+        return StaticPool::Rejected;
+    }
+    if max_texture_array_layers < 2 {
+        log::error!(
+            "[Renderer] Streamed lightmap pool needs a spare array layer beside its first; \
+             device maxTextureArrayLayers is {max_texture_array_layers}; degrading to the \
+             neutral placeholder for this level"
+        );
+        return StaticPool::Rejected;
+    }
+    let shadowmask_width = u64::from(LIGHTMAP_POOL_LAYER_EDGE) * u64::from(SHADOWMASK_GROUP_COUNT);
+    let with_shadowmask = shadowmask.is_some()
+        && if shadowmask_width > u64::from(max_texture_dimension_2d) {
+            log::error!(
+                "[Renderer] ShadowmaskAtlas rejected: pool texture {shadowmask_width}x\
+                 {LIGHTMAP_POOL_LAYER_EDGE} (two mask groups) exceeds device \
+                 maxTextureDimension2D {max_texture_dimension_2d}; static world specular falls \
+                 back to fully lit for this level"
+            );
+            false
+        } else {
+            true
+        };
+    StaticPool::Streaming(StreamingPoolPlan {
+        header,
+        extents,
+        with_shadowmask,
+        content_tag,
+        pool_cap_layers: pool_cap_layers.min(max_texture_array_layers - 1),
+        max_array_layers: max_texture_array_layers,
+    })
+}
+
+fn block_extents(index: &LightmapBlockIndex) -> Vec<(u32, u32)> {
+    index
+        .records
+        .iter()
+        .map(|r| (u32::from(r.width), u32::from(r.height)))
+        .collect()
+}
+
+/// Checks a pool of any layer count shares: the direction scale divides a
+/// layer, a layer fits the device, and every block fits a layer.
+fn pool_shape_fits(
+    header: &LightmapHeader,
+    extents: &[(u32, u32)],
+    max_texture_dimension_2d: u32,
+) -> Result<(), String> {
+    let scale = header.direction_texel_scale.max(1);
+    if LIGHTMAP_POOL_LAYER_EDGE % scale != 0 {
+        return Err(format!(
+            "direction texel scale {scale} does not divide the {LIGHTMAP_POOL_LAYER_EDGE}-texel \
+             pool layer"
+        ));
+    }
+    if LIGHTMAP_POOL_LAYER_EDGE > max_texture_dimension_2d {
+        return Err(format!(
+            "pool layer {LIGHTMAP_POOL_LAYER_EDGE}² exceeds device maxTextureDimension2D \
+             {max_texture_dimension_2d}"
+        ));
+    }
+    if place_all_resident(extents, header.block_alignment(), LIGHTMAP_POOL_LAYER_EDGE).is_none() {
+        return Err(format!(
+            "cell blocks do not fit {LIGHTMAP_POOL_LAYER_EDGE}² pool layers"
+        ));
+    }
+    Ok(())
 }
 
 /// The loader validated every blob against the index; hand-built geometry can

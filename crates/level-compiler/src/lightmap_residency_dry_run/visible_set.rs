@@ -16,6 +16,7 @@ use postretro_level_loader::LevelWorld;
 use rayon::prelude::*;
 
 use super::DryRunInput;
+use super::brief_set_residency::{BriefSetResult, run_brief_set};
 use super::cell_block_residency::{CellBlockResidency, run_cell_block_residency};
 use super::cell_blocks::CellBlocks;
 use super::layouts::Layout;
@@ -73,6 +74,8 @@ pub(crate) struct VisibleSetResult {
     pub sightlines: Sightlines,
     /// Dense cell-granular sets costed as cell blocks, and the pool walks.
     pub cell_blocks: CellBlockResidency,
+    /// The brief's lead-map set over the dense PVS, with and without dilation.
+    pub brief_set: BriefSetResult,
     /// Portals the runtime loader would reject (`DryRunInput`).
     pub loader_rejected_portals: usize,
 }
@@ -127,6 +130,7 @@ pub(crate) fn run_visible_set(inputs: &VisibleSetInputs<'_>) -> VisibleSetResult
             .count(),
         sightlines: sightlines(inputs.graph, inputs.camera_cells, &pvs.dense),
         cell_blocks: run_cell_block_residency(inputs, &pvs.dense),
+        brief_set: run_brief_set(inputs, &pvs.dense),
         loader_rejected_portals: inputs.input.loader_rejected_portals,
     }
 }

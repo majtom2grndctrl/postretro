@@ -227,9 +227,21 @@ impl BlockPool {
     /// First fit by layer index, opening a layer when none fits and the cap
     /// allows. Refuses a zero-width or zero-height request.
     pub(crate) fn allocate(&mut self, width: u32, height: u32) -> Option<Slot> {
+        self.allocate_within(width, height, self.max_layers)
+    }
+
+    /// `allocate` bounded to layers below `limit` instead of the pool cap:
+    /// a pool that grew past a soft cap keeps placing optional blocks under it.
+    pub(crate) fn allocate_within(
+        &mut self,
+        width: u32,
+        height: u32,
+        limit: Option<usize>,
+    ) -> Option<Slot> {
         if width == 0 || height == 0 || width > self.edge || height > self.edge {
             return None;
         }
+        let searchable = limit.map_or(self.layers.len(), |max| max.min(self.layers.len()));
         let owner = self.next_owner;
         let slot = |layer: usize, (x, y): (u32, u32)| Slot {
             layer: layer as u32,
@@ -239,8 +251,7 @@ impl BlockPool {
             height,
             owner,
         };
-        let placed = self
-            .layers
+        let placed = self.layers[..searchable]
             .iter_mut()
             .enumerate()
             .find_map(|(index, layer)| {
@@ -251,7 +262,7 @@ impl BlockPool {
         let placed = match placed {
             Some(placed) => placed,
             None => {
-                if self.max_layers.is_some_and(|max| self.layers.len() >= max) {
+                if limit.is_some_and(|max| self.layers.len() >= max) {
                     return None;
                 }
                 let mut layer = ShelfLayer::new(self.edge, self.edge);

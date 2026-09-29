@@ -8,13 +8,20 @@
 //! distance: everything visible from the cells a movement lead reaches, and
 //! costs those sets under fixed-size tiles owned by one cell or cluster each,
 //! and under per-cell blocks allocated into a pool of `POOL_LAYER_EDGE²` layers.
+//! A third pass measures the problem brief's own set: a baked lead map with
+//! one-hop dilation and no camera-cluster term, its prefetch band, and pool
+//! walks under the brief's miss policy.
 //! Measurement only; nothing here feeds a bake.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
 
 mod attribution;
+mod band_pool_sim;
 mod block_allocator;
 mod block_pool_sim;
+mod brief_set;
+mod brief_set_render;
+mod brief_set_residency;
 mod camera_walks;
 mod cell_block_residency;
 mod cell_blocks;
@@ -32,9 +39,13 @@ mod visible_set;
 mod visible_set_render;
 
 #[cfg(test)]
+mod brief_set_tests;
+#[cfg(test)]
 mod cell_blocks_tests;
 #[cfg(test)]
 mod dry_run_test_fixtures;
+#[cfg(test)]
+mod real_prl_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

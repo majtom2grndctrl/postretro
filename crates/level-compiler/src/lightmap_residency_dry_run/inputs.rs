@@ -13,7 +13,7 @@ use postretro_level_format::cell_locator::{self, CellLocatorSection};
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
-    CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection,
+    CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection, ClusterHintRecord,
 };
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::GeometrySection;
@@ -173,14 +173,7 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         })
         .collect();
 
-    let mut pinned_clusters: Vec<u32> = directory
-        .cluster_hints
-        .iter()
-        .filter(|hint| hint.flags & CLUSTER_HINT_FLAG_PINNED != 0)
-        .map(|hint| hint.cluster_id)
-        .collect();
-    pinned_clusters.sort_unstable();
-    pinned_clusters.dedup();
+    let pinned_clusters = pinned_clusters(&directory.cluster_hints);
 
     let portal_graph = PortalGraphInput {
         cells: cells
@@ -234,6 +227,20 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         loader_rejected_portals,
         reconstruction,
     })
+}
+
+/// Clusters an id-49 hint flags pinned, ascending. The flag alone decides:
+/// a priority region's hint ranks prefetch and pins nothing, and SH's owner
+/// closure is SH-only.
+pub(super) fn pinned_clusters(hints: &[ClusterHintRecord]) -> Vec<u32> {
+    let mut pinned: Vec<u32> = hints
+        .iter()
+        .filter(|hint| hint.flags & CLUSTER_HINT_FLAG_PINNED != 0)
+        .map(|hint| hint.cluster_id)
+        .collect();
+    pinned.sort_unstable();
+    pinned.dedup();
+    pinned
 }
 
 /// A portal record's vertices, or `None` for a range outside the vertex

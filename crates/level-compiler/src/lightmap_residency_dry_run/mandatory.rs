@@ -76,10 +76,20 @@ impl Neighbors {
 
     /// Partners within `fixed` (inclusive), nearest first.
     pub(crate) fn within(&self, cell: u32, fixed: u32) -> impl Iterator<Item = u32> + '_ {
+        self.within_distances(cell, fixed).map(|(other, _)| other)
+    }
+
+    /// Partners within `fixed` (inclusive) with their fixed-point distance,
+    /// nearest first.
+    pub(crate) fn within_distances(
+        &self,
+        cell: u32,
+        fixed: u32,
+    ) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.per_cell[cell as usize]
             .iter()
             .take_while(move |&&(_, distance)| distance <= fixed)
-            .map(|&(other, _)| other)
+            .copied()
     }
 }
 

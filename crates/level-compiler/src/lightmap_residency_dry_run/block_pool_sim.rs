@@ -152,7 +152,7 @@ pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> PoolWalks {
 
 /// Mandatory blocks of `set` that fit a pool layer, in allocation order:
 /// tallest first, as shelf packing prefers.
-fn allocation_order(blocks: &CellBlocks, set: &[u32]) -> Vec<(u32, BlockDims)> {
+pub(crate) fn allocation_order(blocks: &CellBlocks, set: &[u32]) -> Vec<(u32, BlockDims)> {
     let mut order: Vec<(u32, BlockDims)> = blocks
         .set_dims(set)
         .filter(|(_, dims)| dims.fits_pool_layer())

@@ -10,9 +10,9 @@ Hallway = `stress-warren-hallway-inspection`. Campaign = `campaign-test`.
 
 The brief's set (index Decisions, "Mandatory set"): `M(c, L) = W(c, L) ∪ Dil(PVS(W)) ∪ Pinned`. `W` is the camera cell plus every cell within untruncated portal-path distance L. `PVS` is sampled on a 3×3×3 inset lattice. `Dil` adds one portal hop. There is no camera-cluster term. Neither map has pinned clusters.
 
-The dry run bakes it as the section would: a per-camera-cell lead map to 32 m. Read at L = 0, 16 and 32 m, the map equals direct evaluation of `M(c, L)` for every camera cell on both maps.
+The dry run bakes it as the section would: a per-camera-cell lead map to 32 m. The map equals direct evaluation of `M(c, L)` for every camera cell at every L up to 32 m on both maps. The check compares at each breakpoint of either side: 58,540 (camera, lead) pairs on the hallway, 7,570 on campaign (`bandfix-*.txt`).
 
-Layers are 2048². Pool layer = 14.0 MiB (ids 22 + 42). Source: `$SCRATCH/briefset-hallway.txt` lines 486–524, `briefset-campaign-test.txt` lines 305–339.
+Layers are 2048². Pool layer = 14.0 MiB (ids 22 + 42). Source: `$SCRATCH/briefset-hallway.txt` lines 486–500, `briefset-campaign-test.txt` lines 305–319.
 
 Cell-block bytes, worst / p95 MiB, and shelf layers packing each set from scratch, worst / p95:
 
@@ -37,43 +37,44 @@ Prefetch band at L = 16 m, max lead 32 m (dilated):
 | Band block MiB, worst / p95 | 123.1 / 52.5 | 23.9 / 21.4 |
 | Mandatory + band MiB, worst / p95 (= M at 32 m) | 170.0 / 120.2 | 49.3 / 46.2 |
 
-Would-be cell residency section at max lead 32 m. The CSR spans every cell id (5,671 hallway, 464 campaign), with 8 B per entry:
+Would-be cell residency section at max lead 32 m. The CSR spans every cell id (5,671 hallway, 464 campaign), with 8 B per entry. No entry names an exterior cell on either map:
 
 | Set | Hallway | Campaign |
 |---|---|---|
 | Dilated | 322,029 entries (mean 154.7, max 380 per camera cell), 2.48 MiB | 21,000 entries (mean 106.1, max 159), 166 KiB |
 | Undilated | 254,261 entries, 1.96 MiB | 19,249 entries, 152 KiB |
 
-Pool walks run the dilated set at L = 16 m with the shelf allocator, over 20,000 steps. Cells show random walk / far-point tour.
+Pool walks run the dilated set at L = 16 m with the shelf allocator, over 20,000 steps. Cells show random walk / far-point tour. Source: `$SCRATCH/bandfix-hallway.txt` lines 502–524, `bandfix-campaign-test.txt` lines 321–339.
 
 - A mandatory miss first evicts band blocks, farthest lead first.
-- With none left, the pool repacks from scratch if `M(c, L)` fits the cap. Otherwise it grows past the cap.
-- Band retain keeps resident band blocks and prefetches the rest into free space under the cap. Immediate free keeps only `M(c, L)`.
-- Hit rate counts blocks that re-enter `M(c, L)` while still resident.
-- Demand reads make a mandatory block resident. Thrash reads re-read a block freed within the last 8 steps.
+- With none left, the pool repacks in place if `M(c, L)` fits the cap. The repack moves `M(c, L)`, then the band blocks resident at step start (nearest lead first), under the cap without reads. Otherwise the pool grows past the cap.
+- Band retain keeps resident band blocks under the cap and frees any past it. It prefetches the rest into free space under the cap, but not a block freed in the same step. Immediate free keeps only `M(c, L)`.
+- Growth steps are steps where `M(c, L)` opened a layer at or past the cap.
+- Hit rate counts blocks joining `M(c, L)` that were already resident. Blocks larger than a pool layer are excluded.
+- Demand reads make a mandatory block resident. Read MiB counts demand and prefetch bytes. Thrash reads are demand or prefetch reads of a block freed within the last 8 steps. The window is an arbitrary measurement choice.
 - No drain budget is modelled.
 
-| Pool | Policy | Repacks | Growth steps | Hit rate | Demand reads/step | Prefetch reads/step | Thrash reads/step |
-|---|---|---|---|---|---|---|---|
-| Hallway 7 (98 MiB, shelf p95) | Immediate | 4.28% / 10.08% | 216 / 1,411 | — | 8.45 / 15.76 | — | 6.09 / 3.40 |
-| | Band | 5.76% / 16.33% | 95 / 1,399 | 85.9% / 67.7% | 1.20 / 5.09 | 10.52 / 16.87 | 9.26 / 8.06 |
-| Hallway 12 (168 MiB, shelf worst) | Immediate | 0.00% / 2.49% | 0 / 0 | — | 8.45 / 15.76 | — | 6.09 / 3.40 |
-| | Band | 0.21% / 6.28% | 0 / 0 | 97.2% / 92.9% | 0.24 / 1.12 | 12.98 / 21.34 | 10.54 / 7.34 |
-| Hallway 15 (210 MiB, 125%) | Immediate | 0.00% / 0.09% | 0 / 0 | — | 8.45 / 15.76 | — | 6.09 / 3.40 |
-| | Band | 0.01% / 2.46% | 0 / 0 | 97.3% / 96.0% | 0.23 / 0.63 | 12.99 / 20.63 | 10.53 / 5.93 |
-| Campaign 4 (56 MiB, shelf p95 = worst) | Immediate | 0.24% / 6.61% | 0 / 0 | — | 1.55 / 4.19 | — | 1.20 / 0.96 |
-| | Band | 0.51% / 11.38% | 0 / 0 | 98.2% / 92.7% | 0.03 / 0.31 | 2.42 / 4.77 | 1.84 / 2.51 |
-| Campaign 5 (70 MiB, 125%) | Immediate | 0.03% / 2.10% | 0 / 0 | — | 1.55 / 4.19 | — | 1.20 / 0.96 |
-| | Band | 0.06% / 5.00% | 0 / 0 | 98.8% / 97.2% | 0.02 / 0.12 | 2.48 / 4.58 | 1.87 / 2.15 |
+| Pool | Policy | Repacks | Growth steps | Hit rate | Demand reads/step | Prefetch reads/step | Read MiB/step | Thrash reads/step |
+|---|---|---|---|---|---|---|---|---|
+| Hallway 7 (98 MiB, shelf p95) | Immediate | 4.28% / 10.08% | 153 / 828 | — | 8.45 / 15.76 | — | 3.58 / 8.09 | 6.09 / 3.40 |
+| | Band | 6.06% / 17.94% | 142 / 904 | 84.3% / 72.1% | 1.33 / 4.41 | 9.40 / 14.70 | 3.70 / 8.89 | 8.22 / 4.87 |
+| Hallway 12 (168 MiB, shelf worst) | Immediate | 0.00% / 2.49% | 0 / 0 | — | 8.45 / 15.76 | — | 3.58 / 8.09 | 6.09 / 3.40 |
+| | Band | 0.19% / 6.47% | 0 / 0 | 96.9% / 92.4% | 0.26 / 1.20 | 12.84 / 18.55 | 5.42 / 9.91 | 10.42 / 4.60 |
+| Hallway 15 (210 MiB, 125%) | Immediate | 0.00% / 0.09% | 0 / 0 | — | 8.45 / 15.76 | — | 3.58 / 8.09 | 6.09 / 3.40 |
+| | Band | 0.01% / 2.54% | 0 / 0 | 97.3% / 95.8% | 0.23 / 0.66 | 12.99 / 19.05 | 5.62 / 10.12 | 10.53 / 4.39 |
+| Campaign 4 (56 MiB, shelf p95 = worst) | Immediate | 0.24% / 6.61% | 0 / 0 | — | 1.55 / 4.19 | — | 0.52 / 1.32 | 1.20 / 0.96 |
+| | Band | 0.51% / 11.38% | 0 / 0 | 98.2% / 92.4% | 0.03 / 0.32 | 2.37 / 3.59 | 0.80 / 1.23 | 1.79 / 1.35 |
+| Campaign 5 (70 MiB, 125%) | Immediate | 0.03% / 2.10% | 0 / 0 | — | 1.55 / 4.19 | — | 0.52 / 1.32 | 1.20 / 0.96 |
+| | Band | 0.06% / 5.00% | 0 / 0 | 98.8% / 97.0% | 0.02 / 0.13 | 2.48 / 3.81 | 0.86 / 1.25 | 1.86 / 1.39 |
 
 Uncapped peaks are 12 / 17 layers with immediate free and 19 / 22 with band retain on the hallway. On campaign they are 7 / 8 and 7 / 9.
 
-- **12 layers at L = 16 m has no headroom.** The brief set's worst cell alone needs 12 shelf layers at L = 16 m. A 12-layer cap therefore holds by repack: 2.49% of tour steps with immediate free and 6.28% with band retain. At 15 layers (210 MiB) band retain repacks on 2.46% of tour steps.
-- **A cap at or above the shelf worst never grows.** A from-scratch repack of any `M(c, 16 m)` fits it. Growth appears only below the worst: at the hallway's p95 cap it hits 216 / 1,411 steps.
-- **Band retention trades bandwidth for misses.** At the worst cap it keeps 93–98% of re-entering blocks resident, and it cuts demand reads 13–52×. The churn moves to the band's outer edge instead of disappearing:
-  - total reads rise 1.2–1.6×;
-  - thrash reads rise 1.5–2.6×;
-  - repacks rise 1.7–2.5× wherever immediate free repacks at all.
+- **12 layers at L = 16 m has no headroom.** The brief set's worst cell alone needs 12 shelf layers at L = 16 m. A 12-layer cap therefore holds by repack: 2.49% of tour steps with immediate free and 6.47% with band retain. At 15 layers (210 MiB) band retain repacks on 2.54% of tour steps.
+- **A cap at or above the shelf worst never grows.** A from-scratch repack of any `M(c, 16 m)` fits it. Growth appears only below the worst. At the hallway's p95 cap, `M(c, L)` opens a layer past it on 153 / 828 steps with immediate free and 142 / 904 with band retain. Steps ending over the cap number 717 / 5,338 and 738 / 3,795; peaks reach 10 / 16 and 10 / 17 layers.
+- **Band retention trades bandwidth for misses.** At the worst cap it keeps 92–98% of joining blocks resident, and it cuts demand reads 13–52×. The churn moves to the band's outer edge instead of disappearing:
+  - total reads are 0.93–1.55× immediate free's, in blocks and in bytes; on campaign's tour band retention reads less;
+  - thrash reads rise 1.35–1.71×;
+  - repacks rise 1.7–2.6× wherever immediate free repacks at all.
 
   The older cell-granular walks favoured immediate free over LRU on repacks. That result does not settle the brief's policy, which is band retention.
 - The walks use a shelf allocator. Guillotine and merging allocators are unmeasured.

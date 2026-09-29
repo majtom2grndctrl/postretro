@@ -193,6 +193,10 @@ Raw measurements for the findings note (AC 22–25), recorded as they arrive.
   - 2,080 cell blocks (of 5,671 cells): 303.3 MB irradiance blobs, 151.6 MB direction, 606.6 MB shadowmask, with 338 selected shadowmask channels.
   - All-resident pool: 101 layers of 2048². Meter: static irradiance 404 MiB, direction 202 MiB, shadowmask 808 MiB, 1.38 GiB in all (shelf fill about 72%). This is the all-resident baseline that streaming replaces.
   - Headless spawn captures render lit, with baked shadow edges.
+- Id-51 rebake of both maps, 2026-09-29, warm with the 2 GiB default cap, which had evicted the SH groups:
+  - `campaign-test`: 3 m 38 s; PRL 149,045,701 B; Cell Residency Set stage 0.26 s.
+  - Hallway: 3 h 53 m; PRL 1,674,702,102 B, so id 51 adds about 2.6 MB, near research's 2.48 MiB estimate; Cell Residency Set stage 6.63 s.
+  - Both maps now carry id 51.
 
 ## Follow-ups at landing
 

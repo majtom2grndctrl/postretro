@@ -321,7 +321,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 | Debug descriptor reload | Visual asset path additions or changes stay deferred in the installed descriptor snapshot. The latest authored snapshot promotes before the next level install preload. Gameplay never uploads a model or sprite collection. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 
-Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
+Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level. Exception (decided, not yet built): baked lighting residency will stream the static lightmap and shadowmask (ids 22/42) per cell block during gameplay, allocating and installing pool blocks and growing the pool; see `rendering_pipeline.md` §Cluster SH residency. Until it lands, the whole-load behaviour above and below stands.
 
 **GPU-only baked payloads leave the CPU at upload.** The lightmap's irradiance and direction payloads and the shadowmask's mask payload have no CPU reader after upload. Every level install — the game's and the capture harness's — moves them out of the loaded level into the upload, which drops them once the textures exist. The loaded level keeps only their headers (dimensions, formats, the shadowmask slot table); header types carry no payload, so nothing can re-validate or re-upload from a retained level, and a header that reaches the renderer without its payload degrades to the placeholder. An install with no renderer uploads nothing and keeps the payloads. This is safe because every load and reload re-reads the level from disk; a future path that rebuilds GPU lighting from a retained level must re-read instead.
 
@@ -344,5 +344,5 @@ Renderer uses handles to bind textures and buffers during draw calls. If a handl
 - **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras.
 - **GPU asset hot-reload.** Textures and models are loaded once per level. Descriptor tuning may refresh, but visual asset path changes wait for the next level install.
 - **Procedural textures.** No noise-based or shader-generated textures. All surfaces use authored PNGs.
-- **Texture streaming / virtual textures.** All textures for a level are loaded upfront. No partial or on-demand loading.
+- **Texture streaming / virtual textures.** All material textures for a level are loaded upfront. No partial or on-demand loading. Baked lighting residency (static lightmap and shadowmask cell blocks) is a separate, decided, not yet built exception; see §8.2.
 - **Cubemap bake tool.** The entity format and runtime consumption path are defined. The offline bake tool is deferred.

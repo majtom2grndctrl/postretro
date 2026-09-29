@@ -7,6 +7,7 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 | Item | Value |
 |---|---|
 | Map | `content/dev/maps/stress-warren-hallway-inspection.map` |
+| Lever 3 gate map | Also the longest-baking stress map at measurement time. The owner reports stress-map bakes of 6–9 h; which map sits at the top was not recorded. If it is the hallway, one map serves both. Same conditions as the rows below. |
 | Machine | Intel i9-9980HK: 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD |
 | Cache mode | Warm (cache enabled), with every entry missing in the first build. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares the previous build's entries. |
 | Peak memory | The process's maximum resident set size over the whole build, as the OS reports it (`/usr/bin/time -l` on macOS), on a warm all-miss build. See §Peak memory. |

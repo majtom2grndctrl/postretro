@@ -30,6 +30,8 @@ use crate::streaming::shared_drain::SharedDrain;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod walk_measurement;
 
 /// The loaded level's streamed-lightmap inputs. Present only when the level's
 /// `LightmapStorage` is `Streaming`, which the loader selects only with a

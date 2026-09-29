@@ -17,4 +17,5 @@ mod style_ranges;
 mod theming;
 mod tween_panel;
 mod tween_text;
+mod value_text;
 mod visibility;

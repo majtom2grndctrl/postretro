@@ -20,9 +20,7 @@ mod resolved;
 pub use accessibility::AccessibilityOptions;
 pub(crate) use bridge::OptionsBridge;
 use document::{DocumentWriter, FieldReader, StoredDocument};
-pub(crate) use panel_actions::{
-    FLASH_LIMITER_FIELD, PanelActionOutcome, apply_panel_action, is_numeric_field,
-};
+pub(crate) use panel_actions::{PanelActionOutcome, apply_panel_action, is_numeric_field};
 pub(crate) use resolved::{OsPreferences, apply_to_audio, reduce_motion_from_slots};
 
 /// Registered dev-mod options tree whose open/close boundaries seed and flush

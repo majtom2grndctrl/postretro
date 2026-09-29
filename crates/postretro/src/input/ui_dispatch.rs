@@ -251,13 +251,6 @@ impl UiDispatch {
         std::mem::take(&mut self.ready)
     }
 
-    /// Drop the intents promoted for next frame. The global panel toggle calls
-    /// this after changing the stack, so a same-stage confirm cannot activate a
-    /// control in the tree the toggle revealed or pushed.
-    pub fn discard_ready(&mut self) {
-        self.ready.clear();
-    }
-
     /// Drop every queued intent: frames that draw no UI never deliver input.
     pub fn discard_all(&mut self) {
         self.pending.clear();

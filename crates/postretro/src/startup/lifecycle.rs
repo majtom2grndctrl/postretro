@@ -780,16 +780,8 @@ impl App {
                 }
             },
         );
-        crate::app::accessibility_panel::warn_missing_accessibility_entries(
-            &session.modal_stack,
-            session
-                .frontend
-                .as_ref()
-                .map_or(postretro_ui::demo::FRONTEND_MENU_NAME, |f| {
-                    f.menu_tree.as_str()
-                }),
-            Some(postretro_ui::modal_stack::ScopeTier::Level),
-        );
+        // The level's trees joined the tree set.
+        session.check_accessibility_entry();
 
         // Lights are installed before movers. This synchronous pass is the
         // only windowed binding funnel, so it runs before the first
@@ -1610,6 +1602,7 @@ pub(crate) mod tests {
                 player_options: options::PlayerOptions::default(),
                 settings_path: None,
                 frontend: None,
+                accessibility_entry_check: Default::default(),
                 net_endpoint: None,
                 seat_table: None,
                 audio: None,
@@ -1639,7 +1632,6 @@ pub(crate) mod tests {
             switching: Default::default(),
             pending_mode_signal: None,
             pending_menu_toggle: false,
-            pending_panel_toggle: false,
             accessibility_panel_was_open: false,
             pending_exit_to_desktop: false,
             ui_focused_id: None,

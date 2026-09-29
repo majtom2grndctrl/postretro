@@ -7,9 +7,9 @@ pub(crate) mod accessibility_panel;
 mod accessibility_panel_tests;
 #[cfg(test)]
 mod accessibility_surface_fixture_tests;
-pub(crate) mod global_input;
-#[cfg(test)]
-mod global_input_tests;
 pub(crate) mod keyboard_input;
 pub(crate) mod options_menu;
 pub(crate) mod ui_actions;
+pub(crate) mod ui_input_frames;
+#[cfg(test)]
+mod ui_input_frames_tests;

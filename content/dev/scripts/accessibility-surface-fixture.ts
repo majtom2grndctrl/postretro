@@ -1,6 +1,7 @@
 // Accessibility scripting-surface fixture: a mod menu entry to the engine
-// panel, a panel field action on a mod button, a mod slider on the working
-// copy, and content bound to the resolved slot and its source slot.
+// panel, panel field actions on mod value buttons (the flash limiter's
+// included), a mod slider on the working copy, and content bound to the
+// resolved slot and its source slot.
 //
 // A level data script, run in both runtimes by
 // `app::accessibility_surface_fixture_tests`. No map references it.
@@ -37,11 +38,38 @@ export function setupLevel(_ctx: unknown): { uiTrees: UiTreeRegistration[] } {
       VStack({ gap: 8, padding: 16, align: "stretch", focus: { policy: "linear", wrap: true } }, [
         // A mod menu entry to the engine panel.
         Button({ id: "openA11y", label: "ACCESSIBILITY", onPress: OPEN_ACCESSIBILITY_ACTION }),
-        // A panel field action on a mod button.
+        // A panel field action on a mod value button: named by its label, its
+        // text shows the field's current value.
+        Text({ id: "reduceMotionLabel", content: "REDUCE MOTION" }),
         Button({
           id: "reduceMotion",
-          label: "REDUCE MOTION",
+          labelledBy: "reduceMotionLabel",
           onPress: accessibilityAction("reduceMotion", "cycle"),
+          valueText: [
+            {
+              when: [
+                stateEquals(accessibility.reduceMotionFollowsSystem, true),
+                stateEquals(accessibility.reduceMotion, true),
+              ],
+              text: "SYSTEM (ON)",
+            },
+            {
+              when: [stateEquals(accessibility.reduceMotionFollowsSystem, true)],
+              text: "SYSTEM (OFF)",
+            },
+            { when: [stateEquals(accessibility.reduceMotion, true)], text: "ON" },
+            { text: "OFF" },
+          ],
+        }),
+        Text({ id: "flashLimiterLabel", content: "FLASH LIMITER" }),
+        Button({
+          id: "flashLimiter",
+          labelledBy: "flashLimiterLabel",
+          onPress: accessibilityAction("flashLimiter", "cycle"),
+          valueText: [
+            { when: [stateEquals(accessibility.flashLimiter, true)], text: "LIMITER ON" },
+            { text: "LIMITER OFF" },
+          ],
         }),
         Button({
           id: "shakeDown",

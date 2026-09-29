@@ -2421,17 +2421,20 @@ scripts** — the engine is its sole producer.
 
 ### The accessibility panel and `accessibility.*` slots
 
-The engine ships an accessibility panel every player can reach, whatever your
-menus include. It opens from:
+The engine ships an accessibility panel that holds every accessibility
+preference. Players see it once on first launch, before any level loads. After
+that it opens from any button whose `onPress` is `OPEN_ACCESSIBILITY_ACTION`
+(`"ui.openAccessibility"`); the engine's fallback frontend and pause menus carry
+one. The panel closes with cancel (**Escape** or gamepad **B**) or its close
+button. There is no reserved key or button that opens it, so your menus are the
+way back in.
 
-- any button whose `onPress` is `OPEN_ACCESSIBILITY_ACTION` (`"ui.openAccessibility"`);
-- the global input — **F1** on the keyboard, **Select/Back** on a gamepad — from
-  gameplay or over any menu.
-
-Give your frontend menu and `pauseMenu` trees a button that opens it. A frontend
-or pause tree without one draws a load-time warning naming the tree. The panel's
-registry name, `accessibilityPanel`, is reserved: a tree you register under it is
-rejected and the engine panel stays.
+Offer accessibility from a menu players can reach — an entry that opens the
+panel, or your own controls built with `accessibilityAction` (below), such as an
+accessibility tab in your options screen. If none of your UI trees offers either,
+the mod draws a load-time warning naming the fix. The panel's registry name,
+`accessibilityPanel`, is reserved: a tree you register under it is rejected and
+the engine panel stays.
 
 **Reading preferences.** Content that honors a preference reads the readonly
 `accessibility.*` slots from `getGameState()`. Each carries the player's
@@ -2457,17 +2460,38 @@ has a writable `options.*` working copy (`options.reduceMotion`,
 `options.screenShakeScale`, `options.masterVolume`, …) that behaves like the
 existing options: bind a `Slider` to it, or write it with `updateState`. For a
 button, `accessibilityAction(field, op)` builds the reserved action the panel's
-own controls fire: toggles `cycle` (reduce motion cycles System → On → Off);
-numeric fields `increase` or `decrease` by one step. The flash limiter has no
-working copy and no `accessibilityAction`: only the engine panel changes it.
+own controls fire: toggles (`reduceMotion`, `flashLimiter`, `monoAudio`)
+`cycle` — reduce motion cycles System → On → Off — and numeric fields
+`increase` or `decrease` by one step. The flash limiter has no working copy: a
+button firing `accessibilityAction("flashLimiter", "cycle")` is the only way a
+menu changes it.
+
+A toggle reads best as one button showing its current value, named by a label
+beside it. `valueText` makes a button's visible text follow state: the first
+case whose `when` predicates all hold is shown, and a case with no `when` is the
+default. The button keeps its id as its text changes, so focus stays on it after
+a press, and `labelledBy` gives it the field's name.
 
 ```typescript
-import { Button, Slider, Text, getGameState, stateEquals, OPEN_ACCESSIBILITY_ACTION, accessibilityAction } from "postretro/ui";
+import { Button, HStack, Slider, Text, getGameState, stateEquals, OPEN_ACCESSIBILITY_ACTION, accessibilityAction } from "postretro/ui";
 
 const { options, accessibility } = getGameState();
 
 Button({ id: "openA11y", label: "ACCESSIBILITY", onPress: OPEN_ACCESSIBILITY_ACTION });
-Button({ id: "reduceMotion", label: "REDUCE MOTION", onPress: accessibilityAction("reduceMotion", "cycle") });
+HStack({ gap: 16, align: "center" }, [
+  Text({ id: "reduceMotionLabel", content: "REDUCE MOTION" }),
+  Button({
+    id: "reduceMotion",
+    labelledBy: "reduceMotionLabel",
+    onPress: accessibilityAction("reduceMotion", "cycle"),
+    valueText: [
+      { when: [stateEquals(accessibility.reduceMotionFollowsSystem, true), stateEquals(accessibility.reduceMotion, true)], text: "SYSTEM (ON)" },
+      { when: [stateEquals(accessibility.reduceMotionFollowsSystem, true)], text: "SYSTEM (OFF)" },
+      { when: [stateEquals(accessibility.reduceMotion, true)], text: "ON" },
+      { text: "OFF" },
+    ],
+  }),
+]);
 Text({ id: "shakeLabel", content: "SCREEN SHAKE" });
 Slider({ id: "shake", labelledBy: "shakeLabel", bind: options.screenShakeScale, min: 0, max: 1, step: 0.1, capturesNav: ["nav.left", "nav.right"] });
 Text({ content: "MOTION REDUCED", visibleWhen: stateEquals(accessibility.reduceMotion, true) });
@@ -2720,6 +2744,27 @@ highlight `bind` (as above) and the two agree by construction.
 
 `checked` is the toggle/checkbox/radio analogue; pair it with `role: "checkbox"` /
 `role: "radio"`.
+
+### `valueText` (a button that shows its value)
+
+`valueText` is an optional array of `{ when?, text }` cases on a `Button`. The
+first case whose `when` predicates **all** hold supplies the button's visible
+text; a case with no `when` always holds, so a last case can be the default. When
+no case holds, the button shows its `label` (empty for a `labelledBy` button).
+Use it for a setting that cycles: one button, named by a `Text` beside it through
+`labelledBy`, showing the current value (`"ON"`, `"SYSTEM (ON)"`). The button
+keeps its id while its text changes, so focus stays on it after a press. A text
+change relays out like a bound text change; a settled frame does no work.
+
+```typescript
+Text({ id: "monoLabel", content: "MONO AUDIO" });
+Button({
+  id: "mono",
+  labelledBy: "monoLabel",
+  onPress: accessibilityAction("monoAudio", "cycle"),
+  valueText: [{ when: [stateEquals(accessibility.monoAudio, true)], text: "ON" }, { text: "OFF" }],
+});
+```
 
 ### `visibleWhen` and `Switch`
 

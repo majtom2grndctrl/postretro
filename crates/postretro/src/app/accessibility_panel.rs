@@ -1,6 +1,6 @@
 // Engine accessibility panel: `ui.openAccessibility`, the reserved field-action
-// family, flash-limiter attribution, engine-routed sliders, and the close-time
-// save and first-launch record.
+// family, engine-routed sliders, the close-time save and first-launch record,
+// and the load-time check that the mod offers accessibility somewhere.
 // See: context/lib/ui.md §4.1 · context/lib/player_options.md §5
 
 use postretro_ui::demo::ACCESSIBILITY_PANEL_NAME;
@@ -9,37 +9,69 @@ use postretro_ui::tree::FocusRectOwner;
 
 use crate::*;
 
-/// Warn once per check for each mod- or level-scope frontend menu or
-/// `pauseMenu` tree that carries no `ui.openAccessibility` button. Runs after
-/// trees and the frontend declaration commit — mod init, level load, staged
-/// reload — so it reads the committed declaration. Engine fallbacks carry the
-/// entry already. `only_tier` limits the check to trees resolving at that tier
-/// (level load checks only the level's own trees, so a mod tree is not
-/// re-warned on every map).
-pub(crate) fn warn_missing_accessibility_entries(
+/// Load-time check that the mounted mod offers accessibility somewhere: a mod-
+/// or level-scope tree with a button that opens the engine panel or fires a
+/// field action, or an engine fallback menu in use (each carries the entry).
+/// Evaluated when the tree set changes — mod init, staged reload, level
+/// install — never per frame. It keeps the last verdict, so it warns once per
+/// state: on the first evaluation that finds no entry, and again only after an
+/// entry appeared and was later removed.
+#[derive(Debug, Default)]
+pub(crate) struct AccessibilityEntryCheck {
+    offered: Option<bool>,
+}
+
+impl AccessibilityEntryCheck {
+    /// `frontend_menu_tree` is the committed frontend declaration's menu tree
+    /// name (the engine fallback's name when none is declared).
+    pub(crate) fn evaluate(
+        &mut self,
+        modal_stack: &postretro_ui::modal_stack::ModalStack,
+        frontend_menu_tree: &str,
+    ) {
+        let offered = accessibility_is_offered(modal_stack, frontend_menu_tree);
+        if !offered && self.offered != Some(false) {
+            log::warn!(
+                "[UI] no mod or level UI tree offers accessibility settings: no button's onPress is 'ui.openAccessibility' or a 'ui.accessibility.<op>.<field>' action. Add one to a menu players can reach, such as the pause or options menu. Players still see the accessibility panel on first launch."
+            );
+        }
+        self.offered = Some(offered);
+    }
+}
+
+fn accessibility_is_offered(
     modal_stack: &postretro_ui::modal_stack::ModalStack,
     frontend_menu_tree: &str,
-    only_tier: Option<ScopeTier>,
-) {
-    for (role, name) in [
-        ("frontend menu", frontend_menu_tree),
-        ("pause menu", postretro_ui::demo::PAUSE_MENU_NAME),
-    ] {
-        let Some((tier, tree)) = modal_stack.resolve_with_tier(name) else {
-            continue;
-        };
-        if tier == ScopeTier::Engine
-            || only_tier.is_some_and(|only| only != tier)
-            || postretro_ui::actions::tree_has_button_action(
-                tree,
-                postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION,
-            )
-        {
-            continue;
-        }
-        log::warn!(
-            "[UI] {role} tree '{name}' has no button whose onPress is 'ui.openAccessibility'; add one so players can reach the accessibility panel from it. Players can still open the panel with F1 or gamepad Select/Back."
-        );
+) -> bool {
+    use postretro_ui::actions::tree_offers_accessibility;
+    // An undeclared or unregistered frontend menu presents the engine fallback.
+    let frontend = if modal_stack.resolve_with_tier(frontend_menu_tree).is_some() {
+        frontend_menu_tree
+    } else {
+        postretro_ui::demo::FRONTEND_MENU_NAME
+    };
+    let menu_in_use_offers = [frontend, postretro_ui::demo::PAUSE_MENU_NAME]
+        .into_iter()
+        .filter_map(|name| modal_stack.resolve_with_tier(name))
+        .any(|(_, tree)| tree_offers_accessibility(tree));
+    menu_in_use_offers
+        || modal_stack
+            .resolved_trees()
+            .any(|(tier, tree)| tier != ScopeTier::Engine && tree_offers_accessibility(tree))
+}
+
+impl crate::session::Session {
+    /// Re-evaluate the accessibility-entry check after the UI tree set or the
+    /// frontend declaration changed.
+    pub(crate) fn check_accessibility_entry(&mut self) {
+        let frontend = self
+            .frontend
+            .as_ref()
+            .map_or(postretro_ui::demo::FRONTEND_MENU_NAME, |f| {
+                f.menu_tree.as_str()
+            });
+        self.accessibility_entry_check
+            .evaluate(&self.modal_stack, frontend);
     }
 }
 
@@ -61,45 +93,13 @@ impl App {
         }
     }
 
-    /// Whether the press that produced this activation resolved against the
-    /// engine panel's own export while the panel is the active tree. The stack's
-    /// top at activation alone cannot attribute a press: the export is last
-    /// frame's, and a same-frame pop can leave the panel on top of a press that
-    /// hit another tree.
-    fn press_is_from_active_panel(&self, owner: Option<&FocusRectOwner>) -> bool {
-        let Some(session) = self.session.as_ref() else {
-            return false;
-        };
-        let owned_by_panel = owner.is_some_and(|owner| {
-            owner.name == ACCESSIBILITY_PANEL_NAME && owner.tier == ScopeTier::Engine
-        });
-        owned_by_panel
-            && session.modal_stack.active_name() == Some(ACCESSIBILITY_PANEL_NAME)
-            && session.modal_stack.active_tier() == Some(ScopeTier::Engine)
-    }
-
-    /// A button fired `ui.accessibility.<op>.<field>`. Writes the store and
-    /// schedules the settled save; the options bridge projects the change into
-    /// `accessibility.*` and reseeds the working copy later this frame. Any tree
-    /// may fire a field action except the flash limiter's, which only the
-    /// engine panel's own control honors.
-    pub(crate) fn fire_accessibility_field_action(
-        &mut self,
-        op: &str,
-        field: &str,
-        owner: Option<&FocusRectOwner>,
-    ) {
-        if field == options::FLASH_LIMITER_FIELD && !self.press_is_from_active_panel(owner) {
-            let from = owner.map_or("<none>", |owner| owner.name.as_str());
-            log::warn!(
-                "[UI] ignoring flash-limiter action from tree '{from}': only the engine accessibility panel changes the flash limiter"
-            );
-            return;
-        }
-        self.apply_accessibility_field_action(op, field);
-    }
-
-    fn apply_accessibility_field_action(&mut self, op: &str, field: &str) {
+    /// A button fired `ui.accessibility.<op>.<field>`, from any tree. Writes the
+    /// store and schedules the settled save; the options bridge projects the
+    /// change into `accessibility.*` and reseeds the working copy later this
+    /// frame. Only button activations and engine-routed slider steps reach this
+    /// handler, so it is the one store write site for the flash limiter, which
+    /// has no working copy: no reaction, manifest field or script reaches it.
+    pub(crate) fn apply_accessibility_field_action(&mut self, op: &str, field: &str) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -139,8 +139,8 @@ impl App {
         if !engine_owned || !options::is_numeric_field(field) {
             return false;
         }
-        // Name and tier both, as `press_is_from_active_panel` checks: a
-        // same-named tree at another tier is not the tree that exported it.
+        // Name and tier both: a same-named tree at another tier is not the tree
+        // that exported it.
         let owner_is_active = self.session.as_ref().is_some_and(|session| {
             owner.is_some_and(|owner| {
                 session.modal_stack.active_name() == Some(owner.name.as_str())

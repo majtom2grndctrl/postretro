@@ -115,6 +115,8 @@ fn the_scripting_surface_fixture_runs_in_both_runtimes_and_drives_the_engine() {
     let drawn = frame(&mut app, tree);
     assert!(drawn.shows("MOTION REDUCED"), "{:?}", drawn.texts);
     assert!(drawn.shows("FOLLOWING SYSTEM"), "{:?}", drawn.texts);
+    assert!(drawn.shows("SYSTEM (ON)"), "{:?}", drawn.texts);
+    assert!(drawn.shows("LIMITER ON"), "{:?}", drawn.texts);
 
     // The mod slider binds the working copy on the ordinary setState path.
     let rects = app
@@ -148,12 +150,27 @@ fn the_scripting_surface_fixture_runs_in_both_runtimes_and_drives_the_engine() {
     );
     assert!(drawn.shows("MOTION REDUCED"), "{:?}", drawn.texts);
     assert!(!drawn.shows("FOLLOWING SYSTEM"), "{:?}", drawn.texts);
+    assert!(drawn.shows("ON"), "{:?}", drawn.texts);
 
     // The next step: Off, which the resolved slot follows.
     app.fire_focused_button_activation(Some("reduceMotion"));
     let drawn = frame(&mut app, tree);
     assert!(!drawn.shows("MOTION REDUCED"), "{:?}", drawn.texts);
     assert!(!drawn.shows("FOLLOWING SYSTEM"), "{:?}", drawn.texts);
+    assert!(drawn.shows("OFF"), "{:?}", drawn.texts);
+
+    // The flash limiter's value button on a level-tier tree toggles it.
+    app.fire_focused_button_activation(Some("flashLimiter"));
+    let drawn = frame(&mut app, tree);
+    assert!(
+        !app.session
+            .as_ref()
+            .unwrap()
+            .player_options
+            .accessibility
+            .flash_limiter
+    );
+    assert!(drawn.shows("LIMITER OFF"), "{:?}", drawn.texts);
 
     // A numeric field action on a mod button steps that field.
     app.fire_focused_button_activation(Some("shakeDown"));

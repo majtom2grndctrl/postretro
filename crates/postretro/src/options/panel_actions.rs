@@ -4,9 +4,6 @@
 
 use super::{PlayerOptions, keys};
 
-/// The field whose action only the engine panel may fire.
-pub(crate) const FLASH_LIMITER_FIELD: &str = "flashLimiter";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PanelOp {
     Cycle,
@@ -79,7 +76,7 @@ const FIELDS: &[Field] = &[
         },
     },
     Field {
-        name: FLASH_LIMITER_FIELD,
+        name: "flashLimiter",
         key: keys::FLASH_LIMITER,
         kind: Kind::Toggle(|o| &mut o.accessibility.flash_limiter),
     },

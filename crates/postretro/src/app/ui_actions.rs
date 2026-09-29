@@ -67,6 +67,28 @@ pub(crate) fn apply_pause_menu_nav_policy(modal_stack: &mut postretro_ui::modal_
     }
 }
 
+/// Running `nav.cancel`: close the active `pauseMenu` or accessibility panel,
+/// or a submenu pushed above the pause menu or the frontend root — the same
+/// rule the frontend uses, so a submenu opened from the pause menu (the options
+/// screen) returns to it. Other trees own their own cancel policy.
+/// `close_frontend_submenu` is the frontend's verdict: its root is pushed and is
+/// not on top.
+pub(crate) fn apply_running_cancel_policy(
+    modal_stack: &mut postretro_ui::modal_stack::ModalStack,
+    close_frontend_submenu: bool,
+) {
+    let active = modal_stack.active_name();
+    let pause_submenu = active != Some(postretro_ui::demo::PAUSE_MENU_NAME)
+        && modal_stack.contains_pushed(postretro_ui::demo::PAUSE_MENU_NAME);
+    if active == Some(postretro_ui::demo::PAUSE_MENU_NAME)
+        || active == Some(postretro_ui::demo::ACCESSIBILITY_PANEL_NAME)
+        || pause_submenu
+        || close_frontend_submenu
+    {
+        modal_stack.pop();
+    }
+}
+
 impl App {
     /// Apply slider nav-capture for the focused slider (M13 Goal F, Task 4).
     ///
@@ -161,12 +183,7 @@ impl App {
             }
             if let Some(action) = postretro_ui::actions::parse_accessibility_field_action(&on_press)
             {
-                let owner = self
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.ui_focus_rects.as_ref())
-                    .and_then(|rects| rects.owner.clone());
-                self.fire_accessibility_field_action(action.op, action.field, owner.as_ref());
+                self.apply_accessibility_field_action(action.op, action.field);
                 return;
             }
             let action = match self.session.as_mut() {

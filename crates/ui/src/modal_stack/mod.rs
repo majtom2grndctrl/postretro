@@ -114,6 +114,11 @@ impl ModalStack {
         self.registry.resolve_with_tier(name)
     }
 
+    /// Every registered name's resolved tree with its tier.
+    pub fn resolved_trees(&self) -> impl Iterator<Item = (ScopeTier, &AnchoredTree)> {
+        self.registry.resolved_trees()
+    }
+
     /// Read a registered tree by `name`, or `None` if no such name is registered.
     /// Public `&self` read seam onto the registry's tiered resolution: keeps
     /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The

@@ -217,7 +217,7 @@ mod tests {
         app.session.as_mut().unwrap().settings_path = Some(path.clone());
         app.enter_first_launch_hold(BootDestination::Frontend);
         app.update_player_options(0.0, false);
-        app.fire_accessibility_field_action("cycle", "monoAudio", None);
+        app.apply_accessibility_field_action("cycle", "monoAudio");
         for _ in 0..4 {
             app.update_player_options(0.1, false);
         }

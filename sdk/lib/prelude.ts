@@ -50,6 +50,7 @@ export type {
   ImageProps,
   SpacerProps,
   ButtonProps,
+  ValueTextCase,
   SliderProps,
   BarProps,
   RingProps,

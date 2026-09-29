@@ -181,6 +181,13 @@ impl UiTreeRegistry {
             .map(|(tier, t)| (tier, &t.descriptor))
     }
 
+    pub(super) fn resolved_trees(&self) -> impl Iterator<Item = (ScopeTier, &AnchoredTree)> {
+        self.trees
+            .values()
+            .filter_map(TieredRegisteredTree::resolved)
+            .map(|(tier, t)| (tier, &t.descriptor))
+    }
+
     pub(super) fn resolve_pushable(&self, name: &str) -> Option<(ScopeTier, &AnchoredTree, bool)> {
         self.trees
             .get(name)

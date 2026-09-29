@@ -6,7 +6,7 @@
   ],
   "root": {
     "kind": "vstack",
-    "gap": 10.0,
+    "gap": 14.0,
     "padding": 20.0,
     "align": "start",
     "fill": "panel.default",
@@ -22,100 +22,62 @@
         "font": "mono"
       },
       {
-        "kind": "text",
-        "content": "F1 OR SELECT CLOSES THIS PANEL",
-        "fontSize": 12,
-        "color": "ok",
-        "font": "mono"
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
+        "kind": "grid",
+        "gap": 10.0,
         "padding": 0.0,
         "align": "center",
+        "cols": 2,
         "children": [
+          {
+            "kind": "text",
+            "content": "REDUCE MOTION",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_reduceMotionLabel"
+          },
           {
             "kind": "button",
             "id": "a11y_reduceMotion",
-            "label": "REDUCE MOTION",
-            "onPress": "ui.accessibility.cycle.reduceMotion"
-          },
-          {
-            "kind": "hstack",
-            "gap": 8.0,
-            "padding": 0.0,
-            "align": "center",
-            "visibleWhen": {
-              "slot": "accessibility.reduceMotionFollowsSystem",
-              "equals": true
-            },
-            "children": [
+            "labelledBy": "a11y_reduceMotionLabel",
+            "onPress": "ui.accessibility.cycle.reduceMotion",
+            "valueText": [
               {
-                "kind": "text",
-                "content": "SYSTEM (ON)",
-                "fontSize": 16,
-                "color": "ok",
-                "font": "mono",
-                "visibleWhen": {
-                  "slot": "accessibility.reduceMotion",
-                  "equals": true
-                }
+                "when": [
+                  {
+                    "slot": "accessibility.reduceMotionFollowsSystem",
+                    "equals": true
+                  },
+                  {
+                    "slot": "accessibility.reduceMotion",
+                    "equals": true
+                  }
+                ],
+                "text": "SYSTEM (ON)"
               },
               {
-                "kind": "text",
-                "content": "SYSTEM (OFF)",
-                "fontSize": 16,
-                "color": "ok",
-                "font": "mono",
-                "visibleWhen": {
-                  "slot": "accessibility.reduceMotion",
-                  "equals": false
-                }
+                "when": [
+                  {
+                    "slot": "accessibility.reduceMotionFollowsSystem",
+                    "equals": true
+                  }
+                ],
+                "text": "SYSTEM (OFF)"
+              },
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.reduceMotion",
+                    "equals": true
+                  }
+                ],
+                "text": "ON"
+              },
+              {
+                "text": "OFF"
               }
             ]
           },
-          {
-            "kind": "hstack",
-            "gap": 8.0,
-            "padding": 0.0,
-            "align": "center",
-            "visibleWhen": {
-              "slot": "accessibility.reduceMotionFollowsSystem",
-              "equals": false
-            },
-            "children": [
-              {
-                "kind": "text",
-                "content": "ON",
-                "fontSize": 16,
-                "color": "ok",
-                "font": "mono",
-                "visibleWhen": {
-                  "slot": "accessibility.reduceMotion",
-                  "equals": true
-                }
-              },
-              {
-                "kind": "text",
-                "content": "OFF",
-                "fontSize": 16,
-                "color": "ok",
-                "font": "mono",
-                "visibleWhen": {
-                  "slot": "accessibility.reduceMotion",
-                  "equals": false
-                }
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
           {
             "kind": "text",
             "content": "SCREEN SHAKE",
@@ -144,15 +106,7 @@
               "nav.left",
               "nav.right"
             ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
+          },
           {
             "kind": "text",
             "content": "VIEW FEEL",
@@ -181,51 +135,35 @@
               "nav.left",
               "nav.right"
             ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
+          },
+          {
+            "kind": "text",
+            "content": "FLASH LIMITER",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_flashLimiterLabel"
+          },
           {
             "kind": "button",
             "id": "a11y_flashLimiter",
-            "label": "FLASH LIMITER",
-            "onPress": "ui.accessibility.cycle.flashLimiter"
+            "labelledBy": "a11y_flashLimiterLabel",
+            "onPress": "ui.accessibility.cycle.flashLimiter",
+            "valueText": [
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.flashLimiter",
+                    "equals": true
+                  }
+                ],
+                "text": "ON"
+              },
+              {
+                "text": "OFF"
+              }
+            ]
           },
-          {
-            "kind": "text",
-            "content": "ON",
-            "fontSize": 16,
-            "color": "ok",
-            "font": "mono",
-            "visibleWhen": {
-              "slot": "accessibility.flashLimiter",
-              "equals": true
-            }
-          },
-          {
-            "kind": "text",
-            "content": "OFF",
-            "fontSize": 16,
-            "color": "ok",
-            "font": "mono",
-            "visibleWhen": {
-              "slot": "accessibility.flashLimiter",
-              "equals": false
-            }
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
           {
             "kind": "text",
             "content": "MASTER VOLUME",
@@ -254,15 +192,7 @@
               "nav.left",
               "nav.right"
             ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
+          },
           {
             "kind": "text",
             "content": "SFX VOLUME",
@@ -291,15 +221,7 @@
               "nav.left",
               "nav.right"
             ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
+          },
           {
             "kind": "text",
             "content": "MUSIC VOLUME",
@@ -328,15 +250,7 @@
               "nav.left",
               "nav.right"
             ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
+          },
           {
             "kind": "text",
             "content": "UI VOLUME",
@@ -365,42 +279,34 @@
               "nav.left",
               "nav.right"
             ]
-          }
-        ]
-      },
-      {
-        "kind": "hstack",
-        "gap": 16.0,
-        "padding": 0.0,
-        "align": "center",
-        "children": [
+          },
+          {
+            "kind": "text",
+            "content": "MONO AUDIO",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_monoAudioLabel"
+          },
           {
             "kind": "button",
             "id": "a11y_monoAudio",
-            "label": "MONO AUDIO",
-            "onPress": "ui.accessibility.cycle.monoAudio"
-          },
-          {
-            "kind": "text",
-            "content": "ON",
-            "fontSize": 16,
-            "color": "ok",
-            "font": "mono",
-            "visibleWhen": {
-              "slot": "accessibility.monoAudio",
-              "equals": true
-            }
-          },
-          {
-            "kind": "text",
-            "content": "OFF",
-            "fontSize": 16,
-            "color": "ok",
-            "font": "mono",
-            "visibleWhen": {
-              "slot": "accessibility.monoAudio",
-              "equals": false
-            }
+            "labelledBy": "a11y_monoAudioLabel",
+            "onPress": "ui.accessibility.cycle.monoAudio",
+            "valueText": [
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.monoAudio",
+                    "equals": true
+                  }
+                ],
+                "text": "ON"
+              },
+              {
+                "text": "OFF"
+              }
+            ]
           }
         ]
       },

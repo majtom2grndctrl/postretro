@@ -9,13 +9,13 @@ import {
   CLOSE_DIALOG_ACTION,
   EXIT_TO_DESKTOP_ACTION,
   Grid,
-  OPEN_ACCESSIBILITY_ACTION,
   HStack,
   Slider,
   Switch,
   Text,
   Tree,
   VStack,
+  accessibilityAction,
   defineUiTree,
   getGameState,
   loadLevel,
@@ -24,6 +24,7 @@ import {
   ui,
   updateState,
   type Predicate,
+  type ValueTextCase,
   type WidgetDescriptor,
 } from "postretro/ui";
 
@@ -141,7 +142,8 @@ export const devLevelSelectMenu = defineUiTree({
 });
 
 const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
-const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
+/** Opens the tabbed options screen; the pause menu opens it too. */
+export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
 
 export const frontendMenu = defineUiTree({
   name: TITLE_MENU_NAME,
@@ -166,11 +168,6 @@ export const frontendMenu = defineUiTree({
         Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
         Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
-        Button({
-          id: "frontendAccessibility",
-          label: "ACCESSIBILITY",
-          onPress: OPEN_ACCESSIBILITY_ACTION,
-        }),
         Button({ id: "frontendExit", label: "EXIT", onPress: EXIT_TO_DESKTOP_ACTION }),
       ],
     ),
@@ -204,10 +201,6 @@ const optionReactions: NamedReactionDescriptor[] = [
     "frontend.options.surfaceDepthQuality.on",
     updateState(options.surfaceDepthQuality, "on"),
   ),
-  defineReaction("frontend.options.reduceMotion.off", updateState(options.reduceMotion, false)),
-  defineReaction("frontend.options.reduceMotion.on", updateState(options.reduceMotion, true)),
-  defineReaction("frontend.options.monoAudio.off", updateState(options.monoAudio, false)),
-  defineReaction("frontend.options.monoAudio.on", updateState(options.monoAudio, true)),
 ];
 
 const accessibility = getGameState().accessibility;
@@ -421,43 +414,37 @@ const graphicsPanel = optionsPanel("optionsPanelGraphics", [
   ]),
 ]);
 
-/// The flash limiter's read-only status. There is no `options.flashLimiter`
-/// working copy by design: only the engine panel changes it, so this tab only
-/// reads the resolved `accessibility.flashLimiter` slot.
-function flashLimiterStatus() {
-  return HStack({ align: "center" }, [
-    Text({
-      id: "optionsFlashLimiterOn",
-      content: "ON",
-      fontSize: 14,
-      color: COLOR_ACCENT,
-      visibleWhen: stateEquals(accessibility.flashLimiter, true),
-    }),
-    Text({
-      id: "optionsFlashLimiterOff",
-      content: "OFF",
-      fontSize: 14,
-      visibleWhen: stateEquals(accessibility.flashLimiter, false),
-    }),
-  ]);
+/// A toggle's one control: a button showing the field's current value, named by
+/// its label on the left. Pressing it fires the field's reserved action, the
+/// same write the engine accessibility panel's control makes; the button keeps
+/// its id as its text changes, so focus stays on it.
+function valueButton(
+  id: string,
+  labelledBy: string,
+  field: "reduceMotion" | "flashLimiter" | "monoAudio",
+  valueText: ValueTextCase[],
+) {
+  return optionValue(
+    Button({ id, labelledBy, onPress: accessibilityAction(field, "cycle"), valueText }),
+  );
 }
+
+/// ON while the resolved `accessibility.<field>` slot is true, else OFF.
+function onOff(on: Predicate): ValueTextCase[] {
+  return [{ when: [on], text: "ON" }, { text: "OFF" }];
+}
+
+const followsSystem = stateEquals(accessibility.reduceMotionFollowsSystem, true);
+const motionReduced = stateEquals(accessibility.reduceMotion, true);
 
 const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
   Grid({ gap: 12, align: "stretch", cols: 2 }, [
     optionLabel("optionsReduceMotionLabel", "REDUCE MOTION"),
-    optionChoices([
-      radioChoice(
-        "optionsReduceMotionOff",
-        "OFF",
-        stateEquals(accessibility.reduceMotion, false),
-        "frontend.options.reduceMotion.off",
-      ),
-      radioChoice(
-        "optionsReduceMotionOn",
-        "ON",
-        stateEquals(accessibility.reduceMotion, true),
-        "frontend.options.reduceMotion.on",
-      ),
+    valueButton("optionsReduceMotion", "optionsReduceMotionLabel", "reduceMotion", [
+      { when: [followsSystem, motionReduced], text: "SYSTEM (ON)" },
+      { when: [followsSystem], text: "SYSTEM (OFF)" },
+      { when: [motionReduced], text: "ON" },
+      { text: "OFF" },
     ]),
     optionLabel("optionsScreenShakeScaleLabel", "SCREEN SHAKE"),
     unitSlider(
@@ -465,6 +452,20 @@ const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
       "optionsScreenShakeScaleLabel",
       options.screenShakeScale,
       0.1,
+    ),
+    optionLabel("optionsA11yViewFeelScaleLabel", "VIEW FEEL"),
+    unitSlider(
+      "optionsA11yViewFeelScale",
+      "optionsA11yViewFeelScaleLabel",
+      options.viewFeelScale,
+      0.1,
+    ),
+    optionLabel("optionsFlashLimiterLabel", "FLASH LIMITER"),
+    valueButton(
+      "optionsFlashLimiter",
+      "optionsFlashLimiterLabel",
+      "flashLimiter",
+      onOff(stateEquals(accessibility.flashLimiter, true)),
     ),
     optionLabel("optionsMasterVolumeLabel", "MASTER VOLUME"),
     unitSlider("optionsMasterVolume", "optionsMasterVolumeLabel", options.masterVolume, 0.05),
@@ -475,38 +476,13 @@ const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
     optionLabel("optionsUiVolumeLabel", "UI VOLUME"),
     unitSlider("optionsUiVolume", "optionsUiVolumeLabel", options.uiVolume, 0.05),
     optionLabel("optionsMonoAudioLabel", "MONO AUDIO"),
-    optionChoices([
-      radioChoice(
-        "optionsMonoAudioOff",
-        "OFF",
-        stateEquals(accessibility.monoAudio, false),
-        "frontend.options.monoAudio.off",
-      ),
-      radioChoice(
-        "optionsMonoAudioOn",
-        "ON",
-        stateEquals(accessibility.monoAudio, true),
-        "frontend.options.monoAudio.on",
-      ),
-    ]),
-    optionLabel(
-      "optionsFlashLimiterLabel",
-      "FLASH LIMITER",
-      "Change it in All Accessibility Settings",
+    valueButton(
+      "optionsMonoAudio",
+      "optionsMonoAudioLabel",
+      "monoAudio",
+      onOff(stateEquals(accessibility.monoAudio, true)),
     ),
-    flashLimiterStatus(),
   ]),
-  Text({
-    content: "REDUCE MOTION IS FOLLOWING THE SYSTEM SETTING",
-    fontSize: 11,
-    color: COLOR_MUTED,
-    visibleWhen: stateEquals(accessibility.reduceMotionFollowsSystem, true),
-  }),
-  Button({
-    id: "optionsAccessibilityPanel",
-    label: "ALL ACCESSIBILITY SETTINGS",
-    onPress: OPEN_ACCESSIBILITY_ACTION,
-  }),
 ]);
 
 export const optionsMenu = defineUiTree({
@@ -525,7 +501,7 @@ export const optionsMenu = defineUiTree({
     // every stop is reachable from every tab. The tab strip deliberately declares
     // no focus policy of its own: a nested group would trap nav inside the strip.
     // Hidden panels drop out of the focus export. `restoreOnReturn` brings focus
-    // back to "ALL ACCESSIBILITY SETTINGS" when the engine panel closes.
+    // back to the last-focused control when a tree pushed above this one closes.
     VStack(
       {
         localState: optionsTabState.scope,

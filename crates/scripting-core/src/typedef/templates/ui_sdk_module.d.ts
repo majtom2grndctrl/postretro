@@ -174,8 +174,10 @@ declare module "postretro/ui" {
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a spacer widget descriptor. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
-  /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. */
-  export type ButtonProps = { id: string; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp; selected?: Predicate; checked?: Predicate; bind?: Predicate; styleRanges?: StyleRangesProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
+  export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
+  /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`. */
+  export type ButtonProps = { id: string; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp; selected?: Predicate; checked?: Predicate; bind?: Predicate; styleRanges?: StyleRangesProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole; valueText?: ValueTextCase[] } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
   /** Build an interactive button descriptor. Pure; activation is resolved by the app at runtime. */
   export function Button(props: ButtonProps): WidgetDescriptor;
   /** Props for `Slider`. `bind` must be writable numeric state/local cell. `min`, `max`, and `step` are finite numbers; navigation clamps writes into `[min, max]`. Exactly one of `label` or `labelledBy` is required. */
@@ -270,8 +272,8 @@ declare module "postretro/ui" {
   export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   /** Reserved `Button.onPress` action that opens the engine accessibility panel. */
   export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
-  /** Accessibility toggles a mod menu button may cycle. The flash limiter is absent: only the engine panel changes it. */
-  export type AccessibilityToggleField = "reduceMotion" | "monoAudio";
+  /** Accessibility toggles a menu button may cycle. */
+  export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
   /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
   export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
   /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */

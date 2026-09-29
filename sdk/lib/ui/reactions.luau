@@ -298,11 +298,11 @@ UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
 UiReactionsSdk.OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility"
 
 --- The reserved `onPress` action for one accessibility field:
---- `ui.accessibility.<op>.<field>`. Toggles (`reduceMotion`, `monoAudio`)
---- `cycle`; numeric fields (`screenShakeScale`, `viewFeelScale`,
+--- `ui.accessibility.<op>.<field>`. Toggles (`reduceMotion`, `flashLimiter`,
+--- `monoAudio`) `cycle`; numeric fields (`screenShakeScale`, `viewFeelScale`,
 --- `masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume`) `increase` or
---- `decrease`. The flash limiter has no action here: only the engine panel
---- changes it.
+--- `decrease`. The action writes the player's setting exactly as the engine
+--- accessibility panel's control does.
 function UiReactionsSdk.accessibilityAction(field: string, op: string): string
 	return `ui.accessibility.{op}.{field}`
 end

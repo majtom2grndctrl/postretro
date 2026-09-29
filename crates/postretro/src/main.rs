@@ -124,8 +124,8 @@ use winit::window::{Window, WindowAttributes};
 
 #[cfg(test)]
 use crate::app::ui_actions::{
-    UiButtonAction, apply_pause_menu_nav_policy, classify_ui_button_action,
-    focused_button_on_press, route_ui_button_action,
+    UiButtonAction, apply_pause_menu_nav_policy, apply_running_cancel_policy,
+    classify_ui_button_action, focused_button_on_press, route_ui_button_action,
 };
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
@@ -807,11 +807,6 @@ pub(crate) struct App {
     /// queues nothing — hence the dedicated punch-through, mirroring how
     /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
     pending_menu_toggle: bool,
-
-    /// The accessibility panel's global input (F1, gamepad Select) was pressed
-    /// this frame's Input stage. Applied in game logic; never latched across a
-    /// frame that draws no UI.
-    pending_panel_toggle: bool,
 
     /// Whether the engine accessibility panel was on the stack at the last
     /// options update, so any close path is noticed once.
@@ -2130,10 +2125,9 @@ impl ApplicationHandler for App {
                 // events forward through the seam. See: context/lib/input.md §7
                 // Reached only in Running (Frontend returned above), so the
                 // session is installed. Disjoint borrows of the session group and
-                // the non-session `nav_stick_tracker`; mode-signal, menu-toggle,
-                // and panel-toggle votes are collected and applied after the
-                // borrow ends.
-                let (gamepad_nav_seen, gamepad_menu_toggle, gamepad_panel_toggle) = {
+                // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
+                // votes are collected and applied after the borrow ends.
+                let (gamepad_nav_seen, gamepad_menu_toggle) = {
                     let App {
                         session,
                         nav_stick_tracker,
@@ -2141,7 +2135,6 @@ impl ApplicationHandler for App {
                     } = self;
                     let mut nav_seen = false;
                     let mut menu_toggle = false;
-                    let mut panel_toggle = false;
                     if let Some(session) = session.as_mut() {
                         if let Some(gp) = session.gamepad_system.as_mut() {
                             let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
@@ -2171,13 +2164,6 @@ impl ApplicationHandler for App {
                                     menu_toggle = true;
                                     continue;
                                 }
-                                // `nav.options` is the panel's global input: the
-                                // App consumes it ahead of the capture gate and
-                                // slider capture, so no tree claims it.
-                                if intent == input::NavIntent::Options {
-                                    panel_toggle = true;
-                                    continue;
-                                }
                                 if capture {
                                     session
                                         .ui_dispatch
@@ -2186,16 +2172,13 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    (nav_seen, menu_toggle, panel_toggle)
+                    (nav_seen, menu_toggle)
                 };
                 if gamepad_nav_seen {
                     self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
                 }
                 if gamepad_menu_toggle {
                     self.pending_menu_toggle = true;
-                }
-                if gamepad_panel_toggle {
-                    self.request_panel_toggle();
                 }
 
                 // Resolve this frame's input-mode signal into the engine-owned
@@ -2334,25 +2317,20 @@ impl ApplicationHandler for App {
                 // but never removes the frontend root. The capture-mode
                 // + cursor effect follows on this frame's `reconcile_ui_focus`
                 // below. The toggle flag is a punch-through from gameplay;
-                // `cancelled` rides the captured-intent queue.
-                //
-                // The accessibility panel's global input applies first; while the
-                // panel is the active tree, `nav.cancel` closes it too.
-                let panel_toggled = self.apply_panel_toggle();
+                // `cancelled` rides the captured-intent queue. While the
+                // accessibility panel is the active tree, `nav.cancel` closes it
+                // too.
                 if self.pending_menu_toggle {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
-                } else if focus_result.cancelled && !text_entry_consumed_nav && !panel_toggled {
+                } else if focus_result.cancelled && !text_entry_consumed_nav {
                     let close_frontend_submenu =
                         self.frontend_menu_is_present() && !self.frontend_menu_is_top();
                     if let Some(session) = self.session.as_mut() {
-                        let active = session.modal_stack.active_name();
-                        if active == Some(postretro_ui::demo::PAUSE_MENU_NAME)
-                            || active == Some(postretro_ui::demo::ACCESSIBILITY_PANEL_NAME)
-                            || close_frontend_submenu
-                        {
-                            session.modal_stack.pop();
-                        }
+                        crate::app::ui_actions::apply_running_cancel_policy(
+                            &mut session.modal_stack,
+                            close_frontend_submenu,
+                        );
                     }
                 }
 
@@ -5174,12 +5152,8 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.frontend = frontend;
         }
-        if let Some(session) = self.session.as_ref() {
-            crate::app::accessibility_panel::warn_missing_accessibility_entries(
-                &session.modal_stack,
-                self.frontend_menu_tree_name(),
-                None,
-            );
+        if let Some(session) = self.session.as_mut() {
+            session.check_accessibility_entry();
         }
         if frontend_was_top || self.boot_state == BootState::Frontend {
             self.present_frontend_menu();
@@ -5443,7 +5417,7 @@ impl App {
         // Gamepad poll: disjoint borrows of the session group and the
         // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
         // recorded after the borrow ends.
-        let (nav_input_seen, panel_toggle) = {
+        let nav_input_seen = {
             let App {
                 session,
                 nav_stick_tracker,
@@ -5451,7 +5425,6 @@ impl App {
             } = self;
             let session = session.as_mut().expect("frontend session installed");
             let mut nav_input_seen = false;
-            let mut panel_toggle = false;
             if let Some(gp) = session.gamepad_system.as_mut() {
                 let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
                 gp.tick_rumble(frame_dt);
@@ -5467,10 +5440,6 @@ impl App {
                     if intent == input::NavIntent::Menu {
                         continue;
                     }
-                    if intent == input::NavIntent::Options {
-                        panel_toggle = true;
-                        continue;
-                    }
                     if capture {
                         session
                             .ui_dispatch
@@ -5478,13 +5447,10 @@ impl App {
                     }
                 }
             }
-            (nav_input_seen, panel_toggle)
+            nav_input_seen
         };
         if nav_input_seen {
             self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
-        }
-        if panel_toggle {
-            self.request_panel_toggle();
         }
 
         let mode_signal = self.pending_mode_signal.take();
@@ -5543,10 +5509,8 @@ impl App {
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
-        let panel_toggled = self.apply_panel_toggle();
         if focus_result.cancelled
             && !text_entry_consumed_nav
-            && !panel_toggled
             && !self.frontend_menu_is_top()
             && let Some(session) = self.session.as_mut()
         {
@@ -12563,6 +12527,26 @@ mod tests {
             Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION)
         );
         assert_eq!(
+            button_action(&title.root, "frontendAccessibility"),
+            None,
+            "Options → Accessibility is the title menu's route to accessibility"
+        );
+        assert_eq!(
+            button_action(
+                &tree(postretro_ui::demo::PAUSE_MENU_NAME).root,
+                "pauseOptions"
+            ),
+            Some("frontend.openOptions"),
+            "the pause menu opens the same tabbed options screen"
+        );
+        assert_eq!(
+            button_action(
+                &tree(postretro_ui::demo::PAUSE_MENU_NAME).root,
+                "pauseAccessibility"
+            ),
+            None
+        );
+        assert_eq!(
             button_action(&tree("frontend.devLevelSelect").root, "levelSelectBack"),
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
         );
@@ -12596,7 +12580,7 @@ mod tests {
         );
         assert!(
             options_root.restore_on_return,
-            "closing the engine panel returns focus to the button that opened it"
+            "closing a tree pushed above returns focus to the control it left"
         );
         let tab_state = options_root
             .local_state
@@ -12725,19 +12709,18 @@ mod tests {
                 "optionsTabAccessibility",
                 "accessibility",
                 "optionsPanelAccessibility",
-                // 14 existing cells plus the flash limiter's label and status.
-                16,
+                // A label and a control for each of the nine accessibility fields.
+                18,
                 &[
-                    "optionsReduceMotionOff",
-                    "optionsReduceMotionOn",
+                    "optionsReduceMotion",
                     "optionsScreenShakeScale",
+                    "optionsA11yViewFeelScale",
+                    "optionsFlashLimiter",
                     "optionsMasterVolume",
                     "optionsSfxVolume",
                     "optionsMusicVolume",
                     "optionsUiVolume",
-                    "optionsMonoAudioOff",
-                    "optionsMonoAudioOn",
-                    "optionsAccessibilityPanel",
+                    "optionsMonoAudio",
                 ][..],
             ),
         ] {
@@ -12806,44 +12789,80 @@ mod tests {
             "no grid sits outside the three tab panels"
         );
 
+        // Every toggle is one value button on the right, named by its label on
+        // the left, firing the field's reserved action — the flash limiter's
+        // included — and showing the resolved value.
         let accessibility_panel = find_by_id(&options_tree.root, "optionsPanelAccessibility")
             .expect("accessibility panel is in the options tree");
-        for (id, content, on) in [
-            ("optionsFlashLimiterOn", "ON", true),
-            ("optionsFlashLimiterOff", "OFF", false),
+        let is = |slot: &str, value: bool| Predicate {
+            source: BindSource::Slot { slot: slot.into() },
+            equals: Some(PredicateValue::Boolean(value)),
+        };
+        for (id, field, cases) in [
+            (
+                "optionsReduceMotion",
+                "reduceMotion",
+                vec![
+                    (
+                        vec![
+                            is("accessibility.reduceMotionFollowsSystem", true),
+                            is("accessibility.reduceMotion", true),
+                        ],
+                        "SYSTEM (ON)",
+                    ),
+                    (
+                        vec![is("accessibility.reduceMotionFollowsSystem", true)],
+                        "SYSTEM (OFF)",
+                    ),
+                    (vec![is("accessibility.reduceMotion", true)], "ON"),
+                    (vec![], "OFF"),
+                ],
+            ),
+            (
+                "optionsFlashLimiter",
+                "flashLimiter",
+                vec![
+                    (vec![is("accessibility.flashLimiter", true)], "ON"),
+                    (vec![], "OFF"),
+                ],
+            ),
+            (
+                "optionsMonoAudio",
+                "monoAudio",
+                vec![
+                    (vec![is("accessibility.monoAudio", true)], "ON"),
+                    (vec![], "OFF"),
+                ],
+            ),
         ] {
-            let Some(Widget::Text(status)) = find_by_id(accessibility_panel, id) else {
-                panic!("{id} is a text in the accessibility tab");
-            };
-            assert_eq!(status.content, content);
-            assert_eq!(
-                status.visible_when,
-                Some(Predicate {
-                    source: BindSource::Slot {
-                        slot: "accessibility.flashLimiter".into()
-                    },
-                    equals: Some(PredicateValue::Boolean(on)),
-                }),
-                "{id} reads the resolved readonly limiter slot"
+            let button = find_button(accessibility_panel, id)
+                .unwrap_or_else(|| panic!("{id} is a button in the accessibility tab"));
+            assert_eq!(button.on_press, format!("ui.accessibility.cycle.{field}"));
+            assert_eq!(button.label, None);
+            let label_id = format!("{id}Label");
+            assert_eq!(button.labelled_by.as_deref(), Some(label_id.as_str()));
+            assert!(
+                matches!(
+                    find_by_id(accessibility_panel, &label_id),
+                    Some(Widget::Text(_))
+                ),
+                "{id} is named by a text label"
             );
+            let actual: Vec<(Vec<Predicate>, &str)> = button
+                .value_text
+                .iter()
+                .map(|case| (case.when.clone(), case.text.as_str()))
+                .collect();
+            assert_eq!(actual, cases, "{id} shows the field's current value");
         }
-        let mut every_widget = Vec::new();
-        collect_widgets(&options_tree.root, &mut every_widget);
         assert!(
-            every_widget.iter().all(|widget| match widget {
-                Widget::Button(button) => !button.on_press.contains("flashLimiter"),
-                Widget::Slider(slider) => slider
-                    .bind
-                    .source
-                    .slot()
-                    .is_none_or(|slot| !slot.contains("flashLimiter")),
-                _ => true,
-            }),
-            "the flash limiter is read-only here: only the engine panel changes it"
+            find_by_id(accessibility_panel, "optionsAccessibilityPanel").is_none(),
+            "every field is in the tab; it needs no route to the engine panel"
         );
 
         for (slider, slot) in [
             ("optionsScreenShakeScale", "options.screenShakeScale"),
+            ("optionsA11yViewFeelScale", "options.viewFeelScale"),
             ("optionsMasterVolume", "options.masterVolume"),
             ("optionsSfxVolume", "options.sfxVolume"),
             ("optionsMusicVolume", "options.musicVolume"),
@@ -12853,14 +12872,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("{slider} is reachable in the options tree"));
             assert_eq!(slider.bind.source, BindSource::Slot { slot: slot.into() });
         }
-        assert_eq!(
-            button_action(&options_tree.root, "optionsAccessibilityPanel"),
-            Some(postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION)
-        );
-        assert_eq!(
-            button_action(&title.root, "frontendAccessibility"),
-            Some(postretro_ui::actions::OPEN_ACCESSIBILITY_ACTION)
-        );
         let sensitivity = find_slider(&options_tree.root, "optionsMouseSensitivity")
             .expect("mouse sensitivity slider is reachable in the options tree");
         assert_eq!(sensitivity.label, None);
@@ -12979,6 +12990,29 @@ mod tests {
             "nav.menu is ignored while another modal is active",
         );
         assert_eq!(stack.len(), 1);
+
+        // Cancel from a submenu opened from the pause menu (the options
+        // screen) returns to the pause menu; cancel again closes it.
+        stack.clear_pushed();
+        stack
+            .registry_mut()
+            .register("options", capturing_tree(), ScopeTier::Mod, false);
+        apply_pause_menu_nav_policy(&mut stack);
+        stack.push_named("options", None);
+        apply_running_cancel_policy(&mut stack, false);
+        assert_eq!(
+            stack.active_name(),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
+            "cancel pops the submenu and reveals the pause menu",
+        );
+        assert_eq!(stack.len(), 1, "the options tree is popped");
+        apply_running_cancel_policy(&mut stack, false);
+        assert!(stack.is_empty(), "cancel closes the pause menu as before");
+
+        // A tree with no pause menu beneath owns its own cancel policy.
+        stack.push_named("dialog", None);
+        apply_running_cancel_policy(&mut stack, false);
+        assert_eq!(stack.active_name(), Some("dialog"));
     }
 
     // --- resolve_crouch_intent (input-layer toggle/hold derivation) ---

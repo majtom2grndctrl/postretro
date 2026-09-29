@@ -229,6 +229,11 @@ pub(crate) struct Session {
     /// See: context/lib/boot_sequence.md §4.
     pub(crate) frontend: Option<Frontend>,
 
+    /// Whether the mod's UI trees offer accessibility, re-evaluated when the
+    /// tree set changes so its load-time warning fires once per state.
+    /// See: context/lib/ui.md §4.1.
+    pub(crate) accessibility_entry_check: crate::app::accessibility_panel::AccessibilityEntryCheck,
+
     /// Network endpoint (M15 Phase 1). Inner `Option` is genuine runtime absence:
     /// `None` for single-player (net inert); `Host`/`Client` once a
     /// `--host`/`--connect` role's transport is constructed. A malformed net flag
@@ -629,6 +634,7 @@ impl Session {
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.
             frontend: None,
+            accessibility_entry_check: Default::default(),
             net_endpoint,
             seat_table,
             audio,

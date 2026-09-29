@@ -37,7 +37,7 @@
 - **Remapping / rebinding / key bindings / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat)** → `player_options.md` §6 · `input.md` §5, §7
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
-- **Accessibility panel / `ui.openAccessibility` / global panel input (Select/Back) / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
+- **Accessibility panel / `ui.openAccessibility` / accessibility field actions / missing-entry warning / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
 - **Photosensitivity / flash limiter / strobe safety** → `rendering_pipeline.md` §7.8 (Photosensitivity limiter)
 - **Screen reader / assistive technology / accessibility snapshot / hidden-window adapter boot** → `ui.md` §4.2 · `boot_sequence.md` §Window visibility
 - **Theme variants / high contrast / text scale / contrast diagnostic / focus visuals** → `ui.md` §1, §2

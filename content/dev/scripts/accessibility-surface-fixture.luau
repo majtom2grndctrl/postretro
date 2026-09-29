@@ -27,11 +27,38 @@ function setupLevel(_ctx: any): LevelManifest
     }, {
       -- A mod menu entry to the engine panel.
       UI.Button({ id = "openA11y", label = "ACCESSIBILITY", onPress = UI.OPEN_ACCESSIBILITY_ACTION }),
-      -- A panel field action on a mod button.
+      -- A panel field action on a mod value button: named by its label, its
+      -- text shows the field's current value.
+      UI.Text({ id = "reduceMotionLabel", content = "REDUCE MOTION" }),
       UI.Button({
         id = "reduceMotion",
-        label = "REDUCE MOTION",
+        labelledBy = "reduceMotionLabel",
         onPress = UI.accessibilityAction("reduceMotion", "cycle"),
+        valueText = {
+          {
+            when = {
+              UI.stateEquals(accessibility.reduceMotionFollowsSystem, true),
+              UI.stateEquals(accessibility.reduceMotion, true),
+            },
+            text = "SYSTEM (ON)",
+          },
+          {
+            when = { UI.stateEquals(accessibility.reduceMotionFollowsSystem, true) },
+            text = "SYSTEM (OFF)",
+          },
+          { when = { UI.stateEquals(accessibility.reduceMotion, true) }, text = "ON" },
+          { text = "OFF" },
+        },
+      }),
+      UI.Text({ id = "flashLimiterLabel", content = "FLASH LIMITER" }),
+      UI.Button({
+        id = "flashLimiter",
+        labelledBy = "flashLimiterLabel",
+        onPress = UI.accessibilityAction("flashLimiter", "cycle"),
+        valueText = {
+          { when = { UI.stateEquals(accessibility.flashLimiter, true) }, text = "LIMITER ON" },
+          { text = "LIMITER OFF" },
+        },
       }),
       UI.Button({
         id = "shakeDown",

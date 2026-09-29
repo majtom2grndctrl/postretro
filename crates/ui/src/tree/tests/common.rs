@@ -310,5 +310,6 @@ pub fn button(id: &str, on_press: &str) -> Widget {
         disabled: false,
         visible_when: None,
         role: None,
+        value_text: Vec::new(),
     })
 }

@@ -570,12 +570,49 @@ end
 
 -- --- Button -----------------------------------------------------------------
 
+-- Validate + clone a Button's `valueText` cases, or nil when absent or empty.
+local function buildValueText(value: any, factory: string): any?
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`valueText\` must be an array of cases with \`text\` and optional \`when\``)
+  end
+  local cases = {}
+  for i, raw in ipairs(value) do
+    if type(raw) ~= "table" then
+      error(`{factory}: \`valueText[{i}]\` must be a table`)
+    end
+    requireString(raw.text, `valueText[{i}].text`, factory)
+    local case: { [string]: any } = { text = raw.text }
+    if raw.when ~= nil then
+      if type(raw.when) ~= "table" then
+        error(`{factory}: \`valueText[{i}].when\` must be an array of predicates`)
+      end
+      local when = {}
+      for j, p in ipairs(raw.when) do
+        table.insert(when, buildPredicate(p, `valueText[{i}].when[{j}]`, factory))
+      end
+      if #when > 0 then
+        case.when = when
+      end
+    end
+    table.insert(cases, case)
+  end
+  if #cases == 0 then
+    return nil
+  end
+  return cases
+end
+
 --- An interactive `button`. `id` is required. `onPress` accepts a reaction
 --- handle (the `.name` is read) or a bare reaction-name string, emitting the
 --- unchanged `onPress: string` wire form. Name-XOR (M13 G2): exactly one of
 --- `label` / `labelledBy` is required -- neither or both errors. `selected`/
 --- `checked` are reactive predicates; `bind`+`styleRanges` drive the reactive
---- highlight; `disabled` makes it non-interactive.
+--- highlight; `disabled` makes it non-interactive. `valueText` makes the
+--- visible text follow state: the first `{ when?, text }` case whose predicates
+--- all hold is shown, else `label`.
 function UiWidgetsSdk.Button(props: any): WidgetDescriptor
   requireObject(props, "Button")
   requireNonemptyString(props.id, "id", "Button")
@@ -631,6 +668,10 @@ function UiWidgetsSdk.Button(props: any): WidgetDescriptor
     end
   end
   applyA11yFields(out, props, "Button")
+  local valueText = buildValueText(props.valueText, "Button")
+  if valueText ~= nil then
+    out.valueText = valueText
+  end
   return out
 end
 

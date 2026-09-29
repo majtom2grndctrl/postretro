@@ -828,12 +828,21 @@ export function Spacer(props: SpacerProps = {}): WidgetDescriptor {
 // --- Button -----------------------------------------------------------------
 
 /**
+ * One `Button.valueText` case: `text` shows while every predicate in `when`
+ * holds. An absent or empty `when` always holds, so a last case can be the
+ * default.
+ */
+export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
+
+/**
  * Props for `Button`. `onPress` is a reaction handle or a bare name string.
  * Name-XOR (M13 G2): exactly one of `label` (inline accessible name) or
  * `labelledBy` (a node id whose text names this button) is required — neither or
  * both throws, and the union narrows it at compile time. `selected`/`checked` are
  * reactive `Predicate`s; `bind`+`styleRanges` drive the reactive highlight;
- * `disabled` makes it non-interactive.
+ * `disabled` makes it non-interactive. `valueText` makes the visible text follow
+ * state: the first case whose predicates all hold is shown, else `label`. A
+ * toggle's one control shows its value ("ON") while `labelledBy` names the field.
  */
 export type ButtonProps = {
   id: string;
@@ -847,7 +856,36 @@ export type ButtonProps = {
   disabled?: boolean;
   visibleWhen?: Predicate;
   role?: WidgetRole;
+  valueText?: ValueTextCase[];
 } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+
+/** Validate + clone a Button's `valueText` cases; an empty array is omitted. */
+function buildValueText(value: unknown, factory: string): ValueTextCase[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${factory}: \`valueText\` must be an array of { when?, text } cases`);
+  }
+  const cases = value.map((raw: unknown, i: number) => {
+    if (raw === null || typeof raw !== "object") {
+      throw new Error(`${factory}: \`valueText[${i}]\` must be an object`);
+    }
+    const c = raw as Record<string, unknown>;
+    requireString(c.text, `valueText[${i}].text`, factory);
+    const out: ValueTextCase = { text: c.text as string };
+    if (c.when !== undefined) {
+      if (!Array.isArray(c.when)) {
+        throw new Error(`${factory}: \`valueText[${i}].when\` must be an array of predicates`);
+      }
+      const when = c.when.map(
+        (p: unknown, j: number) =>
+          buildPredicate(p, `valueText[${i}].when[${j}]`, factory) as Predicate,
+      );
+      if (when.length > 0) out.when = when;
+    }
+    return out;
+  });
+  return cases.length > 0 ? cases : undefined;
+}
 
 /**
  * An interactive `button`. `id` is required (activation resolves the focused
@@ -899,6 +937,8 @@ export function Button(props: ButtonProps): WidgetDescriptor {
     if (props.disabled) out.disabled = true;
   }
   applyA11yFields(out, props, "Button");
+  const valueText = buildValueText(props.valueText, "Button");
+  if (valueText !== undefined) out.valueText = valueText;
   return out;
 }
 

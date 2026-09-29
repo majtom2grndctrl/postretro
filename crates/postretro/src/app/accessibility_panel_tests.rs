@@ -1,5 +1,6 @@
-// App-level accessibility panel tests: reserved field actions, flash-limiter
-// attribution, engine-routed sliders, settled saves and the first-launch record.
+// App-level accessibility panel tests: reserved field actions from any tree,
+// engine-routed sliders, settled saves, the first-launch record and the
+// missing-entry warning.
 // See: context/lib/ui.md §4.1
 
 use log::Level;
@@ -92,59 +93,27 @@ fn limiter(app: &App) -> bool {
 const LIMITER_ACTION: &str = "ui.accessibility.cycle.flashLimiter";
 
 #[test]
-fn the_panels_own_limiter_control_toggles_the_limiter() {
-    let mut app = app_with_panel();
-    push(&mut app, ACCESSIBILITY_PANEL_NAME);
-    export_button(
-        &mut app,
-        LIMITER_ACTION,
-        owner(ACCESSIBILITY_PANEL_NAME, ScopeTier::Engine),
-    );
-    press(&mut app);
-    assert!(!limiter(&app));
-    press(&mut app);
-    assert!(limiter(&app));
-}
-
-#[test]
-fn the_limiter_action_from_any_other_tree_is_ignored_with_a_warning() {
+fn the_limiter_action_from_any_tree_toggles_the_limiter() {
+    // The engine panel's own control, a mod tree's button, and a press with no
+    // recorded owner all reach the setting the same way.
     let cases = [
-        // A mod tree's button, with that mod tree active.
-        (Some(MOD_MENU), owner(MOD_MENU, ScopeTier::Mod)),
-        // A mod tree popped earlier this frame leaves the panel on top, but
-        // the press resolved against the mod tree's export.
         (
-            Some(ACCESSIBILITY_PANEL_NAME),
-            owner(MOD_MENU, ScopeTier::Mod),
-        ),
-        // A mod tree registered at mod tier under another name that happens
-        // to be the panel's descriptor.
-        (
-            Some(ACCESSIBILITY_PANEL_NAME),
-            owner(ACCESSIBILITY_PANEL_NAME, ScopeTier::Mod),
-        ),
-        // The panel's own control after the active tree changed earlier in the
-        // frame.
-        (
-            Some(MOD_MENU),
+            ACCESSIBILITY_PANEL_NAME,
             owner(ACCESSIBILITY_PANEL_NAME, ScopeTier::Engine),
         ),
-        // No export owner at all.
-        (Some(ACCESSIBILITY_PANEL_NAME), None),
+        (MOD_MENU, owner(MOD_MENU, ScopeTier::Mod)),
+        (MOD_MENU, None),
     ];
     for (active, from) in cases {
         let capture = LogCapture::start();
         let mut app = app_with_panel();
-        if let Some(active) = active {
-            push(&mut app, active);
-        }
+        push(&mut app, active);
         export_button(&mut app, LIMITER_ACTION, from.clone());
         press(&mut app);
-        assert!(limiter(&app), "active {active:?}, owner {from:?}");
-        capture.assert_logged_once(
-            Level::Warn,
-            "only the engine accessibility panel changes the flash limiter",
-        );
+        assert!(!limiter(&app), "active {active}, owner {from:?}");
+        press(&mut app);
+        assert!(limiter(&app), "active {active}, owner {from:?}");
+        capture.assert_not_logged(Level::Warn, "flash");
     }
 }
 
@@ -253,7 +222,11 @@ fn an_engine_tier_slider_steps_its_field_through_the_field_action() {
 }
 
 #[test]
-fn a_mod_tier_slider_on_a_resolved_slot_keeps_the_setstate_path() {
+fn a_mod_tier_slider_on_a_resolved_slot_warns_and_writes_nothing() {
+    // Engine-routed slider steps are engine-tier only: a mod slider bound to a
+    // readonly `accessibility.*` slot rides the ordinary `setState` path, where
+    // the readonly write gate warns and no-ops.
+    let capture = LogCapture::start();
     let mut app = app_with_panel();
     push(&mut app, MOD_MENU);
     app.update_player_options(0.0, false);
@@ -264,12 +237,24 @@ fn a_mod_tier_slider_on_a_resolved_slot_keeps_the_setstate_path() {
     );
     let mut intents = vec![crate::input::NavIntent::Left];
     app.apply_slider_nav_capture(&mut intents);
+    assert!(
+        !app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .system_commands
+            .is_empty(),
+        "the step rides setState"
+    );
+    app.dispatch_system_commands();
+    app.update_player_options(0.0, false);
+    capture.assert_logged(
+        Level::Warn,
+        "rejected write to readonly slot `accessibility.screenShakeScale`",
+    );
     let session = app.session.as_ref().unwrap();
     assert_eq!(session.player_options.accessibility.screen_shake_scale, 1.0);
-    assert!(
-        !session.scripting.script_ctx.system_commands.is_empty(),
-        "the step rides setState, where the readonly slot warns and no-ops"
-    );
 }
 
 #[test]
@@ -364,13 +349,12 @@ fn menu(with_entry: bool) -> postretro_ui::descriptor::AnchoredTree {
 }
 
 #[test]
-fn a_frontend_or_pause_tree_without_an_accessibility_entry_warns_naming_it() {
-    use super::accessibility_panel::warn_missing_accessibility_entries;
+fn a_mod_offering_no_accessibility_warns_once_per_state() {
+    use super::accessibility_panel::AccessibilityEntryCheck;
     use postretro_ui::demo::{FRONTEND_MENU_NAME, PAUSE_MENU_NAME};
     use postretro_ui::modal_stack::ModalStack;
 
-    let warning =
-        |name: &str| format!("tree '{name}' has no button whose onPress is 'ui.openAccessibility'");
+    const WARNING: &str = "no mod or level UI tree offers accessibility settings";
     let mut stack = ModalStack::new();
     stack
         .registry_mut()
@@ -378,36 +362,84 @@ fn a_frontend_or_pause_tree_without_an_accessibility_entry_warns_naming_it() {
     stack
         .registry_mut()
         .register(PAUSE_MENU_NAME, menu(true), ScopeTier::Engine, false);
+    stack.registry_mut().register(
+        ACCESSIBILITY_PANEL_NAME,
+        build_accessibility_panel_descriptor(),
+        ScopeTier::Engine,
+        false,
+    );
+    let mut check = AccessibilityEntryCheck::default();
 
-    // Engine fallbacks carry the entry: silent.
+    // A mod with no trees of its own uses the engine fallback menus, which
+    // carry the entry: silent.
     let capture = LogCapture::start();
-    warn_missing_accessibility_entries(&stack, FRONTEND_MENU_NAME, None);
-    capture.assert_not_logged(Level::Warn, "has no button whose onPress");
+    check.evaluate(&stack, FRONTEND_MENU_NAME);
+    capture.assert_not_logged(Level::Warn, WARNING);
 
-    // UO8: a staged reload retargets `frontend.menuTree` to a mod tree without
-    // the button; the check names that tree, not the previous one.
+    // Mod init commits a title and pause menu without an entry. The engine
+    // panel's own field actions do not count.
     stack
         .registry_mut()
-        .register("titleV2", menu(false), ScopeTier::Mod, false);
+        .register("title", menu(false), ScopeTier::Mod, false);
     stack
         .registry_mut()
         .register(PAUSE_MENU_NAME, menu(false), ScopeTier::Mod, false);
     capture.clear();
-    warn_missing_accessibility_entries(&stack, "titleV2", None);
-    capture.assert_logged_once(Level::Warn, &warning("titleV2"));
-    capture.assert_logged_once(Level::Warn, &warning(PAUSE_MENU_NAME));
-    capture.assert_not_logged(Level::Warn, &warning(FRONTEND_MENU_NAME));
+    check.evaluate(&stack, "title");
+    capture.assert_logged_once(Level::Warn, WARNING);
+    capture.assert_logged_once(
+        Level::Warn,
+        "Players still see the accessibility panel on first launch",
+    );
 
-    // A reload that adds the button draws no warning for that tree.
+    // A later evaluation in the same state (a level install, a reload that
+    // still offers nothing) does not warn again.
+    capture.clear();
+    check.evaluate(&stack, "title");
+    capture.assert_not_logged(Level::Warn, WARNING);
+
+    // UO8: a staged reload adds an options tree with one field action. Any
+    // mod or level tree counts, not only the frontend and pause menus.
+    let mut options = menu(false);
+    let postretro_ui::descriptor::Widget::VStack(root) = &mut options.root else {
+        panic!("vstack root");
+    };
+    root.children.push(postretro_ui::descriptor::Widget::Button(
+        serde_json::from_value(serde_json::json!({
+            "id": "monoAudio",
+            "label": "MONO AUDIO",
+            "onPress": "ui.accessibility.cycle.monoAudio"
+        }))
+        .unwrap(),
+    ));
     stack
         .registry_mut()
-        .register("titleV2", menu(true), ScopeTier::Mod, false);
+        .register("modOptions", options, ScopeTier::Mod, false);
     capture.clear();
-    warn_missing_accessibility_entries(&stack, "titleV2", None);
-    capture.assert_not_logged(Level::Warn, &warning("titleV2"));
+    check.evaluate(&stack, "title");
+    capture.assert_not_logged(Level::Warn, WARNING);
 
-    // Level load checks only level-scope trees.
+    // A reload that removes it enters the missing state again: one warning.
+    stack.replace_script_tree_tier(
+        [("title", menu(false)), (PAUSE_MENU_NAME, menu(false))].map(|(name, tree)| {
+            postretro_scripting_core::data_descriptors::RegisteredUiTree {
+                name: name.to_string(),
+                tree,
+                always_on: false,
+                hide_below: false,
+            }
+        }),
+        ScopeTier::Mod,
+    );
     capture.clear();
-    warn_missing_accessibility_entries(&stack, "titleV2", Some(ScopeTier::Level));
-    capture.assert_not_logged(Level::Warn, "has no button whose onPress");
+    check.evaluate(&stack, "title");
+    capture.assert_logged_once(Level::Warn, WARNING);
+
+    // A level tree with an entry satisfies the check too.
+    stack
+        .registry_mut()
+        .register("levelMenu", menu(true), ScopeTier::Level, false);
+    capture.clear();
+    check.evaluate(&stack, "title");
+    capture.assert_not_logged(Level::Warn, WARNING);
 }

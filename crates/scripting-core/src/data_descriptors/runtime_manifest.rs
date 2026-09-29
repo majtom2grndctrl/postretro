@@ -161,6 +161,11 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
             predicate(&button.selected, "selected")?;
             predicate(&button.checked, "checked")?;
             predicate(&button.bind, "bind")?;
+            for (index, case) in button.value_text.iter().enumerate() {
+                for condition in &case.when {
+                    source(&condition.source, &format!("valueText[{index}].when"))?;
+                }
+            }
             predicate(&button.visible_when, "visibleWhen")
         }
         Widget::Slider(slider) => {

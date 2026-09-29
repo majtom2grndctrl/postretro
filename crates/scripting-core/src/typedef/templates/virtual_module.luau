@@ -5,9 +5,8 @@
 -- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
 -- is typed directly from SDK function signatures instead of bare globals.
 
---- Accessibility toggles a mod menu button may cycle. The flash limiter is
---- absent: only the engine panel changes it.
-export type AccessibilityToggleField = "reduceMotion" | "monoAudio"
+--- Accessibility toggles a menu button may cycle.
+export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio"
 
 --- Accessibility numeric fields a mod menu button may step, each within [0, 1].
 export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
@@ -108,7 +107,7 @@ export type PostretroUiModule = {
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   --- Reserved button `onPress` action that opens the engine accessibility panel.
   OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
-  --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. The flash limiter has none.
+  --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`.
   accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
   --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
   updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,

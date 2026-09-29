@@ -19,7 +19,8 @@ use super::bindings::{
 };
 use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
-use super::predicate::resolve_predicate;
+use super::node_context::ValueText;
+use super::predicate::{resolve_predicate, resolve_value_text};
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
 use super::{CellValues, ImageSizes};
 
@@ -208,7 +209,8 @@ impl UiTree {
     /// nodes resolve their drawn string/color against it at `collect_node` time;
     /// an absent slot falls back to the literal descriptor value. Layout never
     /// depends on it — only the drawn payload does — so binding never re-triggers
-    /// a recompute.
+    /// a recompute. The one exception is a button's `valueText`, whose resolved
+    /// text is measured and drawn alike, exactly as on the retained path.
     pub fn build_draw_data(
         &mut self,
         device_size: [u32; 2],
@@ -216,6 +218,21 @@ impl UiTree {
         image_sizes: &ImageSizes,
         slot_values: &HashMap<String, SlotValue>,
     ) -> UiDrawData {
+        let no_cells = CellValues::new();
+        let mut nodes: Vec<NodeId> = Vec::new();
+        self.collect_node_ids(self.root, &mut nodes);
+        for node in nodes {
+            if let Some(NodeContext::Text {
+                content,
+                last_resolved,
+                value_text: Some(value_text),
+                ..
+            }) = self.taffy.get_node_context_mut(node)
+                && sync_value_text(value_text, content, last_resolved, slot_values, &no_cells)
+            {
+                self.mark_dirty(node);
+            }
+        }
         // Gate: recompute only on a structural change (taffy's root cache is
         // empty after a rebuild) or a viewport change. taffy caches computed
         // layout internally and only recomputes dirtied subtrees; this gate
@@ -259,7 +276,6 @@ impl UiTree {
         // `time_seconds`. This path also carries no
         // `{ local }` binds (a fresh tree is transient and carries no scope cells),
         // so cell resolution sees an empty map.
-        let no_cells = CellValues::new();
         self.collect_draw_data(device_size, slot_values, &no_cells, 0.0)
     }
 
@@ -473,8 +489,23 @@ impl UiTree {
                     predicate_bind,
                     predicate_scope,
                     last_predicate_resolved,
+                    value_text,
                     ..
                 }) => {
+                    // A button's state-following text: a changed case re-measures
+                    // like a bound text change. A settled frame only compares.
+                    if let Some(value_text) = value_text
+                        && sync_value_text(
+                            value_text,
+                            content,
+                            last_resolved,
+                            slot_values,
+                            cell_values,
+                        )
+                    {
+                        diff.content_changed = true;
+                        dirty_text.push(node);
+                    }
                     if let Some(bind) = bind {
                         if drive_text_binding(
                             bind,
@@ -700,4 +731,23 @@ impl UiTree {
         }
         diff
     }
+}
+
+/// Store a button's resolved `valueText` in its text run's `last_resolved`,
+/// which both the measure seam and the draw read, so they always agree.
+/// Returns whether the text changed (the caller marks the node dirty). A
+/// settled frame only compares borrowed strings.
+fn sync_value_text(
+    value_text: &ValueText,
+    content: &str,
+    last_resolved: &mut Option<String>,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> bool {
+    let text = resolve_value_text(value_text, content, slot_values, cell_values);
+    if last_resolved.as_deref() == Some(text) {
+        return false;
+    }
+    *last_resolved = Some(text.to_string());
+    true
 }

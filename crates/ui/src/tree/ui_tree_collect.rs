@@ -418,6 +418,7 @@ fn collect_node(
             style_state,
             predicate_bind,
             predicate_scope,
+            value_text,
             ..
         }) => {
             // A bound text node resolves its drawn string from the slot
@@ -433,8 +434,13 @@ fn collect_node(
             // the draw and matches what the measure seam shaped. The
             // fresh/splash path never populates `tween`, so it resolves the
             // target directly (inert).
-            let resolved = match (tween, last_resolved) {
-                (Some(_), Some(displayed)) => displayed.clone(),
+            //
+            // A button's `valueText` was resolved into `last_resolved` before
+            // layout on both build paths, so the draw shows the string the
+            // measure seam shaped.
+            let resolved = match (tween, last_resolved, value_text) {
+                (Some(_), Some(displayed), _) | (_, Some(displayed), Some(_)) => displayed.clone(),
+                (_, None, Some(_)) => content.clone(),
                 _ => resolve_text(
                     bind.as_ref(),
                     bind_scope.as_deref(),

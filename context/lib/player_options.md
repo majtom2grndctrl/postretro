@@ -42,7 +42,7 @@ The runtime options bridge saves accepted menu changes after a deterministic 250
 
 ## 4. E13 Settings Menu Seam
 
-`PlayerOptions` is the store the settings menu reads and writes. The dev title screen opens `frontend.options`, whose controls cover mouse sensitivity, invert-Y, view-feel scale, crouch mode, shadow quality, fog quality, and the Surface Depth on/off switch, beside an accessibility group: reduce motion, screen shake, the four bus volumes, mono, and an entry to the engine panel (`ui.md` §4.1). The flash limiter is left to the panel, the only surface that changes it (§5).
+`PlayerOptions` is the store the settings menu reads and writes. The dev title and pause menus open `frontend.options`, whose controls and graphics tabs cover mouse sensitivity, invert-Y, view-feel scale, crouch mode, shadow quality, fog quality, and the Surface Depth on/off switch. Its accessibility tab carries every field of the accessibility group, as the engine panel does (`ui.md` §4.1): its toggles — reduce motion, the flash limiter, mono — fire the panel's field actions, which the App applies to the store; its sliders write working copies.
 
 **Seam mechanism.** The menu never writes `PlayerOptions` directly — the UI module originates no store write (`ui.md` §3). The engine exposes writable, non-persisted `options.*` slots on `getGameState()`, seeded from the current in-memory `PlayerOptions` when the menu opens. Controls write them via `setState` at the game-logic stage; the session-owned options bridge observes write generations once per app frame, updates only the matching `PlayerOptions` field, applies live input/fog/Surface-Depth effects through their owners, and schedules the settled atomic save. The slots are UI-facing working copies; `PlayerOptions` / `settings.toml` remains the authoritative persisted home, re-seeded into the slots on every open rather than maintained as a continuous two-way sync.
 
@@ -65,7 +65,7 @@ An `accessibility` group in `PlayerOptions` holds the player's accommodations: r
 - `accessibility.<field>FollowsSystem` — one readonly, unreplicated bool per OS-seedable field, true while the field is unset. Resolved slots stay resolved; this slot is how the panel and mod menus show a System choice ("System (On)").
 - `options.*` — the menu-scoped working copies of §4, unchanged in kind, for every accessibility field but the flash limiter. An engine write to the store — a panel action, the OS reader's first reply, an OS change to an unset field — reseeds the matching working copy that frame, and the reseed never reads back as a menu write. Session build also seeds every accessibility working copy once, so a mod menu under any tree name shows resolved values.
 
-**Flash limiter.** On by default. It has no script-writable working copy: no `options.*` slot exists for it, `accessibility.flashLimiter` is readonly, and only the engine panel's own control changes it (`ui.md` §4.1, `rendering_pipeline.md` §7.8).
+**Flash limiter.** On by default. It has no script-writable working copy: no `options.*` slot exists for it and `accessibility.flashLimiter` is readonly. Only a button activation of its field action changes it — the engine panel's control or a mod or level menu's button; no reaction, manifest field, or script write reaches it (`ui.md` §4.1, `rendering_pipeline.md` §7.8).
 
 **Reduce motion.** One OS-seeded switch over per-effect sliders: view-feel scale, screen-shake scale, and snapping of UI and presentation-template tweens (`ui.md` §3). While on, suppression is full: screen shake and view feel apply 0, and tweens reach their targets the frame they start, a running tween included. Off, each effect follows its own slider, and slider values survive toggling the switch. Scaling applies where the effect is presented and never writes a slot a script reads, so an effect decaying under the switch resumes at its decayed level when the switch turns off. Each per-effect `accessibility.*` slot carries its slider's value; the switch has its own slot.
 
@@ -85,8 +85,8 @@ Bindings live in this store, per player, in `settings.toml`. Every action is rem
 
 - **Per-binding fallback.** An unknown key string falls back to that binding's default without discarding other bindings or settings.
 - **Conflicts and reset.** A conflicting assignment is reported before it applies. Reset restores defaults.
-- **Guards.** Confirm, cancel, and the accessibility panel's global input can be moved but never left unbound. The panel input's keyboard entry is never bound to a key text entry consumes (printable keys, Backspace, Enter, Escape): that input reads ahead of text entry, so the key could no longer be typed.
-- **Capture.** A rebind capture receives raw input the UI otherwise swallows, the panel's global input included (`input.md` §5).
+- **Guards.** Confirm and cancel can be moved but never left unbound.
+- **Capture.** A rebind capture receives raw input the UI otherwise swallows (`input.md` §5).
 
 ---
 

@@ -286,3 +286,85 @@ fn lua_bridge_enforces_g2_preconditions() {
         );
     }
 }
+
+/// The value-button cases every `valueText` bridge test expects.
+fn expected_value_text() -> Vec<ValueTextCase> {
+    let is = |slot: &str, value: bool| Predicate {
+        source: BindSource::Slot { slot: slot.into() },
+        equals: Some(PredicateValue::Boolean(value)),
+    };
+    vec![
+        ValueTextCase {
+            when: vec![
+                is("accessibility.reduceMotionFollowsSystem", true),
+                is("accessibility.reduceMotion", true),
+            ],
+            text: "SYSTEM (ON)".into(),
+        },
+        ValueTextCase {
+            when: Vec::new(),
+            text: "OFF".into(),
+        },
+    ]
+}
+
+#[test]
+fn both_bridges_read_a_buttons_value_text() {
+    let js = r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"button", id:"rm",
+        labelledBy:"rmLabel", onPress:"ui.accessibility.cycle.reduceMotion",
+        valueText: [
+            { when: [ { slot:"accessibility.reduceMotionFollowsSystem", equals:true },
+                      { slot:"accessibility.reduceMotion", equals:true } ],
+              text: "SYSTEM (ON)" },
+            { text: "OFF" }
+        ] } })"#;
+    let lua = r#"return { anchor = "center", offset = {0.0, 0.0}, root = { kind = "button", id = "rm",
+        labelledBy = "rmLabel", onPress = "ui.accessibility.cycle.reduceMotion",
+        valueText = {
+            { when = { { slot = "accessibility.reduceMotionFollowsSystem", equals = true },
+                       { slot = "accessibility.reduceMotion", equals = true } },
+              text = "SYSTEM (ON)" },
+            { text = "OFF" }
+        } } }"#;
+    let from_js = eval_js(js, |ctx, v| {
+        anchored_tree_from_js_value(ctx, v).expect("valueText must convert")
+    });
+    let from_lua = eval_lua(lua, |v| {
+        anchored_tree_from_lua_value(v).expect("valueText must convert")
+    });
+    for tree in [&from_js, &from_lua] {
+        let Widget::Button(button) = &tree.root else {
+            panic!("root must be a button");
+        };
+        assert_eq!(button.value_text, expected_value_text());
+    }
+    assert_eq!(from_js, from_lua, "the runtimes are behavioral twins");
+
+    // The wire round-trips byte-identically, and a button without cases omits
+    // the key.
+    let json = serde_json::to_string(&from_js).unwrap();
+    assert!(json.contains(r#""valueText":[{"when":[{"#), "{json}");
+    let back: AnchoredTree = serde_json::from_str(&json).unwrap();
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    let plain = r#"{"kind":"button","id":"a","label":"A","onPress":"go"}"#;
+    let widget: Widget = serde_json::from_str(plain).unwrap();
+    assert_eq!(serde_json::to_string(&widget).unwrap(), plain);
+}
+
+#[test]
+fn both_bridges_reject_a_malformed_value_text() {
+    for js in [
+        r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"button", id:"a", label:"A", onPress:"go", valueText: [ { when: [] } ] } })"#,
+        r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"button", id:"a", label:"A", onPress:"go", valueText: [ "ON" ] } })"#,
+    ] {
+        let result = eval_js(js, |ctx, v| anchored_tree_from_js_value(ctx, v).is_err());
+        assert!(result, "{js}");
+    }
+    for lua in [
+        r#"return { anchor = "center", offset = {0.0, 0.0}, root = { kind = "button", id = "a", label = "A", onPress = "go", valueText = { { when = {} } } } }"#,
+        r#"return { anchor = "center", offset = {0.0, 0.0}, root = { kind = "button", id = "a", label = "A", onPress = "go", valueText = { "ON" } } }"#,
+    ] {
+        let result = eval_lua(lua, |v| anchored_tree_from_lua_value(v).is_err());
+        assert!(result, "{lua}");
+    }
+}

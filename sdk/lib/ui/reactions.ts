@@ -333,9 +333,8 @@ export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
  */
 export const OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility";
 
-/** Accessibility toggles a mod menu button may cycle. The flash limiter is
- * absent on purpose: only the engine accessibility panel changes it. */
-export type AccessibilityToggleField = "reduceMotion" | "monoAudio";
+/** Accessibility toggles a menu button may cycle. */
+export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
 
 /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
 export type AccessibilityNumericField =

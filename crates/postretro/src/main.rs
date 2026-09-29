@@ -27,6 +27,9 @@ mod door_occluder_diagnostics;
 pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
 mod input;
+// App-side lightmap cell-block residency: demand from the baked set, block
+// reads through the shared issuer, and bounded renderer drain batches.
+mod lightmap_streaming;
 use postretro_physics::kinematic_mover;
 use postretro_sim::mover_commands;
 mod mod_digest;
@@ -3889,15 +3892,18 @@ impl ApplicationHandler for App {
                     // inside `render_frame_indirect`, before scene recording.
                     // The warm set follows the same locator cell that seeded
                     // portal visibility this frame.
-                    let sh_drain_batch = match session.prepare_sh_streaming_drain(
+                    // One level-scope drain step for SH and lightmap blocks:
+                    // one read issuer, one shared install budget.
+                    let sh_drain_batch = match session.prepare_streaming_drains(
                         sh_stream_manifest.as_ref(),
-                        self.level
-                            .as_ref()
-                            .and_then(|world| world.cell_visibility.as_ref()),
+                        self.level.as_ref(),
                         renderer,
-                        &visible_cells,
-                        self.level.as_ref().map(|_| stats.camera_cell as usize),
-                        self.script_time,
+                        crate::session::level_streaming::StreamingFrame {
+                            visible_cells: &visible_cells,
+                            camera_cell: self.level.as_ref().map(|_| stats.camera_cell as usize),
+                            path: stats.path,
+                            monotonic_seconds: self.script_time,
+                        },
                     ) {
                         Ok(batch) => batch,
                         Err(err) => {
@@ -3906,6 +3912,13 @@ impl ApplicationHandler for App {
                             return;
                         }
                     };
+                    // The lightmap drain runs now, before the forward pass is
+                    // recorded, so this frame samples what it made resident.
+                    if let Err(err) = session.drain_lightmap_streaming(renderer) {
+                        self.exit_result = Err(err);
+                        event_loop.exit();
+                        return;
+                    }
                     let particle_collections: Vec<(&str, &[u8])> =
                         session.particle_render.iter_collections().collect();
 
@@ -5580,7 +5593,7 @@ impl App {
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
         let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
-        session.clear_sh_streaming();
+        session.clear_level_streaming();
         let sh_frame_result = match renderer.render_frame_indirect(
             &mut session.font_system,
             visible_render.camera_cull(),

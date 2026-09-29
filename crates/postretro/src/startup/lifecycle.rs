@@ -1596,7 +1596,7 @@ pub(crate) mod tests {
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
                 sh_streaming: None,
-                sh_worker_retirement: None,
+                level_streaming: crate::session::level_streaming::LevelStreaming::default(),
                 options_bridge: options::OptionsBridge::new(),
                 os_preferences: crate::os_preferences::OsPreferenceFeed::fake().0,
                 player_options: options::PlayerOptions::default(),

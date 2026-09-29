@@ -43,10 +43,9 @@ fn cluster_request(request: ReadRequest) -> ShClusterRequest {
 
 /// Read bytes go to the decode pool; cancellations and failures complete
 /// directly, without a decode.
-pub(super) struct ShReadRoute {
+pub(in crate::session) struct ShReadRoute {
     pub(super) source: Arc<dyn ShWorkerSource>,
     pub(super) shared: Arc<WorkerShared>,
-    pub(super) decode: SyncSender<DecodeJob>,
     pub(super) completed: SyncSender<ShWorkerCompletion>,
 }
 
@@ -105,7 +104,10 @@ impl ReadRoute for ShReadRoute {
             ReadOutcome::Read(parts) => {
                 // An SH request carries exactly one range.
                 let bytes = parts.into_iter().next().unwrap_or_default();
-                self.decode.send(DecodeJob { request, bytes }).is_ok()
+                // Cancelled workers have taken the sender: SH's receiver is gone.
+                self.shared
+                    .decode_sender()
+                    .is_some_and(|decode| decode.send(DecodeJob { request, bytes }).is_ok())
             }
             ReadOutcome::Failed(error) => self.complete(request, ShWorkerResult::Failed(error)),
             ReadOutcome::Cancelled => self.complete(request, ShWorkerResult::Cancelled),

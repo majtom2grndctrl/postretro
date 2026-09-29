@@ -4,13 +4,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use postretro_level_loader::PrlLoadError;
 
 use super::*;
+use crate::streaming::read_gate_test_fixture::ReadGate;
 use crate::streaming::request::{ReadIdentity, ReadRanges, ReadTier};
 use crate::streaming::schedule::COALESCE_MAX_GAP_BYTES;
 use crate::streaming::target_bitset::TargetBitset;
@@ -41,9 +42,8 @@ enum Delivered {
 struct Log {
     reads: Mutex<Vec<(StreamResource, Range<u64>, ThreadId)>>,
     deliveries: Mutex<Vec<(StreamResource, u32, Delivered)>>,
-    /// Reads starting at these offsets block until released.
-    held: Mutex<BTreeSet<u64>>,
-    gate: Condvar,
+    /// Reads starting at held offsets block until released.
+    gate: ReadGate,
     /// Reads starting at these offsets fail.
     failing: Mutex<BTreeSet<u64>>,
     charged: AtomicU64,
@@ -51,20 +51,15 @@ struct Log {
 
 impl Log {
     fn hold(&self, range: &Range<u64>) {
-        self.held.lock().unwrap().insert(range.start);
+        self.gate.hold(range.start);
     }
 
     fn release(&self, range: &Range<u64>) {
-        self.held.lock().unwrap().remove(&range.start);
-        self.gate.notify_all();
+        self.gate.release(range.start);
     }
 
     fn release_all(&self) {
-        self.held
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        self.gate.notify_all();
+        self.gate.release_all();
     }
 
     fn wait_until(&self, what: &str, done: impl Fn(&Self) -> bool) {
@@ -116,11 +111,7 @@ impl ReadRoute for TestRoute {
             span.clone(),
             std::thread::current().id(),
         ));
-        let mut held = self.log.held.lock().unwrap();
-        while held.contains(&span.start) {
-            held = self.log.gate.wait(held).unwrap();
-        }
-        drop(held);
+        self.log.gate.wait_while_held(span.start);
         if self.log.failing.lock().unwrap().contains(&span.start) {
             return Err(PrlLoadError::SectionValidation {
                 section: "test route",

@@ -4,7 +4,6 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::streaming::drain_budget::{DrainItem, DrainRank, admit_drain};
 
 impl ShResidencyController {
     /// Reads at most one target chunk synchronously. This is intentionally a
@@ -208,125 +207,6 @@ impl ShResidencyController {
         );
         self.states[cluster_id as usize].state = ClusterResidencyState::Ready;
         Ok(ShDrainAdmission::Ready)
-    }
-
-    /// Emits a decoded-byte-bounded set of renderer-ready chunks plus an
-    /// initial reset or sorted target deltas for the sync-proof path. This path
-    /// deliberately never emits evictions or changes targets for budget
-    /// pressure: Task 10's proof gate remains a stable no-eviction baseline.
-    pub(crate) fn take_drain_batch(&mut self) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        self.take_drain_batch_with_eviction(false)
-    }
-
-    /// Async-only drain policy. Departed residents leave before pressure can
-    /// suppress cold prefetch, and every eviction remains only a request until
-    /// the renderer confirms that no installed dependent pins its owner.
-    pub(crate) fn take_async_drain_batch(
-        &mut self,
-    ) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        self.take_drain_batch_with_eviction(true)
-    }
-
-    /// One async frame's controller work after completions are admitted: the
-    /// drain batch first, then new read requests. The drain's budget policy
-    /// may suppress optional targets, so requests taken before it could name
-    /// a cluster this same frame has already dropped.
-    pub(crate) fn take_async_drain_batch_and_requests(
-        &mut self,
-    ) -> Result<(ShDrainBatch, Vec<ShClusterRequest>), ShResidencyControllerError> {
-        let batch = self.take_async_drain_batch()?;
-        let mut requests = Vec::new();
-        while let Some(request) = self.take_next_request()? {
-            requests.push(request);
-        }
-        Ok((batch, requests))
-    }
-
-    fn take_drain_batch_with_eviction(
-        &mut self,
-        eviction_enabled: bool,
-    ) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        if !self.in_drain.is_empty() || !self.in_drain_evictions.is_empty() {
-            return Err(ShResidencyControllerError::InvalidDrainOutcome(
-                "previous drain outcome was not applied before preparing another batch".into(),
-            ));
-        }
-        if eviction_enabled {
-            self.apply_budget_policy()?;
-        }
-        let mut batch = ShDrainBatch {
-            generation: self.generation,
-            content_tag: self.content_tag,
-            ..ShDrainBatch::default()
-        };
-        if self.needs_target_reset {
-            batch.target_reset = Some(target_bitset(self.topology.cluster_count(), &self.targets)?);
-            self.needs_target_reset = false;
-            self.sent_targets = self.targets.clone();
-        } else {
-            batch.target_add = self
-                .targets
-                .difference(&self.sent_targets)
-                .copied()
-                .collect();
-            batch.target_remove = self
-                .sent_targets
-                .difference(&self.targets)
-                .copied()
-                .collect();
-            self.sent_targets = self.targets.clone();
-        }
-        self.drop_departed_ready(&self.targets.clone())?;
-
-        if eviction_enabled {
-            batch.evictions = self.departed_eviction_order();
-        }
-        self.in_drain_evictions = batch.evictions.iter().copied().collect();
-        // The merged ready list holds only SH items until lightmap blocks
-        // join the shared drain; the shared owner orders and admits it.
-        let mut ready: Vec<DrainItem> = self
-            .ready
-            .iter()
-            .filter(|&(&cluster_id, _)| self.ready_for_install(cluster_id))
-            .map(|(&cluster_id, ready)| {
-                let state = &self.states[cluster_id as usize];
-                DrainItem {
-                    rank: DrainRank::sh(
-                        state.class.unwrap_or(TargetClass::Hysteresis).drain_class(),
-                        state.effective_priority,
-                        cluster_id,
-                    ),
-                    bytes: ready.byte_charge,
-                }
-            })
-            .collect();
-        let admission = admit_drain(&mut ready)
-            .map_err(|_| ShResidencyControllerError::AccountingOverflow("drain decoded bytes"))?;
-        let mut counters = self.counters;
-        Self::add_to_counter(
-            &mut counters.decoded_bytes_installed,
-            admission.bytes,
-            "decoded bytes installed",
-        )?;
-        if admission.admitted > 0 {
-            counters.last_drain_decoded_bytes = admission.bytes;
-            counters.max_drain_decoded_bytes =
-                counters.max_drain_decoded_bytes.max(admission.bytes);
-        }
-        if admission.admitted < ready.len() {
-            Self::increment_counter(&mut counters.budget_limited_drains, "budget-limited drains")?;
-        }
-        self.counters = counters;
-        for item in &ready[..admission.admitted] {
-            let cluster_id = item.rank.key();
-            let ready = self
-                .ready
-                .remove(&cluster_id)
-                .expect("ready id came from map");
-            self.in_drain.insert(cluster_id, ready.byte_charge);
-            batch.ready.push(ready.prepared);
-        }
-        Ok(batch)
     }
 
     /// Applies renderer ownership transfer after one drain. Deferred chunks

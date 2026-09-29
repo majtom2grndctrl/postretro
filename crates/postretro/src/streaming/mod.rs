@@ -4,6 +4,9 @@
 pub(crate) mod cluster_hints;
 pub(crate) mod drain_budget;
 pub(crate) mod issuer;
+#[cfg(test)]
+pub(crate) mod read_gate_test_fixture;
 pub(crate) mod request;
 pub(crate) mod schedule;
+pub(crate) mod shared_drain;
 pub(crate) mod target_bitset;

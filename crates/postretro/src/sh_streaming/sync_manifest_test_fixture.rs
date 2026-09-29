@@ -23,7 +23,7 @@ use postretro_level_format::sh_volume::{
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
 
-pub(super) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
+pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("sync-proof.prl");
     let cells = CellsSection {

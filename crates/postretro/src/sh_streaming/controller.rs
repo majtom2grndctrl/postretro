@@ -15,6 +15,8 @@ use super::topology::PlannerTopology;
 use super::warm_set::{WarmSet, WarmSource};
 use crate::streaming::drain_budget::DrainClass;
 
+#[path = "drain.rs"]
+mod drain;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[path = "pressure.rs"]

@@ -11,10 +11,6 @@ pub(crate) enum StreamResource {
     Sh,
     /// One lightmap cell block with its shadowmask block, installed as a
     /// pair. Key: block id.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "lightmap residency submits block reads next")
-    )]
     LightmapBlock,
 }
 
@@ -69,10 +65,6 @@ impl ReadRanges {
     }
 
     /// Two ranges read as one unit: the request completes once, after both.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "lightmap residency submits block pairs next")
-    )]
     pub(crate) fn pair(first: Range<u64>, second: Range<u64>) -> Self {
         debug_assert!(first.start <= first.end && second.start <= second.end);
         Self {

@@ -685,6 +685,7 @@ mod tests {
                 row("animated_direction", 12_582_912),
             ],
             total_bytes: 37_748_736,
+            retiring_bytes: 0,
         };
         let json = as_json(measurement_report(
             &scene_with_measurement(),

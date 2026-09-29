@@ -1,0 +1,101 @@
+//! Where the lightmap controller and route read block facts and bytes.
+//! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
+
+use std::ops::Range;
+use std::sync::Arc;
+
+use postretro_level_format::lightmap::LightmapBlockPayload;
+use postretro_level_loader::{LightmapBlockFileRanges, LightmapStreamManifest, PrlLoadError};
+
+/// One block's index facts: its owning cell and texel extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BlockSummary {
+    pub(crate) cell_id: u32,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+}
+
+/// A level's streamed lightmap blocks. Production reads the retained
+/// [`LightmapStreamManifest`]; tests inject in-memory sources that hold chosen
+/// reads by offset.
+///
+/// Contract: `block_file_ranges` returns the same ranges for a block for the
+/// source's lifetime; `read_file_span` returns exactly the span's length or
+/// an error, may cover several blocks and the gaps between them across the
+/// id-22/42 boundary, and is called only on the issuer thread;
+/// `payload_from_pair_bytes` rejects buffers whose lengths disagree with the
+/// block's ranges.
+pub(crate) trait LightmapBlockSource: Send + Sync {
+    fn block_count(&self) -> u32;
+    fn block_summary(&self, block: u32) -> Option<BlockSummary>;
+    fn block_file_ranges(&self, block: u32) -> Result<LightmapBlockFileRanges, PrlLoadError>;
+    fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError>;
+    fn payload_from_pair_bytes(
+        &self,
+        block: u32,
+        lightmap: Vec<u8>,
+        shadowmask: Option<Vec<u8>>,
+    ) -> Result<LightmapBlockPayload, PrlLoadError>;
+    /// The level's content identity for stale-completion checks.
+    fn content_tag(&self) -> [u8; 32];
+}
+
+impl std::fmt::Debug for dyn LightmapBlockSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LightmapBlockSource")
+            .field("blocks", &self.block_count())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The production source: the level's retained streaming manifest.
+#[derive(Debug)]
+pub(crate) struct ManifestBlockSource {
+    manifest: Arc<LightmapStreamManifest>,
+}
+
+impl ManifestBlockSource {
+    pub(crate) fn new(manifest: Arc<LightmapStreamManifest>) -> Self {
+        Self { manifest }
+    }
+}
+
+impl LightmapBlockSource for ManifestBlockSource {
+    fn block_count(&self) -> u32 {
+        self.manifest.block_count()
+    }
+
+    fn block_summary(&self, block: u32) -> Option<BlockSummary> {
+        self.manifest
+            .lightmap_index()
+            .records
+            .get(block as usize)
+            .map(|record| BlockSummary {
+                cell_id: record.cell_id,
+                width: record.width,
+                height: record.height,
+            })
+    }
+
+    fn block_file_ranges(&self, block: u32) -> Result<LightmapBlockFileRanges, PrlLoadError> {
+        self.manifest.block_file_ranges(block)
+    }
+
+    fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
+        self.manifest.read_file_span(range)
+    }
+
+    fn payload_from_pair_bytes(
+        &self,
+        block: u32,
+        lightmap: Vec<u8>,
+        shadowmask: Option<Vec<u8>>,
+    ) -> Result<LightmapBlockPayload, PrlLoadError> {
+        self.manifest
+            .payload_from_pair_bytes(block, lightmap, shadowmask)
+    }
+
+    fn content_tag(&self) -> [u8; 32] {
+        self.manifest.content_tag()
+    }
+}

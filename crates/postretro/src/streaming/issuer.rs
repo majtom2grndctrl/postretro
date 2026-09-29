@@ -102,9 +102,10 @@ impl ReadRoutes {
     }
 }
 
-/// Frame-side handle of the issuer thread. Dropping it lets the thread exit
-/// once its queue is empty; [`Self::cancel`] stops it before its next read.
-#[derive(Debug)]
+/// Frame-side handle of the issuer thread. The thread exits once every clone
+/// is dropped and its queue is empty; [`Self::cancel`] stops it before its
+/// next read. A level-scope owner clones it for each resource that submits.
+#[derive(Debug, Clone)]
 pub(crate) struct ReadIssuer {
     requests: SyncSender<SubmittedRead>,
     cancel: Arc<AtomicBool>,

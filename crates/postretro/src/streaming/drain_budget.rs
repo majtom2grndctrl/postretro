@@ -22,10 +22,6 @@ pub(crate) enum DrainClass {
     Pinned,
     /// A lightmap block mandatory only through the camera cell's baked set
     /// within lead L. SH has no counterpart.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "lightmap residency ranks its lead set next")
-    )]
     Lead,
     SeamWarm,
     /// SH warm-set prefetch, and the lightmap prefetch band.
@@ -34,10 +30,6 @@ pub(crate) enum DrainClass {
 }
 
 impl DrainClass {
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "lightmap residency reads tiers from classes next")
-    )]
     pub(crate) const fn tier(self) -> ReadTier {
         match self {
             Self::Visible | Self::Pinned | Self::Lead => ReadTier::Mandatory,
@@ -73,10 +65,6 @@ impl DrainRank {
 
     /// `lead` is the block's baked lead in id-46 fixed-point units; zero for
     /// the camera's own dilated visible set.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "lightmap residency ranks block pairs next")
-    )]
     pub(crate) const fn lightmap_block(
         class: DrainClass,
         priority: u32,
@@ -92,13 +80,6 @@ impl DrainRank {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the merged drain splits admissions by resource next"
-        )
-    )]
     pub(crate) const fn resource(&self) -> StreamResource {
         self.resource
     }
@@ -118,10 +99,6 @@ pub(crate) struct DrainItem {
 
 impl DrainItem {
     /// A lightmap block pair: both halves' upload bytes, charged together.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "lightmap residency drains block pairs next")
-    )]
     pub(crate) fn pair(
         rank: DrainRank,
         lightmap_bytes: u64,

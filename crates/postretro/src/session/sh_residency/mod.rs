@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use postretro_level_loader::{
-    CellVisibility, ShDrainBatch, ShDrainOutcome, ShStreamManifest, ShStreamingMode,
-};
+#[cfg(any(test, feature = "capture"))]
+use postretro_level_loader::ShDrainBatch;
+use postretro_level_loader::{CellVisibility, ShDrainOutcome, ShStreamManifest, ShStreamingMode};
 use postretro_renderer::{Renderer, ShResidencySnapshot, ShStreamingLiveDiagnostics};
 use postretro_visibility::VisibleCells;
 
@@ -15,6 +15,7 @@ use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement, ShWorkerStats}
 use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
+use crate::streaming::issuer::ReadRoute;
 
 #[cfg(feature = "capture")]
 mod capture_summary;
@@ -25,7 +26,7 @@ mod tests;
 
 #[cfg(test)]
 #[path = "../../sh_streaming/sync_manifest_test_fixture.rs"]
-mod sync_manifest_test_fixture;
+pub(in crate::session) mod sync_manifest_test_fixture;
 
 /// Controller state whose lifetime belongs to one loaded session, never to the
 /// renderer. A distinct loaded manifest replaces this object before any new
@@ -68,7 +69,7 @@ impl ShStreamingSession {
         )
     }
 
-    fn from_renderer_with_mode(
+    pub(in crate::session) fn from_renderer_with_mode(
         manifest: Arc<ShStreamManifest>,
         cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
@@ -94,7 +95,7 @@ impl ShStreamingSession {
         Self::from_renderer(manifest, cell_visibility, renderer)
     }
 
-    fn from_snapshot(
+    pub(in crate::session) fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
         cell_visibility: Option<&CellVisibility>,
@@ -114,10 +115,17 @@ impl ShStreamingSession {
         })
     }
 
-    fn is_for_manifest(&self, manifest: &Arc<ShStreamManifest>) -> bool {
-        Arc::ptr_eq(&self.manifest, manifest)
+    pub(in crate::session) fn is_for(
+        &self,
+        manifest: &Arc<ShStreamManifest>,
+        mode: ShStreamingMode,
+    ) -> bool {
+        Arc::ptr_eq(&self.manifest, manifest) && self.mode == mode
     }
 
+    /// Starts SH-only workers with their own issuer. Production shares one
+    /// level-scope issuer instead ([`Self::prepare_async_workers`]).
+    #[cfg(test)]
     fn start_async_workers(&mut self) -> Result<()> {
         if self.mode == ShStreamingMode::Async && self.workers.is_none() {
             self.workers = Some(ShAsyncWorkers::new(self.manifest.clone())?);
@@ -125,7 +133,24 @@ impl ShStreamingSession {
         Ok(())
     }
 
-    fn begin_worker_retirement(&mut self) -> Option<ShWorkerRetirement> {
+    /// The decode pool and SH's issuer route for the level-scope issuer, when
+    /// this async session has no workers yet. The workers join the session
+    /// once the owner has spawned the issuer ([`Self::attach_workers`]).
+    pub(in crate::session) fn prepare_async_workers(
+        &self,
+    ) -> Result<Option<(ShAsyncWorkers, Box<dyn ReadRoute>)>> {
+        if self.mode != ShStreamingMode::Async || self.workers.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(ShAsyncWorkers::prepare(self.manifest.clone())?))
+    }
+
+    pub(in crate::session) fn attach_workers(&mut self, workers: ShAsyncWorkers) {
+        debug_assert!(self.workers.is_none(), "one worker set per SH session");
+        self.workers = Some(workers);
+    }
+
+    pub(in crate::session) fn begin_worker_retirement(&mut self) -> Option<ShWorkerRetirement> {
         self.workers.as_mut().map(ShAsyncWorkers::begin_retirement)
     }
 
@@ -175,6 +200,7 @@ impl ShStreamingSession {
     /// Prepares the bounded loader-to-renderer handoff after target/read work.
     /// A prior successful compose submission is promoted at this next drain;
     /// a failed or skipped frame leaves its installs uncomposed.
+    #[cfg(feature = "capture")]
     pub(crate) fn prepare_batch(&mut self) -> Result<ShDrainBatch> {
         self.promote_composed_clusters();
         match self.mode {
@@ -239,9 +265,29 @@ impl ShStreamingSession {
 
     /// Capture uses this to continue its deterministic preload/render loop
     /// until the complete current visible/owner closure is sampleable.
-    #[cfg(feature = "capture")]
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn all_targets_sampleable(&self) -> bool {
         self.controller.all_targets_sampleable()
+    }
+
+    #[cfg(test)]
+    pub(in crate::session) fn set_mode_for_test(&mut self, mode: ShStreamingMode) {
+        self.mode = mode;
+    }
+
+    /// A renderer that accepts every ready cluster and submits compose.
+    #[cfg(test)]
+    pub(in crate::session) fn accept_drain_for_test(&mut self, batch: &ShDrainBatch) -> Result<()> {
+        self.controller.apply_drain_outcome(ShDrainOutcome {
+            accepted: batch
+                .ready
+                .iter()
+                .map(|prepared| prepared.chunk.cluster_id)
+                .collect(),
+            ..ShDrainOutcome::default()
+        })?;
+        self.mark_compose_submitted();
+        Ok(())
     }
 }
 
@@ -273,7 +319,7 @@ pub(crate) fn require_sync_proof_mode(mode: ShStreamingMode) -> Result<()> {
     }
 }
 
-fn require_loaded_streaming_mode(mode: ShStreamingMode) -> Result<()> {
+pub(in crate::session) fn require_loaded_streaming_mode(mode: ShStreamingMode) -> Result<()> {
     if mode == ShStreamingMode::Off {
         bail!(
             "[SH streaming] mode changed to off after this streamed map was loaded; reload the map"

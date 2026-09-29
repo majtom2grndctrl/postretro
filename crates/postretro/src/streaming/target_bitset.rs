@@ -33,6 +33,21 @@ impl TargetBitset {
         }
     }
 
+    /// Sets or clears one key without touching the others, so a resource
+    /// that tracks target changes incrementally publishes without
+    /// allocating. Keys beyond the resource's key count are ignored.
+    pub(crate) fn set(&self, key: u32, targeted: bool) {
+        let Some(word) = self.words.get(key as usize / 64) else {
+            return;
+        };
+        let bit = 1u64 << (key % 64);
+        if targeted {
+            word.fetch_or(bit, Ordering::AcqRel);
+        } else {
+            word.fetch_and(!bit, Ordering::AcqRel);
+        }
+    }
+
     pub(crate) fn contains(&self, key: u32) -> bool {
         self.words
             .get(key as usize / 64)
@@ -58,5 +73,17 @@ mod tests {
         bitset.publish(&BTreeSet::from([1]));
         assert!(bitset.contains(1));
         assert!(!bitset.contains(0) && !bitset.contains(129));
+    }
+
+    #[test]
+    fn set_changes_one_key_and_leaves_its_word_neighbours() {
+        let bitset = TargetBitset::new(130);
+        bitset.publish(&BTreeSet::from([63, 64]));
+        bitset.set(65, true);
+        bitset.set(63, false);
+        bitset.set(500, true);
+        assert!(!bitset.contains(63));
+        assert!(bitset.contains(64) && bitset.contains(65));
+        assert!(!bitset.contains(500), "out of range ids are ignored");
     }
 }

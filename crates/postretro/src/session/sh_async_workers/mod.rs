@@ -21,8 +21,7 @@ use postretro_level_loader::{PrlLoadError, ShStreamManifest};
 
 use crate::sh_streaming::budget::CpuPhaseLedger;
 use crate::sh_streaming::controller::{MAX_STREAM_PERMITS, ShClusterRequest};
-use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
-use crate::streaming::request::StreamResource;
+use crate::streaming::issuer::{ReadIssuer, ReadRoute};
 use crate::streaming::target_bitset::TargetBitset;
 
 pub(crate) use stats::ShWorkerStats;
@@ -30,7 +29,7 @@ pub(crate) use stats::ShWorkerStats;
 /// Everything the SH route and decode pool need from a level. Production
 /// reads the retained manifest; tests inject sources that record offsets and
 /// threads.
-trait ShWorkerSource: Send + Sync {
+pub(in crate::session) trait ShWorkerSource: Send + Sync {
     fn cluster_count(&self) -> u32;
     /// Absolute file range of one chunk; empty for a canonical empty cluster.
     fn chunk_file_range(&self, cluster_id: u32) -> Result<Range<u64>, PrlLoadError>;
@@ -84,18 +83,30 @@ fn decode_pool_size(available_parallelism: usize) -> usize {
 }
 
 /// State shared by the frame thread, SH's issuer route, and the decode pool.
-/// Locks are held only for counter updates, never across a read or a decode.
+/// Locks are held only for counter updates and sender clones, never across a
+/// read, a decode, or a send.
 struct WorkerShared {
     /// Stops the decode pool; the issuer has its own flag.
     cancel: AtomicBool,
     phases: Mutex<CpuPhaseLedger>,
     stats: Mutex<ShWorkerStats>,
     targets: TargetBitset,
+    /// The decode queue's one sender, cloned by the route per job. Cancel
+    /// takes it, so the pool's queue disconnects even while a level-scope
+    /// issuer shared with another resource outlives SH.
+    decode: Mutex<Option<SyncSender<DecodeJob>>>,
 }
 
 impl WorkerShared {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
+    }
+
+    fn decode_sender(&self) -> Option<SyncSender<DecodeJob>> {
+        self.decode
+            .lock()
+            .expect("SH decode sender mutex poisoned")
+            .clone()
     }
 }
 
@@ -141,6 +152,9 @@ impl std::fmt::Debug for ShAsyncWorkers {
 }
 
 impl ShAsyncWorkers {
+    /// A worker set with its own SH-only issuer. The level-scope owner uses
+    /// [`Self::prepare`] instead, so SH shares one issuer with lightmap blocks.
+    #[cfg(test)]
     pub(super) fn new(manifest: Arc<ShStreamManifest>) -> std::io::Result<Self> {
         let available = thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let mut workers = Self::with_source(
@@ -153,13 +167,54 @@ impl ShAsyncWorkers {
         Ok(workers)
     }
 
+    /// The decode pool plus SH's issuer route, before any issuer exists. The
+    /// level-scope owner spawns one issuer over this route and the other
+    /// resources' routes, then hands a handle back through
+    /// [`Self::attach_issuer`].
+    pub(in crate::session) fn prepare(
+        manifest: Arc<ShStreamManifest>,
+    ) -> std::io::Result<(Self, Box<dyn ReadRoute>)> {
+        let available = thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let (mut workers, route) = Self::prepare_with_source(
+            Arc::new(ManifestWorkerSource {
+                manifest: manifest.clone(),
+            }),
+            decode_pool_size(available),
+        )?;
+        workers.retained_manifest = Some(manifest);
+        Ok((workers, Box::new(route)))
+    }
+
+    /// A worker set with its own SH-only issuer, the shape SH had before the
+    /// issuer moved to level scope. Tests drive SH's route through it.
+    #[cfg(test)]
     fn with_source(
         source: Arc<dyn ShWorkerSource>,
         decode_threads: usize,
     ) -> std::io::Result<Self> {
+        let (mut manager, route) = Self::prepare_with_source(source, decode_threads)?;
+        let (issuer, handle) = ReadIssuer::spawn(
+            crate::streaming::issuer::ReadRoutes::default().with(
+                crate::streaming::request::StreamResource::Sh,
+                Box::new(route),
+            ),
+            MAX_STREAM_PERMITS,
+        )?;
+        manager.issuer = Some(issuer);
+        manager.handles.push(handle);
+        Ok(manager)
+    }
+
+    /// On a spawn failure the caller drops the manager, whose cancel takes the
+    /// decode sender, so already spawned pool threads can exit and join.
+    pub(in crate::session) fn prepare_with_source(
+        source: Arc<dyn ShWorkerSource>,
+        decode_threads: usize,
+    ) -> std::io::Result<(Self, route::ShReadRoute)> {
         // Controller permits bound every outstanding request, so none of these
         // channels can fill and block a sender.
         let (completed_sender, completed) = sync_channel(MAX_STREAM_PERMITS);
+        let (decode_sender, decode_jobs) = sync_channel(MAX_STREAM_PERMITS);
         let mut manager = Self {
             issuer: None,
             source: Arc::clone(&source),
@@ -170,47 +225,35 @@ impl ShAsyncWorkers {
                 phases: Mutex::new(CpuPhaseLedger::default()),
                 stats: Mutex::new(ShWorkerStats::default()),
                 targets: TargetBitset::new(source.cluster_count()),
+                decode: Mutex::new(Some(decode_sender)),
             }),
             handles: Vec::with_capacity(decode_threads + 1),
             retained_manifest: None,
         };
-        manager.spawn_threads(source, decode_threads, completed_sender)?;
-        Ok(manager)
-    }
-
-    /// On a spawn failure the decode sender drops here, before the caller
-    /// drops the manager, so already spawned pool threads can exit and join.
-    fn spawn_threads(
-        &mut self,
-        source: Arc<dyn ShWorkerSource>,
-        decode_threads: usize,
-        completed_sender: SyncSender<ShWorkerCompletion>,
-    ) -> std::io::Result<()> {
-        let (decode_sender, decode_jobs) = sync_channel(MAX_STREAM_PERMITS);
         let decode_jobs = Arc::new(Mutex::new(decode_jobs));
         for index in 0..decode_threads.max(1) {
             let source = Arc::clone(&source);
             let jobs = Arc::clone(&decode_jobs);
             let completed = completed_sender.clone();
-            let shared = Arc::clone(&self.shared);
+            let shared = Arc::clone(&manager.shared);
             let handle = thread::Builder::new()
                 .name(format!("sh-probe-decode-{index}"))
                 .spawn(move || decode_pool::decode_loop(&jobs, &completed, &shared, &*source))?;
-            self.handles.push(handle);
+            manager.handles.push(handle);
         }
         let route = route::ShReadRoute {
             source,
-            shared: Arc::clone(&self.shared),
-            decode: decode_sender,
+            shared: Arc::clone(&manager.shared),
             completed: completed_sender,
         };
-        let (issuer, handle) = ReadIssuer::spawn(
-            ReadRoutes::default().with(StreamResource::Sh, Box::new(route)),
-            MAX_STREAM_PERMITS,
-        )?;
+        Ok((manager, route))
+    }
+
+    /// Hands the workers their submit handle on a level-scope issuer that
+    /// already serves [`Self::prepare`]'s route. Its thread is the owner's to
+    /// join, not these workers'.
+    pub(in crate::session) fn attach_issuer(&mut self, issuer: ReadIssuer) {
         self.issuer = Some(issuer);
-        self.handles.push(handle);
-        Ok(())
     }
 
     pub(super) fn submit(&self, request: ShClusterRequest) -> Result<(), &'static str> {
@@ -302,6 +345,11 @@ impl ShAsyncWorkers {
             issuer.cancel();
         }
         self.unresolved.take();
+        self.shared
+            .decode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 }
 

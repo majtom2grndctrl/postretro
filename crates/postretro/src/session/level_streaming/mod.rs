@@ -1,0 +1,193 @@
+//! Level-scope streaming: one read issuer and one drain step for SH and lightmaps.
+//! See: context/lib/rendering_pipeline.md §4
+
+mod hooks;
+mod io;
+#[cfg(test)]
+mod tests;
+
+use anyhow::Result;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
+use postretro_level_loader::ShDrainBatch;
+use postretro_visibility::{VisibilityPath, VisibleCells};
+
+pub(crate) use io::{LevelReadIssuer, StreamingRetirement};
+
+use super::lightmap_residency::LightmapStreamingSession;
+use super::sh_residency::ShStreamingSession;
+use crate::lightmap_streaming::demand::DemandFrame;
+use crate::streaming::shared_drain::SharedDrain;
+
+/// One frame's visibility, as every streamed resource reads it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StreamingFrame<'a> {
+    pub(crate) visible_cells: &'a VisibleCells,
+    /// The locator's camera cell; `None` without a level.
+    pub(crate) camera_cell: Option<usize>,
+    pub(crate) path: VisibilityPath,
+    pub(crate) monotonic_seconds: f64,
+}
+
+/// Streaming state whose lifetime is one loaded level: the lightmap session,
+/// the one issuer both resources read through, a cancelled predecessor's
+/// retirement, and the reused merged drain. SH's session stays on `Session`
+/// (it is read by diagnostics and outcome hooks) and is passed in; this owner
+/// replaces and retires the two together, so neither outlives the issuer
+/// they share.
+#[derive(Debug, Default)]
+pub(crate) struct LevelStreaming {
+    lightmap: Option<LightmapStreamingSession>,
+    reads: Option<LevelReadIssuer>,
+    retirement: Option<StreamingRetirement>,
+    drain: SharedDrain,
+}
+
+impl LevelStreaming {
+    pub(crate) fn lightmap(&self) -> Option<&LightmapStreamingSession> {
+        self.lightmap.as_ref()
+    }
+
+    pub(crate) fn lightmap_mut(&mut self) -> Option<&mut LightmapStreamingSession> {
+        self.lightmap.as_mut()
+    }
+
+    /// Installs a fresh lightmap session. Call only after [`Self::retire`],
+    /// so the previous generation's I/O is already cancelled.
+    pub(crate) fn install_lightmap(&mut self, session: LightmapStreamingSession) {
+        debug_assert!(
+            self.lightmap.is_none() && self.reads.is_none(),
+            "a lightmap session is installed only after retirement"
+        );
+        self.lightmap = Some(session);
+    }
+
+    /// Joins a predecessor's threads once they have all finished.
+    pub(crate) fn poll_retirement(&mut self) {
+        if self
+            .retirement
+            .as_mut()
+            .is_some_and(StreamingRetirement::try_finish)
+        {
+            self.retirement = None;
+        }
+    }
+
+    /// Cancels this level's I/O without joining: SH's workers, the lightmap
+    /// session, and the issuer, in that order, so the issuer's last handle
+    /// drops last. Their threads retire off the frame path; the next
+    /// generation's issuer starts only after they have joined. Releases the
+    /// sessions' manifest clones once those threads are gone.
+    pub(crate) fn retire(&mut self, sh: &mut Option<ShStreamingSession>) {
+        let mut retirement = self.retirement.take().unwrap_or_default();
+        if let Some(mut streaming) = sh.take()
+            && let Some(workers) = streaming.begin_worker_retirement()
+        {
+            retirement.add_sh(workers);
+        }
+        if let Some(lightmap) = self.lightmap.take() {
+            retirement.retain_lightmap(lightmap.into_retained_source());
+        }
+        if let Some(reads) = self.reads.take() {
+            retirement.add_issuer(reads.begin_retirement());
+        }
+        if !retirement.is_empty() {
+            self.retirement = Some(retirement);
+        }
+    }
+
+    /// One frame's streaming work for both resources:
+    ///
+    /// 1. start this level's issuer if no predecessor is still retiring;
+    /// 2. SH and lightmaps each update demand, admit completions, and offer
+    ///    ready items to one merged list;
+    /// 3. the list is admitted once against the shared per-drain budget;
+    /// 4. each takes its admitted prefix into its batch and submits reads.
+    ///
+    /// Returns SH's batch; the lightmap batch waits in its session for the
+    /// renderer's lightmap drain. `residency_set` is the level's id 51, present
+    /// whenever a lightmap session is.
+    pub(crate) fn prepare_drains(
+        &mut self,
+        sh: &mut Option<ShStreamingSession>,
+        residency_set: Option<&CellResidencySetSection>,
+        frame: StreamingFrame<'_>,
+    ) -> Result<ShDrainBatch> {
+        self.poll_retirement();
+        self.start_reads(sh)?;
+        self.drain.begin();
+        let sh_pending = match sh.as_mut() {
+            Some(streaming) => Some(streaming.begin_drain(
+                frame.visible_cells,
+                frame.camera_cell,
+                frame.monotonic_seconds,
+                &mut self.drain,
+            )?),
+            None => None,
+        };
+        let lightmap_frame =
+            residency_set
+                .zip(frame.camera_cell)
+                .map(|(residency_set, camera_cell)| DemandFrame {
+                    residency_set,
+                    camera_cell: camera_cell as u32,
+                    path: frame.path,
+                    visible_cells: frame.visible_cells,
+                });
+        let lightmap_drains = match (self.lightmap.as_mut(), lightmap_frame) {
+            (Some(lightmap), Some(lightmap_frame)) => {
+                lightmap.begin_drain(lightmap_frame, &mut self.drain)?;
+                true
+            }
+            _ => false,
+        };
+        self.drain.admit()?;
+        let batch = match (sh.as_mut(), sh_pending) {
+            (Some(streaming), Some(pending)) => streaming.finish_drain(pending, &self.drain)?,
+            _ => ShDrainBatch::default(),
+        };
+        if lightmap_drains && let Some(lightmap) = self.lightmap.as_mut() {
+            lightmap.finish_drain(
+                &self.drain,
+                self.reads.as_ref().map(LevelReadIssuer::issuer),
+            )?;
+        }
+        Ok(batch)
+    }
+
+    /// Spawns the level's one issuer over every route that needs it (SH's in
+    /// async mode, the lightmap session's), once no predecessor is retiring.
+    fn start_reads(&mut self, sh: &mut Option<ShStreamingSession>) -> Result<()> {
+        if self.reads.is_some() || self.retirement.is_some() {
+            return Ok(());
+        }
+        let sh_prepared = match sh.as_ref() {
+            Some(streaming) => streaming.prepare_async_workers()?,
+            None => None,
+        };
+        let lightmap_route = self
+            .lightmap
+            .as_mut()
+            .and_then(LightmapStreamingSession::take_route);
+        if sh_prepared.is_none() && lightmap_route.is_none() {
+            return Ok(());
+        }
+        let (sh_workers, sh_route) = sh_prepared.unzip();
+        let reads = LevelReadIssuer::spawn(sh_route, lightmap_route)?;
+        if let (Some(mut workers), Some(streaming)) = (sh_workers, sh.as_mut()) {
+            workers.attach_issuer(reads.issuer().clone());
+            streaming.attach_workers(workers);
+        }
+        self.reads = Some(reads);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_retiring(&self) -> bool {
+        self.retirement.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drain_capacity(&self) -> usize {
+        self.drain.capacity()
+    }
+}

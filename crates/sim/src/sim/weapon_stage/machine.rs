@@ -13,6 +13,8 @@ pub(super) struct WeaponMachineTick {
     pub(super) authorization: WeaponFireAuthorization,
     pub(super) deliveries: Vec<ReloadDelivery>,
     pub(super) lowered: bool,
+    /// This tick's accepted shot latched the weapon overheated.
+    pub(super) overheat: bool,
 }
 /// Run the one ordered weapon machine shared by local and host-simulated pawns.
 /// Reload entry must run before expiry and fire: a reload started this tick owns
@@ -121,10 +123,15 @@ pub(super) fn tick_weapon_machine(
             deliveries: &mut deliveries,
         },
     );
+    // An overheated weapon is never Accepted, so an accepted shot that leaves
+    // the latch set is the crossing shot.
+    let overheat = authorization == WeaponFireAuthorization::Accepted
+        && component.heat.is_some_and(|heat| heat.overheated);
     WeaponMachineTick {
         authorization,
         deliveries,
         lowered,
+        overheat,
     }
 }
 

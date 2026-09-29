@@ -23,4 +23,5 @@ pub mod sprite_visual;
 pub mod touchable;
 pub mod trigger_volume;
 pub mod weapon;
+pub mod weapon_resource;
 pub mod wieldable_state;

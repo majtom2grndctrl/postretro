@@ -154,7 +154,7 @@ fn committed_sdk_types_contain_weapon_ammo_resource() {
 
     for output in [&generated_ts, &committed_ts] {
         assert!(output.contains("export type AmmoResource = {"));
-        assert!(output.contains("| ({ kind: \"ammo\" } & AmmoResource);"));
+        assert!(output.contains("| ({ kind: \"ammo\" } & AmmoResource)"));
         assert!(output.contains("resource?: WeaponResource;"));
         assert!(output.contains("costPerShot?: number;"));
         assert!(output.contains("reloadMs?: number;"));
@@ -173,6 +173,45 @@ fn committed_sdk_types_contain_weapon_ammo_resource() {
         assert!(output.contains("\"magazine\""));
         assert!(output.contains("| \"perShell\""));
         assert!(output.contains("reloadStyle: ReloadStyle?,"));
+    }
+}
+
+/// Guard the heat and cell resource surface and its HUD slots in both the
+/// generator and the committed files.
+#[test]
+fn committed_sdk_types_contain_heat_and_cell_resources() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use std::fs;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let committed = |file: &str| {
+        fs::read_to_string(format!(
+            "{}/../../sdk/types/{file}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("read committed SDK types")
+    };
+
+    for output in [generate_typescript(&registry), committed("postretro.d.ts")] {
+        assert!(output.contains("| ({ kind: \"heat\" } & HeatResource)"));
+        assert!(output.contains("| ({ kind: \"cell\" } & CellResource);"));
+        assert!(output.contains("overheatBehavior?: OverheatBehavior;"));
+        assert!(output.contains("regenDelayMs?: number;"));
+        assert!(output.contains("overheat?: string;"));
+        assert!(output.contains("readonly overheated: ComputedRef<boolean>;"));
+        assert!(output.contains(
+            "readonly weaponResource: ComputedRef<\"none\" | \"ammo\" | \"heat\" | \"cell\">;"
+        ));
+    }
+    for output in [generate_luau(&registry), committed("postretro.d.luau")] {
+        assert!(output.contains("| (HeatResource & { kind: \"heat\" })"));
+        assert!(output.contains("| (CellResource & { kind: \"cell\" })"));
+        assert!(output.contains("coolDelayMs: number?,"));
+        assert!(output.contains("overheat: string?,"));
+        assert!(output.contains("cellCapacity: ComputedRef<number>,"));
     }
 }
 
@@ -614,7 +653,7 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "ts missing getGameState declaration:\n{ts}"
     );
     assert!(
-        ts.contains("readonly player: {\n      readonly ammo: ComputedRef<number>;\n      readonly ammoReserve: ComputedRef<number>;\n      readonly health: ComputedRef<number>;\n      readonly maxHealth: ComputedRef<number>;")
+        ts.contains("readonly player: {\n      readonly ammo: ComputedRef<number>;\n      readonly ammoReserve: ComputedRef<number>;\n      readonly cell: ComputedRef<number>;\n      readonly cellCapacity: ComputedRef<number>;\n      readonly health: ComputedRef<number>;\n      readonly heat: ComputedRef<number>;\n      readonly maxHealth: ComputedRef<number>;")
             && ts.contains("readonly textEntry: Ref<string>;"),
         "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
     );

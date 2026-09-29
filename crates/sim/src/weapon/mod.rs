@@ -424,6 +424,8 @@ pub struct WeaponFireEvents {
     /// Filled only by the mutable caller after it materializes a launch intent.
     pub(crate) spawned: Vec<ActivationOutcome>,
     pub(crate) dry_fire: bool,
+    /// Set by the machine when this activation's shot latched an overheat.
+    pub(crate) overheat: bool,
 }
 
 impl ClientFireResolution {
@@ -451,9 +453,10 @@ impl WeaponFireEvents {
             .collect()
     }
 
-    /// This activation's named events, in dispatch order. Fire, dry fire and
-    /// spawn come from `shooter`; one `impact` carries every contact of the
-    /// activation. `weapon` names the weapon descriptor the events came from.
+    /// This activation's named events, in dispatch order. Fire, dry fire,
+    /// spawn and overheat come from `shooter`; one `impact` carries every
+    /// contact of the activation. `weapon` names the weapon descriptor the
+    /// events came from.
     pub fn emissions(&self, shooter: &Emitter, weapon: Option<String>) -> Vec<WeaponEmission> {
         let from_shooter = |address| WeaponEmission {
             address,
@@ -483,6 +486,9 @@ impl WeaponFireEvents {
         }
         if !self.spawned.is_empty() {
             emissions.push(from_shooter("spawned"));
+        }
+        if self.overheat {
+            emissions.push(from_shooter("overheat"));
         }
         emissions
     }
@@ -681,6 +687,7 @@ fn fire_hitscan(
         projectile_launches: Vec::new(),
         spawned: Vec::new(),
         dry_fire: false,
+        overheat: false,
     };
 
     match resolution {

@@ -961,6 +961,27 @@ impl EntityRegistry {
             })
     }
 
+    /// Visits every live `(EntityId, &mut ComponentValue)` of one kind in
+    /// slot-index order. Fixed-tick systems that touch a whole column use this
+    /// instead of collecting ids, so the pass allocates nothing.
+    pub fn for_each_with_kind_mut(
+        &mut self,
+        kind: ComponentKind,
+        mut visit: impl FnMut(EntityId, &mut ComponentValue),
+    ) {
+        let column = &mut self.components[kind as usize];
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if !slot.live || slot.retired {
+                continue;
+            }
+            let Some(cell) = column.get_mut(idx).and_then(Option::as_mut) else {
+                continue;
+            };
+            // idx as u16 is valid: slots.len() is bounded to u16::MAX by spawn.
+            visit(EntityId::new(idx as u16, slot.generation), cell);
+        }
+    }
+
     /// Returns `None` when all 65,536 entity slots are exhausted (free list
     /// empty and slot vector at `u16::MAX`). Callers that must not panic
     /// (e.g. script primitives crossing the FFI boundary) should prefer this

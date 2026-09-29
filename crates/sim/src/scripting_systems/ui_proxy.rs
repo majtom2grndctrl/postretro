@@ -1,5 +1,5 @@
 // Player state publisher. Host publishes authoritative health at each impact seam and
-// republishes health, ammo, and reload slots for HUD consumers after game logic;
+// republishes health, ammo, heat/cell, and reload slots for HUD consumers after game logic;
 // every role publishes local display-only `player.weapon.*` slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
@@ -11,6 +11,7 @@ use postretro_entities::components::health::pawn_with_health;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::weapon_resource::WeaponResourceKind;
 use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{EntityId, EntityRegistry};
@@ -28,21 +29,75 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
     pawn_with_health(registry).map(|(id, health)| (id, health.current, health.max))
 }
 
-fn weapon_hud_values(
-    registry: &EntityRegistry,
-) -> (Option<EntityId>, Option<(u32, u32)>, f32, bool, f32) {
+/// The sampled active weapon's HUD facts. `sampled` is `None` with no pawn or
+/// no live active weapon, and the other fields are then placeholders.
+#[derive(Debug, Default, PartialEq)]
+struct WeaponHudValues {
+    sampled: Option<EntityId>,
+    ammo: Option<(u32, u32)>,
+    resource: ResourceHud,
+    reload_progress: f32,
+    reload_active: bool,
+    effective_spread_degrees: f32,
+}
+
+/// Heat and cell use the health pattern: raw value plus a companion max.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum ResourceHud {
+    #[default]
+    None,
+    Ammo,
+    Heat {
+        heat: f32,
+        overheat_at: f32,
+        overheated: bool,
+    },
+    Cell {
+        charge: f32,
+        capacity: f32,
+    },
+}
+
+impl ResourceHud {
+    fn of(weapon: &WeaponComponent) -> Self {
+        match weapon.resource_kind() {
+            WeaponResourceKind::None => Self::None,
+            WeaponResourceKind::Ammo => Self::Ammo,
+            WeaponResourceKind::Heat => weapon.heat.map_or(Self::None, |heat| Self::Heat {
+                heat: heat.heat,
+                overheat_at: heat.effective().overheat_at,
+                overheated: heat.overheated,
+            }),
+            WeaponResourceKind::Cell => weapon.cell.map_or(Self::None, |cell| Self::Cell {
+                charge: cell.charge,
+                capacity: cell.effective().capacity,
+            }),
+        }
+    }
+
+    fn kind(self) -> WeaponResourceKind {
+        match self {
+            Self::None => WeaponResourceKind::None,
+            Self::Ammo => WeaponResourceKind::Ammo,
+            Self::Heat { .. } => WeaponResourceKind::Heat,
+            Self::Cell { .. } => WeaponResourceKind::Cell,
+        }
+    }
+}
+
+fn weapon_hud_values(registry: &EntityRegistry) -> WeaponHudValues {
     let Some(pawn) = registry.local_player_movement_pawn() else {
-        return (None, None, 0.0, false, 0.0);
+        return WeaponHudValues::default();
     };
     let Some(weapon_id) = registry
         .get_component::<Inventory>(pawn)
         .ok()
         .and_then(Inventory::active_wieldable)
     else {
-        return (None, None, 0.0, false, 0.0);
+        return WeaponHudValues::default();
     };
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
-        return (None, None, 0.0, false, 0.0);
+        return WeaponHudValues::default();
     };
     let (horizontal_speed, run_speed) = registry
         .get_component::<PlayerMovementComponent>(pawn)
@@ -61,13 +116,14 @@ fn weapon_hud_values(
             .map_or(0, |reserve| reserve.available(ammo.ammo_type));
         (weapon.magazine, reserve)
     });
-    (
-        Some(weapon_id),
+    WeaponHudValues {
+        sampled: Some(weapon_id),
         ammo,
-        progress,
-        active,
-        weapon.effective_spread_degrees(horizontal_speed, run_speed),
-    )
+        resource: ResourceHud::of(weapon),
+        reload_progress: progress,
+        reload_active: active,
+        effective_spread_degrees: weapon.effective_spread_degrees(horizontal_speed, run_speed),
+    }
 }
 
 /// Read the local display-only switching state from the owning pawn's inventory.
@@ -173,10 +229,9 @@ impl PlayerHudStatePublisher {
         if is_connected_client {
             // These switching display slots are local on every role: their inventory
             // source is locally owned, so no host projection exists to replicate.
-            let (sampled_weapon, _, _, _, effective_spread_degrees) =
-                weapon_hud_values(&self.ctx.registry.borrow());
-            self.publish_local_weapon_state(effective_spread_degrees);
-            return sampled_weapon;
+            let values = weapon_hud_values(&self.ctx.registry.borrow());
+            self.publish_local_weapon_state(values.effective_spread_degrees);
+            return values.sampled;
         }
         self.tick_and_report_sampled_weapon()
     }
@@ -207,8 +262,14 @@ impl PlayerHudStatePublisher {
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
         self.publish_local_per_owner_mod_slots();
-        let (sampled_weapon, ammo, reload_progress, reload_active, effective_spread_degrees) =
-            weapon_hud_values(&self.ctx.registry.borrow());
+        let WeaponHudValues {
+            sampled: sampled_weapon,
+            ammo,
+            resource,
+            reload_progress,
+            reload_active,
+            effective_spread_degrees,
+        } = weapon_hud_values(&self.ctx.registry.borrow());
         self.publish_local_weapon_state(effective_spread_degrees);
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
@@ -231,6 +292,9 @@ impl PlayerHudStatePublisher {
             }
             (None, None) => {}
         }
+        if sampled_weapon.is_some() {
+            self.publish_resource_values(resource);
+        }
         let reload_progress_written =
             self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
         let reload_active_written =
@@ -239,6 +303,42 @@ impl PlayerHudStatePublisher {
             sampled_weapon
         } else {
             None
+        }
+    }
+
+    /// Publish the live active weapon's heat/cell slots. Like the ammo pair, a
+    /// weapon of another kind is an authoritative absence: its number slots
+    /// clear and the latch reads false.
+    fn publish_resource_values(&mut self, resource: ResourceHud) {
+        self.write_hud_slot(
+            "player.weaponResource",
+            SlotValue::Enum(resource.kind().as_str().to_string()),
+        );
+        match resource {
+            ResourceHud::Heat {
+                heat,
+                overheat_at,
+                overheated,
+            } => {
+                self.write_hud_slot("player.heat", SlotValue::Number(heat));
+                self.write_hud_slot("player.overheatAt", SlotValue::Number(overheat_at));
+                self.write_hud_slot("player.overheated", SlotValue::Boolean(overheated));
+            }
+            ResourceHud::None | ResourceHud::Ammo | ResourceHud::Cell { .. } => {
+                self.clear_hud_slot("player.heat");
+                self.clear_hud_slot("player.overheatAt");
+                self.write_hud_slot("player.overheated", SlotValue::Boolean(false));
+            }
+        }
+        match resource {
+            ResourceHud::Cell { charge, capacity } => {
+                self.write_hud_slot("player.cell", SlotValue::Number(charge));
+                self.write_hud_slot("player.cellCapacity", SlotValue::Number(capacity));
+            }
+            ResourceHud::None | ResourceHud::Ammo | ResourceHud::Heat { .. } => {
+                self.clear_hud_slot("player.cell");
+                self.clear_hud_slot("player.cellCapacity");
+            }
         }
     }
 
@@ -793,7 +893,7 @@ mod tests {
 
         assert_eq!(pawn_health_values(&ctx.registry.borrow()), None);
         assert_eq!(
-            weapon_hud_values(&ctx.registry.borrow()).1,
+            weapon_hud_values(&ctx.registry.borrow()).ammo,
             Some((5, 20)),
             "ammo HUD identity is independent of the Health component"
         );
@@ -1504,5 +1604,182 @@ mod tests {
             (0.5, true),
             "acknowledgement advances to the live reload sample after projection"
         );
+    }
+
+    fn equip_resource_weapon(ctx: &ScriptCtx, pawn: EntityId, resource: serde_json::Value) {
+        let mut descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 10.0,
+            "range": 64.0,
+            "fireRateMs": 100.0,
+            "fireMode": "auto",
+            "resolution": "hitscan",
+        }))
+        .unwrap();
+        descriptor.resource =
+            (!resource.is_null()).then(|| serde_json::from_value(resource).unwrap());
+        let weapon = WeaponComponent::from_descriptor(&descriptor);
+        let mut registry = ctx.registry.borrow_mut();
+        let id = registry.spawn(Transform::default());
+        registry.set_component(id, weapon).unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(id);
+        registry.set_component(pawn, inventory).unwrap();
+    }
+
+    fn slot(ctx: &ScriptCtx, name: &str) -> Option<SlotValue> {
+        ctx.slot_table.borrow().get(name).unwrap().value.clone()
+    }
+
+    fn heat_resource() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "heat", "heatPerShot": 10.0, "overheatAt": 80.0, "coolPerSecond": 20.0
+        })
+    }
+
+    fn cell_resource() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "cell", "capacity": 40.0, "costPerShot": 4.0, "regenPerSecond": 8.0
+        })
+    }
+
+    fn set_live_heat(ctx: &ScriptCtx, pawn: EntityId, heat: f32, overheated: bool) {
+        let mut registry = ctx.registry.borrow_mut();
+        let weapon = registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .active_wieldable()
+            .unwrap();
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        let live = component.heat.as_mut().unwrap();
+        live.heat = heat;
+        live.overheated = overheated;
+        registry.set_component(weapon, component).unwrap();
+    }
+
+    #[test]
+    fn heat_weapon_publishes_heat_max_and_latch_and_clears_cell_and_ammo() {
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let _ammo = spawn_ammo_weapon(&ctx, pawn);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick(None);
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("ammo".into()))
+        );
+
+        equip_resource_weapon(&ctx, pawn, cell_resource());
+        publisher.tick(None);
+        equip_resource_weapon(&ctx, pawn, heat_resource());
+        set_live_heat(&ctx, pawn, 80.0, true);
+        publisher.tick(None);
+
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("heat".into()))
+        );
+        assert_eq!(slot(&ctx, "player.heat"), Some(SlotValue::Number(80.0)));
+        assert_eq!(
+            slot(&ctx, "player.overheatAt"),
+            Some(SlotValue::Number(80.0))
+        );
+        assert_eq!(
+            slot(&ctx, "player.overheated"),
+            Some(SlotValue::Boolean(true))
+        );
+        assert_eq!(slot(&ctx, "player.cell"), None);
+        assert_eq!(slot(&ctx, "player.cellCapacity"), None);
+        assert_eq!(slot(&ctx, "player.ammo"), None);
+        assert_eq!(slot(&ctx, "player.ammoReserve"), None);
+    }
+
+    #[test]
+    fn cell_weapon_publishes_charge_and_capacity_and_clears_heat_and_latch() {
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        equip_resource_weapon(&ctx, pawn, heat_resource());
+        set_live_heat(&ctx, pawn, 40.0, true);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick(None);
+        assert_eq!(
+            slot(&ctx, "player.overheated"),
+            Some(SlotValue::Boolean(true))
+        );
+
+        equip_resource_weapon(&ctx, pawn, cell_resource());
+        publisher.tick(None);
+
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("cell".into()))
+        );
+        assert_eq!(slot(&ctx, "player.cell"), Some(SlotValue::Number(40.0)));
+        assert_eq!(
+            slot(&ctx, "player.cellCapacity"),
+            Some(SlotValue::Number(40.0))
+        );
+        assert_eq!(slot(&ctx, "player.heat"), None);
+        assert_eq!(slot(&ctx, "player.overheatAt"), None);
+        assert_eq!(
+            slot(&ctx, "player.overheated"),
+            Some(SlotValue::Boolean(false))
+        );
+    }
+
+    #[test]
+    fn heat_cell_slots_clear_for_ammo_and_resourceless_weapons_and_hold_without_one() {
+        for kind in ["none", "ammo"] {
+            let ctx = ScriptCtx::new();
+            let pawn = spawn_movement_pawn(&ctx);
+            equip_resource_weapon(&ctx, pawn, cell_resource());
+            let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+            publisher.tick(None);
+            equip_resource_weapon(&ctx, pawn, heat_resource());
+            set_live_heat(&ctx, pawn, 30.0, true);
+            publisher.tick(None);
+
+            if kind == "ammo" {
+                let _ = spawn_ammo_weapon(&ctx, pawn);
+            } else {
+                equip_resource_weapon(&ctx, pawn, serde_json::Value::Null);
+            }
+            publisher.tick(None);
+            assert_eq!(
+                slot(&ctx, "player.weaponResource"),
+                Some(SlotValue::Enum(kind.into()))
+            );
+            for cleared in [
+                "player.heat",
+                "player.overheatAt",
+                "player.cell",
+                "player.cellCapacity",
+            ] {
+                assert_eq!(slot(&ctx, cleared), None, "{kind}: {cleared}");
+            }
+            assert_eq!(
+                slot(&ctx, "player.overheated"),
+                Some(SlotValue::Boolean(false))
+            );
+        }
+
+        // No active weapon keeps the last published values (staleness contract).
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        equip_resource_weapon(&ctx, pawn, cell_resource());
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick(None);
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, Inventory::default())
+            .unwrap();
+        publisher.tick(None);
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("cell".into()))
+        );
+        assert_eq!(slot(&ctx, "player.cell"), Some(SlotValue::Number(40.0)));
     }
 }

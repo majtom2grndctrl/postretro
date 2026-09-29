@@ -1792,11 +1792,17 @@ mod tests {
             vec![
                 "player.ammo",
                 "player.ammoReserve",
+                "player.cell",
+                "player.cellCapacity",
                 "player.health",
+                "player.heat",
                 "player.maxHealth",
+                "player.overheatAt",
+                "player.overheated",
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
+                "player.weaponResource",
                 "net.alpha",
                 "net.bravo",
             ]
@@ -1817,11 +1823,17 @@ mod tests {
             vec![
                 "player.ammo",
                 "player.ammoReserve",
+                "player.cell",
+                "player.cellCapacity",
                 "player.health",
+                "player.heat",
                 "player.maxHealth",
+                "player.overheatAt",
+                "player.overheated",
                 "player.reloadActive",
                 "player.reloadProgress",
-                "player.weaponCooldownMs"
+                "player.weaponCooldownMs",
+                "player.weaponResource",
             ]
         );
         assert!(!schema.to_net_schema().is_empty());
@@ -2079,6 +2091,12 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
+            "player.weaponResource",
+            "player.heat",
+            "player.overheatAt",
+            "player.overheated",
+            "player.cell",
+            "player.cellCapacity",
             WEAPON_COOLDOWN_SLOT,
         ] {
             cooldown.get_mut(name).unwrap().schema.network = ReplicationScope::None;
@@ -2099,6 +2117,12 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
+            "player.weaponResource",
+            "player.heat",
+            "player.overheatAt",
+            "player.overheated",
+            "player.cell",
+            "player.cellCapacity",
             WEAPON_COOLDOWN_SLOT,
         ] {
             renamed.get_mut(name).unwrap().schema.network = ReplicationScope::None;
@@ -2161,6 +2185,12 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
+            "player.weaponResource",
+            "player.heat",
+            "player.overheatAt",
+            "player.overheated",
+            "player.cell",
+            "player.cellCapacity",
             "player.weaponCooldownMs",
         ] {
             table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
@@ -2207,6 +2237,12 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
+            "player.weaponResource",
+            "player.heat",
+            "player.overheatAt",
+            "player.overheated",
+            "player.cell",
+            "player.cellCapacity",
             "player.weaponCooldownMs",
         ] {
             table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
@@ -2322,6 +2358,8 @@ mod tests {
                     credit_source: "weapon.test".to_string(),
                     ammo: None,
                     magazine: 0,
+                    heat: None,
+                    cell: None,
                     state: WieldableState::Idle,
                     state_remaining_ms: 0,
                     state_total_ms: 0,
@@ -2396,6 +2434,8 @@ mod tests {
                         reload_style: ReloadStyle::Magazine,
                     }),
                     magazine: spec.magazine,
+                    heat: None,
+                    cell: None,
                     state: if spec.state_remaining_ms > 0 {
                         WieldableState::Reloading
                     } else {

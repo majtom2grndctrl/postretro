@@ -362,6 +362,7 @@ fn validate_optional_weapon_sound_keys_lua(weapon: &Table) -> Result<(), Descrip
         "reloadStart",
         "reloadShell",
         "reloadComplete",
+        "overheat",
     ] {
         validate_optional_string_field_lua(
             &sounds,

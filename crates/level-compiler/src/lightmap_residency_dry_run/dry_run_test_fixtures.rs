@@ -105,6 +105,7 @@ pub(super) fn input(
                 center: [cell as f32 * 10.0, 0.0, 0.0],
                 cluster,
                 camera_candidate: true,
+                exterior: false,
             })
             .collect(),
         cluster_count,

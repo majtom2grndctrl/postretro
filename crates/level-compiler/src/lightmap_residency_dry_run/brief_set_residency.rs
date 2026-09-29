@@ -8,8 +8,8 @@ use rayon::prelude::*;
 use super::band_pool_sim::{BandSimInputs, BandWalks, pool_caps, run_band_walks};
 use super::block_pool_sim::{SIM_SEED, SIM_STEPS, shelf_layers_from_scratch};
 use super::brief_set::{
-    BRIEF_MAX_LEAD_METERS, BriefSetSources, Dilation, LeadMap, build_lead_map,
-    check_against_direct, meters_fixed, pinned_cells, portal_neighbours, visible_sources,
+    BRIEF_MAX_LEAD_METERS, BriefSetSources, Dilation, LeadCheck, LeadMap, build_lead_map,
+    check_every_breakpoint, meters_fixed, pinned_cells, portal_neighbours, visible_sources,
 };
 use super::cell_block_residency::SIM_LEAD_METERS;
 use super::mandatory::mandatory_bytes;
@@ -51,6 +51,8 @@ pub(crate) struct BandResult {
 pub(crate) struct SectionSize {
     pub cell_count: usize,
     pub entries: usize,
+    /// Entries naming an exterior cell, which holds no charts.
+    pub exterior_entries: usize,
     pub max_entries_per_camera: usize,
 }
 
@@ -68,9 +70,8 @@ pub(crate) struct BriefVariant {
     pub leads: Vec<BriefLeadResult>,
     pub band: BandResult,
     pub section: SectionSize,
-    /// `(checked, mismatched)` camera-cell sets: map-read `M(c, L)` against
-    /// direct evaluation at every movement lead.
-    pub consistency: (usize, usize),
+    /// Map-read `M(c, L)` against direct evaluation at every lead.
+    pub consistency: LeadCheck,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,9 +105,7 @@ pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> 
                 cell_count: inputs.input.cell_count(),
             };
             let map = build_lead_map(&sources, inputs.camera_cells, meters_fixed(max_lead_meters));
-            let leads_fixed = MOVEMENT_LEADS_METERS.map(meters_fixed);
-            let consistency =
-                check_against_direct(&map, &sources, inputs.camera_cells, &leads_fixed);
+            let consistency = check_every_breakpoint(&map, &sources, inputs.camera_cells);
             let leads: Vec<BriefLeadResult> = MOVEMENT_LEADS_METERS
                 .iter()
                 .map(|&lead| evaluate_lead(inputs, &map, &pinned, lead))
@@ -126,6 +125,11 @@ pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> 
                 section: SectionSize {
                     cell_count: inputs.input.cell_count(),
                     entries: map.entries.len(),
+                    exterior_entries: map
+                        .entries
+                        .iter()
+                        .filter(|&&(cell, _)| inputs.input.cells[cell as usize].exterior)
+                        .count(),
                     max_entries_per_camera: inputs
                         .camera_cells
                         .iter()

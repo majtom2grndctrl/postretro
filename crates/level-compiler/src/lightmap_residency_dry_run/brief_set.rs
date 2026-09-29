@@ -9,7 +9,7 @@
 //! one-hop portal neighbour of a cell in `S`; `Pinned` is the cells of the
 //! clusters id 49 flags pinned. There is no camera-cluster term. The lead map
 //! omits `Pinned`, as the brief's wire format does: pins come from id 49.
-//! See: context/plans/drafts/spatial-residency--lightmap-cell-blocks/index.md
+//! See: context/plans/large-map-spatial-residency.md
 
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 use rayon::prelude::*;
@@ -44,7 +44,12 @@ impl Dilation {
 }
 
 /// Portal neighbours of every cell id, ascending: the id-15 portals the
-/// runtime walk traverses, minus self-loops and out-of-range endpoints.
+/// runtime walk traverses, minus self-loops and out-of-range endpoints. On a
+/// PRL the loader accepts it agrees with `HubGraph`'s portal adjacency,
+/// since the loader rejects the solid endpoints and degenerate polygons
+/// `HubGraph` skips. It can reach exterior cells. Those hold no charts, so
+/// they cost no block bytes, only set cells and section entries; the section
+/// line reports those entries, and a bake can drop them.
 pub(crate) fn portal_neighbours(graph: &PortalGraphInput) -> Vec<Vec<u32>> {
     let cell_count = graph.cells.len();
     let mut neighbours = vec![Vec::new(); cell_count];
@@ -127,13 +132,6 @@ impl LeadMap {
         let start = self.offsets[camera as usize] as usize;
         let end = self.offsets[camera as usize + 1] as usize;
         &self.entries[start..end]
-    }
-
-    pub(crate) fn lead_of(&self, camera: u32, cell: u32) -> Option<u32> {
-        self.entries_of(camera)
-            .iter()
-            .find(|&&(entry, _)| entry == cell)
-            .map(|&(_, lead)| lead)
     }
 
     /// `M(c, L)` read from the map, pins added, ascending.
@@ -232,14 +230,66 @@ pub(crate) fn check_against_direct(
 ) -> (usize, usize) {
     let mismatched = camera_cells
         .par_iter()
-        .map(|&camera| {
-            leads_fixed
-                .iter()
-                .filter(|&&lead| {
-                    map.mandatory(camera, lead, sources.pinned) != direct_set(sources, camera, lead)
-                })
-                .count()
-        })
+        .map(|&camera| mismatches(map, sources, camera, leads_fixed))
         .sum();
     (camera_cells.len() * leads_fixed.len(), mismatched)
+}
+
+/// Map-read `M(c, L)` against direct evaluation at every lead up to the
+/// map's maximum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LeadCheck {
+    /// `(camera, lead)` pairs compared.
+    pub checked: usize,
+    pub mismatched: usize,
+    /// Distinct lead values among the map's entries.
+    pub distinct_leads: usize,
+}
+
+/// Both sides are step functions of `L` that change only at one of the
+/// camera's own map leads or one of its hub-metric partner distances, so
+/// comparing at each of those breakpoints compares every `L` up to the map's
+/// maximum.
+pub(crate) fn check_every_breakpoint(
+    map: &LeadMap,
+    sources: &BriefSetSources<'_>,
+    camera_cells: &[u32],
+) -> LeadCheck {
+    let (checked, mismatched) = camera_cells
+        .par_iter()
+        .map(|&camera| {
+            let mut leads: Vec<u32> = map
+                .entries_of(camera)
+                .iter()
+                .map(|&(_, lead)| lead)
+                .chain(
+                    sources
+                        .neighbors
+                        .within_distances(camera, map.max_lead_fixed)
+                        .map(|(_, distance)| distance),
+                )
+                .chain(std::iter::once(0))
+                .collect();
+            leads.sort_unstable();
+            leads.dedup();
+            (leads.len(), mismatches(map, sources, camera, &leads))
+        })
+        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let mut distinct: Vec<u32> = map.entries.iter().map(|&(_, lead)| lead).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    LeadCheck {
+        checked,
+        mismatched,
+        distinct_leads: distinct.len(),
+    }
+}
+
+fn mismatches(map: &LeadMap, sources: &BriefSetSources<'_>, camera: u32, leads: &[u32]) -> usize {
+    leads
+        .iter()
+        .filter(|&&lead| {
+            map.mandatory(camera, lead, sources.pinned) != direct_set(sources, camera, lead)
+        })
+        .count()
 }

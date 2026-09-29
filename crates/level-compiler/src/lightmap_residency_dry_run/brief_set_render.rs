@@ -76,17 +76,19 @@ impl DryRunReport {
             .iter()
             .map(|v| {
                 format!(
-                    "{} {} mismatched of {}",
+                    "{} {} mismatched of {} (camera, lead) checks over {} distinct map leads",
                     v.dilation.label(),
-                    v.consistency.1,
-                    v.consistency.0
+                    v.consistency.mismatched,
+                    v.consistency.checked,
+                    v.consistency.distinct_leads
                 )
             })
             .collect();
         let _ = writeln!(
             out,
             "lead-map consistency (map-read M(c, L) vs direct evaluation, every camera cell at \
-             every lead): {}",
+             each breakpoint of either side, so every L up to {}m): {}",
+            brief.max_lead_meters,
             consistency.join("; ")
         );
         let _ = writeln!(
@@ -221,12 +223,13 @@ impl DryRunReport {
             let _ = writeln!(
                 out,
                 "would-be cell residency section, {}, max lead {max_lead_meters}m: {} entries \
-                 (mean {:.1}, max {} per camera cell), {} bytes = {:.1} KiB (16 B header, \
-                 ({} cells + 1) x 4 B CSR over every cell id, 8 B per entry)",
+                 (mean {:.1}, max {} per camera cell; {} name exterior cells), {} bytes = {:.1} \
+                 KiB (16 B header, ({} cells + 1) x 4 B CSR over every cell id, 8 B per entry)",
                 variant.dilation.label(),
                 section.entries,
                 section.entries as f64 / cameras.len().max(1) as f64,
                 section.max_entries_per_camera,
+                section.exterior_entries,
                 section.bytes(),
                 section.bytes() as f64 / 1024.0,
                 section.cell_count
@@ -244,13 +247,18 @@ impl DryRunReport {
         let _ = writeln!(
             out,
             "mandatory blocks are never refused: a miss evicts band blocks (farthest lead \
-             first), then repacks from scratch if M(c, L) alone fits the cap, else grows past \
-             it. Band retain keeps resident band blocks and prefetches the rest (nearest lead \
-             first) into free space under the cap; immediate free keeps only M(c, L). No drain \
-             budget: every request completes in its step. hit rate = blocks re-entering M(c, L) \
-             that were still resident; demand reads make a mandatory block resident, prefetch \
-             reads a band block (repack moves are not reads); thrash = reads of a block freed \
-             within the last {THRASH_WINDOW_STEPS} steps",
+             first), then repacks in place if M(c, L) alone fits the cap, else grows past it. \
+             A repack moves M(c, L), then the band blocks resident at step start (nearest lead \
+             first), under the cap without reads. Band retain keeps resident band blocks under \
+             the cap, freeing any past it, and prefetches the rest (nearest lead first) into free \
+             space under the cap; a block freed this step is not prefetched back this step. \
+             Immediate free keeps only M(c, L). No drain budget: every request completes in its \
+             step. growth = steps where M(c, L) opened a layer at or past the cap; over cap = \
+             steps ending with mandatory blocks past it; hit rate = blocks joining M(c, L) that \
+             were already resident; blocks larger than a pool layer are excluded; demand reads \
+             make a mandatory block resident, prefetch reads a band block (repack moves are not \
+             reads); read MiB/step counts both; thrash = demand and prefetch reads of a block \
+             freed within the last {THRASH_WINDOW_STEPS} steps (an arbitrary window)",
         );
         let caps: Vec<String> = walks
             .caps
@@ -269,7 +277,7 @@ impl DryRunReport {
             let _ = writeln!(out, "{} ({} steps):", walk.kind.label(), walk.steps);
             let _ = writeln!(
                 out,
-                "    {:<8} {:<15} {:>5} {:>7} {:>9} {:>14} {:>10} {:>9} {:>12} {:>14} {:>12} {:>14}",
+                "    {:<8} {:<15} {:>5} {:>7} {:>9} {:>14} {:>10} {:>9} {:>12} {:>14} {:>14} {:>12} {:>16}",
                 "cap",
                 "policy",
                 "peak",
@@ -280,8 +288,9 @@ impl DryRunReport {
                 "hit rate",
                 "demand/step",
                 "prefetch/step",
+                "read MiB/step",
                 "thrash/step",
-                "thrash MiB/st"
+                "thrash MiB/step"
             );
             for run in &walk.runs {
                 self.render_band_run(out, run);
@@ -293,7 +302,7 @@ impl DryRunReport {
         let steps = run.steps.max(1) as f64;
         let _ = writeln!(
             out,
-            "    {:<8} {:<15} {:>5} {:>7} {:>9} {:>14} {:>10} {:>8.1}% {:>12.2} {:>14.2} {:>12.2} {:>14.2}",
+            "    {:<8} {:<15} {:>5} {:>7} {:>9} {:>14} {:>10} {:>8.1}% {:>12.2} {:>14.2} {:>14.2} {:>12.2} {:>16.2}",
             run.cap
                 .map_or("uncapped".to_string(), |cap| cap.to_string()),
             run.policy.label(),
@@ -309,6 +318,7 @@ impl DryRunReport {
             run.hit_rate() * 100.0,
             run.demand_reads as f64 / steps,
             run.prefetch_reads as f64 / steps,
+            mib_f64(run.read_bytes as f64) / steps,
             run.thrash_reads as f64 / steps,
             mib_f64(run.thrash_bytes as f64) / steps
         );

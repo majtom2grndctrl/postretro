@@ -1,12 +1,13 @@
 use postretro_level_format::cluster_directory::{CLUSTER_HINT_FLAG_PINNED, ClusterHintRecord};
 
-use super::band_pool_sim::{BandPolicy, BandSimInputs, simulate_band};
+use super::band_pool_sim::{BandPolicy, BandRun, BandSimInputs, simulate_band};
 use super::block_pool_sim::shelf_layers_from_scratch;
 use super::brief_set::{
-    BriefSetSources, Dilation, LeadMap, build_lead_map, check_against_direct, direct_set,
-    meters_fixed, pinned_cells, portal_neighbours, visible_sources,
+    BriefSetSources, Dilation, LeadMap, build_lead_map, check_against_direct,
+    check_every_breakpoint, direct_set, meters_fixed, pinned_cells, portal_neighbours,
+    visible_sources,
 };
-use super::cell_blocks::CellBlocks;
+use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{METER, bc6h_formats, chart, input, pair};
 use super::inputs::pinned_clusters;
 use super::mandatory::{Granularity, MandatoryContext, Neighbors};
@@ -31,6 +32,13 @@ fn chain_graph(n: u32) -> PortalGraphInput {
             })
             .collect(),
     }
+}
+
+fn lead_of(map: &LeadMap, camera: u32, cell: u32) -> Option<u32> {
+    map.entries_of(camera)
+        .iter()
+        .find(|&&(entry, _)| entry == cell)
+        .map(|&(_, lead)| lead)
 }
 
 fn sources<'a>(
@@ -146,7 +154,7 @@ fn flagged_pin_joins_every_camera_cell_and_an_unflagged_hint_does_not() {
         }
     }
     // The map itself omits pins, as the wire format does.
-    assert_eq!(map.lead_of(0, 4), None);
+    assert_eq!(lead_of(&map, 0, 4), None);
 }
 
 /// Chain 0..6 with hub distances 10 m apart; each cell sees itself and its
@@ -186,7 +194,7 @@ fn camera_cell_leads_itself_at_zero() {
     let cameras: Vec<u32> = (0..6).collect();
     let map = build_lead_map(&sources, &cameras, meters_fixed(32));
     for camera in cameras {
-        assert_eq!(map.lead_of(camera, camera), Some(0), "camera {camera}");
+        assert_eq!(lead_of(&map, camera, camera), Some(0), "camera {camera}");
         assert_eq!(map.entries_of(camera)[0].1, 0);
     }
 }
@@ -207,6 +215,9 @@ fn lead_map_matches_direct_evaluation_at_every_lead() {
             (cameras.len() * leads.len(), 0),
             "{dilation:?}"
         );
+        let every = check_every_breakpoint(&map, &sources, &cameras);
+        assert_eq!(every.mismatched, 0, "{dilation:?}");
+        assert!(every.checked >= cameras.len(), "{every:?}");
         for camera in &cameras {
             let entries = map.entries_of(*camera);
             assert!(
@@ -223,15 +234,15 @@ fn lead_map_matches_direct_evaluation_at_every_lead() {
     let sources = sources(&neighbors, &pvs, &[]);
     let map = build_lead_map(&sources, &cameras, meters_fixed(32));
     // Cell 4 is reached at exactly 16 m, so it is mandatory at L = 16.
-    assert_eq!(map.lead_of(1, 4), Some(16 * METER));
+    assert_eq!(lead_of(&map, 1, 4), Some(16 * METER));
     assert!(map.mandatory(1, meters_fixed(16), &[]).contains(&4));
     // Cell 3 is seen from cell 2 at 10 m before cell 3 itself is reached.
-    assert_eq!(map.lead_of(1, 3), Some(10 * METER));
+    assert_eq!(lead_of(&map, 1, 3), Some(10 * METER));
     // Cell 5: seen from cell 2 (10 m), not from cell 4 (16 m) or itself.
-    assert_eq!(map.lead_of(1, 5), Some(10 * METER));
+    assert_eq!(lead_of(&map, 1, 5), Some(10 * METER));
     assert_eq!(direct_set(&sources, 1, 0), vec![1, 2]);
     // Cell 0 is 10 m away and nobody nearer sees it.
-    assert_eq!(map.lead_of(1, 0), Some(10 * METER));
+    assert_eq!(lead_of(&map, 1, 0), Some(10 * METER));
 }
 
 /// A hand-built lead map over cells 0–4: camera A = 0, camera B = 1.
@@ -294,42 +305,127 @@ fn band_retention_keeps_a_block_exactly_in_the_band() {
     }
 }
 
-#[test]
-fn mandatory_blocks_grow_past_a_cap_they_exceed_and_block_prefetch() {
-    let map = band_lead_map();
-    let fixed = meters_fixed(16);
-    let fixture = input(
+/// One chart per cell at each `(width, height)`, so each block is exactly
+/// that size.
+fn sized_blocks(sizes: &[(u32, u32)]) -> CellBlocks {
+    let cells: Vec<u32> = (0..sizes.len() as u32).collect();
+    let charts = sizes
+        .iter()
+        .zip(&cells)
+        .map(|(&(width, height), &cell)| chart(cell, 0, 0, 0, width, height))
+        .collect();
+    let blocks = CellBlocks::new(&input(
         bc6h_formats(2048, 1, true),
-        &[0, 1, 2, 3, 4],
-        (0..5).map(|cell| chart(cell, 0, 0, 0, 64, 64)).collect(),
+        &cells,
+        charts,
         Vec::new(),
-    );
-    let blocks = CellBlocks::new(&fixture);
-    let mandatory = vec![Vec::new(), map.mandatory(1, fixed, &[])];
-    let band = vec![Vec::new(), map.band(1, fixed, &[])];
-    let shelf = vec![0, shelf_layers_from_scratch(&blocks, &mandatory[1])];
+    ));
+    for (cell, &(width, height)) in sizes.iter().enumerate() {
+        assert_eq!(blocks.dims[cell], Some(BlockDims { width, height }));
+    }
+    blocks
+}
+
+/// A band-retain walk over hand-picked per-camera sets.
+fn band_walk(
+    blocks: &CellBlocks,
+    mandatory: &[Vec<u32>],
+    band: &[Vec<u32>],
+    path: &[u32],
+    cap: u32,
+) -> BandRun {
+    let shelf: Vec<u32> = mandatory
+        .iter()
+        .map(|set| shelf_layers_from_scratch(blocks, set))
+        .collect();
     let inputs = BandSimInputs {
-        blocks: &blocks,
-        mandatory: &mandatory,
-        band: &band,
+        blocks,
+        mandatory,
+        band,
         mandatory_shelf_layers: &shelf,
     };
-    // A zero-layer cap holds nothing: both mandatory blocks grow past it,
-    // and the grown pool prefetches no band block.
-    let run = simulate_band(&inputs, &[1], Some(0), BandPolicy::BandRetain);
-    assert_eq!(run.growth_steps, 1);
-    assert_eq!(run.over_cap_steps, 1);
+    simulate_band(&inputs, path, Some(cap), BandPolicy::BandRetain)
+}
+
+#[test]
+fn mandatory_blocks_grow_past_a_cap_and_prefetch_stays_under_it() {
+    let map = band_lead_map();
+    let fixed = meters_fixed(16);
+    let blocks = sized_blocks(&[(64, 64); 5]);
+    let mandatory = vec![Vec::new(), map.mandatory(1, fixed, &[])];
+    let band = vec![Vec::new(), map.band(1, fixed, &[])];
+    // A zero-layer cap holds nothing: both mandatory blocks grow past it, and
+    // no band block is placed past the cap.
+    let run = band_walk(&blocks, &mandatory, &band, &[1], 0);
+    assert_eq!((run.growth_steps, run.over_cap_steps), (1, 1));
     assert_eq!(
         (run.demand_reads, run.prefetch_reads),
         (2, 0),
         "cells 1 and 4, not band cell 2"
     );
     // A one-layer cap fits all three.
-    let run = simulate_band(&inputs, &[1], Some(1), BandPolicy::BandRetain);
+    let run = band_walk(&blocks, &mandatory, &band, &[1], 1);
     assert_eq!(
         (run.growth_steps, run.demand_reads, run.prefetch_reads),
         (0, 2, 1)
     );
+
+    // Camera 0 needs three layers against a two-layer cap: 0 and 1 fill
+    // layers 0 and most of 1, and 2 opens layer 2. Band cell 3 still fits
+    // the rest of layer 1, under the cap, though the pool is over it.
+    let blocks = sized_blocks(&[(2048, 2048), (2048, 1536), (2048, 1024), (64, 64)]);
+    let mandatory = vec![vec![0, 1, 2], vec![0, 1]];
+    let band = vec![vec![3], vec![3, 2]];
+    let run = band_walk(&blocks, &mandatory, &band, &[0], 2);
+    assert_eq!((run.peak_layers, run.growth_steps), (3, 1));
+    assert_eq!(
+        run.prefetch_reads, 1,
+        "band cell 3 prefetched under the cap"
+    );
+    // At camera 1, cell 2 drops into the band while sitting past the cap: it
+    // is freed, so the pool falls back under the cap and stays there.
+    let run = band_walk(&blocks, &mandatory, &band, &[0, 1, 1, 1], 2);
+    assert_eq!(run.growth_steps, 1);
+    assert_eq!(run.over_cap_steps, 1, "only the step that grew ends over");
+    assert_eq!(
+        (run.demand_reads, run.prefetch_reads),
+        (3, 1),
+        "cell 2 finds no room under the cap to come back"
+    );
+}
+
+#[test]
+fn a_repack_moves_a_resident_band_block_without_a_read() {
+    // One layer. Camera 0 stacks 0 (768 high) and 1 (512 high) and prefetches
+    // band cell 3 below them. At camera 1, cell 0 leaves, and 2 (1280 high)
+    // fits no shelf even with 3 evicted: a repack places 2 and 1, then moves
+    // 3 back into the space left under the cap.
+    let blocks = sized_blocks(&[(2048, 768), (2048, 512), (2048, 1280), (64, 64)]);
+    let mandatory = vec![vec![0, 1], vec![1, 2]];
+    let band = vec![vec![3], vec![3]];
+    let run = band_walk(&blocks, &mandatory, &band, &[0, 1], 1);
+    assert_eq!(run.repack_steps, 1);
+    assert_eq!(run.demand_reads, 3, "cells 0 and 1, then 2");
+    assert_eq!(run.prefetch_reads, 1, "cell 3 is read once and then moved");
+    assert_eq!((run.band_evictions, run.thrash_reads), (0, 0));
+    assert_eq!(run.peak_layers, 1);
+}
+
+#[test]
+fn a_victim_is_not_read_back_in_the_step_that_evicted_it() {
+    // One layer. Camera 0 places 0 (1024 high) and prefetches band cells 1
+    // and 2 onto one 64-high shelf. At camera 1, cell 3 (1088 high) fits only
+    // once both are evicted; the space left would hold them again.
+    let blocks = sized_blocks(&[(2048, 1024), (64, 64), (64, 64), (2048, 1088)]);
+    let mandatory = vec![vec![0], vec![3]];
+    let band = vec![vec![1, 2], vec![1, 2]];
+    let run = band_walk(&blocks, &mandatory, &band, &[0, 1], 1);
+    assert_eq!((run.repack_steps, run.band_evictions), (0, 2));
+    assert_eq!(run.prefetch_reads, 2, "no read back in the evicting step");
+    assert_eq!(run.thrash_reads, 0);
+    // The next step reads both back, as thrash.
+    let run = band_walk(&blocks, &mandatory, &band, &[0, 1, 1], 1);
+    assert_eq!((run.prefetch_reads, run.thrash_reads), (4, 2));
 }
 
 #[test]
@@ -350,8 +446,12 @@ fn u_turn_brief_set_drops_the_cluster_term_and_dilates_one_hop() {
         (Dilation::OneHop, Dilation::None)
     );
     for variant in [dilated, undilated] {
-        assert_eq!(variant.consistency.1, 0, "{:?}", variant.dilation);
-        assert_eq!(variant.consistency.0, 3 * variant.leads.len());
+        assert_eq!(variant.consistency.mismatched, 0, "{:?}", variant.dilation);
+        assert!(
+            variant.consistency.checked >= 3,
+            "{:?}",
+            variant.consistency
+        );
     }
     assert_eq!(undilated.leads[0].set_cells, vec![2, 3, 2]);
     assert_eq!(dilated.leads[0].set_cells, vec![3, 3, 3]);

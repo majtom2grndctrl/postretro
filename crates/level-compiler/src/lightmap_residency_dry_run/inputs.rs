@@ -170,6 +170,7 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
             ],
             cluster,
             camera_candidate: !record.is_solid() && !record.is_exterior(),
+            exterior: record.is_exterior(),
         })
         .collect();
 

@@ -306,6 +306,8 @@ pub(crate) struct CellInfo {
     /// Non-solid and non-exterior per the Cells (id 38) flags: a cell the
     /// camera can stand in, charted or not.
     pub camera_candidate: bool,
+    /// Exterior per the Cells (id 38) flags.
+    pub exterior: bool,
 }
 
 /// One entry per Geometry (id 17) face, in the bake's chart order.

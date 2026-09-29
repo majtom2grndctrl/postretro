@@ -81,7 +81,7 @@ fn lightmap_residency_dry_run_from_prl() {
     if let Some(visible) = &report.visible_set {
         for variant in &visible.brief_set.variants {
             assert_eq!(
-                variant.consistency.1,
+                variant.consistency.mismatched,
                 0,
                 "{} lead map disagrees with direct evaluation of M(c, L)",
                 variant.dilation.label()

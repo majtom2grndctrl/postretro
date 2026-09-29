@@ -216,6 +216,12 @@ pub enum SectionId {
     /// streaming residency path. Older loaders skip this section and retain
     /// their whole-section SH behavior.
     ClusterShPayloads = 50,
+
+    /// Streaming-owned cell relation: each camera cell's mandatory cells and
+    /// the smallest movement lead that makes each one mandatory. Resources
+    /// map these cells to their own residency units.
+    /// See `cell_residency_set::CellResidencySetSection`.
+    CellResidencySet = 51,
 }
 
 impl SectionId {
@@ -259,6 +265,7 @@ impl SectionId {
             48 => Some(Self::AnimatedBillboardDirectScatterDeltaVolumes),
             49 => Some(Self::ClusterDirectory),
             50 => Some(Self::ClusterShPayloads),
+            51 => Some(Self::CellResidencySet),
             _ => None,
         }
     }
@@ -309,6 +316,7 @@ mod tests {
             SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
             SectionId::ClusterDirectory,
             SectionId::ClusterShPayloads,
+            SectionId::CellResidencySet,
         ];
 
         for section_id in registered {
@@ -316,6 +324,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(51), None);
+        assert_eq!(SectionId::from_u32(52), None);
     }
 }

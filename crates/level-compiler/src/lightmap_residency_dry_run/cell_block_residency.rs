@@ -1,11 +1,13 @@
 //! Cell-block residency over the sampled visible sets: each lead's summed
-//! block bytes, the static pool lower bound (every camera cell's M(c) packed
-//! from scratch into 2048² layers), and the fragmentation walks at one lead.
+//! block bytes, the no-fragmentation reference (greedy MaxRects: every camera
+//! cell's M(c) packed from scratch into `POOL_LAYER_EDGE²` layers), and the
+//! fragmentation walks at one lead against the shelf allocator's own
+//! from-scratch packing.
 
 use rayon::prelude::*;
 
 use super::block_pool_sim::{
-    SIM_SEED, SIM_STEPS, SimInputs, WalkResult, run_walks, shelf_layers_from_scratch,
+    PoolWalks, SIM_SEED, SIM_STEPS, SimInputs, run_walks, shelf_layers_from_scratch,
 };
 use super::cell_blocks::{BlockDims, POOL_LAYER_EDGE};
 use super::mandatory::{Granularity, MandatoryContext};
@@ -21,7 +23,8 @@ pub(crate) struct BlockLeadResult {
     /// Summed block bytes of each camera cell's cell-granular M(c), parallel
     /// to the camera cells.
     pub bytes: Vec<u64>,
-    /// 2048² layers each M(c) needs packed from scratch with MaxRects.
+    /// Layers each M(c) needs packed from scratch with greedy MaxRects: the
+    /// packing-quality reference, not the walks' baseline.
     pub static_layers: Vec<u32>,
     /// Blocks in M(c) too large for any pool layer, summed over camera cells.
     pub unplaceable_blocks: usize,
@@ -30,10 +33,10 @@ pub(crate) struct BlockLeadResult {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CellBlockResidency {
     pub leads: Vec<BlockLeadResult>,
-    /// 2048² layers each M(c) at `SIM_LEAD_METERS` needs packed from scratch
-    /// with the shelf allocator the walks use.
+    /// Layers each M(c) at `SIM_LEAD_METERS` needs packed from scratch with
+    /// the shelf allocator the walks use: their baseline and pool sizing.
     pub shelf_static_layers: Vec<u32>,
-    pub walks: Vec<WalkResult>,
+    pub walks: PoolWalks,
 }
 
 pub(crate) fn run_cell_block_residency(
@@ -44,7 +47,6 @@ pub(crate) fn run_cell_block_residency(
     let mut context = MandatoryContext::new(inputs.input);
     let mut leads = Vec::new();
     let mut sim_sets = Vec::new();
-    let mut sim_static = Vec::new();
     for lead in MOVEMENT_LEADS_METERS {
         let sets: Vec<Vec<u32>> = inputs
             .camera_cells
@@ -66,10 +68,9 @@ pub(crate) fn run_cell_block_residency(
         });
         if lead == SIM_LEAD_METERS {
             sim_sets = sets;
-            sim_static = leads.last().map_or(Vec::new(), |l| l.static_layers.clone());
         }
     }
-    let shelf_static_layers = sim_sets
+    let shelf_static_layers: Vec<u32> = sim_sets
         .par_iter()
         .map(|set| shelf_layers_from_scratch(blocks, set))
         .collect();
@@ -77,9 +78,9 @@ pub(crate) fn run_cell_block_residency(
         blocks,
         camera_cells: inputs.camera_cells,
         sets: &sim_sets,
-        static_layers: &sim_static,
+        static_layers: &shelf_static_layers,
         graph: inputs.graph,
-        static_worst_layers: sim_static.iter().copied().max().unwrap_or(0),
+        static_worst_layers: shelf_static_layers.iter().copied().max().unwrap_or(0),
         steps: SIM_STEPS,
         seed: SIM_SEED,
     });

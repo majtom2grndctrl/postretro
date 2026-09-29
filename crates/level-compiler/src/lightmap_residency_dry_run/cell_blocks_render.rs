@@ -1,14 +1,16 @@
 //! Printed tables for cell blocks: packing overhead, mandatory block bytes and
-//! the static pool bound per lead, and the pool fragmentation walks.
+//! the no-fragmentation pool reference per lead, and the pool fragmentation
+//! walks.
 
 use std::fmt::Write as _;
 
 use super::block_pool_sim::{FIXED_POOL_PERCENT, SIM_SEED};
+use super::camera_walks::STALL_TELEPORT_STEPS;
 use super::cell_block_residency::SIM_LEAD_METERS;
 use super::cell_blocks::{CANDIDATE_WIDTHS, POOL_LAYER_EDGE};
 use super::mandatory::Granularity;
 use super::pvs_sampling::SampleDensity;
-use super::render::{LOW_TIER_BUDGET_BYTES, mib_f64, percentile_desc};
+use super::render::{LOW_TIER_BUDGET_BYTES, LOW_TIER_BUDGET_MIB, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::visible_set::VisibleSetResult;
 
@@ -25,9 +27,10 @@ impl DryRunReport {
         let overhead = blocks.overhead();
         let _ = writeln!(
             out,
-            "\n-- cell blocks: each cell's charts packed into one BC-aligned block (bake MaxRects, \
-             padding kept; min area over up to {CANDIDATE_WIDTHS} 4-aligned widths, each at its \
-             shortest 4-aligned height) --"
+            "\n-- cell blocks: each cell's charts packed into one block on a {}-texel grid (BC \
+             block edge and direction scale; bake MaxRects, padding kept; min area over up to \
+             {CANDIDATE_WIDTHS} aligned widths, each at its shortest aligned height) --",
+            blocks.alignment
         );
         let _ = writeln!(
             out,
@@ -99,17 +102,25 @@ impl DryRunReport {
             SampleDensity::Dense.label(),
             self.camera_cells.len()
         );
-        out.push_str(
+        let _ = writeln!(
+            out,
             "block bytes = sum of M(c)'s block bytes (id22 + id42 at each block's own extent); \
-             static layers = M(c)'s blocks packed from scratch into 2048² layers with MaxRects, \
-             area-descending: the no-fragmentation lower bound on the pool\n",
+             layers = M(c)'s blocks packed from scratch into {POOL_LAYER_EDGE}² layers with \
+             greedy MaxRects, area-descending: the no-fragmentation reference (greedy MaxRects) \
+             for packing quality; the walks below measure against the shelf allocator instead"
         );
+        if self.omitted_mask {
+            out.push_str(
+                "exact columns include the omitted id 42 restored, as every block narrow enough \
+                 to double charges it\n",
+            );
+        }
         let _ = writeln!(
             out,
             "{:<5} {:>9} {:>7} {:>9} {:>10} {:>10} {:>12} {:>11} {:>10} {:>13} {:>12}  worst cell",
             "L",
             "max MiB",
-            "[>256]",
+            format!("[>{LOW_TIER_BUDGET_MIB}]"),
             "p95 MiB",
             "exact max",
             "exact p95",
@@ -130,7 +141,7 @@ impl DryRunReport {
                 exact_lead
                     .cells
                     .iter()
-                    .map(|(cell, bytes)| (bytes.texel_exact, *cell)),
+                    .map(|(cell, bytes)| (bytes.texel_exact_charging_mask(), *cell)),
             );
             let layers = sorted_desc(
                 lead.static_layers
@@ -171,11 +182,26 @@ impl DryRunReport {
                 .zip(&self.camera_cells)
                 .map(|(&l, &cell)| (f64::from(l), cell)),
         );
+        let shelf_worst = shelf.first().map_or(0, |v| v.0 as u32);
+        let maxrects_worst = residency
+            .leads
+            .iter()
+            .find(|l| l.lead_meters == SIM_LEAD_METERS)
+            .and_then(|l| l.static_layers.iter().max().copied())
+            .unwrap_or(0);
         let _ = writeln!(
             out,
-            "shelf allocator from scratch at L={SIM_LEAD_METERS}m (tallest first): layers max {}, p95 {}",
-            shelf.first().map_or(0.0, |v| v.0),
+            "shelf allocator from scratch at L={SIM_LEAD_METERS}m (tallest first; the walks' \
+             baseline): layers max {shelf_worst}, p95 {}",
             percentile_desc(&shelf, 95)
+        );
+        let _ = writeln!(
+            out,
+            "packing gap at L={SIM_LEAD_METERS}m, worst cell: MaxRects from scratch \
+             {maxrects_worst} -> shelf from scratch {shelf_worst} layers ({:+}, allocator choice \
+             alone); shelf from scratch -> dynamic shelf is the walks' excess below \
+             (fragmentation alone)",
+            i64::from(shelf_worst) - i64::from(maxrects_worst)
         );
 
         let _ = writeln!(
@@ -183,33 +209,34 @@ impl DryRunReport {
             "\n-- cell-block pool walks: L={SIM_LEAD_METERS}m cell-granular M(c), shelf allocator \
              with free/merge (etagere-like), seed {SIM_SEED:#x} --"
         );
-        out.push_str(
-            "each step moves to a portal-adjacent camera cell; blocks leaving M(c) are freed \
-             (immediate) or kept until space is needed (LRU); new blocks allocate tallest first, \
-             first-fit by layer. A step whose allocation fails with nothing evictable \
-             defragments: every mandatory block is repacked from scratch; a hard fail means \
-             even the repack did not fit\n",
+        let _ = writeln!(
+            out,
+            "each step moves to a portal-adjacent camera cell; the random walk teleports to a \
+             seeded unvisited camera cell after {STALL_TELEPORT_STEPS} steps without a new cell, \
+             the tour when its component is exhausted. Blocks leaving M(c) are freed (immediate) \
+             or kept until space is needed (LRU); new blocks allocate tallest first, first-fit \
+             by layer. A step whose allocation fails with nothing evictable defragments: every \
+             mandatory block is repacked from scratch with the same shelf allocator; a hard fail \
+             means even the repack did not fit, impossible at or above the shelf worst"
         );
-        for walk in &residency.walks {
+        let walks = &residency.walks;
+        for walk in &walks.walks {
             let u = &walk.unbounded;
             let _ = writeln!(
                 out,
-                "{}: {} steps, {} distinct cells, {} teleports; uncapped immediate-free pool: \
-                 peak {} layers ({:.1} MiB) vs static worst of visited cells {} (all cells {}); \
-                 steps over their own static count {} ({:.1}%), excess mean {:.2} / max {} layers",
+                "{}: {} steps, {} distinct of {} camera cells ({} portal components), {} \
+                 teleports; uncapped immediate-free pool: peak {} layers ({:.1} MiB) vs shelf \
+                 from scratch worst of visited cells {} (all cells {shelf_worst}); steps over \
+                 their own shelf count {} ({:.1}%), excess mean {:.2} / max {} layers",
                 walk.kind.label(),
                 walk.steps,
                 walk.distinct_cells,
+                self.camera_cells.len(),
+                walks.camera_components,
                 walk.teleports,
                 u.peak_layers,
                 mib_f64(self.cell_blocks.pool_bytes(u.peak_layers as u32) as f64),
                 u.walk_static_peak,
-                residency
-                    .leads
-                    .iter()
-                    .find(|l| l.lead_meters == SIM_LEAD_METERS)
-                    .and_then(|l| l.static_layers.iter().max().copied())
-                    .unwrap_or(0),
                 u.steps_over_static,
                 u.steps_over_static as f64 / walk.steps.max(1) as f64 * 100.0,
                 u.mean_excess,
@@ -233,7 +260,8 @@ impl DryRunReport {
         }
         let _ = writeln!(
             out,
-            "fixed pools are {} of the static worst at L={SIM_LEAD_METERS}m, rounded up",
+            "fixed pools are {} of the shelf from-scratch worst at L={SIM_LEAD_METERS}m \
+             ({shelf_worst} layers), rounded up",
             FIXED_POOL_PERCENT
                 .iter()
                 .map(|p| format!("{p}%"))

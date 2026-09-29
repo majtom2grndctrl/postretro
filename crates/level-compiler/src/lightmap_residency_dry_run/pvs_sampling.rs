@@ -6,6 +6,12 @@
 //! points inside the cell, six cube faces per point. A sample can only miss
 //! cells, never invent them, so every set is a lower bound on what the cell
 //! can see.
+//!
+//! The bound is per cell volume, a free-fly camera anywhere in the cell, not
+//! a standing player's eye: the lattice spans 10–90% of the AABB on every
+//! axis, ceiling bands included. It holds for any runtime FOV up to the
+//! maximum, since the cube faces tile every view direction. A cell with no
+//! accepted eye point keeps the set {cell} alone, a much weaker bound.
 
 use glam::{Mat4, Vec3};
 use postretro_level_loader::LevelWorld;
@@ -16,7 +22,7 @@ use rayon::prelude::*;
 
 /// Eye-point lattice per axis, as fractions of the cell AABB. Inset from the
 /// faces so a point on a shared boundary doesn't locate into the neighbour.
-const LATTICE_FRACTIONS: [f32; 3] = [0.1, 0.5, 0.9];
+pub(crate) const LATTICE_FRACTIONS: [f32; 3] = [0.1, 0.5, 0.9];
 const LATTICE_STEPS: usize = LATTICE_FRACTIONS.len();
 /// Lattice points per cell: every combination of `LATTICE_FRACTIONS`.
 pub(crate) const LATTICE_POINTS: usize = LATTICE_STEPS * LATTICE_STEPS * LATTICE_STEPS;
@@ -26,8 +32,11 @@ const INSET_SCALES: [f32; 2] = [0.5, 0.25];
 /// 90° per cube face plus 2° either side, so cells on a face seam are inside
 /// both neighbouring frusta rather than clipped by both.
 pub(crate) const CUBE_FACE_FOV_DEGREES: f32 = 94.0;
-/// Mirrors `NEAR` / `FAR` in `crates/postretro/src/camera.rs`: the engine has
-/// no draw distance past the far plane.
+/// Must match `MAX_FOV_DEG` in `crates/postretro/src/camera.rs`; stated in the
+/// report as the widest camera the bound covers.
+pub(crate) const RUNTIME_MAX_FOV_DEGREES: f32 = 130.0;
+/// Must match `NEAR` / `FAR` in `crates/postretro/src/camera.rs`: the engine
+/// has no draw distance past the far plane.
 const NEAR: f32 = 0.1;
 const FAR: f32 = 4096.0;
 

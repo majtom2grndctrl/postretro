@@ -6,13 +6,17 @@
 //! pools with immediate free or LRU retention; an allocation that fails with
 //! nothing left to evict triggers a defragmentation, a from-scratch repack of
 //! the mandatory blocks.
+//!
+//! The baseline is the same shelf allocator packing each M(c) from scratch,
+//! so excess over it is fragmentation alone, not the shelf-vs-MaxRects
+//! packing gap.
 
 use std::collections::BTreeSet;
 
 use rayon::prelude::*;
 
 use super::block_allocator::{BlockPool, Slot};
-use super::camera_walks::{WalkKind, camera_adjacency, walk_path};
+use super::camera_walks::{WalkKind, camera_adjacency, component_count, walk_path};
 use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE};
 use super::portal_distance::PortalGraphInput;
 
@@ -20,7 +24,8 @@ use super::portal_distance::PortalGraphInput;
 pub(crate) const SIM_STEPS: usize = 20_000;
 pub(crate) const SIM_SEED: u64 = 0x5EED_B10C;
 
-/// Fixed pool sizes, as a percentage of the static worst layer count.
+/// Fixed pool sizes, as a percentage of the shelf from-scratch worst layer
+/// count.
 pub(crate) const FIXED_POOL_PERCENT: [u32; 2] = [100, 125];
 
 pub(crate) struct SimInputs<'a> {
@@ -28,9 +33,11 @@ pub(crate) struct SimInputs<'a> {
     pub camera_cells: &'a [u32],
     /// Cell-granular M(c) per camera cell, parallel to `camera_cells`.
     pub sets: &'a [Vec<u32>],
-    /// MaxRects from-scratch layers per camera cell, parallel to `camera_cells`.
+    /// Shelf from-scratch layers per camera cell (`shelf_layers_from_scratch`),
+    /// parallel to `camera_cells`: the no-fragmentation baseline.
     pub static_layers: &'a [u32],
     pub graph: &'a PortalGraphInput,
+    /// Largest of `static_layers`; sizes the fixed pools.
     pub static_worst_layers: u32,
     pub steps: usize,
     pub seed: u64,
@@ -59,9 +66,9 @@ impl Eviction {
 pub(crate) struct UnboundedRun {
     /// Most layers the pool ever had to hold (highest non-empty layer + 1).
     pub peak_layers: usize,
-    /// Largest static MaxRects layer count among the cells the walk visited.
+    /// Largest shelf from-scratch layer count among the cells the walk visited.
     pub walk_static_peak: u32,
-    /// Steps whose pool extent exceeded that step's static layer count.
+    /// Steps whose pool extent exceeded that step's shelf from-scratch count.
     pub steps_over_static: usize,
     /// Largest `extent - static` over the walk.
     pub max_excess: i64,
@@ -77,6 +84,8 @@ pub(crate) struct FixedRun {
     /// repacks (defragments) the mandatory blocks from scratch.
     pub defrag_steps: usize,
     /// Steps where even the repack could not place every mandatory block.
+    /// The repack is the shelf from-scratch packing, so a pool at least the
+    /// shelf worst never hard-fails.
     pub hard_fail_steps: usize,
     pub hard_fail_blocks: usize,
     /// LRU blocks evicted to make room.
@@ -88,20 +97,28 @@ pub(crate) struct WalkResult {
     pub kind: WalkKind,
     pub steps: usize,
     pub distinct_cells: usize,
-    /// Jumps to a non-adjacent cell: no camera-cell neighbour, or the tour
-    /// exhausted its component.
+    /// Jumps to a non-adjacent cell: no camera-cell neighbour, a stalled
+    /// random walk, or the tour exhausted its component.
     pub teleports: usize,
     pub unbounded: UnboundedRun,
     pub fixed: Vec<FixedRun>,
 }
 
-pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> Vec<WalkResult> {
+/// Every walk kind over one portal adjacency.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PoolWalks {
+    /// Portal-connected components among camera cells.
+    pub camera_components: usize,
+    pub walks: Vec<WalkResult>,
+}
+
+pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> PoolWalks {
     let adjacency = camera_adjacency(inputs.graph, inputs.camera_cells);
     let fixed_sizes: Vec<u32> = FIXED_POOL_PERCENT
         .iter()
         .map(|&percent| (inputs.static_worst_layers * percent).div_ceil(100))
         .collect();
-    WalkKind::ALL
+    let walks = WalkKind::ALL
         .par_iter()
         .map(|&kind| {
             let (path, teleports) = walk_path(kind, &adjacency, inputs.steps, inputs.seed);
@@ -126,7 +143,11 @@ pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> Vec<WalkResult> {
                 fixed,
             }
         })
-        .collect()
+        .collect();
+    PoolWalks {
+        camera_components: component_count(&adjacency),
+        walks,
+    }
 }
 
 /// Mandatory blocks of `set` that fit a pool layer, in allocation order:
@@ -181,7 +202,8 @@ impl Residency {
 
     fn evict(&mut self, cell: u32, pool: &mut BlockPool) {
         if let Some(slot) = self.slots[cell as usize].take() {
-            pool.free(slot);
+            pool.free(slot)
+                .expect("a resident slot names its live allocation");
             self.lru.remove(&(self.last_used[cell as usize], cell));
         }
     }

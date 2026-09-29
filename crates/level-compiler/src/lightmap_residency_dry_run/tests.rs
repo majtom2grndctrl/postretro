@@ -695,9 +695,7 @@ fn recompute_and_cluster_closure_grow_monotonically_and_deterministically() {
 
 /// Measurement helper: attribution, per-cell mandatory bytes under distance
 /// bounds, the sampled visible-set bounds, and the cell-block pool walks for a
-/// real compiled PRL. The visible-set pass walks portals from every camera
-/// cell (about 14 s in all on the hallway map). Run from the workspace root,
-/// in release for large maps:
+/// real compiled PRL. Run from the workspace root, in release for large maps:
 ///
 /// ```text
 /// POSTRETRO_LIGHTMAP_RESIDENCY_DRY_RUN_PRL=/abs/path/to/map.prl \
@@ -707,11 +705,13 @@ fn recompute_and_cluster_closure_grow_monotonically_and_deterministically() {
 /// ```
 ///
 /// The PRL path must be absolute: the test runs from the crate directory.
+/// The CSV variable is optional and names a per-cell output file.
+///
 /// Lightless maps (placeholder id 22) and maps whose id 42 the bake dropped
 /// for an empty placement set are not meaningful inputs.
-/// The CSV variable is optional and names a per-cell output file. The report
-/// prints first; the self-checks then assert, so a failure still shows the
-/// numbers.
+///
+/// The report prints first; the self-checks then assert, so a failure still
+/// shows the numbers.
 #[test]
 #[ignore = "measurement helper; set POSTRETRO_LIGHTMAP_RESIDENCY_DRY_RUN_PRL"]
 fn lightmap_residency_dry_run_from_prl() {

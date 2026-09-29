@@ -7,7 +7,7 @@
 //! A second pass bounds the mandatory set by sampled visibility instead of
 //! distance: everything visible from the cells a movement lead reaches, and
 //! costs those sets under fixed-size tiles owned by one cell or cluster each,
-//! and under per-cell blocks allocated into a pool of 2048² layers.
+//! and under per-cell blocks allocated into a pool of `POOL_LAYER_EDGE²` layers.
 //! Measurement only; nothing here feeds a bake.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
@@ -159,6 +159,23 @@ impl AtlasFormats {
                 .is_some_and(|doubled| doubled <= MAX_SHADOWMASK_TEXTURE_WIDTH)
     }
 
+    /// Grid a runtime block's origin and extent sit on: the BC block edge and
+    /// the irradiance-to-direction scale on each axis, so a block covers whole
+    /// BC blocks and whole direction texels (`layer_bytes_at` asserts the
+    /// latter).
+    pub(crate) fn block_alignment(&self) -> u32 {
+        let scale = |full: u32, dir: u32| {
+            assert!(
+                dir > 0 && full % dir == 0,
+                "direction extent {dir} does not divide irradiance extent {full}"
+            );
+            full / dir
+        };
+        let x = scale(self.irr_width, self.dir_width);
+        let y = scale(self.irr_height, self.dir_height);
+        lcm(lcm(BC_BLOCK_EDGE, x), y)
+    }
+
     /// Id 22 plus id 42 bytes for one layer of `width × height` irradiance
     /// texels, at the stored encodings and the stored direction scale.
     pub(crate) fn layer_bytes_at(&self, width: u32, height: u32) -> u64 {
@@ -235,6 +252,14 @@ impl AtlasFormats {
     pub(crate) fn bytes_per_texel(&self) -> f64 {
         self.lightmap_bytes_per_texel() + self.shadowmask_bytes_per_texel()
     }
+}
+
+fn lcm(a: u32, b: u32) -> u32 {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
 }
 
 /// One face chart's padded rectangle in irradiance texel space, recovered
@@ -325,6 +350,10 @@ pub(crate) struct DryRunInput {
     /// Runtime visibility world (cells, locator, portals) for the sampled
     /// visible-set pass; absent in fixtures that skip it.
     pub visibility_world: Option<LevelWorld>,
+    /// Portals the runtime loader would reject. It rejects all portals when
+    /// any one is bad, so a nonzero count means the shipped runtime takes its
+    /// no-portals fallback instead of the walks sampled here.
+    pub loader_rejected_portals: usize,
     pub reconstruction: ReconstructionStats,
 }
 

@@ -8,7 +8,8 @@
 //! `M(c) = cluster(c) ∪ pinned ∪ ⋃_{c' ∈ {c} ∪ within(c, L)} ({c'} ∪ PVS(c'))`
 //!
 //! `within` is the untruncated hub-metric neighbourhood and `PVS` the sampled
-//! set from `pvs_sampling`, so every figure here is a lower bound.
+//! set from `pvs_sampling`, so every figure here is a lower bound (per cell
+//! volume; see `pvs_sampling`).
 
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 use postretro_level_loader::LevelWorld;
@@ -72,6 +73,8 @@ pub(crate) struct VisibleSetResult {
     pub sightlines: Sightlines,
     /// Dense cell-granular sets costed as cell blocks, and the pool walks.
     pub cell_blocks: CellBlockResidency,
+    /// Portals the runtime loader would reject (`DryRunInput`).
+    pub loader_rejected_portals: usize,
 }
 
 pub(crate) struct VisibleSetInputs<'a> {
@@ -124,6 +127,7 @@ pub(crate) fn run_visible_set(inputs: &VisibleSetInputs<'_>) -> VisibleSetResult
             .count(),
         sightlines: sightlines(inputs.graph, inputs.camera_cells, &pvs.dense),
         cell_blocks: run_cell_block_residency(inputs, &pvs.dense),
+        loader_rejected_portals: inputs.input.loader_rejected_portals,
     }
 }
 

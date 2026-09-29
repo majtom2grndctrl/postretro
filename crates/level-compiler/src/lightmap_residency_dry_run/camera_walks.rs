@@ -8,7 +8,7 @@ use super::portal_distance::PortalGraphInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WalkKind {
-    /// Uniform random portal neighbour each step.
+    /// Uniform random portal neighbour each step; teleports when stalled.
     Random,
     /// Walk the shortest hop path to the farthest unvisited camera cell,
     /// repeatedly: long traversals that cover the map.
@@ -25,6 +25,13 @@ impl WalkKind {
         }
     }
 }
+
+/// Steps without a new cell after which the random walk teleports to a
+/// seeded random unvisited camera cell. A stall rule, not a per-step jump
+/// probability: it leaves only a small disconnected component (or a large
+/// one it has stopped exploring), so every other step stays portal-adjacent
+/// as play would be. 5% of the default walk.
+pub(crate) const STALL_TELEPORT_STEPS: usize = 1_000;
 
 /// Deterministic SplitMix64; the dry run takes no RNG dependency.
 struct SplitMix64(u64);
@@ -64,6 +71,30 @@ pub(crate) fn camera_adjacency(graph: &PortalGraphInput, camera_cells: &[u32]) -
     adjacency
 }
 
+/// Portal-connected components of `adjacency`.
+pub(crate) fn component_count(adjacency: &[Vec<u32>]) -> usize {
+    let mut seen = vec![false; adjacency.len()];
+    let mut stack = Vec::new();
+    let mut components = 0;
+    for start in 0..adjacency.len() {
+        if seen[start] {
+            continue;
+        }
+        components += 1;
+        seen[start] = true;
+        stack.push(start as u32);
+        while let Some(cell) = stack.pop() {
+            for &next in &adjacency[cell as usize] {
+                if !seen[next as usize] {
+                    seen[next as usize] = true;
+                    stack.push(next);
+                }
+            }
+        }
+    }
+    components
+}
+
 /// A walk of `steps` camera-cell indices and its teleport count.
 pub(crate) fn walk_path(
     kind: WalkKind,
@@ -81,14 +112,30 @@ pub(crate) fn walk_path(
     let mut teleports = 0;
     match kind {
         WalkKind::Random => {
+            let mut visited = vec![false; n];
+            visited[current as usize] = true;
+            let mut unvisited = n - 1;
+            let mut since_new = 0;
             while path.len() < steps {
                 let neighbours = &adjacency[current as usize];
                 current = if neighbours.is_empty() {
                     teleports += 1;
                     rng.below(n) as u32
+                } else if since_new >= STALL_TELEPORT_STEPS && unvisited > 0 {
+                    teleports += 1;
+                    let pick = rng.below(unvisited);
+                    let target = (0..n).filter(|&c| !visited[c]).nth(pick);
+                    target.expect("an unvisited cell remains") as u32
                 } else {
                     neighbours[rng.below(neighbours.len())]
                 };
+                if visited[current as usize] {
+                    since_new += 1;
+                } else {
+                    visited[current as usize] = true;
+                    unvisited -= 1;
+                    since_new = 0;
+                }
                 path.push(current);
             }
         }

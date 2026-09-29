@@ -7,11 +7,13 @@ use glam::Vec3;
 use super::{ChartRect, DryRunInput, FaceSlot};
 use crate::chart_raster::ChartPlacement;
 use crate::lightmap_bake::{
-    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, pack_layers, pack_layers_with_layer_limit,
+    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_layers,
+    pack_layers_with_layer_limit,
 };
 
-/// Runtime `max_texture_array_layers` floor the bake packs under.
-pub(crate) const RUNTIME_LAYER_FLOOR: u32 = 256;
+/// Runtime `max_texture_array_layers` floor the bake packs under: the bake's
+/// own layer cap.
+pub(crate) const RUNTIME_LAYER_FLOOR: u32 = MAX_ATLAS_LAYERS;
 
 /// A cell that cannot pack alone into one capped layer. Leaf cohesion forbids
 /// splitting it, so the model gives it a dedicated layer at its own size,

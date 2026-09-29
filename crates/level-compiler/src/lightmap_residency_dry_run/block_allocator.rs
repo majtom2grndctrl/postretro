@@ -6,19 +6,42 @@
 //! The bake's `MaxRects` cannot free; this stands in for the runtime
 //! allocator in the fragmentation simulation, without a crate dependency.
 
-/// An allocated rectangle.
+/// An allocated rectangle. `owner` is unique per allocation for the pool's
+/// lifetime, so a slot kept after its block was freed cannot free whatever
+/// the allocator later placed at the same origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Slot {
     pub layer: u32,
     pub x: u32,
     pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub owner: u64,
+}
+
+/// A free that names no live allocation: stale, doubled, or mis-sized.
+/// Refused without touching the layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StaleFree;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Owner {
+    id: u64,
+    /// Allocated height; a shelf can be taller than what it holds.
+    height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Span {
     x: u32,
     width: u32,
-    used: bool,
+    owner: Option<Owner>,
+}
+
+impl Span {
+    fn used(&self) -> bool {
+        self.owner.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,12 +54,14 @@ struct Shelf {
 
 impl Shelf {
     fn is_empty(&self) -> bool {
-        self.spans.len() == 1 && !self.spans[0].used
+        self.spans.len() == 1 && !self.spans[0].used()
     }
 
     /// First free span at least `width` wide.
     fn free_span(&self, width: u32) -> Option<usize> {
-        self.spans.iter().position(|s| !s.used && s.width >= width)
+        self.spans
+            .iter()
+            .position(|s| !s.used() && s.width >= width)
     }
 }
 
@@ -65,7 +90,7 @@ impl ShelfLayer {
             spans: vec![Span {
                 x: 0,
                 width,
-                used: false,
+                owner: None,
             }],
         }
     }
@@ -74,10 +99,14 @@ impl ShelfLayer {
         self.allocations == 0
     }
 
-    /// Place `width × height`, returning its top-left. Prefers an occupied
-    /// shelf that wastes at most half the item's height, then splits the
-    /// tightest empty shelf, then any occupied shelf that fits.
-    pub(crate) fn allocate(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+    /// Place `width × height` for `owner`, returning its top-left. Prefers
+    /// an occupied shelf that wastes at most half the item's height, then
+    /// splits the tightest empty shelf, then any occupied shelf that fits.
+    /// Refuses a zero-width or zero-height request.
+    pub(crate) fn allocate(&mut self, width: u32, height: u32, owner: u64) -> Option<(u32, u32)> {
+        if width == 0 || height == 0 {
+            return None;
+        }
         let occupied = |slack: u32| {
             self.shelves
                 .iter()
@@ -109,7 +138,7 @@ impl ShelfLayer {
         shelf.spans[span_index] = Span {
             x: span.x,
             width,
-            used: true,
+            owner: Some(Owner { id: owner, height }),
         };
         if span.width > width {
             shelf.spans.insert(
@@ -117,7 +146,7 @@ impl ShelfLayer {
                 Span {
                     x: span.x + width,
                     width: span.width - width,
-                    used: false,
+                    owner: None,
                 },
             );
         }
@@ -125,32 +154,41 @@ impl ShelfLayer {
         Some((span.x, shelf.y))
     }
 
-    /// Free the allocation whose top-left is `(x, y)`.
-    pub(crate) fn free(&mut self, x: u32, y: u32) {
+    /// Free `owner`'s `width × height` allocation at `(x, y)`. Any mismatch
+    /// (no such span, another owner, a different size) is refused.
+    pub(crate) fn free(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        owner: u64,
+    ) -> Result<(), StaleFree> {
         let shelf_index = self
             .shelves
             .iter()
             .position(|s| s.y == y)
-            .expect("freed slot names a shelf");
+            .ok_or(StaleFree)?;
         let shelf = &mut self.shelves[shelf_index];
+        let expected = Some(Owner { id: owner, height });
         let mut span_index = shelf
             .spans
             .iter()
-            .position(|s| s.x == x && s.used)
-            .expect("freed slot names an allocated span");
-        shelf.spans[span_index].used = false;
+            .position(|s| s.x == x && s.width == width && s.owner == expected)
+            .ok_or(StaleFree)?;
+        shelf.spans[span_index].owner = None;
         self.allocations -= 1;
-        if span_index + 1 < shelf.spans.len() && !shelf.spans[span_index + 1].used {
+        if span_index + 1 < shelf.spans.len() && !shelf.spans[span_index + 1].used() {
             let next = shelf.spans.remove(span_index + 1);
             shelf.spans[span_index].width += next.width;
         }
-        if span_index > 0 && !shelf.spans[span_index - 1].used {
+        if span_index > 0 && !shelf.spans[span_index - 1].used() {
             let this = shelf.spans.remove(span_index);
             span_index -= 1;
             shelf.spans[span_index].width += this.width;
         }
         if !shelf.is_empty() {
-            return;
+            return Ok(());
         }
         let mut index = shelf_index;
         if index + 1 < self.shelves.len() && self.shelves[index + 1].is_empty() {
@@ -162,6 +200,7 @@ impl ShelfLayer {
             index -= 1;
             self.shelves[index].height += this.height;
         }
+        Ok(())
     }
 }
 
@@ -171,6 +210,8 @@ pub(crate) struct BlockPool {
     edge: u32,
     layers: Vec<ShelfLayer>,
     max_layers: Option<usize>,
+    /// Never reset, `clear` included, so no slot outlives its owner id.
+    next_owner: u64,
 }
 
 impl BlockPool {
@@ -179,41 +220,58 @@ impl BlockPool {
             edge,
             layers: Vec::new(),
             max_layers,
+            next_owner: 0,
         }
     }
 
     /// First fit by layer index, opening a layer when none fits and the cap
-    /// allows.
+    /// allows. Refuses a zero-width or zero-height request.
     pub(crate) fn allocate(&mut self, width: u32, height: u32) -> Option<Slot> {
-        if width > self.edge || height > self.edge {
+        if width == 0 || height == 0 || width > self.edge || height > self.edge {
             return None;
         }
-        for (layer, shelves) in self.layers.iter_mut().enumerate() {
-            if let Some((x, y)) = shelves.allocate(width, height) {
-                return Some(Slot {
-                    layer: layer as u32,
-                    x,
-                    y,
-                });
-            }
-        }
-        if self.max_layers.is_some_and(|max| self.layers.len() >= max) {
-            return None;
-        }
-        let mut layer = ShelfLayer::new(self.edge, self.edge);
-        let (x, y) = layer
-            .allocate(width, height)
-            .expect("a block no larger than the edge fits an empty layer");
-        self.layers.push(layer);
-        Some(Slot {
-            layer: self.layers.len() as u32 - 1,
+        let owner = self.next_owner;
+        let slot = |layer: usize, (x, y): (u32, u32)| Slot {
+            layer: layer as u32,
             x,
             y,
-        })
+            width,
+            height,
+            owner,
+        };
+        let placed = self
+            .layers
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, layer)| {
+                layer
+                    .allocate(width, height, owner)
+                    .map(|at| slot(index, at))
+            });
+        let placed = match placed {
+            Some(placed) => placed,
+            None => {
+                if self.max_layers.is_some_and(|max| self.layers.len() >= max) {
+                    return None;
+                }
+                let mut layer = ShelfLayer::new(self.edge, self.edge);
+                let at = layer
+                    .allocate(width, height, owner)
+                    .expect("a block no larger than the edge fits an empty layer");
+                self.layers.push(layer);
+                slot(self.layers.len() - 1, at)
+            }
+        };
+        self.next_owner += 1;
+        Some(placed)
     }
 
-    pub(crate) fn free(&mut self, slot: Slot) {
-        self.layers[slot.layer as usize].free(slot.x, slot.y);
+    /// Free `slot`, refusing one that no longer names its live allocation.
+    pub(crate) fn free(&mut self, slot: Slot) -> Result<(), StaleFree> {
+        self.layers
+            .get_mut(slot.layer as usize)
+            .ok_or(StaleFree)?
+            .free(slot.x, slot.y, slot.width, slot.height, slot.owner)
     }
 
     /// Layers a pool must hold right now: one past the highest non-empty one.

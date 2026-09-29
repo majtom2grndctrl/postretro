@@ -226,6 +226,17 @@ pub(crate) struct MandatoryBytes {
     pub layer: Vec<u64>,
 }
 
+impl MandatoryBytes {
+    /// Texel-exact bytes with id 42 charged whenever the level selects shadow
+    /// lights: the restored-mask column when the bake omitted id 42 for width. Blocks and tiles narrow enough to double charge id 42 the
+    /// same way (`AtlasFormats::layer_carries_shadowmask`), so this is the
+    /// matching denominator for them.
+    pub(crate) fn texel_exact_charging_mask(&self) -> f64 {
+        self.with_omitted_mask
+            .map_or(self.texel_exact, |(texel_exact, _)| texel_exact)
+    }
+}
+
 /// Per-cell chart areas and the combined id 22 + id 42 byte rate.
 pub(crate) struct CellFootprint {
     pub area: Vec<u64>,

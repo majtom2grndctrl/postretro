@@ -15,7 +15,8 @@ use super::{AtlasFormats, DryRunInput, ShadowmaskState};
 use crate::shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH;
 
 /// Low tier budget for lightmap + shadowmask data.
-pub(crate) const LOW_TIER_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const LOW_TIER_BUDGET_MIB: u64 = 256;
+pub(crate) const LOW_TIER_BUDGET_BYTES: u64 = LOW_TIER_BUDGET_MIB * 1024 * 1024;
 const TOP_CELLS: usize = 5;
 
 pub(super) fn input_summary(input: &DryRunInput) -> String {
@@ -257,7 +258,11 @@ impl DryRunReport {
             let _ = writeln!(
                 out,
                 "{:<6} {:<40} {:>9} {:>9} {:>7}  worst cells (id@center=MiB)",
-                "D", "metric", "max MiB", "p95 MiB", ">256MiB"
+                "D",
+                "metric",
+                "max MiB",
+                "p95 MiB",
+                format!(">{LOW_TIER_BUDGET_MIB}MiB")
             );
             for bound in &source.bounds {
                 let mean_set = bound

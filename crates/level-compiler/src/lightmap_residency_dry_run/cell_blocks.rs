@@ -1,4 +1,4 @@
-//! Cell blocks: each cell's charts packed into one tight BC-aligned rectangle
+//! Cell blocks: each cell's charts packed into one tight aligned rectangle
 //! the runtime would allocate, free, and remap with a single UV translation.
 //!
 //! A block is costed as its own `width × height` layer region at the stored
@@ -7,7 +7,7 @@
 
 use rayon::prelude::*;
 
-use super::{BC_BLOCK_EDGE, ChartRect, DryRunInput};
+use super::{ChartRect, DryRunInput};
 use crate::lightmap_bake::MaxRects;
 
 /// Edge of one runtime pool layer, in irradiance texels.
@@ -67,6 +67,8 @@ pub(crate) struct CellBlocks {
     pub pool_layer_bytes: u64,
     /// Cells whose recovered charts sit on more than one stored layer.
     pub multi_layer_cells: usize,
+    /// Texel grid every block extent sits on (`AtlasFormats::block_alignment`).
+    pub alignment: u32,
 }
 
 impl CellBlocks {
@@ -79,10 +81,11 @@ impl CellBlocks {
             .iter()
             .filter(|charts| charts.iter().any(|c| c.layer != charts[0].layer))
             .count();
+        let alignment = input.formats.block_alignment();
         let dims: Vec<Option<BlockDims>> = per_cell
             .par_iter()
             .map(|charts| {
-                pack_cell_block(charts).map(|block| BlockDims {
+                pack_cell_block(charts, alignment).map(|block| BlockDims {
                     width: block.width,
                     height: block.height,
                 })
@@ -112,6 +115,7 @@ impl CellBlocks {
                 .formats
                 .layer_bytes_at(POOL_LAYER_EDGE, POOL_LAYER_EDGE),
             multi_layer_cells,
+            alignment,
         }
     }
 
@@ -180,18 +184,20 @@ pub(crate) struct PackingOverhead {
     pub over_pool_edge: Vec<(u32, BlockDims)>,
 }
 
-fn align_up(value: u32) -> u32 {
-    value.div_ceil(BC_BLOCK_EDGE) * BC_BLOCK_EDGE
-}
-
-/// Pack one cell's padded charts into the smallest-area BC-aligned block
-/// found, preferring one that fits a pool layer: for each candidate width, the shortest 4-aligned height the bake's
-/// MaxRects (largest-first, as `place_leaf` orders a leaf) fits every chart
-/// into. `None` for a cell without charts.
-pub(crate) fn pack_cell_block(charts: &[ChartRect]) -> Option<PackedBlock> {
+/// Pack one cell's padded charts into the smallest-area block found whose
+/// extent is a multiple of `align`, preferring one that fits a pool layer.
+/// Each candidate width takes the shortest aligned height the bake's MaxRects
+/// (largest-first, as `place_leaf` orders a leaf) fits every chart into.
+/// `None` for a cell without charts.
+pub(crate) fn pack_cell_block(charts: &[ChartRect], align: u32) -> Option<PackedBlock> {
     if charts.is_empty() {
         return None;
     }
+    assert!(
+        align > 0 && POOL_LAYER_EDGE % align == 0,
+        "block alignment {align} does not divide the pool layer edge"
+    );
+    let align_up = |value: u32| value.div_ceil(align) * align;
     let mut order: Vec<usize> = (0..charts.len()).collect();
     order.sort_by(|&a, &b| charts[b].area().cmp(&charts[a].area()).then(a.cmp(&b)));
     let area: u64 = charts.iter().map(ChartRect::area).sum();
@@ -213,7 +219,7 @@ pub(crate) fn pack_cell_block(charts: &[ChartRect]) -> Option<PackedBlock> {
     let mut best: Option<PackedBlock> = None;
     for width in widths {
         let floor = align_up(max_height.max(area.div_ceil(u64::from(width)) as u32));
-        let block = shortest_block(charts, &order, width, floor);
+        let block = shortest_block(charts, &order, width, floor, align);
         // A block that fits a pool layer beats any that does not; then the
         // smaller area, then the squarer shape.
         let key = |b: &PackedBlock| {
@@ -231,9 +237,16 @@ pub(crate) fn pack_cell_block(charts: &[ChartRect]) -> Option<PackedBlock> {
     best
 }
 
-/// Shortest 4-aligned height at `width` that packs every chart, searched
-/// upward geometrically from `floor` and then bisected.
-fn shortest_block(charts: &[ChartRect], order: &[usize], width: u32, floor: u32) -> PackedBlock {
+/// Shortest `align`-multiple height at `width` that packs every chart,
+/// searched upward geometrically from `floor` and then bisected.
+fn shortest_block(
+    charts: &[ChartRect],
+    order: &[usize],
+    width: u32,
+    floor: u32,
+    align: u32,
+) -> PackedBlock {
+    let align_up = |value: u32| value.div_ceil(align) * align;
     let mut fail = None;
     let mut height = floor;
     let mut placed = loop {
@@ -241,15 +254,15 @@ fn shortest_block(charts: &[ChartRect], order: &[usize], width: u32, floor: u32)
             Some(placements) => break placements,
             None => {
                 fail = Some(height);
-                height = align_up(height + (height / 8).max(BC_BLOCK_EDGE));
+                height = align_up(height + (height / 8).max(align));
             }
         }
     };
     if let Some(mut low) = fail {
-        // `low` fails and `height` packs, both 4-aligned; bisect on the
-        // 4-texel grid. MaxRects fit is not strictly monotone in height, so
+        // `low` fails and `height` packs, both aligned; bisect on the
+        // alignment grid. MaxRects fit is not strictly monotone in height, so
         // this finds a short packing height, not provably the shortest.
-        while height - low > BC_BLOCK_EDGE {
+        while height - low > align {
             let mid = align_up(low + (height - low) / 2);
             match try_pack(charts, order, width, mid) {
                 Some(placements) => {

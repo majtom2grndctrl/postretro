@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use super::mandatory::Granularity;
 use super::pvs_sampling::SampleDensity;
-use super::render::{LOW_TIER_BUDGET_BYTES, mib_f64, percentile_desc};
+use super::render::{LOW_TIER_BUDGET_BYTES, LOW_TIER_BUDGET_MIB, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::tiles::{TILE_SIZES, TileLayout, TileUnit};
 use super::visible_set::{GranularityResult, VisibleSetResult};
@@ -103,6 +103,11 @@ impl DryRunReport {
             "tile/exact = tile texels over chart texels, whole map; shared t/e = the same for \
              charts that fit a tile, excluding oversize charts and their dedicated tiles\n",
         );
+        if self.omitted_mask {
+            out.push_str(
+                "exact max includes the omitted id 42 restored, as every tile charges it\n",
+            );
+        }
         let _ = writeln!(
             out,
             "{:<8} {:>4} {:<5} {:>9} {:>7} {:>9} {:>10} {:>11} {:>11} {:>13}  worst cell",
@@ -110,7 +115,7 @@ impl DryRunReport {
             "P",
             "L",
             "max MiB",
-            "[>256]",
+            format!("[>{LOW_TIER_BUDGET_MIB}]"),
             "p95 MiB",
             "exact max",
             "tile/exact",
@@ -134,7 +139,7 @@ impl DryRunReport {
                 let exact_max = lead
                     .cells
                     .iter()
-                    .map(|(_, bytes)| bytes.texel_exact)
+                    .map(|(_, bytes)| bytes.texel_exact_charging_mask())
                     .fold(0.0, f64::max);
                 let worst = sorted.first().map_or(String::new(), |&(_, cell)| {
                     format!("{cell}@{}", self.format_center(cell))

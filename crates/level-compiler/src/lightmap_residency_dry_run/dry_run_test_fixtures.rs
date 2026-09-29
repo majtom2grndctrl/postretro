@@ -114,6 +114,7 @@ pub(super) fn input(
         coupled_pairs: pairs,
         portal_graph: None,
         visibility_world: None,
+        loader_rejected_portals: 0,
     }
 }
 

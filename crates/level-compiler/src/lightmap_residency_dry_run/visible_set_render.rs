@@ -3,8 +3,11 @@
 
 use std::fmt::Write as _;
 
-use super::pvs_sampling::{CUBE_FACE_FOV_DEGREES, LATTICE_POINTS, SampleDensity};
-use super::render::{MetricSummary, mib_f64, percentile_desc};
+use super::pvs_sampling::{
+    CUBE_FACE_FOV_DEGREES, LATTICE_FRACTIONS, LATTICE_POINTS, RUNTIME_MAX_FOV_DEGREES,
+    SampleDensity,
+};
+use super::render::{LOW_TIER_BUDGET_MIB, MetricSummary, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::visible_set::VisibleSetResult;
 
@@ -21,9 +24,17 @@ impl DryRunReport {
             "\n-- sampled visibility: {} eye points x 6 cube faces ({CUBE_FACE_FOV_DEGREES}° each) per camera cell --",
             LATTICE_POINTS
         );
-        out.push_str(
+        let _ = writeln!(
+            out,
             "note: runtime portal walks from sampled eye points; a sample only misses cells, so every \
-             PVS, set, byte figure and sightline below is a lower bound on true visibility\n",
+             PVS, set, byte figure and sightline below is a lower bound on true visibility, per \
+             cell volume (a free-fly camera; eye points span {:.0}-{:.0}% of each cell's AABB on \
+             every axis, ceiling bands included), not per standing-player eye; the cube faces \
+             tile every view direction, so it holds for any FOV up to the \
+             {RUNTIME_MAX_FOV_DEGREES}° maximum; a cell with no eye point keeps the set {{cell}} \
+             alone, a much weaker bound",
+            LATTICE_FRACTIONS[0] * 100.0,
+            LATTICE_FRACTIONS[LATTICE_FRACTIONS.len() - 1] * 100.0
         );
         let _ = writeln!(
             out,
@@ -43,6 +54,13 @@ impl DryRunReport {
             "walks: {}, step-limit overflow {} (truncated walk kept, not the runtime's frustum superset), \
              other frustum-all fallbacks {} (dropped)",
             stats.walks, stats.step_limit_walks, stats.frustum_all_walks
+        );
+        let _ = writeln!(
+            out,
+            "portals the runtime loader would reject (< 3 vertices, a non-finite vertex, zero \
+             area, or a bad vertex range): {}; any nonzero count makes the shipped loader drop \
+             every portal for its no-portals fallback, so the runtime would not use these walks",
+            visible.loader_rejected_portals
         );
         let (sparse, dense) = visible.mean_pvs;
         let _ = writeln!(
@@ -123,7 +141,11 @@ impl DryRunReport {
             let _ = writeln!(
                 out,
                 "{:<6} {:<40} {:>9} {:>9} {:>7}  worst cells (id@center=MiB)",
-                "L", "metric", "max MiB", "p95 MiB", ">256MiB"
+                "L",
+                "metric",
+                "max MiB",
+                "p95 MiB",
+                format!(">{LOW_TIER_BUDGET_MIB}MiB")
             );
             for lead in &result.leads {
                 let mean_set = lead

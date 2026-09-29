@@ -7,6 +7,7 @@ use std::io::BufReader;
 use std::path::Path;
 
 use anyhow::{Context, bail, ensure};
+use glam::Vec3;
 use postretro_level_format::bvh::{BvhLeaf, BvhSection};
 use postretro_level_format::cell_locator::{self, CellLocatorSection};
 use postretro_level_format::cell_visibility::CellVisibilitySection;
@@ -17,7 +18,7 @@ use postretro_level_format::cluster_directory::{
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::LightmapSection;
-use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
 };
@@ -194,17 +195,20 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         portals: portals
             .portals
             .iter()
-            .map(|record| {
-                let start = record.vertex_start as usize;
-                let end = start + record.vertex_count as usize;
-                HubPortal {
-                    front: record.front_leaf,
-                    back: record.back_leaf,
-                    vertices: portals.vertices[start..end].to_vec(),
-                }
+            .map(|record| HubPortal {
+                front: record.front_leaf,
+                back: record.back_leaf,
+                vertices: portal_vertices(&portals, record)
+                    .unwrap_or_default()
+                    .to_vec(),
             })
             .collect(),
     };
+    let loader_rejected_portals = portals
+        .portals
+        .iter()
+        .filter(|record| loader_rejects_portal(portal_vertices(&portals, record)))
+        .count();
 
     let visibility_world = visibility_world(&cells, &portals, locator)?;
 
@@ -227,8 +231,40 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         coupled_pairs,
         portal_graph: Some(portal_graph),
         visibility_world: Some(visibility_world),
+        loader_rejected_portals,
         reconstruction,
     })
+}
+
+/// A portal record's vertices, or `None` for a range outside the vertex
+/// buffer, so a bad record degrades to an empty polygon instead of panicking.
+fn portal_vertices<'a>(
+    portals: &'a PortalsSection,
+    record: &PortalRecord,
+) -> Option<&'a [[f32; 3]]> {
+    let start = record.vertex_start as usize;
+    let end = start.checked_add(record.vertex_count as usize)?;
+    portals.vertices.get(start..end)
+}
+
+/// Whether the runtime loader would reject this portal. Must match
+/// `convert_usable_portals` in `crates/level-loader/src/prl_loader.rs`: a bad
+/// vertex range, fewer than 3 vertices, a non-finite vertex, or zero area.
+pub(super) fn loader_rejects_portal(vertices: Option<&[[f32; 3]]>) -> bool {
+    let Some(vertices) = vertices else {
+        return true;
+    };
+    if vertices.len() < 3 || !vertices.iter().flatten().all(|c| c.is_finite()) {
+        return true;
+    }
+    let area = vertices
+        .iter()
+        .zip(vertices.iter().cycle().skip(1))
+        .take(vertices.len())
+        .fold(Vec3::ZERO, |sum, (a, b)| {
+            sum + Vec3::from(*a).cross(Vec3::from(*b))
+        });
+    area.length_squared() <= 1.0e-12
 }
 
 /// The runtime visibility world, built from ids 38, 15 and the cell locator
@@ -257,17 +293,14 @@ fn visibility_world(
     let portal_data: Vec<PortalData> = portals
         .portals
         .iter()
-        .map(|record| {
-            let start = record.vertex_start as usize;
-            let end = start + record.vertex_count as usize;
-            PortalData {
-                polygon: portals.vertices[start..end]
-                    .iter()
-                    .map(|&v| v.into())
-                    .collect(),
-                front_cell: record.front_leaf as usize,
-                back_cell: record.back_leaf as usize,
-            }
+        .map(|record| PortalData {
+            polygon: portal_vertices(portals, record)
+                .unwrap_or_default()
+                .iter()
+                .map(|&v| v.into())
+                .collect(),
+            front_cell: record.front_leaf as usize,
+            back_cell: record.back_leaf as usize,
         })
         .collect();
     let child = |child: cell_locator::CellLocatorChild| match child {

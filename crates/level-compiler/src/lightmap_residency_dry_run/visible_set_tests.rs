@@ -4,6 +4,7 @@ use postretro_level_loader::{
 };
 
 use super::dry_run_test_fixtures::{METER, bc6h_formats, chart, input};
+use super::inputs::loader_rejects_portal;
 use super::mandatory::Granularity;
 use super::portal_distance::{HubCell, HubPortal, PortalGraphInput, recompute_pairs};
 use super::pvs_sampling::{SamplingStats, eye_points, sample_pvs};
@@ -266,4 +267,34 @@ fn visible_set_report_is_deterministic_and_states_its_lower_bound() {
     let report = run_dry_run(&no_world);
     assert!(report.visible_set.is_none());
     assert!(!report.render().contains("visible-set mandatory bytes"));
+}
+
+#[test]
+fn loader_rejection_matches_the_runtime_portal_checks_and_is_reported() {
+    let quad = [
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0],
+        [0.0, 0.0, 1.0],
+    ];
+    assert!(!loader_rejects_portal(Some(&quad)));
+    assert!(
+        loader_rejects_portal(None),
+        "vertex range outside the buffer"
+    );
+    assert!(
+        loader_rejects_portal(Some(&quad[..2])),
+        "fewer than 3 vertices"
+    );
+    let mut non_finite = quad;
+    non_finite[2][1] = f32::NAN;
+    assert!(loader_rejects_portal(Some(&non_finite)));
+    let collinear = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 2.0, 0.0]];
+    assert!(loader_rejects_portal(Some(&collinear)), "zero area");
+
+    let mut fixture = u_turn_input();
+    fixture.loader_rejected_portals = 1;
+    let rendered = run_dry_run(&fixture).render();
+    assert!(rendered.contains("portals the runtime loader would reject"));
+    assert!(rendered.contains("zero area, or a bad vertex range): 1;"));
 }

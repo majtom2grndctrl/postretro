@@ -148,7 +148,7 @@ Limiter write verdicts (AC 7):
 
 **Key acceptance.** AC 1–13; AC 32's panel pass if U1 lands after U4.
 
-**Brief.** `context/plans/ready/E23--preferences-comfort-floor/`.
+**Brief.** `context/plans/done/E23--preferences-comfort-floor/`.
 
 **Brief form.** Resumable brief (`/draft-brief`): the brief's plan review sequences the preference substrate (group, slots, storage, OS reader, reduce motion, bus volume, mono), the accessibility panel (panel, reserved actions, close paths, missing-entry warning, first-launch hold), and the flash limiter (both stages, timing, strobe fixtures) as checkpointed stages, the substrate first.
 

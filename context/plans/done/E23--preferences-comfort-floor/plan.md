@@ -1,7 +1,7 @@
 # E23--preferences-comfort-floor — plan of record
 
 mode: resumable
-status: approved
+status: landed-with-gaps
 read at: b21e81d7c
 
 Sibling units: U3 and U4 have not landed (no drafts exist), so U1 lands first. AC 32's panel pass is not U1's (hub Concurrent landing). U1 pins per-field storage and the `accessibility.*` projection. The global input it first pinned was withdrawn by owner decision D.
@@ -115,11 +115,11 @@ Brief rows are numbered in the brief's order. Hub rows are H1–H13. "GPU test" 
 | G2 a UI input on a Loading frame activates nothing on the first Running frame | intake + boot-state test | restated by decision D | pass (Windows full `cargo test`: 8,502 passed, 0 failed) |
 | G3 confirm in the same Input stage as the opening F1 activates nothing | — | withdrawn by decision D | the global input is removed |
 | G4 a gamepad cancel during the splash leaves the first-launch panel open | boot-state test with a buffered gilrs cancel | new with decision D (from hub AC 10) | pass (Windows full `cargo test`: 8,502 passed, 0 failed) |
-| X1 hub AC 6 visual pass: strobe map `screen.flash` pads tamed; ordinary play identical with the limiter on and off | owner, in-engine | manual | outstanding (manual). Earlier finding: ordinary play showed boxes under the frame limiter, which decision C resolved by removing it. |
+| X1 hub AC 6 visual pass: strobe map `screen.flash` pads tamed; ordinary play identical with the limiter on and off | owner, in-engine | manual | pass on Windows (owner, 2026-09-28): the full-screen `screen.flash` pads are tamed; pads 3–4 (UI panels) flash unlimited, as decision C expects. The boxes the frame limiter drew are gone with it. |
 | X2 hub AC 6 GPU timing for the resolve on a timestamp-capable adapter | owner or agent, Windows | manual | outstanding (manual, Windows). |
-| X3 hub AC 1 OS reduced-motion toggle on Windows, macOS, Linux (incl. no portal) | owner, per platform | manual | outstanding (manual, per platform). `windows_text_scale.rs` compiles and passes clippy on Windows (2026-09-28). |
+| X3 hub AC 1 OS reduced-motion toggle on Windows, macOS, Linux (incl. no portal) | owner, per platform | manual | Windows pass (owner, 2026-09-28): the reduce-motion effects follow the panel and the Windows Animation effects setting. macOS and Linux outstanding (manual). `windows_text_scale.rs` compiles and passes clippy on Windows (2026-09-28). |
 | X4 hub AC 12 loopback `--connect` hold; hub AC 13 two-instance co-op | owner, loopback | manual | outstanding (manual, loopback). |
-| X5 decision D pass: panel and dev options labels left, value buttons right; dev pause OPTIONS reaches the Accessibility tab; the tab's limiter button toggles the limiter; Select/Back and F1 open no panel | owner, in-engine | new with decision D | outstanding (manual). |
+| X5 decision D pass: panel and dev options labels left, value buttons right; dev pause OPTIONS reaches the Accessibility tab; the tab's limiter button toggles the limiter; Select/Back and F1 open no panel | owner, in-engine | new with decision D | pass on Windows (owner, 2026-09-28). |
 | H1 OS-seedable follows OS / live change / player-set sticks / no OS → default | fake-reader tests (R2, R5, S1); manual half is X3 | achievable as stated | automated pass; manual half outstanding (X3). |
 | H2 bad value in one accessibility field or `fog_quality` falls back alone with a warning; no group → unset/defaults; save writes unset | store tests + log capture | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
 | H3a `accessibility.*` readable in play; live; script write warns, no change | scripting-core slot test + readonly `setState` log test | achievable as stated | pass (full `cargo test`: 8,535 passed, 0 failed) |
@@ -233,3 +233,18 @@ Each task lands as its own commit(s) with its `plan.md` row update. Owner is the
 - After Tasks 3–7: substrate complete; `cargo test` for touched crates.
 - After Tasks 8–11: panel complete.
 - After Tasks 12–13: limiter and fixtures complete; then `/preflight`, `/review-panel`, `/fix-review-findings`.
+
+## Landing (2026-09-28)
+
+Landed with gaps on `feat/preferences-comfort-floor`. Outstanding manual checks:
+- X2: GPU timing for the resolve on a timestamp-capable adapter.
+- X3: the OS reduced-motion toggle on macOS and on Linux, including a Linux desktop with no portal.
+- X4: the loopback `--connect` hold and the two-instance co-op pass.
+
+Follow-ups outside this brief:
+- `drafts/E23--photosensitivity-source-floor` (decision C).
+- `drafts/motion-reprojection-layer`.
+- `Ring` is missing from the build-side Luau widget list.
+- `createLocalState` scope ids can collide between a mod tree and a level tree.
+- The SH compose shaders may pay the same workgroup zero-fill cost the limiter did.
+- `production_pause_menu_sdk_tree_drives_cpu_interaction_end_to_end` failed twice under parallel load at its dev-mod init step.

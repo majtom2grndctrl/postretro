@@ -173,7 +173,8 @@ Meet the Game Accessibility Guidelines basic tier and the common FPS accessibili
 
 Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each with its own brief drafted when the unit comes up:
 
-- [ ] **U1 — Preferences and comfort floor** — accessibility preference substrate with OS seeding and tolerant per-field storage; flash limiter (on by default); reduce motion; per-bus volume and mono audio. No dependency; concurrent with U3. Brief: `context/plans/ready/E23--preferences-comfort-floor/`.
+- [x] **U1 — Preferences and comfort floor** — accessibility preference substrate with OS seeding and tolerant per-field storage; flash limiter on `screen.flash` and `screen.vignette` (on by default); reduce motion; per-bus volume and mono audio. No dependency; concurrent with U3. Brief: `context/plans/done/E23--preferences-comfort-floor/` (landed with gaps; frame limiter withdrawn).
+- [ ] **U1 follow-up — Photosensitivity source floor** — the flash rules at every other primitive content can strobe with (light animation, UI, emissives, flipbooks, camera cuts, load loops), plus reduced flashing for engine effects. Seed: `context/plans/drafts/E23--photosensitivity-source-floor/`.
 - [ ] **U2 — Visual accessibility** — theme variants (engine high-contrast fallback), tokenized engine visuals, authored focus visuals, contrast diagnostic, text scale. After U1 (its fields sit on U1's substrate).
 - [ ] **U3 — Gamepad and input** — focus-group fix, console menu conventions (restore-on-return, hold-repeat, tabs, scroll, glyphs, confirmation dialogs), full remapping, gamepad look options, hold/toggle sprint. No dependency; concurrent with U1.
 - [ ] **U4 — Screen reader** — engine accessibility snapshot projected through `accesskit_winit`; window created hidden and shown after the adapter exists. After U3's focus-group fix (the snapshot's focusable set).

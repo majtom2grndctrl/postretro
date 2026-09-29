@@ -32,7 +32,7 @@ Path and research claims checked against source at 6526dc627. No Decision premis
   - Compute the canonical partition once, before AtlasPreparation. Its inputs (cells, portals, BVH, seam ids from `resolve_streaming_hints`) all exist after Visibility and BvhBuild.
   - ClusterDirectory consumes that result instead of recomputing it.
 - **Id 42 has no section version.** It carries the format tag `SMB5` (`shadowmask_atlas.rs:12`). `SHADOWMASK_ATLAS_STAGE_VERSION` is only a compiler cache key. Planning: the "version bump" is a new tag, `SMB6`. The old tag rejects, which satisfies AC 17's older-version row.
-- **Container versions are unchecked.** The loader checks entry versions only for id 49 (`prl_loader.rs:1537`). Bumping `section_plan.rs` versions for ids 17, 22 and 25 rejects nothing by itself. Planning: add loader checks for the bumped container versions of ids 17, 22, 25 and 42. The id-22 and id-25 payload versions also bump (`LIGHTMAP_SECTION_VERSION` 2→3, `ANIMATED_LIGHT_WEIGHT_MAPS_VERSION` 4→5).
+- **Container versions are unchecked.** The loader checks entry versions only for id 49 (`prl_loader.rs:1537`). Bumping `section_plan.rs` versions for ids 17, 22 and 25 rejects nothing by itself. Planning: only id 17 needs a container-version check (`GEOMETRY_CONTAINER_VERSION` = 2), because its payload has no version of its own. Ids 22, 25 and 42 reject through their payload version (`LIGHTMAP_SECTION_VERSION` 2→3, `ANIMATED_LIGHT_WEIGHT_MAPS_VERSION` 4→5) or the `SMB6` tag.
 - **Id 42 mismatches are warn-and-ignore today** (`prl_loader.rs:1915-1939`). AC 17 requires rejection. Planning: a block-count mismatch or a malformed v-new id 42 becomes a hard load error.
 - **Id-22 header fields the brief drops. Owner confirmed 2026-09-28.** The brief's header drops `dir_format`, both texel densities, and the optional LMOD `LightmapMode` trailer. Runtime reads `lightmap_mode` (`renderer_full_init.rs:251`, `renderer_diagnostics.rs:269`) and `direction_format` (`lighting/lightmap.rs:737`). Planning:
   - Direction is fixed Rg8; legacy Rgba8 is rejected by the version bump.
@@ -64,6 +64,31 @@ Path and research claims checked against source at 6526dc627. No Decision premis
 
   Each is split along the touched seam, in its own commit, right before the task that extends it.
 
+- **Animated light without static light (Task 2 finding).** Today a map with animated lights but no static ones gets a placeholder id 22, so the animated atlas is inactive and the map renders without animated light. The loader keeps that behaviour: in placeholder mode it skips the id-25 block-frame checks, and the renderer takes the no-animated-light path. It is not a hard reject. Whether such maps should get lightmap blocks is outside this brief.
+
+## Contracts (integrating executor)
+
+Shared seams fixed before delegation. Workers build against them and do not change them.
+
+- **Format types** live in `level-format`. Workers read the source; it is the contract.
+  - `lightmap.rs` (id 22 v3): `LightmapHeader`, `LightmapBlockIndex::from_prefix`, `LightmapSection`, `LightmapBlockPayload`, `LIGHTMAP_POOL_LAYER_EDGE` (2048) and `MAX_LIGHTMAP_BLOCKS` (65,534).
+  - `shadowmask_atlas.rs` (id 42 `SMB6`): `ShadowmaskBlockIndex::from_prefix` and `shadowmask_prefix_len_through_block_count`, both validated against the id-22 index.
+  - `animated_light_weight_maps.rs` (id 25 v5): `AnimatedBlock { lightmap_block, block_x, block_y, .. }` and `chunk_block_origin`.
+  - `geometry.rs`: `Vertex::lightmap_block` is block id + 1, 0 meaning none. The UV is block-local. `GEOMETRY_CONTAINER_VERSION` = 2; the compiler writes it and the loader rejects any other. `render-data` `WorldVertex::lightmap_block` mirrors this.
+- **Commit grouping.** Tasks 1–3 share one format break, so the workspace does not build between them. The split-first commits land separately. Tasks 1–3 then commit together, with their plan rows, once the workspace builds and their proofs pass.
+- **Bake layout.** The compiler packs each cell's charts into one block (`pack_cell_block`, aligned to `LightmapHeader::block_alignment`). It then packs blocks into internal bake layers, so the bake core, shadowmask fill and cache partitioning keep their layer loops. Encoding slices each block's rect out of its bake layer: BC6H and BC5 are per-4×4 and block origins are 4-aligned, so slicing encoded blocks equals encoding each block. Bake noise stays keyed on bake-layer coordinates (brief non-goal).
+- **Lightmap modes the renderer sees.**
+  - *Placeholder:* id 22 is absent or has zero blocks. Every vertex carries block 0 and samples today's neutral placeholder: white irradiance, +Y direction, all-visible shadowmask. This keeps today's no-static-light look.
+  - *Blocks:* in the vertex table, entry 0 is "no lightmap". Static lightmap irradiance is zero, the direction is neutral, and the shadowmask reads all-visible.
+  - A real block whose entry is not resident is a *miss*. Per restated AC 7, it drops lightmap irradiance, shadowmask-gated static specular, and the shadowmask union subtraction. SDF-light terms stay.
+- **Loader → renderer.**
+  - `LevelWorld` keeps `Option<LightmapBlockIndex>` and `Option<ShadowmaskBlockIndex>`, replacing the old headers.
+  - All-resident `GpuLightingPayloads` carries `Vec<LightmapBlockPayload>` in block-id order, with the shadowmask groups inside each payload when id 42 is present.
+  - Id 42 is now a hard load error when malformed, when its count mismatches id 22, or when it is present without id 22.
+- **Vertex table.** Group 6, binding 0, VERTEX-only storage `array<vec4<u32>>`, indexed by `lightmap_block`. Each entry holds the pool layer, the pool offset, the extent, and flags (resident, none).
+  - The vertex stage emits the block-local texel (`uv × extent`) as the interpolated varying, plus one flat `vec4<u32>` and the flat pool layer. That makes 9 of 16 inter-stage locations.
+  - The static and animated lookups add integer offsets to the same interpolated texel, so the animated translation stays exact without power-of-two sizes. The animated block table's dx and dy become compact − block-local, and its static-layer-size header word becomes reserved.
+
 ## Delegated answers
 
 - **Allocator** — the shelf allocator (`BlockPool`), moved from the dry run to `render-cpu` so the renderer and the dry run share one implementation. Repack counts are reported in the findings. It was measured; guillotine was not.
@@ -80,12 +105,12 @@ Numbered in brief order.
 
 | AC | Proof | Status |
 |---|---|---|
-| 1 Charts inside block, no overlap, BC edges, ≤ pool layer, id overflow rejects / one-below builds | `cell_block_pack_*` compiler tests; `block_count_limit_*` over the validation seam | restated (owner, 2026-09-28) |
+| 1 Charts inside block, no overlap, BC edges, ≤ pool layer, id overflow rejects / one-below builds | compiler: `cell_block_pack_holds_every_chart_inside_its_cell_block_without_overlap`, `cell_block_pack_rejects_a_block_past_the_pool_layer_edge_and_accepts_one_at_it`, `block_limits_reject_an_extent_past_the_pool_layer_on_either_axis`, `block_count_limit_rejects_one_past_the_vertex_id_limit_and_accepts_the_limit`, `cell_block_order_is_cluster_major_then_cell_id` | restated (owner, 2026-09-28) |
 | 2 Baked set = dry-run mandatory set, dilation included, all cells × leads | `residency_set_bake_matches_direct_evaluation` (synthetic fixture); ignored yardstick on both maps | achievable as stated |
 | 3 Pinned cluster mandatory everywhere; unflagged only via lead/vis; priority reorders band prefetch | bake test + `lightmap_controller_priority_*` | achievable as stated |
 | 4 Pool holding every block renders pixel-identical to all-resident, both maps | ignored GPU capture test, byte-compare PNGs, run on this Mac | achievable as stated |
-| 5 Vertex block id + block-local UV address the same chart texel as the static-atlas UV | compiler test comparing pre-rebase atlas texel to block-frame texel for every lightmapped vertex | achievable as stated |
-| 6 Animated keys address the same texels; load rejects animated block outside cell block | compiler rebase test + loader reject test | achievable as stated |
+| 5 Vertex block id + block-local UV address the same chart texel as the static-atlas UV | compiler `block_local_vertex_uv_addresses_the_same_chart_texel_as_the_bake_layer_uv`; render-cpu `block_table_maps_each_block_local_texel_to_its_placement_plus_local`; GPU harness `lighting/lightmap/pool_sample_test.rs` | achievable as stated |
+| 6 Animated keys address the same texels; load rejects animated block outside cell block | compiler `animated_block_keys_address_the_same_chart_texels_as_their_bake_layer_rects`, `animated_rebase_rejects_a_rect_outside_its_cell_block`; loader `animated_block_outside_its_cell_block_is_rejected_in_every_build`, `animated_block_naming_a_lightmap_block_past_the_table_is_rejected_in_every_build`; GPU animated parity harness in the block frame | achievable as stated |
 | 7 Forced-missing block: static direct + specular absent, SH present; resident renders lit; matches masked capture | ignored GPU capture test; capture gains a light-term mask field; SDF-free fixture | restated (owner, 2026-09-28) |
 | 8 Held shadowmask read: neither half sampleable; release → both in one drain | controller + per-range hold issuer test (P2) | achievable as stated |
 | 9 Cap below mandatory grows; cap above refuses band beyond cap; out-of-band freed next drain | controller + allocator tests | achievable as stated |
@@ -95,12 +120,12 @@ Numbered in brief order.
 | 13 Stale completions discarded after reload; unload releases pool, handle, workers, retiring | controller/session tests (P3, P9) | achievable as stated |
 | 14 Non-portal paths request only the camera cell's set; solid/exterior nothing new; empty world no lookup; no portals → all-resident | controller tests per `VisibilityPath` variant + loader test | achievable as stated |
 | 15 Steady frames: no table writes, no allocation; cell change writes only changed entries | controller test: buffer capacities + block-table write counter | achievable as stated |
-| 16 No-block level boots; one-block level streams | loader + boot tests on tiny fixtures | achievable as stated |
-| 17 Load rejects the eight listed cases | one loader test per case | achievable as stated (id 42 "version" = format tag, per Corrections) |
+| 16 No-block level boots; one-block level streams | loader `level_with_zero_lightmap_blocks_loads_with_no_payloads`, `level_with_one_lightmap_block_loads_a_one_entry_payload`, `level_without_a_lightmap_loads_in_placeholder_mode_and_warns_once`; streaming half in Task 9 | achievable as stated |
+| 17 Load rejects the eight listed cases | loader `load_rejects_*` in `prl_lightmap_tests.rs` (older version, SMB5 tag, count mismatch, vertex block past table, blob range outside section, block past pool layer, nonzero reserved, stale id-17 container version); residency-section rows in Task 5 | achievable as stated (id 42 "version" = format tag, per Corrections) |
 | 18 SH request order + install budget unchanged with lightmap idle; SH tests pass unchanged | trace fixture recorded in Task 4, replayed after extraction | achievable as stated |
 | 19 One issuer thread performs every read, mandatory before optional across both, ascending offset | shared-issuer ordering test | achievable as stated |
 | 20 P1–P12 outcomes | one test per pin row over the controller + fault-injected issuer | achievable as stated |
-| 21 BGL: FRAGMENT unchanged; only VERTEX addition is the block table | new `forward_pipeline_bindings_*` test in `pipeline_budget_tests.rs` | achievable as stated |
+| 21 BGL: FRAGMENT unchanged; only VERTEX addition is the block table | `forward_bindings_add_only_the_vertex_block_table` (pipeline_budget_tests.rs) | achievable as stated |
 | 22 Walk metrics logged and in capture JSON (both maps) | measurement run; recorded in findings | reported |
 | 23 Lightmap residency CPU time in `[CpuTiming]` | new `RenderStage`/`FrameStage` entry; measurement run | reported |
 | 24 PRL size delta and time-to-first-frame delta vs whole-resident | measurement run on both maps | reported |
@@ -133,9 +158,9 @@ Split-first commits precede the task that extends each file. Every task ends wit
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Compiler block format (riskiest slice, part 1).** Split `lightmap_bake.rs`, `lightmap_layer.rs`, `shadowmask_bake.rs`, `animated_light_weight_maps.rs`, `animated_light_chunks.rs` and `pipeline.rs` along the touched seams. Move the canonical partition before AtlasPreparation. Pack per-cell blocks by moving `pack_cell_block`, ordered cluster-major. Emit id 22 v3, id 42 `SMB6`, id 17 block id + 1 and block-local UV, and id 25 v5 block-local keys. Bump the versions and cache keys. Update the dry-run `inputs.rs` to the new format. Proof: AC 1, 5, 6 (compiler half). | integrating executor; delegable: animated rebase | — | |
-| 2 | **Loader block format.** Parse ids 22, 42 and 25 into a CPU block index plus blobs (all-resident path). Add container-version checks and the AC 17 reject list (minus the residency-section rows), the animated outside-block reject, and the zero- and one-block fixtures. Split `prl_loader.rs` first. Proof: AC 6 (loader half), 16, 17 (partial). | delegable | 1 | |
-| 3 | **Renderer all-resident pool (riskiest slice, part 2).** Move `BlockPool` to `render-cpu`. Pool textures get `COPY_SRC`. Place every block at install. Add the group-6 VERTEX-only block table and the `forward.wgsl` vertex decode, fragment offset and shadowmask clamp. Rebase `animated_block_uv` and update the spliced shader-harness tests. Update the byte meter and `usable_static_layers` consumers. Add the BGL test. Split `forward.wgsl` and `lighting/lightmap.rs` first. Proof: AC 21, plus a visual smoke on both maps. Checkpoint: report the slice to the owner before streaming starts. | integrating executor | 2 | |
+| 1 | **Compiler block format (riskiest slice, part 1).** Split `lightmap_bake.rs`, `lightmap_layer.rs`, `shadowmask_bake.rs`, `animated_light_weight_maps.rs`, `animated_light_chunks.rs` and `pipeline.rs` along the touched seams. Move the canonical partition before AtlasPreparation. Pack per-cell blocks by moving `pack_cell_block`, ordered cluster-major. Emit id 22 v3, id 42 `SMB6`, id 17 block id + 1 and block-local UV, and id 25 v5 block-local keys. Bump the versions and cache keys. Update the dry-run `inputs.rs` to the new format. Proof: AC 1, 5, 6 (compiler half). | integrating executor; delegable: animated rebase | — | done (Tasks 1–3 commit) |
+| 2 | **Loader block format.** Parse ids 22, 42 and 25 into a CPU block index plus blobs (all-resident path). Add container-version checks and the AC 17 reject list (minus the residency-section rows), the animated outside-block reject, and the zero- and one-block fixtures. Split `prl_loader.rs` first. Proof: AC 6 (loader half), 16, 17 (partial). | delegable | 1 | done (Tasks 1–3 commit) |
+| 3 | **Renderer all-resident pool (riskiest slice, part 2).** Move `BlockPool` to `render-cpu`. Pool textures get `COPY_SRC`. Place every block at install. Add the group-6 VERTEX-only block table and the `forward.wgsl` vertex decode, fragment offset and shadowmask clamp. Rebase `animated_block_uv` and update the spliced shader-harness tests. Update the byte meter and `usable_static_layers` consumers. Add the BGL test. Split `forward.wgsl` and `lighting/lightmap.rs` first. Proof: AC 21, plus a visual smoke on both maps. Checkpoint: report the slice to the owner before streaming starts. | integrating executor | 2 | done (Tasks 1–3 commit); owner checkpoint pending |
 | 4 | **Record the SH baseline trace.** Build a synthetic-schedule harness that records request order, per-drain install budget, and issuer read order from the current controller and issuer. Commit it as a fixture. No SH code changes. Proof: AC 18 baseline. | delegable | — | |
 | 5 | **Residency-set bake (id 51).** Promote the visibility and loader crates to dependencies. Move `pvs_sampling` and `brief_set` into a compiler stage that builds its world through the loader's conversion. Write the CSR section, plus the loader decode and the residency-section reject rows (cell past count, decreasing CSR). Proof: AC 2, 3 (bake half), 17 (rest), 25. | delegable | 1 | |
 | 6 | **Shared streaming layer.** Extract a resource-neutral issuer (one thread, tiered, ascending offset, coalescing), a shared drain budget, and the id-49 hint decode. SH keeps its decode, owner closure and target classes. Split `sh_residency.rs` first. Proof: AC 18 replay, 19; the existing SH tests pass unchanged. | integrating executor | 4 | |
@@ -152,3 +177,13 @@ Split-first commits precede the task that extends each file. Every task ends wit
 - Demand from the baked set is recomputed only on a camera-cell or L change. Visible-block demand reuses per-frame buffers. No steady-state allocation (AC 15).
 - Block-table writes happen only on install, eviction or repack, never per frame (AC 15).
 - Uploads stay within the shared drain budget (Delegated answers).
+
+## Findings log
+
+Raw measurements for the findings note (AC 22–25), recorded as they arrive.
+
+- Baseline PRL sizes, pre-change whole-resident builds: `campaign-test.prl` 142,552,247 B; `stress-warren-hallway-inspection.prl` 1,581,022,836 B.
+- Tasks 1–3, all-resident `campaign-test` (warm build, 2 m 36 s):
+  - PRL 148,875,803 B, +4.4%.
+  - 198 cell blocks: 18.6 MB irradiance blobs, 9.3 MB direction, 37.2 MB shadowmask.
+  - Pool: 7 layers of 2048². Meter: static irradiance 28.0 MiB, direction 14.0 MiB, shadowmask 56.0 MiB; the animated pair adds 48.0 MiB.

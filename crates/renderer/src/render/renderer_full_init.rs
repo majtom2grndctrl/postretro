@@ -287,11 +287,13 @@ pub(crate) fn build_full_renderer(
     );
 
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
-    // Resolve the static layer from the same filter the static lightmap
-    // texture uses, so the block table translates from the layer actually
-    // bound (the forward pass samples both atlases from one lightmap_uv).
-    let static_layers = crate::lighting::lightmap::usable_static_layers(
+    // Full init never carries a level's payloads (`install_level_geometry`
+    // uploads them), so this plans against none: a level index here takes the
+    // placeholder path, and the animated atlas has no block frame.
+    let static_pool = crate::lighting::lightmap::plan_static_pool(
         geometry.and_then(|g| g.lightmap),
+        geometry.and_then(|g| g.shadowmask_atlas),
+        &[],
         device.limits().max_texture_dimension_2d,
         device.limits().max_texture_array_layers,
     );
@@ -303,7 +305,7 @@ pub(crate) fn build_full_renderer(
             &bvh_leaves,
             &sh_volume_resources.animation,
             &uniform_bind_group_layout,
-            static_layers,
+            static_pool.static_block_extents(),
             animated_lm_debug,
         ),
         || {
@@ -322,19 +324,22 @@ pub(crate) fn build_full_renderer(
             animated_lightmap.is_active(),
             geometry.and_then(|g| g.animated_light_weight_maps),
         ),
-        static_layers.map_or(0, |(size, _)| size),
     );
 
-    // Group 4: lightmap atlas. Animated-contribution atlas at binding 3 (real or 1×1 zero dummy).
+    // Group 4: lightmap pool + animated atlas (real or 1×1 zero dummy).
+    // Group 6: the vertex block table.
     let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(device);
+    let block_table_bind_group_layout =
+        crate::lighting::lightmap::block_table_bind_group_layout(device);
     let lightmap_resources = LightmapResources::new(
         device,
         queue,
         geometry.and_then(|g| g.lightmap),
         geometry.and_then(|g| g.shadowmask_atlas),
-        // Full init never carries a level; `install_level_geometry` uploads it.
+        &static_pool,
         postretro_level_loader::GpuLightingPayloads::default(),
         &lightmap_bind_group_layout,
+        &block_table_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
         &animated_block_table,
@@ -441,6 +446,7 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources.bind_group_layout,
         &lightmap_bind_group_layout,
         &spot_shadow_bgl,
+        &block_table_bind_group_layout,
         cube_array_supported,
     );
 

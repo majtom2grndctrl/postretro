@@ -9,10 +9,10 @@
 use crate::FormatError;
 use crate::animated_lightmap_atlas::ANIMATED_BLOCK_CAP;
 
-/// Current section version. Version 4 moves chunk rects into compact-atlas
-/// coordinates and adds the block table; v3's slot table is gone. Loaders
-/// accept this version only.
-pub const ANIMATED_LIGHT_WEIGHT_MAPS_VERSION: u32 = 4;
+/// Current section version. Version 5 keys each animated block by its static
+/// lightmap cell block and block-local texels instead of static-atlas layer
+/// and texels. Loaders accept this version only.
+pub const ANIMATED_LIGHT_WEIGHT_MAPS_VERSION: u32 = 5;
 
 /// Atlas rectangle for one chunk in compact-atlas coordinates, plus an offset
 /// into the per-texel offset-count table and the block that owns it. The page
@@ -29,14 +29,17 @@ pub struct ChunkAtlasRect {
 }
 
 /// One animated face's chart placement rect in both spaces. The static rect
-/// is the chart placement including its padding gutter; static→compact is a
-/// translation plus a layer change, so a chunk keeps its offset inside its
+/// is the chart placement including its padding gutter, in the texels of the
+/// static lightmap cell block that holds the chart; static→compact is a
+/// translation plus a page change, so a chunk keeps its offset inside its
 /// block in both spaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnimatedBlock {
-    pub static_layer: u32,
-    pub static_x: u32,
-    pub static_y: u32,
+    /// Id-22 cell block holding this face's chart.
+    pub lightmap_block: u32,
+    /// Block-local texel origin of the static rect.
+    pub block_x: u16,
+    pub block_y: u16,
     pub compact_x: u32,
     pub compact_y: u32,
     /// Compact-atlas page (array layer).
@@ -82,7 +85,7 @@ pub struct TexelLight {
 ///
 /// ```text
 ///   Header (28 bytes):
-///     u32      version            (= 4)
+///     u32      version            (= 5)
 ///     u32      chunk_count
 ///     u32      offset_counts_len  (length of per-texel offset_counts array)
 ///     u32      texel_lights_len   (length of flat light weights pool)
@@ -98,10 +101,10 @@ pub struct TexelLight {
 ///     u32      texel_offset       (index into offset_counts)
 ///     u32      block              (index into the block table)
 ///
-///   Blocks (32 bytes × block_count):
-///     u32      static_layer
-///     u32      static_x
-///     u32      static_y
+///   Blocks (28 bytes × block_count):
+///     u32      lightmap_block     (id-22 cell block)
+///     u16      block_x            (block-local static texel origin)
+///     u16      block_y
 ///     u32      compact_x
 ///     u32      compact_y
 ///     u32      compact_layer
@@ -132,7 +135,7 @@ pub struct AnimatedLightWeightMapsSection {
 
 const HEADER_SIZE: usize = 28;
 const CHUNK_RECT_SIZE: usize = 24;
-const BLOCK_SIZE: usize = 32;
+const BLOCK_SIZE: usize = 28;
 const OFFSET_ENTRY_SIZE: usize = 8;
 const TEXEL_LIGHT_SIZE: usize = 12;
 
@@ -149,10 +152,11 @@ impl AnimatedLightWeightMapsSection {
         }
     }
 
-    /// Static-atlas origin `(layer, x, y)` of chunk `index`: its compact
-    /// position translated back through its block. `None` when the chunk
-    /// names a block past the table or does not lie inside its block.
-    pub fn chunk_static_origin(&self, index: usize) -> Option<(u32, u32, u32)> {
+    /// Static origin `(lightmap block, x, y)` of chunk `index`, in its cell
+    /// block's texels: its compact position translated back through its
+    /// animated block. `None` when the chunk names a block past the table or
+    /// does not lie inside its block.
+    pub fn chunk_block_origin(&self, index: usize) -> Option<(u32, u32, u32)> {
         let chunk = self.chunk_rects.get(index)?;
         let block = self.blocks.get(chunk.block as usize)?;
         if !rect_within(
@@ -164,9 +168,9 @@ impl AnimatedLightWeightMapsSection {
         let dx = chunk.compact_x - block.compact_x;
         let dy = chunk.compact_y - block.compact_y;
         Some((
-            block.static_layer,
-            block.static_x.checked_add(dx)?,
-            block.static_y.checked_add(dy)?,
+            block.lightmap_block,
+            u32::from(block.block_x).checked_add(dx)?,
+            u32::from(block.block_y).checked_add(dy)?,
         ))
     }
 
@@ -334,10 +338,10 @@ impl AnimatedLightWeightMapsSection {
         }
 
         for block in &self.blocks {
+            buf.extend_from_slice(&block.lightmap_block.to_le_bytes());
+            buf.extend_from_slice(&block.block_x.to_le_bytes());
+            buf.extend_from_slice(&block.block_y.to_le_bytes());
             for field in [
-                block.static_layer,
-                block.static_x,
-                block.static_y,
                 block.compact_x,
                 block.compact_y,
                 block.compact_layer,
@@ -442,14 +446,14 @@ impl AnimatedLightWeightMapsSection {
         let mut blocks = Vec::with_capacity(block_count);
         for _ in 0..block_count {
             blocks.push(AnimatedBlock {
-                static_layer: read_u32(data, cursor),
-                static_x: read_u32(data, cursor + 4),
-                static_y: read_u32(data, cursor + 8),
-                compact_x: read_u32(data, cursor + 12),
-                compact_y: read_u32(data, cursor + 16),
-                compact_layer: read_u32(data, cursor + 20),
-                width: read_u32(data, cursor + 24),
-                height: read_u32(data, cursor + 28),
+                lightmap_block: read_u32(data, cursor),
+                block_x: read_u16(data, cursor + 4),
+                block_y: read_u16(data, cursor + 6),
+                compact_x: read_u32(data, cursor + 8),
+                compact_y: read_u32(data, cursor + 12),
+                compact_layer: read_u32(data, cursor + 16),
+                width: read_u32(data, cursor + 20),
+                height: read_u32(data, cursor + 24),
             });
             cursor += BLOCK_SIZE;
         }
@@ -548,9 +552,9 @@ mod tests {
             compact_layers: 1,
             blocks: vec![
                 AnimatedBlock {
-                    static_layer: 3,
-                    static_x: 100,
-                    static_y: 40,
+                    lightmap_block: 3,
+                    block_x: 100,
+                    block_y: 40,
                     compact_x: 0,
                     compact_y: 0,
                     compact_layer: 0,
@@ -558,9 +562,9 @@ mod tests {
                     height: 6,
                 },
                 AnimatedBlock {
-                    static_layer: 11,
-                    static_x: 7,
-                    static_y: 9,
+                    lightmap_block: 11,
+                    block_x: 7,
+                    block_y: 9,
                     compact_x: 8,
                     compact_y: 0,
                     compact_layer: 0,
@@ -668,18 +672,18 @@ mod tests {
     }
 
     #[test]
-    fn v4_round_trips_blocks_pages_and_compact_chunks() {
+    fn v5_round_trips_blocks_pages_and_compact_chunks() {
         let section = sample_section();
         let bytes = section.to_bytes();
         assert_eq!(section.byte_len(), bytes.len());
-        assert_eq!(&bytes[0..4], &4_u32.to_le_bytes());
+        assert_eq!(&bytes[0..4], &5_u32.to_le_bytes());
         let restored = AnimatedLightWeightMapsSection::from_bytes(&bytes).unwrap();
         assert_eq!(restored, section);
         assert_eq!(restored.to_bytes(), bytes);
     }
 
     #[test]
-    fn v4_header_carries_block_count_page_size_and_page_count() {
+    fn v5_header_carries_block_count_page_size_and_page_count() {
         let bytes = sample_section().to_bytes();
         assert_eq!(&bytes[16..20], &2_u32.to_le_bytes(), "block_count");
         assert_eq!(&bytes[20..24], &64_u32.to_le_bytes(), "page_size");
@@ -690,8 +694,8 @@ mod tests {
     }
 
     #[test]
-    fn v2_and_v3_sections_are_rejected_with_a_recompile_error() {
-        for version in [2_u32, 3] {
+    fn v2_through_v4_sections_are_rejected_with_a_recompile_error() {
+        for version in [2_u32, 3, 4] {
             let err = AnimatedLightWeightMapsSection::from_bytes(&with_version(
                 &sample_section(),
                 version,
@@ -720,11 +724,11 @@ mod tests {
     }
 
     #[test]
-    fn chunk_static_origin_translates_through_its_block() {
+    fn chunk_block_origin_translates_through_its_block() {
         let section = sample_section();
-        assert_eq!(section.chunk_static_origin(0), Some((3, 102, 42)));
-        assert_eq!(section.chunk_static_origin(1), Some((11, 9, 11)));
-        assert_eq!(section.chunk_static_origin(2), None);
+        assert_eq!(section.chunk_block_origin(0), Some((3, 102, 42)));
+        assert_eq!(section.chunk_block_origin(1), Some((11, 9, 11)));
+        assert_eq!(section.chunk_block_origin(2), None);
     }
 
     #[test]
@@ -853,15 +857,15 @@ mod tests {
     }
 
     #[test]
-    fn chunk_static_origin_is_none_for_a_chunk_leaving_its_block() {
+    fn chunk_block_origin_is_none_for_a_chunk_leaving_its_block() {
         let mut section = sample_section();
         section.chunk_rects[0].compact_x = 7; // 2 wide from x 7 passes the 8-wide block
-        assert_eq!(section.chunk_static_origin(0), None);
+        assert_eq!(section.chunk_block_origin(0), None);
     }
 
     #[test]
     fn rejects_truncated_header() {
-        let err = AnimatedLightWeightMapsSection::from_bytes(&[4, 0, 0, 0, 0, 0]).unwrap_err();
+        let err = AnimatedLightWeightMapsSection::from_bytes(&[5, 0, 0, 0, 0, 0]).unwrap_err();
         assert!(err.to_string().contains("too short"));
     }
 

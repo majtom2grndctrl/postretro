@@ -13,7 +13,7 @@ use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
-    Chart, CompositedAtlas, light_contribution_and_direction,
+    BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
     light_texel_contribution_and_visibility, segment_clear, texel_seed,
 };
 #[cfg(test)]
@@ -23,6 +23,7 @@ use glam::DVec3;
 
 mod cache_keys;
 
+pub(crate) use cache_keys::atlas_layout_fingerprint;
 pub use cache_keys::{
     layer_input_hash, section_input_hash, validate_cached_lightmap_section,
     validate_layer_partition,
@@ -33,7 +34,9 @@ pub use cache_keys::{
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 6;
+///
+/// v7: layers are internal bake layers holding packed cell blocks.
+pub const LAYER_FORMAT_VERSION: u32 = 7;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -48,7 +51,9 @@ pub const LAYER_FORMAT_VERSION: u32 = 6;
 /// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
 /// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
 /// pipeline or `LightmapSection::to_bytes` format changes independently.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 3;
+///
+/// v4: id 22 v3, per-cell blocks sliced from each encoded bake layer.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 4;
 
 /// One analytically reached atlas texel from a single light.
 ///
@@ -217,11 +222,15 @@ impl LightmapLayer {
 /// The shared atlas a single-light layer bakes against. Produced once by
 /// `lightmap_bake::prepare_atlas` with the full static-light set, then threaded
 /// into every single-light bake so all layers share one chart layout.
+///
+/// `placements` and the dimensions describe the internal bake layers; `layout`
+/// names the cell blocks the encoders slice out of them.
 pub struct SharedAtlas<'a> {
     pub charts: &'a [Chart],
     pub placements: &'a [ChartPlacement],
     pub atlas_width: u32,
     pub atlas_height: u32,
+    pub layout: &'a BlockLayout,
 }
 
 /// One global atlas layer's in-progress, ordered light fold.

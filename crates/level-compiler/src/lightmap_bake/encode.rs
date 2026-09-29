@@ -1,132 +1,147 @@
-// Lightmap section encode: BC6H/RGBA16F irradiance, reduced Rg8 direction, layer-major assembly.
+// Lightmap section encode: BC6H/RGBA16F irradiance and reduced Rg8 direction, sliced per cell block.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use glam::Vec3;
 use postretro_level_format::lightmap::{
-    DIRECTION_FORMAT_OCT_RG8, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode,
-    LightmapSection, encode_direction_oct, f32_to_f16_bits,
+    DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F,
+    IRRADIANCE_TEXEL_BYTES, LightmapBlock, LightmapMode, LightmapSection, encode_direction_oct,
+    f32_to_f16_bits,
 };
 
+use super::block_layout::BlockLayout;
 use super::{CompositedAtlas, MIN_ATLAS_DIMENSION};
 use crate::bc6h;
 
-impl CompositedAtlas {
-    /// Encode this atlas into a [`LightmapSection`] via the shared BC6H (or
-    /// uncompressed-debug) irradiance path. The single section-22 encoder, so a
-    /// composited atlas and a monolithically-baked one emit byte-identical
-    /// sections when their buffers are equal.
-    pub fn encode_section(
-        &self,
-        texel_density: f32,
-        uncompressed_irradiance: bool,
-        direction_texel_scale: u32,
-    ) -> LightmapSection {
-        let (irr_bytes, irradiance_format) = if uncompressed_irradiance {
-            // RGBA16F is already flat layer-major (`w·h·8` per layer concatenated),
-            // so the whole buffer encodes in one pass.
-            (
-                encode_irradiance_rgba16f(&self.irradiance),
-                IRRADIANCE_FORMAT_RGBA16F,
-            )
+/// BC texel block edge and bytes per BC6H/BC5 block.
+const BC_EDGE: u32 = 4;
+const BC_BLOCK_BYTES: usize = 16;
+
+/// Assembles a v3 section one bake layer at a time. Each layer is encoded
+/// whole, then every block on it is sliced out: BC6H is per 4×4 block and
+/// block origins are aligned, so a slice equals encoding the block alone.
+/// Only the current layer's encoded bytes and the finished blocks are held.
+pub(crate) struct BlockSectionBuilder<'a> {
+    layout: &'a BlockLayout,
+    uncompressed_irradiance: bool,
+    blocks: Vec<Option<LightmapBlock>>,
+}
+
+impl<'a> BlockSectionBuilder<'a> {
+    pub(crate) fn new(layout: &'a BlockLayout, uncompressed_irradiance: bool) -> Self {
+        Self {
+            layout,
+            uncompressed_irradiance,
+            blocks: vec![None; layout.blocks.len()],
+        }
+    }
+
+    /// Encode one dilated bake-layer plane and keep its blocks.
+    pub(crate) fn push_layer(&mut self, layer: u32, plane: &CompositedAtlas) {
+        let scale = self.layout.direction_texel_scale;
+        let (irradiance, direction) =
+            encode_atlas_layer(plane, self.uncompressed_irradiance, scale);
+        let (irr_unit, irr_unit_bytes) = if self.uncompressed_irradiance {
+            (1, IRRADIANCE_TEXEL_BYTES)
         } else {
-            // The BC6H encoder is single-image — it asserts its input length is
-            // exactly `w·h·4` floats — so it must run once per layer over that
-            // layer's slice; the per-layer block blobs concatenate into the
-            // layer-major irradiance blob.
-            let plane = (self.atlas_width * self.atlas_height) as usize;
-            let mut blob = Vec::new();
-            for layer in 0..self.layer_count as usize {
-                let start = layer * plane * 4;
-                let end = start + plane * 4;
-                blob.extend_from_slice(&bc6h::encode_bc6h_rgb_from_f32_rgba(
-                    &self.irradiance[start..end],
-                    self.atlas_width,
-                    self.atlas_height,
-                ));
+            (BC_EDGE, BC_BLOCK_BYTES)
+        };
+        for (slot, block) in self.blocks.iter_mut().zip(&self.layout.blocks) {
+            if block.layer != layer {
+                continue;
             }
-            (blob, IRRADIANCE_FORMAT_BC6H)
-        };
-        // Direction is a lower-frequency signal than irradiance. Reduce it only
-        // after the warm/cold byte-identity seam: both paths retain this full
-        // resolution CompositedAtlas and arrive here with identical buffers.
-        let direction_texel_scale = effective_direction_texel_scale(
-            direction_texel_scale,
-            self.atlas_width,
-            self.atlas_height,
-        );
-        let (dir_width, dir_height, dir_bytes) = if direction_texel_scale == 1 {
-            // Keep the full-resolution composited atlas intact; only the
-            // on-wire octahedral encoding changes to its two used channels.
-            (
-                self.atlas_width,
-                self.atlas_height,
-                encode_direction_rg8(&self.direction, &self.coverage),
-            )
-        } else {
-            let (direction, coverage) = reduce_direction_atlas(
-                &self.direction,
-                &self.coverage,
-                self.atlas_width,
-                self.atlas_height,
-                self.layer_count,
-                direction_texel_scale,
+            let irradiance = copy_unit_rect(
+                &irradiance,
+                plane.atlas_width / irr_unit,
+                irr_unit_bytes,
+                [block.x, block.y, block.width, block.height].map(|v| v / irr_unit),
             );
-            (
-                self.atlas_width / direction_texel_scale,
-                self.atlas_height / direction_texel_scale,
-                encode_direction_rg8(&direction, &coverage),
-            )
-        };
+            let direction = copy_unit_rect(
+                &direction,
+                plane.atlas_width / scale,
+                DIRECTION_TEXEL_BYTES,
+                [block.x, block.y, block.width, block.height].map(|v| v / scale),
+            );
+            *slot = Some(LightmapBlock {
+                cell_id: block.cell_id,
+                width: u16::try_from(block.width).expect("blocks fit a pool layer"),
+                height: u16::try_from(block.height).expect("blocks fit a pool layer"),
+                irradiance,
+                direction,
+            });
+        }
+    }
+
+    pub(crate) fn finish(self) -> LightmapSection {
         LightmapSection {
-            layer_count: self.layer_count,
-            irr_width: self.atlas_width,
-            irr_height: self.atlas_height,
-            irr_texel_density: texel_density,
-            irradiance: irr_bytes,
-            irradiance_format,
-            dir_width,
-            dir_height,
-            dir_texel_density: texel_density * direction_texel_scale as f32,
-            direction: dir_bytes,
-            direction_format: DIRECTION_FORMAT_OCT_RG8,
+            direction_texel_scale: self.layout.direction_texel_scale,
+            irradiance_format: irradiance_format(self.uncompressed_irradiance),
             mode: LightmapMode::Shadowed,
+            blocks: self
+                .blocks
+                .into_iter()
+                .enumerate()
+                .map(|(id, block)| {
+                    block.unwrap_or_else(|| {
+                        panic!("lightmap block {id}'s bake layer was never encoded")
+                    })
+                })
+                .collect(),
         }
     }
 }
 
-/// Assemble the stable layer-major section payload after callers have encoded
-/// each atlas plane. The cold bake and warm incremental compositor share this
-/// seam so their final layer ordering and wire-format choices stay identical.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn assemble_layered_section(
-    atlas_w: u32,
-    atlas_h: u32,
-    layer_count: u32,
-    texel_density: f32,
-    uncompressed_irradiance: bool,
-    direction_texel_scale: u32,
-    irradiance: Vec<u8>,
-    direction: Vec<u8>,
-) -> LightmapSection {
-    let direction_texel_scale =
-        effective_direction_texel_scale(direction_texel_scale, atlas_w, atlas_h);
-    LightmapSection {
-        layer_count,
-        irr_width: atlas_w,
-        irr_height: atlas_h,
-        irr_texel_density: texel_density,
-        irradiance,
-        irradiance_format: if uncompressed_irradiance {
-            IRRADIANCE_FORMAT_RGBA16F
-        } else {
-            IRRADIANCE_FORMAT_BC6H
-        },
-        dir_width: atlas_w / direction_texel_scale,
-        dir_height: atlas_h / direction_texel_scale,
-        dir_texel_density: texel_density * direction_texel_scale as f32,
-        direction,
-        direction_format: DIRECTION_FORMAT_OCT_RG8,
-        mode: LightmapMode::Shadowed,
+pub(crate) fn irradiance_format(uncompressed_irradiance: bool) -> u32 {
+    if uncompressed_irradiance {
+        IRRADIANCE_FORMAT_RGBA16F
+    } else {
+        IRRADIANCE_FORMAT_BC6H
+    }
+}
+
+/// Copy the `[x, y, width, height]` rect, in units, out of a row-major plane
+/// `row_units` units wide at `unit_bytes` per unit. A unit is a texel for raw
+/// formats and a 4×4 block for BC formats.
+pub(crate) fn copy_unit_rect(
+    plane: &[u8],
+    row_units: u32,
+    unit_bytes: usize,
+    [x, y, width, height]: [u32; 4],
+) -> Vec<u8> {
+    let row_bytes = row_units as usize * unit_bytes;
+    let rect_row_bytes = width as usize * unit_bytes;
+    let mut out = Vec::with_capacity(rect_row_bytes * height as usize);
+    for row in y as usize..(y + height) as usize {
+        let start = row * row_bytes + x as usize * unit_bytes;
+        out.extend_from_slice(&plane[start..start + rect_row_bytes]);
+    }
+    out
+}
+
+impl CompositedAtlas {
+    /// Encode every layer of this atlas into the layout's blocks. The same
+    /// per-layer encode and slice the bake uses, so an atlas equal to the
+    /// bake's planes yields byte-identical sections.
+    #[cfg(test)]
+    pub fn encode_section(
+        &self,
+        layout: &BlockLayout,
+        uncompressed_irradiance: bool,
+    ) -> LightmapSection {
+        let plane = self.atlas_width as usize * self.atlas_height as usize;
+        let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
+        for layer in 0..self.layer_count {
+            let offset = layer as usize * plane;
+            let single = CompositedAtlas {
+                irradiance: self.irradiance[offset * 4..(offset + plane) * 4].to_vec(),
+                direction: self.direction[offset..offset + plane].to_vec(),
+                coverage: self.coverage[offset..offset + plane].to_vec(),
+                atlas_width: self.atlas_width,
+                atlas_height: self.atlas_height,
+                layer_count: 1,
+            };
+            builder.push_layer(layer, &single);
+        }
+        builder.finish()
     }
 }
 
@@ -190,32 +205,13 @@ fn encode_irradiance_rgba16f(data: &[f32]) -> Vec<u8> {
 /// The CLI rejects malformed values. This defensive path keeps direct callers
 /// from producing a zero-sized direction atlas if they construct a
 /// `LightmapConfig` themselves.
-fn normalized_direction_texel_scale(scale: u32) -> u32 {
+pub(crate) fn normalized_direction_texel_scale(scale: u32) -> u32 {
     let bounded = scale.clamp(1, MIN_ATLAS_DIMENSION);
     if bounded.is_power_of_two() {
         bounded
     } else {
         bounded.next_power_of_two()
     }
-}
-
-/// Clamp the configured scale to dimensions that this particular atlas can
-/// represent. Baked atlas axes are power-of-two and at least 64, but keeping
-/// this guard here also makes synthetic/direct callers safe.
-pub(crate) fn effective_direction_texel_scale(
-    scale: u32,
-    atlas_width: u32,
-    atlas_height: u32,
-) -> u32 {
-    let mut effective = normalized_direction_texel_scale(scale);
-    while effective > atlas_width
-        || effective > atlas_height
-        || atlas_width % effective != 0
-        || atlas_height % effective != 0
-    {
-        effective /= 2;
-    }
-    effective.max(1)
 }
 
 /// Reduce full-resolution dominant directions for the static direction atlas.

@@ -3,7 +3,7 @@
 
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
 };
 
 #[cfg(test)]
@@ -13,6 +13,7 @@ use super::encode;
 #[cfg(test)]
 use super::fill::RawShadowmaskFill;
 use super::fill::{ShadowmaskFill, raw_visibility_is_covered, texel_plane_len};
+use crate::lightmap_bake::CellBlock;
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
 use crate::map_data::MapLight;
 
@@ -29,31 +30,19 @@ pub(super) fn empty_section_for_selection(
     shared: &SharedAtlas<'_>,
     selected_light_count: usize,
 ) -> ShadowmaskAtlasSection {
-    let layer_count = layer_count_from_shared(shared);
-    empty_section_for_dimensions(
-        shared.atlas_width,
-        shared.atlas_height,
-        layer_count,
-        selected_light_count,
-    )
+    empty_section_for_blocks(&shared.layout.blocks, selected_light_count)
 }
 
-fn empty_section_for_dimensions(
-    width: u32,
-    height: u32,
-    layer_count: u32,
+fn empty_section_for_blocks(
+    blocks: &[CellBlock],
     selected_light_count: usize,
 ) -> ShadowmaskAtlasSection {
-    let data = encode::all_visible_bc5_payload(width, height, layer_count);
+    let blocks = encode::all_visible_blocks(blocks);
     #[cfg(test)]
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
     ShadowmaskAtlasSection {
-        format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-        width,
-        height,
-        layer_count,
         channels: vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count],
-        data,
+        blocks,
     }
 }
 
@@ -64,12 +53,15 @@ fn empty_section_for_dimensions(
 /// `AlphaLights` entries the same way the uncached path does. Each `selected`
 /// entry carries its original selection index so invalid earlier selections do
 /// not shift the channel table. Every preloaded texel must fit within the
-/// supplied atlas layer and plane dimensions.
+/// supplied atlas layer and plane dimensions; `blocks` are the cell blocks the
+/// section slices out of those layers.
+#[allow(clippy::too_many_arguments)]
 pub fn bake_shadowmask_atlas_from_layers(
     selection: &EntityShadowLightsSection,
     atlas_width: u32,
     atlas_height: u32,
     layer_count: u32,
+    blocks: &[CellBlock],
     selected: &[(usize, u32, &MapLight)],
     layers: &[LightmapLayer],
 ) -> Option<ShadowmaskAtlasSection> {
@@ -86,22 +78,24 @@ pub fn bake_shadowmask_atlas_from_layers(
     validate_preloaded_layer_texels(atlas_width, atlas_height, layer_count, layers);
 
     if selected.is_empty() {
-        return Some(empty_section_for_dimensions(
-            atlas_width,
-            atlas_height,
-            layer_count,
+        return Some(empty_section_for_blocks(
+            blocks,
             selection.light_indices.len(),
         ));
     }
 
-    Some(build_shadowmask_from_layers(
-        atlas_width,
-        atlas_height,
-        layer_count as usize,
-        selection.light_indices.len(),
-        selected,
-        layers,
-    ))
+    Some(
+        fill_shadowmask_from_layers(
+            atlas_width,
+            atlas_height,
+            layer_count as usize,
+            blocks,
+            selection.light_indices.len(),
+            selected,
+            layers,
+        )
+        .finish(),
+    )
 }
 
 fn validate_preloaded_layer_texels(
@@ -127,25 +121,6 @@ fn validate_preloaded_layer_texels(
     }
 }
 
-fn build_shadowmask_from_layers(
-    width: u32,
-    height: u32,
-    layer_count: usize,
-    selected_light_count: usize,
-    selected: &[(usize, u32, &MapLight)],
-    layers: &[LightmapLayer],
-) -> ShadowmaskAtlasSection {
-    fill_shadowmask_from_layers(
-        width,
-        height,
-        layer_count,
-        selected_light_count,
-        selected,
-        layers,
-    )
-    .finish()
-}
-
 #[cfg(test)]
 pub(super) fn build_raw_shadowmask_from_layers(
     width: u32,
@@ -159,6 +134,7 @@ pub(super) fn build_raw_shadowmask_from_layers(
         width,
         height,
         layer_count,
+        &[],
         selected_light_count,
         selected,
         layers,
@@ -170,6 +146,7 @@ fn fill_shadowmask_from_layers(
     width: u32,
     height: u32,
     layer_count: usize,
+    blocks: &[CellBlock],
     selected_light_count: usize,
     selected: &[(usize, u32, &MapLight)],
     layers: &[LightmapLayer],
@@ -180,6 +157,7 @@ fn fill_shadowmask_from_layers(
         width,
         height,
         layer_count as u32,
+        blocks,
         selected_light_count,
         selected,
         &graph,

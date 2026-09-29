@@ -23,6 +23,7 @@ use crate::{
 };
 
 mod animated_atlas_stage;
+mod cell_partition;
 mod finalized_publication;
 pub(crate) mod lightmap_stage;
 mod stage_registry;
@@ -1684,11 +1685,27 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
+    // The canonical cell partition resolves here, once: lightmap blocks are
+    // stored in its cluster order, and the ClusterDirectory stage consumes the
+    // same plan. Its inputs are all final after Visibility and the BVH build.
+    let cell_partition =
+        cell_partition::plan_cell_partition(cell_partition::CellPartitionInputs {
+            generated_portals: &generated_portals,
+            streaming_seam_regions: &map_data.streaming_seam_regions,
+            stream_resident_regions: &map_data.stream_resident_regions,
+            stream_priority_regions: &map_data.stream_priority_regions,
+            leaves: &vis_result.leaves_section,
+            exterior_leaves: &exterior_leaves,
+            bvh: &bvh_section,
+        })?;
+    let atlas_control = BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
     let prepared_atlas = lightmap_stage::prepare(
         &map_data,
         &mut geo_result,
         &static_baked_lights,
         &lightmap_config,
+        &cell_partition.cell_clusters(),
+        &atlas_control,
     )?;
     let final_lightmap_density = lightmap_config.lightmap_density;
     finish_stage(
@@ -1742,6 +1759,7 @@ fn run_after_parsing(
         atlas_width,
         atlas_height,
         layer_count: static_atlas_layer_count,
+        layout: lightmap_layout,
     } = lightmap_bake_output;
     let fused_elapsed = stage_start.elapsed();
     timings.push((
@@ -1754,7 +1772,11 @@ fn run_after_parsing(
         reporter.skip_stage(StageId::LightmapBake);
     }
     if args.verbose {
-        lightmap_bake::log_stats(&lightmap_section, static_light_count);
+        lightmap_bake::log_stats(
+            &lightmap_section,
+            final_lightmap_density,
+            static_light_count,
+        );
     }
 
     timings.push((StageId::ShadowmaskAtlas.label(), shadowmask_elapsed));
@@ -1766,12 +1788,10 @@ fn run_after_parsing(
     if args.verbose {
         if let Some(ref section) = shadowmask_atlas_section {
             log::info!(
-                "ShadowmaskAtlas: {}x{}x{}, {} selected channel entr(y/ies), {} bytes",
-                section.width,
-                section.height,
-                section.layer_count,
+                "ShadowmaskAtlas: {} cell blocks, {} selected channel entr(y/ies), {} bytes",
+                section.blocks.len(),
                 section.channels.len(),
-                section.data.len(),
+                section.byte_len(),
             );
         } else if shadowmask_overlap == crate::shadowmask_bake::ShadowmaskOverlapReport::NoSelection
         {
@@ -1840,18 +1860,19 @@ fn run_after_parsing(
             lights: &animated_chunk_lights,
             face_charts: &face_charts,
             face_placements: &face_placements,
+            layout: &lightmap_layout,
             atlas_width,
             atlas_height,
             static_atlas_layer_count,
             area_sample_count: args.soft_shadow_samples,
         };
 
-        animated_atlas_stage::bake_or_load_weight_maps(
+        Some(animated_atlas_stage::bake_or_load_weight_maps(
             &wm_inputs,
             final_lightmap_density,
             stage_cache.as_ref(),
             &animated_weight_control,
-        )
+        )?)
     };
     finish_stage(
         &mut timings,
@@ -1878,6 +1899,7 @@ fn run_after_parsing(
                 &animated_light_chunks_section,
                 weight_maps,
                 &bvh_chunk_ranges,
+                &lightmap_layout,
                 atlas_width,
             );
             let mut weight_maps = culled.weight_maps;
@@ -1888,8 +1910,9 @@ fn run_after_parsing(
                     &mut weight_maps,
                     &culled.chunk_section,
                     &geo_result,
+                    &lightmap_layout,
                     atlas_width,
-                    lightmap_section.is_placeholder(),
+                    lightmap_section.blocks.is_empty(),
                 )?
             };
             (
@@ -1978,7 +2001,10 @@ fn run_after_parsing(
 
     // Stamp animated block ids only now: the SDF atlas key above hashes
     // `geo_result`, and an animated-light edit that moves blocks must not
-    // re-bake the SDF atlas.
+    // re-bake the SDF atlas. Lightmap block ids and block-local UVs are
+    // already in that hash (atlas preparation writes them), so a lightmap
+    // layout change misses the SDF cache once; the SDF bake reads positions
+    // only, so its output bytes and stage epoch are unaffected.
     animated_atlas_stage::stamp_animated_blocks(&mut geo_result, animated_face_blocks.as_ref());
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
@@ -2020,13 +2046,8 @@ fn run_after_parsing(
     let stage_start = begin_stage(reporter.as_ref(), StageId::ClusterDirectory);
     let finalized_cluster_metadata =
         build_finalized_cluster_metadata(FinalizedClusterMetadataInputs {
-            generated_portals: &generated_portals,
-            streaming_seam_regions: &map_data.streaming_seam_regions,
-            stream_resident_regions: &map_data.stream_resident_regions,
-            stream_priority_regions: &map_data.stream_priority_regions,
-            leaves: &vis_result.leaves_section,
+            partition: cell_partition,
             tree: &result.tree,
-            exterior_leaves: &exterior_leaves,
             bvh: &bvh_section,
             bvh_chunk_ranges: &bvh_chunk_ranges,
             packed_sh_volume: &packed_sh_volume,

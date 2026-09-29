@@ -11,15 +11,13 @@ use crate::entity_shadow_select::{EntityShadowSelectionInputs, select_entity_sha
 use crate::fixture_pipeline::load_fixture;
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-use crate::lightmap_bake::{Chart, light_texel_is_covered, prepare_atlas};
+use crate::lightmap_bake::{BlockLayout, CellBlock, Chart, light_texel_is_covered, prepare_atlas};
 use crate::lightmap_layer::{LayerTexel, bake_light_layer};
 use crate::map_data::{FalloffModel, LightType, ShadowType};
 use crate::reporter::StageProgress;
 use glam::{DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
-use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-};
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_test_log_capture::LogCapture;
 use rayon::ThreadPoolBuilder;
@@ -128,18 +126,44 @@ const DENSITY: f32 = 0.25;
 const AREA_SAMPLES: u32 = 4;
 
 /// The pre-streaming five-way golden: its slot table is the historical
-/// capture, and every texel stays fully visible. Restated for the tagged
-/// BC5 wire format at the 4-aligned 8×8 fixture atlas.
+/// capture, and every texel stays fully visible. Restated for the per-block
+/// BC5 wire format: one whole-layer block per 8×8 fixture layer.
 fn top_level_multilayer_five_way_golden() -> Vec<u8> {
     ShadowmaskAtlasSection {
-        format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-        width: 8,
-        height: 8,
-        layer_count: 2,
         channels: vec![0, 1, SHADOWMASK_CHANNEL_DROPPED, 2, 3],
-        data: encode::all_visible_bc5_payload(8, 8, 2),
+        blocks: encode::all_visible_blocks(&whole_layer_blocks(8, 8, 2)),
     }
     .to_bytes()
+}
+
+/// One block per bake layer, each covering the whole layer.
+fn whole_layer_blocks(width: u32, height: u32, layer_count: u32) -> Vec<CellBlock> {
+    (0..layer_count)
+        .map(|layer| CellBlock {
+            cell_id: layer,
+            width,
+            height,
+            layer,
+            x: 0,
+            y: 0,
+        })
+        .collect()
+}
+
+/// Decode a section back to the layer-major raw fill of `shared`'s bake layers.
+fn decode_layers(section: &ShadowmaskAtlasSection, shared: &SharedAtlas<'_>) -> Vec<u8> {
+    decode_blocks_to_layers(
+        section,
+        &shared.layout.blocks,
+        shared.atlas_width,
+        shared.atlas_height,
+        layer_count_from_shared(shared),
+    )
+}
+
+/// Encoded group bytes across every block.
+fn payload_len(section: &ShadowmaskAtlasSection) -> usize {
+    section.blocks.iter().map(|[a, b]| a.len() + b.len()).sum()
 }
 
 fn test_control() -> BakeControl {
@@ -232,6 +256,7 @@ fn shared_from_prepared(prepared: &PreparedAtlas) -> SharedAtlas<'_> {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     }
 }
 
@@ -297,53 +322,40 @@ fn shadowmask_key(
     )
 }
 
-fn shadowmask_section(
-    width: u32,
-    height: u32,
-    layer_count: u32,
+/// A section over `blocks` whose every mask texel is `value`.
+fn section_for_blocks(
+    blocks: &[CellBlock],
     channels: Vec<u8>,
     value: u8,
 ) -> ShadowmaskAtlasSection {
+    let width = blocks.iter().map(|b| b.x + b.width).max().unwrap_or(4);
+    let height = blocks.iter().map(|b| b.y + b.height).max().unwrap_or(4);
+    let layer_count = blocks.iter().map(|b| b.layer + 1).max().unwrap_or(1);
     let raw = vec![value; (width * height * layer_count * 4) as usize];
     ShadowmaskAtlasSection {
-        format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-        width,
-        height,
-        layer_count,
         channels,
-        data: encode::encode_side_by_side_bc5(&raw, width, height, layer_count),
+        blocks: encode::encode_blocks_bc5(&raw, width, height, layer_count, blocks),
     }
 }
 
 enum BadCachedSection {
     Dimensions,
-    LayerCount,
+    BlockCount,
     ChannelCount,
 }
 
 fn bad_cached_section(shared: &SharedAtlas<'_>, kind: BadCachedSection) -> ShadowmaskAtlasSection {
+    let mut blocks = shared.layout.blocks.clone();
     match kind {
-        BadCachedSection::Dimensions => shadowmask_section(
-            shared.atlas_width + 4,
-            shared.atlas_height,
-            layer_count_from_shared(shared),
-            vec![0],
-            0,
-        ),
-        BadCachedSection::LayerCount => shadowmask_section(
-            shared.atlas_width,
-            shared.atlas_height,
-            layer_count_from_shared(shared) + 1,
-            vec![0],
-            0,
-        ),
-        BadCachedSection::ChannelCount => shadowmask_section(
-            shared.atlas_width,
-            shared.atlas_height,
-            layer_count_from_shared(shared),
-            vec![0, 1],
-            0,
-        ),
+        BadCachedSection::Dimensions => {
+            blocks[0].width += 4;
+            section_for_blocks(&blocks, vec![0], 0)
+        }
+        BadCachedSection::BlockCount => {
+            blocks.push(blocks[0]);
+            section_for_blocks(&blocks, vec![0], 0)
+        }
+        BadCachedSection::ChannelCount => section_for_blocks(&blocks, vec![0, 1], 0),
     }
 }
 
@@ -367,6 +379,7 @@ fn assert_cached_section_rebuilt_from_seeded_layer(label: &str, kind: BadCachedS
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(&shared),
+        &shared.layout.blocks,
         &selected,
         std::slice::from_ref(&seeded_layer),
     )
@@ -398,7 +411,7 @@ fn assert_cached_section_rebuilt_from_seeded_layer(label: &str, kind: BadCachedS
     let overwritten = cache
         .get(&section_key)
         .expect("mismatched section entry overwritten");
-    assert_eq!(memo_section(&overwritten), expected);
+    assert_eq!(memo_section(&overwritten, &shared), expected);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -494,7 +507,7 @@ fn assert_cached_layer_rejected_and_rebaked(label: &str, kind: BadCachedLayer) {
         .expect("rebaked partition matches current atlas");
 
     let stored_section = cache.get(&section_key).expect("shadowmask section stored");
-    assert_eq!(memo_section(&stored_section), result);
+    assert_eq!(memo_section(&stored_section, &shared), result);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -635,6 +648,7 @@ fn paused_assignment_barrier_waits_before_shadowmask_fill() {
             1,
             1,
             1,
+            &[],
             1,
             &selected,
             &graph,
@@ -964,6 +978,7 @@ fn analytic_coverage_matches_baked_coverage_on_multilayer_golden() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
 
     for test_light in &lights {
@@ -1049,6 +1064,7 @@ fn shadowmask_chart_prune_is_coverage_superset() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let geometry = quad_geometry();
     let world_aabb = lightmap_layer::geometry_world_aabb(&geometry);
@@ -1096,6 +1112,7 @@ fn shadowmask_chart_prune_preserves_high_coordinate_coverage_edge_and_masks() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let mut rounded_origin = light(5.0);
     rounded_origin.origin = DVec3::new(16_777_217.0, 0.05, 0.5);
@@ -1158,7 +1175,7 @@ fn shadowmask_chart_prune_preserves_high_coordinate_coverage_edge_and_masks() {
         layer(8, 8, 1, &[(covered_idx, covered_layer, 0.25)]),
         layer(8, 8, 1, &[(covered_idx, covered_layer, 0.5)]),
     ];
-    let mut fill = ShadowmaskFill::new(8, 8, 1, 2, &selected, &pruned_graph, None, None);
+    let mut fill = ShadowmaskFill::new(8, 8, 1, &[], 2, &selected, &pruned_graph, None, None);
     for (compact_index, layer) in layers.iter().enumerate() {
         fill.write_partition(compact_index, layer);
     }
@@ -1198,6 +1215,7 @@ fn pruned_zero_coverage_light_keeps_node_and_channel_table() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let chart_order: Vec<_> = (0..charts.len()).collect();
     let (pruned_graph, _) = build_analytic_overlap_graph_in_order(
@@ -1247,6 +1265,7 @@ fn pruned_zero_coverage_light_keeps_node_and_channel_table() {
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(&shared),
+        &shared.layout.blocks,
         lights.len(),
         &selected,
         &pruned_graph,
@@ -1257,6 +1276,7 @@ fn pruned_zero_coverage_light_keeps_node_and_channel_table() {
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(&shared),
+        &shared.layout.blocks,
         lights.len(),
         &selected,
         &unpruned_graph,
@@ -1318,6 +1338,7 @@ fn analytic_graph_respects_cross_layer_overlap_and_disjoint_reuse() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let selected: Vec<_> = lights
         .iter()
@@ -1347,6 +1368,7 @@ fn analytic_graph_is_order_and_worker_count_independent() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let selected: Vec<_> = lights
         .iter()
@@ -1404,6 +1426,7 @@ fn shadowmask_coloring_waits_for_complete_graph() {
         placements: &placements[..2],
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements[..2], 2),
     };
     let selected: Vec<_> = lights[..2]
         .iter()
@@ -1471,6 +1494,7 @@ fn shadowmask_progress_advances_during_graph_pass() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let selected: Vec<_> = lights
         .iter()
@@ -1493,6 +1517,7 @@ fn shadowmask_graph_pause_and_permit_retarget_preserve_output() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let selected: Vec<_> = lights
         .iter()
@@ -1689,7 +1714,7 @@ fn pre_streaming_multilayer_five_way_overlap_golden_bytes_are_preserved() {
     ];
 
     let graph = overlap_graph_from_layers(&layers);
-    let mut fill = ShadowmaskFill::new(2, 1, 2, 5, &selected, &graph, None, None);
+    let mut fill = ShadowmaskFill::new(2, 1, 2, &[], 5, &selected, &graph, None, None);
     for (compact_index, partition) in layers.iter().enumerate() {
         fill.write_partition(compact_index, partition);
     }
@@ -1717,6 +1742,7 @@ fn top_level_cached_and_no_cache_paths_match_multilayer_five_way_golden() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
@@ -1848,12 +1874,12 @@ fn fused_plan_colors_before_walk_and_matches_multilayer_golden() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let progress = StageProgress::indeterminate();
     let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
     let mut plan = prepare_fused_shadowmask(
-        "fixture",
         Some(&selection),
         &alpha_lights,
         &shared,
@@ -1895,9 +1921,12 @@ fn memo_entry(section: &ShadowmaskAtlasSection, peak_texel_overlap: u32) -> Vec<
     entry
 }
 
-fn memo_section(entry: &[u8]) -> ShadowmaskAtlasSection {
-    ShadowmaskAtlasSection::from_bytes(&entry[MEMO_OVERLAP_PREFIX_BYTES..])
-        .expect("memo entry holds a section after its overlap count")
+fn memo_section(entry: &[u8], shared: &SharedAtlas<'_>) -> ShadowmaskAtlasSection {
+    ShadowmaskAtlasSection::from_bytes(
+        &entry[MEMO_OVERLAP_PREFIX_BYTES..],
+        &super::memo::extent_index(shared),
+    )
+    .expect("memo entry holds a section after its overlap count")
 }
 
 /// Run the production fused path: prepare (memo probe, graph, coloring),
@@ -1916,7 +1945,6 @@ fn fused_section(
     let progress = StageProgress::indeterminate();
     let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
     let mut plan = prepare_fused_shadowmask(
-        "fixture",
         Some(selection),
         &alpha_lights,
         shared,
@@ -1949,12 +1977,17 @@ fn fused_section(
     plan.finish().section
 }
 
-fn pre_bc5_raw_section_bytes(section: &ShadowmaskAtlasSection) -> Vec<u8> {
+/// The retired untagged raw layout over `shared`'s bake layers.
+fn pre_bc5_raw_section_bytes(
+    section: &ShadowmaskAtlasSection,
+    shared: &SharedAtlas<'_>,
+) -> Vec<u8> {
+    let layer_count = layer_count_from_shared(shared);
     let mut bytes = Vec::new();
     for word in [
-        section.width,
-        section.height,
-        section.layer_count,
+        shared.atlas_width,
+        shared.atlas_height,
+        layer_count,
         section.channels.len() as u32,
     ] {
         bytes.extend_from_slice(&word.to_le_bytes());
@@ -1962,7 +1995,7 @@ fn pre_bc5_raw_section_bytes(section: &ShadowmaskAtlasSection) -> Vec<u8> {
     bytes.extend_from_slice(&section.channels);
     bytes.resize(bytes.len().next_multiple_of(4), 0);
     bytes.resize(
-        bytes.len() + (section.width * section.height * section.layer_count * 4) as usize,
+        bytes.len() + (shared.atlas_width * shared.atlas_height * layer_count * 4) as usize,
         255,
     );
     bytes
@@ -1978,13 +2011,13 @@ fn fused_overlap_report_is_the_graph_peak_on_miss_and_the_memo_value_on_hit() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let cache_dir = fresh_cache_dir("overlap_report");
     let cache = StageCache::new(&cache_dir).expect("cache dir");
     let report = |cache: Option<&StageCache>, shared: &SharedAtlas<'_>| {
         let control = test_control();
         prepare_fused_shadowmask(
-            "fixture",
             Some(&selection),
             &alpha_lights,
             shared,
@@ -2012,15 +2045,6 @@ fn fused_overlap_report_is_the_graph_peak_on_miss_and_the_memo_value_on_hit() {
         ShadowmaskOverlapReport::Peak(5)
     );
     capture.assert_logged_once(log::Level::Info, "[cache] shadowmask_atlas hit");
-
-    let wide = SharedAtlas {
-        atlas_width: 8192,
-        ..shared
-    };
-    assert_eq!(
-        report(Some(&cache), &wide),
-        ShadowmaskOverlapReport::OmittedForWidth { atlas_width: 8192 }
-    );
     let _ = std::fs::remove_dir_all(cache_dir);
 }
 
@@ -2033,6 +2057,7 @@ fn memo_entry_without_an_overlap_count_is_a_miss() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let cache_dir = fresh_cache_dir("overlap_count_missing");
     let cache = StageCache::new(&cache_dir).expect("cache dir");
@@ -2084,23 +2109,15 @@ fn memo_entry_without_an_overlap_count_is_a_miss() {
 }
 
 #[test]
-fn overlap_report_logs_peak_with_layers_and_format_or_names_the_omission() {
-    let section = shadowmask_section(8, 8, 3, vec![0, 1], 255);
+fn overlap_report_logs_peak_with_blocks_and_format() {
+    let section = section_for_blocks(&whole_layer_blocks(8, 8, 3), vec![0, 1], 255);
     let capture = LogCapture::start();
     log_overlap_report(ShadowmaskOverlapReport::Peak(3), Some(&section));
-    log_overlap_report(
-        ShadowmaskOverlapReport::OmittedForWidth { atlas_width: 8192 },
-        None,
-    );
     log_overlap_report(ShadowmaskOverlapReport::NoSelection, None);
     capture.assert_logged_once(
         log::Level::Info,
         "[ShadowmaskAtlas] peak per-texel overlap: 3 selected light(s) at one texel; \
-             3 layer(s), BC5 .rg side by side (4 slots)",
-    );
-    capture.assert_logged_once(
-        log::Level::Info,
-        "peak per-texel overlap: not measured; id 42 omitted for 8192-texel-wide lightmap layers",
+             3 cell block(s), BC5 .rg in 2 groups (4 slots)",
     );
     assert_eq!(
         capture
@@ -2108,7 +2125,7 @@ fn overlap_report_logs_peak_with_layers_and_format_or_names_the_omission() {
             .iter()
             .filter(|record| record.message.contains("peak per-texel overlap"))
             .count(),
-        2,
+        1,
         "no selection reports nothing"
     );
 }
@@ -2125,10 +2142,10 @@ fn fused_prepare_rejects_a_misaligned_atlas_naming_its_dimensions() {
             placements: &placements,
             atlas_width: width,
             atlas_height: height,
+            layout: &BlockLayout::whole_layers(width, height, &placements, 2),
         };
         reset_shadowmask_output_allocation_count();
         let error = prepare_fused_shadowmask(
-            "fixture",
             Some(&selection),
             &alpha_lights,
             &shared,
@@ -2165,12 +2182,12 @@ fn fused_prepare_treats_an_atlas_without_placements_as_no_section() {
         placements: &[],
         atlas_width: 1,
         atlas_height: 1,
+        layout: &BlockLayout::whole_layers(1, 1, &[], 2),
     };
     let cache_dir = fresh_cache_dir("no_placements");
     let cache = StageCache::new(&cache_dir).expect("cache dir");
     reset_shadowmask_output_allocation_count();
     let output = prepare_fused_shadowmask(
-        "empty-level.map",
         Some(&selection),
         &alpha_lights,
         &shared,
@@ -2194,75 +2211,31 @@ fn fused_prepare_treats_an_atlas_without_placements_as_no_section() {
     let _ = std::fs::remove_dir_all(cache_dir);
 }
 
-// Pin: wide-layer, wide-layer-warm. The omission precedes the memo probe
-// and the fill, so a warm rebuild warns again and never finds an entry.
+// A pool layer holds both mask groups side by side, and the build rejects a
+// block wider than a pool layer, so no block is too wide for id 42: a bake
+// layer as wide as the old omission threshold still emits the section.
 #[test]
-fn eight_k_wide_layers_omit_the_shadowmask_on_every_build_and_four_k_emits() {
+fn wide_bake_layers_still_emit_the_shadowmask_for_pool_sized_blocks() {
     let (geometry, _, primitives, charts, placements, lights, selection) =
         top_level_multilayer_five_way_inputs();
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
-    let cache_dir = fresh_cache_dir("wide_layer_omit");
-    let cache = StageCache::new(&cache_dir).expect("cache dir");
+    let layout = BlockLayout {
+        direction_texel_scale: 2,
+        blocks: whole_layer_blocks(8, 8, 2),
+        chart_blocks: placements.iter().map(|p| p.layer).collect(),
+    };
     let wide = SharedAtlas {
         charts: &charts,
         placements: &placements,
         atlas_width: 8192,
-        atlas_height: 4,
-    };
-
-    for build in ["cold", "warm"] {
-        let capture = LogCapture::start();
-        let control = test_control();
-        reset_shadowmask_output_allocation_count();
-        let plan = prepare_fused_shadowmask(
-            "wide-level.map",
-            Some(&selection),
-            &alpha_lights,
-            &wide,
-            &primitives,
-            &geometry,
-            DENSITY,
-            AREA_SAMPLES,
-            Some(&cache),
-            &control,
-        )
-        .expect("an aligned wide atlas is omitted, not an error");
-        assert!(
-            !plan.needs_source(0),
-            "{build}: an omitted section consumes no partition"
-        );
-        assert_eq!(
-            plan.finish().section,
-            None,
-            "{build}: 8192-wide layers ship no id 42"
-        );
-        capture.assert_logged_once(
-            log::Level::Warn,
-            "[ShadowmaskAtlas] wide-level.map: lightmap layers are 8192 texels wide",
-        );
-        capture.assert_not_logged(log::Level::Info, "[cache] shadowmask_atlas");
-        assert_eq!(
-            shadowmask_output_allocation_count(),
-            0,
-            "{build}: no raw fill"
-        );
-    }
-    assert_eq!(
-        std::fs::read_dir(&cache_dir).map_or(0, |entries| entries.count()),
-        0,
-        "an omitted section leaves no memo entry"
-    );
-
-    let four_k = SharedAtlas {
-        atlas_width: 4096,
-        ..wide
+        atlas_height: 8,
+        layout: &layout,
     };
     let capture = LogCapture::start();
     let section = prepare_fused_shadowmask(
-        "wide-level.map",
         Some(&selection),
         &alpha_lights,
-        &four_k,
+        &wide,
         &primitives,
         &geometry,
         DENSITY,
@@ -2270,13 +2243,12 @@ fn eight_k_wide_layers_omit_the_shadowmask_on_every_build_and_four_k_emits() {
         None,
         &test_control(),
     )
-    .expect("4096-wide atlas")
+    .expect("an aligned wide bake layer is not an error")
     .finish()
     .section
-    .expect("4096-wide layers still emit id 42");
-    assert_eq!(section.texture_width(), Some(8192));
+    .expect("8192-wide bake layers still emit id 42");
+    assert_eq!(section.blocks.len(), 2);
     capture.assert_not_logged(log::Level::Warn, "texels wide");
-    let _ = std::fs::remove_dir_all(cache_dir);
 }
 
 // Pin: stale-memo. The version bump misses the old key; a raw entry under
@@ -2290,6 +2262,7 @@ fn pre_bc5_memo_entries_are_never_served_and_the_rebuild_matches_uncached() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let uncached = fused_section(
         &selection,
@@ -2325,7 +2298,7 @@ fn pre_bc5_memo_entries_are_never_served_and_the_rebuild_matches_uncached() {
         shared.atlas_height,
         layer_count_from_shared(&shared),
     );
-    let stale = pre_bc5_raw_section_bytes(&uncached);
+    let stale = pre_bc5_raw_section_bytes(&uncached, &shared);
     let cache_dir = fresh_cache_dir("stale_pre_bc5_memo");
     let cache = StageCache::new(&cache_dir).expect("cache dir");
     for version in [2, SHADOWMASK_ATLAS_STAGE_VERSION] {
@@ -2422,6 +2395,7 @@ fn cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let cache_dir = fresh_cache_dir("encode_residency");
     let cache = StageCache::new(&cache_dir).expect("cache dir");
@@ -2445,7 +2419,7 @@ fn cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch() {
     // `raw_fill` field only echoes the slice it was handed, and the
     // test-only `record_raw_fill` copy sits outside both.
     let raw_layer = (shared.atlas_width * shared.atlas_height * 4) as usize;
-    let raw_fill = raw_layer * section.layer_count as usize;
+    let raw_fill = raw_layer * layer_count_from_shared(&shared) as usize;
     assert_eq!(shadowmask_output_allocation_count(), 1, "one raw fill");
     let peak = encode::take_peak_encode_residency().expect("the miss encodes");
     assert_eq!(peak.raw_fill, raw_fill);
@@ -2462,7 +2436,7 @@ fn cache_miss_holds_one_raw_fill_one_output_and_bounded_encode_scratch() {
         "the raw fill must be gone before the section is cached"
     );
     assert_eq!(raw_fill_live_bytes(), 0, "and before it is returned");
-    assert_eq!(section.data.len(), raw_fill / 2);
+    assert_eq!(payload_len(&section), raw_fill / 2);
     let _ = std::fs::remove_dir_all(cache_dir);
 }
 
@@ -2511,12 +2485,7 @@ fn shadowmask_bc5_encode_error_on_fixture_bakes() {
             continue;
         };
         let raw = take_last_raw_fill();
-        let decoded = decode_side_by_side(
-            &section.data,
-            section.width,
-            section.height,
-            section.layer_count,
-        );
+        let decoded = decode_layers(&section, &shared);
         let mut used_channels: Vec<usize> = section
             .channels
             .iter()
@@ -2538,10 +2507,10 @@ fn shadowmask_bc5_encode_error_on_fixture_bakes() {
         let max = errors.iter().copied().max().unwrap_or(0);
         let mean = errors.iter().map(|&e| f64::from(e)).sum::<f64>() / errors.len().max(1) as f64;
         eprintln!(
-            "{name}: {}x{}x{} atlas, {} used slot(s), {} samples: max abs error {max}/255, mean {mean:.4}/255",
-            section.width,
-            section.height,
-            section.layer_count,
+            "{name}: {}x{}x{} bake layers, {} used slot(s), {} samples: max abs error {max}/255, mean {mean:.4}/255",
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
             used_channels.len(),
             errors.len(),
         );
@@ -2557,6 +2526,7 @@ fn shadowmask_cache_miss_allocates_one_output_and_streams_without_a_second_paylo
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
@@ -2633,6 +2603,7 @@ fn dropped_light_partitions_are_cached_then_hit_next_compile() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let cold_dir = fresh_cache_dir("dropped_partition_cold");
@@ -2727,6 +2698,7 @@ fn window_sizes_physically_bound_resident_layers_and_preserve_shadowmask_bytes()
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
@@ -2781,6 +2753,7 @@ fn high_permit_low_chart_bake_saturates_all_permits_when_window_exposes_eight_ta
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let progress = StageProgress::indeterminate();
@@ -2885,6 +2858,7 @@ fn one_layer_window_bounds_cold_one_chart_payloads_below_eight_permits() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let progress = StageProgress::indeterminate();
@@ -2931,7 +2905,7 @@ fn reversed_partition_fill_keeps_compact_selection_bytes() {
     let submission_order = build_raw_shadowmask_from_layers(1, 1, 1, 3, &selected, &layers);
 
     let graph = overlap_graph_from_layers(&layers);
-    let mut reversed_fill = ShadowmaskFill::new(1, 1, 1, 3, &selected, &graph, None, None);
+    let mut reversed_fill = ShadowmaskFill::new(1, 1, 1, &[], 3, &selected, &graph, None, None);
     for compact_light_index in [2, 1, 0] {
         reversed_fill.write_partition(compact_light_index, &layers[compact_light_index]);
     }
@@ -2949,6 +2923,7 @@ fn one_permit_with_window_four_completes_and_reports_all_chart_work() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let total = shadowmask_progress_total(selection.light_indices.len(), &shared);
@@ -2987,6 +2962,7 @@ fn last_partial_batch_assigns_cross_batch_overlap_once_globally() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let (section, _) = bake_shadowmask_atlas_with_test_window(
@@ -3016,7 +2992,7 @@ fn zero_selection_keeps_the_none_section_path() {
         light_indices: Vec::new(),
     };
     assert_eq!(
-        bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &[], &[]),
+        bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &[], &[], &[]),
         None
     );
 }
@@ -3046,21 +3022,20 @@ fn all_filtered_selection_keeps_empty_bytes_and_indeterminate_progress() {
     .expect("all-filtered selection still emits an empty section");
 
     assert_eq!(section.channels, vec![SHADOWMASK_CHANNEL_DROPPED]);
-    // Pin: all-sentinel. The section still ships, tagged, at half the raw bytes.
-    assert_eq!(section.format, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE);
-    assert_eq!(
-        section.data.len(),
-        (section.width * section.height * section.layer_count * 4) as usize / 2
-    );
-    assert!(
-        encode::decode_side_by_side(
-            &section.data,
-            section.width,
-            section.height,
-            section.layer_count
-        )
+    // Pin: all-sentinel. The section still ships, one block per cell block,
+    // at half the raw bytes of those blocks.
+    assert_eq!(section.blocks.len(), shared.layout.blocks.len());
+    let block_raw: usize = shared
+        .layout
+        .blocks
         .iter()
-        .all(|&mask| mask == 255)
+        .map(|b| (b.width * b.height * 4) as usize)
+        .sum();
+    assert_eq!(payload_len(&section), block_raw / 2);
+    assert!(
+        decode_layers(&section, &shared)
+            .iter()
+            .all(|&mask| mask == 255)
     );
     assert_eq!(progress.total(), None);
     assert_eq!(progress.completed(), 0);
@@ -3128,8 +3103,16 @@ fn invalid_selected_alpha_light_preserves_original_channel_slot() {
     };
     let layers = vec![layer(4, 4, 1, &[(0, 0, 0.25)])];
 
-    let section =
-        bake_shadowmask_atlas_from_layers(&selection, 4, 4, 1, &selected, &layers).unwrap();
+    let section = bake_shadowmask_atlas_from_layers(
+        &selection,
+        4,
+        4,
+        1,
+        &whole_layer_blocks(4, 4, 1),
+        &selected,
+        &layers,
+    )
+    .unwrap();
 
     assert_eq!(section.channels[0], SHADOWMASK_CHANNEL_DROPPED);
     assert_ne!(section.channels[1], SHADOWMASK_CHANNEL_DROPPED);
@@ -3149,7 +3132,7 @@ fn preloaded_layer_bake_rejects_missing_layer_for_selected_light() {
     let selected = vec![(0usize, 0u32, &first_light), (1usize, 1u32, &second_light)];
     let layers = vec![layer(1, 1, 1, &[(0, 0, 0.25)])];
 
-    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &[], &selected, &layers);
 }
 
 // Regression: the compatibility route only checked this alignment in debug
@@ -3167,7 +3150,7 @@ fn preloaded_layer_bake_rejects_layer_without_selected_light() {
         layer(1, 1, 1, &[(0, 0, 0.5)]),
     ];
 
-    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &[], &selected, &layers);
 }
 
 // Regression: a preloaded texel in a later layer could overwrite layer one.
@@ -3181,7 +3164,7 @@ fn preloaded_layer_bake_rejects_texel_index_outside_its_plane() {
     let selected = vec![(0usize, 0u32, &valid_light)];
     let layers = vec![layer(1, 1, 2, &[(1, 0, 0.25)])];
 
-    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 2, &selected, &layers);
+    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 2, &[], &selected, &layers);
 }
 
 #[test]
@@ -3194,7 +3177,7 @@ fn preloaded_layer_bake_rejects_texel_layer_outside_atlas() {
     let selected = vec![(0usize, 0u32, &valid_light)];
     let layers = vec![layer(1, 1, 1, &[(0, 1, 0.25)])];
 
-    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &[], &selected, &layers);
 }
 
 #[test]
@@ -3213,6 +3196,7 @@ fn preloaded_layer_bake_matches_uncached_shadowmask_section_bytes() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let selection = EntityShadowLightsSection {
@@ -3257,6 +3241,7 @@ fn preloaded_layer_bake_matches_uncached_shadowmask_section_bytes() {
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(&shared),
+        &shared.layout.blocks,
         &selected,
         &layers,
     )
@@ -3282,13 +3267,7 @@ fn shadowmask_atlas_cache_hit_returns_section_without_layer_entries() {
     };
     let (_, input_hash) = layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
     let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
-    let cached = shadowmask_section(
-        shared.atlas_width,
-        shared.atlas_height,
-        layer_count_from_shared(&shared),
-        vec![3],
-        0,
-    );
+    let cached = section_for_blocks(&shared.layout.blocks, vec![3], 0);
 
     let dir = fresh_cache_dir("whole_section_hit");
     let cache = StageCache::new(&dir).expect("cache dir");
@@ -3327,7 +3306,7 @@ fn shadowmask_atlas_cache_hit_with_wrong_dimensions_is_rebuilt() {
 fn shadowmask_atlas_cache_hit_with_wrong_layer_count_is_rebuilt() {
     assert_cached_section_rebuilt_from_seeded_layer(
         "wrong_section_layer_count",
-        BadCachedSection::LayerCount,
+        BadCachedSection::BlockCount,
     );
 }
 
@@ -3360,6 +3339,7 @@ fn pre_analytic_layer_cache_is_reused_without_rebake() {
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(&shared),
+        &shared.layout.blocks,
         &selected,
         std::slice::from_ref(&seeded_layer),
     )
@@ -3388,15 +3368,15 @@ fn pre_analytic_layer_cache_is_reused_without_rebake() {
         "section miss must build from the existing lightmap_layer payload"
     );
     let stored = cache.get(&section_key).expect("shadowmask section stored");
-    assert_eq!(memo_section(&stored), expected);
+    assert_eq!(memo_section(&stored, &shared), expected);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn shadowmask_cache_epochs_pin_sparse_layer_values() {
-    assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 4);
-    assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 6);
-    assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 3);
+    assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 5);
+    assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 7);
+    assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 4);
 }
 
 #[test]
@@ -3408,7 +3388,7 @@ fn shadowmask_final_progress_unit_follows_section_memo_write() {
         SHADOWMASK_ATLAS_STAGE_VERSION,
         &[7; 32],
     );
-    let section = shadowmask_section(4, 4, 1, vec![0], 255);
+    let section = section_for_blocks(&whole_layer_blocks(4, 4, 1), vec![0], 255);
     let progress = StageProgress::with_total(1);
     let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
 
@@ -3425,14 +3405,21 @@ fn shadowmask_final_progress_unit_follows_section_memo_write() {
     let graph = OverlapGraph::new(1);
     let uncached_progress = StageProgress::with_total(2);
     let uncached_control = BakeControl::new(Arc::new(Governor::new(1, false)), &uncached_progress);
-    let fill = ShadowmaskFill::new(4, 4, 1, 1, &selected, &graph, Some(&uncached_control), None);
+    let fill = ShadowmaskFill::new(
+        4,
+        4,
+        1,
+        &whole_layer_blocks(4, 4, 1),
+        1,
+        &selected,
+        &graph,
+        Some(&uncached_control),
+        None,
+    );
     assert_eq!(uncached_progress.completed(), 1);
     let uncached_section = fill.finish();
     assert_eq!(uncached_progress.completed(), 1);
-    assert_eq!(
-        uncached_section.data.len(),
-        ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()
-    );
+    assert_eq!(payload_len(&uncached_section), 2 * 16);
     uncached_control.advance(1);
     assert_eq!(uncached_progress.completed(), 2);
 }
@@ -3446,6 +3433,7 @@ fn shadowmask_publishes_one_total_and_completes_with_section() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let alpha_lights = AlphaLightsNs::from_lights(&lights);
     let progress = StageProgress::indeterminate();
@@ -3479,6 +3467,7 @@ fn one_light_change_reruns_graph_and_reuses_unchanged_partitions() {
         placements: &placements,
         atlas_width: 8,
         atlas_height: 8,
+        layout: &BlockLayout::whole_layers(8, 8, &placements, 2),
     };
     let cache_dir = fresh_cache_dir("one_light_change");
     let cache = StageCache::new(&cache_dir).unwrap();
@@ -3753,7 +3742,7 @@ fn shadowmask_atlas_cache_miss_bakes_and_stores_missing_layer() {
         "missing selected lightmap_layer must be baked and stored"
     );
     let stored = cache.get(&section_key).expect("shadowmask section stored");
-    assert_eq!(memo_section(&stored), result);
+    assert_eq!(memo_section(&stored, &shared), result);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3778,6 +3767,7 @@ fn corrupt_shadowmask_atlas_cache_entry_is_overwritten_from_layers() {
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(&shared),
+        &shared.layout.blocks,
         &selected,
         std::slice::from_ref(&seeded_layer),
     )
@@ -3806,7 +3796,7 @@ fn corrupt_shadowmask_atlas_cache_entry_is_overwritten_from_layers() {
     let overwritten = cache
         .get(&section_key)
         .expect("corrupt section entry overwritten");
-    assert_eq!(memo_section(&overwritten), expected);
+    assert_eq!(memo_section(&overwritten, &shared), expected);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3823,13 +3813,7 @@ fn shadowmask_atlas_no_cache_ignores_and_does_not_overwrite_entry() {
     };
     let (_, input_hash) = layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
     let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
-    let cached = shadowmask_section(
-        shared.atlas_width,
-        shared.atlas_height,
-        layer_count_from_shared(&shared),
-        vec![3],
-        0,
-    );
+    let cached = section_for_blocks(&shared.layout.blocks, vec![3], 0);
 
     let dir = fresh_cache_dir("no_cache");
     let cache = StageCache::new(&dir).expect("cache dir");
@@ -3870,7 +3854,7 @@ fn shadowmask_atlas_no_cache_ignores_and_does_not_overwrite_entry() {
     );
     let still_cached = cache.get(&section_key).expect("seeded cache entry remains");
     assert_eq!(
-        memo_section(&still_cached),
+        memo_section(&still_cached, &shared),
         cached,
         "stage_cache == None must not overwrite shadowmask_atlas entries"
     );

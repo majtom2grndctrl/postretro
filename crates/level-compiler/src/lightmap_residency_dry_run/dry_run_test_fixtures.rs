@@ -3,38 +3,37 @@
 use postretro_level_format::cell_visibility::{
     CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE, CoupledPairRecord,
 };
-use postretro_level_format::lightmap::{
-    DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H,
-    IRRADIANCE_FORMAT_RGBA16F,
-};
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 
 use super::{
     AtlasFormats, CellInfo, ChartRect, DryRunInput, FaceSlot, ReconstructionStats,
-    ShadowmaskFormat, ShadowmaskState,
+    ShadowmaskFormat, ShadowmaskState, StoredBlock,
 };
 
 pub(super) const METER: u32 = CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 
 /// Current bake encodings: BC6H irradiance, half-resolution Rg8 direction,
-/// BC5 side-by-side shadowmask.
+/// BC5 group pair per block. `layers` stored `dim²` regions, charts addressing
+/// region `layer` directly, as a whole-layer block layout would.
 pub(super) fn bc6h_formats(dim: u32, layers: u32, shadowmask: bool) -> AtlasFormats {
-    let blocks = u64::from(dim / 4) * u64::from(dim / 4) * u64::from(layers);
+    let bc_blocks = u64::from(dim / 4) * u64::from(dim / 4);
     AtlasFormats {
-        layer_count: layers,
-        irr_width: dim,
-        irr_height: dim,
         irr_format: IRRADIANCE_FORMAT_BC6H,
-        irr_payload_bytes: blocks * 16,
-        dir_width: dim / 2,
-        dir_height: dim / 2,
-        dir_format: DIRECTION_FORMAT_OCT_RG8,
-        dir_payload_bytes: u64::from(dim / 2) * u64::from(dim / 2) * 2 * u64::from(layers),
-        shadowmask: if shadowmask {
-            ShadowmaskState::Stored(ShadowmaskFormat {
+        direction_texel_scale: 2,
+        direction_texel_bytes: 2,
+        blocks: (0..layers)
+            .map(|layer| StoredBlock {
+                cell: layer,
                 width: dim,
                 height: dim,
-                layer_count: layers,
-                payload_bytes: blocks * 32,
+                irradiance_bytes: bc_blocks * 16,
+                direction_bytes: u64::from(dim / 2) * u64::from(dim / 2) * 2,
+            })
+            .collect(),
+        shadowmask: if shadowmask {
+            ShadowmaskState::Stored(ShadowmaskFormat {
+                block_bytes: vec![bc_blocks * 32; layers as usize],
+                payload_bytes: bc_blocks * 32 * u64::from(layers),
             })
         } else {
             ShadowmaskState::Absent
@@ -42,20 +41,23 @@ pub(super) fn bc6h_formats(dim: u32, layers: u32, shadowmask: bool) -> AtlasForm
     }
 }
 
-/// Uncompressed debug encodings: Rgba16Float irradiance, legacy Rgba8
-/// direction at full resolution, no shadowmask.
+/// Uncompressed debug encodings: Rgba16Float irradiance, four-byte direction
+/// at full resolution, no shadowmask.
 pub(super) fn raw_formats(dim: u32, layers: u32) -> AtlasFormats {
-    let texels = u64::from(dim) * u64::from(dim) * u64::from(layers);
+    let texels = u64::from(dim) * u64::from(dim);
     AtlasFormats {
-        layer_count: layers,
-        irr_width: dim,
-        irr_height: dim,
         irr_format: IRRADIANCE_FORMAT_RGBA16F,
-        irr_payload_bytes: texels * 8,
-        dir_width: dim,
-        dir_height: dim,
-        dir_format: DIRECTION_FORMAT_OCT_RGBA8,
-        dir_payload_bytes: texels * 4,
+        direction_texel_scale: 1,
+        direction_texel_bytes: 4,
+        blocks: (0..layers)
+            .map(|layer| StoredBlock {
+                cell: layer,
+                width: dim,
+                height: dim,
+                irradiance_bytes: texels * 8,
+                direction_bytes: texels * 4,
+            })
+            .collect(),
         shadowmask: ShadowmaskState::Absent,
     }
 }

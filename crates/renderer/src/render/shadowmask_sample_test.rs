@@ -1,6 +1,7 @@
 // GPU readback of the forward shader's shadowmask sampling helper and both
-// decode paths' slot selects, against a hand-built side-by-side BC5 atlas and
-// the 2×1 placeholder, uploaded through the renderer's own upload functions.
+// decode paths' slot selects, against hand-built BC5 cell blocks placed in the
+// shadowmask pool and against the 2×1 placeholder, uploaded through the
+// renderer's own pool upload and resolved through the real block table.
 // The WGSL helpers it calls are extracted verbatim from forward.wgsl and
 // lightmap_sample.wgsl; its own entry point repeats the union path's
 // skip-then-select order, which the shader_tests grep gate pins in
@@ -16,19 +17,34 @@
 // missing adapter fail the test instead of skipping it.
 
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, SHADOWMASK_GROUP_COUNT,
-    ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT,
 };
 use postretro_lighting::spec_buffer::SPEC_LIGHT_SHADOWMASK_NONE;
+use postretro_render_cpu::lightmap_pool::{
+    AllResidentPool, BlockPlacement, block_table_bytes, placeholder_block_table,
+};
 
+use crate::lighting::lightmap::test_fixtures::{FixtureTexels, block_fixture};
 use crate::lighting::lightmap::{
-    filtering_sampler_descriptor, upload_placeholder_shadowmask, upload_shadowmask_texture,
+    StaticPoolPlan, filtering_sampler_descriptor, upload_placeholder_shadowmask, upload_static_pool,
 };
 use crate::render::shadowmask::metadata_channel_value;
 
-const ATLAS_WIDTH: u32 = 8;
-const ATLAS_HEIGHT: u32 = 8;
-const ATLAS_LAYERS: u32 = 2;
+/// Two 8×8 cell blocks, one per pool layer, at non-zero pool offsets.
+const BLOCK_EDGE: u32 = 8;
+const BLOCK_COUNT: u32 = 2;
+const PLACEMENTS: [BlockPlacement; 2] = [
+    BlockPlacement {
+        layer: 0,
+        x: 16,
+        y: 8,
+    },
+    BlockPlacement {
+        layer: 1,
+        x: 40,
+        y: 20,
+    },
+];
 const PROBE_BYTES: usize = 32;
 const OUTPUT_TEXEL_BYTES: u32 = 16;
 /// Render targets: the sampled mask, then the two paths' selects (even pixel)
@@ -116,12 +132,27 @@ fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
     panic!("`{name}` body never closes");
 }
 
-/// forward.wgsl's module-scope `const NAME…;` line.
+/// The module-scope `const NAME…;` line of forward.wgsl or lightmap_sample.wgsl.
 fn wgsl_const_line(name: &str) -> &'static str {
-    FORWARD_WGSL
-        .lines()
+    [FORWARD_WGSL, LIGHTMAP_SAMPLE_WGSL]
+        .into_iter()
+        .flat_map(str::lines)
         .find(|line| line.starts_with(&format!("const {name}:")))
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{name}`"))
+        .unwrap_or_else(|| panic!("the WGSL sources must declare `{name}`"))
+}
+
+/// The text of `struct name {` through its closing brace in lightmap_sample.wgsl.
+fn wgsl_struct(name: &str) -> &'static str {
+    let header = format!("struct {name} {{");
+    let start = LIGHTMAP_SAMPLE_WGSL
+        .find(&header)
+        .unwrap_or_else(|| panic!("lightmap_sample.wgsl must declare `{name}`"));
+    let end = start
+        + LIGHTMAP_SAMPLE_WGSL[start..]
+            .find("};")
+            .expect("struct closes")
+        + 2;
+    &LIGHTMAP_SAMPLE_WGSL[start..end]
 }
 
 /// The union's skip sentinel, read from forward.wgsl so the harness asserts
@@ -138,6 +169,10 @@ fn shader_source() -> String {
     let consts = [
         wgsl_const_line("SHADOWMASK_CHANNEL_DROPPED"),
         wgsl_const_line("SHADOWMASK_UNION_CHANNEL_NONE"),
+        wgsl_const_line("LIGHTMAP_POOL_LAYER_EDGE"),
+        wgsl_const_line("LIGHTMAP_BLOCK_RESIDENT"),
+        wgsl_const_line("LIGHTMAP_BLOCK_NONE"),
+        wgsl_struct("LightmapBlockVaryings"),
     ]
     .join("\n");
     let prelude = r#"
@@ -155,7 +190,7 @@ struct HarnessUniforms {
 };
 struct Probe {
     uv: vec2<f32>,
-    layer: u32,
+    block: u32,
     union_channel: f32,
     spec_channel: f32,
     _pad0: f32,
@@ -166,6 +201,7 @@ struct Probe {
 @group(0) @binding(1) var lightmap_filtering_sampler: sampler;
 @group(0) @binding(2) var<uniform> uniforms: HarnessUniforms;
 @group(0) @binding(3) var<storage, read> probes: array<Probe>;
+@group(0) @binding(4) var<storage, read> lightmap_block_table: array<vec4<u32>>;
 "#;
     let entry = r#"
 struct HarnessOut {
@@ -185,14 +221,19 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
     let pixel = u32(position.x);
     let probe = probes[pixel / 2u];
-    let mask = sample_shadowmask_atlas(probe.uv, probe.layer);
+    let block = resolve_lightmap_block(probe.block, probe.uv);
+    let mask = sample_shadowmask_atlas(block.texel, block.layer_flags, block.rect);
     var spec: SpecLight;
     spec.cone_cos = vec4<f32>(0.0, 0.0, probe.spec_channel, 0.0);
     // `shadowmask_union_subtraction`'s own sequence: resolve the metadata
     // float through its guard, skip NONE, then select from the hoisted mask.
     let union_channel = shadowmask_union_channel(probe.union_channel);
     var selects = vec4<f32>(
-        shadowmask_visibility_for_spec_light(spec, mask),
+        shadowmask_visibility_for_spec_light(
+            spec,
+            mask,
+            lightmap_block_missing(block.layer_flags),
+        ),
         f32(union_channel),
         0.0,
         0.0,
@@ -215,29 +256,28 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
 }
 "#;
     let helpers: Vec<&str> = [
-        "shadowmask_channel_value",
-        "sample_shadowmask_atlas",
-        "shadowmask_visibility_for_spec_light",
-        "shadowmask_attenuation",
-        "shadowmask_union_channel",
+        ("shadowmask_channel_value", FORWARD_WGSL),
+        ("resolve_lightmap_block", LIGHTMAP_SAMPLE_WGSL),
+        ("lightmap_block_layer", LIGHTMAP_SAMPLE_WGSL),
+        ("lightmap_block_missing", LIGHTMAP_SAMPLE_WGSL),
+        ("lightmap_pool_uv", LIGHTMAP_SAMPLE_WGSL),
+        ("sample_shadowmask_atlas", LIGHTMAP_SAMPLE_WGSL),
+        ("shadowmask_visibility_for_spec_light", FORWARD_WGSL),
+        ("shadowmask_attenuation", FORWARD_WGSL),
+        ("shadowmask_union_channel", FORWARD_WGSL),
     ]
     .into_iter()
-    .map(|name| {
-        let source = if name == "sample_shadowmask_atlas" {
-            LIGHTMAP_SAMPLE_WGSL
-        } else {
-            FORWARD_WGSL
-        };
-        wgsl_function(source, name)
-    })
+    .map(|(name, source)| wgsl_function(source, name))
     .collect();
     format!("{prelude}\n{consts}\n{}\n{entry}", helpers.join("\n\n"))
 }
 
 #[derive(Clone, Copy)]
 struct Probe {
+    /// Block-local unorm UV, as the vertex attribute carries it.
     uv: [f32; 2],
-    layer: u32,
+    /// Cell block id + 1, as `WorldVertex::lightmap_block` names it.
+    block: u32,
     /// Mask slot `0..3`, or `SHADOWMASK_CHANNEL_DROPPED`. Drives the
     /// world-specular channel.
     slot: u8,
@@ -246,10 +286,10 @@ struct Probe {
 }
 
 impl Probe {
-    fn new(uv: [f32; 2], layer: u32, slot: u8) -> Self {
+    fn new(uv: [f32; 2], block: u32, slot: u8) -> Self {
         Self {
             uv,
-            layer,
+            block,
             slot,
             union_channel: metadata_channel_value(slot),
         }
@@ -264,7 +304,7 @@ impl Probe {
         let words = [
             self.uv[0].to_bits(),
             self.uv[1].to_bits(),
-            self.layer,
+            self.block,
             self.union_channel.to_bits(),
             spec_channel.to_bits(),
             0,
@@ -291,7 +331,12 @@ struct ProbeResult {
     union_attenuation_at_entity_visibility_zero: f32,
 }
 
-fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<ProbeResult> {
+fn run_probes(
+    ctx: &GpuCtx,
+    texture: &wgpu::Texture,
+    block_table: &[u8],
+    probes: &[Probe],
+) -> Vec<ProbeResult> {
     use wgpu::util::DeviceExt;
 
     let device = &ctx.device;
@@ -313,6 +358,11 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
     let probe_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("probes"),
         contents: &probe_bytes,
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let table_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("block table"),
+        contents: block_table,
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -355,6 +405,16 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -376,6 +436,10 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: probe_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: table_buffer.as_entire_binding(),
             },
         ],
     });
@@ -537,41 +601,48 @@ fn run_probes(ctx: &GpuCtx, texture: &wgpu::Texture, probes: &[Probe]) -> Vec<Pr
         .collect()
 }
 
-/// The raw byte slot `slot` holds in lightmap block (`bx`, `by`) of `layer`.
-/// Distinct per slot, block and layer, and constant within a block, so BC4
-/// reproduces it exactly and any misrouted read shows as a wrong value.
-fn mask_byte(slot: u32, bx: u32, by: u32, layer: u32) -> u8 {
-    (10 + slot * 50 + bx * 20 + by * 7 + layer * 3) as u8
+/// The raw byte slot `slot` holds in BC block (`bx`, `by`) of cell `block`.
+/// Distinct per slot, BC block and cell block, and constant within a BC
+/// block, so BC4 reproduces it exactly and any misrouted read shows as a wrong
+/// value.
+fn mask_byte(slot: u32, bx: u32, by: u32, block: u32) -> u8 {
+    (10 + slot * 50 + bx * 20 + by * 7 + block * 3) as u8
 }
 
-/// A side-by-side BC5 section whose group 0 holds slots 0/1 and group 1
-/// slots 2/3, built block by block as the wire format lays them out.
-fn fixture_section() -> ShadowmaskAtlasSection {
-    let bc4 = |value: u8| [value, value, 0, 0, 0, 0, 0, 0];
-    let mut data = Vec::new();
-    for layer in 0..ATLAS_LAYERS {
-        for by in 0..ATLAS_HEIGHT / 4 {
-            for group in 0..2 {
-                for bx in 0..ATLAS_WIDTH / 4 {
-                    data.extend_from_slice(&bc4(mask_byte(group * 2, bx, by, layer)));
-                    data.extend_from_slice(&bc4(mask_byte(group * 2 + 1, bx, by, layer)));
-                }
-            }
-        }
-    }
-    ShadowmaskAtlasSection {
-        format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-        width: ATLAS_WIDTH,
-        height: ATLAS_HEIGHT,
-        layer_count: ATLAS_LAYERS,
-        channels: vec![0, 1, 2, 3],
-        data,
-    }
+/// The two cell blocks in the shadowmask pool, group 0 holding slots 0/1 and
+/// group 1 slots 2/3, and the block table naming their placements.
+fn fixture_pool(ctx: &GpuCtx) -> (wgpu::Texture, Vec<u8>) {
+    let extents = [(BLOCK_EDGE, BLOCK_EDGE); BLOCK_COUNT as usize];
+    let mask = |block: usize, slot: u32, bx: u32, by: u32| mask_byte(slot, bx, by, block as u32);
+    let fixture = block_fixture(
+        &extents,
+        2,
+        &FixtureTexels {
+            irradiance: &|_, _, _| [0.0; 4],
+            direction: &|_, _, _| [128, 255],
+            shadowmask: Some(&mask),
+        },
+    );
+    let plan = StaticPoolPlan {
+        header: fixture.index.header,
+        extents: extents.to_vec(),
+        pool: AllResidentPool {
+            placements: PLACEMENTS.to_vec(),
+            layer_count: 2,
+        },
+        with_shadowmask: true,
+    };
+    let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
+    let table = block_table_bytes(&extents, &PLACEMENTS.map(Some));
+    (
+        textures.shadowmask.expect("the plan keeps the shadowmask"),
+        table,
+    )
 }
 
-fn expected_mask(texel_x: u32, texel_y: u32, layer: u32) -> [f32; 4] {
+fn expected_mask(texel_x: u32, texel_y: u32, block: u32) -> [f32; 4] {
     std::array::from_fn(|slot| {
-        f32::from(mask_byte(slot as u32, texel_x / 4, texel_y / 4, layer)) / 255.0
+        f32::from(mask_byte(slot as u32, texel_x / 4, texel_y / 4, block)) / 255.0
     })
 }
 
@@ -636,7 +707,8 @@ fn assert_selects(result: &ProbeResult, slot: u8, what: &str) {
 
 // Pins: second-group-light, seam-bleed, seam-outer-halftexel. M1 (union
 // half), M3, M4 (union half). Seam-bleed rides on the driven u = 0 / u = 1
-// probes against groups that differ at the seam.
+// probes against groups that differ at the seam; the block clamp also keeps
+// them off the empty pool texels beside each block.
 #[test]
 fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
     let Some(ctx) =
@@ -644,52 +716,50 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
     else {
         return;
     };
-    let (header, data) = fixture_section().into_parts();
-    let texture = upload_shadowmask_texture(&ctx.device, &ctx.queue, &header, &data);
+    let (texture, table) = fixture_pool(&ctx);
 
     let mut probes = Vec::new();
     let mut expectations = Vec::new();
-    for layer in 0..ATLAS_LAYERS {
+    for block in 0..BLOCK_COUNT {
         for &texel_y in &[0, 5] {
-            let v = texel_center(texel_y, ATLAS_HEIGHT);
-            // Texel centers either side of the block edge inside each group.
-            for &texel_x in &[0, 3, 4, ATLAS_WIDTH - 1] {
-                let u = texel_center(texel_x, ATLAS_WIDTH);
+            let v = texel_center(texel_y, BLOCK_EDGE);
+            // Texel centers either side of the BC block edge inside each group.
+            for &texel_x in &[0, 3, 4, BLOCK_EDGE - 1] {
+                let u = texel_center(texel_x, BLOCK_EDGE);
                 expectations.push((
-                    expected_mask(texel_x, texel_y, layer),
-                    format!("texel ({texel_x}, {texel_y}) layer {layer}"),
+                    expected_mask(texel_x, texel_y, block),
+                    format!("texel ({texel_x}, {texel_y}) block {block}"),
                 ));
-                probes.push([u, v, layer as f32]);
+                probes.push(([u, v], block + 1));
             }
             // Driven outer UVs a baked chart gutter never reaches: each group
-            // must clamp to its own edge column, never blend across the seam.
+            // must clamp to its own block's edge column, never blend across
+            // the seam or into the pool texels beside the block.
             for (u, texel_x) in [
                 (0.0, 0),
-                (0.2 / ATLAS_WIDTH as f32, 0),
-                (1.0, ATLAS_WIDTH - 1),
-                (1.0 - 0.2 / ATLAS_WIDTH as f32, ATLAS_WIDTH - 1),
+                (0.2 / BLOCK_EDGE as f32, 0),
+                (1.0, BLOCK_EDGE - 1),
+                (1.0 - 0.2 / BLOCK_EDGE as f32, BLOCK_EDGE - 1),
+                (-0.5, 0),
+                (1.5, BLOCK_EDGE - 1),
             ] {
                 expectations.push((
-                    expected_mask(texel_x, texel_y, layer),
-                    format!("u = {u}, row {texel_y}, layer {layer}"),
+                    expected_mask(texel_x, texel_y, block),
+                    format!("u = {u}, row {texel_y}, block {block}"),
                 ));
-                probes.push([u, v, layer as f32]);
+                probes.push(([u, v], block + 1));
             }
         }
     }
-    // A baked layer index past the atlas clamps to its last layer.
-    probes.push([
-        texel_center(1, ATLAS_WIDTH),
-        texel_center(1, ATLAS_HEIGHT),
-        7.0,
-    ]);
-    expectations.push((
-        expected_mask(1, 1, ATLAS_LAYERS - 1),
-        "layer clamp".to_string(),
+    // A block id past the table resolves to the no-lightmap entry: all visible.
+    probes.push((
+        [texel_center(1, BLOCK_EDGE), texel_center(1, BLOCK_EDGE)],
+        BLOCK_COUNT + 7,
     ));
+    expectations.push(([1.0; 4], "id past the table".to_string()));
 
     // The seam really differs: group 0's last column against group 1's first.
-    let seam_left = expected_mask(ATLAS_WIDTH - 1, 0, 0);
+    let seam_left = expected_mask(BLOCK_EDGE - 1, 0, 0);
     let seam_right = expected_mask(0, 0, 0);
     assert_ne!(seam_left[0], seam_right[2]);
     assert_ne!(seam_left[1], seam_right[3]);
@@ -697,13 +767,9 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
     let slots = [0u8, 1, 2, 3, SHADOWMASK_CHANNEL_DROPPED];
     let expanded: Vec<Probe> = probes
         .iter()
-        .flat_map(|&[u, v, layer]| {
-            slots
-                .iter()
-                .map(move |&slot| Probe::new([u, v], layer as u32, slot))
-        })
+        .flat_map(|&(uv, block)| slots.iter().map(move |&slot| Probe::new(uv, block, slot)))
         .collect();
-    let results = run_probes(&ctx, &texture, &expanded);
+    let results = run_probes(&ctx, &texture, &table, &expanded);
 
     for (index, result) in results.iter().enumerate() {
         let (expected, what) = &expectations[index / slots.len()];
@@ -716,10 +782,11 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
 }
 
 // Pin: placeholder-second-group. A second-group slot against the 2×1 white
-// placeholder reads a real, fully visible texel at any UV or baked layer.
+// placeholder reads a real, fully visible texel at any UV and for any block
+// id, through placeholder mode's one-entry table.
 #[test]
-fn placeholder_reads_fully_lit_for_every_slot_and_layer() {
-    let Some(ctx) = gpu_or_skip("placeholder_reads_fully_lit_for_every_slot_and_layer") else {
+fn placeholder_reads_fully_lit_for_every_slot_and_block() {
+    let Some(ctx) = gpu_or_skip("placeholder_reads_fully_lit_for_every_slot_and_block") else {
         return;
     };
     let texture = upload_placeholder_shadowmask(&ctx.device, &ctx.queue);
@@ -728,21 +795,22 @@ fn placeholder_reads_fully_lit_for_every_slot_and_layer() {
     assert_eq!(texture.width(), SHADOWMASK_GROUP_COUNT);
     assert_eq!(texture.height(), 1);
     assert_eq!(texture.depth_or_array_layers(), 1);
+    let table = placeholder_block_table();
     let probes: Vec<Probe> = [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0], [0.97, 0.03]]
         .into_iter()
         .flat_map(|uv| {
-            [0u32, 3].into_iter().flat_map(move |layer| {
+            [0u32, 3].into_iter().flat_map(move |block| {
                 [0u8, 1, 2, 3, SHADOWMASK_CHANNEL_DROPPED]
                     .into_iter()
-                    .map(move |slot| Probe::new(uv, layer, slot))
+                    .map(move |slot| Probe::new(uv, block, slot))
             })
         })
         .collect();
-    let results = run_probes(&ctx, &texture, &probes);
+    let results = run_probes(&ctx, &texture, &table, &probes);
     for (probe, result) in probes.iter().zip(&results) {
         let what = format!(
-            "placeholder uv {:?} layer {} slot {}",
-            probe.uv, probe.layer, probe.slot
+            "placeholder uv {:?} block {} slot {}",
+            probe.uv, probe.block, probe.slot
         );
         assert!(
             result.mask.iter().all(|&m| m == 1.0),
@@ -767,9 +835,8 @@ fn union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata() {
     else {
         return;
     };
-    let (header, data) = fixture_section().into_parts();
-    let texture = upload_shadowmask_texture(&ctx.device, &ctx.queue, &header, &data);
-    let uv = [texel_center(1, ATLAS_WIDTH), texel_center(1, ATLAS_HEIGHT)];
+    let (texture, table) = fixture_pool(&ctx);
+    let uv = [texel_center(1, BLOCK_EDGE), texel_center(1, BLOCK_EDGE)];
     let invalid = [
         metadata_channel_value(SHADOWMASK_CHANNEL_DROPPED),
         -1.0,
@@ -785,10 +852,10 @@ fn union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata() {
         .iter()
         .map(|&union_channel| Probe {
             union_channel,
-            ..Probe::new(uv, 0, SHADOWMASK_CHANNEL_DROPPED)
+            ..Probe::new(uv, 1, SHADOWMASK_CHANNEL_DROPPED)
         })
         .collect();
-    let results = run_probes(&ctx, &texture, &probes);
+    let results = run_probes(&ctx, &texture, &table, &probes);
     for (probe, result) in probes.iter().zip(&results) {
         assert_eq!(
             result.union_channel,

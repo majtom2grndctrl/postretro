@@ -23,6 +23,7 @@ pub(crate) fn build_renderer_pipelines(
     sh_volume_bind_group_layout: &wgpu::BindGroupLayout,
     lightmap_bind_group_layout: &wgpu::BindGroupLayout,
     spot_shadow_bgl: &wgpu::BindGroupLayout,
+    lightmap_block_table_bgl: &wgpu::BindGroupLayout,
     cube_array_supported: bool,
 ) -> RendererPipelines {
     // Share the array length with the inventory used to request device limits:
@@ -34,6 +35,7 @@ pub(crate) fn build_renderer_pipelines(
         Some(sh_volume_bind_group_layout),
         Some(lightmap_bind_group_layout),
         Some(spot_shadow_bgl),
+        Some(lightmap_block_table_bgl),
     ];
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Textured Pipeline Layout"),
@@ -92,15 +94,15 @@ pub(crate) fn build_renderer_pipelines(
                         shader_location: 3,
                         format: wgpu::VertexFormat::Uint16x2,
                     },
-                    // lightmap_uv: u16x2 at offset 28 (quantized 0..1 UV)
+                    // lightmap_uv: u16x2 at offset 28 (block-local unorm UV)
                     wgpu::VertexAttribute {
                         offset: 28,
                         shader_location: 4,
                         format: wgpu::VertexFormat::Uint16x2,
                     },
-                    // (lightmap_layer, animated_block): u16x2 at offset 32 —
-                    // the static lightmap layer and the face's animated block
-                    // id (0 = none).
+                    // (lightmap_block, animated_block): u16x2 at offset 32 —
+                    // the vertex's lightmap cell block id + 1 and the face's
+                    // animated block id + 1 (0 = none for both).
                     wgpu::VertexAttribute {
                         offset: 32,
                         shader_location: 5,

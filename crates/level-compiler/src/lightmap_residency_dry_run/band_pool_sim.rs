@@ -9,16 +9,16 @@
 //! Every request completes within its step: no drain budget is modelled.
 //!
 //! Reuses the walks and allocation order of `block_pool_sim` and the freeing
-//! shelf allocator of `block_allocator`.
+//! shelf allocator of `postretro_render_cpu::lightmap_pool`.
 //! See: context/plans/large-map-spatial-residency.md
 
 use rayon::prelude::*;
 
-use super::block_allocator::{BlockPool, Slot};
 use super::block_pool_sim::{FIXED_POOL_PERCENT, allocation_order};
 use super::camera_walks::{WalkKind, camera_adjacency, walk_path};
 use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE};
 use super::portal_distance::PortalGraphInput;
+use postretro_render_cpu::lightmap_pool::{BlockPool, Slot};
 
 /// A read of a block freed at most this many steps earlier counts as thrash.
 /// Over a long walk nearly every read is of a block freed at some point, so

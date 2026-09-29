@@ -10,6 +10,8 @@ mod prl_container;
 mod prl_lighting;
 #[cfg(feature = "load-prl")]
 mod prl_lightmap;
+#[cfg(all(test, feature = "load-prl"))]
+mod prl_load_test_fixtures;
 #[cfg(feature = "load-prl")]
 mod prl_loader;
 mod prl_queries;

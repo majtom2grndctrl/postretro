@@ -1,16 +1,18 @@
-//! A freeing rectangle allocator for cell blocks, shaped like the `etagere`
-//! crate's shelf allocator: each pool layer is a stack of horizontal shelves,
-//! each shelf a row of spans. Freeing merges neighbouring free spans, and a
-//! shelf left empty merges with empty neighbours, so space is reusable.
-//!
-//! The bake's `MaxRects` cannot free; this stands in for the runtime
-//! allocator in the fragmentation simulation, without a crate dependency.
+// Freeing shelf allocator for lightmap cell blocks in pool layers.
+// See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
+//
+// Shaped like the `etagere` crate's shelf allocator: each pool layer is a
+// stack of horizontal shelves, each shelf a row of spans. Freeing merges
+// neighbouring free spans, and a shelf left empty merges with empty
+// neighbours, so space is reusable. The level compiler's residency dry run
+// measured pool behaviour with this allocator; the renderer places blocks
+// with the same one.
 
 /// An allocated rectangle. `owner` is unique per allocation for the pool's
 /// lifetime, so a slot kept after its block was freed cannot free whatever
 /// the allocator later placed at the same origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Slot {
+pub struct Slot {
     pub layer: u32,
     pub x: u32,
     pub y: u32,
@@ -22,7 +24,7 @@ pub(crate) struct Slot {
 /// A free that names no live allocation: stale, doubled, or mis-sized.
 /// Refused without touching the layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StaleFree;
+pub struct StaleFree;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Owner {
@@ -67,7 +69,7 @@ impl Shelf {
 
 /// One pool layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ShelfLayer {
+pub struct ShelfLayer {
     width: u32,
     /// Contiguous, ascending by `y`, covering the layer height.
     shelves: Vec<Shelf>,
@@ -75,7 +77,7 @@ pub(crate) struct ShelfLayer {
 }
 
 impl ShelfLayer {
-    pub(crate) fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
             shelves: vec![Self::empty_shelf(0, height, width)],
@@ -95,7 +97,7 @@ impl ShelfLayer {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.allocations == 0
     }
 
@@ -103,7 +105,7 @@ impl ShelfLayer {
     /// an occupied shelf that wastes at most half the item's height, then
     /// splits the tightest empty shelf, then any occupied shelf that fits.
     /// Refuses a zero-width or zero-height request.
-    pub(crate) fn allocate(&mut self, width: u32, height: u32, owner: u64) -> Option<(u32, u32)> {
+    pub fn allocate(&mut self, width: u32, height: u32, owner: u64) -> Option<(u32, u32)> {
         if width == 0 || height == 0 {
             return None;
         }
@@ -156,7 +158,7 @@ impl ShelfLayer {
 
     /// Free `owner`'s `width × height` allocation at `(x, y)`. Any mismatch
     /// (no such span, another owner, a different size) is refused.
-    pub(crate) fn free(
+    pub fn free(
         &mut self,
         x: u32,
         y: u32,
@@ -206,7 +208,7 @@ impl ShelfLayer {
 
 /// Square pool layers, optionally capped.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BlockPool {
+pub struct BlockPool {
     edge: u32,
     layers: Vec<ShelfLayer>,
     max_layers: Option<usize>,
@@ -215,7 +217,7 @@ pub(crate) struct BlockPool {
 }
 
 impl BlockPool {
-    pub(crate) fn new(edge: u32, max_layers: Option<usize>) -> Self {
+    pub fn new(edge: u32, max_layers: Option<usize>) -> Self {
         Self {
             edge,
             layers: Vec::new(),
@@ -226,13 +228,13 @@ impl BlockPool {
 
     /// First fit by layer index, opening a layer when none fits and the cap
     /// allows. Refuses a zero-width or zero-height request.
-    pub(crate) fn allocate(&mut self, width: u32, height: u32) -> Option<Slot> {
+    pub fn allocate(&mut self, width: u32, height: u32) -> Option<Slot> {
         self.allocate_within(width, height, self.max_layers)
     }
 
     /// `allocate` bounded to layers below `limit` instead of the pool cap:
     /// a pool that grew past a soft cap keeps placing optional blocks under it.
-    pub(crate) fn allocate_within(
+    pub fn allocate_within(
         &mut self,
         width: u32,
         height: u32,
@@ -278,7 +280,7 @@ impl BlockPool {
     }
 
     /// Free `slot`, refusing one that no longer names its live allocation.
-    pub(crate) fn free(&mut self, slot: Slot) -> Result<(), StaleFree> {
+    pub fn free(&mut self, slot: Slot) -> Result<(), StaleFree> {
         self.layers
             .get_mut(slot.layer as usize)
             .ok_or(StaleFree)?
@@ -286,14 +288,18 @@ impl BlockPool {
     }
 
     /// Layers a pool must hold right now: one past the highest non-empty one.
-    pub(crate) fn extent(&self) -> usize {
+    pub fn extent(&self) -> usize {
         self.layers
             .iter()
             .rposition(|layer| !layer.is_empty())
             .map_or(0, |last| last + 1)
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.layers.clear();
     }
 }
+
+#[cfg(test)]
+#[path = "block_allocator_tests.rs"]
+mod tests;

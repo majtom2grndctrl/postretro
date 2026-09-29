@@ -7,7 +7,7 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::build_bvh;
 use crate::governor::Governor;
 use crate::lightmap_bake::{
-    bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
+    BlockLayout, bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
 };
 use crate::map_data::{FalloffModel, ShadowType};
 use crate::reporter::StageProgress;
@@ -222,6 +222,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         placements: &placements,
         atlas_width: 5,
         atlas_height: 5,
+        layout: &BlockLayout::whole_layers(5, 5, &placements, 2),
     };
     let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
     let light = point_light([0.5, 1.0, 0.5], 4.0);
@@ -271,6 +272,12 @@ fn incremental_layer_fold_matches_monolithic_section_bytes() {
     let mut mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY, &[]).unwrap();
     mono_prepared.placements[1].layer = 1;
     mono_prepared.layer_count = 2;
+    mono_prepared.layout = BlockLayout::whole_layers(
+        mono_prepared.atlas_width,
+        mono_prepared.atlas_height,
+        &mono_prepared.placements,
+        crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+    );
     let (mono_bvh, mono_prims, _) = build_bvh(&mono_geo).unwrap();
     let mono_progress = StageProgress::with_total(mono_prepared.placements.len());
     let mono_control = BakeControl::new(Arc::new(Governor::new(1, false)), &mono_progress);
@@ -293,21 +300,28 @@ fn incremental_layer_fold_matches_monolithic_section_bytes() {
     let mut layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, DENSITY, &[]).unwrap();
     layer_prepared.placements[1].layer = 1;
     layer_prepared.layer_count = 2;
+    layer_prepared.layout = BlockLayout::whole_layers(
+        layer_prepared.atlas_width,
+        layer_prepared.atlas_height,
+        &layer_prepared.placements,
+        crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+    );
     let (layer_bvh, layer_prims, _) = build_bvh(&layer_geo).unwrap();
     let shared = SharedAtlas {
         charts: &layer_prepared.charts,
         placements: &layer_prepared.placements,
         atlas_width: layer_prepared.atlas_width,
         atlas_height: layer_prepared.atlas_height,
+        layout: &layer_prepared.layout,
     };
     let warm_section = compose_section(&light_refs, &shared, &layer_bvh, &layer_prims, &layer_geo);
     assert_eq!(
-        mono_atlas.encode_section(DENSITY, true, crate::lightmap_bake::DIRECTION_TEXEL_SCALE,),
+        mono_atlas.encode_section(&mono_prepared.layout, true),
         warm_section,
         "layer-major incremental warm fold must equal the cold monolith byte-for-byte"
     );
     assert_eq!(
-        mono_atlas.encode_section(DENSITY, false, crate::lightmap_bake::DIRECTION_TEXEL_SCALE,),
+        mono_atlas.encode_section(&mono_prepared.layout, false),
         compose_section_with_format(
             &light_refs,
             &shared,
@@ -336,6 +350,7 @@ fn layer_bake_preserves_chart_order_and_bytes_across_thread_counts() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let single_progress = StageProgress::with_total(prepared.placements.len());
@@ -429,6 +444,7 @@ fn layer_bake_degenerate_chart_advances_progress_and_keeps_ordered_empty_slot() 
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let progress = StageProgress::with_total(prepared.placements.len());
     let control = BakeControl::new(Arc::new(Governor::new(2, false)), &progress);
@@ -479,6 +495,7 @@ fn layer_bake_paused_before_permit_release_starts_no_chart() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     })
     .len();
     let governor = Arc::new(Governor::new(1, false));
@@ -494,6 +511,7 @@ fn layer_bake_paused_before_permit_release_starts_no_chart() {
             placements: &prepared.placements,
             atlas_width: prepared.atlas_width,
             atlas_height: prepared.atlas_height,
+            layout: &prepared.layout,
         };
         started_tx.send(()).expect("test coordinator is waiting");
         let layer = ThreadPoolBuilder::new()
@@ -561,6 +579,7 @@ fn layer_roundtrips_through_codec() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let layer = bake_layer_for_test(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
 
@@ -682,8 +701,8 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 6);
-    assert_eq!(LIGHTMAP_SECTION_VERSION, 3);
+    assert_eq!(LAYER_FORMAT_VERSION, 7);
+    assert_eq!(LIGHTMAP_SECTION_VERSION, 4);
 }
 
 #[test]
@@ -714,6 +733,7 @@ fn empty_sparse_partition_roundtrips_and_has_no_fold_effect() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let partition = bake_light_layer_controlled(
         &lights[0],
@@ -758,6 +778,7 @@ fn sparse_multilayer_payload_is_below_one_tenth_dense_bytes() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let partitions = bake_light_layer(
         &lights[0],
@@ -820,6 +841,7 @@ fn layer_input_hash_changes_when_light_moves() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let base = point_light([0.5, 1.0, 0.5], 5.0);
@@ -848,6 +870,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let control = BakeControl::unrestricted();
     let first = bake_light_layer_controlled(
@@ -916,6 +939,7 @@ fn validate_layer_partition_accepts_sparse_and_rejects_invalid_records() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let original = bake_light_layer_controlled(
         &lights[0],
@@ -971,29 +995,46 @@ fn validate_layer_partition_accepts_sparse_and_rejects_invalid_records() {
 }
 
 #[test]
-fn all_sdf_fallback_remains_one_uncovered_plane() {
+fn all_sdf_fallback_encodes_every_block_uncovered() {
     let mut geo = two_quad_geometry();
     let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
     let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
     let mut prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
     prepared.placements[1].layer = 1;
+    prepared.layer_count = 2;
+    prepared.layout = BlockLayout::whole_layers(
+        prepared.atlas_width,
+        prepared.atlas_height,
+        &prepared.placements,
+        crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+    );
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let shared = SharedAtlas {
         charts: &prepared.charts,
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let warm_fallback = compose_section(&[], &shared, &bvh, &prims, &geo);
-    let mut legacy_fallback = empty_composite(shared.atlas_width, shared.atlas_height);
-    legacy_fallback.dilate();
+    let mut uncovered = CompositedAtlas::zeroed(shared.atlas_width, shared.atlas_height, 2);
+    uncovered.dilate();
     assert_eq!(
         warm_fallback,
-        legacy_fallback.encode_section(DENSITY, true, crate::lightmap_bake::DIRECTION_TEXEL_SCALE,),
-        "all-Sdf warm fallback must remain the legacy single uncovered plane"
+        uncovered.encode_section(shared.layout, true),
+        "all-Sdf warm fallback must encode every block from an uncovered plane"
     );
-    assert_eq!(warm_fallback.layer_count, 1);
+    assert_eq!(warm_fallback.blocks.len(), 2);
+    for block in &warm_fallback.blocks {
+        assert!(block.irradiance.iter().all(|&byte| byte == 0));
+        assert!(
+            block
+                .direction
+                .chunks_exact(2)
+                .all(|texel| texel == [128, 255])
+        );
+    }
 }
 
 fn lone_chart_layout_fingerprint(
@@ -1024,6 +1065,7 @@ fn lone_chart_layout_fingerprint(
         placements: &placements,
         atlas_width: 64,
         atlas_height: 64,
+        layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
     })
 }
 
@@ -1145,6 +1187,7 @@ fn layer_cache_round_trip_skips_rebake() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let dir = fresh_cache_dir("roundtrip");
@@ -1191,6 +1234,7 @@ fn single_light_edit_invalidates_only_its_own_layer() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let base_keys: Vec<String> = lights
@@ -1232,6 +1276,7 @@ fn directional_light_edit_does_not_disturb_point_layers() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let dir_base = layer_key(&lights[0], &shared, &prims, &geo).as_filename();
@@ -1272,6 +1317,7 @@ fn localized_geometry_edit_invalidates_only_overlapping_layers() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let near_base = layer_key(&near, &shared, &prims, &geo).as_filename();
@@ -1313,6 +1359,7 @@ fn corrupt_layer_entry_is_discarded_and_rebaked() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let dir = fresh_cache_dir("corrupt");
@@ -1358,6 +1405,7 @@ fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let control = BakeControl::unrestricted();
     let expected = bake_light_layer_controlled(
@@ -1437,6 +1485,7 @@ fn cache_dir_override_places_entries_under_override() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let dir = fresh_cache_dir("override");
@@ -1517,6 +1566,7 @@ fn lightmap_composite_equals_monolithic_on_fixtures() {
             placements: &layer_prepared.placements,
             atlas_width: layer_prepared.atlas_width,
             atlas_height: layer_prepared.atlas_height,
+            layout: &layer_prepared.layout,
         };
         let layers: Vec<Vec<LightmapLayer>> = layer_lights
             .iter()
@@ -1606,6 +1656,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
         placements: &placements,
         atlas_width: 64,
         atlas_height: 64,
+        layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
     };
     let at_scale_two = CacheKey::new(
         "lightmap_section",
@@ -1659,12 +1710,14 @@ fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
         placements: &placements,
         atlas_width: 64,
         atlas_height: 64,
+        layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
     };
     let layout_b = SharedAtlas {
         charts: &charts,
         placements: &placements,
         atlas_width: 128,
         atlas_height: 64,
+        layout: &BlockLayout::whole_layers(128, 64, &placements, 2),
     };
     let key_a = section_key(&[], &layout_a, DENSITY, true);
     let key_b = section_key(&[], &layout_b, DENSITY, true);
@@ -1702,54 +1755,34 @@ fn compose_section_with_format(
     geo: &GeometryResult,
     uncompressed_irradiance: bool,
 ) -> LightmapSection {
-    if lights.is_empty() {
-        let mut fallback = empty_composite(shared.atlas_width, shared.atlas_height);
-        fallback.dilate();
-        return fallback.encode_section(
-            DENSITY,
-            uncompressed_irradiance,
-            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
-        );
-    }
-
     let control = BakeControl::unrestricted();
-    let mut irradiance = Vec::new();
-    let mut direction = Vec::new();
+    let mut builder =
+        crate::lightmap_bake::BlockSectionBuilder::new(shared.layout, uncompressed_irradiance);
     for target_layer in 0..atlas_layer_count(shared) {
-        let mut accumulator = IncrementalLayerAccumulator::for_atlas_layer(shared, target_layer);
-        for light in lights {
-            let partition = bake_light_layer_controlled(
-                light,
-                shared,
-                bvh,
-                prims,
-                geo,
-                target_layer,
-                AREA_SAMPLES,
-                &control,
-            );
-            accumulator.fold_partition(light, &partition, shared);
-        }
-        let mut plane = accumulator.finish();
+        let mut plane = if lights.is_empty() {
+            empty_composite(shared.atlas_width, shared.atlas_height)
+        } else {
+            let mut accumulator =
+                IncrementalLayerAccumulator::for_atlas_layer(shared, target_layer);
+            for light in lights {
+                let partition = bake_light_layer_controlled(
+                    light,
+                    shared,
+                    bvh,
+                    prims,
+                    geo,
+                    target_layer,
+                    AREA_SAMPLES,
+                    &control,
+                );
+                accumulator.fold_partition(light, &partition, shared);
+            }
+            accumulator.finish()
+        };
         plane.dilate();
-        let (mut plane_irradiance, mut plane_direction) = crate::lightmap_bake::encode_atlas_layer(
-            &plane,
-            uncompressed_irradiance,
-            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
-        );
-        irradiance.append(&mut plane_irradiance);
-        direction.append(&mut plane_direction);
+        builder.push_layer(target_layer, &plane);
     }
-    crate::lightmap_bake::assemble_layered_section(
-        shared.atlas_width,
-        shared.atlas_height,
-        atlas_layer_count(shared),
-        DENSITY,
-        uncompressed_irradiance,
-        crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
-        irradiance,
-        direction,
-    )
+    builder.finish()
 }
 
 /// Compute the filtered direct-lightmap light set + their ordered
@@ -1802,6 +1835,7 @@ fn section_cache_round_trip_skips_recompose() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
@@ -1845,7 +1879,7 @@ fn section_cache_round_trip_skips_recompose() {
 }
 
 #[test]
-fn cached_section_validation_covers_current_atlas_and_encode_config() {
+fn cached_section_validation_covers_current_block_layout_and_encode_config() {
     let mut geo = two_quad_geometry();
     let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
     let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
@@ -1857,46 +1891,31 @@ fn cached_section_validation_covers_current_atlas_and_encode_config() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let expected = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
-    let validate = |section: &LightmapSection, direction_scale| {
-        validate_cached_lightmap_section(
-            section,
-            &shared,
-            prepared.layer_count,
-            DENSITY,
-            true,
-            direction_scale,
-        )
-    };
-    validate(&expected, crate::lightmap_bake::DIRECTION_TEXEL_SCALE)
-        .expect("freshly composed section matches current inputs");
+    let validate =
+        |section: &LightmapSection| validate_cached_lightmap_section(section, &shared, true);
+    validate(&expected).expect("freshly composed section matches current inputs");
 
     let mut stale = expected.clone();
-    stale.irr_width *= 2;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
-    let mut stale = expected.clone();
-    stale.layer_count += 1;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
-    let mut stale = expected.clone();
-    stale.irr_texel_density *= 2.0;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+    stale.direction_texel_scale *= 2;
+    assert!(validate(&stale).is_err(), "direction scale");
     let mut stale = expected.clone();
     stale.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
-    assert!(validate(&expected, 1).is_err(), "direction scale is config");
-    let mut stale = expected.clone();
-    stale.dir_width *= 2;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
-    let mut stale = expected.clone();
-    stale.dir_texel_density *= 2.0;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
-    let mut stale = expected.clone();
-    stale.direction_format = postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RGBA8;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+    assert!(validate(&stale).is_err(), "irradiance format");
     let mut stale = expected.clone();
     stale.mode = postretro_level_format::lightmap::LightmapMode::Unshadowed;
-    assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+    assert!(validate(&stale).is_err(), "mode");
+    let mut stale = expected.clone();
+    stale.blocks.pop();
+    assert!(validate(&stale).is_err(), "block count");
+    let mut stale = expected.clone();
+    stale.blocks[0].width += 4;
+    assert!(validate(&stale).is_err(), "block extent");
+    let mut stale = expected.clone();
+    stale.blocks[0].cell_id += 7;
+    assert!(validate(&stale).is_err(), "block cell");
 }
 
 #[test]
@@ -1912,12 +1931,13 @@ fn mismatched_decoded_section_cache_hit_soft_misses_and_recomposes() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
     let key = section_key(&hashes, &shared, DENSITY, true);
     let expected = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
     let mut stale = expected.clone();
-    stale.irr_texel_density *= 2.0;
+    stale.direction_texel_scale *= 2;
 
     let dir = fresh_cache_dir("section_metadata_soft_miss");
     let cache = StageCache::new(&dir).expect("cache dir");
@@ -1926,16 +1946,9 @@ fn mismatched_decoded_section_cache_hit_soft_misses_and_recomposes() {
         .get(&key)
         .and_then(|bytes| LightmapSection::from_bytes(&bytes).ok())
         .and_then(|section| {
-            validate_cached_lightmap_section(
-                &section,
-                &shared,
-                prepared.layer_count,
-                DENSITY,
-                true,
-                crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
-            )
-            .ok()
-            .map(|()| section)
+            validate_cached_lightmap_section(&section, &shared, true)
+                .ok()
+                .map(|()| section)
         })
         .unwrap_or_else(|| compose_section(&light_refs, &shared, &bvh, &prims, &geo));
     assert_eq!(recovered, expected);
@@ -1964,6 +1977,7 @@ fn single_light_edit_changes_section_key_but_not_unedited_layer_key() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let base_hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
@@ -2014,6 +2028,7 @@ fn corrupt_section_entry_is_discarded_and_recomposed() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
@@ -2058,6 +2073,7 @@ fn cache_dir_override_places_section_entry_under_override() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
@@ -2098,6 +2114,7 @@ fn no_cache_path_writes_no_section_entry() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
@@ -2141,6 +2158,7 @@ fn section_key_changes_on_add_remove_and_reorder() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let base = layer_input_hashes(&light_refs, &shared, &prims, &geo);
@@ -2202,6 +2220,7 @@ fn section_key_changes_when_soft_shadow_samples_change() {
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
 
     let samples_a = 16u32;

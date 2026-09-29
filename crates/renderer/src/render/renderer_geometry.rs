@@ -36,7 +36,7 @@ pub(crate) fn cast_world_vertices_to_bytes(
         for &c in &vertex.lightmap_uv {
             bytes.extend_from_slice(&c.to_ne_bytes());
         }
-        bytes.extend_from_slice(&vertex.lightmap_layer.to_ne_bytes());
+        bytes.extend_from_slice(&vertex.lightmap_block.to_ne_bytes());
         bytes.extend_from_slice(&vertex.animated_block.to_ne_bytes());
     }
     bytes
@@ -113,14 +113,14 @@ mod tests {
     use postretro_render_data::geometry::WorldVertex;
 
     #[test]
-    fn lightmap_layer_and_animated_block_serialize_as_u16x2_at_byte_offset_32() {
+    fn lightmap_block_and_animated_block_serialize_as_u16x2_at_byte_offset_32() {
         let vertex = WorldVertex {
             position: [0.0, 0.0, 0.0],
             base_uv: [0.0, 0.0],
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0x1234,
+            lightmap_block: 0x1234,
             animated_block: 0xBEEF,
         };
         let bytes = cast_world_vertices_to_bytes(&[vertex]);

@@ -4,7 +4,7 @@
 use super::*;
 use crate::bvh_build::build_bvh;
 use crate::geometry::FaceIndexRange;
-use crate::lightmap_bake::pack_layers;
+use crate::lightmap_bake::{BlockLayout, pack_layers};
 use crate::map_data::{FalloffModel, LightAnimation, LightType};
 use glam::DVec3;
 use log::Level;
@@ -335,6 +335,7 @@ where
         lights: &lights,
         face_charts: &lm_output.charts,
         face_placements: &lm_output.placements,
+        layout: &lm_output.layout,
         atlas_width: lm_output.atlas_width,
         atlas_height: lm_output.atlas_height,
         static_atlas_layer_count: lm_output.layer_count,
@@ -345,7 +346,8 @@ where
         std::sync::Arc::new(crate::governor::Governor::new(2, false)),
         &progress,
     );
-    let section = bake_animated_light_weight_maps_controlled(&inputs, &control);
+    let section = bake_animated_light_weight_maps_controlled(&inputs, &control)
+        .expect("fixture charts stay inside their cell blocks");
     if chunk_section.chunks.is_empty() {
         assert_eq!(progress.total(), None);
         assert_eq!(progress.completed(), 0);
@@ -383,12 +385,17 @@ fn full_face_chunk(
     }
 }
 
-/// Two faces in two leaves, packed onto static layers 0 and 1, each lit by
-/// its own animated light overhead. `first_face_normal` feeds face 0's
-/// chart: `-Y` turns it away from its light so its chunk bakes unlit.
+/// Two faces in two leaves, packed onto bake layers 0 and 1, each lit by
+/// its own animated light overhead. Each layer is one whole-layer cell block.
+/// `first_face_normal` feeds face 0's chart: `-Y` turns it away from its light
+/// so its chunk bakes unlit.
 fn bake_real_multi_layer_fixture(
     first_face_normal: glam::Vec3,
-) -> (AnimatedLightChunksSection, AnimatedLightWeightMapsSection) {
+) -> (
+    AnimatedLightChunksSection,
+    AnimatedLightWeightMapsSection,
+    BlockLayout,
+) {
     let geometry = two_separate_floor_geometry();
     let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH");
     let charts = vec![
@@ -420,6 +427,12 @@ fn bake_real_multi_layer_fixture(
     // `pack_layers` must open layer 1 without changing placement fields.
     let pack = pack_layers(&charts, 64, 0.25).expect("fixture charts must pack");
     assert_eq!(pack.layer_count, 2, "fixture must exercise both layers");
+    let layout = BlockLayout::whole_layers(
+        pack.atlas_width,
+        pack.atlas_height,
+        &pack.placements,
+        crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+    );
 
     let mut second_light = animated_point_light_above();
     second_light.origin = DVec3::new(2.5, 1.0, 0.5);
@@ -453,25 +466,26 @@ fn bake_real_multi_layer_fixture(
         lights: &lights,
         face_charts: &charts,
         face_placements: &pack.placements,
+        layout: &layout,
         atlas_width: pack.atlas_width,
         atlas_height: pack.atlas_height,
         static_atlas_layer_count: pack.layer_count,
         area_sample_count: 1,
     };
 
-    let section = bake_animated_light_weight_maps(&inputs);
-    (chunk_section, section)
+    let section = bake_animated_light_weight_maps(&inputs).expect("fixture rects fit their blocks");
+    (chunk_section, section, layout)
 }
 
 #[test]
 fn real_multi_layer_pack_bakes_one_identity_page_per_covered_layer() {
-    let (_, section) = bake_real_multi_layer_fixture(glam::Vec3::Y);
+    let (_, section, _) = bake_real_multi_layer_fixture(glam::Vec3::Y);
 
-    let block_layers: Vec<u32> = section.blocks.iter().map(|b| b.static_layer).collect();
+    let lightmap_blocks: Vec<u32> = section.blocks.iter().map(|b| b.lightmap_block).collect();
     assert_eq!(
-        block_layers,
+        lightmap_blocks,
         vec![0, 1],
-        "one block per face, in face order"
+        "one block per face, in face order, keyed to its cell block"
     );
     assert_eq!(
         section.compact_layers, 2,
@@ -479,13 +493,14 @@ fn real_multi_layer_pack_bakes_one_identity_page_per_covered_layer() {
     );
     assert_eq!(
         section.page_size, 64,
-        "identity pages are the static layer size"
+        "identity pages are the bake layer size"
     );
     for (index, block) in section.blocks.iter().enumerate() {
         assert_eq!(block.compact_layer, index as u32);
         assert_eq!(
             (block.compact_x, block.compact_y),
-            (block.static_x, block.static_y)
+            (u32::from(block.block_x), u32::from(block.block_y)),
+            "whole-layer cell blocks put block-local keys at bake-layer coords"
         );
         assert_eq!(
             (block.width, block.height),
@@ -495,15 +510,15 @@ fn real_multi_layer_pack_bakes_one_identity_page_per_covered_layer() {
     }
     for (index, rect) in section.chunk_rects.iter().enumerate() {
         assert!(rect.width > 1 && rect.height > 1, "no skip sentinel rect");
-        let (layer, x, y) = section.chunk_static_origin(index).unwrap();
+        let (layer, x, y) = section.chunk_block_origin(index).unwrap();
         assert_eq!(
             layer, index as u32,
-            "real pack layers survive into section 25"
+            "real cell blocks survive into section 25"
         );
         assert_eq!(
             (x, y),
             (rect.compact_x, rect.compact_y),
-            "identity keeps static coords"
+            "identity keeps bake-layer coords"
         );
         let start = rect.texel_offset as usize;
         let end = start + (rect.width * rect.height) as usize;
@@ -511,34 +526,31 @@ fn real_multi_layer_pack_bakes_one_identity_page_per_covered_layer() {
             section.offset_counts[start..end]
                 .iter()
                 .any(|entry| entry.count > 0),
-            "static layer {layer} must retain covered animated texels",
+            "lightmap block {layer} must retain covered animated texels",
         );
     }
     assert_eq!(section.consistency_error(), None);
 
-    let (_, repeated) = bake_real_multi_layer_fixture(glam::Vec3::Y);
+    let (_, repeated, _) = bake_real_multi_layer_fixture(glam::Vec3::Y);
     assert_eq!(section.to_bytes(), repeated.to_bytes());
 }
 
 #[test]
-fn real_multi_layer_bake_logs_static_layer_and_block_counts() {
+fn real_multi_layer_bake_logs_bake_layer_and_block_counts() {
     let capture = LogCapture::start();
 
     bake_real_multi_layer_fixture(glam::Vec3::Y);
 
-    capture.assert_logged_once(
-        Level::Info,
-        "[AnimatedLightWeightMaps] 2 static atlas layers",
-    );
+    capture.assert_logged_once(Level::Info, "[AnimatedLightWeightMaps] 2 bake layers");
     capture.assert_logged_once(Level::Info, "2 animated blocks on 2 identity pages");
 }
 
 #[test]
 fn cull_keeps_every_chunk_when_all_are_lit() {
-    let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::Y);
+    let (chunks, section, layout) = bake_real_multi_layer_fixture(glam::Vec3::Y);
     let leaf_ranges = vec![(0, 1), (1, 1)];
 
-    let culled = cull_unlit_chunks(&chunks, section.clone(), &leaf_ranges, 64);
+    let culled = cull_unlit_chunks(&chunks, section.clone(), &leaf_ranges, &layout, 64);
 
     assert_eq!(culled.chunk_section, chunks);
     assert_eq!(culled.weight_maps, section);
@@ -548,8 +560,8 @@ fn cull_keeps_every_chunk_when_all_are_lit() {
 #[test]
 fn cull_drops_unlit_chunk_and_rebases_every_parallel_table() {
     // Face 0 faces away from its light, so chunk 0 bakes an all-zero rect
-    // and is the only occupant of static layer 0.
-    let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::NEG_Y);
+    // and is the only occupant of bake layer 0.
+    let (chunks, section, layout) = bake_real_multi_layer_fixture(glam::Vec3::NEG_Y);
     let rect_entries = |s: &AnimatedLightWeightMapsSection, i: usize| {
         let rect = s.chunk_rects[i];
         let start = rect.texel_offset as usize;
@@ -562,7 +574,13 @@ fn cull_drops_unlit_chunk_and_rebases_every_parallel_table() {
     assert_eq!(section.compact_layers, 2);
 
     let capture = LogCapture::start();
-    let culled = cull_unlit_chunks(&chunks, section.clone(), &[(0, 1), (1, 1), (2, 0)], 64);
+    let culled = cull_unlit_chunks(
+        &chunks,
+        section.clone(),
+        &[(0, 1), (1, 1), (2, 0)],
+        &layout,
+        64,
+    );
 
     capture.assert_logged_once(Level::Info, "culled 1 of 2 chunks with no lit texel");
     assert_eq!(culled.chunk_section.chunks.len(), 1);
@@ -603,7 +621,7 @@ fn cull_drops_unlit_chunk_and_rebases_every_parallel_table() {
 
 #[test]
 fn cull_drops_every_chunk_when_none_is_lit() {
-    let (chunks, section) = bake_real_multi_layer_fixture(glam::Vec3::NEG_Y);
+    let (chunks, section, layout) = bake_real_multi_layer_fixture(glam::Vec3::NEG_Y);
     let only_unlit = AnimatedLightChunksSection {
         chunks: vec![chunks.chunks[0]],
         light_indices: chunks.light_indices.clone(),
@@ -618,7 +636,7 @@ fn cull_drops_every_chunk_when_none_is_lit() {
         texel_lights: Vec::new(),
     };
 
-    let culled = cull_unlit_chunks(&only_unlit, unlit_section, &[(0, 1)], 64);
+    let culled = cull_unlit_chunks(&only_unlit, unlit_section, &[(0, 1)], &layout, 64);
 
     assert!(culled.chunk_section.chunks.is_empty());
     assert!(culled.chunk_section.light_indices.is_empty());
@@ -669,9 +687,9 @@ fn cull_keeps_one_block_for_a_face_with_some_culled_chunks() {
     offset_counts.extend([unlit; 8]);
     offset_counts.extend([lit; 8]);
     let placement = AnimatedBlock {
-        static_layer: 2,
-        static_x: 8,
-        static_y: 10,
+        lightmap_block: 2,
+        block_x: 8,
+        block_y: 10,
         compact_x: 8,
         compact_y: 10,
         compact_layer: 0,
@@ -692,7 +710,21 @@ fn cull_keeps_one_block_for_a_face_with_some_culled_chunks() {
     };
     assert_eq!(section.consistency_error(), None);
 
-    let culled = cull_unlit_chunks(&chunk_section, section.clone(), &[(0, 3)], 256);
+    let layout = BlockLayout {
+        direction_texel_scale: 2,
+        blocks: (0..3)
+            .map(|layer| crate::lightmap_bake::CellBlock {
+                cell_id: layer,
+                width: 256,
+                height: 256,
+                layer,
+                x: 0,
+                y: 0,
+            })
+            .collect(),
+        chart_blocks: vec![2],
+    };
+    let culled = cull_unlit_chunks(&chunk_section, section.clone(), &[(0, 3)], &layout, 256);
     let weight_maps = &culled.weight_maps;
 
     assert_eq!(
@@ -732,7 +764,10 @@ fn animated_atlas_over_budget_names_budget_and_found_bytes() {
     let AnimatedWeightMapBakeError::AtlasOverBudget {
         budget_bytes,
         found_bytes,
-    } = err;
+    } = err
+    else {
+        panic!("expected an over-budget error, got {err}");
+    };
     assert_eq!(budget_bytes, 1);
     assert_eq!(found_bytes, 64 * 64 * 2 * 12);
     let message = AnimatedWeightMapBakeError::AtlasOverBudget {
@@ -1394,4 +1429,189 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
     );
     assert!(ax2 + w2 <= atlas_size);
     assert!(ay2 + h2 <= atlas_size);
+}
+
+/// Both floors of `two_separate_floor_geometry` (cells 0 and 1) prepared with
+/// one static light, so vertices carry block ids, plus one full-face animated
+/// chunk per face and the baked identity section.
+fn two_cell_block_fixture() -> (
+    GeometryResult,
+    crate::lightmap_bake::PreparedAtlas,
+    AnimatedLightChunksSection,
+    AnimatedLightWeightMapsSection,
+) {
+    let mut geo = two_separate_floor_geometry();
+    let static_light = {
+        let mut light = animated_point_light_above();
+        light.animation = None;
+        light
+    };
+    let statics = [static_light];
+    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&statics);
+    let prepared = crate::lightmap_bake::prepare_atlas(&mut geo, &static_lights, 0.25, &[])
+        .expect("fixture prepares");
+    let (bvh, primitives, _) = build_bvh(&geo).expect("fixture BVH");
+    let chunks = prepared
+        .charts
+        .iter()
+        .enumerate()
+        .map(|(face, chart)| AnimatedLightChunk {
+            aabb_min: [0.0; 3],
+            face_index: face as u32,
+            aabb_max: [3.0, 0.0, 1.0],
+            index_offset: 0,
+            uv_min: chart.uv_min,
+            uv_max: [
+                chart.uv_min[0] + chart.uv_extent[0],
+                chart.uv_min[1] + chart.uv_extent[1],
+            ],
+            index_count: 1,
+            _padding: 0,
+        })
+        .collect();
+    let chunk_section = AnimatedLightChunksSection {
+        chunks,
+        light_indices: vec![0],
+    };
+    let mut wide_light = animated_point_light_above();
+    wide_light.falloff_range = 20.0;
+    let lights = [wide_light];
+    let section = bake_animated_light_weight_maps(&WeightMapInputs {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geo,
+        chunk_section: &chunk_section,
+        lights: &lights,
+        face_charts: &prepared.charts,
+        face_placements: &prepared.placements,
+        layout: &prepared.layout,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        static_atlas_layer_count: prepared.layer_count,
+        area_sample_count: 1,
+    })
+    .expect("charts stay inside their cell blocks");
+    (geo, prepared, chunk_section, section)
+}
+
+/// AC 6 (compiler half): every animated block's key, resolved through its
+/// cell block's bake-layer origin, lands on its face's chart placement, and
+/// every chunk's block-local origin lands on the bake-layer rect the chunk
+/// was baked at; the compact repack keeps both.
+#[test]
+fn animated_block_keys_address_the_same_chart_texels_as_their_bake_layer_rects() {
+    let (geo, prepared, chunk_section, mut section) = two_cell_block_fixture();
+    let layout = &prepared.layout;
+    assert_eq!(section.blocks.len(), 2);
+    assert!(
+        layout.blocks.iter().any(|b| b.x > 0 || b.y > 0),
+        "fixture must rebase through a nonzero cell-block origin"
+    );
+
+    let resolve = |lightmap_block: u32, x: u32, y: u32| {
+        let cell = &layout.blocks[lightmap_block as usize];
+        (cell.layer, cell.x + x, cell.y + y)
+    };
+    for (face, block) in section.blocks.iter().enumerate() {
+        let placement = prepared.placements[face];
+        assert_eq!(block.lightmap_block, layout.chart_blocks[face]);
+        assert_eq!(
+            resolve(
+                block.lightmap_block,
+                u32::from(block.block_x),
+                u32::from(block.block_y)
+            ),
+            (placement.layer, placement.x, placement.y),
+            "face {face}'s key must resolve to its chart placement"
+        );
+    }
+    let bake_origins: Vec<_> = chunk_section
+        .chunks
+        .iter()
+        .map(|chunk| {
+            let face = chunk.face_index as usize;
+            let placement = prepared.placements[face];
+            let (x, y, _, _) = super::static_atlas_frame::chunk_atlas_rect(
+                &prepared.charts[face],
+                placement,
+                chunk.uv_min,
+                chunk.uv_max,
+                prepared.atlas_width,
+                prepared.atlas_height,
+            );
+            (placement.layer, x, y)
+        })
+        .collect();
+    let block_origins = |section: &AnimatedLightWeightMapsSection| -> Vec<_> {
+        (0..section.chunk_rects.len())
+            .map(|index| {
+                let (block, x, y) = section.chunk_block_origin(index).unwrap();
+                resolve(block, x, y)
+            })
+            .collect()
+    };
+    assert_eq!(block_origins(&section), bake_origins);
+
+    crate::animated_atlas_layout::choose_compact_layout(&mut section, layout, prepared.atlas_width);
+    assert_eq!(
+        block_origins(&section),
+        bake_origins,
+        "the compact repack must not move a chunk's cell-block key"
+    );
+
+    let face_blocks = crate::animated_block_ids::face_blocks(
+        &chunk_section,
+        &section,
+        geo.face_index_ranges.len(),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::animated_block_ids::validate_block_guards(
+            &geo.geometry,
+            &geo.face_index_ranges,
+            &section,
+            &face_blocks,
+            layout,
+        ),
+        Ok(()),
+        "vertex footprints resolve inside their placements in the block frame"
+    );
+}
+
+/// AC 6 (compiler half): a rect leaving its cell block cannot be keyed in it.
+#[test]
+fn animated_rebase_rejects_a_rect_outside_its_cell_block() {
+    let (_, prepared, _, _) = two_cell_block_fixture();
+    let layout = &prepared.layout;
+    let face = 1;
+    let chart = &prepared.charts[face];
+    let placement = prepared.placements[face];
+    let (width, height) = (chart.width_texels, chart.height_texels);
+    assert!(rebase_to_cell_block(layout, face, placement, width, height).is_ok());
+
+    let cell = layout.blocks[layout.chart_blocks[face] as usize];
+    let past_right = ChartPlacement {
+        x: cell.x + cell.width - width + 1,
+        ..placement
+    };
+    let other_layer = ChartPlacement {
+        layer: placement.layer + 1,
+        ..placement
+    };
+    let before_origin = ChartPlacement {
+        x: cell.x.wrapping_sub(1),
+        ..placement
+    };
+    for outside in [past_right, other_layer, before_origin] {
+        let error = rebase_to_cell_block(layout, face, outside, width, height)
+            .expect_err("a rect outside its cell block must be rejected");
+        assert!(
+            matches!(
+                error,
+                AnimatedWeightMapBakeError::BlockOutsideCellBlock { face: 1, .. }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("leaves its lightmap cell block"));
+    }
 }

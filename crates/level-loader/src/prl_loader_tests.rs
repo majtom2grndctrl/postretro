@@ -2,11 +2,10 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use crate::prl_load_test_fixtures::write_prl_load_fixture;
 use log::Level;
 use postretro_level_format::alpha_lights::AlphaLightRecord;
-use postretro_level_format::cell_locator::CellLocatorChild as FormatCellLocatorChild;
 use postretro_level_format::cell_visibility::CoupledPairRecord;
-use postretro_level_format::cells::CellRecord;
 use postretro_level_format::cluster_directory::{
     ClusterRecord, ClusterResourceDomain, ClusterResourceRecord,
 };
@@ -54,99 +53,6 @@ fn cell_visibility_section_round_trips_through_runtime_lowering() {
     });
     assert_eq!(component_only.component_ids().len(), 3);
     assert_eq!(component_only.coupled_pairs().count(), 0);
-}
-
-fn write_prl_load_fixture(
-    additional_sections: impl IntoIterator<Item = prl_format::SectionBlob>,
-    name: &str,
-) -> std::path::PathBuf {
-    let mut sections = vec![
-        prl_format::SectionBlob {
-            section_id: SectionId::Geometry as u32,
-            version: 1,
-            data: GeometrySection {
-                vertices: Vec::new(),
-                indices: Vec::new(),
-                faces: Vec::new(),
-            }
-            .to_bytes(),
-        },
-        prl_format::SectionBlob {
-            section_id: SectionId::Bvh as u32,
-            version: 1,
-            data: BvhSection {
-                nodes: Vec::new(),
-                leaves: Vec::new(),
-                root_node_index: 0,
-            }
-            .to_bytes(),
-        },
-        prl_format::SectionBlob {
-            section_id: SectionId::Cells as u32,
-            version: 1,
-            data: CellsSection {
-                cells: vec![
-                    CellRecord {
-                        bounds_min: [0.0, 0.0, 0.0],
-                        bounds_max: [1.0, 1.0, 1.0],
-                        flags: 0,
-                        face_start: 0,
-                        face_count: 0,
-                        portal_ref_start: 0,
-                        portal_ref_count: 0,
-                    },
-                    CellRecord {
-                        bounds_min: [2.0, 0.0, 0.0],
-                        bounds_max: [3.0, 1.0, 1.0],
-                        flags: 0,
-                        face_start: 0,
-                        face_count: 0,
-                        portal_ref_start: 0,
-                        portal_ref_count: 0,
-                    },
-                ],
-                portal_refs: Vec::new(),
-            }
-            .to_bytes(),
-        },
-        prl_format::SectionBlob {
-            section_id: SectionId::CellLocator as u32,
-            version: 1,
-            data: CellLocatorSection {
-                root: FormatCellLocatorChild::Node(0),
-                nodes: vec![
-                    postretro_level_format::cell_locator::CellLocatorNodeRecord {
-                        plane_normal: [1.0, 0.0, 0.0],
-                        plane_distance: 1.5,
-                        front: FormatCellLocatorChild::Cell(0),
-                        back: FormatCellLocatorChild::Cell(1),
-                    },
-                ],
-            }
-            .to_bytes(),
-        },
-        prl_format::SectionBlob {
-            section_id: SectionId::OctahedralShVolume as u32,
-            version: 1,
-            data: OctahedralShVolumeSection::placeholder().to_bytes(),
-        },
-        prl_format::SectionBlob {
-            section_id: SectionId::TextureCacheKeys as u32,
-            version: 1,
-            data: TextureCacheKeysSection::default().to_bytes(),
-        },
-        prl_format::SectionBlob {
-            section_id: SectionId::FogVolumes as u32,
-            version: 1,
-            data: FogVolumesSection::default().to_bytes(),
-        },
-    ];
-    sections.extend(additional_sections);
-
-    let path = std::env::temp_dir().join(name);
-    let mut file = std::fs::File::create(&path).unwrap();
-    prl_format::write_prl(&mut file, &sections).unwrap();
-    path
 }
 
 #[test]

@@ -1,174 +1,51 @@
-// Directional lightmap section (ID 22): atlas-packed per-texel irradiance plus
-// dominant incoming-light direction for static (non-dynamic) lights.
-// See: context/lib/rendering_pipeline.md §4, context/lib/build_pipeline.md §PRL
+// Lightmap PRL section (ID 22): per-cell static lightmap blocks.
+// See: context/lib/build_pipeline.md §PRL section IDs, rendering_pipeline.md §4
 
 use crate::FormatError;
 
-/// Byte stride of one irradiance texel for the **RGBA16F path only**: 4 half-floats = 8 bytes.
-/// Not applicable to BC6H, which encodes 4×4 texel blocks (16 bytes each, so
-/// `ceil(w/4)·ceil(h/4)·16` bytes total). Alpha is currently unused (carries no AO
-/// term yet) and is written as 1.0 so fallback samplers that read alpha don't
-/// misinterpret it as transparency.
+/// Irradiance texel byte width for the uncompressed `Rgba16Float` path.
 pub const IRRADIANCE_TEXEL_BYTES: usize = 8;
-
-/// Byte stride of one current direction texel on disk: Rg8Unorm, 2 bytes.
-/// The octahedral unit direction occupies `rg`; static direction sampling is
-/// nearest, so no padding channel is needed.
+/// Direction texel byte width: two octahedral `Rg8Unorm` components.
 pub const DIRECTION_TEXEL_BYTES: usize = 2;
 
-/// Byte stride of a legacy Rgba8Unorm direction texel. The loader still
-/// accepts this tag so existing PRLs can be inspected without migration.
-pub const DIRECTION_RGBA8_TEXEL_BYTES: usize = 4;
+/// v3: per-cell blocks. v2 was layer-major whole atlases; `from_bytes` rejects
+/// every version but this one.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 3;
 
-/// v2 section format version. Pre-v2 sections had no version field (their first
-/// u32 was `width`); `from_bytes` rejects any value other than this.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 2;
+/// Fixed header: version, block_count, direction_texel_scale,
+/// irradiance_format, mode.
+pub const LIGHTMAP_HEADER_BYTES: usize = 20;
 
-/// Fixed 48-byte v2 header preceding the two layer-major texel blobs.
-const HEADER_SIZE: usize = 48;
+/// One block record: cell_id u32, width u16, height u16, irradiance_offset
+/// u64, irradiance_len u32, direction_offset u64, direction_len u32,
+/// reserved u32.
+pub const LIGHTMAP_BLOCK_RECORD_BYTES: usize = 36;
 
-/// Directional lightmap atlas (multi-layer, format version 2).
-///
-/// Irradiance and direction are independent `texture_2d_array` atlases sharing
-/// a single `layer_count`. Their per-layer dimensions and texel densities are
-/// decoupled — the irradiance and direction atlases need not match in size.
-/// Charts that overflow one layer spill into additional layers, so the blob for
-/// each atlas is layer-major: layer 0's texels, then layer 1's, and so on.
-///
-/// On-disk layout (all little-endian):
-///
-/// ```text
-///   Header (48 bytes):
-///     u32 version            (= LIGHTMAP_SECTION_VERSION = 2)
-///     u32 layer_count        (shared by both atlases; >= 1)
-///     u32 irr_width          (per-layer texel width;  pow2, >= 4)
-///     u32 irr_height         (per-layer texel height; pow2, >= 4)
-///     f32 irr_texel_density  (m/texel at bake time; informational)
-///     u32 irr_format         (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
-///     u32 irr_total_bytes    (byte count for ALL irradiance layers combined)
-///     u32 dir_width          (per-layer texel width;  pow2, >= 1)
-///     u32 dir_height         (per-layer texel height; pow2, >= 1)
-///     f32 dir_texel_density  (m/texel; informational; may differ from irr)
-///     u32 dir_format         (0 = legacy Rgba8Unorm octahedral,
-///                              1 = Rg8Unorm octahedral)
-///     u32 dir_total_bytes    (byte count for ALL direction layers combined)
-///
-///   Irradiance blob (irr_total_bytes bytes): layer-major.
-///     Each layer is irr_width × irr_height texels in irr_format layout:
-///       Rgba16Float:   u16 × 4 per texel, row-major (y * irr_width + x)
-///       Bc6hRgbUfloat: ceil(w/4)·ceil(h/4)·16 bytes of row-major 4×4 blocks
-///
-///   Direction blob (dir_total_bytes bytes): layer-major.
-///     Each layer is dir_width × dir_height × `direction_texel_bytes` bytes
-///     (the selected octahedral format, row-major y * dir_width + x).
-///
-///   Optional LMOD trailer (8 bytes; omitted when mode = Shadowed), at offset
-///   48 + irr_total_bytes + dir_total_bytes:
-///     u32 magic (= LIGHTMAP_MODE_TRAILER_MAGIC)
-///     u32 mode  (LightmapMode discriminant — 0 = shadowed, 1 = unshadowed)
-/// ```
-///
-/// The header carries explicit `irr_total_bytes`/`dir_total_bytes`; `from_bytes`
-/// verifies each against the selected format's exact layer-major layout before
-/// slicing either blob.
-///
-/// Irradiance texels for atlas positions not covered by any face chart are
-/// zero. Edge dilation is applied at bake time so bilinear sampling at chart
-/// boundaries pulls valid neighbours instead of black.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LightmapSection {
-    /// Number of array layers shared by the irradiance and direction atlases.
-    /// Always `>= 1`; single-layer bakes write `1`.
-    pub layer_count: u32,
-    /// Per-layer irradiance texel width.
-    pub irr_width: u32,
-    /// Per-layer irradiance texel height.
-    pub irr_height: u32,
-    /// World-space meters-per-texel used at bake time for the irradiance atlas.
-    /// Informational — the runtime samples through per-vertex lightmap UVs and
-    /// does not derive world-space sizes from this field.
-    pub irr_texel_density: f32,
-    /// Layer-major irradiance blob (all layers concatenated). Layout per layer
-    /// depends on `irr_format`: `IRRADIANCE_FORMAT_RGBA16F` (0) is row-major
-    /// `Rgba16Float` (`w·h·8` bytes per layer); `IRRADIANCE_FORMAT_BC6H` (1) is
-    /// row-major 4×4 `Bc6hRgbUfloat` blocks (`ceil(w/4)·ceil(h/4)·16` per layer).
-    pub irradiance: Vec<u8>,
-    /// Format tag for `irradiance` — one of `IRRADIANCE_FORMAT_RGBA16F` or
-    /// `IRRADIANCE_FORMAT_BC6H`. Written into the section header; the runtime
-    /// branches its texture format on this value. `LightmapSection::placeholder`
-    /// always emits RGBA16F; the bake chooses BC6H vs RGBA16F via
-    /// `LightmapConfig::uncompressed_irradiance`.
-    pub irradiance_format: u32,
-    /// Per-layer direction texel width.
-    pub dir_width: u32,
-    /// Per-layer direction texel height.
-    pub dir_height: u32,
-    /// World-space meters-per-texel used at bake time for the direction atlas.
-    /// Informational; may differ from `irr_texel_density`.
-    pub dir_texel_density: f32,
-    /// Layer-major direction blob in `direction_format`, octahedral and
-    /// row-major per layer.
-    pub direction: Vec<u8>,
-    /// Format tag for `direction`. New bakes use `DIRECTION_FORMAT_OCT_RG8`;
-    /// the legacy `DIRECTION_FORMAT_OCT_RGBA8` tag stays accepted for loading
-    /// older PRLs without a migration.
-    pub direction_format: u32,
-    /// Which bake produced the irradiance. `Shadowed` (default) folds static-light
-    /// shadows into irradiance — the `main` behavior, written without a trailer so
-    /// output is byte-identical to `main`. `Unshadowed` writes a trailer recording
-    /// the mode so the runtime can multiply runtime SDF visibility into the static
-    /// term without double-shadowing.
-    pub mode: LightmapMode,
-}
+/// Edge of one runtime pool layer. No block may exceed it on either axis;
+/// the compiler rejects such a level and the loader rejects such a record.
+pub const LIGHTMAP_POOL_LAYER_EDGE: u32 = 2048;
 
-/// Format tag for the irradiance blob. Uncompressed `Rgba16Float` (4 half-floats
-/// per texel, `w·h·8` bytes total). Used in two cases: (1) the bake's debug
-/// bypass (`LightmapConfig::uncompressed_irradiance = true`), and (2) all
-/// placeholder sections (`LightmapSection::placeholder` always emits RGBA16F —
-/// placeholders never go through BC6H). `to_bytes` writes the blob length into
-/// the header; `from_bytes` verifies it against the format dimensions before
-/// accepting the payload.
+/// Most blocks a level may carry. A vertex names its block as `id + 1` in a
+/// `u16`, with 0 meaning "no lightmap", so ids stop one short of `u16::MAX`.
+pub const MAX_LIGHTMAP_BLOCKS: u32 = u16::MAX as u32 - 1;
+
+/// BC texel block edge. Every block edge is a multiple of it and of the
+/// direction texel scale.
+const BC_BLOCK_EDGE: u32 = 4;
+const BC6H_BLOCK_BYTES: u64 = 16;
+
+/// Format tag for uncompressed `Rgba16Float` irradiance (debug bake and tests).
 pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 
-/// Format tag for the irradiance blob. Block-compressed `Bc6hRgbUfloat` — 4×4
-/// texel blocks, 16 bytes each (`ceil(w/4)·ceil(h/4)·16` total). RGB-only;
-/// alpha is dropped at bake time and reconstructed as 1.0 by the shader's
-/// `.rgb` swizzle (the shader never reads `.a` from the irradiance atlas).
-/// The runtime branches on this tag to choose `Bc6hRgbUfloat` vs `Rgba16Float`
-/// at texture creation; the BGL is sample-type only so both bind to the same
-/// `Float { filterable: true }` slot through the linear sampler.
+/// Format tag for `Bc6hRgbUfloat` irradiance: 4×4 blocks, 16 bytes each.
+/// RGB only; the shader reads `.rgb`.
 pub const IRRADIANCE_FORMAT_BC6H: u32 = 1;
 
-/// Format tag for the legacy Rgba8Unorm direction blob. The octahedral
-/// direction occupies `rg`; `ba` was padding in static lightmaps.
-pub const DIRECTION_FORMAT_OCT_RGBA8: u32 = 0;
-
-/// Format tag for the current Rg8Unorm direction blob. It stores exactly the
-/// two octahedral components consumed by the static forward shader.
-pub const DIRECTION_FORMAT_OCT_RG8: u32 = 1;
-
-/// Magic tag introducing the bake-mode trailer, ASCII `"LMOD"` little-endian.
-/// Trailer layout (8 bytes total) appended *after* the direction blob:
+/// Selects how the lightmap was baked.
 ///
-/// ```text
-///   u32 trailer_magic (= LIGHTMAP_MODE_TRAILER_MAGIC)
-///   u32 mode          (LightmapMode discriminant — 0 = shadowed, 1 = unshadowed)
-/// ```
-///
-/// The base `from_bytes` parser only consumes `HEADER_SIZE + irr_total_bytes +
-/// dir_total_bytes` bytes; trailing bytes are silently ignored. Sections written
-/// without a trailer (shadowed bake) parse
-/// as `LightmapMode::Shadowed` — `main`'s baked-shadow behavior. The shadowed
-/// bake writes no trailer, preserving byte-for-byte parity with `main`.
-pub const LIGHTMAP_MODE_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"LMOD");
-
-/// Selects how the lightmap atlas was baked.
-///
-/// - `Shadowed` (default): static-light shadows are folded into the irradiance
-///   value — the `main` bake. Texels occluded from a static light are dark.
-/// - `Unshadowed`: full static-light irradiance + bounce with **no** visibility
-///   term. Texels occluded from a static light still receive its full irradiance.
-///   Runtime SDF supplies visibility separately to avoid double-shadowing.
+/// - `Shadowed` (default): static-light shadows are folded into irradiance.
+/// - `Unshadowed`: full static-light irradiance with no visibility term; the
+///   runtime multiplies SDF visibility into the static term instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
     #[default]
@@ -193,341 +70,483 @@ impl LightmapMode {
     }
 }
 
-fn is_placeholder_extent(width: u32, height: u32, layers: u32) -> bool {
-    width == 1 && height == 1 && layers == 1
+/// A byte range inside a section payload, measured from the payload start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionByteRange {
+    pub offset: u64,
+    pub len: u32,
 }
 
-impl LightmapHeader {
-    /// Whether this header describes the 1×1 placeholder section. Without a
-    /// real static atlas the animated lightmap has no coordinate space, so the
-    /// level takes the no-animated-light path.
-    pub fn is_placeholder(&self) -> bool {
-        is_placeholder_extent(self.irr_width, self.irr_height, self.layer_count)
+impl SectionByteRange {
+    /// One past the last byte, or `None` on overflow.
+    pub fn end(&self) -> Option<u64> {
+        self.offset.checked_add(u64::from(self.len))
     }
 }
 
-/// A `LightmapSection` without its payload blobs: the dimensions and formats
-/// install-time atlas sizing and the renderer's usability filter read. The
-/// blobs live in [`LightmapPayloads`] so the GPU upload can own and drop them.
-#[derive(Debug, Clone, PartialEq)]
+/// Fixed header of a v3 lightmap section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LightmapHeader {
-    pub layer_count: u32,
-    pub irr_width: u32,
-    pub irr_height: u32,
-    pub irr_texel_density: f32,
+    pub block_count: u32,
+    /// Irradiance texels per direction texel along each axis (>= 1).
+    pub direction_texel_scale: u32,
     pub irradiance_format: u32,
-    pub dir_width: u32,
-    pub dir_height: u32,
-    pub dir_texel_density: f32,
-    pub direction_format: u32,
     pub mode: LightmapMode,
 }
 
-/// The layer-major blobs a `LightmapSection` carries beside its header.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct LightmapPayloads {
+impl LightmapHeader {
+    /// Every block edge must be a multiple of this: both the BC block edge
+    /// and the direction texel scale.
+    pub fn block_alignment(&self) -> u32 {
+        lcm(BC_BLOCK_EDGE, self.direction_texel_scale.max(1))
+    }
+
+    /// Bytes of header plus records: the prefix a streaming loader reads
+    /// before any blob.
+    pub fn index_byte_len(&self) -> Option<u64> {
+        u64::from(self.block_count)
+            .checked_mul(LIGHTMAP_BLOCK_RECORD_BYTES as u64)?
+            .checked_add(LIGHTMAP_HEADER_BYTES as u64)
+    }
+
+    /// Expected irradiance blob bytes for a `width × height` block.
+    pub fn irradiance_len(&self, width: u32, height: u32) -> Option<u64> {
+        let (w, h) = (u64::from(width), u64::from(height));
+        match self.irradiance_format {
+            IRRADIANCE_FORMAT_RGBA16F => {
+                w.checked_mul(h)?.checked_mul(IRRADIANCE_TEXEL_BYTES as u64)
+            }
+            IRRADIANCE_FORMAT_BC6H => w
+                .div_ceil(4)
+                .checked_mul(h.div_ceil(4))?
+                .checked_mul(BC6H_BLOCK_BYTES),
+            _ => None,
+        }
+    }
+
+    /// Direction extent of a `width × height` block.
+    pub fn direction_extent(&self, width: u32, height: u32) -> (u32, u32) {
+        let scale = self.direction_texel_scale.max(1);
+        (width / scale, height / scale)
+    }
+
+    /// Expected direction blob bytes for a `width × height` block.
+    pub fn direction_len(&self, width: u32, height: u32) -> Option<u64> {
+        let (dw, dh) = self.direction_extent(width, height);
+        u64::from(dw)
+            .checked_mul(u64::from(dh))?
+            .checked_mul(DIRECTION_TEXEL_BYTES as u64)
+    }
+
+    /// Parse the fixed header. Rejects an older or unknown version, an unknown
+    /// irradiance format or mode, a zero direction scale, and a block count
+    /// past [`MAX_LIGHTMAP_BLOCKS`].
+    pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
+        if data.len() < LIGHTMAP_HEADER_BYTES {
+            return Err(eof("lightmap section too short for header"));
+        }
+        let version = read_u32(data, 0);
+        if version != LIGHTMAP_SECTION_VERSION {
+            return Err(invalid(format!(
+                "unsupported lightmap section version: {version} (expected {LIGHTMAP_SECTION_VERSION}); re-bake the level"
+            )));
+        }
+        let block_count = read_u32(data, 4);
+        let direction_texel_scale = read_u32(data, 8);
+        let irradiance_format = read_u32(data, 12);
+        let raw_mode = read_u32(data, 16);
+        if block_count > MAX_LIGHTMAP_BLOCKS {
+            return Err(invalid(format!(
+                "lightmap block count {block_count} exceeds the vertex id limit {MAX_LIGHTMAP_BLOCKS}"
+            )));
+        }
+        if direction_texel_scale == 0 {
+            return Err(invalid("lightmap direction texel scale must be nonzero"));
+        }
+        if !matches!(
+            irradiance_format,
+            IRRADIANCE_FORMAT_RGBA16F | IRRADIANCE_FORMAT_BC6H
+        ) {
+            return Err(invalid(format!(
+                "unsupported lightmap irradiance format: {irradiance_format}"
+            )));
+        }
+        let mode = LightmapMode::from_u32(raw_mode)
+            .ok_or_else(|| invalid(format!("unsupported lightmap mode: {raw_mode}")))?;
+        Ok(Self {
+            block_count,
+            direction_texel_scale,
+            irradiance_format,
+            mode,
+        })
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&LIGHTMAP_SECTION_VERSION.to_le_bytes());
+        out.extend_from_slice(&self.block_count.to_le_bytes());
+        out.extend_from_slice(&self.direction_texel_scale.to_le_bytes());
+        out.extend_from_slice(&self.irradiance_format.to_le_bytes());
+        out.extend_from_slice(&self.mode.as_u32().to_le_bytes());
+    }
+}
+
+/// One block's index record. Block id is the record's index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LightmapBlockRecord {
+    /// Runtime cell whose charts this block holds.
+    pub cell_id: u32,
+    pub width: u16,
+    pub height: u16,
+    pub irradiance: SectionByteRange,
+    pub direction: SectionByteRange,
+}
+
+/// Header plus every block record: what a loaded level keeps CPU-side for
+/// its lifetime, and all a streaming loader reads before blobs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightmapBlockIndex {
+    pub header: LightmapHeader,
+    pub records: Vec<LightmapBlockRecord>,
+}
+
+impl LightmapBlockIndex {
+    /// Parse and validate the index from the section prefix. `prefix` must
+    /// hold at least [`LightmapHeader::index_byte_len`] bytes; `section_len`
+    /// is the whole section's length, which every blob range must fit inside.
+    ///
+    /// Rejects: a record with a zero, misaligned, or pool-layer-oversize
+    /// extent; a blob length that disagrees with the block's extent and
+    /// format; a blob range that overlaps the index or leaves the section; a
+    /// nonzero reserved field.
+    pub fn from_prefix(prefix: &[u8], section_len: u64) -> crate::Result<Self> {
+        let header = LightmapHeader::from_bytes(prefix)?;
+        let index_len = header
+            .index_byte_len()
+            .ok_or_else(|| invalid("lightmap index length overflows"))?;
+        if (prefix.len() as u64) < index_len {
+            return Err(eof(format!(
+                "lightmap index truncated: need {index_len} bytes, got {}",
+                prefix.len()
+            )));
+        }
+        if section_len < index_len {
+            return Err(eof(format!(
+                "lightmap section of {section_len} bytes cannot hold its {index_len}-byte index"
+            )));
+        }
+        let align = header.block_alignment();
+        let mut records = Vec::with_capacity(header.block_count as usize);
+        for block in 0..header.block_count as usize {
+            let at = LIGHTMAP_HEADER_BYTES + block * LIGHTMAP_BLOCK_RECORD_BYTES;
+            let record = LightmapBlockRecord {
+                cell_id: read_u32(prefix, at),
+                width: read_u16(prefix, at + 4),
+                height: read_u16(prefix, at + 6),
+                irradiance: SectionByteRange {
+                    offset: read_u64(prefix, at + 8),
+                    len: read_u32(prefix, at + 16),
+                },
+                direction: SectionByteRange {
+                    offset: read_u64(prefix, at + 20),
+                    len: read_u32(prefix, at + 28),
+                },
+            };
+            let reserved = read_u32(prefix, at + 32);
+            if reserved != 0 {
+                return Err(invalid(format!(
+                    "lightmap block {block} has nonzero reserved field {reserved:#x}"
+                )));
+            }
+            validate_record(&header, block, &record, align, index_len, section_len)?;
+            records.push(record);
+        }
+        Ok(Self { header, records })
+    }
+
+    /// Block extent in texels.
+    pub fn extent(&self, block: usize) -> Option<(u32, u32)> {
+        self.records
+            .get(block)
+            .map(|r| (u32::from(r.width), u32::from(r.height)))
+    }
+}
+
+fn validate_record(
+    header: &LightmapHeader,
+    block: usize,
+    record: &LightmapBlockRecord,
+    align: u32,
+    index_len: u64,
+    section_len: u64,
+) -> crate::Result<()> {
+    let (w, h) = (u32::from(record.width), u32::from(record.height));
+    if w == 0 || h == 0 {
+        return Err(invalid(format!(
+            "lightmap block {block} has zero extent {w}x{h}"
+        )));
+    }
+    if w > LIGHTMAP_POOL_LAYER_EDGE || h > LIGHTMAP_POOL_LAYER_EDGE {
+        return Err(invalid(format!(
+            "lightmap block {block} extent {w}x{h} exceeds the {LIGHTMAP_POOL_LAYER_EDGE}² pool layer"
+        )));
+    }
+    if w % align != 0 || h % align != 0 {
+        return Err(invalid(format!(
+            "lightmap block {block} extent {w}x{h} is not a multiple of {align}"
+        )));
+    }
+    let expected_irr = header
+        .irradiance_len(w, h)
+        .ok_or_else(|| invalid("lightmap irradiance length overflows"))?;
+    let expected_dir = header
+        .direction_len(w, h)
+        .ok_or_else(|| invalid("lightmap direction length overflows"))?;
+    check_blob(
+        "lightmap",
+        block,
+        "irradiance",
+        record.irradiance,
+        expected_irr,
+        index_len,
+        section_len,
+    )?;
+    check_blob(
+        "lightmap",
+        block,
+        "direction",
+        record.direction,
+        expected_dir,
+        index_len,
+        section_len,
+    )
+}
+
+/// Shared by ids 22 and 42: a blob has its exact expected length and lies
+/// after the index, inside the section.
+pub(crate) fn check_blob(
+    section: &str,
+    block: usize,
+    what: &str,
+    range: SectionByteRange,
+    expected_len: u64,
+    index_len: u64,
+    section_len: u64,
+) -> crate::Result<()> {
+    if u64::from(range.len) != expected_len {
+        return Err(invalid(format!(
+            "{section} block {block} {what} blob is {} bytes, expected {expected_len}",
+            range.len
+        )));
+    }
+    let end = range
+        .end()
+        .ok_or_else(|| invalid(format!("{section} block {block} {what} range overflows")))?;
+    if range.offset < index_len || end > section_len {
+        return Err(invalid(format!(
+            "{section} block {block} {what} range {}..{end} lies outside the section blobs {index_len}..{section_len}",
+            range.offset
+        )));
+    }
+    Ok(())
+}
+
+/// One block's baked texels in their stored formats.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightmapBlock {
+    pub cell_id: u32,
+    pub width: u16,
+    pub height: u16,
     pub irradiance: Vec<u8>,
     pub direction: Vec<u8>,
 }
 
+/// A whole v3 lightmap section in memory: the compiler's output, and the
+/// all-resident loader's input. A streaming loader never builds one; it keeps
+/// a [`LightmapBlockIndex`] and reads blob ranges.
+///
+/// On-disk layout (little-endian; offsets from the payload start):
+///
+/// ```text
+///   Header (20 bytes):
+///     u32 version                (= 3)
+///     u32 block_count            (<= MAX_LIGHTMAP_BLOCKS)
+///     u32 direction_texel_scale  (>= 1)
+///     u32 irradiance_format      (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
+///     u32 mode                   (LightmapMode: 0 = shadowed, 1 = unshadowed)
+///   block_count records (36 bytes each), block id = record index:
+///     u32 cell_id
+///     u16 width, u16 height      (multiples of lcm(4, direction_texel_scale),
+///                                 each <= LIGHTMAP_POOL_LAYER_EDGE)
+///     u64 irradiance_offset, u32 irradiance_len
+///     u64 direction_offset,  u32 direction_len   (Rg8, extent / scale)
+///     u32 reserved (= 0)
+///   Blobs, in record order: each block's irradiance, then its direction.
+/// ```
+///
+/// Records and blobs are sorted by owning cluster, then cell id; the
+/// compiler owns that order. Zero blocks is a valid header with no records:
+/// a map without static baked light.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightmapSection {
+    pub direction_texel_scale: u32,
+    pub irradiance_format: u32,
+    pub mode: LightmapMode,
+    pub blocks: Vec<LightmapBlock>,
+}
+
 impl LightmapSection {
-    /// Split into the header a loaded level keeps and the blobs only the GPU
-    /// upload reads. Moves the blobs; copies nothing.
-    pub fn into_parts(self) -> (LightmapHeader, LightmapPayloads) {
-        let Self {
-            layer_count,
-            irr_width,
-            irr_height,
-            irr_texel_density,
-            irradiance,
-            irradiance_format,
-            dir_width,
-            dir_height,
-            dir_texel_density,
-            direction,
-            direction_format,
-            mode,
-        } = self;
-        (
-            LightmapHeader {
-                layer_count,
-                irr_width,
-                irr_height,
-                irr_texel_density,
-                irradiance_format,
-                dir_width,
-                dir_height,
-                dir_texel_density,
-                direction_format,
-                mode,
-            },
-            LightmapPayloads {
-                irradiance,
-                direction,
-            },
-        )
-    }
-
-    /// Whether this is the 1×1 [`Self::placeholder`] a map without static
-    /// baked lights carries. A real bake is never smaller than 64².
-    pub fn is_placeholder(&self) -> bool {
-        is_placeholder_extent(self.irr_width, self.irr_height, self.layer_count)
-    }
-
-    /// Build an empty placeholder section: 1×1 white irradiance + neutral
-    /// direction. Used by the compiler when a map has no static lights so
-    /// downstream consumers always see a valid section.
-    pub fn placeholder() -> Self {
-        // White irradiance (1.0, 1.0, 1.0, 1.0) as four half-floats.
-        let one_half = f32_to_f16_bits(1.0);
-        let mut irradiance = Vec::with_capacity(IRRADIANCE_TEXEL_BYTES);
-        for _ in 0..4 {
-            irradiance.extend_from_slice(&one_half.to_le_bytes());
-        }
-        // Neutral direction: encode (0, 1, 0) octahedral = (0.5, 1.0) remapped
-        // to (128, 255).
-        let direction = vec![128u8, 255];
+    /// A section with no blocks: every vertex carries block 0 ("no lightmap").
+    pub fn empty(direction_texel_scale: u32) -> Self {
         Self {
-            layer_count: 1,
-            irr_width: 1,
-            irr_height: 1,
-            irr_texel_density: 1.0,
-            irradiance,
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: 1,
-            dir_height: 1,
-            dir_texel_density: 1.0,
-            direction,
-            direction_format: DIRECTION_FORMAT_OCT_RG8,
+            direction_texel_scale,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
             mode: LightmapMode::Shadowed,
+            blocks: Vec::new(),
         }
+    }
+
+    pub fn header(&self) -> LightmapHeader {
+        LightmapHeader {
+            block_count: self.blocks.len() as u32,
+            direction_texel_scale: self.direction_texel_scale,
+            irradiance_format: self.irradiance_format,
+            mode: self.mode,
+        }
+    }
+
+    /// The index this section serializes with: records carry the blob ranges
+    /// `to_bytes` writes.
+    pub fn index(&self) -> LightmapBlockIndex {
+        let header = self.header();
+        let mut cursor = header.index_byte_len().unwrap_or(0);
+        let records = self
+            .blocks
+            .iter()
+            .map(|block| {
+                let irradiance = SectionByteRange {
+                    offset: cursor,
+                    len: block.irradiance.len() as u32,
+                };
+                cursor += block.irradiance.len() as u64;
+                let direction = SectionByteRange {
+                    offset: cursor,
+                    len: block.direction.len() as u32,
+                };
+                cursor += block.direction.len() as u64;
+                LightmapBlockRecord {
+                    cell_id: block.cell_id,
+                    width: block.width,
+                    height: block.height,
+                    irradiance,
+                    direction,
+                }
+            })
+            .collect();
+        LightmapBlockIndex { header, records }
     }
 
     pub fn byte_len(&self) -> usize {
-        HEADER_SIZE
-            + self.irradiance.len()
-            + self.direction.len()
-            + if self.mode == LightmapMode::Shadowed {
-                0
-            } else {
-                8
-            }
+        LIGHTMAP_HEADER_BYTES
+            + self.blocks.len() * LIGHTMAP_BLOCK_RECORD_BYTES
+            + self
+                .blocks
+                .iter()
+                .map(|b| b.irradiance.len() + b.direction.len())
+                .sum::<usize>()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let irr_total_bytes = self.irradiance.len() as u32;
-        let dir_total_bytes = self.direction.len() as u32;
-        // Shadowed mode is the legacy/default — write no trailer so output is
-        // byte-identical to `main` for the same bake inputs.
-        let trailer_bytes = if self.mode == LightmapMode::Shadowed {
-            0
-        } else {
-            8
-        };
-        let mut buf = Vec::with_capacity(
-            HEADER_SIZE + self.irradiance.len() + self.direction.len() + trailer_bytes,
-        );
-        buf.extend_from_slice(&LIGHTMAP_SECTION_VERSION.to_le_bytes());
-        buf.extend_from_slice(&self.layer_count.to_le_bytes());
-        buf.extend_from_slice(&self.irr_width.to_le_bytes());
-        buf.extend_from_slice(&self.irr_height.to_le_bytes());
-        buf.extend_from_slice(&self.irr_texel_density.to_le_bytes());
-        buf.extend_from_slice(&self.irradiance_format.to_le_bytes());
-        buf.extend_from_slice(&irr_total_bytes.to_le_bytes());
-        buf.extend_from_slice(&self.dir_width.to_le_bytes());
-        buf.extend_from_slice(&self.dir_height.to_le_bytes());
-        buf.extend_from_slice(&self.dir_texel_density.to_le_bytes());
-        buf.extend_from_slice(&self.direction_format.to_le_bytes());
-        buf.extend_from_slice(&dir_total_bytes.to_le_bytes());
-        buf.extend_from_slice(&self.irradiance);
-        buf.extend_from_slice(&self.direction);
-        if self.mode != LightmapMode::Shadowed {
-            buf.extend_from_slice(&LIGHTMAP_MODE_TRAILER_MAGIC.to_le_bytes());
-            buf.extend_from_slice(&self.mode.as_u32().to_le_bytes());
+        let index = self.index();
+        let mut out = Vec::with_capacity(self.byte_len());
+        index.header.write(&mut out);
+        for record in &index.records {
+            out.extend_from_slice(&record.cell_id.to_le_bytes());
+            out.extend_from_slice(&record.width.to_le_bytes());
+            out.extend_from_slice(&record.height.to_le_bytes());
+            out.extend_from_slice(&record.irradiance.offset.to_le_bytes());
+            out.extend_from_slice(&record.irradiance.len.to_le_bytes());
+            out.extend_from_slice(&record.direction.offset.to_le_bytes());
+            out.extend_from_slice(&record.direction.len.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
         }
-        buf
+        for block in &self.blocks {
+            out.extend_from_slice(&block.irradiance);
+            out.extend_from_slice(&block.direction);
+        }
+        out
     }
 
+    /// Parse a whole section, validating the index against its own length.
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        if data.len() < HEADER_SIZE {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "lightmap section too short for header",
-            )));
-        }
-        let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        // Pre-v2 sections carried no version field — their first u32 was `width`.
-        // Reject anything that isn't the v2 marker, naming the value seen on disk.
-        if version != LIGHTMAP_SECTION_VERSION {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "unsupported lightmap section version: {version} (expected {LIGHTMAP_SECTION_VERSION})"
-                ),
-            )));
-        }
-        let layer_count = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let irr_width = u32::from_le_bytes(data[8..12].try_into().unwrap());
-        let irr_height = u32::from_le_bytes(data[12..16].try_into().unwrap());
-        let irr_texel_density = f32::from_le_bytes(data[16..20].try_into().unwrap());
-        let irr_format = u32::from_le_bytes(data[20..24].try_into().unwrap());
-        let irr_total_bytes = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
-        let dir_width = u32::from_le_bytes(data[28..32].try_into().unwrap());
-        let dir_height = u32::from_le_bytes(data[32..36].try_into().unwrap());
-        let dir_texel_density = f32::from_le_bytes(data[36..40].try_into().unwrap());
-        let dir_format = u32::from_le_bytes(data[40..44].try_into().unwrap());
-        let dir_total_bytes = u32::from_le_bytes(data[44..48].try_into().unwrap()) as usize;
-
-        let expected_irr_total_bytes = match irr_format {
-            IRRADIANCE_FORMAT_RGBA16F => u64::from(irr_width)
-                .checked_mul(u64::from(irr_height))
-                .and_then(|texels| texels.checked_mul(u64::from(layer_count)))
-                .and_then(|texels| texels.checked_mul(IRRADIANCE_TEXEL_BYTES as u64)),
-            IRRADIANCE_FORMAT_BC6H => u64::from(irr_width)
-                .div_ceil(4)
-                .checked_mul(u64::from(irr_height).div_ceil(4))
-                .and_then(|blocks| blocks.checked_mul(u64::from(layer_count)))
-                .and_then(|blocks| blocks.checked_mul(16)),
-            _ => {
-                return Err(FormatError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("unsupported lightmap irradiance format: {irr_format}"),
-                )));
-            }
-        }
-        .ok_or_else(|| {
-            FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "lightmap irradiance byte length overflows for {irr_width}x{irr_height}x{layer_count} format {irr_format}"
-                ),
-            ))
-        })?;
-        let actual_irr_total_bytes = u64::try_from(irr_total_bytes).map_err(|_| {
-            FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "lightmap irradiance blob length exceeds u64",
-            ))
-        })?;
-        if actual_irr_total_bytes != expected_irr_total_bytes {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "lightmap irradiance blob length {irr_total_bytes} does not match expected {expected_irr_total_bytes} bytes for {irr_width}x{irr_height}x{layer_count} format {irr_format}"
-                ),
-            )));
-        }
-        let direction_texel_bytes = match dir_format {
-            DIRECTION_FORMAT_OCT_RGBA8 => DIRECTION_RGBA8_TEXEL_BYTES,
-            DIRECTION_FORMAT_OCT_RG8 => DIRECTION_TEXEL_BYTES,
-            _ => {
-                return Err(FormatError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("unsupported lightmap direction format: {dir_format}"),
-                )));
-            }
-        };
-        if dir_width == 0 || dir_height == 0 {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "lightmap direction dimensions must be nonzero, got {dir_width}x{dir_height}"
-                ),
-            )));
-        }
-        let expected_dir_total_bytes = u64::from(dir_width)
-            .checked_mul(u64::from(dir_height))
-            .and_then(|texels| texels.checked_mul(u64::from(layer_count)))
-            .and_then(|texels| texels.checked_mul(direction_texel_bytes as u64))
-            .ok_or_else(|| {
-                FormatError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "lightmap direction byte length overflows for {dir_width}x{dir_height}x{layer_count} format {dir_format}"
-                    ),
-                ))
-            })?;
-        let actual_dir_total_bytes = u64::try_from(dir_total_bytes).map_err(|_| {
-            FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "lightmap direction blob length exceeds u64",
-            ))
-        })?;
-        if actual_dir_total_bytes != expected_dir_total_bytes {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "lightmap direction blob length {dir_total_bytes} does not match expected {expected_dir_total_bytes} bytes for {dir_width}x{dir_height}x{layer_count} format {dir_format}"
-                ),
-            )));
-        }
-
-        let expected = HEADER_SIZE
-            .checked_add(irr_total_bytes)
-            .and_then(|len| len.checked_add(dir_total_bytes))
-            .ok_or_else(|| {
-                FormatError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "lightmap section payload length overflows address space",
-                ))
-            })?;
-        if data.len() < expected {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                format!(
-                    "lightmap section too short: need {expected} bytes, got {}",
-                    data.len()
-                ),
-            )));
-        }
-
-        let irr_start = HEADER_SIZE;
-        let dir_start = irr_start + irr_total_bytes;
-        let irradiance = data[irr_start..dir_start].to_vec();
-        let direction = data[dir_start..dir_start + dir_total_bytes].to_vec();
-
-        // Optional bake-mode trailer. Legacy PRLs (and shadowed-bake output) omit
-        // it entirely; absence reads as `Shadowed` so missing-marker behavior
-        // matches `main`. A present trailer's magic must match to be honored; any
-        // other trailing bytes are ignored as forward-compat slack.
-        let trailer_start = dir_start + dir_total_bytes;
-        let mode = if data.len() >= trailer_start + 8 {
-            let magic =
-                u32::from_le_bytes(data[trailer_start..trailer_start + 4].try_into().unwrap());
-            if magic == LIGHTMAP_MODE_TRAILER_MAGIC {
-                let raw = u32::from_le_bytes(
-                    data[trailer_start + 4..trailer_start + 8]
-                        .try_into()
-                        .unwrap(),
-                );
-                LightmapMode::from_u32(raw).ok_or_else(|| {
-                    FormatError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("unsupported lightmap mode: {raw}"),
-                    ))
-                })?
-            } else {
-                LightmapMode::Shadowed
-            }
-        } else {
-            LightmapMode::Shadowed
-        };
-
+        let index = LightmapBlockIndex::from_prefix(data, data.len() as u64)?;
+        let blocks = index
+            .records
+            .iter()
+            .map(|record| LightmapBlock {
+                cell_id: record.cell_id,
+                width: record.width,
+                height: record.height,
+                irradiance: slice_range(data, record.irradiance).to_vec(),
+                direction: slice_range(data, record.direction).to_vec(),
+            })
+            .collect();
         Ok(Self {
-            layer_count,
-            irr_width,
-            irr_height,
-            irr_texel_density,
-            irradiance,
-            irradiance_format: irr_format,
-            dir_width,
-            dir_height,
-            dir_texel_density,
-            direction,
-            direction_format: dir_format,
-            mode,
+            direction_texel_scale: index.header.direction_texel_scale,
+            irradiance_format: index.header.irradiance_format,
+            mode: index.header.mode,
+            blocks,
         })
     }
+}
+
+/// One block's texels as the pool installs them: the lightmap pair plus its
+/// shadowmask groups when id 42 is present. The all-resident loader and the
+/// streaming issuer both produce this.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LightmapBlockPayload {
+    pub irradiance: Vec<u8>,
+    pub direction: Vec<u8>,
+    /// Shadowmask group A then group B, BC5 at the block extent.
+    pub shadowmask: Option<[Vec<u8>; 2]>,
+}
+
+/// Caller has validated `range` against `data.len()`.
+pub(crate) fn slice_range(data: &[u8], range: SectionByteRange) -> &[u8] {
+    let start = range.offset as usize;
+    &data[start..start + range.len as usize]
+}
+
+fn lcm(a: u32, b: u32) -> u32 {
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    a / gcd(a, b) * b
+}
+
+pub(crate) fn invalid(msg: impl Into<String>) -> FormatError {
+    FormatError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        msg.into(),
+    ))
+}
+
+pub(crate) fn eof(msg: impl Into<String>) -> FormatError {
+    FormatError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        msg.into(),
+    ))
+}
+
+pub(crate) fn read_u16(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([data[at], data[at + 1]])
+}
+
+pub(crate) fn read_u32(data: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+}
+
+pub(crate) fn read_u64(data: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(data[at..at + 8].try_into().unwrap())
 }
 
 /// Round-to-nearest-even f32 → IEEE 754 binary16. Shared with the runtime's
@@ -618,397 +637,198 @@ fn signum_nonzero(v: f32) -> f32 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn byte_len_matches_shadowed_lightmap_payload() {
-        let section = LightmapSection::placeholder();
-        let bytes = section.to_bytes();
-        assert_eq!(section.byte_len(), bytes.len());
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(section, restored);
-    }
-
-    #[test]
-    fn round_trip_real_atlas_single_layer() {
-        // Single-layer 2×2 atlas with distinct per-texel values.
-        let mut irradiance = Vec::new();
-        for i in 0..4 {
-            let v = f32_to_f16_bits(i as f32 * 0.25);
-            for _ in 0..4 {
-                irradiance.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        let direction = (0..4)
-            .flat_map(|i| [i as u8 * 30, i as u8 * 20, 128, 255])
-            .collect();
-        let section = LightmapSection {
-            layer_count: 1,
-            irr_width: 2,
-            irr_height: 2,
-            irr_texel_density: 0.04,
-            irradiance,
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: 2,
-            dir_height: 2,
-            dir_texel_density: 0.04,
-            direction,
-            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
-            mode: LightmapMode::Shadowed,
-        };
-        let bytes = section.to_bytes();
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(section, restored);
-    }
-
-    #[test]
-    fn round_trip_real_atlas_multi_layer() {
-        // Three layers, with irradiance and direction sized differently to
-        // exercise the decoupled dimensions. Irradiance: 2×2 RGBA16F per layer
-        // (2·2·8 = 32 bytes/layer). Direction: 4×2 RGBA8 per layer (4·2·4 = 32
-        // bytes/layer). Blobs are layer-major.
-        let layer_count = 3u32;
-        let irr_w = 2u32;
-        let irr_h = 2u32;
-        let dir_w = 4u32;
-        let dir_h = 2u32;
-
-        let mut irradiance = Vec::new();
-        for layer in 0..layer_count {
-            for texel in 0..(irr_w * irr_h) {
-                let v = f32_to_f16_bits((layer * 4 + texel) as f32 * 0.1);
-                for _ in 0..4 {
-                    irradiance.extend_from_slice(&v.to_le_bytes());
-                }
-            }
-        }
-        let mut direction = Vec::new();
-        for layer in 0..layer_count {
-            for texel in 0..(dir_w * dir_h) {
-                let base = (layer * 8 + texel) as u8;
-                direction.extend_from_slice(&[base, base.wrapping_add(7), 128, 255]);
-            }
-        }
-
-        let section = LightmapSection {
-            layer_count,
-            irr_width: irr_w,
-            irr_height: irr_h,
-            irr_texel_density: 0.04,
-            irradiance,
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: dir_w,
-            dir_height: dir_h,
-            dir_texel_density: 0.08,
-            direction,
-            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
-            mode: LightmapMode::Shadowed,
-        };
-        let bytes = section.to_bytes();
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(section, restored);
-        assert_eq!(restored.layer_count, 3);
-    }
-
-    #[test]
-    fn shadowed_mode_writes_no_trailer_byte_identical_to_pre_trailer_layout() {
-        // The shadowed bake is `main`'s behavior. Output must be byte-identical to
-        // the pre-trailer encoding (header + irradiance + direction, nothing more)
-        // so a build with neither new prl-build flag set produces no output drift.
-        let section = LightmapSection::placeholder();
-        let bytes = section.to_bytes();
-        let expected_len = HEADER_SIZE + section.irradiance.len() + section.direction.len();
-        assert_eq!(
-            bytes.len(),
-            expected_len,
-            "shadowed mode must write zero trailer bytes",
-        );
-    }
-
-    #[test]
-    fn byte_len_matches_unshadowed_lightmap_payload() {
-        // Multi-layer section so the trailer offset lands past concatenated
-        // layer-major blobs, not just a single layer.
-        let layer_count = 2u32;
-        let irr_w = 2u32;
-        let irr_h = 2u32;
-        let dir_w = 2u32;
-        let dir_h = 2u32;
-        let mut irradiance = Vec::new();
-        for layer in 0..layer_count {
-            for texel in 0..(irr_w * irr_h) {
-                let v = f32_to_f16_bits((layer * 4 + texel) as f32 * 0.2);
-                for _ in 0..4 {
-                    irradiance.extend_from_slice(&v.to_le_bytes());
-                }
-            }
-        }
-        let direction: Vec<u8> = (0..(layer_count * dir_w * dir_h))
-            .flat_map(|i| [i as u8, (i as u8).wrapping_add(3), 128, 255])
-            .collect();
-        let section = LightmapSection {
-            layer_count,
-            irr_width: irr_w,
-            irr_height: irr_h,
-            irr_texel_density: 0.04,
-            irradiance,
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: dir_w,
-            dir_height: dir_h,
-            dir_texel_density: 0.04,
-            direction,
-            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
-            mode: LightmapMode::Unshadowed,
-        };
-        let bytes = section.to_bytes();
-        assert_eq!(section.byte_len(), bytes.len());
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(restored.mode, LightmapMode::Unshadowed);
-        assert_eq!(section, restored);
-    }
-
-    #[test]
-    fn legacy_section_without_trailer_reads_as_shadowed() {
-        // Bytes produced by a pre-trailer encoder: no magic, no mode field.
-        let section = LightmapSection::placeholder();
-        let bytes = section.to_bytes(); // shadowed → no trailer
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(
-            restored.mode,
-            LightmapMode::Shadowed,
-            "missing trailer must read as shadowed (main's behavior)",
-        );
-    }
-
-    #[test]
-    fn round_trip_bc6h_section_preserves_block_blob() {
-        // 8×4 atlas → 2×1 BC6H blocks → 32 bytes of block payload. The header
-        // stores `irr_len` directly, so `from_bytes` reads the blob by length
-        // without recomputing block math — the test asserts the round-trip
-        // reproduces dimensions, the tag, and the block-sized blob exactly.
-        let irradiance: Vec<u8> = (0..32).collect();
-        let direction: Vec<u8> = (0..32 * 4).map(|i| (i & 0xff) as u8).collect();
-        let section = LightmapSection {
-            layer_count: 1,
-            irr_width: 8,
-            irr_height: 4,
-            irr_texel_density: 0.04,
-            irradiance,
+    fn block(cell_id: u32, width: u16, height: u16, seed: u8, scale: u32) -> LightmapBlock {
+        let header = LightmapHeader {
+            block_count: 0,
+            direction_texel_scale: scale,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
-            dir_width: 8,
-            dir_height: 4,
-            dir_texel_density: 0.04,
-            direction,
-            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
-        let bytes = section.to_bytes();
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(restored, section);
-        assert_eq!(restored.irradiance_format, IRRADIANCE_FORMAT_BC6H);
-    }
-
-    #[test]
-    fn from_bytes_still_accepts_rgba16f_tag() {
-        // Sibling AC: BC6H acceptance must NOT regress the legacy uncompressed
-        // tag. Placeholder is RGBA16F; it must continue to decode cleanly.
-        let section = LightmapSection::placeholder();
-        let bytes = section.to_bytes();
-        let restored = LightmapSection::from_bytes(&bytes).unwrap();
-        assert_eq!(restored.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
-    }
-
-    #[test]
-    fn rejects_short_rgba16f_irradiance_blob() {
-        let mut bytes = LightmapSection::placeholder().to_bytes();
-        // Regression: a zero-length irradiance blob for a nonzero RGBA16F atlas
-        // used to parse and later panic during the renderer texture upload.
-        bytes[8..12].copy_from_slice(&64u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&64u32.to_le_bytes());
-        bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
-
-        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
-        match err {
-            FormatError::Io(err) => {
-                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-                assert!(
-                    err.to_string()
-                        .contains("irradiance blob length 0 does not match")
-                );
-            }
-            other => panic!("expected InvalidData, got {other:?}"),
+        let (w, h) = (u32::from(width), u32::from(height));
+        let irr_len = header.irradiance_len(w, h).unwrap() as usize;
+        let dir_len = header.direction_len(w, h).unwrap() as usize;
+        LightmapBlock {
+            cell_id,
+            width,
+            height,
+            irradiance: (0..irr_len).map(|i| seed.wrapping_add(i as u8)).collect(),
+            direction: (0..dir_len).map(|i| seed ^ (i as u8)).collect(),
         }
     }
 
-    #[test]
-    fn rejects_short_bc6h_irradiance_blob() {
-        let mut bytes = LightmapSection::placeholder().to_bytes();
-        // Regression: a zero-length BC6H block payload for a nonzero atlas
-        // used to parse and later panic during the renderer texture upload.
-        bytes[8..12].copy_from_slice(&64u32.to_le_bytes());
-        bytes[12..16].copy_from_slice(&64u32.to_le_bytes());
-        bytes[20..24].copy_from_slice(&IRRADIANCE_FORMAT_BC6H.to_le_bytes());
-        bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
-
-        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
-        match err {
-            FormatError::Io(err) => {
-                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-                assert!(
-                    err.to_string()
-                        .contains("irradiance blob length 0 does not match")
-                );
-            }
-            other => panic!("expected InvalidData, got {other:?}"),
+    fn two_block_section() -> LightmapSection {
+        LightmapSection {
+            direction_texel_scale: 2,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            mode: LightmapMode::Unshadowed,
+            blocks: vec![block(7, 8, 4, 3, 2), block(2, 4, 12, 9, 2)],
         }
     }
 
-    #[test]
-    fn rejects_unsupported_irradiance_format() {
-        let mut section = LightmapSection::placeholder();
-        let mut bytes = section.to_bytes();
-        // Corrupt irradiance format tag at v2 offset 20..24.
-        bytes[20..24].copy_from_slice(&99u32.to_le_bytes());
-        assert!(LightmapSection::from_bytes(&bytes).is_err());
-        // Suppress unused-must-use warning on `section`.
-        section.layer_count = 1;
-        let _ = section;
+    fn error_message(result: crate::Result<impl std::fmt::Debug>) -> String {
+        format!("{:?}", result.expect_err("expected a rejection"))
+    }
+
+    /// Byte offset of block `block`'s record field at `field` within it.
+    fn record_at(block: usize, field: usize) -> usize {
+        LIGHTMAP_HEADER_BYTES + block * LIGHTMAP_BLOCK_RECORD_BYTES + field
     }
 
     #[test]
-    fn rejects_unknown_direction_format() {
-        let section = LightmapSection::placeholder();
-        let mut bytes = section.to_bytes();
-        // Direction format tag at v2 offset 40..44 must remain an exhaustive
-        // parser gate as future tags are added.
-        bytes[40..44].copy_from_slice(&7u32.to_le_bytes());
-
-        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
-        match err {
-            FormatError::Io(err) => {
-                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-                assert!(
-                    err.to_string()
-                        .contains("unsupported lightmap direction format: 7")
-                );
-            }
-            other => panic!("expected InvalidData, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rg8_direction_round_trip_preserves_two_bytes_per_texel() {
-        let section = LightmapSection {
-            layer_count: 1,
-            irr_width: 2,
-            irr_height: 2,
-            irr_texel_density: 0.04,
-            irradiance: vec![0; 2 * 2 * IRRADIANCE_TEXEL_BYTES],
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: 2,
-            dir_height: 2,
-            dir_texel_density: 0.04,
-            direction: vec![128, 255, 255, 128, 0, 128, 128, 0],
-            direction_format: DIRECTION_FORMAT_OCT_RG8,
-            mode: LightmapMode::Shadowed,
-        };
-
+    fn lightmap_blocks_round_trip_with_header_mode_and_scale() {
+        let section = two_block_section();
         let bytes = section.to_bytes();
-        assert_eq!(
-            u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
-            DIRECTION_FORMAT_OCT_RG8
-        );
-        assert_eq!(section.direction.len(), 4 * DIRECTION_TEXEL_BYTES);
+        assert_eq!(section.byte_len(), bytes.len());
         assert_eq!(LightmapSection::from_bytes(&bytes).unwrap(), section);
     }
 
     #[test]
-    fn rejects_short_rg8_direction_blob() {
-        let section = LightmapSection::placeholder();
-        let mut bytes = section.to_bytes();
-        // Keep the body intact, but claim one fewer direction byte at the
-        // fixed v2 header offset. This must fail before a renderer can use the
-        // inconsistent dimensions and payload for a texture upload.
-        bytes[44..48].copy_from_slice(&1u32.to_le_bytes());
-
-        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
-        match err {
-            FormatError::Io(err) => {
-                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-                assert!(
-                    err.to_string()
-                        .contains("direction blob length 1 does not match")
-                );
-            }
-            other => panic!("expected InvalidData, got {other:?}"),
-        }
+    fn zero_block_section_is_a_bare_header() {
+        let section = LightmapSection::empty(2);
+        let bytes = section.to_bytes();
+        assert_eq!(bytes.len(), LIGHTMAP_HEADER_BYTES);
+        let index = LightmapBlockIndex::from_prefix(&bytes, bytes.len() as u64).unwrap();
+        assert!(index.records.is_empty());
+        assert_eq!(LightmapSection::from_bytes(&bytes).unwrap(), section);
     }
 
     #[test]
-    fn rejects_zero_direction_dimensions() {
-        let section = LightmapSection::placeholder();
-        let mut bytes = section.to_bytes();
-        // `dir_width` lives at fixed v2 header offset 28..32.
-        bytes[28..32].copy_from_slice(&0u32.to_le_bytes());
-
-        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
-        match err {
-            FormatError::Io(err) => {
-                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-                assert!(
-                    err.to_string()
-                        .contains("direction dimensions must be nonzero")
-                );
-            }
-            other => panic!("expected InvalidData, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn legacy_rgba8_direction_round_trip_remains_accepted() {
-        let mut section = LightmapSection::placeholder();
-        section.direction_format = DIRECTION_FORMAT_OCT_RGBA8;
-        section.direction = vec![128, 255, 128, 255];
-
+    fn index_parses_from_the_prefix_alone() {
+        let section = two_block_section();
+        let bytes = section.to_bytes();
+        let index_len = section.header().index_byte_len().unwrap() as usize;
+        let index = LightmapBlockIndex::from_prefix(&bytes[..index_len], bytes.len() as u64)
+            .expect("the index needs no blob bytes");
+        assert_eq!(index, section.index());
+        // Blobs follow the index in record order: irradiance, then direction.
+        let first = index.records[0];
+        assert_eq!(first.irradiance.offset, index_len as u64);
         assert_eq!(
-            LightmapSection::from_bytes(&section.to_bytes()).unwrap(),
-            section
+            first.direction.offset,
+            first.irradiance.offset + u64::from(first.irradiance.len)
+        );
+        assert_eq!(index.extent(1), Some((4, 12)));
+    }
+
+    #[test]
+    fn block_alignment_is_lcm_of_bc_edge_and_direction_scale() {
+        let mut header = two_block_section().header();
+        for (scale, align) in [(1, 4), (2, 4), (4, 4), (8, 8), (3, 12)] {
+            header.direction_texel_scale = scale;
+            assert_eq!(header.block_alignment(), align, "scale {scale}");
+        }
+    }
+
+    #[test]
+    fn rejects_older_section_versions_with_a_rebake_hint() {
+        let mut bytes = two_block_section().to_bytes();
+        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+        let message = error_message(LightmapSection::from_bytes(&bytes));
+        assert!(message.contains("version: 2"), "{message}");
+        assert!(message.contains("re-bake"), "{message}");
+    }
+
+    #[test]
+    fn rejects_nonzero_reserved_field() {
+        let mut bytes = two_block_section().to_bytes();
+        let at = record_at(1, 32);
+        bytes[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+        let message = error_message(LightmapSection::from_bytes(&bytes));
+        assert!(message.contains("reserved"), "{message}");
+    }
+
+    #[test]
+    fn rejects_blob_range_outside_the_section() {
+        let mut bytes = two_block_section().to_bytes();
+        let at = record_at(1, 20);
+        let past_end = bytes.len() as u64;
+        bytes[at..at + 8].copy_from_slice(&past_end.to_le_bytes());
+        let message = error_message(LightmapSection::from_bytes(&bytes));
+        assert!(message.contains("outside the section"), "{message}");
+    }
+
+    #[test]
+    fn rejects_blob_range_overlapping_the_index() {
+        let mut bytes = two_block_section().to_bytes();
+        let at = record_at(0, 8);
+        bytes[at..at + 8].copy_from_slice(&0u64.to_le_bytes());
+        let message = error_message(LightmapSection::from_bytes(&bytes));
+        assert!(message.contains("outside the section"), "{message}");
+    }
+
+    #[test]
+    fn rejects_block_larger_than_a_pool_layer() {
+        let edge = LIGHTMAP_POOL_LAYER_EDGE as u16 + 4;
+        let section = LightmapSection {
+            blocks: vec![block(0, edge, 4, 1, 2)],
+            ..two_block_section()
+        };
+        let message = error_message(LightmapSection::from_bytes(&section.to_bytes()));
+        assert!(message.contains("pool layer"), "{message}");
+    }
+
+    #[test]
+    fn accepts_a_block_exactly_one_pool_layer() {
+        let edge = LIGHTMAP_POOL_LAYER_EDGE as u16;
+        let section = LightmapSection {
+            blocks: vec![block(0, edge, 4, 1, 2)],
+            ..two_block_section()
+        };
+        assert!(LightmapSection::from_bytes(&section.to_bytes()).is_ok());
+    }
+
+    #[test]
+    fn rejects_misaligned_extent() {
+        let mut bytes = two_block_section().to_bytes();
+        let at = record_at(0, 4);
+        bytes[at..at + 2].copy_from_slice(&6u16.to_le_bytes());
+        let message = error_message(LightmapSection::from_bytes(&bytes));
+        assert!(message.contains("not a multiple of 4"), "{message}");
+    }
+
+    #[test]
+    fn rejects_blob_length_that_disagrees_with_extent() {
+        let mut section = two_block_section();
+        section.blocks[1].direction.pop();
+        let message = error_message(LightmapSection::from_bytes(&section.to_bytes()));
+        assert!(message.contains("direction blob"), "{message}");
+    }
+
+    #[test]
+    fn rejects_block_count_past_the_vertex_id_limit() {
+        let mut bytes = LightmapSection::empty(2).to_bytes();
+        bytes[4..8].copy_from_slice(&(MAX_LIGHTMAP_BLOCKS + 1).to_le_bytes());
+        let message = error_message(LightmapHeader::from_bytes(&bytes));
+        assert!(message.contains("vertex id limit"), "{message}");
+        bytes[4..8].copy_from_slice(&MAX_LIGHTMAP_BLOCKS.to_le_bytes());
+        assert!(LightmapHeader::from_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_mode_format_and_zero_scale() {
+        for (at, value, expect) in [
+            (16, 9u32, "mode"),
+            (12, 9u32, "irradiance format"),
+            (8, 0u32, "scale"),
+        ] {
+            let mut bytes = LightmapSection::empty(2).to_bytes();
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            let message = error_message(LightmapSection::from_bytes(&bytes));
+            assert!(message.contains(expect), "{expect}: {message}");
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_index() {
+        let bytes = two_block_section().to_bytes();
+        let index_len = LIGHTMAP_HEADER_BYTES + 2 * LIGHTMAP_BLOCK_RECORD_BYTES;
+        assert!(
+            LightmapBlockIndex::from_prefix(&bytes[..index_len - 1], bytes.len() as u64).is_err()
         );
     }
 
     #[test]
-    fn rejects_pre_v2_section() {
-        // Pre-v2 sections had no version field — their first u32 was `width`,
-        // typically a sizeable atlas dimension. Feed a realistic pre-v2 28-byte
-        // header (width=1024, height=1024, density, RGBA16F, OCT_RGBA8, irr_len,
-        // dir_len) plus a body. `from_bytes` reads the leading 1024 as the
-        // version and must reject it as InvalidData.
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&1024u32.to_le_bytes()); // width (read as version)
-        bytes.extend_from_slice(&1024u32.to_le_bytes()); // height
-        bytes.extend_from_slice(&0.04f32.to_le_bytes()); // texel_density
-        bytes.extend_from_slice(&IRRADIANCE_FORMAT_RGBA16F.to_le_bytes());
-        bytes.extend_from_slice(&DIRECTION_FORMAT_OCT_RGBA8.to_le_bytes());
-        bytes.extend_from_slice(&64u32.to_le_bytes()); // irr_len
-        bytes.extend_from_slice(&32u32.to_le_bytes()); // dir_len
-        bytes.extend_from_slice(&[0u8; 64]); // irradiance body
-        bytes.extend_from_slice(&[0u8; 32]); // direction body
-
-        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
-        match err {
-            FormatError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
-            other => panic!("expected InvalidData, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rejects_truncated_body() {
-        let bytes = LightmapSection::placeholder().to_bytes();
-        let truncated = &bytes[..bytes.len() - 2];
-        assert!(LightmapSection::from_bytes(truncated).is_err());
-    }
-
-    #[test]
     fn encode_direction_axis_round_trip() {
-        // +Y should map close to the neutral placeholder (128, 255).
         let enc = encode_direction_oct([0.0, 1.0, 0.0]);
         assert_eq!(enc[0], 128);
         assert_eq!(enc[1], 255);

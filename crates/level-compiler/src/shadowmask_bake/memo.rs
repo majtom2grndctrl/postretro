@@ -2,6 +2,9 @@
 // See: context/lib/build_pipeline.md §Build Cache
 
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
+use postretro_level_format::lightmap::{
+    LightmapBlockIndex, LightmapBlockRecord, LightmapHeader, LightmapMode, SectionByteRange,
+};
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
 #[cfg(test)]
@@ -68,7 +71,6 @@ pub(super) fn read_shadowmask_memo(
     key: &CacheKey,
     selection: &EntityShadowLightsSection,
     shared: &SharedAtlas<'_>,
-    layer_count: u32,
 ) -> Option<ShadowmaskMemo> {
     let bytes = cache.get(key)?;
     let Some((prefix, section_bytes)) = bytes.split_first_chunk::<MEMO_OVERLAP_PREFIX_BYTES>()
@@ -78,16 +80,14 @@ pub(super) fn read_shadowmask_memo(
         );
         return None;
     };
-    let section = match ShadowmaskAtlasSection::from_bytes(section_bytes) {
+    let section = match ShadowmaskAtlasSection::from_bytes(section_bytes, &extent_index(shared)) {
         Ok(section) => section,
         Err(err) => {
             log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: {err}");
             return None;
         }
     };
-    if let Err(reason) =
-        validate_cached_shadowmask_section(&section, selection, shared, layer_count)
-    {
+    if let Err(reason) = validate_cached_shadowmask_section(&section, selection) {
         log::warn!(
             "[Compiler] shadowmask_atlas cache entry does not match current atlas ({reason}), re-baking"
         );
@@ -108,7 +108,7 @@ pub(super) fn cache_shadowmask_section_then_complete(
     has_valid_selection: bool,
     after_cache_write: impl FnOnce(),
 ) {
-    let section_header = section.header_bytes();
+    let section_index = section.index_bytes();
 
     #[cfg(test)]
     {
@@ -117,10 +117,16 @@ pub(super) fn cache_shadowmask_section_then_complete(
             .with(|at_write| at_write.set(Some(raw_fill_live_bytes())));
     }
     let entry_len = MEMO_OVERLAP_PREFIX_BYTES + section.byte_len();
+    // The index, then each block's groups: the section's own byte order, with
+    // no second contiguous copy of the payload.
     cache.put_streamed(section_key, entry_len as u64, |writer| {
         writer.write_all(&peak_texel_overlap.to_le_bytes())?;
-        writer.write_all(&section_header)?;
-        writer.write_all(&section.data)
+        writer.write_all(&section_index)?;
+        for [group_a, group_b] in &section.blocks {
+            writer.write_all(group_a)?;
+            writer.write_all(group_b)?;
+        }
+        Ok(())
     });
     after_cache_write();
     if has_valid_selection {
@@ -137,24 +143,40 @@ pub(super) fn invalid_selected_light_hash(alpha_index: u32, target_layer: u32) -
     *hasher.finalize().as_bytes()
 }
 
+/// The id-22 index the memo's id-42 parse checks group lengths against. The
+/// shadowmask parse reads only block count and extents, and the lightmap
+/// section is not built yet when the memo resolves, so the blob ranges are
+/// empty.
+pub(super) fn extent_index(shared: &SharedAtlas<'_>) -> LightmapBlockIndex {
+    let empty = SectionByteRange { offset: 0, len: 0 };
+    LightmapBlockIndex {
+        header: LightmapHeader {
+            block_count: shared.layout.blocks.len() as u32,
+            direction_texel_scale: shared.layout.direction_texel_scale,
+            irradiance_format: 0,
+            mode: LightmapMode::Shadowed,
+        },
+        records: shared
+            .layout
+            .blocks
+            .iter()
+            .map(|block| LightmapBlockRecord {
+                cell_id: block.cell_id,
+                width: block.width as u16,
+                height: block.height as u16,
+                irradiance: empty,
+                direction: empty,
+            })
+            .collect(),
+    }
+}
+
+/// Block count and group extents are already checked by the parse against
+/// [`extent_index`]; what remains is the selection the section was built for.
 fn validate_cached_shadowmask_section(
     section: &ShadowmaskAtlasSection,
     selection: &EntityShadowLightsSection,
-    shared: &SharedAtlas<'_>,
-    layer_count: u32,
 ) -> Result<(), String> {
-    if section.width != shared.atlas_width || section.height != shared.atlas_height {
-        return Err(format!(
-            "dimensions {}x{} != {}x{}",
-            section.width, section.height, shared.atlas_width, shared.atlas_height
-        ));
-    }
-    if section.layer_count != layer_count {
-        return Err(format!(
-            "layer_count {} != {}",
-            section.layer_count, layer_count
-        ));
-    }
     if section.channels.len() != selection.light_indices.len() {
         return Err(format!(
             "channel count {} != selected light count {}",

@@ -616,20 +616,16 @@ impl Renderer {
         }
 
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(device);
+        let block_table_bgl = crate::lighting::lightmap::block_table_bind_group_layout(device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
-        // Resolve the static layer the animated block table translates from
-        // the same way the lightmap constructor filters its atlas — one
-        // resolver, one device limit (see `usable_static_layers`). The
-        // constructor also falls back when the header's payload is missing,
-        // so this sees the header only when its payload is present. The
-        // constructor still gets the header itself, so that fallback logs its
-        // error.
-        let sized_lightmap = geometry
-            .lightmap
-            .filter(|_| gpu_lighting_payloads.lightmap.is_some());
-        let static_layers = crate::lighting::lightmap::usable_static_layers(
-            sized_lightmap,
+        // One plan decides the static pool for both consumers: the animated
+        // atlas keys its blocks on the cell blocks the pool installs, and a
+        // placeholder or rejected pool leaves it no block frame.
+        let static_pool = crate::lighting::lightmap::plan_static_pool(
+            geometry.lightmap,
+            geometry.shadowmask_atlas,
+            &gpu_lighting_payloads.blocks,
             device.limits().max_texture_dimension_2d,
             device.limits().max_texture_array_layers,
         );
@@ -642,7 +638,7 @@ impl Renderer {
                 &bvh_leaves,
                 &full.sh_volume_resources.animation,
                 &full.uniform_bind_group_layout,
-                static_layers,
+                static_pool.static_block_extents(),
                 animated_lm_debug,
             ),
             || {
@@ -663,15 +659,16 @@ impl Renderer {
                 animated_lightmap.is_active(),
                 geometry.animated_light_weight_maps,
             ),
-            static_layers.map_or(0, |(size, _)| size),
         );
         full.lightmap_resources = LightmapResources::new(
             device,
             queue,
             geometry.lightmap,
             geometry.shadowmask_atlas,
+            &static_pool,
             gpu_lighting_payloads,
             &lightmap_bgl,
+            &block_table_bgl,
             &animated_lightmap.forward_view,
             &animated_lightmap.direction_forward_view,
             &animated_block_table,

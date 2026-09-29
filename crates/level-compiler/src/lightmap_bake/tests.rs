@@ -12,7 +12,7 @@ use crate::governor::Governor;
 use crate::reporter::StageProgress;
 use glam::DVec3;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
-use postretro_level_format::lightmap::{DIRECTION_FORMAT_OCT_RG8, encode_direction_oct};
+use postretro_level_format::lightmap::{LightmapBlock, encode_direction_oct};
 use postretro_level_format::texture_names::TextureNamesSection;
 use rayon::ThreadPoolBuilder;
 use std::sync::Arc;
@@ -198,7 +198,7 @@ fn bake_scale_region_fixture(regions: &[MapLightmapScaleRegion]) -> Vec<u8> {
 }
 
 #[test]
-fn empty_geometry_returns_placeholder() {
+fn empty_geometry_bakes_no_blocks() {
     let mut geo = GeometryResult {
         geometry: GeometrySection {
             vertices: vec![],
@@ -230,12 +230,11 @@ fn empty_geometry_returns_placeholder() {
     )
     .unwrap()
     .section;
-    assert_eq!(section.irr_width, 1);
-    assert_eq!(section.irr_height, 1);
+    assert!(section.blocks.is_empty(), "no static light bakes no block");
 }
 
 #[test]
-fn no_static_lights_returns_placeholder() {
+fn no_static_lights_bakes_no_blocks() {
     let mut geo = unit_quad_geometry();
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let lights: Vec<MapLight> = Vec::new();
@@ -258,8 +257,7 @@ fn no_static_lights_returns_placeholder() {
     )
     .unwrap()
     .section;
-    assert_eq!(section.irr_width, 1);
-    assert_eq!(section.irr_height, 1);
+    assert!(section.blocks.is_empty(), "no static light bakes no block");
 }
 
 #[test]
@@ -289,14 +287,16 @@ fn single_static_light_produces_nonzero_irradiance() {
     )
     .unwrap()
     .section;
-    assert!(section.irr_width >= MIN_ATLAS_DIMENSION);
-    assert!(section.irr_height >= MIN_ATLAS_DIMENSION);
-    assert_eq!(
-        section.irradiance.len(),
-        (section.irr_width * section.irr_height * 8) as usize
-    );
+    assert!(!section.blocks.is_empty());
+    for block in &section.blocks {
+        assert_eq!(
+            block.irradiance.len(),
+            usize::from(block.width) * usize::from(block.height) * 8
+        );
+    }
+    let irradiance = all_irradiance(&section);
     let mut has_nonzero = false;
-    for chunk in section.irradiance.chunks_exact(2).step_by(4) {
+    for chunk in irradiance.chunks_exact(2).step_by(4) {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         if bits != 0 {
             has_nonzero = true;
@@ -353,7 +353,7 @@ fn sdf_typed_light_excluded_from_direct_lightmap() {
     .unwrap()
     .section;
     let mut has_nonzero = false;
-    for chunk in section.irradiance.chunks_exact(2).step_by(4) {
+    for chunk in all_irradiance(&section).chunks_exact(2).step_by(4) {
         let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
         if bits != 0 {
             has_nonzero = true;
@@ -392,8 +392,7 @@ fn is_dynamic_lights_skipped_by_bake() {
     )
     .unwrap()
     .section;
-    assert_eq!(section.irr_width, 1);
-    assert_eq!(section.irr_height, 1);
+    assert!(section.blocks.is_empty(), "no static light bakes no block");
 }
 
 #[test]
@@ -426,8 +425,8 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     .unwrap()
     .section;
     assert!(
-        section_static.irr_width >= MIN_ATLAS_DIMENSION,
-        "non-animated static light must bake into a real atlas",
+        !section_static.blocks.is_empty(),
+        "non-animated static light must bake into real blocks",
     );
 
     let mut dyn_light = point_light_above();
@@ -453,7 +452,10 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     )
     .unwrap()
     .section;
-    assert_eq!(section_dyn.irr_width, 1, "is_dynamic light must not bake");
+    assert!(
+        section_dyn.blocks.is_empty(),
+        "is_dynamic light must not bake"
+    );
 
     let mut anim_light = point_light_above();
     anim_light.animation = Some(LightAnimation {
@@ -485,9 +487,9 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     )
     .unwrap()
     .section;
-    assert_eq!(
-        section_anim.irr_width, 1,
-        "animated light must not contribute to the static atlas",
+    assert!(
+        section_anim.blocks.is_empty(),
+        "animated light must not contribute to the static lightmap",
     );
 
     let mut bake_only_anim = anim_light.clone();
@@ -513,9 +515,9 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     )
     .unwrap()
     .section;
-    assert_eq!(
-        section_bo.irr_width, 1,
-        "bake_only animated light must not contribute to the static atlas",
+    assert!(
+        section_bo.blocks.is_empty(),
+        "bake_only animated light must not contribute to the static lightmap",
     );
 }
 
@@ -795,24 +797,23 @@ fn pack_layers_opens_second_layer_keeping_each_leaf_cohesive() {
     );
 }
 
-/// Task 3b AC — per-vertex `lightmap_layer`. The sibling test above asserts
-/// `ChartPlacement.layer`; this one proves `assign_lightmap_uvs` actually
-/// writes that layer into `Vertex.lightmap_layer`. From a two-layer
-/// `PackOutput`, run `assign_lightmap_uvs` over a minimal geometry whose
-/// triangle faces map 1:1 to the charts, then assert each face's vertices
-/// carry `placement.layer as u16` and that `lightmap_uv` normalizes against
-/// the shared `(atlas_width, atlas_height)` (in `[0,1]`).
+/// `assign_lightmap_uvs` names each face's cell block as `id + 1` and writes
+/// the UV over that block's extent. Three charts in two cells → two blocks;
+/// the cell-1 faces share a block, and every UV stays in `[0, 1]`.
 #[test]
-fn assign_lightmap_uvs_writes_per_vertex_layer_across_two_layers() {
-    // Same two-layer setup as the sibling test: leaf 0 fills a 64² layer,
-    // leaf 1's two charts fill a second. Three charts → three faces.
+fn assign_lightmap_uvs_writes_block_id_plus_one_and_block_local_uvs() {
     let charts = vec![
         synthetic_chart_leaf(64, 64, 0),
         synthetic_chart_leaf(64, 32, 1),
         synthetic_chart_leaf(64, 32, 1),
     ];
-    let pack = pack_layers(&charts, 64, 0.25).expect("must pack into two layers");
-    assert_eq!(pack.layer_count, 2, "fixture must exercise two layers");
+    let pack = block_layout::pack_cell_blocks(
+        &charts,
+        BlockOrdering::by_cell_id(DIRECTION_TEXEL_SCALE),
+        &BakeControl::unrestricted(),
+    )
+    .expect("synthetic cells must pack");
+    assert_eq!(pack.layout.blocks.len(), 2, "one block per cell");
 
     // Minimal geometry: one triangle per chart, each face owning three
     // vertices (no sharing), so face index `i` maps to chart `i`.
@@ -854,17 +855,22 @@ fn assign_lightmap_uvs_writes_per_vertex_layer_across_two_layers() {
         face_index_ranges,
     };
 
-    assign_lightmap_uvs(&mut geom, &charts, &pack);
+    assign_lightmap_uvs(&mut geom, &charts, &pack.placements, &pack.layout);
 
+    let first_vertex_block = |face: usize| {
+        let r = geom.face_index_ranges[face];
+        geom.geometry.vertices[geom.geometry.indices[r.index_offset as usize] as usize]
+            .lightmap_block
+    };
     for (face_index, range) in geom.face_index_ranges.iter().enumerate() {
-        let expected_layer = pack.placements[face_index].layer as u16;
+        let expected = pack.layout.chart_blocks[face_index] as u16 + 1;
         let start = range.index_offset as usize;
         let end = start + range.index_count as usize;
         for &idx in &geom.geometry.indices[start..end] {
             let v = &geom.geometry.vertices[idx as usize];
             assert_eq!(
-                v.lightmap_layer, expected_layer,
-                "face {face_index} vertex {idx}: lightmap_layer must equal placement.layer",
+                v.lightmap_block, expected,
+                "face {face_index} vertex {idx}: lightmap_block must be its block id + 1",
             );
             let uv = v.decode_lightmap_uv();
             assert!(
@@ -873,23 +879,13 @@ fn assign_lightmap_uvs_writes_per_vertex_layer_across_two_layers() {
             );
         }
     }
-
-    // The two leaves must have produced distinct per-vertex layers, so the
-    // test actually exercises a non-zero `lightmap_layer` write.
-    let layer_face0 = {
-        let r = geom.face_index_ranges[0];
-        geom.geometry.vertices[geom.geometry.indices[r.index_offset as usize] as usize]
-            .lightmap_layer
-    };
-    let layer_face1 = {
-        let r = geom.face_index_ranges[1];
-        geom.geometry.vertices[geom.geometry.indices[r.index_offset as usize] as usize]
-            .lightmap_layer
-    };
-    assert_ne!(
-        layer_face0, layer_face1,
-        "the two leaves' faces must land on distinct lightmap layers",
+    assert_ne!(first_vertex_block(0), first_vertex_block(1));
+    assert_eq!(
+        first_vertex_block(1),
+        first_vertex_block(2),
+        "one cell's faces share its block"
     );
+    assert!(first_vertex_block(0) > 0 && first_vertex_block(1) > 0);
 }
 
 /// Fix 1 robustness — a single BVH leaf whose charts can't fit even an empty
@@ -1023,7 +1019,7 @@ fn single_layer_reference_section(uncompressed_irradiance: bool) -> LightmapSect
         prepared.layer_count,
         DEFAULT_AREA_SAMPLE_COUNT,
     )
-    .encode_section(0.25, uncompressed_irradiance, DIRECTION_TEXEL_SCALE)
+    .encode_section(&prepared.layout, uncompressed_irradiance)
 }
 
 fn single_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
@@ -1084,7 +1080,7 @@ fn multi_layer_reference_section(uncompressed_irradiance: bool) -> LightmapSecti
         prepared.layer_count,
         DEFAULT_AREA_SAMPLE_COUNT,
     )
-    .encode_section(0.25, uncompressed_irradiance, DIRECTION_TEXEL_SCALE)
+    .encode_section(&prepared.layout, uncompressed_irradiance)
 }
 
 fn multi_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
@@ -1117,8 +1113,8 @@ fn multi_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
     .section
 }
 
-/// OP1: the shipping cold path encodes every layer in ascending order and
-/// appends its bytes exactly as the retained whole-atlas reference kernel.
+/// OP1: the shipping cold path encodes every bake layer in ascending order and
+/// slices its blocks exactly as the retained whole-atlas reference kernel.
 #[test]
 fn layered_cold_bake_matches_reference_and_repeats_byte_identically() {
     for uncompressed_irradiance in [true, false] {
@@ -1134,7 +1130,7 @@ fn layered_cold_bake_matches_reference_and_repeats_byte_identically() {
         let first = multi_layer_cold_section(uncompressed_irradiance);
         let second = multi_layer_cold_section(uncompressed_irradiance);
 
-        assert_eq!(first.layer_count, 2, "fixture must exercise layer 1");
+        assert_eq!(first.blocks.len(), 2, "fixture must exercise bake layer 1");
         assert_eq!(
             first.to_bytes(),
             reference.to_bytes(),
@@ -1263,9 +1259,9 @@ fn per_layer_parallel_scatter_joins_before_dilation() {
     assert_eq!(progress.total(), Some(progress.completed()));
 }
 
-/// OP8: even a layer containing only degenerate charts is encoded and
-/// appended. Skipping it would shrink the two layer blobs and violate the
-/// section's layer count despite leaving no covered texels behind.
+/// OP8: even a block containing only degenerate charts is encoded. Skipping
+/// its bake layer would leave the block without blobs despite leaving no
+/// covered texels behind.
 #[test]
 fn layered_cold_encode_retains_degenerate_layer_blob() {
     let geometry = unit_quad_geometry();
@@ -1285,6 +1281,7 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
             layer: 1,
         },
     ];
+    let layout = BlockLayout::whole_layers(64, 64, &placements, DIRECTION_TEXEL_SCALE);
     let section = bake_layered_section_controlled(
         &bvh,
         &primitives,
@@ -1292,13 +1289,12 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
         &light_refs,
         &charts,
         &placements,
+        &layout,
         64,
         64,
         2,
         DEFAULT_AREA_SAMPLE_COUNT,
-        0.25,
         true,
-        DIRECTION_TEXEL_SCALE,
         &BakeControl::unrestricted(),
     );
     let reference = bake_monolithic_atlas(
@@ -1313,15 +1309,17 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
         2,
         DEFAULT_AREA_SAMPLE_COUNT,
     )
-    .encode_section(0.25, true, DIRECTION_TEXEL_SCALE);
+    .encode_section(&layout, true);
 
-    assert_eq!(section.layer_count, 2);
-    assert_eq!(section.irradiance.len(), 2 * 64 * 64 * 8);
-    assert_eq!(section.direction.len(), 2 * 32 * 32 * 2);
+    assert_eq!(section.blocks.len(), 2);
+    for block in &section.blocks {
+        assert_eq!(block.irradiance.len(), 64 * 64 * 8);
+        assert_eq!(block.direction.len(), 32 * 32 * 2);
+    }
     assert_eq!(
         section.to_bytes(),
         reference.to_bytes(),
-        "the uncovered degenerate plane must still be encoded layer-major"
+        "the uncovered degenerate block must still be encoded"
     );
 }
 
@@ -1539,8 +1537,17 @@ fn two_bakes_decode_within_frozen_tolerance() {
     // config, `uncompressed_irradiance = false`). The two sections must
     // agree on dimensions and irradiance format before we can do block-
     // wise decode comparison.
-    assert_eq!(a.irr_width, b.irr_width, "width drifted between runs");
-    assert_eq!(a.irr_height, b.irr_height, "height drifted between runs");
+    let extents = |s: &LightmapSection| {
+        s.blocks
+            .iter()
+            .map(|b| (b.cell_id, b.width, b.height))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        extents(&a),
+        extents(&b),
+        "block layout drifted between runs"
+    );
     assert_eq!(
         a.irradiance_format,
         postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
@@ -1550,20 +1557,21 @@ fn two_bakes_decode_within_frozen_tolerance() {
         a.irradiance_format, b.irradiance_format,
         "irradiance format drifted between runs",
     );
+    let (irradiance_a, irradiance_b) = (all_irradiance(&a), all_irradiance(&b));
     assert_eq!(
-        a.irradiance.len(),
-        b.irradiance.len(),
+        irradiance_a.len(),
+        irradiance_b.len(),
         "irradiance blob length drifted; block math diverged across runs",
     );
 
     // Block-wise decode + relative-error comparison. The decoded f16 bits
     // are first lifted to f32 so the relative-error metric matches the
     // round-trip AC's gauge (a per-channel epsilon-floored ratio).
-    let blocks = a.irradiance.len() / 16;
+    let blocks = irradiance_a.len() / 16;
     for bi in 0..blocks {
         let off = bi * 16;
-        let block_a: [u8; 16] = a.irradiance[off..off + 16].try_into().unwrap();
-        let block_b: [u8; 16] = b.irradiance[off..off + 16].try_into().unwrap();
+        let block_a: [u8; 16] = irradiance_a[off..off + 16].try_into().unwrap();
+        let block_b: [u8; 16] = irradiance_b[off..off + 16].try_into().unwrap();
         let decoded_a = crate::bc6h::decode_bc6h_block_for_tests(&block_a);
         let decoded_b = crate::bc6h::decode_bc6h_block_for_tests(&block_b);
         for t in 0..16 {
@@ -1858,9 +1866,10 @@ fn occluder_produces_dark_texel() {
     .unwrap()
     .section;
 
+    let irradiance = all_irradiance(&section);
     let mut zero_count = 0;
-    for t in 0..(section.irr_width * section.irr_height) as usize {
-        let r_bits = u16::from_le_bytes([section.irradiance[t * 8], section.irradiance[t * 8 + 1]]);
+    for t in 0..irradiance.len() / 8 {
+        let r_bits = u16::from_le_bytes([irradiance[t * 8], irradiance[t * 8 + 1]]);
         if r_bits == 0 {
             zero_count += 1;
         }
@@ -1946,13 +1955,16 @@ fn oversize_face_returns_error_rather_than_panicking() {
             uncompressed_irradiance: false,
         },
     );
-    // A 400 m face is 10000 texels at 0.04 m/texel — wider than a single
-    // `MAX_ATLAS_DIMENSION` (8192) layer, so the packer reports `ChartTooLarge`
-    // rather than placing it. (Atlas-area overflow no longer errors: the
-    // multi-bin packer opens more layers instead.)
+    // A 400 m face is 10000 texels at 0.04 m/texel: its cell block cannot
+    // fit one runtime pool layer, so the build fails naming the cell rather
+    // than placing it.
     match result {
-        Err(LightmapBakeError::ChartTooLarge { .. }) => {}
-        other => panic!("expected ChartTooLarge error, got {other:?}"),
+        Err(LightmapBakeError::BlockTooLarge {
+            cell_id: 0,
+            largest_chart_face: 0,
+            ..
+        }) => {}
+        other => panic!("expected BlockTooLarge error, got {other:?}"),
     }
 }
 
@@ -2603,15 +2615,21 @@ fn soft_overhead_light() -> MapLight {
     l
 }
 
-/// Decode the floor's irradiance texels (R channel) from the encoded section.
+/// Decode every block's irradiance texels (R channel) from an RGBA16F section.
 fn floor_irradiance_r(section: &LightmapSection) -> Vec<f32> {
-    let texel_count = (section.irr_width * section.irr_height) as usize;
-    let mut out = Vec::with_capacity(texel_count);
-    for t in 0..texel_count {
-        let bits = u16::from_le_bytes([section.irradiance[t * 8], section.irradiance[t * 8 + 1]]);
-        out.push(f16_bits_to_f32(bits));
-    }
-    out
+    all_irradiance(section)
+        .chunks_exact(8)
+        .map(|texel| f16_bits_to_f32(u16::from_le_bytes([texel[0], texel[1]])))
+        .collect()
+}
+
+/// Every block's irradiance blob, in block order.
+fn all_irradiance(section: &LightmapSection) -> Vec<u8> {
+    section
+        .blocks
+        .iter()
+        .flat_map(|block: &LightmapBlock| block.irradiance.iter().copied())
+        .collect()
 }
 
 /// IEEE-754 half → f32 decode for reading baked irradiance back in tests.
@@ -2738,34 +2756,45 @@ fn direction_scale_one_emits_rg8_bytes() {
         atlas_height: 2,
         layer_count: 1,
     };
+    let placements = [ChartPlacement {
+        x: 0,
+        y: 0,
+        layer: 0,
+    }];
 
-    let section = atlas.encode_section(0.25, true, 1);
-    assert_eq!(section.dir_width, 2);
-    assert_eq!(section.dir_height, 2);
-    assert_eq!(section.dir_texel_density, 0.25);
-    assert_eq!(section.direction_format, DIRECTION_FORMAT_OCT_RG8);
+    let section = atlas.encode_section(&BlockLayout::whole_layers(2, 2, &placements, 1), true);
+    assert_eq!(section.direction_texel_scale, 1);
     assert_eq!(
-        section.direction,
+        section.blocks[0].direction,
         encode_direction_rg8(&direction, &coverage),
         "factor 1 must encode only the octahedral channels"
     );
 
-    let coarse = atlas.encode_section(0.25, true, 2);
-    assert_eq!(coarse.irradiance, section.irradiance);
-    assert_eq!((coarse.irr_width, coarse.irr_height), (2, 2));
-    assert_eq!((coarse.dir_width, coarse.dir_height), (1, 1));
-    assert_eq!(coarse.dir_texel_density, 0.5);
-    assert_eq!(coarse.direction.len(), section.direction.len() / 4);
-
-    // The CLI rejects these values, but direct callers must still never
-    // produce a zero-sized direction descriptor.
-    let zero_scale = atlas.encode_section(0.25, true, 0);
-    assert_eq!((zero_scale.dir_width, zero_scale.dir_height), (2, 2));
-    let oversized_scale = atlas.encode_section(0.25, true, 128);
+    let coarse = atlas.encode_section(&BlockLayout::whole_layers(2, 2, &placements, 2), true);
+    assert_eq!(coarse.direction_texel_scale, 2);
+    assert_eq!(coarse.blocks[0].irradiance, section.blocks[0].irradiance);
     assert_eq!(
-        (oversized_scale.dir_width, oversized_scale.dir_height),
-        (1, 1)
+        coarse.blocks[0].direction.len(),
+        section.blocks[0].direction.len() / 4
     );
+}
+
+/// The CLI rejects these scales, but direct callers must still never produce
+/// a zero or oversized direction scale in the header or the block alignment.
+#[test]
+fn block_layout_normalizes_out_of_range_direction_scales() {
+    let charts = [synthetic_chart_leaf(8, 8, 0)];
+    for (requested, expected) in [(0, 1), (3, 4), (128, 64)] {
+        let pack = block_layout::pack_cell_blocks(
+            &charts,
+            BlockOrdering::by_cell_id(requested),
+            &BakeControl::unrestricted(),
+        )
+        .unwrap();
+        assert_eq!(pack.layout.direction_texel_scale, expected, "{requested}");
+        let block = pack.layout.blocks[0];
+        assert_eq!(block.width % pack.layout.alignment(), 0);
+    }
 }
 
 #[test]
@@ -2811,10 +2840,16 @@ fn direction_reduction_keeps_array_layers_separate() {
         atlas_height: 2,
         layer_count: 2,
     };
-    let section = atlas.encode_section(0.25, true, 2);
-    assert_eq!(section.layer_count, 2);
-    assert_eq!((section.dir_width, section.dir_height), (2, 1));
-    assert_eq!(section.direction.len(), 2 * 2 * 2);
+    let placements = [0, 1].map(|layer| ChartPlacement { x: 0, y: 0, layer });
+    let section = atlas.encode_section(&BlockLayout::whole_layers(4, 2, &placements, 2), true);
+    assert_eq!(section.blocks.len(), 2);
+    for (block, expected) in section.blocks.iter().zip([Vec3::X, -Vec3::X]) {
+        assert_eq!(block.direction.len(), 2 * 2);
+        assert_eq!(
+            block.direction[..2],
+            encode_direction_oct(expected.to_array())
+        );
+    }
 }
 
 #[test]
@@ -2853,4 +2888,85 @@ fn shadowmask_coverage_threshold_uses_one_shared_comparison() {
 
     assert!(!contribution_covers_shadowmask(below));
     assert!(contribution_covers_shadowmask(above));
+}
+
+/// AC 5: for every lightmapped vertex of a fixture, the block id plus the
+/// block-local UV, resolved through the block's bake-layer origin, addresses
+/// the texel the bake-layer UV addressed before the rebase, within the two
+/// quantizations. The bake-layer UV is recomputed exactly as the pre-block
+/// packer wrote it: the chart's continuous texel over the layer extent.
+#[test]
+fn block_local_vertex_uv_addresses_the_same_chart_texel_as_the_bake_layer_uv() {
+    let mut fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");
+    let static_lights = StaticBakedLights::from_lights(&fixture.lights);
+    assert!(!static_lights.is_empty(), "fixture must bake static light");
+    let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[]).unwrap();
+    let layout = &prepared.layout;
+    assert!(
+        layout.blocks.len() > 1,
+        "fixture must exercise several cell blocks"
+    );
+
+    let geometry = &fixture.geometry;
+    let mut checked = 0usize;
+    let mut nonzero_origin = false;
+    for (face, chart) in prepared.charts.iter().enumerate() {
+        if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+            continue;
+        }
+        let placement = prepared.placements[face];
+        let range = geometry.face_index_ranges[face];
+        let start = range.index_offset as usize;
+        for &index in &geometry.geometry.indices[start..start + range.index_count as usize] {
+            let vertex = &geometry.geometry.vertices[index as usize];
+            assert!(
+                vertex.lightmap_block > 0,
+                "face {face} vertex {index} names no block"
+            );
+            let block = &layout.blocks[usize::from(vertex.lightmap_block) - 1];
+            assert_eq!(
+                block.cell_id, chart.leaf_index,
+                "vertex names its cell's block"
+            );
+            assert_eq!(block.layer, placement.layer);
+            nonzero_origin |= block.x > 0 || block.y > 0;
+
+            let (bake_x, bake_y) =
+                chart_texel_position(chart, placement.x, placement.y, Vec3::from(vertex.position));
+            let resolve =
+                |quantized: u16, extent: u32| f32::from(quantized) / 65535.0 * extent as f32;
+            let pre_rebase = [
+                resolve(
+                    quantize_lightmap_uv(bake_x, prepared.atlas_width),
+                    prepared.atlas_width,
+                ),
+                resolve(
+                    quantize_lightmap_uv(bake_y, prepared.atlas_height),
+                    prepared.atlas_height,
+                ),
+            ];
+            let block_frame = [
+                block.x as f32 + resolve(vertex.lightmap_uv[0], block.width),
+                block.y as f32 + resolve(vertex.lightmap_uv[1], block.height),
+            ];
+            let tolerance = [
+                (prepared.atlas_width + block.width) as f32 / 65535.0 / 2.0 + 1.0e-3,
+                (prepared.atlas_height + block.height) as f32 / 65535.0 / 2.0 + 1.0e-3,
+            ];
+            for axis in 0..2 {
+                assert!(
+                    (block_frame[axis] - pre_rebase[axis]).abs() <= tolerance[axis],
+                    "face {face} vertex {index} axis {axis}: block frame {} vs bake layer {}",
+                    block_frame[axis],
+                    pre_rebase[axis]
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+    assert!(
+        nonzero_origin,
+        "fixture must rebase through a nonzero block origin"
+    );
 }

@@ -15,10 +15,10 @@ use std::collections::BTreeSet;
 
 use rayon::prelude::*;
 
-use super::block_allocator::{BlockPool, Slot};
 use super::camera_walks::{WalkKind, camera_adjacency, component_count, walk_path};
 use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE};
 use super::portal_distance::PortalGraphInput;
+use postretro_render_cpu::lightmap_pool::{BlockPool, Slot};
 
 /// Steps per walk.
 pub(crate) const SIM_STEPS: usize = 20_000;

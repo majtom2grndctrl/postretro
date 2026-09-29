@@ -3,9 +3,9 @@
 // PRL loader preserves the baked geometry and BVH ordering emitted by prl-build.
 
 /// World-geometry vertex: position + base UV + octahedral normal + octahedral
-/// tangent + lightmap UV + lightmap layer + animated-lightmap block id.
+/// tangent + lightmap UV + lightmap block id + animated-lightmap block id.
 /// Matches the `Geometry` on-disk layout. Normal and tangent decode in the
-/// vertex shader; lightmap UV, layer and block id pass through to the fragment
+/// vertex shader; lightmap UV and block ids pass through to the fragment
 /// shader for atlas sampling.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -17,21 +17,21 @@ pub struct WorldVertex {
     /// Packed tangent: u16 octahedral u-component, u16 v-component with
     /// bitangent sign in bit 15.
     pub tangent_packed: [u16; 2],
-    /// Lightmap atlas UV, quantized 0..65535 → 0..1. Zero on vertices that
-    /// did not receive a lightmap chart (runtime renders against the
-    /// placeholder atlas in that case).
+    /// Block-local lightmap UV, quantized 0..65535 → 0..1 over the extent of
+    /// the cell block `lightmap_block` names. Zero on vertices with no chart.
     pub lightmap_uv: [u16; 2],
-    /// Static lightmap atlas array layer sampled at `lightmap_uv`.
-    pub lightmap_layer: u16,
+    /// Id-22 cell block holding this vertex's chart, plus one; 0 means no
+    /// lightmap. `lightmap_uv` is local to that block's extent.
+    pub lightmap_block: u16,
     /// Animated-lightmap block of this vertex's face: 0 means none, `n` means
-    /// section 25 block `n - 1`. Read with `lightmap_layer` as one `Uint16x2`
+    /// section 25 block `n - 1`. Read with `lightmap_block` as one `Uint16x2`
     /// attribute.
     pub animated_block: u16,
 }
 
 impl WorldVertex {
     /// Stride in bytes: 12 (pos) + 8 (base uv) + 4 (normal) + 4 (tangent) + 4
-    /// (lightmap uv) + 2 (lightmap layer) + 2 (animated block) = 36 bytes.
+    /// (lightmap uv) + 2 (lightmap block) + 2 (animated block) = 36 bytes.
     pub const STRIDE: usize = 36;
 }
 

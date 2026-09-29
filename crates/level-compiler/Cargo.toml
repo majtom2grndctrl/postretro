@@ -38,4 +38,5 @@ fs4.workspace = true
 postretro-test-log-capture.workspace = true
 postretro-level-loader.workspace = true
 postretro-visibility.workspace = true
+postretro-render-cpu.workspace = true
 proptest = { workspace = true }

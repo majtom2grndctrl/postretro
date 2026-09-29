@@ -28,7 +28,7 @@ use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES};
-use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
+use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection, NO_TEXTURE};
 use postretro_level_format::kinematic_geometry::{
     KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH, KinematicGeometrySection,
 };
@@ -1554,6 +1554,19 @@ pub(crate) fn load_prl_from_container(
         None => None,
     };
 
+    // The vertex lightmap fields changed frame without changing their bytes,
+    // so only the container entry version tells a stale geometry apart.
+    if let Some(entry) = meta.find_section(SectionId::Geometry as u32)
+        && entry.version != GEOMETRY_CONTAINER_VERSION
+    {
+        return Err(section_validation(
+            "Geometry",
+            format!(
+                "container version {} (expected {GEOMETRY_CONTAINER_VERSION}); recompile with `prl-build`",
+                entry.version
+            ),
+        ));
+    }
     let geom_data = read_section(SectionId::Geometry)?
         .ok_or_else(|| stale_section("Geometry", SectionId::Geometry))?;
     let geom = GeometrySection::from_bytes(&geom_data)
@@ -1583,7 +1596,7 @@ pub(crate) fn load_prl_from_container(
             normal_oct: v.normal_oct,
             tangent_packed: v.tangent_packed,
             lightmap_uv: v.lightmap_uv,
-            lightmap_layer: v.lightmap_layer,
+            lightmap_block: v.lightmap_block,
             animated_block: v.animated_block,
         })
         .collect();
@@ -1881,8 +1894,10 @@ pub(crate) fn load_prl_from_container(
     }
 
     let lightmap = crate::prl_lightmap::read_lightmap(&container)?;
+    let lightmap_index = lightmap.as_ref().map(|lightmap| &lightmap.index);
+    crate::prl_lightmap::validate_vertex_lightmap_blocks(&vertices, lightmap_index)?;
     let mut shadowmask_atlas =
-        crate::prl_lightmap::read_shadowmask_atlas(&container, lightmap.as_ref())?;
+        crate::prl_lightmap::read_shadowmask_atlas(&container, lightmap_index)?;
 
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
@@ -1934,7 +1949,7 @@ pub(crate) fn load_prl_from_container(
     let animated_light_chunks = crate::prl_lightmap::read_animated_light_chunks(&container)?;
     let animated_light_weight_maps = crate::prl_lightmap::read_animated_light_weight_maps(
         &container,
-        lightmap.as_ref(),
+        lightmap.as_ref().map(|lightmap| &lightmap.index),
         &vertices,
     )?;
 

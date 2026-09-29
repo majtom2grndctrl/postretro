@@ -4,18 +4,21 @@
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 
 use crate::bake_control::BakeControl;
+use crate::lightmap_bake::BlockLayout;
+use crate::lightmap_layer::{SharedAtlas, atlas_layout_fingerprint};
 use crate::{
     animated_atlas_layout, animated_block_ids, animated_light_weight_maps, cache, geometry,
 };
 
 /// Load the animated-light weight maps from the stage cache, or bake them and
-/// store the result. Returns `Some` on both paths.
+/// store the result. Fails when an animated face's chart leaves its lightmap
+/// cell block.
 pub(super) fn bake_or_load_weight_maps(
     wm_inputs: &animated_light_weight_maps::WeightMapInputs<'_>,
     final_lightmap_density: f32,
     stage_cache: Option<&cache::StageCache>,
     animated_weight_control: &BakeControl,
-) -> Option<AnimatedLightWeightMapsSection> {
+) -> anyhow::Result<AnimatedLightWeightMapsSection> {
     let animated_chunk_lights = wm_inputs.lights;
     let geo_result = wm_inputs.geometry;
     let atlas_width = wm_inputs.atlas_width;
@@ -34,7 +37,17 @@ pub(super) fn bake_or_load_weight_maps(
     //
     // Weight maps run after atlas preparation and consume `geo_result` with
     // split vertices and assigned atlas UVs. Hash that same prepared geometry
-    // so the cache key matches the bake inputs.
+    // so the cache key matches the bake inputs. The chunk-section proxy does
+    // not see where charts landed, and the cached blocks carry cell-block
+    // keys and bake-layer seeds, so the layout fingerprint (placements and the
+    // cell-block table) is folded too.
+    let layout_fingerprint = atlas_layout_fingerprint(&SharedAtlas {
+        charts: wm_inputs.face_charts,
+        placements: wm_inputs.face_placements,
+        atlas_width,
+        atlas_height,
+        layout: wm_inputs.layout,
+    });
     let wm_input_hash = {
         let mut buf = postcard::to_allocvec(&animated_chunk_lights)
             .expect("postcard serialize animated_chunk_lights");
@@ -47,6 +60,7 @@ pub(super) fn bake_or_load_weight_maps(
         buf.extend_from_slice(&static_atlas_layer_count.to_le_bytes());
         buf.extend_from_slice(&animated_light_chunks_section.to_bytes());
         buf.extend_from_slice(&soft_shadow_samples.to_le_bytes());
+        buf.extend_from_slice(&layout_fingerprint);
         *blake3::hash(&buf).as_bytes()
     };
     let wm_key = cache::CacheKey::new(
@@ -76,34 +90,36 @@ pub(super) fn bake_or_load_weight_maps(
         // no permit (the parallel bake path is what needs a permit).
         animated_weight_control.governor().checkpoint();
         animated_weight_control.advance(animated_light_chunks_section.chunks.len());
-        Some(section)
+        Ok(section)
     } else {
         log::info!("[cache] animated_lm_weight_maps miss");
         let section = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
             wm_inputs,
             animated_weight_control,
-        );
+        )
+        .map_err(|e| anyhow::anyhow!("Animated weight-map bake failed: {e}"))?;
         if let Some(c) = stage_cache {
             c.put(&wm_key, &section.to_bytes());
         }
-        Some(section)
+        Ok(section)
     }
 }
 
 /// Repack the culled animated atlas into its compact layout and enforce what
 /// the layout relies on. Returns each face's block for the post-SDF vertex
-/// stamp, or `None` when the static lightmap is the placeholder: its vertices
-/// were never split or given lightmap UVs, and the runtime never samples the
-/// animated atlas without a static one, so there is nothing to guard or stamp.
+/// stamp, or `None` when the static lightmap has no blocks: its vertices were
+/// never split or given block ids, and the runtime never samples the animated
+/// atlas without a static one, so there is nothing to guard or stamp.
 pub(super) fn layout_animated_atlas(
     weight_maps: &mut postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection,
     chunk_section: &postretro_level_format::animated_light_chunks::AnimatedLightChunksSection,
     geo_result: &geometry::GeometryResult,
-    static_layer_size: u32,
-    static_lightmap_is_placeholder: bool,
+    layout: &BlockLayout,
+    bake_layer_size: u32,
+    static_lightmap_has_no_blocks: bool,
 ) -> anyhow::Result<Option<Vec<Option<u32>>>> {
     let identity_pages = weight_maps.compact_layers;
-    let chosen = animated_atlas_layout::choose_compact_layout(weight_maps, static_layer_size);
+    let chosen = animated_atlas_layout::choose_compact_layout(weight_maps, layout, bake_layer_size);
     if let Some(error) = weight_maps.consistency_error() {
         anyhow::bail!("Animated lightmap atlas layout is inconsistent: {error}");
     }
@@ -124,23 +140,23 @@ pub(super) fn layout_animated_atlas(
             weight_maps.compact_layers,
         ),
         identity_pages,
-        static_layer_size,
+        bake_layer_size,
         postretro_level_format::animated_lightmap_atlas::animated_atlas_byte_estimate(
-            static_layer_size,
-            static_layer_size,
+            bake_layer_size,
+            bake_layer_size,
             identity_pages,
         ),
     );
 
     // One face, one block holds on every path — it is a compiler invariant,
-    // not a vertex guard — so this runs before the placeholder early return.
+    // not a vertex guard — so this runs before the no-block early return.
     let face_blocks = animated_block_ids::face_blocks(
         chunk_section,
         weight_maps,
         geo_result.face_index_ranges.len(),
     )
     .map_err(|e| anyhow::anyhow!("Animated lightmap block guard failed: {e}"))?;
-    if static_lightmap_is_placeholder {
+    if static_lightmap_has_no_blocks {
         return Ok(None);
     }
     animated_block_ids::validate_block_guards(
@@ -148,7 +164,7 @@ pub(super) fn layout_animated_atlas(
         &geo_result.face_index_ranges,
         weight_maps,
         &face_blocks,
-        static_layer_size,
+        layout,
     )
     .map_err(|e| anyhow::anyhow!("Animated lightmap block guard failed: {e}"))?;
     Ok(Some(face_blocks))

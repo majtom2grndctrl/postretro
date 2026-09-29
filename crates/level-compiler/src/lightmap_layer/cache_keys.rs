@@ -10,14 +10,14 @@ use super::{
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::chart_interior_dims;
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::effective_direction_texel_scale;
 use crate::map_data::MapLight;
 
 /// The atlas layout descriptor folded into a layer's cache key. Captures atlas
-/// dimensions, resolved chart sampling extents/dimensions, and per-chart
-/// placements so an atlas repack (which shifts every placement) or a
-/// per-surface density override invalidates all layers by changing this
-/// fingerprint.
+/// dimensions, resolved chart sampling extents/dimensions, per-chart
+/// placements, and the cell-block table (order, extents, bake-layer origins,
+/// direction scale) so an atlas repack (which shifts every placement), a block
+/// reorder, or a per-surface density override invalidates all layers by
+/// changing this fingerprint.
 ///
 /// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`/`layer`
 /// fields directly into the digest — the deterministically-derived proxy-bytes
@@ -27,7 +27,7 @@ use crate::map_data::MapLight;
 /// while its 64² atlas and `(0, 0, 0)` placement remain unchanged. Raw region
 /// definitions are intentionally not folded: equivalent resolved chart
 /// outcomes share cache identity.
-pub(super) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
+pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&atlas.atlas_width.to_le_bytes());
     hasher.update(&atlas.atlas_height.to_le_bytes());
@@ -61,6 +61,25 @@ pub(super) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
         // Fold the atlas layer so a repack that moves a chart to a different
         // array layer (same x/y) still invalidates the per-light cache.
         hasher.update(&p.layer.to_le_bytes());
+    }
+    let layout = atlas.layout;
+    hasher.update(&layout.direction_texel_scale.to_le_bytes());
+    hasher.update(&(layout.blocks.len() as u32).to_le_bytes());
+    for block in &layout.blocks {
+        for field in [
+            block.cell_id,
+            block.width,
+            block.height,
+            block.layer,
+            block.x,
+            block.y,
+        ] {
+            hasher.update(&field.to_le_bytes());
+        }
+    }
+    hasher.update(&(layout.chart_blocks.len() as u32).to_le_bytes());
+    for block in &layout.chart_blocks {
+        hasher.update(&block.to_le_bytes());
     }
     hasher.finalize().as_bytes().to_vec()
 }
@@ -267,75 +286,29 @@ pub fn validate_layer_partition(
     Ok(())
 }
 
-/// Validate a decoded composited-section memo against the current atlas and
-/// encode configuration. A decodable but stale payload is a soft cache miss.
-#[allow(clippy::too_many_arguments)]
+/// Validate a decoded composited-section memo against the current block
+/// layout and encode configuration. A decodable but stale payload is a soft
+/// cache miss.
 pub fn validate_cached_lightmap_section(
     section: &postretro_level_format::lightmap::LightmapSection,
     atlas: &SharedAtlas<'_>,
-    expected_layer_count: u32,
-    texel_density: f32,
     uncompressed_irradiance: bool,
-    direction_texel_scale: u32,
 ) -> Result<(), String> {
-    use postretro_level_format::lightmap::{
-        DIRECTION_FORMAT_OCT_RG8, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode,
-    };
+    use postretro_level_format::lightmap::LightmapMode;
 
-    if section.irr_width != atlas.atlas_width || section.irr_height != atlas.atlas_height {
+    let layout = atlas.layout;
+    if section.direction_texel_scale != layout.direction_texel_scale {
         return Err(format!(
-            "irradiance dimensions {}x{} != {}x{}",
-            section.irr_width, section.irr_height, atlas.atlas_width, atlas.atlas_height
+            "direction scale {} != {}",
+            section.direction_texel_scale, layout.direction_texel_scale
         ));
     }
-    if section.layer_count != expected_layer_count {
-        return Err(format!(
-            "layer_count {} != {expected_layer_count}",
-            section.layer_count
-        ));
-    }
-    if section.irr_texel_density.to_bits() != texel_density.to_bits() {
-        return Err(format!(
-            "irradiance density {} != {texel_density}",
-            section.irr_texel_density
-        ));
-    }
-    let expected_irradiance_format = if uncompressed_irradiance {
-        IRRADIANCE_FORMAT_RGBA16F
-    } else {
-        IRRADIANCE_FORMAT_BC6H
-    };
+    let expected_irradiance_format =
+        crate::lightmap_bake::irradiance_format(uncompressed_irradiance);
     if section.irradiance_format != expected_irradiance_format {
         return Err(format!(
             "irradiance format {} != {expected_irradiance_format}",
             section.irradiance_format
-        ));
-    }
-
-    let direction_texel_scale = effective_direction_texel_scale(
-        direction_texel_scale,
-        atlas.atlas_width,
-        atlas.atlas_height,
-    );
-    let expected_dir_width = atlas.atlas_width / direction_texel_scale;
-    let expected_dir_height = atlas.atlas_height / direction_texel_scale;
-    if section.dir_width != expected_dir_width || section.dir_height != expected_dir_height {
-        return Err(format!(
-            "direction dimensions {}x{} != {expected_dir_width}x{expected_dir_height}",
-            section.dir_width, section.dir_height
-        ));
-    }
-    let expected_dir_density = texel_density * direction_texel_scale as f32;
-    if section.dir_texel_density.to_bits() != expected_dir_density.to_bits() {
-        return Err(format!(
-            "direction density {} != {expected_dir_density}",
-            section.dir_texel_density
-        ));
-    }
-    if section.direction_format != DIRECTION_FORMAT_OCT_RG8 {
-        return Err(format!(
-            "direction format {} != {DIRECTION_FORMAT_OCT_RG8}",
-            section.direction_format
         ));
     }
     if section.mode != LightmapMode::Shadowed {
@@ -344,6 +317,29 @@ pub fn validate_cached_lightmap_section(
             section.mode,
             LightmapMode::Shadowed
         ));
+    }
+    if section.blocks.len() != layout.blocks.len() {
+        return Err(format!(
+            "block count {} != {}",
+            section.blocks.len(),
+            layout.blocks.len()
+        ));
+    }
+    for (id, (stored, expected)) in section.blocks.iter().zip(&layout.blocks).enumerate() {
+        if stored.cell_id != expected.cell_id
+            || u32::from(stored.width) != expected.width
+            || u32::from(stored.height) != expected.height
+        {
+            return Err(format!(
+                "block {id} is cell {} {}x{}, expected cell {} {}x{}",
+                stored.cell_id,
+                stored.width,
+                stored.height,
+                expected.cell_id,
+                expected.width,
+                expected.height
+            ));
+        }
     }
     Ok(())
 }
@@ -373,7 +369,9 @@ pub fn validate_cached_lightmap_section(
 ///    this is belt-and-suspenders (same rationale as the light-count fold).
 /// 6. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
 /// 7. `direction_texel_scale` (u32 LE) — selects the post-composite direction
-///    atlas resolution without invalidating any per-light layer cache entry.
+///    resolution. It also sets the block alignment, which the layout
+///    fingerprint already covers, so a scale that changes the alignment
+///    re-keys the per-light layers too.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.

@@ -1,11 +1,8 @@
-// Lightmap GPU texture uploads: irradiance, direction and shadowmask atlases,
-// their placeholders, and the adapter format checks.
+// Lightmap placeholder textures (placeholder mode's neutral irradiance,
+// direction and all-visible shadowmask) and the adapter format checks.
 // See: context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::lightmap::{
-    DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapHeader,
-};
-use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasHeader};
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use wgpu::util::DeviceExt;
 
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
@@ -21,51 +18,6 @@ pub fn atlas_format_filterable(adapter: &wgpu::Adapter) -> bool {
         .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
 }
 
-pub(super) fn upload_irradiance_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sec: &LightmapHeader,
-    irradiance: &[u8],
-) -> wgpu::Texture {
-    // Branch the texture format on the section's stored tag. Both formats bind
-    // through the same group-4 BGL slot (`Float { filterable: true }`) and
-    // sample through the existing linear sampler — `Bc6hRgbUfloat` is hardware-
-    // decoded before filtering, so the shader's sample call is identical and
-    // requires no second pipeline variant. RGBA16F retains its alpha (legacy
-    // padding); BC6H is RGB-only and the shader's `.rgb` swizzle never reads
-    // alpha. `create_texture_with_data` accepts the block-compressed payload
-    // verbatim — the dimensions are the texel-space size and the data slice is
-    // `ceil(w/4)·ceil(h/4)·16` bytes.
-    let format = match sec.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H => wgpu::TextureFormat::Bc6hRgbUfloat,
-        // `IRRADIANCE_FORMAT_RGBA16F` (or any value `from_bytes` already
-        // gated to one of the two known tags).
-        _ => wgpu::TextureFormat::Rgba16Float,
-    };
-    // `texture_2d_array`: the on-disk `irradiance` blob is layer-major (layer 0's
-    // texels, then layer 1's, …), exactly the `LayerMajor` order
-    // `create_texture_with_data` expects, so a single upload covers all layers.
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Lightmap Irradiance"),
-            size: wgpu::Extent3d {
-                width: sec.irr_width,
-                height: sec.irr_height,
-                depth_or_array_layers: sec.layer_count,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        irradiance,
-    )
-}
-
 /// Whether `Bc6hRgbUfloat` (the default irradiance storage on disk) advertises
 /// the texture-binding and linear-filtering features the runtime relies on.
 /// Mirrors `atlas_format_filterable` for the BC6H sibling check: BC6H is the
@@ -79,86 +31,6 @@ pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
         .get_texture_format_features(wgpu::TextureFormat::Bc6hRgbUfloat)
         .flags
         .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-}
-
-pub(super) fn upload_direction_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sec: &LightmapHeader,
-    direction: &[u8],
-) -> wgpu::Texture {
-    // `texture_2d_array`, sharing `layer_count` with the irradiance atlas. The
-    // `direction` blob is layer-major, so one `LayerMajor` upload covers all layers.
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Lightmap Direction"),
-            size: wgpu::Extent3d {
-                width: sec.dir_width,
-                height: sec.dir_height,
-                depth_or_array_layers: sec.layer_count,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: direction_texture_format(sec.direction_format),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        direction,
-    )
-}
-
-/// Select the texture format from the strictly parsed section tag. Current
-/// compilers write Rg8; Rgba8 remains loadable for existing PRLs whose static
-/// direction bytes carried unused padding channels.
-pub(super) fn direction_texture_format(direction_format: u32) -> wgpu::TextureFormat {
-    match direction_format {
-        DIRECTION_FORMAT_OCT_RG8 => wgpu::TextureFormat::Rg8Unorm,
-        DIRECTION_FORMAT_OCT_RGBA8 => wgpu::TextureFormat::Rgba8Unorm,
-        unknown => panic!("unsupported lightmap direction format tag {unknown}"),
-    }
-}
-
-/// The texture a usable shadowmask section uploads as: BC5 `.rg`, both mask
-/// groups side by side, one layer per lightmap layer. Callers pass a section
-/// that `filter_usable_shadowmask_section` kept.
-pub(crate) fn shadowmask_texture_descriptor(
-    sec: &ShadowmaskAtlasHeader,
-) -> wgpu::TextureDescriptor<'static> {
-    wgpu::TextureDescriptor {
-        label: Some("Shadowmask Atlas"),
-        size: wgpu::Extent3d {
-            width: sec
-                .texture_width()
-                .expect("usable shadowmask width fits the device texture limit"),
-            height: sec.height,
-            depth_or_array_layers: sec.layer_count,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bc5RgUnorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    }
-}
-
-pub(crate) fn upload_shadowmask_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sec: &ShadowmaskAtlasHeader,
-    data: &[u8],
-) -> wgpu::Texture {
-    // The payload is layer-major BC5 blocks, exactly the `LayerMajor` order
-    // `create_texture_with_data` expects for a block-compressed array.
-    device.create_texture_with_data(
-        queue,
-        &shadowmask_texture_descriptor(sec),
-        wgpu::util::TextureDataOrder::LayerMajor,
-        data,
-    )
 }
 
 pub(super) fn upload_placeholder_irradiance(

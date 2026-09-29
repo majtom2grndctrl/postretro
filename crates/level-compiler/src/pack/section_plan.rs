@@ -95,7 +95,7 @@ pub(super) fn build_finalized_section_plan<'a>(
     let mut sections = Vec::new();
     sections.push(PlannedSection::new(
         SectionId::Geometry as u32,
-        1,
+        postretro_level_format::geometry::GEOMETRY_CONTAINER_VERSION,
         geo_result.geometry.byte_len(),
         || Ok(geo_result.geometry.to_bytes()),
     ));
@@ -204,6 +204,14 @@ pub(super) fn build_finalized_section_plan<'a>(
             ));
         }
         if let Some(section) = shadowmask_atlas.filter(|section| !section.channels.is_empty()) {
+            // Id 42 block `i` pairs with id 22 block `i`; the loader rejects a
+            // count mismatch, so refuse to write one.
+            anyhow::ensure!(
+                section.blocks.len() == lightmap.blocks.len(),
+                "ShadowmaskAtlas has {} blocks but Lightmap has {}",
+                section.blocks.len(),
+                lightmap.blocks.len()
+            );
             sections.push(PlannedSection::new(
                 SectionId::ShadowmaskAtlas as u32,
                 2,

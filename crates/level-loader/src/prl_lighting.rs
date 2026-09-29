@@ -14,17 +14,17 @@ use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::{LightmapHeader, LightmapSection};
+use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::{
     OctahedralShVolumeSection, validate_storage_levels_against_delta,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasHeader, ShadowmaskAtlasSection};
+use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_level_format::{self as prl_format, SectionId};
 use postretro_render_data::influence::LightInfluence;
 
 use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, ShadowType};
-use crate::prl_lightmap::GpuLightingPayloads;
+use crate::prl_lightmap::{GpuLightingPayloads, LoadedLightmap, LoadedShadowmask};
 #[cfg(test)]
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
 use crate::prl_loader::{section_validation, section_validation_from_error};
@@ -41,7 +41,7 @@ pub(crate) struct LoadedLighting {
     pub(crate) lights: Vec<MapLight>,
     pub(crate) light_influences: Vec<LightInfluence>,
     pub(crate) sh_volume: Option<OctahedralShVolumeSection>,
-    pub(crate) lightmap: Option<LightmapSection>,
+    pub(crate) lightmap: Option<LoadedLightmap>,
     pub(crate) lightmap_mode: LightmapMode,
     pub(crate) sdf_atlas: Option<SdfAtlasSection>,
     pub(crate) chunk_light_list: Option<ChunkLightListSection>,
@@ -55,7 +55,7 @@ pub(crate) struct LoadedLighting {
     pub(crate) animated_billboard_direct_scatter_delta_volumes:
         Option<AnimatedBillboardDirectScatterDeltaVolumesSection>,
     pub(crate) entity_shadow_lights: Vec<u32>,
-    pub(crate) shadowmask_atlas: Option<ShadowmaskAtlasSection>,
+    pub(crate) shadowmask_atlas: Option<LoadedShadowmask>,
     pub(crate) cluster_directory: Option<ClusterDirectorySection>,
 }
 
@@ -92,7 +92,7 @@ pub struct LevelWorldLighting<'a> {
     pub lights: &'a [MapLight],
     pub light_influences: &'a [LightInfluence],
     pub sh_volume: Option<&'a OctahedralShVolumeSection>,
-    pub lightmap: Option<&'a LightmapHeader>,
+    pub lightmap: Option<&'a LightmapBlockIndex>,
     pub lightmap_mode: LightmapMode,
     pub sdf_atlas: Option<&'a SdfAtlasSection>,
     pub chunk_light_list: Option<&'a ChunkLightListSection>,
@@ -106,7 +106,7 @@ pub struct LevelWorldLighting<'a> {
     pub animated_billboard_direct_scatter_delta_volumes:
         Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
     pub entity_shadow_lights: &'a [u32],
-    pub shadowmask_atlas: Option<&'a ShadowmaskAtlasHeader>,
+    pub shadowmask_atlas: Option<&'a ShadowmaskBlockIndex>,
     pub cluster_directory: Option<&'a ClusterDirectorySection>,
     pub sh_storage: &'a crate::sh_stream::ShStorage,
 }
@@ -169,12 +169,13 @@ impl LevelWorld {
         &self.entity_shadow_lights
     }
 
-    pub fn shadowmask_atlas(&self) -> Option<&ShadowmaskAtlasHeader> {
+    pub fn shadowmask_atlas(&self) -> Option<&ShadowmaskBlockIndex> {
         self.shadowmask_atlas.as_ref()
     }
 
-    /// Move the GPU-only lightmap and shadowmask payloads out for upload.
-    /// The level keeps their headers; a second take finds nothing.
+    /// Move the GPU-only lightmap and shadowmask block payloads out for
+    /// upload. The level keeps their block indices; a second take finds
+    /// nothing.
     pub fn take_gpu_lighting_payloads(&mut self) -> GpuLightingPayloads {
         std::mem::take(&mut self.gpu_lighting_payloads)
     }

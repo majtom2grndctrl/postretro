@@ -21,7 +21,7 @@ fn cast_world_vertices_roundtrips() {
             normal_oct: [32768, 32768],
             tangent_packed: [65535, 32768],
             lightmap_uv: [100, 200],
-            lightmap_layer: 0,
+            lightmap_block: 0,
             animated_block: 0,
         },
         postretro_render_data::geometry::WorldVertex {
@@ -30,7 +30,7 @@ fn cast_world_vertices_roundtrips() {
             normal_oct: [0, 32768],
             tangent_packed: [32768, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0,
+            lightmap_block: 0,
             animated_block: 0,
         },
     ];

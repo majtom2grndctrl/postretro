@@ -9,6 +9,7 @@ use glam::DVec3;
 use rayon::prelude::*;
 
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection};
 
 use crate::bake_control::BakeControl;
@@ -28,7 +29,7 @@ mod partitions;
 mod section;
 
 #[cfg(test)]
-pub(crate) use encode::decode_side_by_side;
+pub(crate) use encode::decode_blocks_to_layers;
 
 use assignment::*;
 use fill::*;
@@ -44,14 +45,23 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
 /// Bump when the cached `ShadowmaskAtlas` bytes can change without a layer input
 /// hash change: channel assignment/drop policy, raw-visibility quantization,
-/// payload encoding (BC5 side by side, per-block BC4 mode choice), memo entry
+/// payload encoding (BC5 groups, per-block BC4 mode choice), memo entry
 /// layout (the peak-overlap prefix), empty-section behavior, or
 /// `ShadowmaskAtlasSection::to_bytes` payload semantics.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 4;
+///
+/// v5: `SMB6`, one pair of BC5 group planes per lightmap cell block.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 5;
 
-/// The shadowmask texture is `SHADOWMASK_GROUP_COUNT` lightmap widths wide and
-/// must fit the same pinned device texture dimension the lightmap does.
+/// A pool layer holds the two mask groups side by side, so it is
+/// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device
+/// texture dimension. The old whole-layer omission rule (id 42 dropped when
+/// the lightmap layer could not double) cannot trigger any more: the build
+/// already rejects a block wider than a pool layer, and the doubled pool
+/// layer fits by construction.
 pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
+
+const _: () =
+    assert!(LIGHTMAP_POOL_LAYER_EDGE * SHADOWMASK_GROUP_COUNT <= MAX_SHADOWMASK_TEXTURE_WIDTH);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ShadowmaskBakeError {
@@ -146,8 +156,6 @@ pub(crate) enum ShadowmaskOverlapReport {
     /// Most selected lights covering one texel, from this bake's graph or the
     /// memo entry that graph produced.
     Peak(u32),
-    /// Lightmap layers too wide to double: id 42 omitted, overlap not measured.
-    OmittedForWidth { atlas_width: u32 },
 }
 
 /// The `--verbose` overlap line. The mask-capacity decision reads this number;
@@ -156,30 +164,22 @@ pub(crate) fn log_overlap_report(
     report: ShadowmaskOverlapReport,
     section: Option<&ShadowmaskAtlasSection>,
 ) {
-    match (report, section) {
-        (ShadowmaskOverlapReport::Peak(peak), Some(section)) => log::info!(
+    if let (ShadowmaskOverlapReport::Peak(peak), Some(section)) = (report, section) {
+        log::info!(
             "[ShadowmaskAtlas] peak per-texel overlap: {peak} selected light(s) at one texel; \
-             {} layer(s), BC5 .rg side by side ({} slots)",
-            section.layer_count,
+             {} cell block(s), BC5 .rg in {} groups ({} slots)",
+            section.blocks.len(),
+            SHADOWMASK_GROUP_COUNT,
             SHADOWMASK_GROUP_COUNT * 2,
-        ),
-        (ShadowmaskOverlapReport::OmittedForWidth { atlas_width }, _) => log::info!(
-            "[ShadowmaskAtlas] peak per-texel overlap: not measured; id 42 omitted for \
-             {atlas_width}-texel-wide lightmap layers"
-        ),
-        _ => {}
+        );
     }
 }
 
 /// Probe the whole shadowmask memo and, on a miss, complete analytic overlap
 /// graph construction plus deterministic channel assignment before the fused
 /// lightmap walk begins. No visibility ray is traced here.
-///
-/// An atlas too wide to double omits the section before the memo probe, so
-/// neither a memo entry nor a raw fill exists for it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_fused_shadowmask<'a>(
-    level_label: &str,
     selection: Option<&EntityShadowLightsSection>,
     alpha_lights: &'a AlphaLightsNs<'a>,
     shared: &SharedAtlas<'_>,
@@ -215,21 +215,6 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             height: shared.atlas_height,
         });
     }
-    if !shadowmask_texture_fits(shared.atlas_width) {
-        log::warn!(
-            "[ShadowmaskAtlas] {level_label}: lightmap layers are {} texels wide, so the \
-             side-by-side shadowmask texture would exceed {MAX_SHADOWMASK_TEXTURE_WIDTH}; \
-             omitting ShadowmaskAtlas (id 42), static world specular renders fully lit",
-            shared.atlas_width,
-        );
-        return Ok(no_section(
-            started,
-            ShadowmaskOverlapReport::OmittedForWidth {
-                atlas_width: shared.atlas_width,
-            },
-        ));
-    }
-
     let layer_count = layer_count_from_shared(shared);
     let mut selected = Vec::with_capacity(selection.light_indices.len());
     let mut compact_index_by_source = HashMap::new();
@@ -285,7 +270,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     }
 
     if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
-        if let Some(memo) = read_shadowmask_memo(cache, key, selection, shared, layer_count) {
+        if let Some(memo) = read_shadowmask_memo(cache, key, selection, shared) {
             log::info!("[cache] shadowmask_atlas hit");
             control.governor().checkpoint();
             control.advance(fused_total);
@@ -326,6 +311,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         shared.atlas_width,
         shared.atlas_height,
         layer_count,
+        &shared.layout.blocks,
         selection.light_indices.len(),
         &selected,
         &graph,
@@ -343,12 +329,6 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         control,
         work_elapsed: started.elapsed(),
     })
-}
-
-fn shadowmask_texture_fits(atlas_width: u32) -> bool {
-    atlas_width
-        .checked_mul(SHADOWMASK_GROUP_COUNT)
-        .is_some_and(|width| width <= MAX_SHADOWMASK_TEXTURE_WIDTH)
 }
 
 /// Test-only instrumentation counts every full-layer-equivalent payload:
@@ -490,6 +470,7 @@ fn bake_shadowmask_atlas_with_window(
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(shared),
+        &shared.layout.blocks,
         selection.light_indices.len(),
         &selected,
         &graph,
@@ -628,7 +609,7 @@ fn bake_shadowmask_atlas_cached_with_window(
     );
 
     publish_shadowmask_total(control, selected.len(), shared);
-    if let Some(memo) = read_shadowmask_memo(cache, &section_key, selection, shared, layer_count) {
+    if let Some(memo) = read_shadowmask_memo(cache, &section_key, selection, shared) {
         log::info!("[cache] shadowmask_atlas hit");
         advance_shadowmask_total(control, selected.len(), shared);
         return Some(memo.section);
@@ -653,6 +634,7 @@ fn bake_shadowmask_atlas_cached_with_window(
         shared.atlas_width,
         shared.atlas_height,
         layer_count,
+        &shared.layout.blocks,
         selection.light_indices.len(),
         &selected,
         &graph,

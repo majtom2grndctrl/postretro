@@ -1,12 +1,12 @@
-// Animated blocks and chunk rects keyed in static lightmap atlas coordinates.
+// Animated blocks keyed in cell-block texels; chunk rects placed in bake-layer coordinates.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::animated_light_chunks::AnimatedLightChunk;
 use postretro_level_format::animated_light_weight_maps::AnimatedBlock;
 
-use super::ChunkBakeResult;
+use super::{AnimatedWeightMapBakeError, ChunkBakeResult};
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims};
-use crate::lightmap_bake::Chart;
+use crate::lightmap_bake::{BlockLayout, Chart};
 
 /// One block per face with a chunk: its whole chart placement, padding
 /// included, so the zero gutter travels with it. Blocks are indexed in
@@ -14,34 +14,77 @@ use crate::lightmap_bake::Chart;
 /// by cell), the order the compact repack packs them in. `AnimatedLightChunk`s
 /// keep their original order for baking and serialization.
 ///
+/// Each block is keyed by its face's lightmap cell block and the chart's
+/// block-local origin; its compact position starts at the chart's bake-layer
+/// placement (the identity layout).
+///
 /// Returns the sorted block faces (a chunk's block index is its face's position
 /// here) and the blocks themselves.
 pub(super) fn static_frame_blocks(
     chunks: &[AnimatedLightChunk],
     face_charts: &[Chart],
     face_placements: &[ChartPlacement],
-) -> (Vec<u32>, Vec<AnimatedBlock>) {
+    layout: &BlockLayout,
+) -> Result<(Vec<u32>, Vec<AnimatedBlock>), AnimatedWeightMapBakeError> {
     let mut block_faces: Vec<u32> = chunks.iter().map(|chunk| chunk.face_index).collect();
     block_faces.sort_unstable();
     block_faces.dedup();
-    let blocks: Vec<AnimatedBlock> = block_faces
+    let blocks = block_faces
         .iter()
         .map(|&face| {
-            let placement = face_placements[face as usize];
-            let chart = &face_charts[face as usize];
-            AnimatedBlock {
-                static_layer: placement.layer,
-                static_x: placement.x,
-                static_y: placement.y,
-                compact_x: placement.x,
-                compact_y: placement.y,
-                compact_layer: 0,
-                width: chart.width_texels,
-                height: chart.height_texels,
-            }
+            let face = face as usize;
+            rebase_to_cell_block(
+                layout,
+                face,
+                face_placements[face],
+                face_charts[face].width_texels,
+                face_charts[face].height_texels,
+            )
         })
-        .collect();
-    (block_faces, blocks)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((block_faces, blocks))
+}
+
+/// Key face `face`'s bake-layer rect `(placement, width × height)` by its
+/// lightmap cell block and block-local origin. Rejects a rect that leaves the
+/// cell block: the runtime resolves the key through that block's pool slot,
+/// so texels outside it would sample another block.
+pub(crate) fn rebase_to_cell_block(
+    layout: &BlockLayout,
+    face: usize,
+    placement: ChartPlacement,
+    width: u32,
+    height: u32,
+) -> Result<AnimatedBlock, AnimatedWeightMapBakeError> {
+    let lightmap_block = layout.chart_blocks[face];
+    let cell_block = &layout.blocks[lightmap_block as usize];
+    if !cell_block.contains(placement.layer, placement.x, placement.y, width, height) {
+        return Err(AnimatedWeightMapBakeError::BlockOutsideCellBlock {
+            face,
+            lightmap_block,
+            rect: [placement.layer, placement.x, placement.y, width, height],
+            cell_block: [
+                cell_block.layer,
+                cell_block.x,
+                cell_block.y,
+                cell_block.width,
+                cell_block.height,
+            ],
+        });
+    }
+    let local = |bake: u32, origin: u32| {
+        u16::try_from(bake - origin).expect("a cell block fits a u16-wide pool layer")
+    };
+    Ok(AnimatedBlock {
+        lightmap_block,
+        block_x: local(placement.x, cell_block.x),
+        block_y: local(placement.y, cell_block.y),
+        compact_x: placement.x,
+        compact_y: placement.y,
+        compact_layer: 0,
+        width,
+        height,
+    })
 }
 
 /// Center-based half-open ownership: a chart-interior texel `t` (whose center
@@ -136,7 +179,7 @@ pub(super) fn chunk_atlas_rect(
 }
 
 /// If this fires, the UV packer assigned overlapping chart space within one
-/// static-atlas layer. Different faces on the same layer share coordinates, so
+/// bake layer. Different faces on the same layer share coordinates, so
 /// this must not be limited to sibling chunks of one face.
 pub(super) fn assert_no_overlapping_rects_per_layer(
     chunks: &[postretro_level_format::animated_light_chunks::AnimatedLightChunk],
@@ -161,8 +204,8 @@ pub(super) fn assert_no_overlapping_rects_per_layer(
                     let ca = &chunks[i];
                     let cb = &chunks[j];
                     panic!(
-                        "animated-light chunks {i} (face {}) and {j} (face {}) on static \
-                         atlas layer {layer} produced \
+                        "animated-light chunks {i} (face {}) and {j} (face {}) on bake \
+                         layer {layer} produced \
                          overlapping atlas rects under center-based half-open ownership \
                          ({}x{}+{}+{} vs {}x{}+{}+{}); chunk UVs [{:?}..{:?}] vs \
                          [{:?}..{:?}]. Likely causes: subdivider emitted truly \

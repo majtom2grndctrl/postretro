@@ -1,5 +1,6 @@
 //! PRL → `DryRunInput`: parses only the sections the dry run needs and
-//! recovers each face chart's padded atlas rectangle from stored vertex UVs.
+//! recovers each face chart's padded block-local rectangle from stored vertex
+//! block ids and UVs.
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -17,11 +18,9 @@ use postretro_level_format::cluster_directory::{
 };
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::GeometrySection;
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{DIRECTION_TEXEL_BYTES, LightmapBlockIndex};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
-use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
-};
+use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::{
     CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld, PortalData,
@@ -30,7 +29,7 @@ use postretro_level_loader::{
 use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use super::{
     AtlasFormats, CellInfo, ChartRect, DryRunInput, FaceSlot, ReconstructionStats,
-    ShadowmaskFormat, ShadowmaskState,
+    ShadowmaskFormat, ShadowmaskState, StoredBlock,
 };
 use crate::chart_raster::CHART_PADDING_TEXELS;
 
@@ -45,30 +44,29 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
             .with_context(|| format!("read section {id:?}"))
     };
 
-    // Each payload section is parsed, reduced to its header facts, and
-    // dropped before the next is read, bounding peak memory to one section.
+    // Each payload section is reduced to its block index and dropped before
+    // the next is read, bounding peak memory to one section. Only the index
+    // is parsed; blob bytes are never copied.
     let lightmap_bytes = optional(SectionId::Lightmap)?.context("missing Lightmap (id 22)")?;
-    let lightmap = LightmapSection::from_bytes(&lightmap_bytes).context("parse Lightmap")?;
+    let lightmap = LightmapBlockIndex::from_prefix(&lightmap_bytes, lightmap_bytes.len() as u64)
+        .context("parse Lightmap")?;
     drop(lightmap_bytes);
     let shadowmask = match optional(SectionId::ShadowmaskAtlas)? {
         Some(bytes) => {
-            let section =
-                ShadowmaskAtlasSection::from_bytes(&bytes).context("parse ShadowmaskAtlas")?;
-            ensure!(
-                section.format == SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-                "unexpected ShadowmaskAtlas format tag {:#x}",
-                section.format
-            );
+            let index = ShadowmaskBlockIndex::from_prefix(&bytes, bytes.len() as u64, &lightmap)
+                .context("parse ShadowmaskAtlas")?;
+            let block_bytes: Vec<u64> = index
+                .records
+                .iter()
+                .map(|r| u64::from(r.group_a.len) + u64::from(r.group_b.len))
+                .collect();
             ShadowmaskState::Stored(ShadowmaskFormat {
-                width: section.width,
-                height: section.height,
-                layer_count: section.layer_count,
-                payload_bytes: section.data.len() as u64,
+                payload_bytes: block_bytes.iter().sum(),
+                block_bytes,
             })
         }
         None => {
-            // The bake emits id 42 for every usable id-40 selection unless
-            // the doubled layer width exceeds the texture limit.
+            // The bake emits id 42 for every usable id-40 selection.
             let selected = match optional(SectionId::EntityShadowLights)? {
                 Some(bytes) => !EntityShadowLightsSection::from_bytes(&bytes)
                     .map_err(|error| anyhow::anyhow!("parse EntityShadowLights: {error:?}"))?
@@ -84,32 +82,23 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         }
     };
     let formats = AtlasFormats {
-        layer_count: lightmap.layer_count,
-        irr_width: lightmap.irr_width,
-        irr_height: lightmap.irr_height,
-        irr_format: lightmap.irradiance_format,
-        irr_payload_bytes: lightmap.irradiance.len() as u64,
-        dir_width: lightmap.dir_width,
-        dir_height: lightmap.dir_height,
-        dir_format: lightmap.direction_format,
-        dir_payload_bytes: lightmap.direction.len() as u64,
+        irr_format: lightmap.header.irradiance_format,
+        direction_texel_scale: lightmap.header.direction_texel_scale,
+        direction_texel_bytes: DIRECTION_TEXEL_BYTES as u64,
+        blocks: lightmap
+            .records
+            .iter()
+            .map(|record| StoredBlock {
+                cell: record.cell_id,
+                width: u32::from(record.width),
+                height: u32::from(record.height),
+                irradiance_bytes: u64::from(record.irradiance.len),
+                direction_bytes: u64::from(record.direction.len),
+            })
+            .collect(),
         shadowmask,
     };
     drop(lightmap);
-    if let Some(sm) = formats.stored_shadowmask() {
-        ensure!(
-            sm.width == formats.irr_width
-                && sm.height == formats.irr_height
-                && sm.layer_count == formats.layer_count,
-            "ShadowmaskAtlas dimensions {}x{}x{} disagree with Lightmap {}x{}x{}",
-            sm.width,
-            sm.height,
-            sm.layer_count,
-            formats.irr_width,
-            formats.irr_height,
-            formats.layer_count
-        );
-    }
 
     let cells = CellsSection::from_bytes(&optional(SectionId::Cells)?.context("missing Cells")?)
         .context("parse Cells")?;
@@ -337,7 +326,8 @@ fn visibility_world(
     .map_err(|error| anyhow::anyhow!("build visibility world: {error}"))
 }
 
-/// Recover one padded chart rectangle per face, in the bake's chart order.
+/// Recover one padded block-local chart rectangle per face, in the bake's
+/// chart order.
 ///
 /// The bake plans one chart per Geometry face record, in record order. A BVH
 /// leaf is one face's index range; faces with no indices have no leaf. Each
@@ -347,10 +337,11 @@ fn visibility_world(
 /// placeholder is 1×1 while a real chart is at least `2 × padding + 1` wide,
 /// so the recovered order packs exactly as the bake's did.
 ///
-/// The bake writes a vertex UV as `(placement + padding + local · scale) /
-/// atlas`, and the face's extreme vertices land exactly on the interior's
-/// integer edges, so rounding the quantized UV bounds (1/8 texel worst case
-/// at 8192²) recovers the placement and padded size exactly.
+/// The bake writes a vertex UV as `(block-local placement + padding + local ·
+/// scale) / block extent`, and the face's extreme vertices land exactly on
+/// the interior's integer edges, so rounding the quantized UV bounds (1/32
+/// texel worst case at a 2048-texel block) recovers the placement and padded
+/// size exactly.
 pub(super) fn reconstruct_charts(
     geometry: &GeometrySection,
     bvh: &BvhSection,
@@ -419,7 +410,7 @@ fn recover_rect(
         .context("BVH leaf index range outside the index buffer")?;
     let mut u = (u16::MAX, u16::MIN);
     let mut v = (u16::MAX, u16::MIN);
-    let mut layer = None;
+    let mut block_slot = None;
     let mut mixed_layer = false;
     let mut edge_clamped = false;
     for &index in indices {
@@ -431,12 +422,14 @@ fn recover_rect(
         u = (u.0.min(vu), u.1.max(vu));
         v = (v.0.min(vv), v.1.max(vv));
         edge_clamped |= vu == 0 || vv == 0 || vu == UV_QUANT_MAX || vv == UV_QUANT_MAX;
-        match layer {
-            None => layer = Some(vertex.lightmap_layer),
-            Some(existing) => mixed_layer |= existing != vertex.lightmap_layer,
+        match block_slot {
+            None => block_slot = Some(vertex.lightmap_block),
+            Some(existing) => mixed_layer |= existing != vertex.lightmap_block,
         }
     }
-    if u.1 == 0 && v.1 == 0 {
+    // Slot 0 names no block; a real slot is `block id + 1`.
+    let block_slot = block_slot.unwrap_or(0);
+    if (u.1 == 0 && v.1 == 0) || block_slot == 0 {
         stats.uncharted_faces += 1;
         return Ok(None);
     }
@@ -448,21 +441,25 @@ fn recover_rect(
         stats.mixed_layer_faces += 1;
         return Ok(None);
     }
+    let layer = u32::from(block_slot) - 1;
+    let Some(block) = formats.blocks.get(layer as usize) else {
+        stats.out_of_bounds_faces += 1;
+        return Ok(None);
+    };
     let pad = i64::from(CHART_PADDING_TEXELS);
     let texel = |quantized: u16, extent: u32| {
         (f64::from(quantized) / f64::from(UV_QUANT_MAX) * f64::from(extent)).round() as i64
     };
-    let x0 = texel(u.0, formats.irr_width) - pad;
-    let y0 = texel(v.0, formats.irr_height) - pad;
+    let x0 = texel(u.0, block.width) - pad;
+    let y0 = texel(v.0, block.height) - pad;
     // A face thinner than one texel still owns a one-texel interior.
-    let x1 = (texel(u.1, formats.irr_width) + pad).max(x0 + 2 * pad + 1);
-    let y1 = (texel(v.1, formats.irr_height) + pad).max(y0 + 2 * pad + 1);
-    let layer = u32::from(layer.unwrap_or(0));
+    let x1 = (texel(u.1, block.width) + pad).max(x0 + 2 * pad + 1);
+    let y1 = (texel(v.1, block.height) + pad).max(y0 + 2 * pad + 1);
     if x0 < 0
         || y0 < 0
-        || x1 > i64::from(formats.irr_width)
-        || y1 > i64::from(formats.irr_height)
-        || layer >= formats.layer_count
+        || x1 > i64::from(block.width)
+        || y1 > i64::from(block.height)
+        || block.cell != face.cell_id
     {
         stats.out_of_bounds_faces += 1;
         return Ok(None);

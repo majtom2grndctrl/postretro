@@ -240,19 +240,15 @@ mod tests {
         let lights = vec![light(true), light(false)];
         let entity_shadow_lights = [1];
         let atlas = ShadowmaskAtlasSection {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 1,
             channels: vec![2],
-            data: vec![255; ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()],
+            blocks: vec![[vec![255; 16], vec![255; 16]]],
         };
         let bvh = BvhTree {
             nodes: Vec::new(),
             leaves: Vec::new(),
             root_node_index: 0,
         };
-        let (atlas_header, _payload) = atlas.clone().into_parts();
+        let atlas_header = atlas.index();
         let mut geometry = LevelGeometry {
             vertices: &[],
             indices: &[],

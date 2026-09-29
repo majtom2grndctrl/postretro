@@ -112,7 +112,7 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
 fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
     // This is also the complete group inventory used by the device request;
     // its array length is shared with actual forward pipeline construction.
-    assert_eq!(FORWARD_BIND_GROUP_COUNT, 6);
+    assert_eq!(FORWARD_BIND_GROUP_COUNT, 7);
     for cube in [false, true] {
         let actual: u32 = forward_bind_group_layout_entries(cube)
             .iter()
@@ -122,7 +122,7 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         assert!(actual <= FORWARD_SAMPLED_TEXTURE_BUDGET);
     }
     // The forward pipeline layout (see `create_pipeline_layout`) composes
-    // exactly these six BGLs in this group order. Counting fragment-visible
+    // exactly these seven BGLs in this group order. Counting fragment-visible
     // texture entries across them is how wgpu charges
     // `max_sampled_textures_per_shader_stage`. Group 5's count is
     // feature-conditional, so check both variants from the same builders.
@@ -145,6 +145,9 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
             fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries(
                 cube_array_supported,
             )), // group 5
+            fragment_sampled_textures(
+                &crate::lighting::lightmap::block_table_bind_group_layout_entries(),
+            ), // group 6
         ]
     };
 
@@ -152,7 +155,7 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
     let supported = per_group(true);
     assert_eq!(
         supported,
-        [0, 4, 0, 3, 5, 4],
+        [0, 4, 0, 3, 5, 4, 0],
         "forward BGL texture inventory changed (CUBE_ARRAY supported)"
     );
     let derived_supported: u32 = supported.iter().sum();
@@ -167,7 +170,7 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
     let unsupported = per_group(false);
     assert_eq!(
         unsupported,
-        [0, 4, 0, 3, 5, 3],
+        [0, 4, 0, 3, 5, 3, 0],
         "forward BGL texture inventory changed (CUBE_ARRAY absent)"
     );
     let derived_unsupported: u32 = unsupported.iter().sum();
@@ -342,4 +345,127 @@ fn billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_ver
         .expect("shared group 3 must bind billboard direct scatter at 17");
     assert_eq!(scatter.visibility, wgpu::ShaderStages::VERTEX);
     assert_eq!(forward_pipeline_sampled_texture_count(true), 16);
+}
+
+/// Per-stage binding inventory of one BGL: (sampled textures, storage
+/// buffers, uniform buffers, samplers) visible to `stage`.
+fn stage_inventory(entries: &[wgpu::BindGroupLayoutEntry], stage: wgpu::ShaderStages) -> [u32; 4] {
+    let mut counts = [0; 4];
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.visibility.contains(stage))
+    {
+        let slot = match entry.ty {
+            wgpu::BindingType::Texture { .. } => 0,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { .. },
+                ..
+            } => 1,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                ..
+            } => 2,
+            wgpu::BindingType::Sampler(_) => 3,
+            other => panic!("unexpected forward binding type {other:?}"),
+        };
+        counts[slot] += 1;
+    }
+    counts
+}
+
+// AC 21 (spatial-residency--lightmap-cell-blocks): the vertex-stage block
+// table adds no fragment binding. Derived from the forward pipeline's real
+// BGL builders — the same inventory the pipeline layout and device request
+// compose — against the per-group snapshot taken before group 6 existed:
+// every FRAGMENT count per group is unchanged, and the only VERTEX-visible
+// entry beyond that snapshot is the group-6 table.
+#[test]
+fn forward_bindings_add_only_the_vertex_block_table() {
+    use crate::lighting::lightmap::block_table_bind_group_layout_entries;
+
+    for cube in [true, false] {
+        let groups = forward_bind_group_layout_entries(cube);
+        let fragment: Vec<[u32; 4]> = groups
+            .iter()
+            .map(|entries| stage_inventory(entries, wgpu::ShaderStages::FRAGMENT))
+            .collect();
+        // Pre-block-table snapshot of groups 0–5: (sampled, storage, uniform,
+        // sampler). Group 5's point-shadow cube is feature-conditional.
+        let group5 = if cube { [4, 0, 1, 1] } else { [3, 0, 1, 1] };
+        assert_eq!(
+            fragment,
+            [
+                [0, 0, 1, 0],
+                [4, 0, 1, 1],
+                [0, 5, 1, 0],
+                [3, 3, 1, 1],
+                [5, 0, 1, 2],
+                group5,
+                [0, 0, 0, 0],
+            ],
+            "forward FRAGMENT bindings changed (cube = {cube})"
+        );
+
+        let vertex_visible: Vec<(usize, u32)> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(group, entries)| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.visibility.contains(wgpu::ShaderStages::VERTEX))
+                    .map(move |entry| (group, entry.binding))
+            })
+            .collect();
+        let before: Vec<(usize, u32)> = [
+            (0, 0),
+            (2, 0),
+            (2, 1),
+            (2, 2),
+            (2, 3),
+            (2, 4),
+            (2, 5),
+            (3, 1),
+            (3, 2),
+            (3, 10),
+            (3, 14),
+            (3, 15),
+            (3, 17),
+        ]
+        .to_vec();
+        let added: Vec<(usize, u32)> = vertex_visible
+            .iter()
+            .copied()
+            .filter(|entry| !before.contains(entry))
+            .collect();
+        assert!(
+            before.iter().all(|entry| vertex_visible.contains(entry)),
+            "a pre-existing VERTEX-visible forward entry disappeared (cube = {cube})"
+        );
+        assert_eq!(
+            added,
+            [(LIGHTMAP_BLOCK_TABLE_GROUP as usize, 0)],
+            "the block table must be the only VERTEX-visible forward addition"
+        );
+        assert_eq!(
+            groups[LIGHTMAP_BLOCK_TABLE_GROUP as usize],
+            block_table_bind_group_layout_entries().to_vec(),
+            "group 6 is exactly the block table BGL"
+        );
+        assert_eq!(
+            stage_inventory(
+                &groups[LIGHTMAP_BLOCK_TABLE_GROUP as usize],
+                wgpu::ShaderStages::VERTEX
+            ),
+            [0, 1, 0, 0],
+            "the block table is one VERTEX storage buffer"
+        );
+        let vertex_storage: u32 = groups
+            .iter()
+            .map(|entries| stage_inventory(entries, wgpu::ShaderStages::VERTEX)[1])
+            .sum();
+        assert!(
+            vertex_storage <= 8,
+            "forward VERTEX storage buffers ({vertex_storage}) exceed the downlevel limit of 8"
+        );
+    }
 }

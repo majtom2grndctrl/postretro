@@ -5,45 +5,69 @@ use std::collections::HashSet;
 
 use glam::Vec3;
 
-use super::atlas_pack::{PackOutput, pack_layers};
+use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks};
 use super::charts::{Chart, plan_charts};
-use super::{CompositedAtlas, LightmapBakeError, MAX_ATLAS_DIMENSION};
+use super::{CompositedAtlas, LightmapBakeError};
+use crate::bake_control::BakeControl;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::MapLightmapScaleRegion;
 
-/// Cheap pre-bake setup: chart planning, MaxRects packing across atlas layers,
-/// and writing lightmap UVs back into geometry. Returned by [`prepare_atlas`]
-/// and consumed by both the warm per-light composite path and the cold
-/// whole-atlas bake — called once before either branch, so the atlas layout is
-/// shared.
+/// Cheap pre-bake setup: chart planning, per-cell block packing, bake-layer
+/// placement, and writing block ids and block-local lightmap UVs back into
+/// geometry. Returned by [`prepare_atlas`] and consumed by both the warm
+/// per-light composite path and the cold per-layer bake — called once before
+/// either branch, so the layout is shared.
 #[derive(Debug)]
 pub struct PreparedAtlas {
     pub charts: Vec<Chart>,
+    /// Bake-layer placement of each chart.
     pub placements: Vec<ChartPlacement>,
+    /// Edge of every internal bake layer.
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Number of atlas array layers the multi-bin packer produced — `1` when
-    /// every chart fits a single layer, more when a leaf spills onto a new one.
+    /// Internal bake layers the blocks were packed into.
     pub layer_count: u32,
+    /// Cell blocks in block-id order and each chart's block.
+    pub layout: BlockLayout,
 }
 
-/// Prepare atlas charts and assign lightmap UVs into geometry. Runs
-/// `split_shared_vertices`, `plan_charts`, `pack_layers`, and
-/// `assign_lightmap_uvs`. Does NOT run the per-texel ray casting.
-///
-/// Called once before either bake branch — the warm per-light composite path
-/// and the cold whole-atlas bake — so the atlas layout is shared. The
-/// mutations applied here — vertex splitting and lightmap UV writes — run on
-/// all non-empty geometry, regardless of whether a full per-texel bake is
-/// needed. Empty geometry returns a placeholder immediately without running
-/// any mutations.
+/// [`prepare_atlas_ordered`] with blocks in cell-id order at the default
+/// direction scale, for callers without a cluster partition.
 pub fn prepare_atlas(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
     texel_density: f32,
     scale_regions: &[MapLightmapScaleRegion],
+) -> Result<PreparedAtlas, LightmapBakeError> {
+    prepare_atlas_ordered(
+        geom,
+        static_lights,
+        texel_density,
+        scale_regions,
+        BlockOrdering::by_cell_id(super::DIRECTION_TEXEL_SCALE),
+        &BakeControl::unrestricted(),
+    )
+}
+
+/// Prepare charts and cell blocks, and assign each vertex its block id and
+/// block-local lightmap UV. Runs `split_shared_vertices`, `plan_charts`,
+/// `pack_cell_blocks`, and `assign_lightmap_uvs`. Does NOT run the per-texel
+/// ray casting.
+///
+/// Called once before either bake branch, so the layout is shared. Vertex
+/// splitting and UV writes run on all non-empty geometry with static lights.
+/// Without static lights the section has no blocks, so vertices keep block 0,
+/// but charts and placements are still returned for the animated-light
+/// passes. Empty geometry returns an empty layout without mutating anything.
+pub fn prepare_atlas_ordered(
+    geom: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+    ordering: BlockOrdering<'_>,
+    control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(PreparedAtlas {
@@ -52,30 +76,39 @@ pub fn prepare_atlas(
             atlas_width: 1,
             atlas_height: 1,
             layer_count: 1,
+            layout: BlockLayout {
+                direction_texel_scale: super::encode::normalized_direction_texel_scale(
+                    ordering.direction_texel_scale,
+                ),
+                ..BlockLayout::default()
+            },
         });
     }
 
     if static_lights.is_empty() {
-        // Plan charts anyway — the animated-light-chunks builder needs per-face UV bounds and
-        // placements even when no static lights exist. Vertex splitting and UV assignment are
-        // skipped because the empty bake path returns a placeholder section that no atlas
-        // sampling consumes.
+        // Plan charts anyway — the animated-light-chunks builder needs per-face
+        // UV bounds and placements even when no static lights exist. Vertex
+        // splitting and UV assignment are skipped because the section carries
+        // no blocks for any vertex to name. A layout the runtime could not hold
+        // is tolerated here for the same reason.
         let charts = plan_charts(geom, texel_density, scale_regions)?;
-        let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density) {
-            Ok(p) => p,
-            Err(_) => PackOutput {
-                layer_count: 1,
+        return Ok(match pack_cell_blocks(&charts, ordering, control) {
+            Ok(pack) => PreparedAtlas {
+                charts,
+                placements: pack.placements,
+                atlas_width: pack.layer_dim,
+                atlas_height: pack.layer_dim,
+                layer_count: pack.layer_count,
+                layout: pack.layout,
+            },
+            Err(_) => PreparedAtlas {
+                charts,
+                placements: Vec::new(),
                 atlas_width: 1,
                 atlas_height: 1,
-                placements: Vec::new(),
+                layer_count: 1,
+                layout: BlockLayout::default(),
             },
-        };
-        return Ok(PreparedAtlas {
-            charts,
-            placements: pack.placements,
-            atlas_width: pack.atlas_width,
-            atlas_height: pack.atlas_height,
-            layer_count: pack.layer_count,
         });
     }
 
@@ -83,28 +116,18 @@ pub fn prepare_atlas(
     split_shared_vertices(geom);
 
     let charts = plan_charts(geom, texel_density, scale_regions)?;
-
-    // `pack_layers` owns the `ChartTooLarge` check against its `max_dim`, so the
-    // pre-pack loop that duplicated it is gone — one source of truth.
-    let pack = pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density)?;
-    if pack.placements.is_empty() {
-        return Ok(PreparedAtlas {
-            charts,
-            placements: pack.placements,
-            atlas_width: pack.atlas_width,
-            atlas_height: pack.atlas_height,
-            layer_count: pack.layer_count,
-        });
+    let pack = pack_cell_blocks(&charts, ordering, control)?;
+    if !pack.placements.is_empty() {
+        assign_lightmap_uvs(geom, &charts, &pack.placements, &pack.layout);
     }
-
-    assign_lightmap_uvs(geom, &charts, &pack);
 
     Ok(PreparedAtlas {
         charts,
         placements: pack.placements,
-        atlas_width: pack.atlas_width,
-        atlas_height: pack.atlas_height,
+        atlas_width: pack.layer_dim,
+        atlas_height: pack.layer_dim,
         layer_count: pack.layer_count,
+        layout: pack.layout,
     })
 }
 
@@ -147,24 +170,61 @@ fn split_shared_vertices(geom: &mut GeometryResult) {
     }
 }
 
-pub(super) fn assign_lightmap_uvs(geom: &mut GeometryResult, charts: &[Chart], pack: &PackOutput) {
-    // All layers share one dimension; UVs normalize against that per-layer size.
-    let atlas_w_f = pack.atlas_width as f32;
-    let atlas_h_f = pack.atlas_height as f32;
+/// Continuous texel position of `world_p` inside `chart` placed with its
+/// padded top-left at `(origin_x, origin_y)`: the interior starts one padding
+/// in, and the chart's UV extent spans the interior. Shared by UV assignment
+/// (block-local origin) and the rebase proof (bake-layer origin).
+pub(crate) fn chart_texel_position(
+    chart: &Chart,
+    origin_x: u32,
+    origin_y: u32,
+    world_p: Vec3,
+) -> (f32, f32) {
+    let padding = CHART_PADDING_TEXELS as f32;
+    let interior_w = ((chart.width_texels as f32) - 2.0 * padding).max(1.0);
+    let interior_h = ((chart.height_texels as f32) - 2.0 * padding).max(1.0);
+    let scale_u = interior_w / chart.uv_extent[0].max(1.0e-6);
+    let scale_v = interior_h / chart.uv_extent[1].max(1.0e-6);
+    let rel = world_p - chart.origin;
+    let local_u = rel.dot(chart.u_axis) - chart.uv_min[0];
+    let local_v = rel.dot(chart.v_axis) - chart.uv_min[1];
+    (
+        (origin_x as f32 + padding) + local_u * scale_u,
+        (origin_y as f32 + padding) + local_v * scale_v,
+    )
+}
+
+/// Quantize a texel position over `extent` texels to the vertex's unorm16 UV.
+pub(crate) fn quantize_lightmap_uv(texel: f32, extent: u32) -> u16 {
+    let uv = (texel / extent as f32).clamp(0.0, 1.0);
+    (uv * 65535.0 + 0.5) as u16
+}
+
+/// Write each face vertex's block (`id + 1`) and its UV over that block's
+/// extent, computed from the chart's block-local placement. Vertices no face
+/// references keep block 0 and UV 0.
+pub(super) fn assign_lightmap_uvs(
+    geom: &mut GeometryResult,
+    charts: &[Chart],
+    placements: &[ChartPlacement],
+    layout: &BlockLayout,
+) {
+    for vert in &mut geom.geometry.vertices {
+        vert.lightmap_uv = [0, 0];
+        vert.lightmap_block = 0;
+    }
     let ranges = geom.face_index_ranges.clone();
 
     for (face_index, chart) in charts.iter().enumerate() {
-        let placement = pack.placements[face_index];
+        let block_id = layout.chart_blocks[face_index];
+        let block = &layout.blocks[block_id as usize];
+        let (local_x, local_y) = layout.local_placement(face_index, &placements[face_index]);
+        // `check_block_limits` bounds the block count to `MAX_LIGHTMAP_BLOCKS`,
+        // so `id + 1` fits the vertex's `u16`.
+        let vertex_block = u16::try_from(block_id + 1).expect("block count limit keeps ids in u16");
         let range = ranges[face_index];
         let start = range.index_offset as usize;
         let end = start + range.index_count as usize;
-        let padding = CHART_PADDING_TEXELS as f32;
-        let interior_w = (chart.width_texels as f32) - 2.0 * padding;
-        let interior_h = (chart.height_texels as f32) - 2.0 * padding;
-        let interior_w = interior_w.max(1.0);
-        let interior_h = interior_h.max(1.0);
-        let scale_u = interior_w / chart.uv_extent[0].max(1.0e-6);
-        let scale_v = interior_h / chart.uv_extent[1].max(1.0e-6);
 
         let geom_section = &mut geom.geometry;
         let mut assigned: HashSet<usize> = HashSet::new();
@@ -176,21 +236,13 @@ pub(super) fn assign_lightmap_uvs(geom: &mut GeometryResult, charts: &[Chart], p
                     continue;
                 }
                 let vert = &mut geom_section.vertices[vi];
-                let world_p = Vec3::from(vert.position);
-                let rel = world_p - chart.origin;
-                let local_u = rel.dot(chart.u_axis) - chart.uv_min[0];
-                let local_v = rel.dot(chart.v_axis) - chart.uv_min[1];
-                let tx = (placement.x as f32 + padding) + local_u * scale_u;
-                let ty = (placement.y as f32 + padding) + local_v * scale_v;
-                let atlas_u = (tx / atlas_w_f).clamp(0.0, 1.0);
-                let atlas_v = (ty / atlas_h_f).clamp(0.0, 1.0);
+                let (tx, ty) =
+                    chart_texel_position(chart, local_x, local_y, Vec3::from(vert.position));
                 vert.lightmap_uv = [
-                    (atlas_u * 65535.0 + 0.5) as u16,
-                    (atlas_v * 65535.0 + 0.5) as u16,
+                    quantize_lightmap_uv(tx, block.width),
+                    quantize_lightmap_uv(ty, block.height),
                 ];
-                // Select the atlas array slice. `layer` is capped at
-                // `MAX_ATLAS_LAYERS` (256), well within the on-disk `u16`.
-                vert.lightmap_layer = placement.layer as u16;
+                vert.lightmap_block = vertex_block;
             }
             tri += 3;
         }

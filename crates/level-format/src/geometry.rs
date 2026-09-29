@@ -4,13 +4,19 @@
 use crate::FormatError;
 use crate::octahedral;
 
+/// Container entry version of the Geometry section (id 17). Version 2 made
+/// the vertex lightmap fields block-local: `lightmap_block` is an id-22 cell
+/// block id + 1 and `lightmap_uv` spans that block. The loader rejects any
+/// other version, since the payload bytes alone cannot tell the frames apart.
+pub const GEOMETRY_CONTAINER_VERSION: u16 = 2;
+
 /// Sentinel value for `FaceMeta.texture_index`: face has no texture (checkerboard fallback).
 pub const NO_TEXTURE: u32 = u32::MAX;
 
 /// 36-byte vertex: position (f32x3) + base UV (f32x2) + octahedral normal
 /// (u16x2) + octahedral tangent with bitangent sign (u16x2) + lightmap UV
-/// (u16x2, normalized 0..65535 → 0..1 atlas space) + lightmap array layer
-/// (u16) + animated-lightmap block id (u16).
+/// (u16x2, normalized 0..65535 → 0..1 over the cell block's extent) +
+/// lightmap cell block id + 1 (u16) + animated-lightmap block id (u16).
 ///
 /// The bitangent sign is packed into the MSB of `tangent_packed[1]`: the lower
 /// 15 bits hold the octahedral v-component, and bit 15 is 1 for positive
@@ -28,12 +34,14 @@ pub struct Vertex {
     /// Packed tangent: `[0]` is full u16 octahedral u-component, `[1]` has
     /// bitangent sign in bit 15 and 15-bit octahedral v-component in bits 0..14.
     pub tangent_packed: [u16; 2],
-    /// Lightmap atlas UV, quantized 0..65535 → 0..1. Zero on vertices that
-    /// don't belong to any baked chart (runtime binds a 1×1 white fallback).
+    /// Block-local lightmap UV, quantized 0..65535 → 0..1 over the extent of
+    /// the id-22 cell block named by `lightmap_block`. Zero on vertices with
+    /// no lightmap.
     pub lightmap_uv: [u16; 2],
-    /// Atlas array layer this vertex's lightmap chart lives in. Selects the
-    /// `texture_2d_array` slice sampled at `lightmap_uv` in the hot path.
-    pub lightmap_layer: u16,
+    /// Id-22 cell block holding this vertex's chart, plus one; 0 means the
+    /// vertex has no lightmap. A `u16`, so a level holds at most
+    /// `lightmap::MAX_LIGHTMAP_BLOCKS` blocks.
+    pub lightmap_block: u16,
     /// Animated-lightmap block of this vertex's face: 0 means none, `n`
     /// means section 25 block `n - 1`. Stamped by the compiler after the
     /// animated atlas repack; occupies the former 36-byte alignment pad.
@@ -54,7 +62,7 @@ impl Vertex {
         tangent: [f32; 3],
         bitangent_sign: bool,
         lightmap_uv: [f32; 2],
-        lightmap_layer: u16,
+        lightmap_block: u16,
     ) -> Self {
         let normal_oct = octahedral::encode(normal[0], normal[1], normal[2]);
         let tangent_oct = octahedral::encode(tangent[0], tangent[1], tangent[2]);
@@ -69,7 +77,7 @@ impl Vertex {
             normal_oct,
             tangent_packed,
             lightmap_uv,
-            lightmap_layer,
+            lightmap_block,
             animated_block: 0,
         }
     }
@@ -184,7 +192,7 @@ impl GeometrySection {
             buf.extend_from_slice(&v.tangent_packed[1].to_le_bytes());
             buf.extend_from_slice(&v.lightmap_uv[0].to_le_bytes());
             buf.extend_from_slice(&v.lightmap_uv[1].to_le_bytes());
-            buf.extend_from_slice(&v.lightmap_layer.to_le_bytes());
+            buf.extend_from_slice(&v.lightmap_block.to_le_bytes());
             buf.extend_from_slice(&v.animated_block.to_le_bytes());
         }
 
@@ -308,7 +316,7 @@ impl GeometrySection {
                 normal_oct: [normal_u, normal_v],
                 tangent_packed: [tangent_u, tangent_v_with_sign],
                 lightmap_uv: [lm_u, lm_v],
-                lightmap_layer: lm_layer,
+                lightmap_block: lm_layer,
                 animated_block,
             });
             offset += VERTEX_SIZE;
@@ -475,18 +483,18 @@ mod tests {
     }
 
     #[test]
-    fn lightmap_layer_round_trips() {
+    fn lightmap_block_round_trips() {
         let mut section = sample_section();
-        section.vertices[1].lightmap_layer = 7;
+        section.vertices[1].lightmap_block = 7;
         let bytes = section.to_bytes();
         let restored = GeometrySection::from_bytes(&bytes).unwrap();
-        assert_eq!(restored.vertices[1].lightmap_layer, 7);
+        assert_eq!(restored.vertices[1].lightmap_block, 7);
     }
 
     #[test]
     fn animated_block_round_trips_in_the_former_pad_bytes() {
         let mut section = sample_section();
-        section.vertices[1].lightmap_layer = 7;
+        section.vertices[1].lightmap_block = 7;
         section.vertices[1].animated_block = 0xBEEF;
         let bytes = section.to_bytes();
         // Header (12) + vertex 0 (36) + the block id at bytes 34..36 of vertex 1.
@@ -494,7 +502,7 @@ mod tests {
         assert_eq!(&bytes[at..at + 2], &0xBEEF_u16.to_le_bytes());
         let restored = GeometrySection::from_bytes(&bytes).unwrap();
         assert_eq!(restored.vertices[1].animated_block, 0xBEEF);
-        assert_eq!(restored.vertices[1].lightmap_layer, 7);
+        assert_eq!(restored.vertices[1].lightmap_block, 7);
         assert_eq!(restored.vertices[0].animated_block, 0);
     }
 

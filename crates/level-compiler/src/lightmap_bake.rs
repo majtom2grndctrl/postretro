@@ -15,20 +15,25 @@ use thiserror::Error;
 
 mod atlas_layout;
 mod atlas_pack;
+mod block_layout;
+mod cell_blocks;
 mod charts;
 mod encode;
 mod reference;
 
 use atlas_layout::scatter_chart_into_atlas;
-pub use atlas_layout::{PreparedAtlas, prepare_atlas};
+pub use atlas_layout::{PreparedAtlas, prepare_atlas, prepare_atlas_ordered};
+#[cfg(test)]
+pub(crate) use atlas_layout::{chart_texel_position, quantize_lightmap_uv};
 pub(crate) use atlas_pack::MaxRects;
-pub use atlas_pack::PackOutput;
 #[cfg(test)]
 pub(crate) use atlas_pack::{pack_layers, pack_layers_with_layer_limit};
+
+pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
+#[cfg(test)]
+pub(crate) use cell_blocks::{CANDIDATE_WIDTHS, PackedBlock, pack_cell_block};
 pub use charts::Chart;
-pub(crate) use encode::{
-    assemble_layered_section, effective_direction_texel_scale, encode_atlas_layer,
-};
+pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};
 
@@ -53,18 +58,15 @@ pub const DIRECTION_TEXEL_SCALE: u32 = 2;
 /// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
 pub(crate) const MIN_ATLAS_DIMENSION: u32 = 64;
 
-/// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
-/// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
-/// (see `crates/postretro/src/render/renderer_init_resources.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
-/// Also pins the shadowmask bake's max texture width (`shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH`):
-/// its side-by-side texture is twice the lightmap width, so lightmap layers wider than half this
-/// omit the `ShadowmaskAtlas`.
+/// Largest internal bake-layer edge. Bake layers are compiler working planes,
+/// never shipped; blocks are at most one pool layer
+/// (`LIGHTMAP_POOL_LAYER_EDGE`), so the layer sizing never reaches this cap in
+/// production, but the reference packer and the dry run still use it.
 pub(crate) const MAX_ATLAS_DIMENSION: u32 = 8192;
 
-/// Maximum atlas array layers. The atlas is a `texture_2d_array`; the multi-bin
-/// packer opens a new layer whenever a BVH leaf's charts don't fit the current
-/// one. Beyond this the packer errors so the caller can coarsen density or split
-/// the map. 256 is the `max_texture_array_layers` floor the runtime requires.
+/// Most internal bake layers. Each layer is a unit of the per-light cache
+/// partition and of the one-plane bake working set; past this the packer
+/// errors so the caller can coarsen density or split the map.
 pub(crate) const MAX_ATLAS_LAYERS: u32 = 256;
 
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
@@ -133,6 +135,24 @@ pub enum LightmapBakeError {
         chart_count: usize,
         max_dim: u32,
     },
+    #[error(
+        "lightmap cell block too large: cell {cell_id}'s charts pack into a {width}x{height} \
+         block, over the {max}x{max} runtime pool layer (largest chart: face \
+         {largest_chart_face}). Raise `texel_density`, lower `_lightmap_scale` over the cell, or \
+         split the cell's surfaces."
+    )]
+    BlockTooLarge {
+        cell_id: u32,
+        width: u32,
+        height: u32,
+        max: u32,
+        largest_chart_face: usize,
+    },
+    #[error(
+        "lightmap block count {count} exceeds the vertex block-id limit {max}: vertices name a \
+         block as a u16 `id + 1`. Merge cells or bake fewer lightmapped cells."
+    )]
+    BlockCountOverflow { count: usize, max: u32 },
 }
 
 pub struct LightmapBakeCtx<'a> {
@@ -175,18 +195,20 @@ pub struct LightmapConfig {
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
-/// `charts` + `placements` + `atlas_width` to resolve chunk atlas rects.
+/// `charts` + `placements` + the bake-layer size to resolve chunk rects, and
+/// `layout` to key them in cell-block texels.
 #[derive(Debug)]
 pub struct LightmapBakeOutput {
     pub section: LightmapSection,
     pub charts: Vec<Chart>,
-    /// Parallel to `charts`. Empty when the bake short-circuits.
+    /// Bake-layer placements, parallel to `charts`. Empty when the bake
+    /// short-circuits.
     pub placements: Vec<ChartPlacement>,
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Number of atlas array layers. `1` until the multi-bin packer (Task 3b)
-    /// spills charts onto higher layers.
+    /// Internal bake layers.
     pub layer_count: u32,
+    pub layout: BlockLayout,
 }
 
 /// The pre-encode (pre-BC6H) lightmap atlas: the full per-texel `(irradiance,
@@ -267,7 +289,7 @@ impl CompositedAtlas {
     }
 }
 
-/// Bake a directional lightmap. Returns a placeholder when there is nothing to bake.
+/// Bake a directional lightmap. Returns a section without blocks when there is nothing to bake.
 pub fn bake_lightmap(
     inputs: &mut LightmapBakeCtx<'_>,
     config: &LightmapConfig,
@@ -304,17 +326,18 @@ pub fn bake_prepared_lightmap_controlled(
     let texel_density = config.lightmap_density;
     let area_sample_count = config.area_sample_count;
 
-    // No static lights, or atlas prep produced no placements → emit a placeholder section but
-    // return the planned charts/placements so downstream animated-light passes still have
+    // No static lights, or atlas prep produced no placements → emit a section with no blocks
+    // but return the planned charts/placements so downstream animated-light passes still have
     // per-face UV bounds.
     if inputs.lights.is_empty() || prepared.placements.is_empty() {
         return Ok(LightmapBakeOutput {
-            section: LightmapSection::placeholder(),
+            section: LightmapSection::empty(prepared.layout.direction_texel_scale),
             charts: prepared.charts,
             placements: prepared.placements,
             atlas_width: prepared.atlas_width,
             atlas_height: prepared.atlas_height,
             layer_count: prepared.layer_count,
+            layout: prepared.layout,
         });
     }
 
@@ -341,6 +364,7 @@ pub fn bake_prepared_lightmap_controlled(
     let atlas_w = prepared.atlas_width;
     let atlas_h = prepared.atlas_height;
     let layer_count = prepared.layer_count;
+    let layout = prepared.layout;
 
     control.publish_total(placements.len());
     let section = bake_layered_section_controlled(
@@ -350,13 +374,12 @@ pub fn bake_prepared_lightmap_controlled(
         &static_lights,
         &charts,
         &placements,
+        &layout,
         atlas_w,
         atlas_h,
         layer_count,
         area_sample_count,
-        texel_density,
         config.uncompressed_irradiance,
-        config.direction_texel_scale,
         control,
     );
 
@@ -367,17 +390,18 @@ pub fn bake_prepared_lightmap_controlled(
         atlas_width: atlas_w,
         atlas_height: atlas_h,
         layer_count,
+        layout,
     })
 }
 
-/// Bake, dilate, encode, and discard one atlas layer at a time.
+/// Bake, dilate, encode, and discard one bake layer at a time, keeping only
+/// the blocks sliced out of it.
 ///
 /// This is the shipping cold path. The layer loop is deliberately serial and
-/// ascending so its blobs retain the section format's layer-major order. Chart
-/// work remains parallel within one layer, but every worker joins before that
-/// layer is dilated, encoded, and dropped. The whole-atlas
-/// [`reference::bake_monolithic_atlas_controlled`] builder remains as the reference
-/// kernel for byte-identity tests.
+/// ascending. Chart work remains parallel within one layer, but every worker
+/// joins before that layer is dilated, encoded, and dropped. The whole-atlas
+/// [`reference::bake_monolithic_atlas_controlled`] builder remains as the
+/// reference kernel for byte-identity tests.
 #[allow(clippy::too_many_arguments)]
 fn bake_layered_section_controlled(
     bvh: &Bvh<f32, 3>,
@@ -386,56 +410,37 @@ fn bake_layered_section_controlled(
     static_lights: &[&MapLight],
     charts: &[Chart],
     placements: &[ChartPlacement],
+    layout: &BlockLayout,
     atlas_w: u32,
     atlas_h: u32,
     layer_count: u32,
     area_sample_count: u32,
-    texel_density: f32,
     uncompressed_irradiance: bool,
-    direction_texel_scale: u32,
     control: &BakeControl,
 ) -> LightmapSection {
     debug_assert_eq!(charts.len(), placements.len());
 
-    let direction_texel_scale =
-        effective_direction_texel_scale(direction_texel_scale, atlas_w, atlas_h);
-    let mut irradiance = Vec::new();
-    let mut direction = Vec::new();
-
+    let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
     for layer in 0..layer_count {
-        // Keep the layer's full-resolution f32 buffers scoped to this block.
-        // The encoded bytes are appended before their backing buffers are
-        // dropped, bounding the uncompressed working set to one atlas plane.
-        let (mut layer_irradiance, mut layer_direction) = {
-            let atlas = bake_atlas_layer_controlled(
-                bvh,
-                primitives,
-                geometry,
-                static_lights,
-                charts,
-                placements,
-                atlas_w,
-                atlas_h,
-                layer,
-                area_sample_count,
-                control,
-            );
-            encode_atlas_layer(&atlas, uncompressed_irradiance, direction_texel_scale)
-        };
-        irradiance.append(&mut layer_irradiance);
-        direction.append(&mut layer_direction);
+        // Keep the layer's full-resolution f32 buffers scoped to this block:
+        // the plane drops once its blocks are encoded, bounding the
+        // uncompressed working set to one bake layer.
+        let atlas = bake_atlas_layer_controlled(
+            bvh,
+            primitives,
+            geometry,
+            static_lights,
+            charts,
+            placements,
+            atlas_w,
+            atlas_h,
+            layer,
+            area_sample_count,
+            control,
+        );
+        builder.push_layer(layer, &atlas);
     }
-
-    assemble_layered_section(
-        atlas_w,
-        atlas_h,
-        layer_count,
-        texel_density,
-        uncompressed_irradiance,
-        direction_texel_scale,
-        irradiance,
-        direction,
-    )
+    builder.finish()
 }
 
 /// Bake one global atlas layer into a one-layer composited buffer.
@@ -520,16 +525,37 @@ fn bake_atlas_layer_controlled(
     atlas
 }
 
-pub fn log_stats(section: &LightmapSection, static_light_count: usize) {
+pub fn log_stats(section: &LightmapSection, texel_density: f32, static_light_count: usize) {
+    let texels: u64 = section
+        .blocks
+        .iter()
+        .map(|b| u64::from(b.width) * u64::from(b.height))
+        .sum();
+    let largest = section
+        .blocks
+        .iter()
+        .map(|b| (b.width, b.height))
+        .max_by_key(|&(w, h)| u32::from(w) * u32::from(h))
+        .unwrap_or((0, 0));
     log::info!(
-        "Lightmap: {}x{}x{} atlas, {} m/texel, {} static lights baked, irr={} B, dir={} B",
-        section.irr_width,
-        section.irr_height,
-        section.layer_count,
-        section.irr_texel_density,
+        "Lightmap: {} cell blocks ({} texels, largest {}x{}), {} m/texel, {} static lights baked, \
+         irr={} B, dir={} B",
+        section.blocks.len(),
+        texels,
+        largest.0,
+        largest.1,
+        texel_density,
         static_light_count,
-        section.irradiance.len(),
-        section.direction.len(),
+        section
+            .blocks
+            .iter()
+            .map(|b| b.irradiance.len())
+            .sum::<usize>(),
+        section
+            .blocks
+            .iter()
+            .map(|b| b.direction.len())
+            .sum::<usize>(),
     );
 }
 

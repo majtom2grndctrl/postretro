@@ -1,5 +1,6 @@
-// Group-4 lightmap binding layout: binding numbers, BGL entries, the linear
-// sampler, and the animated block-table uniform bytes.
+// Group-4 lightmap binding layout (binding numbers, BGL entries, the linear
+// sampler, the animated block-table uniform bytes) and the group-6 vertex
+// block-table layout.
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -34,8 +35,8 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// pass) and binding 8 in the compose shader are independent numbering spaces for
 /// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
-/// Static-light shadowmask atlas (BC5 `.rg`, two mask groups side by side at
-/// twice the lightmap width), layer-matched to the lightmap irradiance atlas.
+/// Static-light shadowmask pool (BC5 `.rg`, two mask groups side by side at
+/// twice the pool width), layer- and offset-matched to the irradiance pool.
 /// Sampled by forward union-subtraction and static world-specular visibility.
 pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 /// Animated block table for the forward shader: where each animated face's
@@ -50,11 +51,11 @@ pub(crate) const ANIMATED_BLOCK_TABLE_BYTES: usize = ANIMATED_BLOCK_TABLE_UNIFOR
 /// empty table when `section` is `None`. An empty table resolves every vertex
 /// to no block, whatever ids the level's vertices carry. Layout (native-endian
 /// u32s, as the GPU reads them, mirroring `AnimatedBlockTable` in forward.wgsl):
-/// `static_layer_size, page_size, block_count, 0`, then per block the packed
-/// `(i16 dx, i16 dy)` static→compact texel offset and the page.
+/// `0 (reserved), page_size, block_count, 0`, then per block the packed
+/// `(i16 dx, i16 dy)` compact − block-local texel offset and the page. The
+/// forward stage adds that offset to the fragment's block-local texel.
 pub(crate) fn animated_block_table_bytes(
     section: Option<&AnimatedLightWeightMapsSection>,
-    static_layer_size: u32,
 ) -> Vec<u8> {
     let mut bytes = vec![0_u8; ANIMATED_BLOCK_TABLE_BYTES];
     let Some(section) = section else {
@@ -65,12 +66,11 @@ pub(crate) fn animated_block_table_bytes(
         "section 25 consistency validation bounds the block count to the table cap"
     );
     let mut write = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
-    write(0, static_layer_size);
     write(4, section.page_size);
     write(8, section.blocks.len() as u32);
     for (index, block) in section.blocks.iter().enumerate() {
-        let dx = texel_offset(block.static_x, block.compact_x);
-        let dy = texel_offset(block.static_y, block.compact_y);
+        let dx = texel_offset(block.block_x, block.compact_x);
+        let dy = texel_offset(block.block_y, block.compact_y);
         let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
             + index * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
         write(at, u32::from(dx as u16) | (u32::from(dy as u16) << 16));
@@ -79,11 +79,34 @@ pub(crate) fn animated_block_table_bytes(
     bytes
 }
 
-/// Static→compact translation on one axis. Both coordinates lie inside an
-/// 8192-texel layer, so the difference always fits an `i16`.
-fn texel_offset(static_coord: u32, compact_coord: u32) -> i16 {
-    i16::try_from(i64::from(compact_coord) - i64::from(static_coord))
-        .expect("static and compact coordinates lie within one 8192-texel layer")
+/// Block-local→compact translation on one axis. A block-local coordinate lies
+/// inside a 2048-texel cell block and a compact one inside an 8192-texel page,
+/// so the difference always fits an `i16`.
+fn texel_offset(block_coord: u16, compact_coord: u32) -> i16 {
+    i16::try_from(i64::from(compact_coord) - i64::from(block_coord))
+        .expect("block-local and compact coordinates lie within one 8192-texel page")
+}
+
+/// Group 6, binding 0: the lightmap block table the forward vertex stage
+/// reads, one `vec4<u32>` per `WorldVertex::lightmap_block`
+/// (see `postretro_render_cpu::lightmap_pool::BlockTableEntry`).
+pub const BIND_BLOCK_TABLE: u32 = 0;
+
+/// VERTEX-only: the vertex stage resolves each vertex's block and hands the
+/// fragment stage flat varyings, so no fragment binding is spent.
+pub(crate) fn block_table_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
+    [wgpu::BindGroupLayoutEntry {
+        binding: BIND_BLOCK_TABLE,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(
+                postretro_render_cpu::lightmap_pool::BLOCK_TABLE_ENTRY_BYTES as u64,
+            ),
+        },
+        count: None,
+    }]
 }
 
 /// The linear lightmap sampler. Clamp-to-edge is what the shadowmask
@@ -120,8 +143,8 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                // `texture_2d_array`: charts that overflow one layer spill into
-                // additional layers; the forward shader samples by `lightmap_layer`.
+                // `texture_2d_array`: the pool's layers hold cell blocks; the
+                // forward shader samples at a block's pool layer and offset.
                 view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
@@ -132,7 +155,7 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                // `texture_2d_array`, sharing `layer_count` with the irradiance atlas.
+                // `texture_2d_array`, layer-matched to the irradiance pool.
                 view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },

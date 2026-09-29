@@ -23,36 +23,40 @@ pub(super) fn input_summary(input: &DryRunInput) -> String {
     let f = &input.formats;
     let r = &input.reconstruction;
     let mut out = String::new();
+    let block_texels: u64 = f
+        .blocks
+        .iter()
+        .map(|b| u64::from(b.width) * u64::from(b.height))
+        .sum();
     let _ = writeln!(
         out,
-        "id 22: {} layers of {}x{} irr (format {}) + {}x{} dir (format {}); payload irr {} + dir {} bytes",
-        f.layer_count,
-        f.irr_width,
-        f.irr_height,
+        "id 22: {} cell blocks, {} texels (irr format {}, direction scale {}); payload irr {} + dir {} bytes",
+        f.blocks.len(),
+        block_texels,
         f.irr_format,
-        f.dir_width,
-        f.dir_height,
-        f.dir_format,
-        f.irr_payload_bytes,
-        f.dir_payload_bytes
+        f.direction_texel_scale,
+        f.irr_payload_bytes(),
+        f.dir_payload_bytes()
     );
     match &f.shadowmask {
         ShadowmaskState::Stored(sm) => {
             let _ = writeln!(
                 out,
-                "id 42: BC5 side-by-side, {} layers of {}x{} lightmap texels; payload {} bytes",
-                sm.layer_count, sm.width, sm.height, sm.payload_bytes
+                "id 42: BC5 group A + B per block, {} blocks; payload {} bytes",
+                sm.block_bytes.len(),
+                sm.payload_bytes
             );
         }
         ShadowmaskState::OmittedForWidth | ShadowmaskState::Absent => {}
     }
     let _ = writeln!(out, "{}", shadowmask_policy(f));
+    let stored_bytes: u64 = (0..f.blocks.len()).map(|b| f.stored_block_bytes(b)).sum();
     let _ = writeln!(
         out,
-        "bytes per chart texel: id22 {:.3} + id42 {:.3}; stored layer {} bytes",
+        "bytes per chart texel: id22 {:.3} + id42 {:.3}; stored blocks {} bytes",
         f.lightmap_bytes_per_texel(),
         f.shadowmask_bytes_per_texel(),
-        f.stored_layer_bytes()
+        stored_bytes
     );
     let _ = writeln!(
         out,
@@ -84,13 +88,13 @@ pub(super) fn shadowmask_policy(formats: &AtlasFormats) -> String {
     let limit = MAX_SHADOWMASK_TEXTURE_WIDTH / SHADOWMASK_GROUP_COUNT;
     match formats.shadowmask {
         ShadowmaskState::Stored(_) => format!(
-            "id 42 stored: charged 2 B/texel in texel-exact and in every layer up to {limit} wide"
+            "id 42 stored: charged 2 B/texel in texel-exact, every stored block, and every \
+             simulated layer up to {limit} wide"
         ),
         ShadowmaskState::OmittedForWidth => format!(
-            "id 42 omitted for width (selected shadow lights, {}-wide layers cannot double): \
-             texel-exact and stored layout carry none, the \"+ omitted id42\" rows restore it; \
-             simulated layers up to {limit} wide are charged 2 B/texel",
-            formats.irr_width
+            "id 42 omitted although id 40 selects shadow lights: texel-exact and stored blocks \
+             carry none, the \"+ omitted id42\" rows restore it; simulated layers up to {limit} \
+             wide are charged 2 B/texel"
         ),
         ShadowmaskState::Absent => "id 42 absent: no selected shadow lights, never charged".into(),
     }
@@ -207,7 +211,7 @@ impl DryRunReport {
                 layout
                     .layer_dims
                     .first()
-                    .map_or("none".to_string(), |d| format!("{d}²")),
+                    .map_or("none".to_string(), |(w, h)| format!("{w}x{h}")),
                 layout.oversize_cells.len(),
                 mib(layout.total_bytes()),
                 layout.total_layer_texels() as f64 / self.stored_total_texels.max(1) as f64,

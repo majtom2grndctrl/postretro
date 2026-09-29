@@ -22,12 +22,14 @@ use crate::chart_raster::{
 };
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
-    Chart, light_contribution_and_direction, segment_clear, soft_visibility,
+    BlockLayout, Chart, light_contribution_and_direction, segment_clear, soft_visibility,
 };
 use crate::map_data::MapLight;
 
 mod static_atlas_frame;
 
+#[cfg(test)]
+pub(crate) use static_atlas_frame::rebase_to_cell_block;
 use static_atlas_frame::{
     assert_no_overlapping_rects_per_layer, chunk_atlas_rect, static_frame_blocks,
 };
@@ -61,6 +63,9 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// v7 caches section 25 v4 in the identity layout: one block per animated
 /// face, chunk rects in compact coordinates equal to their static ones.
 ///
+/// v8 caches section 25 v5: blocks keyed by lightmap cell block and
+/// block-local texels, identity pages the internal bake layers.
+///
 /// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
 /// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
 /// per-stage version-constant pattern every cached stage uses. Bumping this
@@ -68,7 +73,7 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
-pub const STAGE_VERSION: u32 = 7;
+pub const STAGE_VERSION: u32 = 8;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -79,12 +84,16 @@ pub struct WeightMapInputs<'a> {
     /// `sh_bake.rs` for `animation_descriptors`, so indices agree without remap.
     pub lights: &'a [MapLight],
     pub face_charts: &'a [Chart],
+    /// Bake-layer placements, parallel to `face_charts`.
     pub face_placements: &'a [ChartPlacement],
-    /// Static lightmap layer size; layers are square, so this is also the
-    /// identity layout's page size.
+    /// Cell blocks the placements sit in; animated blocks are keyed in their
+    /// texels.
+    pub layout: &'a BlockLayout,
+    /// Bake layer size; layers are square, so this is also the identity
+    /// layout's page size.
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Total depth of the static lightmap atlas, for the bake log.
+    /// Bake layers, for the bake log.
     pub static_atlas_layer_count: u32,
     /// Area-sample count for soft-shadow penumbra visibility.
     /// `pipeline.rs` folds this value into the `animated_lm_weight_maps` cache
@@ -100,6 +109,16 @@ pub enum AnimatedWeightMapBakeError {
         "animated lightmap atlas is over budget: budget {budget_bytes} bytes, found {found_bytes} bytes"
     )]
     AtlasOverBudget { budget_bytes: u64, found_bytes: u64 },
+    #[error(
+        "face {face}'s animated rect (layer, x, y, w, h) {rect:?} leaves its lightmap cell \
+         block {lightmap_block} at {cell_block:?}; its block-local key would sample another block"
+    )]
+    BlockOutsideCellBlock {
+        face: usize,
+        lightmap_block: u32,
+        rect: [u32; 5],
+        cell_block: [u32; 5],
+    },
 }
 
 /// Reject an animated atlas whose combined irradiance and direction targets do
@@ -133,9 +152,9 @@ fn validate_animated_atlas_budget_with_limit(
 }
 
 struct ChunkBakeResult {
-    /// Static-atlas rect; `block` and `texel_offset` are filled by concatenation.
+    /// Bake-layer rect; `block` and `texel_offset` are filled by concatenation.
     rect: ChunkAtlasRect,
-    /// Static-atlas layer of `rect`.
+    /// Bake layer of `rect`.
     layer: u32,
     /// chunk-local offsets; concatenation pass rewrites to global offsets.
     offset_counts: Vec<TexelLightEntry>,
@@ -162,7 +181,7 @@ pub struct CulledAnimatedChunks {
 /// initialization, which is exactly what compose would have written.
 ///
 /// A block whose every chunk drops is dropped too, and the survivors are laid
-/// out again in the identity layout over the static layers still holding a
+/// out again in the identity layout over the bake layers still holding a
 /// chunk; the compact repack runs afterwards. Runs outside the weight-map
 /// cache so hit and miss paths cull identically. Unlit chunks own no
 /// `texel_lights` entries, so that pool and every surviving
@@ -172,7 +191,8 @@ pub fn cull_unlit_chunks(
     chunk_section: &AnimatedLightChunksSection,
     weight_maps: AnimatedLightWeightMapsSection,
     leaf_chunk_ranges: &[(u32, u32)],
-    static_layer_size: u32,
+    layout: &BlockLayout,
+    bake_layer_size: u32,
 ) -> CulledAnimatedChunks {
     assert_eq!(
         chunk_section.chunks.len(),
@@ -277,7 +297,7 @@ pub fn cull_unlit_chunks(
             ..AnimatedLightWeightMapsSection::empty()
         };
     } else {
-        apply_identity_layout(&mut culled, static_layer_size);
+        apply_identity_layout(&mut culled, layout, bake_layer_size);
     }
 
     let dropped = lit.len() - chunks.len();
@@ -305,28 +325,33 @@ pub fn cull_unlit_chunks(
 
 /// Bake per-texel animated-light weights for every chunk, in the identity
 /// layout. The atlas budget is not checked here: it depends on the page count
-/// the compact repack reaches after [`cull_unlit_chunks`].
+/// the compact repack reaches after [`cull_unlit_chunks`]. Rejects an animated
+/// face whose chart leaves its lightmap cell block.
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
-) -> AnimatedLightWeightMapsSection {
+) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
     bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
 }
 
 pub fn bake_animated_light_weight_maps_controlled(
     inputs: &WeightMapInputs<'_>,
     control: &BakeControl,
-) -> AnimatedLightWeightMapsSection {
+) -> Result<AnimatedLightWeightMapsSection, AnimatedWeightMapBakeError> {
     if inputs.chunk_section.chunks.is_empty() {
-        return AnimatedLightWeightMapsSection::empty();
+        return Ok(AnimatedLightWeightMapsSection::empty());
     }
 
     let chunks = &inputs.chunk_section.chunks;
     assert_eq!(
         inputs.atlas_width, inputs.atlas_height,
-        "static lightmap layers are square",
+        "bake layers are square",
     );
-    let (block_faces, blocks) =
-        static_frame_blocks(chunks, inputs.face_charts, inputs.face_placements);
+    let (block_faces, blocks) = static_frame_blocks(
+        chunks,
+        inputs.face_charts,
+        inputs.face_placements,
+        inputs.layout,
+    )?;
 
     control.publish_total(chunks.len());
     let light_indices_pool = &inputs.chunk_section.light_indices;
@@ -381,10 +406,10 @@ pub fn bake_animated_light_weight_maps_controlled(
         offset_counts,
         texel_lights,
     };
-    // Chunk rects hold static coordinates and every block sits at its static
-    // placement, so this only assigns pages: the identity layout, which the
-    // stage cache stores.
-    apply_identity_layout(&mut section, inputs.atlas_width);
+    // Chunk rects hold bake-layer coordinates and every block sits at its
+    // bake-layer placement, so this only assigns pages: the identity layout,
+    // which the stage cache stores.
+    apply_identity_layout(&mut section, inputs.layout, inputs.atlas_width);
 
     let covered_texels: u32 = section.offset_counts.iter().filter(|e| e.count > 0).count() as u32;
     let mean_lights_per_covered = if covered_texels == 0 {
@@ -400,7 +425,7 @@ pub fn bake_animated_light_weight_maps_controlled(
         .unwrap_or(0);
 
     log::info!(
-        "[AnimatedLightWeightMaps] {} static atlas layers, {} animated blocks on {} identity \
+        "[AnimatedLightWeightMaps] {} bake layers, {} animated blocks on {} identity \
          pages, {} chunks, {} byte section, {} covered texels, \
          mean {:.2} lights / covered texel, peak {} texels / chunk",
         inputs.static_atlas_layer_count,
@@ -413,7 +438,7 @@ pub fn bake_animated_light_weight_maps_controlled(
         peak_texels_per_chunk,
     );
 
-    section
+    Ok(section)
 }
 
 fn bake_one_chunk(

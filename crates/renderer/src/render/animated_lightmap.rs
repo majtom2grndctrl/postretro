@@ -283,13 +283,13 @@ impl AnimatedLightmapResources {
     /// opaque so this cannot be runtime-checked — it must be preserved at the
     /// call site.
     ///
-    /// `static_layers` — `(layer size, layer count)` from
-    /// `lightmap::usable_static_layers`. Section 25's blocks must lie inside
-    /// those layers, and its pages may not exceed the layer size; the compact
-    /// atlas itself is `page_size² × compact_layers`. `None` means the static
-    /// atlas is absent, zero-area, oversize, or the 1×1 placeholder; the
-    /// animated path takes the dummy-atlas early-out — the block table has no
-    /// coordinate space to translate from.
+    /// `static_blocks` — each installed lightmap cell block's `(width,
+    /// height)` by block id, from `lightmap::StaticPool::static_block_extents`.
+    /// Section 25's blocks must lie inside their cell blocks; the compact
+    /// atlas itself is `page_size² × compact_layers`. `None` is placeholder
+    /// mode (no id 22, zero blocks, or a pool the device rejected): the
+    /// animated path takes the dummy-atlas early-out, since the block table
+    /// has no block frame to translate from.
     ///
     /// Returns `Err` on validation or allocation preflight failure; callers log
     /// and bind the non-dispatching dummy resource for this level.
@@ -301,7 +301,7 @@ impl AnimatedLightmapResources {
         bvh_leaves: &[BvhLeaf],
         animation: &AnimatedLightBuffers,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
-        static_layers: Option<(u32, u32)>,
+        static_blocks: Option<&[(u32, u32)]>,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
         if let Some(section) = weight_maps {
@@ -362,15 +362,14 @@ impl AnimatedLightmapResources {
             });
         }
 
-        let Some(static_layers) = static_layers else {
-            // The static lightmap atlas is the placeholder (or absent,
-            // zero-area, or oversize), so the static coordinates the block
-            // table translates from have no valid target. Take the dummy-atlas
-            // path: the animated term contributes nothing, which matches the
-            // static term already being neutral.
+        let Some(static_blocks) = static_blocks else {
+            // Placeholder mode (no cell blocks installed), so the block-local
+            // coordinates the block table translates from have no valid
+            // target. Take the dummy-atlas path: the animated term contributes
+            // nothing, which matches the static term already being neutral.
             log::warn!(
-                "[Renderer] Animated lightmap present but the static lightmap atlas \
-                 is unavailable; skipping animated-light compose for this level."
+                "[Renderer] Animated lightmap present but no static lightmap cell blocks \
+                 are installed; skipping animated-light compose for this level."
             );
             return Ok(Self {
                 atlas_texture: None,
@@ -389,7 +388,7 @@ impl AnimatedLightmapResources {
             section,
             animated_chunks,
             animation.animated_light_count(),
-            static_layers,
+            static_blocks,
         )?;
 
         if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
@@ -1061,11 +1060,11 @@ mod tests {
         }
     }
 
-    fn mk_block(static_layer: u32, compact_layer: u32) -> AnimatedBlock {
+    fn mk_block(lightmap_block: u32, compact_layer: u32) -> AnimatedBlock {
         AnimatedBlock {
-            static_layer,
-            static_x: 0,
-            static_y: 0,
+            lightmap_block,
+            block_x: 0,
+            block_y: 0,
             compact_x: 0,
             compact_y: 0,
             compact_layer,
@@ -1074,8 +1073,8 @@ mod tests {
         }
     }
 
-    /// Two 1×1 chunks in two blocks from static layers 2 and 9, packed on
-    /// pages 0 and 1 of a 16² atlas.
+    /// Two 1×1 chunks in two animated blocks keyed on lightmap cell blocks 2
+    /// and 9, packed on pages 0 and 1 of a 16² atlas.
     fn two_page_weight_maps() -> AnimatedLightWeightMapsSection {
         let first = mk_rect(1, 1, 0);
         let second = ChunkAtlasRect {
@@ -1317,8 +1316,8 @@ mod tests {
         assert!(src.contains("animated_lm_atlas: texture_2d_array<f32>"));
         assert!(src.contains("animated_lm_direction: texture_2d_array<f32>"));
         assert!(src.contains("@location(7) @interpolate(flat) animated_block: u32"));
-        assert!(src.contains("@location(5) lightmap_layer_block: vec2<u32>"));
-        assert!(src.contains("animated_block_uv(in.lightmap_uv, in.animated_block)"));
+        assert!(src.contains("@location(5) lightmap_block_ids: vec2<u32>"));
+        assert!(src.contains("animated_block_uv(in.lightmap_texel, in.animated_block)"));
         assert!(src.contains("sample_lightmap_animated(animated.uv, animated.page)"));
         assert!(src.contains("i32(animated.page)"));
         let helpers = include_str!("../shaders/lightmap_sample.wgsl");
@@ -1327,8 +1326,8 @@ mod tests {
             "id 0 and ids past an empty (inactive) table must resolve to no block",
         );
         assert!(
-            !src.contains("in.lightmap_layer == 0u"),
-            "animated sampling must not be limited to static layer zero",
+            !src.contains("lightmap_layer_flags == 0u"),
+            "animated sampling must not be limited to pool layer zero",
         );
     }
 
@@ -1393,10 +1392,10 @@ mod tests {
         use postretro_level_format::animated_lightmap_atlas::{
             ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK, ANIMATED_BLOCK_TABLE_HEADER_BYTES,
         };
-        let block = |static_layer, static_x, compact_x, compact_layer| AnimatedBlock {
-            static_layer,
-            static_x,
-            static_y: 40,
+        let block = |lightmap_block, block_x, compact_x, compact_layer| AnimatedBlock {
+            lightmap_block,
+            block_x,
+            block_y: 40,
             compact_x,
             compact_y: 0,
             compact_layer,
@@ -1429,7 +1428,7 @@ mod tests {
         assert_eq!(section.consistency_error(), None);
 
         let tiles = expand_dispatch_tiles(&section.chunk_rects, &section.blocks);
-        let table = animated_block_table_bytes(Some(&section), 512);
+        let table = animated_block_table_bytes(Some(&section));
         let word = |at: usize| u32::from_ne_bytes(table[at..at + 4].try_into().unwrap());
         for tile in &tiles {
             let rect = section.chunk_rects[tile.chunk_idx as usize];
@@ -1446,12 +1445,11 @@ mod tests {
                 word(at + 4),
                 "compose and forward share the page"
             );
-            // A static texel of this chunk lands where compose wrote it.
-            let (_, static_x, static_y) = section
-                .chunk_static_origin(tile.chunk_idx as usize)
-                .unwrap();
+            // A block-local texel of this chunk lands where compose wrote it.
+            let (_, block_x, block_y) =
+                section.chunk_block_origin(tile.chunk_idx as usize).unwrap();
             assert_eq!(
-                (i64::from(static_x) + dx, i64::from(static_y) + dy),
+                (i64::from(block_x) + dx, i64::from(block_y) + dy),
                 (i64::from(rect.compact_x), i64::from(rect.compact_y)),
                 "block {} offsets agree",
                 rect.block,

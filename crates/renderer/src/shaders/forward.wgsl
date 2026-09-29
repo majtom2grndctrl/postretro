@@ -228,8 +228,10 @@ struct AnimationDescriptor {
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 
-// Group 4 — baked directional lightmap (static direct lighting).
-// See context/lib/rendering_pipeline.md §4.
+// Group 4 — baked directional lightmap (static direct lighting). Bindings 0,
+// 1 and 6 are the cell-block pool: 2048² layers holding each block at the
+// pool layer and offset its group-6 table entry names (or the 1×1 neutral
+// placeholders in placeholder mode). See context/lib/rendering_pipeline.md §4.
 @group(4) @binding(0) var lightmap_irradiance: texture_2d_array<f32>;
 @group(4) @binding(1) var lightmap_direction: texture_2d_array<f32>;
 // Non-filtering (Nearest) sampler — used only for the octahedral direction
@@ -255,13 +257,13 @@ struct AnimationDescriptor {
 @group(4) @binding(5) var animated_lm_direction: texture_2d_array<f32>;
 @group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;
 
-// Animated block table. Header: static lightmap layer size, page size, block
-// count. Each block is two u32s — a packed (i16 dx, i16 dy) static→compact
-// texel offset, then its page — two blocks per vec4 because uniform arrays
-// stride 16 bytes. The array length is ANIMATED_BLOCK_CAP / 2 from
-// `level-format` (`animated_lightmap_atlas.rs`), the cap the compiler enforces.
+// Animated block table. Header: reserved zero, page size, block count. Each
+// block is two u32s — a packed (i16 dx, i16 dy) compact − block-local texel
+// offset, then its page — two blocks per vec4 because uniform arrays stride
+// 16 bytes. The array length is ANIMATED_BLOCK_CAP / 2 from `level-format`
+// (`animated_lightmap_atlas.rs`), the cap the compiler enforces.
 struct AnimatedBlockTable {
-    static_layer_size: u32,
+    _reserved: u32,
     page_size: u32,
     block_count: u32,
     _pad: u32,
@@ -269,12 +271,14 @@ struct AnimatedBlockTable {
 };
 @group(4) @binding(7) var<uniform> animated_block_table: AnimatedBlockTable;
 
-// The lightmap sampling helpers — `sample_lightmap_irradiance`,
+// The lightmap helpers — the vertex-stage `resolve_lightmap_block`, and
+// `sample_lightmap_irradiance`, `sample_lightmap_direction`,
 // `sample_lightmap_animated`, `animated_block_uv` (with its `AnimatedBlockUv`
 // result) and `sample_shadowmask_atlas` — live in `lightmap_sample.wgsl`,
 // concatenated after this source at pipeline-build time (render/mod.rs
 // `SHADER_SOURCE`). The snippet declares no bindings: it reads the group-4
-// bindings and `animated_block_table` declared above by lexical name.
+// bindings, `animated_block_table` and the group-6 `lightmap_block_table`
+// declared here by lexical name.
 
 // Group 5 — dynamic spot light shadow maps.
 // See context/lib/rendering_pipeline.md §4.
@@ -316,15 +320,25 @@ struct LightSpaceMatrices {
 // `render::strip_point_shadow_cube`.
 @group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
+// Group 6 — lightmap block table, VERTEX only. One vec4<u32> per
+// `WorldVertex::lightmap_block` (block id + 1, 0 = no lightmap): pool layer,
+// packed pool offset, packed block extent, flags. Layout:
+// `postretro_render_cpu::lightmap_pool::BlockTableEntry`. Written at level
+// install only; the vertex stage reads one entry per vertex and hands the
+// fragment stage flat varyings, so no fragment binding is spent.
+@group(6) @binding(0) var<storage, read> lightmap_block_table: array<vec4<u32>>;
+
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
     @location(2) normal_oct: vec2<u32>,
     @location(3) tangent_packed: vec2<u32>,
+    // Block-local unorm UV over the lightmap cell block's extent.
     @location(4) lightmap_uv_packed: vec2<u32>,
-    // (static lightmap layer, animated block id) from one Uint16x2 attribute.
-    @location(5) lightmap_layer_block: vec2<u32>,
+    // (lightmap block id + 1, animated block id + 1; 0 = none) from one
+    // Uint16x2 attribute.
+    @location(5) lightmap_block_ids: vec2<u32>,
 };
 
 struct VertexOutput {
@@ -337,9 +351,14 @@ struct VertexOutput {
     @location(2) world_tangent: vec3<f32>,
     @location(3) bitangent_sign: f32,
     @location(4) world_position: vec3<f32>,
-    @location(5) lightmap_uv: vec2<f32>,
-    @location(6) @interpolate(flat) lightmap_layer: u32,
+    // Block-local lightmap texel: the block-local UV times the block extent.
+    // The static and animated lookups both add integer offsets to it.
+    @location(5) lightmap_texel: vec2<f32>,
+    // Pool layer (low 16 bits) and block-table flags (high 16 bits).
+    @location(6) @interpolate(flat) lightmap_layer_flags: u32,
     @location(7) @interpolate(flat) animated_block: u32,
+    // Pool offset (xy) and block extent (zw), in pool texels.
+    @location(8) @interpolate(flat) lightmap_rect: vec4<u32>,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -374,12 +393,15 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.world_tangent = oct_decode(vec2<u32>(in.tangent_packed.x, v_16bit));
     out.bitangent_sign = select(-1.0, 1.0, sign_bit != 0u);
 
-    out.lightmap_uv = vec2<f32>(
+    let lightmap_uv = vec2<f32>(
         f32(in.lightmap_uv_packed.x) / 65535.0,
         f32(in.lightmap_uv_packed.y) / 65535.0,
     );
-    out.lightmap_layer = in.lightmap_layer_block.x;
-    out.animated_block = in.lightmap_layer_block.y;
+    let block = resolve_lightmap_block(in.lightmap_block_ids.x, lightmap_uv);
+    out.lightmap_texel = block.texel;
+    out.lightmap_layer_flags = block.layer_flags;
+    out.lightmap_rect = block.rect;
+    out.animated_block = in.lightmap_block_ids.y;
 
     return out;
 }
@@ -695,13 +717,20 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
 
 // Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
 // A dropped/no-mask channel samples as fully lit, preserving the prior behavior.
-fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>) -> f32 {
+// A missed cell block drops only lights that read a mask channel from it:
+// their shadow lives in the absent block. Lights that never read the block
+// (forced-one or dropped channel) stay lit, so a miss removes exactly the
+// block's terms.
+fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>, block_missing: bool) -> f32 {
     if uniforms.spec_shadowmask_force_one != 0u {
         return 1.0;
     }
     let spec_channel = round(sl.cone_cos.z);
     if spec_channel >= SHADOWMASK_CHANNEL_DROPPED {
         return 1.0;
+    }
+    if block_missing {
+        return 0.0;
     }
     return shadowmask_channel_value(mask, u32(spec_channel));
 }
@@ -796,8 +825,9 @@ fn shadowmask_union_channel(channel_value: f32) -> u32 {
 
 fn shadowmask_union_subtraction(
     world_pos: vec3<f32>,
-    lightmap_uv: vec2<f32>,
-    lightmap_layer: u32,
+    lightmap_texel: vec2<f32>,
+    lightmap_layer_flags: u32,
+    lightmap_rect: vec4<u32>,
     mesh_n: vec3<f32>,
     bump_n: vec3<f32>,
 ) -> ShadowmaskUnion {
@@ -813,8 +843,8 @@ fn shadowmask_union_subtraction(
         return out;
     }
     // Hoisted because every promoted light shares this fragment's lightmap
-    // UV/layer.
-    let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
+    // block and texel. A missed block reads zero, so no light subtracts.
+    let mask = sample_shadowmask_atlas(lightmap_texel, lightmap_layer_flags, lightmap_rect);
     let promoted_count = uniforms.total_light_count - promoted_start;
     let influence_len = arrayLength(&light_influence);
     let spec_len = arrayLength(&spec_lights);
@@ -917,7 +947,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // `in.uv`, `in.world_position` and the geometric normal unchanged, so
     // everything below is the pre-Surface-Depth path exactly.
     //
-    // It shifts `base_uv` ONLY. `in.lightmap_uv` is never offset: lightmap
+    // It shifts `base_uv` ONLY. `in.lightmap_texel` is never offset: lightmap
     // charts carry just CHART_PADDING_TEXELS = 2 of gutter.
     let depth = surface_depth_resolve(
         in.uv,
@@ -990,7 +1020,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Static direct term: baked directional lightmap. NdotL is already folded
     // in by the baker — sampling gives correct static direct contribution for
-    // a mesh-normal surface.
+    // a mesh-normal surface. A missed cell block (not resident) reads zero
+    // irradiance and drops its shadowmask-gated terms; SH indirect and the
+    // SDF-light terms stay.
     var static_direct = vec3<f32>(0.0);
     var shadowmask_union = vec3<f32>(0.0);
     var shadowmask_raw_pool_visibility = 1.0;
@@ -1001,14 +1033,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // sampler (octahedral lerp ≠ slerp).
         var lm_irr = vec3<f32>(0.0);
         if use_baked_direct_static {
-            lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
+            lm_irr = sample_lightmap_irradiance(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect);
         }
         // Pre-shaded Lambert irradiance from the animated compose pre-pass. A
         // face without an animated block (id 0, or any id while the atlas is
         // inactive) contributes zero rather than sampling another block.
         var lm_anim = vec3<f32>(0.0);
         var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
-        let animated = animated_block_uv(in.lightmap_uv, in.animated_block);
+        let animated = animated_block_uv(in.lightmap_texel, in.animated_block);
         if use_baked_direct_animated && animated.found {
             lm_anim = sample_lightmap_animated(animated.uv, animated.page);
             anim_dir_sample = textureSample(
@@ -1026,7 +1058,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // correction below via its own fused animated dominant direction, so
         // style-animated lights respond to normal-map detail identically to
         // static ones.
-        let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv, i32(in.lightmap_layer)));
+        let dom = decode_lightmap_direction(sample_lightmap_direction(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_shade, dom), 0.0);
         // NDOTL_EPS is a tight cosine floor (~0.57° from grazing) — a divide-by-zero
@@ -1117,8 +1149,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if use_baked_direct_static || uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
         let shadowmask = shadowmask_union_subtraction(
             in.world_position,
-            in.lightmap_uv,
-            in.lightmap_layer,
+            in.lightmap_texel,
+            in.lightmap_layer_flags,
+            in.lightmap_rect,
             mesh_n,
             N_shade,
         );
@@ -1139,8 +1172,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let spec_int = sample_color(spec_texture, shade_uv, ddx, ddy).r;
         let spec_exp = max(material.shininess, 1.0);
         // Hoisted because every static specular light shares this fragment's
-        // lightmap UV/layer. Undo this if specular gains per-light UVs.
-        let specular_shadowmask = sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer);
+        // lightmap block and texel. Undo this if specular gains per-light UVs.
+        let specular_shadowmask = sample_shadowmask_atlas(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect);
+        let static_block_missing = lightmap_block_missing(in.lightmap_layer_flags);
 
         // Chunk lookup when the offline index is populated; otherwise walk
         // the full spec buffer.
@@ -1194,7 +1228,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     visibility = 1.0;
                 }
             } else {
-                visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask);
+                visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask, static_block_missing);
             }
             let contribution = blinn_phong(
                 L, V, N_shade, sl.color_and_pad.xyz, spec_exp, spec_int

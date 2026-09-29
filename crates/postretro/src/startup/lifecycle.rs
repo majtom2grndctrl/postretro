@@ -1935,7 +1935,7 @@ pub(crate) mod tests {
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0,
+            lightmap_block: 0,
             animated_block: 0,
         }
     }
@@ -2708,43 +2708,44 @@ pub(crate) mod tests {
     // an install with no renderer uploads nothing, so the world keeps them.
     #[test]
     fn install_without_renderer_keeps_gpu_lighting_payloads_in_the_world() {
-        use postretro_level_format::lightmap::{LightmapHeader, LightmapMode, LightmapPayloads};
-        use postretro_level_format::shadowmask_atlas::{
-            SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasHeader,
+        use postretro_level_format::lightmap::{
+            IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapBlockPayload, LightmapMode,
+            LightmapSection,
         };
+        use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
         let mut app = test_app();
         assert!(app.renderer.is_none());
         let mut world = level_world("payloads", 1);
-        world.lightmap = Some(LightmapHeader {
-            layer_count: 1,
-            irr_width: 4,
-            irr_height: 4,
-            irr_texel_density: 0.04,
-            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: 4,
-            dir_height: 4,
-            dir_texel_density: 0.04,
-            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
+        let lightmap = LightmapSection {
+            direction_texel_scale: 2,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             mode: LightmapMode::Shadowed,
-        });
-        world.shadowmask_atlas = Some(ShadowmaskAtlasHeader {
-            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 1,
-            channels: vec![0],
-        });
-        let payloads = postretro_level_loader::GpuLightingPayloads {
-            lightmap: Some(LightmapPayloads {
+            blocks: vec![LightmapBlock {
+                cell_id: 0,
+                width: 4,
+                height: 4,
                 irradiance: vec![1; 128],
-                direction: vec![2; 32],
-            }),
-            shadowmask: Some(vec![3; 32]),
+                direction: vec![2; 8],
+            }],
+        };
+        world.lightmap = Some(lightmap.index());
+        world.shadowmask_atlas = Some(
+            ShadowmaskAtlasSection {
+                channels: vec![0],
+                blocks: vec![[vec![3; 16], vec![4; 16]]],
+            }
+            .index(),
+        );
+        let payloads = postretro_level_loader::GpuLightingPayloads {
+            blocks: vec![LightmapBlockPayload {
+                irradiance: vec![1; 128],
+                direction: vec![2; 8],
+                shadowmask: Some([vec![3; 16], vec![4; 16]]),
+            }],
         };
         world.gpu_lighting_payloads = postretro_level_loader::GpuLightingPayloads {
-            lightmap: payloads.lightmap.clone(),
-            shadowmask: payloads.shadowmask.clone(),
+            blocks: payloads.blocks.clone(),
         };
 
         app.install_level_payload(world, PathBuf::from("baked"));

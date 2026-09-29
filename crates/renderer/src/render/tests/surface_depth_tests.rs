@@ -288,8 +288,9 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
          piecewise-constant property the DDA's exactness rests on",
     );
 
-    // `lightmap_uv` is offset nowhere. Charts carry only CHART_PADDING_TEXELS = 2
-    // of gutter, so a parallax offset would pull a neighbouring chart across it.
+    // The lightmap texel is offset nowhere. Charts carry only
+    // CHART_PADDING_TEXELS = 2 of gutter, so a parallax offset would pull a
+    // neighbouring chart across it.
     //
     // Asserted POSITIVELY, per call site, because the negative form this
     // replaced — no line contains both `lightmap_uv` and `depth.` — was vacuous
@@ -302,10 +303,12 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // Forward plus the lightmap sampling helpers it composes.
     let forward_code = strip_line_comments(&format!("{FORWARD}\n{LIGHTMAP_SAMPLE}"));
     // The animated atlas is read at the block-remapped UV, a pure atlas
-    // translation of the interpolated lightmap UV: `animated_block_uv` must
-    // receive that UV verbatim, and the animated sample must take its result.
+    // translation of the interpolated block-local lightmap texel:
+    // `animated_block_uv` must receive that texel verbatim, and the animated
+    // sample must take its result.
     for call in [
         "sample_lightmap_irradiance(",
+        "sample_lightmap_direction(",
         "sample_lightmap_animated(",
         "animated_block_uv(",
         "sample_shadowmask_atlas(",
@@ -333,12 +336,12 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
             let accepted: &[&str] = if call == "sample_lightmap_animated(" {
                 &["animated.uv"]
             } else {
-                &["in.lightmap_uv", "lightmap_uv"]
+                &["in.lightmap_texel", "lightmap_texel"]
             };
             let verbatim = args.split(',').any(|arg| accepted.contains(&arg.trim()));
             assert!(
                 verbatim,
-                "forward: `{call}` must sample the atlas at the interpolated lightmap UV, unmodified — got `{}`",
+                "forward: `{call}` must sample the atlas at the interpolated lightmap texel, unmodified — got `{}`",
                 args.trim(),
             );
             assert!(
@@ -353,13 +356,12 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
         );
     }
 
-    // A floor under the per-call-site assertions above: they name four helpers,
-    // but the atlas is ALSO read through raw `textureSample` (the
-    // `lightmap_direction` decode at forward.wgsl:1032), which no named-helper
-    // list covers. Scanning every line keeps those sites guarded without having
-    // to enumerate them — this is the coverage the positive rewrite dropped.
+    // A floor under the per-call-site assertions above: any line naming the
+    // lightmap UV or texel — a raw `textureSample` a future edit adds outside
+    // the named helpers included — must not mix in a marched UV. Scanning every
+    // line keeps those sites guarded without having to enumerate them.
     for line in forward_code.lines() {
-        if !line.contains("lightmap_uv") {
+        if !line.contains("lightmap_uv") && !line.contains("lightmap_texel") {
             continue;
         }
         assert!(
@@ -372,8 +374,9 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // The mover has no lightmap path at all, so it has nothing to offset. Pin
     // that fact rather than looping the checks above over it, which is what the
     // previous form did — vacuously, since the token never appears there.
+    let kinematic_code = strip_line_comments(KINEMATIC);
     assert!(
-        !strip_line_comments(KINEMATIC).contains("lightmap_uv"),
+        !kinematic_code.contains("lightmap_uv") && !kinematic_code.contains("lightmap_texel"),
         "the mover grew a lightmap path — extend the per-call-site assertions to it",
     );
 

@@ -1,14 +1,18 @@
-// Leaf-cohesive multi-layer MaxRects packing of lightmap charts.
+// Group-cohesive multi-layer MaxRects packing: cell blocks into bake layers, charts for the dry run.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+use super::MIN_ATLAS_DIMENSION;
+#[cfg(test)]
 use super::charts::Chart;
-use super::{LightmapBakeError, MAX_ATLAS_LAYERS, MIN_ATLAS_DIMENSION};
+#[cfg(test)]
+use super::{LightmapBakeError, MAX_ATLAS_LAYERS};
 use crate::chart_raster::ChartPlacement;
 
 /// Result of multi-bin atlas packing. All layers share one `(atlas_width,
 /// atlas_height)` — a `texture_2d_array` has a single per-layer dimension across
 /// every layer — and each placement carries the layer its chart landed on.
 /// `placements` is parallel to the input `charts`.
+#[cfg(test)]
 #[derive(Debug)]
 pub struct PackOutput {
     pub layer_count: u32,
@@ -45,6 +49,10 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// The shared `(atlas_width, atlas_height)` is sized to host the largest single
 /// leaf in one layer (grown by doubling, capped at `max_dim`), so no leaf is
 /// ever forced to split for want of room within a layer.
+///
+/// Production packs cell blocks instead (`block_layout::pack_cell_blocks`);
+/// this chart-level packer remains for the residency dry run and tests.
+#[cfg(test)]
 pub(crate) fn pack_layers(
     charts: &[Chart],
     max_dim: u32,
@@ -57,6 +65,7 @@ pub(crate) fn pack_layers(
 /// [`MAX_ATLAS_LAYERS`]. Production always goes through `pack_layers`; the
 /// lightmap residency dry run raises the ceiling so a small capped layer size
 /// can be measured even when its layer count would exceed the runtime floor.
+#[cfg(test)]
 pub(crate) fn pack_layers_with_layer_limit(
     charts: &[Chart],
     max_dim: u32,
@@ -92,57 +101,123 @@ pub(crate) fn pack_layers_with_layer_limit(
     // deterministic (no HashMap iteration leaking into placement). Each group is
     // a contiguous unit the packer places together.
     let leaves = group_charts_by_leaf(charts);
+    let sizes: Vec<(u32, u32)> = charts
+        .iter()
+        .map(|chart| (chart.width_texels, chart.height_texels))
+        .collect();
+    let pack =
+        pack_groups_into_layers(&sizes, &leaves, max_dim, max_layers).map_err(
+            |error| match error {
+                GroupPackError::LayerOverflow { layer_count, max } => {
+                    LightmapBakeError::LayerOverflow { layer_count, max }
+                }
+                GroupPackError::GroupTooLarge { group } => LightmapBakeError::LeafTooLarge {
+                    leaf_index: leaves[group]
+                        .first()
+                        .map(|&i| charts[i].leaf_index)
+                        .unwrap_or(0),
+                    chart_count: leaves[group].len(),
+                    max_dim,
+                },
+            },
+        )?;
+    Ok(PackOutput {
+        layer_count: pack.layer_count,
+        atlas_width: pack.dim,
+        atlas_height: pack.dim,
+        placements: pack.placements,
+    })
+}
 
-    // Size the shared per-layer dimension to fit the largest leaf in a single
-    // layer. Start from a square that covers each leaf's total area and largest
-    // chart side, then grow (doubling) until every leaf packs alone.
-    let atlas_dim = choose_layer_dim(charts, &leaves, max_dim);
+/// Square, uniform layers holding rects packed group by group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerPack {
+    pub layer_count: u32,
+    /// Edge of every layer: a power of two in `[MIN_ATLAS_DIMENSION, max_dim]`.
+    pub dim: u32,
+    /// Parallel to the input sizes.
+    pub placements: Vec<ChartPlacement>,
+}
 
-    // Pack leaves into layers. Each leaf tries the current layer's MaxRects free
-    // list; a leaf that doesn't fit rolls whole to a new layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupPackError {
+    LayerOverflow {
+        layer_count: u32,
+        max: u32,
+    },
+    /// Group `group` cannot fit one empty `max_dim²` layer.
+    GroupTooLarge {
+        group: usize,
+    },
+}
+
+/// Pack `sizes` into uniform square layers, one group at a time in the given
+/// order. A group is cohesive: it packs into the current layer's free
+/// rectangles, largest rect first, or rolls whole to a fresh layer; earlier
+/// layers are never revisited. The layer edge is the smallest power of two
+/// that hosts the largest group alone.
+///
+/// Every placement is a sum of rect extents and zero, so rects whose extents
+/// are multiples of some `k` land on multiples of `k` (the layer edge is a
+/// power of two at least 64).
+pub(crate) fn pack_groups_into_layers(
+    sizes: &[(u32, u32)],
+    groups: &[Vec<usize>],
+    max_dim: u32,
+    max_layers: u32,
+) -> Result<LayerPack, GroupPackError> {
+    if sizes.is_empty() {
+        return Ok(LayerPack {
+            layer_count: 1,
+            dim: MIN_ATLAS_DIMENSION,
+            placements: Vec::new(),
+        });
+    }
+
+    // Size the shared per-layer dimension to fit the largest group in a single
+    // layer. Start from a square that covers each group's total area and
+    // largest side, then grow (doubling) until every group packs alone.
+    let atlas_dim = choose_layer_dim(sizes, groups, max_dim);
+
+    // Pack groups into layers. Each group tries the current layer's MaxRects
+    // free list; a group that doesn't fit rolls whole to a new layer.
     let mut placements = vec![
         ChartPlacement {
             x: 0,
             y: 0,
             layer: 0
         };
-        charts.len()
+        sizes.len()
     ];
     let mut layer: u32 = 0;
     let mut packer = MaxRects::new(atlas_dim, atlas_dim);
 
-    for leaf in &leaves {
-        if !place_leaf(&mut packer, charts, leaf, layer, &mut placements) {
-            // The leaf didn't fit in the current layer — open a fresh one and
-            // place the whole leaf there. Sizing guarantees a leaf fits an empty
-            // layer, so this single retry always succeeds.
+    for (group_index, group) in groups.iter().enumerate() {
+        if !place_group(&mut packer, sizes, group, layer, &mut placements) {
+            // The group didn't fit in the current layer — open a fresh one and
+            // place the whole group there. Sizing guarantees a group fits an
+            // empty layer, so this single retry always succeeds.
             layer += 1;
             if layer >= max_layers {
-                return Err(LightmapBakeError::LayerOverflow {
+                return Err(GroupPackError::LayerOverflow {
                     layer_count: layer + 1,
                     max: max_layers,
                 });
             }
             packer = MaxRects::new(atlas_dim, atlas_dim);
-            let fit = place_leaf(&mut packer, charts, leaf, layer, &mut placements);
-            if !fit {
-                // A single leaf too large to fit even an empty `max_dim²` layer
-                // can never be placed — and leaf cohesion forbids splitting it.
+            if !place_group(&mut packer, sizes, group, layer, &mut placements) {
+                // A single group too large to fit even an empty `max_dim²`
+                // layer can never be placed, and cohesion forbids splitting it.
                 // Error rather than `debug_assert!` so release builds reject it
-                // instead of silently leaving its charts at the default `{0,0,N}`.
-                return Err(LightmapBakeError::LeafTooLarge {
-                    leaf_index: leaf.first().map(|&i| charts[i].leaf_index).unwrap_or(0),
-                    chart_count: leaf.len(),
-                    max_dim,
-                });
+                // instead of silently leaving its rects at `{0,0,N}`.
+                return Err(GroupPackError::GroupTooLarge { group: group_index });
             }
         }
     }
 
-    Ok(PackOutput {
+    Ok(LayerPack {
         layer_count: layer + 1,
-        atlas_width: atlas_dim,
-        atlas_height: atlas_dim,
+        dim: atlas_dim,
         placements,
     })
 }
@@ -150,6 +225,7 @@ pub(crate) fn pack_layers_with_layer_limit(
 /// Group chart indices by `leaf_index`, preserving first-seen leaf order. Charts
 /// arrive leaf-ordered from `extract_geometry`, so this is usually contiguous,
 /// but the grouping does not rely on that.
+#[cfg(test)]
 fn group_charts_by_leaf(charts: &[Chart]) -> Vec<Vec<usize>> {
     let mut order: Vec<u32> = Vec::new();
     let mut groups: std::collections::HashMap<u32, Vec<usize>> = std::collections::HashMap::new();
@@ -167,38 +243,36 @@ fn group_charts_by_leaf(charts: &[Chart]) -> Vec<Vec<usize>> {
 }
 
 /// Choose the shared per-layer square dimension. It must host the largest single
-/// leaf in one layer, so we grow (doubling, 4-aligned pow2, capped at `max_dim`)
-/// until each leaf packs alone via MaxRects.
-fn choose_layer_dim(charts: &[Chart], leaves: &[Vec<usize>], max_dim: u32) -> u32 {
-    // Lower bound from the densest leaf: its total area and its widest/tallest
-    // chart both have to fit one layer.
+/// group in one layer, so we grow (doubling, 4-aligned pow2, capped at `max_dim`)
+/// until each group packs alone via MaxRects.
+fn choose_layer_dim(sizes: &[(u32, u32)], groups: &[Vec<usize>], max_dim: u32) -> u32 {
+    // Lower bound from the densest group: its total area and its widest/tallest
+    // rect both have to fit one layer.
     let mut min_side = MIN_ATLAS_DIMENSION;
-    for leaf in leaves {
-        let area: u64 = leaf
+    for group in groups {
+        let area: u64 = group
             .iter()
-            .map(|&i| charts[i].width_texels as u64 * charts[i].height_texels as u64)
+            .map(|&i| sizes[i].0 as u64 * sizes[i].1 as u64)
             .sum();
         let side_from_area = (area as f64).sqrt().ceil() as u32;
-        let max_chart_side = leaf
+        let max_side = group
             .iter()
-            .map(|&i| charts[i].width_texels.max(charts[i].height_texels))
+            .map(|&i| sizes[i].0.max(sizes[i].1))
             .max()
             .unwrap_or(0);
-        min_side = min_side.max(side_from_area).max(max_chart_side);
+        min_side = min_side.max(side_from_area).max(max_side);
     }
 
     let mut dim = round_atlas_dim(min_side, max_dim);
     loop {
-        // A leaf fits this dimension if MaxRects places all its charts in one
-        // empty layer. The area lower bound is optimistic (ignores fragmentation),
-        // so confirm with a real pack and grow if any leaf overflows.
-        let all_fit = leaves.iter().all(|leaf| {
+        // A group fits this dimension if MaxRects places all its rects in one
+        // empty layer. The area lower bound is optimistic (ignores
+        // fragmentation), so confirm with a real pack and grow on overflow.
+        let all_fit = groups.iter().all(|group| {
             let mut packer = MaxRects::new(dim, dim);
-            leaf.iter().all(|&i| {
-                packer
-                    .insert(charts[i].width_texels, charts[i].height_texels)
-                    .is_some()
-            })
+            group
+                .iter()
+                .all(|&i| packer.insert(sizes[i].0, sizes[i].1).is_some())
         });
         if all_fit || dim >= max_dim {
             return dim;
@@ -207,33 +281,33 @@ fn choose_layer_dim(charts: &[Chart], leaves: &[Vec<usize>], max_dim: u32) -> u3
     }
 }
 
-/// Try to place all of `leaf`'s charts into `packer` (the current layer). On
+/// Try to place all of `group`'s rects into `packer` (the current layer). On
 /// success, writes each placement at `layer` and returns `true`. On the first
-/// chart that doesn't fit, returns `false` WITHOUT mutating `placements` for the
-/// charts it did place — the caller rolls the whole leaf to a fresh layer, so
+/// rect that doesn't fit, returns `false` WITHOUT mutating `placements` for the
+/// rects it did place — the caller rolls the whole group to a fresh layer, so
 /// any partial work in `packer` is discarded with the packer itself.
-fn place_leaf(
+fn place_group(
     packer: &mut MaxRects,
-    charts: &[Chart],
-    leaf: &[usize],
+    sizes: &[(u32, u32)],
+    group: &[usize],
     layer: u32,
     placements: &mut [ChartPlacement],
 ) -> bool {
-    // Largest-first within the leaf packs big charts before the free list
+    // Largest-first within the group packs big rects before the free list
     // fragments — the standard MaxRects ordering for density.
-    let mut order: Vec<usize> = leaf.to_vec();
+    let mut order: Vec<usize> = group.to_vec();
     order.sort_by(|&a, &b| {
-        let area_a = charts[a].width_texels as u64 * charts[a].height_texels as u64;
-        let area_b = charts[b].width_texels as u64 * charts[b].height_texels as u64;
+        let area_a = sizes[a].0 as u64 * sizes[a].1 as u64;
+        let area_b = sizes[b].0 as u64 * sizes[b].1 as u64;
         area_b
             .cmp(&area_a)
-            // Tie-break on chart index so the order is fully deterministic.
+            // Tie-break on input index so the order is fully deterministic.
             .then(a.cmp(&b))
     });
 
     let mut staged: Vec<(usize, u32, u32)> = Vec::with_capacity(order.len());
     for &i in &order {
-        match packer.insert(charts[i].width_texels, charts[i].height_texels) {
+        match packer.insert(sizes[i].0, sizes[i].1) {
             Some((x, y)) => staged.push((i, x, y)),
             None => return false,
         }

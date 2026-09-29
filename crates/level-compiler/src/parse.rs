@@ -5610,7 +5610,7 @@ mod tests {
             section.movers[0]
                 .vertices
                 .iter()
-                .all(|vertex| vertex.lightmap_uv == [0, 0] && vertex.lightmap_layer == 0),
+                .all(|vertex| vertex.lightmap_uv == [0, 0] && vertex.lightmap_block == 0),
             "mover vertices must not carry static lightmap data"
         );
         assert!(

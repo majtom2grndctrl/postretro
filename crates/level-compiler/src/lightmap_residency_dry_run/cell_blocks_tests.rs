@@ -10,9 +10,9 @@ use super::cell_block_residency::static_maxrects_layers;
 use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{bc6h_formats, chart, input};
 use super::mandatory::Granularity;
-use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use super::visible_set_tests::u_turn_input;
 use super::{ChartRect, ShadowmaskState, run_dry_run};
+use crate::cell_residency_bake::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use crate::lightmap_bake::{PackedBlock, pack_cell_block as pack_sizes};
 
 /// The bake's packer over recovered chart rects.

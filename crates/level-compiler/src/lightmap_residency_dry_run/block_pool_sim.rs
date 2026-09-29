@@ -17,7 +17,7 @@ use rayon::prelude::*;
 
 use super::camera_walks::{WalkKind, camera_adjacency, component_count, walk_path};
 use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE};
-use super::portal_distance::PortalGraphInput;
+use crate::cell_residency_bake::portal_distance::PortalGraphInput;
 use postretro_render_cpu::lightmap_pool::{BlockPool, Slot};
 
 /// Steps per walk.

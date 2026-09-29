@@ -8,13 +8,16 @@ use rayon::prelude::*;
 use super::band_pool_sim::{BandSimInputs, BandWalks, pool_caps, run_band_walks};
 use super::block_pool_sim::{SIM_SEED, SIM_STEPS, shelf_layers_from_scratch};
 use super::brief_set::{
-    BRIEF_MAX_LEAD_METERS, BriefSetSources, Dilation, LeadCheck, LeadMap, build_lead_map,
-    check_every_breakpoint, meters_fixed, pinned_cells, portal_neighbours, visible_sources,
+    BriefSetSources, Dilation, LeadCheck, build_lead_map, check_every_breakpoint, pinned_cells,
+    visible_sources,
 };
 use super::cell_block_residency::SIM_LEAD_METERS;
 use super::mandatory::mandatory_bytes;
 use super::render::percentile_desc;
 use super::visible_set::{MOVEMENT_LEADS_METERS, VisibleSetInputs};
+use crate::cell_residency_bake::lead_map::{
+    BRIEF_MAX_LEAD_METERS, LeadMap, meters_fixed, portal_neighbours,
+};
 
 /// Wire format of the brief's cell residency set: a four-`u32` header,
 /// `u32` CSR offsets, and `(cell_id u32, lead u32)` entries.
@@ -81,6 +84,9 @@ pub(crate) struct BriefSetResult {
     pub variants: Vec<BriefVariant>,
     /// Band-aware walks over the dilated set at `SIM_LEAD_METERS`.
     pub walks: BandWalks,
+    /// The PRL's baked id 51 against direct evaluation of the dilated set
+    /// with no pins, since the bake stores none; `None` without a section.
+    pub baked: Option<LeadCheck>,
 }
 
 pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> BriefSetResult {
@@ -93,6 +99,20 @@ pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> 
     );
     let neighbours = portal_neighbours(inputs.graph);
     let pinned = pinned_cells(inputs.input);
+    let baked = inputs.input.baked_residency_set.as_ref().map(|section| {
+        let visible = visible_sources(pvs, &neighbours, Dilation::OneHop);
+        let unpinned = BriefSetSources {
+            neighbors: inputs.neighbors,
+            visible: &visible,
+            pinned: &[],
+            cell_count: inputs.input.cell_count(),
+        };
+        check_every_breakpoint(
+            &LeadMap::from_section(section),
+            &unpinned,
+            inputs.camera_cells,
+        )
+    });
     let mut walks = None;
     let variants = Dilation::ALL
         .iter()
@@ -146,6 +166,7 @@ pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> 
         pinned_cells: pinned.len(),
         variants,
         walks: walks.expect("Dilation::ALL includes the dilated set"),
+        baked,
     }
 }
 

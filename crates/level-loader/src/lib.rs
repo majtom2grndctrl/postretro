@@ -15,6 +15,8 @@ mod prl_load_test_fixtures;
 #[cfg(feature = "load-prl")]
 mod prl_loader;
 mod prl_queries;
+#[cfg(all(test, feature = "load-prl"))]
+mod prl_residency_set_tests;
 #[cfg(feature = "load-prl")]
 mod prl_streaming;
 #[cfg(feature = "load-prl")]

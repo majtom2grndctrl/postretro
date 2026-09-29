@@ -21,6 +21,8 @@ use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScat
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cluster_directory::{ClusterDirectoryError, ClusterDirectorySection};
@@ -725,6 +727,11 @@ pub struct LevelWorld {
     /// data until the residency slice adds an explicit consumer.
     #[cfg(feature = "load-prl")]
     pub cluster_directory: Option<ClusterDirectorySection>,
+    /// Baked per-camera-cell lightmap residency relation (PRL section 51),
+    /// validated against the cell count. `None` when the level carries no
+    /// usable portals, which runs lightmaps all-resident.
+    #[cfg(feature = "load-prl")]
+    pub cell_residency_set: Option<CellResidencySetSection>,
 }
 
 impl LevelWorld {
@@ -843,7 +850,38 @@ impl LevelWorld {
             cell_draw_index: None,
             #[cfg(feature = "load-prl")]
             cluster_directory: lighting.cluster_directory,
+            #[cfg(feature = "load-prl")]
+            cell_residency_set: None,
         })
+    }
+
+    /// The runtime visibility world (cells, cell locator, portals) built from
+    /// the Cells, Portals and CellLocator sections through the conversions
+    /// `load_prl` applies. As on load, a Portals section the loader would
+    /// reject (empty, or any one portal unusable) is dropped whole and the
+    /// world takes the no-portals fallback (`has_portals == false`). Bake-time
+    /// consumers build from this so they walk exactly what the runtime walks.
+    #[cfg(feature = "load-prl")]
+    pub fn visibility_only_from_sections(
+        cells: &prl_format::cells::CellsSection,
+        portals: &prl_format::portals::PortalsSection,
+        locator: &prl_format::cell_locator::CellLocatorSection,
+    ) -> Result<Self, LevelWorldValidationError> {
+        let (cells, cell_portal_refs) = crate::prl_loader::convert_cells_section(cells.clone());
+        let (locator_root, locator_nodes) =
+            crate::prl_loader::convert_cell_locator_section(locator.clone());
+        let (portals, has_portals) = match crate::prl_loader::convert_usable_portals(portals) {
+            Some(portals) => (portals, true),
+            None => (Vec::new(), false),
+        };
+        Self::new_visibility_only(
+            cells,
+            cell_portal_refs,
+            locator_root,
+            locator_nodes,
+            portals,
+            has_portals,
+        )
     }
 }
 
@@ -1901,6 +1939,7 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
         }
     }
 
@@ -2000,6 +2039,7 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
         };
         assert_eq!(world.locate_cell(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -2053,6 +2093,7 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
         };
 
         let spawn = world.spawn_position();

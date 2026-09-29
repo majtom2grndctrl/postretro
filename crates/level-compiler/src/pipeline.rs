@@ -29,11 +29,12 @@ pub(crate) mod lightmap_stage;
 mod stage_registry;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
-    billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
-    chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake, entity_shadow_select,
-    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, map_data,
-    navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
-    sh_density, sh_group, texture_mips, texture_validation, trigger_volumes, visibility,
+    billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_residency_bake,
+    cell_visibility_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
+    entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
+    lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze,
+    sh_bake, sh_coarsen, sh_density, sh_group, texture_mips, texture_validation, trigger_volumes,
+    visibility,
 };
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
@@ -1716,6 +1717,27 @@ fn run_after_parsing(
         !prepared_atlas.charts.is_empty(),
     );
 
+    // Lightmap residency set (id 51): reads only the partition plan's Cells and
+    // Portals and the encoded locator, all final here. It never feeds a bake.
+    let stage_start = begin_stage(reporter.as_ref(), StageId::CellResidencySet);
+    let cell_residency_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::CellResidencySet, cell_residency_progress.clone());
+    let cell_residency_control = BakeControl::new(Arc::clone(&governor), &cell_residency_progress);
+    let cell_residency_set_section = cell_residency_bake::cell_residency_set_bake_cached(
+        &cell_partition.cells,
+        &cell_partition.portals,
+        &pack::encode_cell_locator(&result.tree)?,
+        stage_cache.as_ref(),
+        &cell_residency_control,
+    )?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::CellResidencySet,
+        stage_start,
+        cell_residency_set_section.is_some(),
+    );
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
     let lightmap_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
@@ -2103,6 +2125,7 @@ fn run_after_parsing(
         trigger_volumes: trigger_volumes_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),
         cell_visibility: Some(&cell_visibility_section),
+        cell_residency_set: cell_residency_set_section.as_ref(),
         animated_direct_sh_delta_volumes: delta_sections.animated_direct.as_ref(),
         billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
         animated_billboard_direct_scatter_delta_volumes:

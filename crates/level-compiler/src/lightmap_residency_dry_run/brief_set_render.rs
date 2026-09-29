@@ -8,10 +8,10 @@ use super::band_pool_sim::{BandRun, THRASH_WINDOW_STEPS};
 use super::block_pool_sim::SIM_SEED;
 use super::brief_set_residency::{BriefLeadResult, BriefVariant};
 use super::cell_block_residency::SIM_LEAD_METERS;
-use super::pvs_sampling::SampleDensity;
 use super::render::{LOW_TIER_BUDGET_BYTES, LOW_TIER_BUDGET_MIB, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::visible_set::VisibleSetResult;
+use crate::cell_residency_bake::pvs_sampling::SampleDensity;
 
 /// Max, p95, the count over Low, and the worst camera cell of one per-camera
 /// metric.
@@ -90,6 +90,17 @@ impl DryRunReport {
              each breakpoint of either side, so every L up to {}m): {}",
             brief.max_lead_meters,
             consistency.join("; ")
+        );
+        let baked = match &brief.baked {
+            Some(check) => format!(
+                "{} mismatched of {} (camera, lead) checks over {} distinct baked leads",
+                check.mismatched, check.checked, check.distinct_leads
+            ),
+            None => "no section in this PRL".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "baked id 51 vs direct evaluation (dilated, no pins, every breakpoint): {baked}"
         );
         let _ = writeln!(
             out,

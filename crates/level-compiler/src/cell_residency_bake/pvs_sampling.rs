@@ -1,5 +1,8 @@
 //! Sampled potentially-visible sets per camera cell.
 //!
+//! The CellResidencySet bake's visible-set input; the lightmap residency dry
+//! run measures the same sets.
+//!
 //! The engine bakes no PVS (id 14 is retired): the runtime walks portals from
 //! the eye every frame. This estimates a cell's PVS by running that same walk
 //! (`postretro_visibility::determine_visible_cells`) from a lattice of eye
@@ -20,10 +23,12 @@ use postretro_visibility::{
 };
 use rayon::prelude::*;
 
+use crate::bake_control::BakeControl;
+
 /// Eye-point lattice per axis, as fractions of the cell AABB. Inset from the
 /// faces so a point on a shared boundary doesn't locate into the neighbour.
 pub(crate) const LATTICE_FRACTIONS: [f32; 3] = [0.1, 0.5, 0.9];
-const LATTICE_STEPS: usize = LATTICE_FRACTIONS.len();
+pub(crate) const LATTICE_STEPS: usize = LATTICE_FRACTIONS.len();
 /// Lattice points per cell: every combination of `LATTICE_FRACTIONS`.
 pub(crate) const LATTICE_POINTS: usize = LATTICE_STEPS * LATTICE_STEPS * LATTICE_STEPS;
 /// A lattice point outside its cell (cells are convex, their AABBs are not
@@ -33,7 +38,8 @@ const INSET_SCALES: [f32; 2] = [0.5, 0.25];
 /// both neighbouring frusta rather than clipped by both.
 pub(crate) const CUBE_FACE_FOV_DEGREES: f32 = 94.0;
 /// Must match `MAX_FOV_DEG` in `crates/postretro/src/camera.rs`; stated in the
-/// report as the widest camera the bound covers.
+/// dry-run report as the widest camera the bound covers.
+#[cfg(test)]
 pub(crate) const RUNTIME_MAX_FOV_DEGREES: f32 = 130.0;
 /// Must match `NEAR` / `FAR` in `crates/postretro/src/camera.rs`: the engine
 /// has no draw distance past the far plane.
@@ -55,20 +61,13 @@ const CUBE_FACES: [(Vec3, Vec3); 6] = [
 pub(crate) enum SampleDensity {
     /// Centroid plus the 8 inset corners.
     Sparse,
-    /// The full inset lattice, a superset of `Sparse`.
+    /// The full inset lattice, a superset of `Sparse`. Only the dry run names
+    /// it; the bake reads `SampledPvs::dense` directly.
+    #[cfg_attr(not(test), allow(dead_code))]
     Dense,
 }
 
 impl SampleDensity {
-    pub(crate) fn label(self) -> String {
-        match self {
-            SampleDensity::Sparse => "centroid + 8 inset corners".to_string(),
-            SampleDensity::Dense => {
-                format!("{LATTICE_STEPS}x{LATTICE_STEPS}x{LATTICE_STEPS} inset lattice")
-            }
-        }
-    }
-
     fn includes(self, lattice: [usize; 3]) -> bool {
         let centre = LATTICE_STEPS / 2;
         match self {
@@ -128,25 +127,29 @@ impl SamplingStats {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SampledPvs {
     /// Indexed by cell id; ascending drawable cells plus the cell itself.
-    /// Empty for cells that are not camera cells.
+    /// Empty for cells that are not camera cells. Only the dry run's density
+    /// convergence check reads the sparse sets; the bake reads `dense`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub sparse: Vec<Vec<u32>>,
     pub dense: Vec<Vec<u32>>,
     pub stats: SamplingStats,
 }
 
-impl SampledPvs {
-    pub(crate) fn sets(&self, density: SampleDensity) -> &[Vec<u32>] {
-        match density {
-            SampleDensity::Sparse => &self.sparse,
-            SampleDensity::Dense => &self.dense,
-        }
-    }
-}
-
-pub(crate) fn sample_pvs(world: &LevelWorld, camera_cells: &[u32]) -> SampledPvs {
+/// Sample every camera cell in parallel, one governor permit and one progress
+/// unit per camera cell.
+pub(crate) fn sample_pvs(
+    world: &LevelWorld,
+    camera_cells: &[u32],
+    control: &BakeControl,
+) -> SampledPvs {
     let samples: Vec<CellSample> = camera_cells
         .par_iter()
-        .map_init(Vec::new, |scratch, &cell| sample_cell(world, cell, scratch))
+        .map_init(Vec::new, |scratch, &cell| {
+            let _permit = control.governor().enter();
+            let sample = sample_cell(world, cell, scratch);
+            control.advance(1);
+            sample
+        })
         .collect();
     let mut result = SampledPvs {
         sparse: vec![Vec::new(); world.cell_count()],

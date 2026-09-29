@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 
-use super::portal_distance::PortalGraphInput;
+use crate::cell_residency_bake::portal_distance::PortalGraphInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WalkKind {

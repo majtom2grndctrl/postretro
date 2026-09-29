@@ -43,6 +43,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
+    pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
     pub(super) cluster_bake: &'a crate::cluster_directory_bake::ClusterDirectoryBake,
     pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
 }
@@ -84,6 +85,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         trigger_volumes,
         cell_draw_index,
         cell_visibility,
+        cell_residency_set,
         cluster_bake,
         cluster_payload,
     } = inputs;
@@ -401,6 +403,14 @@ pub(super) fn build_finalized_section_plan<'a>(
             })
         },
     ));
+    if let Some(section) = cell_residency_set {
+        sections.push(PlannedSection::new(
+            SectionId::CellResidencySet as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
     if let Some(cluster_payload) = cluster_payload {
         sections.push(cluster_payload.into_planned_section()?);
     }

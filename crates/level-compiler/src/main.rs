@@ -14,6 +14,7 @@ pub mod billboard_direct_scatter_bake;
 pub mod bvh_build;
 pub mod cache;
 pub mod cell_draw_index_bake;
+pub mod cell_residency_bake;
 pub mod cell_visibility_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;

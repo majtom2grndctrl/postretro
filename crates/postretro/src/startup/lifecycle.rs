@@ -2014,6 +2014,7 @@ pub(crate) mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
         }
     }
 

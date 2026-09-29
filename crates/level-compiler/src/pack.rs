@@ -21,6 +21,7 @@ use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
 };
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::{
     CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
@@ -481,6 +482,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         trigger_volumes,
         cell_draw_index_section,
         cell_visibility_section,
+        None,
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
@@ -526,6 +528,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     // CellVisibility (id 46). The section stays optional for old PRLs; current
     // compiler output always provides it.
     cell_visibility_section: Option<&CellVisibilitySection>,
+    // CellResidencySet (id 51); `None` when the level has no usable portals.
+    cell_residency_set_section: Option<&CellResidencySetSection>,
     animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
     billboard_direct_scatter_volume: Option<&BillboardDirectScatterVolumeSection>,
     animated_billboard_direct_scatter_delta_volumes: Option<
@@ -657,6 +661,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         trigger_volumes,
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
+        cell_residency_set: cell_residency_set_section,
         cluster_bake,
         cluster_payload,
     })?;

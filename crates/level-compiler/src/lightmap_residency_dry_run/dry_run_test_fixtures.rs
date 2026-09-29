@@ -118,6 +118,7 @@ pub(super) fn input(
         portal_graph: None,
         visibility_world: None,
         loader_rejected_portals: 0,
+        baked_residency_set: None,
     }
 }
 

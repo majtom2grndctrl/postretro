@@ -10,15 +10,15 @@ use super::layouts::{
     Layout, RepackCheck, cluster_ordered_layout, stored_layout, stored_repack_matches,
 };
 use super::mandatory::{
-    CellFootprint, DistanceBound, Granularity, MandatoryBytes, MandatoryContext, Neighbors,
-    mandatory_bytes,
+    CellFootprint, DistanceBound, Granularity, MandatoryBytes, MandatoryContext, mandatory_bytes,
 };
 use super::portal_distance::{
-    DistanceValidation, VALIDATION_TOLERANCE_FIXED, recompute_pairs, validate_against_stored,
+    DistanceValidation, VALIDATION_TOLERANCE_FIXED, validate_against_stored,
 };
 use super::render::{input_summary, shadowmask_policy};
 use super::tiles::{TileLayout, tile_layouts};
 use super::visible_set::{VisibleSetInputs, VisibleSetResult, run_visible_set};
+use crate::cell_residency_bake::portal_distance::{Neighbors, recompute_pairs};
 
 /// Layer caps simulated for soft cluster-ordered packing.
 pub(crate) const SIMULATED_LAYER_CAPS: [u32; 2] = [1024, 2048];

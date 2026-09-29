@@ -14,6 +14,7 @@ use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScat
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::cell_draw_index::{CELL_DRAW_INDEX_VERSION, CellDrawIndexSection};
 use postretro_level_format::cell_locator::CellLocatorSection;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
@@ -909,7 +910,7 @@ fn validate_cell_portal_refs(
     Ok(())
 }
 
-fn convert_usable_portals(section: &PortalsSection) -> Option<Vec<PortalData>> {
+pub(crate) fn convert_usable_portals(section: &PortalsSection) -> Option<Vec<PortalData>> {
     if section.portals.is_empty() {
         log::warn!("[PRL] Portals section is empty — using no-portals fallback");
         return None;
@@ -1733,6 +1734,23 @@ pub(crate) fn load_prl_from_container(
             );
             None
         }
+    };
+
+    // Optional — absent when the level has no usable portals, which runs
+    // lightmaps all-resident. A present section must match the cell count.
+    let cell_residency_set = match read_section(SectionId::CellResidencySet)? {
+        Some(data) => {
+            let section = CellResidencySetSection::from_bytes(&data, cells.len())
+                .map_err(|err| section_validation_from_error("CellResidencySet", err))?;
+            log::info!(
+                "[PRL] CellResidencySet: {} camera cells, {} entries, max lead {}",
+                section.camera_cell_count(),
+                section.entries.len(),
+                section.max_lead,
+            );
+            Some(section)
+        }
+        None => None,
     };
 
     let (cell_locator_section, cell_locator_root, cell_locator_nodes) =
@@ -2954,6 +2972,7 @@ pub(crate) fn load_prl_from_container(
         navmesh,
         cell_draw_index,
         cluster_directory: lighting.cluster_directory,
+        cell_residency_set,
     })
 }
 

@@ -10,7 +10,8 @@ use std::path::Path;
 use anyhow::{Context, bail, ensure};
 use glam::Vec3;
 use postretro_level_format::bvh::{BvhLeaf, BvhSection};
-use postretro_level_format::cell_locator::{self, CellLocatorSection};
+use postretro_level_format::cell_locator::CellLocatorSection;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
@@ -22,15 +23,13 @@ use postretro_level_format::lightmap::{DIRECTION_TEXEL_BYTES, LightmapBlockIndex
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_level_format::{SectionId, read_container, read_section_data};
-use postretro_level_loader::{
-    CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld, PortalData,
-};
+use postretro_level_loader::LevelWorld;
 
-use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use super::{
     AtlasFormats, CellInfo, ChartRect, DryRunInput, FaceSlot, ReconstructionStats,
     ShadowmaskFormat, ShadowmaskState, StoredBlock,
 };
+use crate::cell_residency_bake::portal_distance::portal_graph_from_sections;
 use crate::chart_raster::CHART_PADDING_TEXELS;
 
 const UV_QUANT_MAX: u16 = u16::MAX;
@@ -165,35 +164,24 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
 
     let pinned_clusters = pinned_clusters(&directory.cluster_hints);
 
-    let portal_graph = PortalGraphInput {
-        cells: cells
-            .cells
-            .iter()
-            .map(|record| HubCell {
-                bounds_min: record.bounds_min,
-                bounds_max: record.bounds_max,
-                solid: record.is_solid(),
-            })
-            .collect(),
-        portals: portals
-            .portals
-            .iter()
-            .map(|record| HubPortal {
-                front: record.front_leaf,
-                back: record.back_leaf,
-                vertices: portal_vertices(&portals, record)
-                    .unwrap_or_default()
-                    .to_vec(),
-            })
-            .collect(),
-    };
+    let portal_graph = portal_graph_from_sections(&cells, &portals);
     let loader_rejected_portals = portals
         .portals
         .iter()
         .filter(|record| loader_rejects_portal(portal_vertices(&portals, record)))
         .count();
 
-    let visibility_world = visibility_world(&cells, &portals, locator)?;
+    // The world the runtime loader builds, so the sampled walks are the
+    // runtime's (and the residency bake's).
+    let visibility_world = LevelWorld::visibility_only_from_sections(&cells, &portals, &locator)
+        .map_err(|error| anyhow::anyhow!("build visibility world: {error}"))?;
+    let baked_residency_set = match optional(SectionId::CellResidencySet)? {
+        Some(bytes) => Some(
+            CellResidencySetSection::from_bytes(&bytes, cells.cells.len())
+                .context("parse CellResidencySet")?,
+        ),
+        None => None,
+    };
 
     let cell_visibility_present = visibility.is_some();
     let (component_ids, coupled_pairs) = match visibility {
@@ -215,6 +203,7 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         portal_graph: Some(portal_graph),
         visibility_world: Some(visibility_world),
         loader_rejected_portals,
+        baked_residency_set,
         reconstruction,
     })
 }
@@ -262,68 +251,6 @@ pub(super) fn loader_rejects_portal(vertices: Option<&[[f32; 3]]>) -> bool {
             sum + Vec3::from(*a).cross(Vec3::from(*b))
         });
     area.length_squared() <= 1.0e-12
-}
-
-/// The runtime visibility world, built from ids 38, 15 and the cell locator
-/// with the field mapping `postretro-level-loader` applies on load. Loading
-/// the whole PRL would read every payload, over a gigabyte on large maps.
-fn visibility_world(
-    cells: &CellsSection,
-    portals: &PortalsSection,
-    locator: CellLocatorSection,
-) -> anyhow::Result<LevelWorld> {
-    let cell_data = cells
-        .cells
-        .iter()
-        .map(|record| CellData {
-            bounds_min: record.bounds_min.into(),
-            bounds_max: record.bounds_max.into(),
-            face_start: record.face_start,
-            face_count: record.face_count,
-            portal_ref_start: record.portal_ref_start,
-            portal_ref_count: record.portal_ref_count,
-            is_solid: record.is_solid(),
-            is_exterior: record.is_exterior(),
-            is_drawable: record.is_drawable(),
-        })
-        .collect();
-    let portal_data: Vec<PortalData> = portals
-        .portals
-        .iter()
-        .map(|record| PortalData {
-            polygon: portal_vertices(portals, record)
-                .unwrap_or_default()
-                .iter()
-                .map(|&v| v.into())
-                .collect(),
-            front_cell: record.front_leaf as usize,
-            back_cell: record.back_leaf as usize,
-        })
-        .collect();
-    let child = |child: cell_locator::CellLocatorChild| match child {
-        cell_locator::CellLocatorChild::Cell(index) => CellLocatorChild::Cell(index as usize),
-        cell_locator::CellLocatorChild::Node(index) => CellLocatorChild::Node(index as usize),
-    };
-    let nodes = locator
-        .nodes
-        .iter()
-        .map(|node| CellLocatorNodeData {
-            plane_normal: node.plane_normal.into(),
-            plane_distance: node.plane_distance,
-            front: child(node.front),
-            back: child(node.back),
-        })
-        .collect();
-    let has_portals = !portal_data.is_empty();
-    LevelWorld::new_visibility_only(
-        cell_data,
-        cells.portal_refs.clone(),
-        child(locator.root),
-        nodes,
-        portal_data,
-        has_portals,
-    )
-    .map_err(|error| anyhow::anyhow!("build visibility world: {error}"))
 }
 
 /// Recover one padded block-local chart rectangle per face, in the bake's

@@ -5,12 +5,11 @@
 //! cell coupled to the camera cell within the distance bound (or, unbounded,
 //! its whole reachability component).
 
-use postretro_level_format::cell_visibility::{
-    CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE, CoupledPairRecord,
-};
+use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 
 use super::DryRunInput;
 use super::layouts::Layout;
+use crate::cell_residency_bake::portal_distance::Neighbors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DistanceBound {
@@ -52,44 +51,6 @@ impl DistanceBound {
             DistanceBound::Meters(meters) => format!("{meters}m"),
             DistanceBound::Unbounded => "reach".to_string(),
         }
-    }
-}
-
-/// Coupled partners of each cell with their fixed-point distance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Neighbors {
-    per_cell: Vec<Vec<(u32, u32)>>,
-}
-
-impl Neighbors {
-    pub(crate) fn from_pairs(cell_count: usize, pairs: &[CoupledPairRecord]) -> Self {
-        let mut per_cell = vec![Vec::new(); cell_count];
-        for pair in pairs {
-            per_cell[pair.cell_a as usize].push((pair.cell_b, pair.distance));
-            per_cell[pair.cell_b as usize].push((pair.cell_a, pair.distance));
-        }
-        for partners in &mut per_cell {
-            partners.sort_unstable_by_key(|&(cell, distance)| (distance, cell));
-        }
-        Self { per_cell }
-    }
-
-    /// Partners within `fixed` (inclusive), nearest first.
-    pub(crate) fn within(&self, cell: u32, fixed: u32) -> impl Iterator<Item = u32> + '_ {
-        self.within_distances(cell, fixed).map(|(other, _)| other)
-    }
-
-    /// Partners within `fixed` (inclusive) with their fixed-point distance,
-    /// nearest first.
-    pub(crate) fn within_distances(
-        &self,
-        cell: u32,
-        fixed: u32,
-    ) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.per_cell[cell as usize]
-            .iter()
-            .take_while(move |&&(_, distance)| distance <= fixed)
-            .copied()
     }
 }
 

@@ -24,6 +24,7 @@ pub enum StageId {
     BillboardDirectScatterBake,
     ChunkLightList,
     AtlasPreparation,
+    CellResidencySet,
     LightmapBake,
     ShadowmaskAtlas,
     AnimatedLightChunks,
@@ -63,6 +64,7 @@ impl StageId {
             Self::BillboardDirectScatterBake => "Billboard Direct Scatter Bake",
             Self::ChunkLightList => "ChunkLightList",
             Self::AtlasPreparation => "Atlas Preparation",
+            Self::CellResidencySet => "Cell Residency Set",
             Self::LightmapBake => "Lightmap Bake",
             Self::ShadowmaskAtlas => "ShadowmaskAtlas",
             Self::AnimatedLightChunks => "AnimLightChunks",
@@ -94,6 +96,7 @@ impl StageId {
             Self::BillboardDirectScatterBake => "Billboard direct scatter bake...",
             Self::ChunkLightList => "Chunk light list bake...",
             Self::AtlasPreparation => "Atlas preparation...",
+            Self::CellResidencySet => "Cell residency set bake...",
             Self::LightmapBake => "Lightmap bake...",
             Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
             Self::AnimatedLightChunks => "Animated light chunks...",
@@ -106,7 +109,7 @@ impl StageId {
     }
 }
 
-pub(crate) const ORDERED_STAGES: [StageId; 26] = [
+pub(crate) const ORDERED_STAGES: [StageId; 27] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -125,6 +128,7 @@ pub(crate) const ORDERED_STAGES: [StageId; 26] = [
     StageId::BillboardDirectScatterBake,
     StageId::ChunkLightList,
     StageId::AtlasPreparation,
+    StageId::CellResidencySet,
     StageId::LightmapBake,
     StageId::ShadowmaskAtlas,
     StageId::AnimatedLightChunks,

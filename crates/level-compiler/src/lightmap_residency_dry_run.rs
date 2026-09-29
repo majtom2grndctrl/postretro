@@ -11,7 +11,10 @@
 //! A third pass measures the problem brief's own set: a baked lead map with
 //! one-hop dilation and no camera-cluster term, its prefetch band, and pool
 //! walks under the brief's miss policy.
-//! Measurement only; nothing here feeds a bake.
+//! Measurement only; nothing here feeds a bake. The sampling, dilation and
+//! lead map it measures are the CellResidencySet bake's own
+//! (`cell_residency_bake`), and the brief-set pass checks a PRL's baked id 51
+//! against direct evaluation.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
 
@@ -29,7 +32,6 @@ mod inputs;
 mod layouts;
 mod mandatory;
 mod portal_distance;
-mod pvs_sampling;
 mod render;
 mod report;
 mod tiles;
@@ -46,22 +48,25 @@ mod dry_run_test_fixtures;
 #[cfg(test)]
 mod real_prl_tests;
 #[cfg(test)]
+mod residency_bake_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tiles_tests;
 #[cfg(test)]
 mod visible_set_tests;
 
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use postretro_level_loader::LevelWorld;
 
+use crate::cell_residency_bake::portal_distance::PortalGraphInput;
 use crate::chart_raster::CHART_PADDING_TEXELS;
 use crate::shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH;
 
 pub(crate) use inputs::read_dry_run_input;
-pub(crate) use portal_distance::PortalGraphInput;
 pub(crate) use report::run_dry_run;
 
 /// Bytes of one 4×4 BC block (BC5, BC6H).
@@ -352,6 +357,9 @@ pub(crate) struct DryRunInput {
     /// any one is bad, so a nonzero count means the shipped runtime takes its
     /// no-portals fallback instead of the walks sampled here.
     pub loader_rejected_portals: usize,
+    /// The PRL's baked CellResidencySet (id 51), checked against direct
+    /// evaluation; absent in fixtures and in levels without usable portals.
+    pub baked_residency_set: Option<CellResidencySetSection>,
     pub reconstruction: ReconstructionStats,
 }
 

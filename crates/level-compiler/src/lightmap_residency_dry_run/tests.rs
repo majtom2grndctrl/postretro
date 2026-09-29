@@ -9,11 +9,12 @@ use super::dry_run_test_fixtures::{
 };
 use super::inputs::reconstruct_charts;
 use super::layouts::{cluster_ordered_layout, stored_repack_matches};
-use super::mandatory::{DistanceBound, Granularity, MandatoryContext, Neighbors};
-use super::portal_distance::{
-    HubCell, HubPortal, PortalGraphInput, recompute_pairs, validate_against_stored,
-};
+use super::mandatory::{DistanceBound, Granularity, MandatoryContext};
+use super::portal_distance::validate_against_stored;
 use super::{ChartRect, FaceSlot, ShadowmaskState, run_dry_run};
+use crate::cell_residency_bake::portal_distance::{
+    HubCell, HubPortal, Neighbors, PortalGraphInput, recompute_pairs,
+};
 use crate::chart_raster::CHART_PADDING_TEXELS;
 use crate::lightmap_bake::pack_cell_block;
 

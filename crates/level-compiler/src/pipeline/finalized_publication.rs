@@ -15,6 +15,7 @@ use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScat
 use postretro_level_format::bsp::BspLeavesSection;
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
@@ -148,6 +149,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
+    /// CellResidencySet (id 51), or `None` when the level has no usable portals.
+    pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
     pub(super) animated_direct_sh_delta_volumes: Option<&'a AnimatedDirectShDeltaVolumesSection>,
     pub(super) billboard_direct_scatter_volume: Option<&'a BillboardDirectScatterVolumeSection>,
     pub(super) animated_billboard_direct_scatter_delta_volumes:
@@ -189,6 +192,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         trigger_volumes,
         cell_draw_index,
         cell_visibility,
+        cell_residency_set,
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
@@ -233,6 +237,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         trigger_volumes,
         cell_draw_index,
         cell_visibility,
+        cell_residency_set,
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,

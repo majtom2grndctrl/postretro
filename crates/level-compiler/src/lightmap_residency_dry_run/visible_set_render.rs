@@ -3,13 +3,13 @@
 
 use std::fmt::Write as _;
 
-use super::pvs_sampling::{
-    CUBE_FACE_FOV_DEGREES, LATTICE_FRACTIONS, LATTICE_POINTS, RUNTIME_MAX_FOV_DEGREES,
-    SampleDensity,
-};
 use super::render::{LOW_TIER_BUDGET_MIB, MetricSummary, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::visible_set::VisibleSetResult;
+use crate::cell_residency_bake::pvs_sampling::{
+    CUBE_FACE_FOV_DEGREES, LATTICE_FRACTIONS, LATTICE_POINTS, RUNTIME_MAX_FOV_DEGREES,
+    SampleDensity,
+};
 
 impl DryRunReport {
     pub(super) fn render_visible_set(

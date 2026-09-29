@@ -21,11 +21,14 @@ use super::cell_block_residency::{CellBlockResidency, run_cell_block_residency};
 use super::cell_blocks::CellBlocks;
 use super::layouts::Layout;
 use super::mandatory::{
-    CellFootprint, Granularity, MandatoryBytes, MandatoryContext, Neighbors, mandatory_bytes,
+    CellFootprint, Granularity, MandatoryBytes, MandatoryContext, mandatory_bytes,
 };
-use super::portal_distance::{HubGraph, PortalGraphInput};
-use super::pvs_sampling::{SampleDensity, SampledPvs, SamplingStats, sample_pvs};
 use super::tiles::{TileLayout, UnitStamp};
+use crate::bake_control::BakeControl;
+use crate::cell_residency_bake::portal_distance::{HubGraph, Neighbors, PortalGraphInput};
+use crate::cell_residency_bake::pvs_sampling::{
+    LATTICE_STEPS, SampleDensity, SampledPvs, SamplingStats, sample_pvs,
+};
 
 /// Movement leads: sampled PVS alone, then about 1 s and 2 s of sustained
 /// movement at 11–15 m/s.
@@ -93,8 +96,32 @@ pub(crate) struct VisibleSetInputs<'a> {
     pub cell_blocks: &'a CellBlocks,
 }
 
+impl SampleDensity {
+    pub(crate) fn label(self) -> String {
+        match self {
+            SampleDensity::Sparse => "centroid + 8 inset corners".to_string(),
+            SampleDensity::Dense => {
+                format!("{LATTICE_STEPS}x{LATTICE_STEPS}x{LATTICE_STEPS} inset lattice")
+            }
+        }
+    }
+}
+
+impl SampledPvs {
+    pub(crate) fn sets(&self, density: SampleDensity) -> &[Vec<u32>] {
+        match density {
+            SampleDensity::Sparse => &self.sparse,
+            SampleDensity::Dense => &self.dense,
+        }
+    }
+}
+
 pub(crate) fn run_visible_set(inputs: &VisibleSetInputs<'_>) -> VisibleSetResult {
-    let pvs = sample_pvs(inputs.world, inputs.camera_cells);
+    let pvs = sample_pvs(
+        inputs.world,
+        inputs.camera_cells,
+        &BakeControl::unrestricted(),
+    );
     let evaluate = |density, leads: &[u32]| -> Vec<GranularityResult> {
         Granularity::ALL
             .map(|granularity| GranularityResult {

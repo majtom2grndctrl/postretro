@@ -3,17 +3,19 @@ use postretro_level_format::cluster_directory::{CLUSTER_HINT_FLAG_PINNED, Cluste
 use super::band_pool_sim::{BandPolicy, BandRun, BandSimInputs, simulate_band};
 use super::block_pool_sim::shelf_layers_from_scratch;
 use super::brief_set::{
-    BriefSetSources, Dilation, LeadMap, build_lead_map, check_against_direct,
-    check_every_breakpoint, direct_set, meters_fixed, pinned_cells, portal_neighbours,
-    visible_sources,
+    BriefSetSources, Dilation, build_lead_map, check_against_direct, check_every_breakpoint,
+    direct_set, pinned_cells, visible_sources,
 };
 use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{METER, bc6h_formats, chart, input, pair};
 use super::inputs::pinned_clusters;
-use super::mandatory::{Granularity, MandatoryContext, Neighbors};
-use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
+use super::mandatory::{Granularity, MandatoryContext};
 use super::run_dry_run;
 use super::visible_set_tests::u_turn_input;
+use crate::cell_residency_bake::lead_map::{LeadMap, meters_fixed, portal_neighbours};
+use crate::cell_residency_bake::portal_distance::{
+    HubCell, HubPortal, Neighbors, PortalGraphInput,
+};
 
 /// `n` unit cubes chained along X by portals `k ↔ k + 1`.
 fn chain_graph(n: u32) -> PortalGraphInput {

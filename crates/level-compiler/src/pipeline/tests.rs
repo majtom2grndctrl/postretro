@@ -429,8 +429,8 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
     let without_sdf = planned_stages_for_sdf(false);
     let with_sdf = planned_stages_for_sdf(true);
 
-    assert_eq!(without_sdf.len(), 26);
-    assert_eq!(with_sdf.len(), 26);
+    assert_eq!(without_sdf.len(), 27);
+    assert_eq!(with_sdf.len(), 27);
     assert_eq!(
         without_sdf
             .iter()
@@ -458,6 +458,7 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
             ),
             (StageId::ChunkLightList, "ChunkLightList"),
             (StageId::AtlasPreparation, "Atlas Preparation"),
+            (StageId::CellResidencySet, "Cell Residency Set"),
             (StageId::LightmapBake, "Lightmap Bake"),
             (StageId::ShadowmaskAtlas, "ShadowmaskAtlas"),
             (StageId::AnimatedLightChunks, "AnimLightChunks"),

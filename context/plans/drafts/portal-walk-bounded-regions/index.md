@@ -2,6 +2,28 @@
 
 Brief · compact · reads: `context/lib/rendering_pipeline.md` §2, `context/lib/build_pipeline.md` §Runtime visibility, `context/lib/testing_guide.md` · read at b99101534 · evidence: `research.md`, `prototype/`
 
+## Coordination with lightmap cell blocks
+
+`spatial-residency--lightmap-cell-blocks` (in progress on `feat/lightmap-cell-blocks`;
+`PORTAL_WALK_EPOCH` lands with it) consumes this walk in two ways.
+
+- **Baked offline.** The compiler's CellResidencySet stage (id 51) samples
+  `determine_visible_cells` and `portal_traverse` from eye points in every cell, to
+  bake each camera cell's lightmap residency set. Its cache key hashes
+  `postretro_visibility::PORTAL_WALK_EPOCH`. This brief changes which cells a pose
+  reaches, so it bumps that epoch. Otherwise warm builds keep id-51 sets from the old
+  walk, and the runtime counts the difference as visible misses. Rebake the measured
+  maps after landing.
+- **Superset consumer.** Add lightmap residency to the consumer list under "The
+  visible set becomes a conservative superset". Visible cells drive lightmap block
+  demand that is never refused, so extra cells mean more resident blocks and possible
+  pool growth. At the shaft and arena poses, also report the change in visible
+  lightmap blocks and bytes vs the exact walk.
+
+It also helps that brief. On the hallway's shaft rooms the exact walk trips its step
+cap during id-51 sampling. The bounded walk should cut that stage's bake time. Report
+the stage time before and after.
+
 ## Problem
 
 Developer-observed defect, confirmed by an offline sweep of the real traversal: on

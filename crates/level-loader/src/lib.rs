@@ -1,6 +1,8 @@
 //! CPU-only runtime PRL loading and level data.
 //! See: context/lib/build_pipeline.md §PRL Compilation
 
+#[cfg(feature = "load-prl")]
+mod lightmap_stream;
 mod prl;
 #[cfg(feature = "load-prl")]
 mod prl_animated_atlas;
@@ -24,6 +26,12 @@ mod sh_stream;
 #[cfg(all(test, feature = "load-prl"))]
 mod sh_stream_tests;
 
+#[cfg(feature = "load-prl")]
+pub use lightmap_stream::{
+    LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapPoolReport,
+    LightmapStreamingMode, LightmapTarget, PreparedLightmapBlock,
+    requested_lightmap_streaming_mode,
+};
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
     CellLocatorTraceStep, CellVisibility, CoupledCellPair, CouplingTuple, FalloffModel, LevelWorld,

@@ -1,10 +1,10 @@
 # spatial-residency--lightmap-cell-blocks — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 6526dc627
 
-Blocked on two Acceptance restatements (AC 1, AC 7) and one wire-format confirmation (Corrections, id-22 header). Once the owner resolves them, apply the authorized wording, set `status: proposed`, and report for the plan skim. The owner may clear the block and approve the plan in one answer. If so, set `approved` directly.
+Owner approved 2026-09-28: AC 1 and AC 7 restated as proposed below (applied to `index.md`), the id-22 header confirmed (mode in header, Rg8 direction fixed, densities dropped; applied to `index.md` Wire format), and the plan approved.
 
 ## Corrections
 
@@ -34,7 +34,7 @@ Path and research claims checked against source at 6526dc627. No Decision premis
 - **Id 42 has no section version.** It carries the format tag `SMB5` (`shadowmask_atlas.rs:12`). `SHADOWMASK_ATLAS_STAGE_VERSION` is only a compiler cache key. Planning: the "version bump" is a new tag, `SMB6`. The old tag rejects, which satisfies AC 17's older-version row.
 - **Container versions are unchecked.** The loader checks entry versions only for id 49 (`prl_loader.rs:1537`). Bumping `section_plan.rs` versions for ids 17, 22 and 25 rejects nothing by itself. Planning: add loader checks for the bumped container versions of ids 17, 22, 25 and 42. The id-22 and id-25 payload versions also bump (`LIGHTMAP_SECTION_VERSION` 2→3, `ANIMATED_LIGHT_WEIGHT_MAPS_VERSION` 4→5).
 - **Id 42 mismatches are warn-and-ignore today** (`prl_loader.rs:1915-1939`). AC 17 requires rejection. Planning: a block-count mismatch or a malformed v-new id 42 becomes a hard load error.
-- **Id-22 header fields the brief drops. Owner confirmation requested.** The brief's header drops `dir_format`, both texel densities, and the optional LMOD `LightmapMode` trailer. Runtime reads `lightmap_mode` (`renderer_full_init.rs:251`, `renderer_diagnostics.rs:269`) and `direction_format` (`lighting/lightmap.rs:737`). Planning, pending confirmation:
+- **Id-22 header fields the brief drops. Owner confirmed 2026-09-28.** The brief's header drops `dir_format`, both texel densities, and the optional LMOD `LightmapMode` trailer. Runtime reads `lightmap_mode` (`renderer_full_init.rs:251`, `renderer_diagnostics.rs:269`) and `direction_format` (`lighting/lightmap.rs:737`). Planning:
   - Direction is fixed Rg8; legacy Rgba8 is rejected by the version bump.
   - The texel densities are informational and are dropped.
   - `mode u32` joins the header after `irradiance_format`, so the index read carries it. It replaces the trailer.
@@ -80,13 +80,13 @@ Numbered in brief order.
 
 | AC | Proof | Status |
 |---|---|---|
-| 1 Charts inside block, no overlap, BC edges, ≤ pool layer, id overflow rejects / one-below builds | `cell_block_pack_*` compiler tests; `block_count_limit_*` over the validation seam | **needs restatement** — see below |
+| 1 Charts inside block, no overlap, BC edges, ≤ pool layer, id overflow rejects / one-below builds | `cell_block_pack_*` compiler tests; `block_count_limit_*` over the validation seam | restated (owner, 2026-09-28) |
 | 2 Baked set = dry-run mandatory set, dilation included, all cells × leads | `residency_set_bake_matches_direct_evaluation` (synthetic fixture); ignored yardstick on both maps | achievable as stated |
 | 3 Pinned cluster mandatory everywhere; unflagged only via lead/vis; priority reorders band prefetch | bake test + `lightmap_controller_priority_*` | achievable as stated |
 | 4 Pool holding every block renders pixel-identical to all-resident, both maps | ignored GPU capture test, byte-compare PNGs, run on this Mac | achievable as stated |
 | 5 Vertex block id + block-local UV address the same chart texel as the static-atlas UV | compiler test comparing pre-rebase atlas texel to block-frame texel for every lightmapped vertex | achievable as stated |
 | 6 Animated keys address the same texels; load rejects animated block outside cell block | compiler rebase test + loader reject test | achievable as stated |
-| 7 Forced-missing block: static direct + specular absent, SH present; resident renders lit; matches masked capture | ignored GPU capture test; capture gains a light-term mask field | **needs restatement** — see below |
+| 7 Forced-missing block: static direct + specular absent, SH present; resident renders lit; matches masked capture | ignored GPU capture test; capture gains a light-term mask field; SDF-free fixture | restated (owner, 2026-09-28) |
 | 8 Held shadowmask read: neither half sampleable; release → both in one drain | controller + per-range hold issuer test (P2) | achievable as stated |
 | 9 Cap below mandatory grows; cap above refuses band beyond cap; out-of-band freed next drain | controller + allocator tests | achievable as stated |
 | 10 Repack allocates no second pool; each block samples own texels | pool-model test (texture-creation counter) + renderer GPU readback test | achievable as stated |
@@ -109,7 +109,7 @@ Numbered in brief order.
 | 27 Windows `POSTRETRO_GPU_TIMING=1` forward delta | Windows handoff (no timestamp queries on this Mac) | manual |
 | 28 Findings note | `findings.md` beside this plan, owner reads | manual |
 
-### AC 1 — proposed restatement
+### AC 1 — restatement (approved)
 
 Current: "Block edges are multiples of 4 × the direction texel scale."
 
@@ -117,7 +117,7 @@ Proposed: "Block edges are multiples of both 4 (the BC block) and the direction 
 
 The reason: with scale 2, the current text demands 8-alignment, but the measured basis (research §1, 1.234× overhead, the layer counts, the default pool cap) was taken at 4. Direction is uncompressed Rg8 and needs only an integral scale. The other clauses of AC 1 stand.
 
-### AC 7 — proposed restatement
+### AC 7 — restatement (approved)
 
 Current: "The missing-block pixels match the same capture with the static-direct and static-specular light terms masked off."
 

@@ -69,6 +69,10 @@ Path and research claims checked against source at 6526dc627. No Decision premis
 - **Pool UV precision (Task 10 finding).** `(rect.xy + local) / 2048` rounded differently depending on where a block was placed: 1 LSB on 3 of 76,800 hallway pixels between a partial streamed pool and the all-resident pool. `lightmap_pool_uv` now snaps the block-local texel to 1/256 texel, the bilinear sub-texel precision, before adding the offset, so the sum is exact at any placement. AC 4 stays byte-identical.
 - **AC 7 test condition.** Bloom off (`POSTRETRO_BLOOM=0`): bloom carries a neighbouring block's light across the block edge, which is outside what the AC measures.
 
+- **Review decisions (owner, 2026-09-29).**
+  - AC 12: lightmap reads merge only byte-contiguous ranges (no gap coalescing for `StreamResource::LightmapBlock`), so bytes read from ids 22 and 42 equal exactly the requested ranges plus the index. AC 12 is unchanged.
+  - Non-portal frames retain resident drawn blocks without new reads and count visible misses. The Decision text in `index.md` is amended with that wording.
+
 ## Contracts (integrating executor)
 
 Shared seams fixed before delegation. Workers build against them and do not change them.
@@ -102,7 +106,7 @@ Shared seams fixed before delegation. Workers build against them and do not chan
 - **Default pool cap** — 15 layers (210 MiB). At L = 16 m it never grows, and band retain repacks on 2.54% of tour steps (research §1).
 - **Budget unit** — one per-drain byte budget, shared: SH decoded bytes plus block upload bytes against today's `MAX_INSTALL_DECODED_BYTES_PER_DRAIN` (8 MiB). The first request is always admitted, and a lightmap/shadowmask pair is admitted or deferred whole (P12). Keeping SH's constant leaves SH-only behaviour unchanged (AC 18).
 - **Interleave** — the tiers are mandatory (SH Visible/Pinned, block mandatory/visible/pinned) then optional (SH SeamWarm/Prefetch/Hysteresis, block band), across both resources. The drain admits in that tier order. Within the mandatory tier, SH keeps its class order ahead of blocks at equal class, and blocks order by lead then block id. The issuer reads each tier in ascending file offset.
-- **Miss-shader flag** — the vertex table entry's residency bit travels in the flat `vec4` (extent 0 means non-resident). The fragment stage skips the lightmap and shadowmask taps, and so drops the block-dependent terms (see AC 7).
+- **Miss-shader flag** — residency travels in the high 16 bits of the flat `lightmap_layer_flags` varying (RESIDENT, NONE). A missed entry keeps its extent, because the animated lookup needs it. The fragment stage skips the lightmap and shadowmask taps, and so drops the block-dependent terms (see AC 7). AC 7's masked-capture equality also needs every non-SDF static light reaching the pixel to hold a shadowmask channel; the test fixture meets that.
 
 ## AC-to-proof
 

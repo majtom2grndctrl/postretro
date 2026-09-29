@@ -694,9 +694,10 @@ fn recompute_and_cluster_closure_grow_monotonically_and_deterministically() {
 }
 
 /// Measurement helper: attribution, per-cell mandatory bytes under distance
-/// bounds, and the sampled visible-set bounds for a real compiled PRL. The
-/// visible-set pass walks portals from every camera cell (about 12 s in all
-/// on the hallway map). Run from the workspace root, in release for large maps:
+/// bounds, the sampled visible-set bounds, and the cell-block pool walks for a
+/// real compiled PRL. The visible-set pass walks portals from every camera
+/// cell (about 14 s in all on the hallway map). Run from the workspace root,
+/// in release for large maps:
 ///
 /// ```text
 /// POSTRETRO_LIGHTMAP_RESIDENCY_DRY_RUN_PRL=/abs/path/to/map.prl \

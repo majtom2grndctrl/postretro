@@ -6,12 +6,19 @@
 //! today's stored packing and soft cluster-ordered packing at two layer caps.
 //! A second pass bounds the mandatory set by sampled visibility instead of
 //! distance: everything visible from the cells a movement lead reaches, and
-//! costs those sets under fixed-size tiles owned by one cell or cluster each.
+//! costs those sets under fixed-size tiles owned by one cell or cluster each,
+//! and under per-cell blocks allocated into a pool of 2048² layers.
 //! Measurement only; nothing here feeds a bake.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
 
 mod attribution;
+mod block_allocator;
+mod block_pool_sim;
+mod camera_walks;
+mod cell_block_residency;
+mod cell_blocks;
+mod cell_blocks_render;
 mod inputs;
 mod layouts;
 mod mandatory;
@@ -24,6 +31,8 @@ mod tiles_render;
 mod visible_set;
 mod visible_set_render;
 
+#[cfg(test)]
+mod cell_blocks_tests;
 #[cfg(test)]
 mod dry_run_test_fixtures;
 #[cfg(test)]

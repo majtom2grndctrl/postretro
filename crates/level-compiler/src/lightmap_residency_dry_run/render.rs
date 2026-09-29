@@ -287,6 +287,7 @@ impl DryRunReport {
             self.render_visible_set(&mut out, visible, &names);
             self.render_tiles(&mut out, visible);
         }
+        self.render_cell_blocks(&mut out);
         out
     }
 

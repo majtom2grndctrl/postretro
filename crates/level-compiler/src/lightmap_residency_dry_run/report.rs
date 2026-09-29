@@ -5,6 +5,7 @@ use postretro_level_format::cell_visibility::CELL_VISIBILITY_FANOUT_K;
 
 use super::DryRunInput;
 use super::attribution::{Attribution, SectionAttribution, attribute};
+use super::cell_blocks::CellBlocks;
 use super::layouts::{
     Layout, RepackCheck, cluster_ordered_layout, stored_layout, stored_repack_matches,
 };
@@ -84,6 +85,8 @@ pub(crate) struct DryRunReport {
     pub visible_set: Option<VisibleSetResult>,
     /// Per-unit fixed-size tile packings the visible-set pass costs.
     pub tile_layouts: Vec<TileLayout>,
+    /// Each cell's charts packed into one BC-aligned block.
+    pub cell_blocks: CellBlocks,
     /// Non-solid, non-exterior cells: every cell the camera can occupy.
     pub camera_cells: Vec<u32>,
     pub cluster_rows: Vec<ClusterRow>,
@@ -99,6 +102,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
     }
     let repack = stored_repack_matches(input);
     let tile_layouts = tile_layouts(input);
+    let cell_blocks = CellBlocks::new(input);
     let footprint = CellFootprint::new(input);
 
     let mut chart_clusters = vec![false; input.cluster_count as usize];
@@ -142,6 +146,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
                 footprint: &footprint,
                 layouts: &layouts,
                 tile_layouts: &tile_layouts,
+                cell_blocks: &cell_blocks,
             }));
         }
         specs.push(SourceSpec {
@@ -182,6 +187,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
         sources,
         visible_set,
         tile_layouts,
+        cell_blocks,
         camera_cells,
         cell_centers: input.cells.iter().map(|info| info.center).collect(),
         cell_clusters: input.cells.iter().map(|info| info.cluster).collect(),

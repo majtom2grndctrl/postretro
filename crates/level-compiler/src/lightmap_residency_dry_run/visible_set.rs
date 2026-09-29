@@ -15,6 +15,8 @@ use postretro_level_loader::LevelWorld;
 use rayon::prelude::*;
 
 use super::DryRunInput;
+use super::cell_block_residency::{CellBlockResidency, run_cell_block_residency};
+use super::cell_blocks::CellBlocks;
 use super::layouts::Layout;
 use super::mandatory::{
     CellFootprint, Granularity, MandatoryBytes, MandatoryContext, Neighbors, mandatory_bytes,
@@ -68,6 +70,8 @@ pub(crate) struct VisibleSetResult {
     /// Camera cells whose dense PVS is larger than the sparse one.
     pub cells_grown_by_density: usize,
     pub sightlines: Sightlines,
+    /// Dense cell-granular sets costed as cell blocks, and the pool walks.
+    pub cell_blocks: CellBlockResidency,
 }
 
 pub(crate) struct VisibleSetInputs<'a> {
@@ -80,6 +84,7 @@ pub(crate) struct VisibleSetInputs<'a> {
     pub footprint: &'a CellFootprint,
     pub layouts: &'a [Layout],
     pub tile_layouts: &'a [TileLayout],
+    pub cell_blocks: &'a CellBlocks,
 }
 
 pub(crate) fn run_visible_set(inputs: &VisibleSetInputs<'_>) -> VisibleSetResult {
@@ -118,6 +123,7 @@ pub(crate) fn run_visible_set(inputs: &VisibleSetInputs<'_>) -> VisibleSetResult
             .filter(|&&c| pvs.dense[c as usize].len() > pvs.sparse[c as usize].len())
             .count(),
         sightlines: sightlines(inputs.graph, inputs.camera_cells, &pvs.dense),
+        cell_blocks: run_cell_block_residency(inputs, &pvs.dense),
     }
 }
 

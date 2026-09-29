@@ -767,4 +767,13 @@ fn lightmap_residency_dry_run_from_prl() {
             "hub-metric recompute disagrees with stored id-46 records: {validation:?}"
         );
     }
+    if let Some(visible) = &report.visible_set {
+        assert!(
+            super::tiles_render::cluster_units_agree_across_granularity(
+                visible,
+                &report.tile_layouts
+            ),
+            "cluster-unit tile bytes differ between cell-granular and cluster-closure sets"
+        );
+    }
 }

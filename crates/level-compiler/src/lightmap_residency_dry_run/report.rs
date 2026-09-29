@@ -16,6 +16,7 @@ use super::portal_distance::{
     DistanceValidation, VALIDATION_TOLERANCE_FIXED, recompute_pairs, validate_against_stored,
 };
 use super::render::{input_summary, shadowmask_policy};
+use super::tiles::{TileLayout, tile_layouts};
 use super::visible_set::{VisibleSetInputs, VisibleSetResult, run_visible_set};
 
 /// Layer caps simulated for soft cluster-ordered packing.
@@ -81,6 +82,8 @@ pub(crate) struct DryRunReport {
     /// Sampled visible-set bounds; needs the portal graph and the runtime
     /// visibility world.
     pub visible_set: Option<VisibleSetResult>,
+    /// Per-unit fixed-size tile packings the visible-set pass costs.
+    pub tile_layouts: Vec<TileLayout>,
     /// Non-solid, non-exterior cells: every cell the camera can occupy.
     pub camera_cells: Vec<u32>,
     pub cluster_rows: Vec<ClusterRow>,
@@ -95,6 +98,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
         layouts.push(cluster_ordered_layout(input, cap));
     }
     let repack = stored_repack_matches(input);
+    let tile_layouts = tile_layouts(input);
     let footprint = CellFootprint::new(input);
 
     let mut chart_clusters = vec![false; input.cluster_count as usize];
@@ -137,6 +141,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
                 camera_cells: &camera_cells,
                 footprint: &footprint,
                 layouts: &layouts,
+                tile_layouts: &tile_layouts,
             }));
         }
         specs.push(SourceSpec {
@@ -176,6 +181,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
         validation,
         sources,
         visible_set,
+        tile_layouts,
         camera_cells,
         cell_centers: input.cells.iter().map(|info| info.center).collect(),
         cell_clusters: input.cells.iter().map(|info| info.cluster).collect(),

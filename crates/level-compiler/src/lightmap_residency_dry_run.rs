@@ -5,7 +5,8 @@
 //! mandatory resident bytes under distance bounds and three atlas layouts:
 //! today's stored packing and soft cluster-ordered packing at two layer caps.
 //! A second pass bounds the mandatory set by sampled visibility instead of
-//! distance: everything visible from the cells a movement lead reaches.
+//! distance: everything visible from the cells a movement lead reaches, and
+//! costs those sets under fixed-size tiles owned by one cell or cluster each.
 //! Measurement only; nothing here feeds a bake.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
@@ -18,6 +19,8 @@ mod portal_distance;
 mod pvs_sampling;
 mod render;
 mod report;
+mod tiles;
+mod tiles_render;
 mod visible_set;
 mod visible_set_render;
 
@@ -25,6 +28,8 @@ mod visible_set_render;
 mod dry_run_test_fixtures;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tiles_tests;
 #[cfg(test)]
 mod visible_set_tests;
 

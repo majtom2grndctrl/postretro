@@ -104,7 +104,7 @@ fn u_turn_world() -> LevelWorld {
 
 /// The U-turn as a full dry-run input: one chart per open cell, cells 2 and 3
 /// sharing cluster 2, untruncated id-46 pairs.
-fn u_turn_input() -> DryRunInput {
+pub(super) fn u_turn_input() -> DryRunInput {
     let graph = PortalGraphInput {
         cells: BOUNDS
             .iter()

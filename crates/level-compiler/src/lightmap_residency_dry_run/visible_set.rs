@@ -21,6 +21,7 @@ use super::mandatory::{
 };
 use super::portal_distance::{HubGraph, PortalGraphInput};
 use super::pvs_sampling::{SampleDensity, SampledPvs, SamplingStats, sample_pvs};
+use super::tiles::{TileLayout, UnitStamp};
 
 /// Movement leads: sampled PVS alone, then about 1 s and 2 s of sustained
 /// movement at 11–15 m/s.
@@ -34,6 +35,9 @@ pub(crate) struct LeadResult {
     /// Reached cells with no sampled PVS (not camera cells); they join the
     /// set alone.
     pub reached_without_pvs: usize,
+    /// Per camera cell, parallel to `cells`: the same set's resident bytes
+    /// under each tile layout.
+    pub tile_bytes: Vec<Vec<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +79,7 @@ pub(crate) struct VisibleSetInputs<'a> {
     pub camera_cells: &'a [u32],
     pub footprint: &'a CellFootprint,
     pub layouts: &'a [Layout],
+    pub tile_layouts: &'a [TileLayout],
 }
 
 pub(crate) fn run_visible_set(inputs: &VisibleSetInputs<'_>) -> VisibleSetResult {
@@ -149,7 +154,9 @@ fn evaluate_lead(
     let sets = pvs.sets(density);
     let mut context = MandatoryContext::new(inputs.input);
     let mut layer_stamp = Vec::new();
+    let mut unit_stamp = UnitStamp::default();
     let mut reached_without_pvs = 0;
+    let mut tile_bytes = Vec::with_capacity(inputs.camera_cells.len());
     let cells = inputs
         .camera_cells
         .iter()
@@ -157,6 +164,13 @@ fn evaluate_lead(
             let (reached, without_pvs) = lead_reach(camera, lead_meters, inputs.neighbors, sets);
             reached_without_pvs += without_pvs;
             let set = context.set_from_reached(camera, &reached, granularity);
+            tile_bytes.push(
+                inputs
+                    .tile_layouts
+                    .iter()
+                    .map(|layout| layout.mandatory_bytes(&set, &mut unit_stamp))
+                    .collect(),
+            );
             (
                 camera,
                 mandatory_bytes(&set, inputs.footprint, inputs.layouts, &mut layer_stamp),
@@ -167,6 +181,7 @@ fn evaluate_lead(
         lead_meters,
         cells,
         reached_without_pvs,
+        tile_bytes,
     }
 }
 

@@ -285,6 +285,7 @@ impl DryRunReport {
         }
         if let Some(visible) = &self.visible_set {
             self.render_visible_set(&mut out, visible, &names);
+            self.render_tiles(&mut out, visible);
         }
         out
     }

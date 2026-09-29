@@ -8,33 +8,83 @@ Hallway = `stress-warren-hallway-inspection`. Campaign = `campaign-test`.
 
 ## 1. Measured basis
 
-Cell-granular M(c), 3×3×3 inset lattice. Layers are 2048². Pool layer = 14.0 MiB (ids 22 + 42).
+The brief's set (index Decisions, "Mandatory set"): `M(c, L) = W(c, L) ∪ Dil(PVS(W)) ∪ Pinned`. `W` is the camera cell plus every cell within untruncated portal-path distance L. `PVS` is sampled on a 3×3×3 inset lattice. `Dil` adds one portal hop. There is no camera-cluster term. Neither map has pinned clusters.
+
+The dry run bakes it as the section would: a per-camera-cell lead map to 32 m. Read at L = 0, 16 and 32 m, the map equals direct evaluation of `M(c, L)` for every camera cell on both maps.
+
+Layers are 2048². Pool layer = 14.0 MiB (ids 22 + 42). Source: `$SCRATCH/briefset-hallway.txt` lines 486–524, `briefset-campaign-test.txt` lines 305–339.
+
+Cell-block bytes, worst / p95 MiB, and shelf layers packing each set from scratch, worst / p95:
+
+| Set | L | Hallway MiB | Hallway layers | Campaign MiB | Campaign layers |
+|---|---|---|---|---|---|
+| Dilated (brief) | 0 m | 121.4 / 48.9 | 10 / 5 | 37.0 / 35.0 | 4 / 3 |
+| Dilated (brief) | 16 m | 136.5 / 84.7 | 12 / 7 | 44.1 / 44.1 | 4 / 4 |
+| Dilated (brief) | 32 m | 170.0 / 120.2 | 14 / 10 | 49.3 / 46.2 | 5 / 4 |
+| Undilated | 0 m | 97.0 / 34.6 | 8 / 3 | 27.7 / 25.0 | 3 / 3 |
+| Undilated | 16 m | 111.7 / 63.5 | 9 / 6 | 37.1 / 37.1 | 4 / 4 |
+| Undilated | 32 m | 125.7 / 94.0 | 10 / 8 | 43.4 / 43.4 | 4 / 4 |
+
+- **Low fits at every lead.** No camera cell exceeds 256 MiB in any row. The worst is 170.0 MiB, on the hallway at L = 32 m.
+- **Dilation cost.** On the hallway, dilation adds 22–35% to the worst cell and 28–41% to p95. On campaign it adds 14–33% to the worst and 7–40% to p95. It adds 2, 3 and 4 layers to the hallway's worst shelf count at L = 0, 16 and 32 m.
+- **No camera-cluster term.** Dropping it changes little. For comparison, the older cell-granular set (`cellblocks-*.txt`) adds cluster(c) and has no dilation. Its hallway worst matches the undilated rows at every lead: 97.0, 111.7 and 125.7 MiB. p95 falls by at most 0.7 MiB. The one change is campaign's worst at L = 0, which drops from 29.4 to 27.7 MiB.
+
+Prefetch band at L = 16 m, max lead 32 m (dilated):
+
+| Figure | Hallway | Campaign |
+|---|---|---|
+| Band cells, mean / p95 / max | 47.8 / 109 / 227 | 16.6 / 49 / 68 |
+| Band block MiB, worst / p95 | 123.1 / 52.5 | 23.9 / 21.4 |
+| Mandatory + band MiB, worst / p95 (= M at 32 m) | 170.0 / 120.2 | 49.3 / 46.2 |
+
+Would-be cell residency section at max lead 32 m. The CSR spans every cell id (5,671 hallway, 464 campaign), with 8 B per entry:
+
+| Set | Hallway | Campaign |
+|---|---|---|
+| Dilated | 322,029 entries (mean 154.7, max 380 per camera cell), 2.48 MiB | 21,000 entries (mean 106.1, max 159), 166 KiB |
+| Undilated | 254,261 entries, 1.96 MiB | 19,249 entries, 152 KiB |
+
+Pool walks run the dilated set at L = 16 m with the shelf allocator, over 20,000 steps. Cells show random walk / far-point tour.
+
+- A mandatory miss first evicts band blocks, farthest lead first.
+- With none left, the pool repacks from scratch if `M(c, L)` fits the cap. Otherwise it grows past the cap.
+- Band retain keeps resident band blocks and prefetches the rest into free space under the cap. Immediate free keeps only `M(c, L)`.
+- Hit rate counts blocks that re-enter `M(c, L)` while still resident.
+- Demand reads make a mandatory block resident. Thrash reads re-read a block freed within the last 8 steps.
+- No drain budget is modelled.
+
+| Pool | Policy | Repacks | Growth steps | Hit rate | Demand reads/step | Prefetch reads/step | Thrash reads/step |
+|---|---|---|---|---|---|---|---|
+| Hallway 7 (98 MiB, shelf p95) | Immediate | 4.28% / 10.08% | 216 / 1,411 | — | 8.45 / 15.76 | — | 6.09 / 3.40 |
+| | Band | 5.76% / 16.33% | 95 / 1,399 | 85.9% / 67.7% | 1.20 / 5.09 | 10.52 / 16.87 | 9.26 / 8.06 |
+| Hallway 12 (168 MiB, shelf worst) | Immediate | 0.00% / 2.49% | 0 / 0 | — | 8.45 / 15.76 | — | 6.09 / 3.40 |
+| | Band | 0.21% / 6.28% | 0 / 0 | 97.2% / 92.9% | 0.24 / 1.12 | 12.98 / 21.34 | 10.54 / 7.34 |
+| Hallway 15 (210 MiB, 125%) | Immediate | 0.00% / 0.09% | 0 / 0 | — | 8.45 / 15.76 | — | 6.09 / 3.40 |
+| | Band | 0.01% / 2.46% | 0 / 0 | 97.3% / 96.0% | 0.23 / 0.63 | 12.99 / 20.63 | 10.53 / 5.93 |
+| Campaign 4 (56 MiB, shelf p95 = worst) | Immediate | 0.24% / 6.61% | 0 / 0 | — | 1.55 / 4.19 | — | 1.20 / 0.96 |
+| | Band | 0.51% / 11.38% | 0 / 0 | 98.2% / 92.7% | 0.03 / 0.31 | 2.42 / 4.77 | 1.84 / 2.51 |
+| Campaign 5 (70 MiB, 125%) | Immediate | 0.03% / 2.10% | 0 / 0 | — | 1.55 / 4.19 | — | 1.20 / 0.96 |
+| | Band | 0.06% / 5.00% | 0 / 0 | 98.8% / 97.2% | 0.02 / 0.12 | 2.48 / 4.58 | 1.87 / 2.15 |
+
+Uncapped peaks are 12 / 17 layers with immediate free and 19 / 22 with band retain on the hallway. On campaign they are 7 / 8 and 7 / 9.
+
+- **12 layers at L = 16 m has no headroom.** The brief set's worst cell alone needs 12 shelf layers at L = 16 m. A 12-layer cap therefore holds by repack: 2.49% of tour steps with immediate free and 6.28% with band retain. At 15 layers (210 MiB) band retain repacks on 2.46% of tour steps.
+- **A cap at or above the shelf worst never grows.** A from-scratch repack of any `M(c, 16 m)` fits it. Growth appears only below the worst: at the hallway's p95 cap it hits 216 / 1,411 steps.
+- **Band retention trades bandwidth for misses.** At the worst cap it keeps 93–98% of re-entering blocks resident, and it cuts demand reads 13–52×. The churn moves to the band's outer edge instead of disappearing:
+  - total reads rise 1.2–1.6×;
+  - thrash reads rise 1.5–2.6×;
+  - repacks rise 1.7–2.5× wherever immediate free repacks at all.
+
+  The older cell-granular walks favoured immediate free over LRU on repacks. That result does not settle the brief's policy, which is band retention.
+- The walks use a shelf allocator. Guillotine and merging allocators are unmeasured.
+
+Set-independent figures:
 
 | Figure | Hallway | Campaign | Source (`$SCRATCH/`) |
 |---|---|---|---|
-| Mandatory worst / p95 MiB, L = 0 | 97.0 / 35.3 | 29.4 / 25.4 | `cellblocks-hallway.txt`, `cellblocks-campaign-test.txt` |
-| L = 16 m | 111.7 / 64.2 | 37.1 / 37.1 | same |
-| L = 32 m | 125.7 / 94.1 | 43.4 / 43.4 | same |
-| Static pool layers worst / p95, L = 0 / 16 / 32 | 8/3, 9/6, 10/8 | 3/2, 3/3, 4/4 | same |
-| Shelf from scratch, L = 16 | 9 max, 6 p95 | 4 max, 4 p95 | same |
-| Block overhead (block / chart texels) | 1.234× (p50 1.147×, p95 2.288×) | 1.381× (p50 1.163×, p95 4.118×) | same |
+| Block overhead (block / chart texels) | 1.234× (p50 1.147×, p95 2.288×) | 1.381× (p50 1.163×, p95 4.118×) | `briefset-*.txt` |
 | Largest block | 1144×1844 | 696×1044 | same |
-| Sightline p50 / p95 / max | 71.6 / 127.1 / 237.5 m | 60.5 / 87.2 / 99.5 m | `final-stress-warren-hallway-inspection.txt`, `final-campaign-test.txt` |
-
-Pool walks at L = 16 m, shelf allocator. Cells are repack (defrag) steps as a share of 20,000 steps, random walk / far-point tour. The uncapped immediate-free peak is 10 / 15 layers on the hallway and 7 / 9 on campaign.
-
-| Pool | Immediate free | LRU | Hard-fail steps |
-|---|---|---|---|
-| Hallway 9 layers (126 MiB) | 0.01% / 3.65% | 0.20% / 5.22% | 0 |
-| Hallway 12 layers (168 MiB) | 0.00% / 0.30% | 0.03% / 1.33% | 0 |
-| Campaign 3 layers (42 MiB) | 9.87% / 32.77% | 5.00% / 25.85% | 591 / 3,308 |
-| Campaign 4 layers (56 MiB) | 0.77% / 5.24% | 0.04% / 3.34% | 0 |
-
-Source: `cellblocks-hallway.txt` lines 470-482, `cellblocks-campaign-test.txt` lines 289-301. Pools are 100% and 125% of the static worst.
-
-- The hypothesis "at most 12 layers at L = 16 m" is a pool cap, not a peak. The uncapped tour peaks at 15, so the cap must hold by repack, not by luck.
-- Immediate free beats LRU on repack rate at every pool measured. That is the basis for the brief's default.
-- The walks use a shelf allocator. Guillotine and merging allocators are unmeasured.
+| Sightline p50 / p95 / max | 71.6 / 127.1 / 237.5 m | 60.5 / 87.2 / 99.5 m | same |
 
 ## 2. Rejected shapes with numbers
 
@@ -49,7 +99,7 @@ Tables in the seed. Deciding number per shape (hallway, L = 32 m unless noted):
 | Fragment-stage virtual texturing | Needs a fragment binding. Forward FRAGMENT sits at 8/8 storage and 15/16 sampled. Also needs chart splitting (the 91.7% above). |
 | `first_instance` cell identity | Not requested as a device feature. DX12 reads it as 0 (gfx-rs/wgpu#2471). Not re-verified in this pass. |
 
-Cell blocks fit Low at every measured L (worst 125.7 MiB vs 256). No block exceeds 2048 in either dimension.
+Cell blocks fit Low at every measured L: the brief set peaks at 170.0 MiB worst at 32 m, against 256. No block exceeds 2048 in either dimension.
 
 ## 3. Blast radius of block-local UVs
 

@@ -20,7 +20,7 @@ Owner goal: PostRetro runs smoothly on laptops with other apps open. Low tier gi
   - Blocks upload in their stored texel formats with no decode step; SH decode stays SH-only. Extracting the shared layer must not change SH behaviour.
 - **Miss policy is stricter than SH's.**
   - Mandatory and visible blocks are never refused; the pool grows past its cap to hold them. The owner's no-pop-in rule rules out SH's ambient-floor tolerance.
-  - Entries with lead between L and the baked maximum form a prefetch band. Band blocks are requested as prefetch: the cap bounds them and priority regions rank them. A block that leaves the mandatory set but stays in the band remains resident, which keeps residency stable across cell borders without a timer. Blocks outside both are freed at the next drain.
+  - Entries with lead between L and the baked maximum form a prefetch band. Band blocks are requested as prefetch: the cap bounds them and priority regions rank them. A block that leaves the mandatory set but stays in the band remains resident, so a block re-entering the mandatory set is usually already there. No timer is involved. The band trades pool size and repacks for fewer demand reads (research §1). Blocks outside both are freed at the next drain.
   - A transient miss drops static direct light and static specular for that block and keeps SH indirect.
   - Every non-portal visibility path (step-limit overflow, solid or exterior camera cell, no portals, empty world) demands only the camera cell's baked set. A solid or exterior camera cell has none, so those frames keep current residency and demand nothing new. A level without portal data has no meaningful baked set and runs in all-resident mode.
 - **Level install makes the spawn cell's mandatory set resident before the first frame.** This extends the SH rule "doors never wait on residency". Gameplay never waits on a block.
@@ -102,7 +102,7 @@ Owner goal: PostRetro runs smoothly on laptops with other apps open. Low tier gi
 
 ## Open questions
 - Allocator: the measured shelf allocator, or a guillotine allocator that merges freed space. — **delegated**: start with shelf, and report repack counts.
-- Baked maximum lead (lean: 32 m) and default L (lean: 16 m). — **delegated**
+- Baked maximum lead (lean: 32 m), default L (lean: 16 m), and default pool cap (lean: 15 layers at L = 16 m, where the brief set's worst cell needs 12 and repacks stay under 3% of steps; research §1). — **delegated**
 
 ## Wire format
 Little-endian throughout, following the id-50 index layout (fixed header, then fixed-width records, then payload blobs). Offsets are from the section payload start. Every count is a `u32` in the header, and no list is length-prefixed per entry. Reserved fields are written as zero, and load rejects nonzero.

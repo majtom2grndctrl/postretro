@@ -268,6 +268,10 @@ Pending. Walk the hallway and campaign-test at the default lead with the Streami
 
 ## Handoff: Windows GPU timing (AC 27)
 
-Pending. This Mac lacks `TIMESTAMP_QUERY`. On Windows, walk both maps with `POSTRETRO_GPU_TIMING=1`, streamed and all-resident. Record the forward pass delta from the vertex block-table fetch and the per-lookup offset. Also record repack drain GPU time: a repack copies about 200 blocks through the spare layer.
+This Mac lacks `TIMESTAMP_QUERY`, so the timing ran on the owner's Windows box. On Windows, walk both maps with `POSTRETRO_GPU_TIMING=1`, streamed and all-resident. Record the forward pass delta from the vertex block-table fetch and the per-lookup offset. Also record repack drain GPU time: a repack copies about 200 blocks through the spare layer.
 
-- Result: _pending_
+- **Partial result (owner, 2026-09-29, Windows, hallway, streamed, branch as of `e9cb411e2`):**
+  - The owner reports the hallway back above 60 fps throughout. It ran below that before, a slowdown that predates this branch.
+  - The lightmap meter reads 224 MiB static: irradiance 64, direction 32 and shadowmask 128 MiB, which is 15 layers plus the spare. The animated pair adds 36 MiB (24 + 12), for 260 MiB in total. That matches the walk harness's first generation at cap 15. All-resident, the same map holds about 1.38 GiB of static pool.
+  - GPU timing at one pose: cull 0.00 ms, depth prepass 0.02 ms, forward 2.75 ms, SH compose 0.74 ms, animated direct SH compose 0.97 ms, billboard direct scatter compose 0.15 ms, bloom 0.25 ms, promoted depth cache 0.04 ms, resolve 0.04 ms.
+- **Still pending:** the same pose with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`, for the forward-pass delta (the shader is identical, so the delta isolates residency effects); campaign-test; and repack drain GPU time.

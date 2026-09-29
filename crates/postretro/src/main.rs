@@ -78,6 +78,9 @@ mod session;
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
 mod sound_events;
+// Resource-neutral read issuer, drain budget, and id-49 hint decode shared by
+// every streamed resource.
+mod streaming;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;

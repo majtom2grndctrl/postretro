@@ -13,6 +13,7 @@ use super::budget::{FixedGpuCharges, ShGpuBudgetInputs, ShResidencyAccounting};
 use super::generation::{GenerationClock, ProcessGenerationClock};
 use super::topology::PlannerTopology;
 use super::warm_set::{WarmSet, WarmSource};
+use crate::streaming::drain_budget::DrainClass;
 
 #[path = "lifecycle.rs"]
 mod lifecycle;
@@ -30,9 +31,6 @@ pub(crate) const WARM_WALK_MAX_SETTLED_CELLS: usize = 4096;
 pub(crate) const HYSTERESIS_SECONDS: f64 = 2.0;
 /// A permit covers one cluster from request until install, drop, or failure.
 pub(crate) const MAX_STREAM_PERMITS: usize = 8;
-/// Decoded bytes handed to the renderer per drain. The first eligible cluster
-/// is always admitted, so one oversized chunk can still install.
-pub(crate) const MAX_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClusterResidencyState {
@@ -103,6 +101,18 @@ enum TargetClass {
 impl TargetClass {
     const fn is_pressure_eligible(self) -> bool {
         matches!(self, Self::SeamWarm | Self::Prefetch)
+    }
+
+    /// The class on the shared drain scale. Order-preserving, so the shared
+    /// drain admits SH clusters in SH's own class order.
+    const fn drain_class(self) -> DrainClass {
+        match self {
+            Self::Visible => DrainClass::Visible,
+            Self::Pinned => DrainClass::Pinned,
+            Self::SeamWarm => DrainClass::SeamWarm,
+            Self::Prefetch => DrainClass::Prefetch,
+            Self::Hysteresis => DrainClass::Hysteresis,
+        }
     }
 }
 
@@ -287,7 +297,7 @@ impl ShResidencyController {
     ) -> Result<Self, ShResidencyControllerError> {
         let topology = PlannerTopology::from_manifest(&manifest)?;
         let warm_source =
-            WarmSource::from_cell_visibility(cell_visibility, topology.cell_to_cluster.len());
+            WarmSource::from_cell_visibility(cell_visibility, topology.hints.cell_to_cluster.len());
         Self::from_parts(Some(manifest), topology, warm_source, clock, gpu_budget)
     }
 
@@ -522,7 +532,7 @@ impl ShResidencyController {
     ) -> Result<Self, ShResidencyControllerError> {
         let warm_source = WarmSource::resolve(
             None::<(usize, &[postretro_level_loader::CoupledCellPair])>,
-            topology.cell_to_cluster.len(),
+            topology.hints.cell_to_cluster.len(),
         );
         Self::from_parts(None, topology, warm_source, clock, gpu_budget)
     }
@@ -534,7 +544,7 @@ impl ShResidencyController {
         pairs: &[postretro_level_loader::CoupledCellPair],
         gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
-        let cell_count = topology.cell_to_cluster.len();
+        let cell_count = topology.hints.cell_to_cluster.len();
         let warm_source = WarmSource::resolve(Some((cell_count, pairs)), cell_count);
         Self::from_parts(
             None,

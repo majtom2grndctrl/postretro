@@ -27,6 +27,7 @@ use super::super::topology::SeamPortalEndpoint;
 use super::tests::hinted_topology;
 use super::*;
 use crate::sh_streaming::trace_fixture::assert_matches_baseline;
+use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 
 const BASELINE: &str = "sh_controller_trace_baseline.txt";
 const MIB: usize = 1024 * 1024;

@@ -1,15 +1,11 @@
-//! Session-owned SH worker set: one ordered read issuer thread plus a small
-//! decode pool. No read or decode runs on the frame thread; a completion
-//! remains covered by its controller permit.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency".
+//! Session-owned SH worker set: the shared read issuer with SH's route, plus
+//! a small decode pool. See: context/lib/rendering_pipeline.md §"Cluster SH residency".
 
 mod decode_pool;
-mod issuer;
 #[cfg(test)]
 mod issuer_trace_tests;
-mod schedule;
+mod route;
 mod stats;
-mod target_bitset;
 #[cfg(test)]
 mod tests;
 
@@ -19,19 +15,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
 
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{PrlLoadError, ShStreamManifest};
 
 use crate::sh_streaming::budget::CpuPhaseLedger;
 use crate::sh_streaming::controller::{MAX_STREAM_PERMITS, ShClusterRequest};
+use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
+use crate::streaming::request::StreamResource;
+use crate::streaming::target_bitset::TargetBitset;
 
 pub(crate) use stats::ShWorkerStats;
-use target_bitset::ShTargetBitset;
 
-/// Everything the worker threads need from a level. Production reads the
-/// retained manifest; tests inject sources that record offsets and threads.
+/// Everything the SH route and decode pool need from a level. Production
+/// reads the retained manifest; tests inject sources that record offsets and
+/// threads.
 trait ShWorkerSource: Send + Sync {
     fn cluster_count(&self) -> u32;
     /// Absolute file range of one chunk; empty for a canonical empty cluster.
@@ -85,26 +83,20 @@ fn decode_pool_size(available_parallelism: usize) -> usize {
     (available_parallelism / 2).clamp(1, 3)
 }
 
-/// State shared by the frame thread, the issuer, and the decode pool. Locks
-/// are held only for counter updates, never across a read or a decode.
+/// State shared by the frame thread, SH's issuer route, and the decode pool.
+/// Locks are held only for counter updates, never across a read or a decode.
 struct WorkerShared {
+    /// Stops the decode pool; the issuer has its own flag.
     cancel: AtomicBool,
     phases: Mutex<CpuPhaseLedger>,
     stats: Mutex<ShWorkerStats>,
-    targets: ShTargetBitset,
+    targets: TargetBitset,
 }
 
 impl WorkerShared {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
-}
-
-/// A controller request stamped when the frame thread handed it over, so read
-/// latency covers queueing behind earlier reads.
-struct SubmittedRequest {
-    request: ShClusterRequest,
-    submitted_at: Instant,
 }
 
 /// Encoded bytes in hand, queued for a pool thread. Its bytes stay charged to
@@ -129,7 +121,11 @@ pub(super) struct ShWorkerCompletion {
 }
 
 pub(super) struct ShAsyncWorkers {
-    requests: Option<SyncSender<SubmittedRequest>>,
+    issuer: Option<ReadIssuer>,
+    /// Resolves a request's chunk range at submission, on the frame thread.
+    source: Arc<dyn ShWorkerSource>,
+    /// Completes a request whose range cannot be resolved, without a read.
+    unresolved: Option<SyncSender<ShWorkerCompletion>>,
     completed: Receiver<ShWorkerCompletion>,
     shared: Arc<WorkerShared>,
     handles: Vec<JoinHandle<()>>,
@@ -163,21 +159,22 @@ impl ShAsyncWorkers {
     ) -> std::io::Result<Self> {
         // Controller permits bound every outstanding request, so none of these
         // channels can fill and block a sender.
-        let (requests, request_receiver) = sync_channel(MAX_STREAM_PERMITS);
         let (completed_sender, completed) = sync_channel(MAX_STREAM_PERMITS);
         let mut manager = Self {
-            requests: Some(requests),
+            issuer: None,
+            source: Arc::clone(&source),
+            unresolved: Some(completed_sender.clone()),
             completed,
             shared: Arc::new(WorkerShared {
                 cancel: AtomicBool::new(false),
                 phases: Mutex::new(CpuPhaseLedger::default()),
                 stats: Mutex::new(ShWorkerStats::default()),
-                targets: ShTargetBitset::new(source.cluster_count()),
+                targets: TargetBitset::new(source.cluster_count()),
             }),
             handles: Vec::with_capacity(decode_threads + 1),
             retained_manifest: None,
         };
-        manager.spawn_threads(source, decode_threads, request_receiver, completed_sender)?;
+        manager.spawn_threads(source, decode_threads, completed_sender)?;
         Ok(manager)
     }
 
@@ -187,7 +184,6 @@ impl ShAsyncWorkers {
         &mut self,
         source: Arc<dyn ShWorkerSource>,
         decode_threads: usize,
-        request_receiver: Receiver<SubmittedRequest>,
         completed_sender: SyncSender<ShWorkerCompletion>,
     ) -> std::io::Result<()> {
         let (decode_sender, decode_jobs) = sync_channel(MAX_STREAM_PERMITS);
@@ -202,28 +198,38 @@ impl ShAsyncWorkers {
                 .spawn(move || decode_pool::decode_loop(&jobs, &completed, &shared, &*source))?;
             self.handles.push(handle);
         }
-        let shared = Arc::clone(&self.shared);
-        let channels = issuer::IssuerChannels {
-            requests: request_receiver,
+        let route = route::ShReadRoute {
+            source,
+            shared: Arc::clone(&self.shared),
             decode: decode_sender,
             completed: completed_sender,
         };
-        let handle = thread::Builder::new()
-            .name("sh-probe-read".into())
-            .spawn(move || issuer::issuer_loop(channels, &shared, &*source))?;
+        let (issuer, handle) = ReadIssuer::spawn(
+            ReadRoutes::default().with(StreamResource::Sh, Box::new(route)),
+            MAX_STREAM_PERMITS,
+        )?;
+        self.issuer = Some(issuer);
         self.handles.push(handle);
         Ok(())
     }
 
     pub(super) fn submit(&self, request: ShClusterRequest) -> Result<(), &'static str> {
-        self.requests
-            .as_ref()
-            .ok_or("worker manager stopped")?
-            .try_send(SubmittedRequest {
-                request,
-                submitted_at: Instant::now(),
-            })
-            .map_err(|_| "SH worker request queue full or disconnected")
+        let issuer = self.issuer.as_ref().ok_or("worker manager stopped")?;
+        match self.source.chunk_file_range(request.cluster_id) {
+            Ok(range) => issuer
+                .submit(route::read_request(request, range))
+                .map_err(|_| "SH worker request queue full or disconnected"),
+            Err(error) => self
+                .unresolved
+                .as_ref()
+                .ok_or("worker manager stopped")?
+                .try_send(ShWorkerCompletion {
+                    request,
+                    result: ShWorkerResult::Failed(error),
+                    ready_bytes: 0,
+                })
+                .map_err(|_| "SH worker completion queue full or disconnected"),
+        }
     }
 
     /// Publishes the controller's current target set for pre-read
@@ -269,8 +275,7 @@ impl ShAsyncWorkers {
     }
 
     pub(super) fn stop(&mut self) {
-        self.shared.cancel.store(true, Ordering::Release);
-        self.requests.take();
+        self.cancel_threads();
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
@@ -280,12 +285,23 @@ impl ShAsyncWorkers {
     /// read. The frame path polls the returned handles and joins only after
     /// they have finished; process teardown still joins through `Drop`.
     pub(super) fn begin_retirement(&mut self) -> ShWorkerRetirement {
-        self.shared.cancel.store(true, Ordering::Release);
-        self.requests.take();
+        self.cancel_threads();
         ShWorkerRetirement {
             handles: std::mem::take(&mut self.handles),
             retained_manifest: self.retained_manifest.take(),
         }
+    }
+}
+
+impl ShAsyncWorkers {
+    /// Cancels the issuer and decode pool and drops every frame-side sender,
+    /// so the threads exit and the completion queue then disconnects.
+    fn cancel_threads(&mut self) {
+        self.shared.cancel.store(true, Ordering::Release);
+        if let Some(issuer) = self.issuer.take() {
+            issuer.cancel();
+        }
+        self.unresolved.take();
     }
 }
 

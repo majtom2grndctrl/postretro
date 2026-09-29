@@ -1,71 +1,88 @@
-//! Pure read scheduling for the SH I/O issuer: tier choice, offset order,
-//! and coalescing. No threads or I/O, so every rule is unit-testable.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency".
+//! Pure read scheduling for the shared issuer: tier, offset order, coalescing.
+//! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
 
 use std::ops::Range;
 
-/// Largest run of unrequested bytes one physical read may cover and discard.
-pub(super) const COALESCE_MAX_GAP_BYTES: u64 = 256 * 1024;
-/// Largest span one coalesced read may cover. A single chunk above it is
-/// read alone.
-pub(super) const COALESCE_MAX_SPAN_BYTES: u64 = 16 * 1024 * 1024;
+use super::request::{ReadTier, StreamResource};
 
-/// One pending chunk as the planner sees it: its tier and absolute file range.
+/// Largest run of unrequested bytes one physical read may cover and discard.
+pub(crate) const COALESCE_MAX_GAP_BYTES: u64 = 256 * 1024;
+/// Largest span one coalesced read may cover. A single range above it is
+/// read alone.
+pub(crate) const COALESCE_MAX_SPAN_BYTES: u64 = 16 * 1024 * 1024;
+
+/// One unread range as the planner sees it: its resource, tier, and absolute
+/// file range. A multi-range request contributes one slot per unread range.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ChunkSlot {
-    pub(super) mandatory: bool,
-    pub(super) range: Range<u64>,
+pub(crate) struct RangeSlot {
+    pub(crate) resource: StreamResource,
+    pub(crate) tier: ReadTier,
+    pub(crate) range: Range<u64>,
 }
 
-/// One physical read: the file span and the slots it serves, by index into the
-/// planner's input, in ascending offset order.
+/// One physical read: its resource, the file span, and the slots it serves,
+/// by index into the planner's input, in ascending offset order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ReadPlan {
-    pub(super) span: Range<u64>,
-    pub(super) members: Vec<usize>,
+pub(crate) struct ReadPlan {
+    pub(crate) resource: StreamResource,
+    pub(crate) span: Range<u64>,
+    pub(crate) members: Vec<usize>,
 }
 
 impl ReadPlan {
-    /// Span bytes that belong to no member chunk; they are read and discarded.
-    pub(super) fn gap_bytes(&self, slots: &[ChunkSlot]) -> u64 {
-        let chunk_bytes: u64 = self
+    /// Span bytes that belong to no member range; they are read and discarded.
+    pub(crate) fn gap_bytes(&self, slots: &[RangeSlot]) -> u64 {
+        let range_bytes: u64 = self
             .members
             .iter()
             .map(|&index| range_len(&slots[index].range))
             .sum();
-        range_len(&self.span).saturating_sub(chunk_bytes)
+        range_len(&self.span).saturating_sub(range_bytes)
     }
 }
 
-/// Plans the next physical read. The mandatory tier is served first whenever
-/// it has any pending chunk, so optional work never delays it; within the
-/// chosen tier the lowest offset starts the read, and following chunks of the
-/// same tier merge while the gap and span caps hold.
-pub(super) fn plan_next_read(slots: &[ChunkSlot]) -> Option<ReadPlan> {
-    let mandatory = slots.iter().any(|slot| slot.mandatory);
-    let mut tier: Vec<usize> = (0..slots.len())
-        .filter(|&index| slots[index].mandatory == mandatory)
+/// Plans the next physical read. The mandatory tier, across every resource,
+/// is served first whenever it has any pending range, so optional work never
+/// delays it. Within the chosen tier the lowest offset starts the read, and
+/// the ranges that follow it in offset order merge while they belong to the
+/// same resource and the gap and span caps hold. Offset ties keep slot order.
+pub(crate) fn plan_next_read(slots: &[RangeSlot]) -> Option<ReadPlan> {
+    let tier = if slots.iter().any(|slot| slot.tier == ReadTier::Mandatory) {
+        ReadTier::Mandatory
+    } else {
+        ReadTier::Optional
+    };
+    let mut in_tier: Vec<usize> = (0..slots.len())
+        .filter(|&index| slots[index].tier == tier)
         .collect();
-    tier.sort_by_key(|&index| (slots[index].range.start, slots[index].range.end));
-    let (&first, rest) = tier.split_first()?;
+    in_tier.sort_by_key(|&index| (slots[index].range.start, slots[index].range.end));
+    let (&first, rest) = in_tier.split_first()?;
+    let resource = slots[first].resource;
     let mut span = slots[first].range.clone();
     let mut members = vec![first];
     for &index in rest {
-        let range = &slots[index].range;
-        let gap = range.start.saturating_sub(span.end);
-        let merged_end = span.end.max(range.end);
-        if gap > COALESCE_MAX_GAP_BYTES || merged_end - span.start > COALESCE_MAX_SPAN_BYTES {
+        let slot = &slots[index];
+        let gap = slot.range.start.saturating_sub(span.end);
+        let merged_end = span.end.max(slot.range.end);
+        if slot.resource != resource
+            || gap > COALESCE_MAX_GAP_BYTES
+            || merged_end - span.start > COALESCE_MAX_SPAN_BYTES
+        {
             break;
         }
         span.end = merged_end;
         members.push(index);
     }
-    Some(ReadPlan { span, members })
+    Some(ReadPlan {
+        resource,
+        span,
+        members,
+    })
 }
 
-/// Splits one span read into per-chunk buffers, in the order of `ranges`.
-/// A read serving one chunk that fills the span moves the buffer unchanged.
-pub(super) fn split_span(span: &Range<u64>, bytes: Vec<u8>, ranges: &[Range<u64>]) -> Vec<Vec<u8>> {
+/// Splits one span read into per-range buffers, in the order of `ranges`.
+/// A read serving one range that fills the span moves the buffer unchanged.
+pub(crate) fn split_span(span: &Range<u64>, bytes: Vec<u8>, ranges: &[Range<u64>]) -> Vec<Vec<u8>> {
     if let [only] = ranges
         && *only == *span
     {
@@ -89,20 +106,25 @@ fn range_len(range: &Range<u64>) -> u64 {
 mod tests {
     use super::*;
 
-    fn slot(mandatory: bool, start: u64, len: u64) -> ChunkSlot {
-        ChunkSlot {
-            mandatory,
+    fn slot(mandatory: bool, start: u64, len: u64) -> RangeSlot {
+        RangeSlot {
+            resource: StreamResource::Sh,
+            tier: if mandatory {
+                ReadTier::Mandatory
+            } else {
+                ReadTier::Optional
+            },
             range: start..start + len,
         }
     }
 
     /// Drains `slots` through the planner the way the issuer does, returning
     /// the member indices of each physical read in issue order.
-    fn drain_order(slots: &[ChunkSlot]) -> Vec<Vec<usize>> {
+    fn drain_order(slots: &[RangeSlot]) -> Vec<Vec<usize>> {
         let mut remaining: Vec<usize> = (0..slots.len()).collect();
         let mut reads = Vec::new();
         while !remaining.is_empty() {
-            let view: Vec<ChunkSlot> = remaining.iter().map(|&i| slots[i].clone()).collect();
+            let view: Vec<RangeSlot> = remaining.iter().map(|&i| slots[i].clone()).collect();
             let plan = plan_next_read(&view).expect("nonempty pending set");
             let issued: Vec<usize> = plan.members.iter().map(|&i| remaining[i]).collect();
             remaining.retain(|index| !issued.contains(index));
@@ -157,6 +179,21 @@ mod tests {
         assert_eq!(plan.members, vec![0, 2]);
         assert_eq!(plan.span, 0..30);
         assert_eq!(plan.gap_bytes(&slots), 10);
+    }
+
+    #[test]
+    fn coalescing_stops_at_a_range_of_another_resource() {
+        let mut lightmap = slot(true, 10, 10);
+        lightmap.resource = StreamResource::LightmapBlock;
+        let slots = [slot(true, 0, 10), lightmap, slot(true, 20, 10)];
+        let plan = plan_next_read(&slots).unwrap();
+        assert_eq!(plan.resource, StreamResource::Sh);
+        assert_eq!(plan.members, vec![0]);
+        assert_eq!(
+            drain_order(&slots),
+            vec![vec![0], vec![1], vec![2]],
+            "each read starts at the lowest pending offset"
+        );
     }
 
     #[test]

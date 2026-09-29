@@ -2,30 +2,28 @@
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
-    CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
-    DENSE_OWNER_SENTINEL,
+    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain, DENSE_OWNER_SENTINEL,
 };
 use postretro_level_format::cluster_sh_payloads::ClusterShPayloadsSection;
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamManifest, ShStreamSeamPortal};
 
 use super::controller::ShResidencyControllerError;
+use crate::streaming::cluster_hints::ClusterHints;
 
 #[derive(Debug)]
 pub(super) struct PlannerTopology {
-    pub(super) cell_to_cluster: Vec<u32>,
+    /// Pins, authored priorities, and the cell-to-cluster map, decoded by the
+    /// shared streaming layer.
+    pub(super) hints: Arc<ClusterHints>,
     pub(super) adjacency: Vec<Vec<u32>>,
     /// Authored seam portal endpoints resolved by the validated loader. This
     /// supplements normal adjacency for warm-up only; it is never fed back to
     /// the visibility traversal.
     pub(super) seam_portals: Vec<SeamPortalEndpoint>,
-    /// Canonical cluster IDs with a non-optional resident policy record.
-    pub(super) pinned_clusters: BTreeSet<u32>,
-    /// Canonical authored priority for each cluster. Zero is intentionally a
-    /// no-op so old maps retain the exact old ordering.
-    pub(super) authored_priorities: Vec<u32>,
     /// Every dependency which must be sampleable before this cluster's halo
     /// can become sampleable. Dense node/probe writers and sparse row owners
     /// are both represented here.
@@ -79,27 +77,8 @@ impl PlannerTopology {
             ));
         }
 
-        let mut pinned_clusters = BTreeSet::new();
-        let mut authored_priorities = vec![0; cluster_count];
-        for hint in &directory.cluster_hints {
-            let cluster_id = usize::try_from(hint.cluster_id).map_err(|_| {
-                ShResidencyControllerError::InvalidTopology("cluster hint id exceeds usize".into())
-            })?;
-            if cluster_id >= cluster_count {
-                return Err(ShResidencyControllerError::InvalidTopology(
-                    "cluster hint names an out-of-range cluster".into(),
-                ));
-            }
-            if hint.flags & !CLUSTER_HINT_FLAG_PINNED != 0 || hint.priority > 3 {
-                return Err(ShResidencyControllerError::InvalidTopology(
-                    "cluster hint has invalid flags or priority".into(),
-                ));
-            }
-            if hint.flags & CLUSTER_HINT_FLAG_PINNED != 0 {
-                pinned_clusters.insert(hint.cluster_id);
-            }
-            authored_priorities[cluster_id] = hint.priority;
-        }
+        let hints = ClusterHints::decode(directory)
+            .map_err(|error| ShResidencyControllerError::InvalidTopology(error.to_string()))?;
 
         let mut seam_portals = Vec::with_capacity(manifest.seam_portals.len());
         for seam in manifest.seam_portals {
@@ -111,47 +90,6 @@ impl PlannerTopology {
         {
             return Err(ShResidencyControllerError::InvalidTopology(
                 "seam portal IDs are not canonical".into(),
-            ));
-        }
-
-        let cell_count = usize::try_from(directory.runtime_cell_count).map_err(|_| {
-            ShResidencyControllerError::InvalidTopology("runtime cell count exceeds usize".into())
-        })?;
-        let mut cell_to_cluster = vec![u32::MAX; cell_count];
-        for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
-            let start = usize::try_from(cluster.member_start).map_err(|_| {
-                ShResidencyControllerError::InvalidTopology("member start exceeds usize".into())
-            })?;
-            let end = start
-                .checked_add(usize::try_from(cluster.member_count).map_err(|_| {
-                    ShResidencyControllerError::InvalidTopology("member count exceeds usize".into())
-                })?)
-                .ok_or_else(|| {
-                    ShResidencyControllerError::InvalidTopology("member range overflows".into())
-                })?;
-            let members = directory.members.get(start..end).ok_or_else(|| {
-                ShResidencyControllerError::InvalidTopology("member range exceeds id-49".into())
-            })?;
-            for &cell_id in members {
-                let cell = usize::try_from(cell_id).map_err(|_| {
-                    ShResidencyControllerError::InvalidTopology("cell id exceeds usize".into())
-                })?;
-                let entry = cell_to_cluster.get_mut(cell).ok_or_else(|| {
-                    ShResidencyControllerError::InvalidTopology("id-49 cell is out of range".into())
-                })?;
-                if *entry != u32::MAX {
-                    return Err(ShResidencyControllerError::InvalidTopology(
-                        "id-49 assigns a runtime cell more than once".into(),
-                    ));
-                }
-                *entry = u32::try_from(cluster_id).map_err(|_| {
-                    ShResidencyControllerError::InvalidTopology("cluster id exceeds u32".into())
-                })?;
-            }
-        }
-        if cell_to_cluster.contains(&u32::MAX) {
-            return Err(ShResidencyControllerError::InvalidTopology(
-                "id-49 leaves a runtime cell unassigned".into(),
             ));
         }
 
@@ -331,11 +269,9 @@ impl PlannerTopology {
             .map(|entry| entry.hash)
             .collect();
         Ok(Self {
-            cell_to_cluster,
+            hints: Arc::new(hints),
             adjacency,
             seam_portals,
-            pinned_clusters,
-            authored_priorities,
             owners: owners
                 .into_iter()
                 .map(|owners| owners.into_iter().collect())

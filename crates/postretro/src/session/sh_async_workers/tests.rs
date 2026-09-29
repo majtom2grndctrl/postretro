@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::PrlLoadError;
 
-use super::schedule::COALESCE_MAX_GAP_BYTES;
 use super::*;
+use crate::streaming::schedule::COALESCE_MAX_GAP_BYTES;
 
 const MIB: u64 = 1024 * 1024;
 

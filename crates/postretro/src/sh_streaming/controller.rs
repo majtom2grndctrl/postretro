@@ -594,3 +594,6 @@ mod tests;
 #[cfg(test)]
 #[path = "controller_warm_and_budget_tests.rs"]
 mod warm_and_budget_tests;
+#[cfg(test)]
+#[path = "controller_trace_tests.rs"]
+mod trace_tests;

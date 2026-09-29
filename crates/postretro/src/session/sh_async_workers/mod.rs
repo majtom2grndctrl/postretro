@@ -5,6 +5,8 @@
 
 mod decode_pool;
 mod issuer;
+#[cfg(test)]
+mod issuer_trace_tests;
 mod schedule;
 mod stats;
 mod target_bitset;

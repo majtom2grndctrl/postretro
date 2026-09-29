@@ -1,0 +1,68 @@
+# SH issuer trace baseline. Produced by
+# session::sh_async_workers::issuer_trace_tests::sh_trace_issuer_schedule_matches_baseline
+# from the pre-extraction SH read issuer (brief AC 18).
+# Steps act while the issuer is idle or held in a read, then release it.
+# Reads list each physical span in issue order with the chunks it served
+# and the discarded gap bytes. Do not regenerate to make a refactor pass.
+layout:
+  chunk 0: 0..65536 (65536B)
+  chunk 1: 65536..131072 (65536B)
+  chunk 2: 233472..299008 (65536B)
+  chunk 3: 2097152..2162688 (65536B)
+  chunk 4: 2424832..2457600 (32768B)
+  chunk 5: 153600..174080 (20480B)
+  chunk 6: 8388608..18874368 (10485760B)
+  chunk 7: 18874368..27262976 (8388608B)
+  chunk 8: 27262976..27262976 (0B)
+  chunk 9: 41943040..42008576 (65536B)
+  chunk 10: 42991616..43057152 (65536B)
+  chunk 11: 67108864..67108928 (64B)
+  chunk 12: 2719745..2736129 (16384B)
+  chunk 13: 83886080..83951616 (65536B)
+  chunk 14: 83951616..84017152 (65536B)
+  chunk 15: 104857600..104923136 (65536B)
+step 0 (idle): idle; mixed tiers in shuffled order
+  publish targets [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15]
+  submit 11 m; read 0 starts 67108864..67108928 (64B)
+  submit 9 o, 10 o, 5 o, 2 m, 0 m, 1 m, 13 o
+  release read 0; read 1 starts 0..299008 (299008B)
+step 1 (held in read 1): 10 leaves the target set before its read; gap-cap neighbours arrive
+  publish targets [0 1 2 3 4 5 6 7 8 9 11 12 13 14 15]
+  submit 3 m, 4 m, 12 m
+  cancelled unread: [10]
+  release read 1; read 2 starts 2097152..2457600 (360448B)
+step 2 (held in read 2): span-cap pair, an empty chunk, and an optional neighbour of 13
+  submit 14 o, 6 m, 7 m, 8 m
+  release read 2; read 3 starts 2719745..2736129 (16384B)
+step 3 (held in read 3): no new work
+  release read 3; read 4 starts 8388608..18874368 (10485760B)
+step 4 (held in read 4): no new work
+  release read 4; read 5 starts 18874368..27262976 (8388608B)
+step 5 (held in read 5): no new work
+  release read 5; read 6 starts 153600..174080 (20480B)
+step 6 (held in read 6): fresh mandatory work arrives during the optional tier
+  submit 15 m
+  release read 6; read 7 starts 104857600..104923136 (65536B)
+step 7 (held in read 7): no new work
+  release read 7; read 8 starts 41943040..42008576 (65536B)
+step 8 (held in read 8): no new work
+  release read 8; read 9 starts 83886080..84017152 (131072B)
+step 9 (held in read 9): no new work
+  release read 9; issuer idle
+step 10 (idle): idle again; 10 is targeted and requested anew
+  publish targets [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15]
+  submit 10 o; read 10 starts 42991616..43057152 (65536B)
+  release read 10; issuer idle
+reads:
+  read 0: 67108864..67108928 (64B) chunks [11] gap 0B
+  read 1: 0..299008 (299008B) chunks [0 1 2] gap 102400B
+  read 2: 2097152..2457600 (360448B) chunks [3 4] gap 262144B
+  read 3: 2719745..2736129 (16384B) chunks [12] gap 0B
+  read 4: 8388608..18874368 (10485760B) chunks [6] gap 0B
+  read 5: 18874368..27262976 (8388608B) chunks [7] gap 0B
+  read 6: 153600..174080 (20480B) chunks [5] gap 0B
+  read 7: 104857600..104923136 (65536B) chunks [15] gap 0B
+  read 8: 41943040..42008576 (65536B) chunks [9] gap 0B
+  read 9: 83886080..84017152 (131072B) chunks [13 14] gap 0B
+  read 10: 42991616..43057152 (65536B) chunks [10] gap 0B
+prepared without a read: [8]

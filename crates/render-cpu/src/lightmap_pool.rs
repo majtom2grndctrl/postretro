@@ -4,11 +4,16 @@
 
 mod block_allocator;
 mod block_table;
+mod policy;
 
-pub use block_allocator::{BlockPool, ShelfLayer, Slot, StaleFree};
+pub use block_allocator::{BlockPool, RestoreConflict, ShelfLayer, Slot, StaleFree};
 pub use block_table::{
     BLOCK_FLAG_NONE, BLOCK_FLAG_RESIDENT, BLOCK_TABLE_ENTRY_BYTES, BlockTableEntry,
     block_table_bytes, placeholder_block_table,
+};
+pub use policy::{
+    BlockUpload, DrainPlan, DrainRequest, EvictionReason, LightmapPoolModel, NotAPlannedUpload,
+    PlannedEviction, PoolCopy, PoolGrowth, TableWrite,
 };
 
 /// Top-left texel of a block inside the pool: array layer plus offset.

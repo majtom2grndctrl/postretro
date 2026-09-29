@@ -257,7 +257,6 @@ fn band_walks(
             blocks: inputs.cell_blocks,
             mandatory: &mandatory,
             band: &band,
-            mandatory_shelf_layers: &sim_lead.shelf_layers,
         },
         inputs.camera_cells,
         inputs.graph,

@@ -26,6 +26,11 @@ pub struct Slot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaleFree;
 
+/// A restore whose rectangle is not wholly free space. Refused without
+/// touching the layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreConflict;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Owner {
     id: u64,
@@ -204,6 +209,100 @@ impl ShelfLayer {
         }
         Ok(())
     }
+
+    /// Re-occupy exactly `width × height` at `(x, y)` for `owner`: the
+    /// inverse of [`Self::free`], for an undo journal replayed newest-first.
+    /// An empty shelf splits so a shelf starts at `y`; an occupied shelf must
+    /// start at `y`, and borrows height from an empty shelf below it when it
+    /// is shorter than the block (the shelf the block once shared may have
+    /// been rebuilt shorter by an earlier restore).
+    pub fn restore(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        owner: u64,
+    ) -> Result<(), RestoreConflict> {
+        if width == 0 || height == 0 || x.saturating_add(width) > self.width {
+            return Err(RestoreConflict);
+        }
+        let mut index = self
+            .shelves
+            .iter()
+            .position(|s| s.y <= y && y < s.y + s.height)
+            .ok_or(RestoreConflict)?;
+        if self.shelves[index].is_empty() {
+            let (shelf_y, shelf_height) = (self.shelves[index].y, self.shelves[index].height);
+            if y + height > shelf_y + shelf_height {
+                return Err(RestoreConflict);
+            }
+            if y > shelf_y {
+                self.shelves[index].height = y - shelf_y;
+                let rest = Self::empty_shelf(y, shelf_y + shelf_height - y, self.width);
+                self.shelves.insert(index + 1, rest);
+                index += 1;
+            }
+            let shelf_height = self.shelves[index].height;
+            if shelf_height > height {
+                self.shelves[index].height = height;
+                let rest = Self::empty_shelf(y + height, shelf_height - height, self.width);
+                self.shelves.insert(index + 1, rest);
+            }
+        } else {
+            let shelf = &self.shelves[index];
+            if shelf.y != y {
+                return Err(RestoreConflict);
+            }
+            if shelf.height < height {
+                let short = height - shelf.height;
+                let below = self
+                    .shelves
+                    .get(index + 1)
+                    .filter(|next| next.is_empty() && next.height >= short)
+                    .ok_or(RestoreConflict)?;
+                if below.height == short {
+                    self.shelves.remove(index + 1);
+                } else {
+                    let below = &mut self.shelves[index + 1];
+                    below.y += short;
+                    below.height -= short;
+                }
+                self.shelves[index].height = height;
+            }
+        }
+        let shelf = &mut self.shelves[index];
+        let span_index = shelf
+            .spans
+            .iter()
+            .position(|s| !s.used() && s.x <= x && x + width <= s.x + s.width)
+            .ok_or(RestoreConflict)?;
+        let span = shelf.spans[span_index];
+        let mut at = span_index;
+        if x > span.x {
+            shelf.spans[at].width = x - span.x;
+            at += 1;
+            shelf.spans.insert(at, span);
+        }
+        shelf.spans[at] = Span {
+            x,
+            width,
+            owner: Some(Owner { id: owner, height }),
+        };
+        let end = span.x + span.width;
+        if x + width < end {
+            shelf.spans.insert(
+                at + 1,
+                Span {
+                    x: x + width,
+                    width: end - x - width,
+                    owner: None,
+                },
+            );
+        }
+        self.allocations += 1;
+        Ok(())
+    }
 }
 
 /// Square pool layers, optionally capped.
@@ -285,6 +384,25 @@ impl BlockPool {
             .get_mut(slot.layer as usize)
             .ok_or(StaleFree)?
             .free(slot.x, slot.y, slot.width, slot.height, slot.owner)
+    }
+
+    /// Re-occupy `slot` exactly, owner id included, undoing its `free`. Only
+    /// valid while its rectangle is free, as it is when an undo journal
+    /// replays newest-first.
+    pub fn restore(&mut self, slot: Slot) -> Result<(), RestoreConflict> {
+        if slot.width > self.edge || slot.height > self.edge {
+            return Err(RestoreConflict);
+        }
+        while self.layers.len() <= slot.layer as usize {
+            self.layers.push(ShelfLayer::new(self.edge, self.edge));
+        }
+        self.layers[slot.layer as usize].restore(
+            slot.x,
+            slot.y,
+            slot.width,
+            slot.height,
+            slot.owner,
+        )
     }
 
     /// Layers a pool must hold right now: one past the highest non-empty one.

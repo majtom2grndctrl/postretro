@@ -4351,6 +4351,7 @@ dependencies = [
  "postretro-model",
  "postretro-render-data",
  "postretro-visibility",
+ "proptest",
 ]
 
 [[package]]

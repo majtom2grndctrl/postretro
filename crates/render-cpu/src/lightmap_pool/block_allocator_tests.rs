@@ -1,7 +1,7 @@
 // Shelf allocator tests, moved with the allocator from the level compiler's
 // residency dry run.
 
-use super::{BlockPool, ShelfLayer, Slot, StaleFree};
+use super::{BlockPool, RestoreConflict, ShelfLayer, Slot, StaleFree};
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 #[test]
@@ -79,4 +79,36 @@ fn zero_size_allocations_are_refused() {
     let mut layer = ShelfLayer::new(64, 64);
     assert!(layer.allocate(0, 0, 0).is_none());
     assert!(layer.is_empty());
+}
+
+#[test]
+fn restore_undoes_frees_newest_first_even_after_their_shelves_merged() {
+    let mut pool = BlockPool::new(64, Some(1));
+    // `tall` opens a 24-high shelf and `short` shares it; `below` opens the
+    // next shelf.
+    let tall = pool.allocate(16, 24).unwrap();
+    let short = pool.allocate(16, 16).unwrap();
+    let below = pool.allocate(64, 8).unwrap();
+    assert_eq!((short.y, below.y), (0, 24));
+    for slot in [tall, short, below] {
+        pool.free(slot).unwrap();
+    }
+    assert_eq!(pool.extent(), 0, "every shelf merged back");
+
+    // Newest first. Restoring `short` rebuilds its shelf only 16 high, so
+    // `tall` must borrow the empty rows beneath it.
+    for slot in [below, short, tall] {
+        pool.restore(slot).unwrap();
+    }
+    assert_eq!(pool.restore(tall), Err(RestoreConflict), "already occupied");
+    assert!(
+        pool.allocate(64, 40).is_none(),
+        "the restored rows are taken"
+    );
+    // The restored slots keep their owners, so their frees are accepted.
+    for slot in [tall, short, below] {
+        pool.free(slot).unwrap();
+    }
+    let whole = pool.allocate(64, 64).unwrap();
+    assert_eq!((whole.layer, whole.x, whole.y), (0, 0, 0));
 }

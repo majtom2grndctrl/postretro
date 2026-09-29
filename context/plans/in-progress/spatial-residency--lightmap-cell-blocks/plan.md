@@ -188,3 +188,14 @@ Raw measurements for the findings note (AC 22–25), recorded as they arrive.
   - 198 cell blocks: 18.6 MB irradiance blobs, 9.3 MB direction, 37.2 MB shadowmask.
   - Pool: 7 layers of 2048². Meter: static irradiance 28.0 MiB, direction 14.0 MiB, shadowmask 56.0 MiB; the animated pair adds 48.0 MiB.
 - The hallway rebake started before Task 5 landed, so its PRL has no id 51. Rebake it (warm) before any streaming measurement.
+
+## Follow-ups at landing
+
+- **Revisit `drafts/sh-streaming--reveal-gate-and-warm-horizon`** (owner, 2026-09-29). The overlap is:
+  - its settle chokepoint gains a lightmap "settled?" answer;
+  - its "does Settling lift the per-drain install cap" question and its temporarily-mandatory entry warm clusters now go through the shared SH plus lightmap drain budget and tiers;
+  - its widened SH prefetch shares the optional tier with the lightmap band;
+  - its Path symbols (`prepare_sh_streaming_drain`, `select_install_budget`, `take_async_drain_batch`, the "held by the install cap" miss bucket) move in Task 6.
+  
+  Whichever lands second adopts the other's seam. If Settling lands first, Task 9 settles spawn blocks through Settling instead of a synchronous install read.
+- **Coupling with `drafts/portal-walk-bounded-regions`.** The id-51 bake samples the runtime portal walk (`postretro_visibility::determine_visible_cells`, `portal_traverse`), but its cache key hashes only the Cells, Portals and CellLocator bytes and the max lead. A walk change (the rect walk makes the visible set a superset) would leave warm-cached id-51 sections from the old walk, and visible misses would count the difference. That brief should either bump `CELL_RESIDENCY_SET_STAGE_VERSION` or hash a walk epoch. It should also list lightmap residency among the superset consumers: never-refused visible demand grows the pool.

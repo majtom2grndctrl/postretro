@@ -9,6 +9,8 @@ mod prl_animated_atlas;
 #[cfg(feature = "load-prl")]
 mod prl_container;
 #[cfg(feature = "load-prl")]
+mod prl_file;
+#[cfg(feature = "load-prl")]
 mod prl_lighting;
 #[cfg(feature = "load-prl")]
 mod prl_lightmap;
@@ -28,9 +30,9 @@ mod sh_stream_tests;
 
 #[cfg(feature = "load-prl")]
 pub use lightmap_stream::{
-    LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapPoolReport,
-    LightmapStreamingMode, LightmapTarget, PreparedLightmapBlock,
-    requested_lightmap_streaming_mode,
+    LightmapBlockClass, LightmapBlockFileRanges, LightmapDrainBatch, LightmapDrainOutcome,
+    LightmapPoolReport, LightmapStorage, LightmapStreamManifest, LightmapStreamingMode,
+    LightmapTarget, PreparedLightmapBlock, requested_lightmap_streaming_mode,
 };
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
@@ -42,6 +44,8 @@ pub use prl::{
     CellDrawIndex, FaceMeta, KinematicGeometry, LightmapMode, LoadedKinematicMover,
     LoadedKinematicWaypoint, LoadedMemberLight, PrlLoadError,
 };
+#[cfg(feature = "load-prl")]
+pub use prl_file::PrlReadCounters;
 #[cfg(feature = "load-prl")]
 pub use prl_lighting::LevelWorldLighting;
 #[cfg(feature = "load-prl")]

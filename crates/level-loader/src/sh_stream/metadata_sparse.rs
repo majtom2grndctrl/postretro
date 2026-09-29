@@ -1,7 +1,7 @@
 //! Metadata-only id-35 and sparse-source projection parsing.
 //! See: context/lib/build_pipeline.md §PRL Compilation.
 
-use std::fs::File;
+use crate::prl_file::PrlFile;
 
 use postretro_level_format::SectionEntry;
 use postretro_level_format::SectionId;
@@ -15,7 +15,7 @@ use super::positional_io::read_vec_at;
 use super::projection::{ShStreamBaseMetadata, ShStreamDirectMetadata, ShStreamSparseMetadata};
 use super::{PrlLoadError, stream_error};
 pub(super) fn read_optional_direct_metadata(
-    file: &File,
+    file: &PrlFile,
     entry: Option<&SectionEntry>,
 ) -> Result<Option<ShStreamDirectMetadata>, PrlLoadError> {
     let Some(entry) = entry else {
@@ -85,7 +85,7 @@ pub(super) fn read_optional_direct_metadata(
 }
 
 pub(super) fn read_optional_sparse_metadata(
-    file: &File,
+    file: &PrlFile,
     entry: Option<&SectionEntry>,
     section: SectionId,
     base: &ShStreamBaseMetadata,

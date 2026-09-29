@@ -1,6 +1,8 @@
 // PRL container ownership and section reads for the runtime loader.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+use std::borrow::Cow;
+#[cfg(test)]
 use std::fs::File;
 use std::io::Cursor;
 #[cfg(test)]
@@ -10,21 +12,29 @@ use std::sync::Arc;
 use postretro_level_format as prl_format;
 
 use crate::prl::PrlLoadError;
+use crate::prl_file::{PrlFile, PrlReadCounters};
 use crate::sh_stream::read_vec_at;
 
 /// One fully validated PRL container image plus its parsed table.
 ///
 /// The loader still owns decoding and cross-section policy. This type owns
-/// only the shared file image and the container-level inventory/read seam so
-/// a later positional-reader path has one place to replace.
+/// only the backing (a whole file image, or the retained file read
+/// positionally) and the container-level inventory/read seam.
 pub(crate) struct PrlContainer {
     backing: PrlBacking,
     metadata: prl_format::ContainerMeta,
+    reads: Option<Arc<PrlReadCounters>>,
 }
 
 enum PrlBacking {
     Whole(Vec<u8>),
-    Positional(Arc<File>),
+    /// Sections are read on demand. `sh_bodies_streamed` forbids whole-body
+    /// reads of the SH families that id 50 streams; lightmap streaming uses
+    /// this backing with SH bodies read whole as legacy decode expects.
+    Positional {
+        file: Arc<PrlFile>,
+        sh_bodies_streamed: bool,
+    },
 }
 
 impl PrlContainer {
@@ -41,16 +51,26 @@ impl PrlContainer {
         Ok(Self {
             backing: PrlBacking::Whole(file_data),
             metadata,
+            reads: None,
         })
     }
 
-    /// Construct the streaming reader after the caller has already parsed and
-    /// bounds-validated the table through positional reads. This deliberately
-    /// retains the same file handle that the manifest will use for chunks.
-    pub(crate) fn from_positional(file: Arc<File>, metadata: prl_format::ContainerMeta) -> Self {
+    /// Construct the positional reader after the caller has already parsed
+    /// and bounds-validated the table through positional reads. This retains
+    /// the same file handle the SH and lightmap manifests use for chunks.
+    pub(crate) fn from_positional(
+        file: Arc<PrlFile>,
+        metadata: prl_format::ContainerMeta,
+        sh_bodies_streamed: bool,
+    ) -> Self {
+        let reads = Some(file.read_counters().clone());
         Self {
-            backing: PrlBacking::Positional(file),
+            backing: PrlBacking::Positional {
+                file,
+                sh_bodies_streamed,
+            },
             metadata,
+            reads,
         }
     }
 
@@ -60,10 +80,12 @@ impl PrlContainer {
     pub(crate) fn from_whole_bytes(
         file_data: Vec<u8>,
         metadata: prl_format::ContainerMeta,
+        reads: Option<Arc<PrlReadCounters>>,
     ) -> Self {
         Self {
             backing: PrlBacking::Whole(file_data),
             metadata,
+            reads,
         }
     }
 
@@ -71,11 +93,19 @@ impl PrlContainer {
         &self.metadata
     }
 
-    pub(crate) fn data(&self) -> &[u8] {
+    /// The retained handle when sections are read positionally: the only
+    /// backing a streamed resource can keep reading after load.
+    pub(crate) fn retained_file(&self) -> Option<&Arc<PrlFile>> {
         match &self.backing {
-            PrlBacking::Whole(file_data) => file_data,
-            PrlBacking::Positional(_) => &[],
+            PrlBacking::Whole(_) => None,
+            PrlBacking::Positional { file, .. } => Some(file),
         }
+    }
+
+    /// The counters of the file this container was read from, when it came
+    /// through the positional reader.
+    pub(crate) fn read_counters(&self) -> Option<&Arc<PrlReadCounters>> {
+        self.reads.as_ref()
     }
 
     /// Read a section by raw id, preserving the format crate's allocation and
@@ -93,15 +123,20 @@ impl PrlContainer {
                     section_id,
                 )?)
             }
-            PrlBacking::Positional(file) => {
-                if matches!(
-                    section_id,
-                    id if id == prl_format::SectionId::DeltaShVolumes as u32
-                        || id == prl_format::SectionId::OctahedralShVolume as u32
-                        || id == prl_format::SectionId::DirectShVolume as u32
-                        || id == prl_format::SectionId::DirectShDeltaVolumes as u32
-                        || id == prl_format::SectionId::AnimatedDirectShDeltaVolumes as u32
-                ) {
+            PrlBacking::Positional {
+                file,
+                sh_bodies_streamed,
+            } => {
+                if *sh_bodies_streamed
+                    && matches!(
+                        section_id,
+                        id if id == prl_format::SectionId::DeltaShVolumes as u32
+                            || id == prl_format::SectionId::OctahedralShVolume as u32
+                            || id == prl_format::SectionId::DirectShVolume as u32
+                            || id == prl_format::SectionId::DirectShDeltaVolumes as u32
+                            || id == prl_format::SectionId::AnimatedDirectShDeltaVolumes as u32
+                    )
+                {
                     return Err(PrlLoadError::SectionValidation {
                         section: "SH streaming",
                         message: format!(
@@ -109,11 +144,7 @@ impl PrlContainer {
                         ),
                     });
                 }
-                prl_format::validate_container_entry_bounds(
-                    &self.metadata,
-                    entry,
-                    file.metadata()?.len(),
-                )?;
+                prl_format::validate_container_entry_bounds(&self.metadata, entry, file.len()?)?;
                 Ok(Some(read_vec_at(
                     file,
                     entry.offset,
@@ -122,6 +153,41 @@ impl PrlContainer {
                 )?))
             }
         }
+    }
+
+    /// A section body, borrowed from a whole image or read positionally.
+    /// Bounds are validated before any read, as [`Self::read_section`] does.
+    pub(crate) fn section_bytes(
+        &self,
+        section_id: u32,
+    ) -> Result<Option<Cow<'_, [u8]>>, PrlLoadError> {
+        match &self.backing {
+            PrlBacking::Whole(file_data) => {
+                Ok(
+                    prl_format::section_data_from_bytes(file_data, &self.metadata, section_id)?
+                        .map(Cow::Borrowed),
+                )
+            }
+            PrlBacking::Positional { .. } => Ok(self.read_section(section_id)?.map(Cow::Owned)),
+        }
+    }
+
+    /// A section's length after validating its container bounds, without
+    /// reading its body. Lets a size policy refuse a section before it is
+    /// read or allocated.
+    pub(crate) fn validated_section_len(
+        &self,
+        section_id: u32,
+    ) -> Result<Option<u64>, PrlLoadError> {
+        let Some(entry) = self.metadata.find_section(section_id) else {
+            return Ok(None);
+        };
+        let file_len = match &self.backing {
+            PrlBacking::Whole(file_data) => file_data.len() as u64,
+            PrlBacking::Positional { file, .. } => file.len()?,
+        };
+        prl_format::validate_container_entry_bounds(&self.metadata, entry, file_len)?;
+        Ok(Some(entry.size))
     }
 
     pub(crate) fn has_section(&self, section_id: u32) -> bool {
@@ -140,7 +206,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("streamed_atlas_guard.prl");
         std::fs::write(&path, b"only a tiny backing file").unwrap();
-        let file = Arc::new(File::open(&path).unwrap());
+        let file = Arc::new(PrlFile::new(File::open(&path).unwrap()));
         let container = PrlContainer::from_positional(
             file,
             prl_format::ContainerMeta {
@@ -155,6 +221,7 @@ mod tests {
                     version: 1,
                 }],
             },
+            true,
         );
 
         let error = container

@@ -8,6 +8,7 @@ use postretro_level_format::cell_locator::{
 use postretro_level_format::cells::{CellRecord, CellsSection};
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
+use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
@@ -44,6 +45,98 @@ pub(crate) fn write_prl_load_fixture_with_geometry(
     additional_sections: impl IntoIterator<Item = SectionBlob>,
     name: &str,
 ) -> std::path::PathBuf {
+    let cell = |x: f32| CellRecord {
+        bounds_min: [x, 0.0, 0.0],
+        bounds_max: [x + 1.0, 1.0, 1.0],
+        flags: 0,
+        face_start: 0,
+        face_count: 0,
+        portal_ref_start: 0,
+        portal_ref_count: 0,
+    };
+    let cells = CellsSection {
+        cells: vec![cell(0.0), cell(2.0)],
+        portal_refs: Vec::new(),
+    };
+    let locator = CellLocatorSection {
+        root: FormatCellLocatorChild::Node(0),
+        nodes: vec![CellLocatorNodeRecord {
+            plane_normal: [1.0, 0.0, 0.0],
+            plane_distance: 1.5,
+            front: FormatCellLocatorChild::Cell(0),
+            back: FormatCellLocatorChild::Cell(1),
+        }],
+    };
+    write_fixture(geometry, cells, locator, additional_sections, name)
+}
+
+/// [`write_prl_load_fixture`] whose two cells share portal 0 through the
+/// x = 1 face, so the level has a usable portal graph (id 15 included).
+pub(crate) fn write_portal_prl_load_fixture(
+    additional_sections: impl IntoIterator<Item = SectionBlob>,
+    name: &str,
+) -> std::path::PathBuf {
+    let cell = |x: f32, refs_at: u32| CellRecord {
+        bounds_min: [x, 0.0, 0.0],
+        bounds_max: [x + 1.0, 1.0, 1.0],
+        flags: 0,
+        face_start: 0,
+        face_count: 0,
+        portal_ref_start: refs_at,
+        portal_ref_count: 1,
+    };
+    let cells = CellsSection {
+        cells: vec![cell(0.0, 0), cell(1.0, 1)],
+        portal_refs: vec![0, 0],
+    };
+    let portals = PortalsSection {
+        portals: vec![PortalRecord {
+            vertex_start: 0,
+            vertex_count: 4,
+            front_leaf: 0,
+            back_leaf: 1,
+        }],
+        vertices: vec![
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ],
+    };
+    let locator = CellLocatorSection {
+        root: FormatCellLocatorChild::Node(0),
+        nodes: vec![CellLocatorNodeRecord {
+            plane_normal: [1.0, 0.0, 0.0],
+            plane_distance: 1.0,
+            front: FormatCellLocatorChild::Cell(1),
+            back: FormatCellLocatorChild::Cell(0),
+        }],
+    };
+    let portals = SectionBlob {
+        section_id: SectionId::Portals as u32,
+        version: 1,
+        data: portals.to_bytes(),
+    };
+    write_fixture(
+        geometry_blob(GeometrySection {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            faces: Vec::new(),
+        }),
+        cells,
+        locator,
+        std::iter::once(portals).chain(additional_sections),
+        name,
+    )
+}
+
+fn write_fixture(
+    geometry: SectionBlob,
+    cells: CellsSection,
+    locator: CellLocatorSection,
+    additional_sections: impl IntoIterator<Item = SectionBlob>,
+    name: &str,
+) -> std::path::PathBuf {
     let mut sections = vec![
         geometry,
         SectionBlob {
@@ -59,44 +152,12 @@ pub(crate) fn write_prl_load_fixture_with_geometry(
         SectionBlob {
             section_id: SectionId::Cells as u32,
             version: 1,
-            data: CellsSection {
-                cells: vec![
-                    CellRecord {
-                        bounds_min: [0.0, 0.0, 0.0],
-                        bounds_max: [1.0, 1.0, 1.0],
-                        flags: 0,
-                        face_start: 0,
-                        face_count: 0,
-                        portal_ref_start: 0,
-                        portal_ref_count: 0,
-                    },
-                    CellRecord {
-                        bounds_min: [2.0, 0.0, 0.0],
-                        bounds_max: [3.0, 1.0, 1.0],
-                        flags: 0,
-                        face_start: 0,
-                        face_count: 0,
-                        portal_ref_start: 0,
-                        portal_ref_count: 0,
-                    },
-                ],
-                portal_refs: Vec::new(),
-            }
-            .to_bytes(),
+            data: cells.to_bytes(),
         },
         SectionBlob {
             section_id: SectionId::CellLocator as u32,
             version: 1,
-            data: CellLocatorSection {
-                root: FormatCellLocatorChild::Node(0),
-                nodes: vec![CellLocatorNodeRecord {
-                    plane_normal: [1.0, 0.0, 0.0],
-                    plane_distance: 1.5,
-                    front: FormatCellLocatorChild::Cell(0),
-                    back: FormatCellLocatorChild::Cell(1),
-                }],
-            }
-            .to_bytes(),
+            data: locator.to_bytes(),
         },
         SectionBlob {
             section_id: SectionId::OctahedralShVolume as u32,

@@ -54,6 +54,7 @@ use super::{
     CoupledCellPair, FaceMeta, FalloffModel, LevelWorld, LightType, LightmapMode, MapLight,
     PortalData, PrlLoadError, ShadowType,
 };
+use crate::lightmap_stream::{LightmapResidencyInputs, LightmapStreamingMode};
 use crate::prl::{KinematicGeometry, LoadedKinematicWaypoint};
 use crate::prl_container::PrlContainer;
 use crate::prl_lighting::LoadedLighting;
@@ -1510,6 +1511,7 @@ pub(crate) fn load_prl_from_container(
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
     stream_manifest: Option<std::sync::Arc<ShStreamManifest>>,
+    lightmap_requested: LightmapStreamingMode,
 ) -> Result<LevelWorld, PrlLoadError> {
     let meta = container.metadata();
     let read_section = |section: SectionId| container.read_section(section as u32);
@@ -1677,6 +1679,9 @@ pub(crate) fn load_prl_from_container(
         },
         None => None,
     };
+    // Converted here, before id 22 is read: lightmap streaming needs a usable
+    // portal graph. Adjacency against the cells is validated below.
+    let portal_data = portals_section.as_ref().and_then(convert_usable_portals);
 
     let cells_section = match read_section(SectionId::Cells)? {
         Some(data) => CellsSection::from_bytes(&data)
@@ -1911,11 +1916,20 @@ pub(crate) fn load_prl_from_container(
         }
     }
 
-    let lightmap = crate::prl_lightmap::read_lightmap(&container)?;
+    // Streaming mode reads only the id-22/42 index prefixes; all-resident
+    // reads both sections whole.
+    let (lightmap, mut lightmap_residency) = crate::lightmap_stream::read_lightmap_for_residency(
+        &container,
+        LightmapResidencyInputs {
+            requested: lightmap_requested,
+            has_residency_set: cell_residency_set.is_some(),
+            has_usable_portals: portal_data.is_some(),
+            has_retained_file: container.retained_file().is_some(),
+        },
+    )?;
     let lightmap_index = lightmap.as_ref().map(|lightmap| &lightmap.index);
     crate::prl_lightmap::validate_vertex_lightmap_blocks(&vertices, lightmap_index)?;
-    let mut shadowmask_atlas =
-        crate::prl_lightmap::read_shadowmask_atlas(&container, lightmap_index)?;
+    let mut shadowmask_atlas = lightmap_residency.read_shadowmask(&container, lightmap_index)?;
 
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
@@ -1978,14 +1992,13 @@ pub(crate) fn load_prl_from_container(
         None
     } else {
         match read_bounded_delta_section_data_with_limit(
-            container.data(),
-            meta,
+            &container,
             SectionId::DeltaShVolumes,
             "DeltaShVolumes",
             max_delta_section_binding_bytes,
         )? {
             BoundedDeltaSectionData::Data(data) => {
-                let section = DeltaShVolumesSection::from_bytes(data)?;
+                let section = DeltaShVolumesSection::from_bytes(&data)?;
 
                 // Validation (mirrors the section-version reject path): a mismatched
                 // bake must fail the load with a clear error rather than feed the
@@ -2025,14 +2038,13 @@ pub(crate) fn load_prl_from_container(
             None
         } else {
             match read_bounded_delta_section_data_with_limit(
-                container.data(),
-                meta,
+                &container,
                 SectionId::AnimatedDirectShDeltaVolumes,
                 "AnimatedDirectShDeltaVolumes",
                 max_delta_section_binding_bytes,
             )? {
                 BoundedDeltaSectionData::Data(data) => {
-                    match AnimatedDirectShDeltaVolumesSection::from_bytes(data) {
+                    match AnimatedDirectShDeltaVolumesSection::from_bytes(&data) {
                         Ok(section) => {
                             let base = sh_volume.as_ref().expect("id-34 is required before id-45");
                             if delta_grid_matches_base(
@@ -2118,12 +2130,11 @@ pub(crate) fn load_prl_from_container(
             }
         } else {
             match read_soft_optional_scatter_section_data(
-                container.data(),
-                meta,
+                &container,
                 SectionId::BillboardDirectScatterVolume,
                 "BillboardDirectScatterVolume",
             ) {
-                Some(data) => match BillboardDirectScatterVolumeSection::from_bytes(data) {
+                Some(data) => match BillboardDirectScatterVolumeSection::from_bytes(&data) {
                     Ok(section) => {
                         match validate_billboard_direct_scatter_volume(&section, sh_volume.as_ref())
                         {
@@ -2205,12 +2216,11 @@ pub(crate) fn load_prl_from_container(
     } else {
         match parsed_animated_direct_sh_delta_volumes.as_ref() {
             Some(animated_direct) => match read_bounded_scatter_section_data_with_limit(
-                container.data(),
-                meta,
+                &container,
                 max_scatter_section_bytes,
             ) {
                 BoundedScatterSectionData::Data(data) => {
-                    match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(data) {
+                    match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&data) {
                         Ok(section) => {
                             match validate_animated_billboard_direct_scatter_delta_volumes(
                                 &section,
@@ -2379,14 +2389,13 @@ pub(crate) fn load_prl_from_container(
         }
     } else {
         match read_bounded_delta_section_data_with_limit(
-            container.data(),
-            meta,
+            &container,
             SectionId::DirectShDeltaVolumes,
             "DirectShDeltaVolumes",
             max_delta_section_binding_bytes,
         )? {
             BoundedDeltaSectionData::Data(data) => {
-                match DirectShDeltaVolumesSection::from_bytes(data) {
+                match DirectShDeltaVolumesSection::from_bytes(&data) {
                     Ok(section) => {
                         let base = sh_volume.as_ref().expect("id-34 is required before id-41");
                         if delta_grid_matches_base(
@@ -2865,7 +2874,6 @@ pub(crate) fn load_prl_from_container(
             None
         };
 
-    let portal_data = portals_section.as_ref().and_then(convert_usable_portals);
     if let Some(portal_data) = portal_data.as_ref() {
         let dropped_count =
             drop_out_of_range_sealed_portal_ids(&mut kinematic_geometry, portal_data.len());
@@ -2922,6 +2930,13 @@ pub(crate) fn load_prl_from_container(
 
     let (lightmap, shadowmask_atlas, gpu_lighting_payloads) =
         crate::prl_lightmap::split_gpu_lighting(lighting.lightmap, lighting.shadowmask_atlas);
+    let lightmap_storage = lightmap_residency.into_storage(
+        &container,
+        lightmap.as_ref(),
+        shadowmask_atlas.as_ref(),
+        stream_manifest.as_deref(),
+    )?;
+    let prl_read_counters = container.read_counters().cloned();
     Ok(LevelWorld {
         vertices,
         indices,
@@ -2961,6 +2976,7 @@ pub(crate) fn load_prl_from_container(
         entity_shadow_lights: lighting.entity_shadow_lights,
         shadowmask_atlas,
         gpu_lighting_payloads,
+        lightmap_storage,
         data_script,
         map_entities,
         kinematic_geometry,
@@ -2973,6 +2989,7 @@ pub(crate) fn load_prl_from_container(
         cell_draw_index,
         cluster_directory: lighting.cluster_directory,
         cell_residency_set,
+        prl_read_counters,
     })
 }
 

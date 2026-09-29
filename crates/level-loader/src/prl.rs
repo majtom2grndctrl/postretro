@@ -70,6 +70,8 @@ use crate::prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
 use crate::sh_stream::ShStorage;
 #[cfg(feature = "load-prl")]
+use crate::{lightmap_stream::LightmapStorage, prl_file::PrlReadCounters};
+#[cfg(feature = "load-prl")]
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
 #[cfg(feature = "load-prl")]
 use postretro_render_data::influence::LightInfluence;
@@ -683,6 +685,13 @@ pub struct LevelWorld {
     /// into the GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
     #[cfg(feature = "load-prl")]
     pub gpu_lighting_payloads: GpuLightingPayloads,
+    /// Id-22/42 block ownership. `AllResident` keeps the texels in
+    /// `gpu_lighting_payloads`; `Streaming` keeps only the manifest (indexes,
+    /// section offsets, the retained file) and leaves the payloads empty.
+    /// Dropping the world drops the manifest and, with its last clone, the
+    /// retained file.
+    #[cfg(feature = "load-prl")]
+    pub lightmap_storage: LightmapStorage,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     #[cfg(feature = "load-prl")]
@@ -732,6 +741,11 @@ pub struct LevelWorld {
     /// usable portals, which runs lightmaps all-resident.
     #[cfg(feature = "load-prl")]
     pub cell_residency_set: Option<CellResidencySetSection>,
+    /// Always-on per-section byte counters of the positional reader the
+    /// level was read through, shared with its streaming manifests. `None`
+    /// for a world not loaded through it.
+    #[cfg(feature = "load-prl")]
+    pub prl_read_counters: Option<std::sync::Arc<PrlReadCounters>>,
 }
 
 impl LevelWorld {
@@ -829,6 +843,8 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             gpu_lighting_payloads: GpuLightingPayloads::default(),
             #[cfg(feature = "load-prl")]
+            lightmap_storage: LightmapStorage::AllResident,
+            #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
             map_entities: Vec::new(),
@@ -852,6 +868,8 @@ impl LevelWorld {
             cluster_directory: lighting.cluster_directory,
             #[cfg(feature = "load-prl")]
             cell_residency_set: None,
+            #[cfg(feature = "load-prl")]
+            prl_read_counters: None,
         })
     }
 
@@ -1928,6 +1946,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -1940,6 +1959,7 @@ mod tests {
             cell_draw_index: None,
             cluster_directory: None,
             cell_residency_set: None,
+            prl_read_counters: None,
         }
     }
 
@@ -2028,6 +2048,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -2040,6 +2061,7 @@ mod tests {
             cell_draw_index: None,
             cluster_directory: None,
             cell_residency_set: None,
+            prl_read_counters: None,
         };
         assert_eq!(world.locate_cell(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -2082,6 +2104,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -2094,6 +2117,7 @@ mod tests {
             cell_draw_index: None,
             cluster_directory: None,
             cell_residency_set: None,
+            prl_read_counters: None,
         };
 
         let spawn = world.spawn_position();

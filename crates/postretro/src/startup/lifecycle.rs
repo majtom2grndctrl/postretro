@@ -2003,6 +2003,7 @@ pub(crate) mod tests {
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
@@ -2015,6 +2016,7 @@ pub(crate) mod tests {
             cell_draw_index: None,
             cluster_directory: None,
             cell_residency_set: None,
+            prl_read_counters: None,
         }
     }
 

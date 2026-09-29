@@ -446,7 +446,8 @@ fn binding_floor_validates_each_delta_section_container_before_degrading() {
             }],
         };
 
-        let result = read_bounded_delta_section_data(&[], &meta, section_id, name);
+        let container = PrlContainer::from_whole_bytes(Vec::new(), meta, None);
+        let result = read_bounded_delta_section_data(&container, section_id, name);
         assert!(
             matches!(
                 result,
@@ -483,10 +484,10 @@ fn binding_floor_degrades_each_valid_oversized_delta_section_after_borrowing() {
         let mut cursor = Cursor::new(&file_data);
         let meta = prl_format::read_container(&mut cursor)
             .expect("fixture container metadata should parse");
+        let container = PrlContainer::from_whole_bytes(file_data, meta, None);
 
-        let outcome =
-            read_bounded_delta_section_data_with_limit(&file_data, &meta, section_id, name, 1)
-                .expect("valid container bounds must reach the binding-floor policy");
+        let outcome = read_bounded_delta_section_data_with_limit(&container, section_id, name, 1)
+            .expect("valid container bounds must reach the binding-floor policy");
         assert!(matches!(outcome, BoundedDeltaSectionData::OverBindingFloor));
     }
 }

@@ -12,14 +12,19 @@ use postretro_level_format::SectionEntry;
 use postretro_level_format::{ContainerMeta, SectionId};
 
 use super::{PrlLoadError, stream_error};
+use crate::prl_file::PrlFile;
+
+/// Open the level's one PRL handle and parse its table through counted
+/// positional reads. The returned handle's counters attribute every later
+/// read to the sections of this table.
 pub(crate) fn read_container_positionally(
     path: &str,
-) -> Result<(Arc<File>, ContainerMeta), PrlLoadError> {
+) -> Result<(Arc<PrlFile>, ContainerMeta), PrlLoadError> {
     let path_ref = Path::new(path);
     if !path_ref.exists() {
         return Err(PrlLoadError::FileNotFound(path.to_owned()));
     }
-    let file = Arc::new(File::open(path_ref)?);
+    let file = Arc::new(PrlFile::open(path_ref)?);
     let header = read_vec_at(&file, 0, 8, "PRL header")?;
     let found_magic = [header[0], header[1], header[2], header[3]];
     if found_magic != postretro_level_format::MAGIC {
@@ -38,11 +43,12 @@ pub(crate) fn read_container_positionally(
     let table = read_vec_at(&file, 0, table_len, "PRL header and table")?;
     let mut cursor = io::Cursor::new(table);
     let container = postretro_level_format::read_container(&mut cursor)?;
+    file.read_counters().install_table(&container);
     Ok((file, container))
 }
 
 pub(crate) fn read_section_positionally(
-    file: &Arc<File>,
+    file: &PrlFile,
     container: &ContainerMeta,
     section: SectionId,
 ) -> Result<Option<Vec<u8>>, PrlLoadError> {
@@ -58,21 +64,26 @@ pub(crate) fn read_section_positionally(
     )?))
 }
 
+/// The one positional reader: every loader and streaming read of a level's
+/// PRL goes through here, and each completed read credits the file's
+/// per-section byte counters.
 pub(crate) fn read_vec_at(
-    file: &File,
+    file: &PrlFile,
     offset: u64,
     len: u64,
     what: &'static str,
 ) -> Result<Vec<u8>, PrlLoadError> {
     #[cfg(test)]
     record_positional_read(offset, len);
-    let len = usize::try_from(len).map_err(|_| stream_error("positional read exceeds usize"))?;
+    let byte_len =
+        usize::try_from(len).map_err(|_| stream_error("positional read exceeds usize"))?;
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(len)
+        .try_reserve_exact(byte_len)
         .map_err(|_| stream_error("positional read allocation failed"))?;
-    bytes.resize(len, 0);
-    read_exact_at(file, offset, &mut bytes).map_err(PrlLoadError::IoError)?;
+    bytes.resize(byte_len, 0);
+    read_exact_at(file.file(), offset, &mut bytes).map_err(PrlLoadError::IoError)?;
+    file.read_counters().record(offset, len);
     let _ = what;
     Ok(bytes)
 }
@@ -189,15 +200,11 @@ fn read_exact_at(file: &File, offset: u64, bytes: &mut [u8]) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn validate_positional_entry_bounds(
-    file: &File,
+pub(crate) fn validate_positional_entry_bounds(
+    file: &PrlFile,
     container: &ContainerMeta,
     entry: &SectionEntry,
 ) -> Result<(), PrlLoadError> {
-    postretro_level_format::validate_container_entry_bounds(
-        container,
-        entry,
-        file.metadata()?.len(),
-    )
-    .map_err(PrlLoadError::FormatError)
+    postretro_level_format::validate_container_entry_bounds(container, entry, file.len()?)
+        .map_err(PrlLoadError::FormatError)
 }

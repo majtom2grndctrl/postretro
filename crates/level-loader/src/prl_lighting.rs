@@ -1,6 +1,9 @@
 // SH-family section bounds, decoding policy, and semantic validation.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+use std::borrow::Cow;
+
+use postretro_level_format::SectionId;
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
@@ -20,10 +23,10 @@ use postretro_level_format::sh_volume::{
     OctahedralShVolumeSection, validate_storage_levels_against_delta,
 };
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
-use postretro_level_format::{self as prl_format, SectionId};
 use postretro_render_data::influence::LightInfluence;
 
 use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, ShadowType};
+use crate::prl_container::PrlContainer;
 use crate::prl_lightmap::{GpuLightingPayloads, LoadedLightmap, LoadedShadowmask};
 #[cfg(test)]
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
@@ -122,6 +125,24 @@ impl LevelWorld {
         &self,
     ) -> Option<&std::sync::Arc<crate::sh_stream::ShStreamManifest>> {
         self.sh_storage.manifest()
+    }
+
+    /// Id-22/42 block ownership: all-resident payloads, or a streaming
+    /// manifest.
+    pub fn lightmap_storage(&self) -> &crate::lightmap_stream::LightmapStorage {
+        &self.lightmap_storage
+    }
+
+    pub fn lightmap_stream_manifest(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::lightmap_stream::LightmapStreamManifest>> {
+        self.lightmap_storage.manifest()
+    }
+
+    /// Per-section bytes read from this level's PRL, at load and by every
+    /// streaming read since.
+    pub fn prl_read_counters(&self) -> Option<&std::sync::Arc<crate::prl_file::PrlReadCounters>> {
+        self.prl_read_counters.as_ref()
     }
 
     pub fn sh_volume(&self) -> Option<&OctahedralShVolumeSection> {
@@ -267,23 +288,22 @@ impl LevelWorld {
 pub(crate) enum BoundedDeltaSectionData<'a> {
     Absent,
     OverBindingFloor,
-    Data(&'a [u8]),
+    Data(Cow<'a, [u8]>),
 }
 
-/// Borrow an optional delta section after validating its container bounds, then
+/// Read an optional delta section after validating its container bounds, then
 /// reject raw payloads that cannot fit a single runtime storage-buffer binding.
-/// The borrow remains allocation-free, so no decoder table is allocated before
-/// either structural validation or the binding-floor check.
+/// The floor is checked on the table length before the body is borrowed or
+/// read, so no decoder table is allocated before either structural validation
+/// or the binding-floor check.
 #[cfg(test)]
 pub(crate) fn read_bounded_delta_section_data<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
+    container: &'a PrlContainer,
     section_id: SectionId,
     section_name: &str,
 ) -> Result<BoundedDeltaSectionData<'a>, PrlLoadError> {
     read_bounded_delta_section_data_with_limit(
-        file_data,
-        meta,
+        container,
         section_id,
         section_name,
         MAX_DELTA_SECTION_BINDING_BYTES,
@@ -291,37 +311,35 @@ pub(crate) fn read_bounded_delta_section_data<'a>(
 }
 
 pub(crate) fn read_bounded_delta_section_data_with_limit<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
+    container: &'a PrlContainer,
     section_id: SectionId,
     section_name: &str,
     max_binding_bytes: u64,
 ) -> Result<BoundedDeltaSectionData<'a>, PrlLoadError> {
-    let Some(data) = prl_format::section_data_from_bytes(file_data, meta, section_id as u32)?
-    else {
+    let Some(len) = container.validated_section_len(section_id as u32)? else {
         return Ok(BoundedDeltaSectionData::Absent);
     };
-    if data.len() as u64 > max_binding_bytes {
+    if len > max_binding_bytes {
         log::warn!(
-            "[PRL] {section_name} raw payload is {} B, above the {} B storage-binding floor; disabling before decode",
-            data.len(),
-            max_binding_bytes,
+            "[PRL] {section_name} raw payload is {len} B, above the {max_binding_bytes} B storage-binding floor; disabling before decode",
         );
         return Ok(BoundedDeltaSectionData::OverBindingFloor);
     }
-    Ok(BoundedDeltaSectionData::Data(data))
+    Ok(match container.section_bytes(section_id as u32)? {
+        Some(data) => BoundedDeltaSectionData::Data(data),
+        None => BoundedDeltaSectionData::Absent,
+    })
 }
 
 /// Read an optional scatter section without allowing a bad optional entry to
 /// reject the map. Unlike core sections, billboard scatter selects an additive
 /// optimization; a malformed container range must choose the legacy path.
 pub(crate) fn read_soft_optional_scatter_section_data<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
+    container: &'a PrlContainer,
     section_id: SectionId,
     section_name: &str,
-) -> Option<&'a [u8]> {
-    match prl_format::section_data_from_bytes(file_data, meta, section_id as u32) {
+) -> Option<Cow<'a, [u8]>> {
+    match container.section_bytes(section_id as u32) {
         Ok(data) => data,
         Err(error) => {
             log::warn!(
@@ -335,33 +353,38 @@ pub(crate) fn read_soft_optional_scatter_section_data<'a>(
 pub(crate) enum BoundedScatterSectionData<'a> {
     Absent,
     OverPackCap,
-    Data(&'a [u8]),
+    Data(Cow<'a, [u8]>),
 }
 
 /// Apply section 48's encoded-size policy after validating container bounds
-/// but before its dense decoder allocates descriptor, CSR, or delta vectors.
-pub(crate) fn read_bounded_scatter_section_data_with_limit<'a>(
-    file_data: &'a [u8],
-    meta: &prl_format::ContainerMeta,
+/// but before its body is read or its dense decoder allocates descriptor,
+/// CSR, or delta vectors.
+pub(crate) fn read_bounded_scatter_section_data_with_limit(
+    container: &PrlContainer,
     max_encoded_bytes: u64,
-) -> BoundedScatterSectionData<'a> {
-    let Some(data) = read_soft_optional_scatter_section_data(
-        file_data,
-        meta,
-        SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
-        "AnimatedBillboardDirectScatterDeltaVolumes",
-    ) else {
-        return BoundedScatterSectionData::Absent;
+) -> BoundedScatterSectionData<'_> {
+    const SECTION: SectionId = SectionId::AnimatedBillboardDirectScatterDeltaVolumes;
+    const NAME: &str = "AnimatedBillboardDirectScatterDeltaVolumes";
+    let len = match container.validated_section_len(SECTION as u32) {
+        Ok(Some(len)) => len,
+        Ok(None) => return BoundedScatterSectionData::Absent,
+        Err(error) => {
+            log::warn!(
+                "[PRL] {NAME} has an invalid optional container entry; disabling billboard direct scatter: {error}"
+            );
+            return BoundedScatterSectionData::Absent;
+        }
     };
-    if data.len() as u64 > max_encoded_bytes {
+    if len > max_encoded_bytes {
         log::warn!(
-            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes is {} B, above the {} B encoded section cap; disabling billboard direct scatter before decode",
-            data.len(),
-            max_encoded_bytes,
+            "[PRL] {NAME} is {len} B, above the {max_encoded_bytes} B encoded section cap; disabling billboard direct scatter before decode",
         );
         return BoundedScatterSectionData::OverPackCap;
     }
-    BoundedScatterSectionData::Data(data)
+    match read_soft_optional_scatter_section_data(container, SECTION, NAME) {
+        Some(data) => BoundedScatterSectionData::Data(data),
+        None => BoundedScatterSectionData::Absent,
+    }
 }
 
 pub(crate) fn expected_affinity_dims(base_dims: [u32; 3], factor: u8) -> [u32; 3] {

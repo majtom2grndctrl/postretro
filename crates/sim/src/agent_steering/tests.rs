@@ -2143,7 +2143,7 @@ fn freestanding_wall_chaser_reaches_far_side_without_blocking() {
             "static target must stay set on tick {tick_index}"
         );
         assert!(
-            !(state.blocked && !state.has_path),
+            !state.blocked || state.has_path,
             "reachable wraparound must never latch blocked/no-path on tick {tick_index}: \
              pos={:?}, path={:?}",
             state.position,

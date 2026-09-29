@@ -722,7 +722,7 @@ fn read_vertex(
         tangent_packed,
         lightmap_uv,
         lightmap_layer,
-        _padding: 0,
+        animated_block: 0,
     })
 }
 
@@ -1606,7 +1606,7 @@ mod tests {
                         tangent_packed: [0; 2],
                         lightmap_uv: [0; 2],
                         lightmap_layer: 0,
-                        _padding: 0,
+                        animated_block: 0,
                     };
                     3
                 ],

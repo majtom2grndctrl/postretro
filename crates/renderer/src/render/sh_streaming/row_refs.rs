@@ -1,11 +1,13 @@
 //! Affinity-row contributor counts and the resident-row unions they feed.
 //!
 //! Each ref table counts, per affinity row, the installed probes or sparse
-//! rows that contribute to it. The resident sets are unions of table keys:
+//! rows that contribute to it. The resident sets are dense bitsets over the
+//! row space, each the union of its tables' keys:
 //! indirect is base ∪ id-27; Pass A is id-35 ∪ id-41; Pass B is Pass A ∪
 //! id-45. Install and eviction both update these unions per touched row, so
 //! neither costs time proportional to the resident map.
 
+use super::compose_plan::PassMembership;
 use super::*;
 
 /// Affinity-row sets an install or eviction can touch.
@@ -107,14 +109,38 @@ pub(super) fn decrement_row_ref(
 }
 
 impl ShResidencyState {
-    pub(super) fn row_set_mut(&mut self, set: RowSet) -> &mut BTreeSet<u32> {
+    /// Insert `row` into `set`; returns whether it was absent.
+    pub(super) fn row_set_insert(&mut self, set: RowSet, row: u32) -> bool {
         match set {
-            RowSet::IndirectDirty => &mut self.indirect_dirty_rows,
-            RowSet::IndirectResident => &mut self.indirect_resident_rows,
-            RowSet::DirectPromotionDirty => &mut self.direct_promotion_dirty_rows,
-            RowSet::DirectPromotionResident => &mut self.direct_promotion_resident_rows,
-            RowSet::DirectAnimatedDirty => &mut self.direct_animated_dirty_rows,
-            RowSet::DirectAnimatedResident => &mut self.direct_animated_resident_rows,
+            RowSet::IndirectDirty => self.indirect_dirty_rows.insert(row),
+            RowSet::DirectPromotionDirty => self.direct_promotion_dirty_rows.insert(row),
+            RowSet::DirectAnimatedDirty => self.direct_animated_dirty_rows.insert(row),
+            RowSet::IndirectResident => self.indirect_resident_rows.insert(row),
+            RowSet::DirectPromotionResident => self.direct_promotion_resident_rows.insert(row),
+            RowSet::DirectAnimatedResident => self.direct_animated_resident_rows.insert(row),
+        }
+    }
+
+    pub(super) fn row_set_remove(&mut self, set: RowSet, row: u32) {
+        match set {
+            RowSet::IndirectDirty => {
+                self.indirect_dirty_rows.remove(&row);
+            }
+            RowSet::DirectPromotionDirty => {
+                self.direct_promotion_dirty_rows.remove(&row);
+            }
+            RowSet::DirectAnimatedDirty => {
+                self.direct_animated_dirty_rows.remove(&row);
+            }
+            RowSet::IndirectResident => {
+                self.indirect_resident_rows.remove(&row);
+            }
+            RowSet::DirectPromotionResident => {
+                self.direct_promotion_resident_rows.remove(&row);
+            }
+            RowSet::DirectAnimatedResident => {
+                self.direct_animated_resident_rows.remove(&row);
+            }
         }
     }
 
@@ -151,16 +177,58 @@ impl ShResidencyState {
         if self.row_ref_table(table).contains_key(&row) {
             return Ok(());
         }
+        self.compose_membership_touched.push(row);
         for &set in table.resident_sets() {
             if !set
                 .sources()
                 .iter()
                 .any(|&source| self.row_ref_table(source).contains_key(&row))
             {
-                self.row_set_mut(set).remove(&row);
+                self.row_set_remove(set, row);
             }
         }
         Ok(())
+    }
+
+    /// Whether `row` is resident for Pass A. With id-45 present, Pass A also
+    /// covers id-45-only rows so Pass B always reads a written intermediate.
+    /// A level with an id-35 base but neither id-41 nor id-45 samples that
+    /// base directly and never dispatches Pass A, so no row is resident for it.
+    pub(super) fn direct_compose_resident(&self, row: u32) -> bool {
+        self.direct_compose_required
+            && (self.direct_promotion_resident_rows.contains(&row)
+                || (self.animated_direct_compose_required
+                    && self.direct_animated_resident_rows.contains(&row)))
+    }
+
+    /// A row's current compose-planner membership, from the resident unions
+    /// and contributing ref tables. A pass the level never dispatches reports
+    /// no membership, so the planner neither tracks nor retries its rows.
+    pub(super) fn compose_row_membership(&self, row: u32) -> RowMembership {
+        let direct_resident = self.direct_compose_resident(row);
+        let static_contributing = self.direct_promotion_row_refs.contains_key(&row);
+        let animated_direct = if self.animated_direct_compose_required {
+            PassMembership {
+                resident: direct_resident,
+                contributing: self.direct_animated_row_refs.contains_key(&row),
+                upstream: static_contributing,
+            }
+        } else {
+            PassMembership::default()
+        };
+        RowMembership {
+            indirect: PassMembership {
+                resident: self.indirect_resident_rows.contains(&row),
+                contributing: self.indirect_delta_row_refs.contains_key(&row),
+                upstream: false,
+            },
+            static_direct: PassMembership {
+                resident: direct_resident,
+                contributing: static_contributing,
+                upstream: false,
+            },
+            animated_direct,
+        }
     }
 
     /// Rebuild every resident union from the ref tables. A test oracle for
@@ -183,9 +251,9 @@ impl ShResidencyState {
     #[cfg(test)]
     pub(super) fn resident_rows(&self) -> [BTreeSet<u32>; 3] {
         [
-            self.indirect_resident_rows.clone(),
-            self.direct_promotion_resident_rows.clone(),
-            self.direct_animated_resident_rows.clone(),
+            self.indirect_resident_rows.iter().collect(),
+            self.direct_promotion_resident_rows.iter().collect(),
+            self.direct_animated_resident_rows.iter().collect(),
         ]
     }
 }

@@ -11,13 +11,14 @@ use postretro_render_cpu::sh_volume::{
 };
 use wgpu::util::DeviceExt;
 
+use super::residency::{ResidencyAllocationState, source_ids};
 pub(super) use super::sh_allocation::{DirectAtlasLayout, atlas_fits};
 use super::sh_allocation::{
     DirectAtlasUsage, ShAllocationKind, buffer_allocation, direct_atlas_usage,
     direct_base_atlas_allocation, direct_base_atlas_dummy_allocation,
     direct_composed_atlas_allocation,
 };
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Renderer-owned direct-SH textures and mesh-only dynamic-direct parameters.
@@ -144,7 +145,7 @@ impl DirectShResources {
             dynamic_direct_params_allocation,
             &direct_sources,
             direct_sources.is_empty(),
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         let dynamic_direct_params_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -261,16 +262,16 @@ fn upload_direct_atlas_texture(
             &source_ids([direct_section_present.then_some(35)]),
             false,
             if direct_section_present {
-                ShResidencyAllocationState::Fallback
+                ResidencyAllocationState::Fallback
             } else {
-                ShResidencyAllocationState::Dummy
+                ResidencyAllocationState::Dummy
             },
         );
         return (upload_direct_atlas_dummy(device, queue, allocation), false);
     };
 
     let allocation = direct_base_atlas_allocation(section);
-    ledger.record_texture(allocation, &[35], false, ShResidencyAllocationState::Data);
+    ledger.record_texture(allocation, &[35], false, ResidencyAllocationState::Data);
 
     let texture = device.create_texture_with_data(
         queue,
@@ -329,7 +330,7 @@ fn create_direct_composed_atlas_texture(
     ledger: &mut ShAllocationLedger,
 ) -> wgpu::Texture {
     let allocation = direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count);
-    ledger.record_texture(allocation, sources, false, ShResidencyAllocationState::Data);
+    ledger.record_texture(allocation, sources, false, ResidencyAllocationState::Data);
     device.create_texture(&allocation.descriptor(Some(label)))
 }
 

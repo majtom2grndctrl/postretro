@@ -18,10 +18,12 @@ mod dynamic_depth_cache;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
+mod lightmap_residency;
 mod loaded_texture;
 mod mesh_depth;
 mod mesh_pass;
 mod promoted_depth_cache;
+pub(crate) mod residency;
 mod rigid_occluder_depth;
 mod screen_effects;
 mod sdf_atlas;
@@ -45,12 +47,16 @@ mod splash_pass;
 mod ui;
 
 #[cfg(test)]
+mod animated_atlas_parity_test;
+#[cfg(test)]
 mod curve_eval_test;
 /// Shared headless GPU harness for offscreen readback tests: the `pollster`
 /// device init (self-skip on no adapter) and texture readback. See
 /// `testing_guide.md` §3/§4.
 #[cfg(test)]
 pub(crate) mod gpu_test_harness;
+#[cfg(test)]
+mod lightmap_residency_test;
 #[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]
@@ -125,17 +131,22 @@ use direct_sh_compose::{
 use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+pub use lightmap_residency::{
+    LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
+    LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
+};
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::ShDrainFrameResult;
 pub use renderer_splash::PresentationDrawInput;
+pub use residency::{
+    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
+};
 use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
 pub use sh_residency::{
-    ShResidencyAllocation, ShResidencyAllocationShape, ShResidencyAllocationState,
-    ShResidencyReport, ShResidencySource, ShStreamingAllocationSummary,
-    ShStreamingLifecycleSummary,
+    ShResidencyReport, ShStreamingAllocationSummary, ShStreamingLifecycleSummary,
 };
 pub use sh_sample_regions::{ShSampleRegion, ShSampleRegionSets};
 pub use sh_streaming::{

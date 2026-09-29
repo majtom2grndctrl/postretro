@@ -251,7 +251,9 @@ fn pack_vertex(
         normal_oct: vertex.normal_oct,
         tangent_packed: vertex.tangent_packed,
         lightmap_uv: vertex.lightmap_uv,
-        lightmap_layer: vertex.lightmap_layer as u32,
+        lightmap_layer: vertex.lightmap_layer,
+        // Movers never sample the animated lightmap atlas.
+        animated_block: 0,
     }
 }
 

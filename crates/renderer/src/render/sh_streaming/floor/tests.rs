@@ -215,8 +215,10 @@ fn all_invalid_dense_source_keeps_one_dummy_binding_slot() {
 
 #[test]
 fn floor_rejects_an_adapter_without_an_8x8_cell() {
-    let mut limits = wgpu::Limits::default();
-    limits.max_texture_dimension_2d = 7;
+    let limits = wgpu::Limits {
+        max_texture_dimension_2d: 7,
+        ..Default::default()
+    };
     assert_eq!(
         plan_initial_pool_floor(
             &base(IRRADIANCE_FORMAT_RGBA16F),
@@ -240,9 +242,11 @@ fn floor_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
         indirect_delta: Some(sparse_source(27, 1)),
         ..Default::default()
     };
-    let mut limits = wgpu::Limits::default();
-    limits.max_buffer_size = 8;
-    limits.max_storage_buffer_binding_size = 8;
+    let limits = wgpu::Limits {
+        max_buffer_size: 8,
+        max_storage_buffer_binding_size: 8,
+        ..Default::default()
+    };
     assert_eq!(
         plan_initial_pool_floor(
             &base(IRRADIANCE_FORMAT_RGBA16F),
@@ -262,9 +266,11 @@ fn floor_rejects_sparse_fixed_or_active_storage_above_adapter_limits() {
 
 #[test]
 fn floor_rejects_indirection_before_any_gpu_allocation() {
-    let mut limits = wgpu::Limits::default();
-    limits.max_buffer_size = 3;
-    limits.max_storage_buffer_binding_size = 3;
+    let limits = wgpu::Limits {
+        max_buffer_size: 3,
+        max_storage_buffer_binding_size: 3,
+        ..Default::default()
+    };
     assert_eq!(
         plan_initial_pool_floor(
             &base(IRRADIANCE_FORMAT_RGBA16F),
@@ -286,9 +292,11 @@ fn floor_rejects_indirection_before_any_gpu_allocation() {
 fn floor_rejects_an_absent_indirect_carrier_above_adapter_limits() {
     let mut base = base(IRRADIANCE_FORMAT_RGBA16F);
     base.grid_dimensions = [8, 1, 1];
-    let mut limits = wgpu::Limits::default();
-    limits.max_buffer_size = 8;
-    limits.max_storage_buffer_binding_size = 8;
+    let limits = wgpu::Limits {
+        max_buffer_size: 8,
+        max_storage_buffer_binding_size: 8,
+        ..Default::default()
+    };
     assert_eq!(
         plan_initial_pool_floor(
             &base,
@@ -316,9 +324,11 @@ fn floor_rejects_an_absent_direct_promotion_carrier_above_adapter_limits() {
         animated_direct_delta: Some(sparse_source(45, 0)),
         ..Default::default()
     };
-    let mut limits = wgpu::Limits::default();
-    limits.max_buffer_size = 16;
-    limits.max_storage_buffer_binding_size = 16;
+    let limits = wgpu::Limits {
+        max_buffer_size: 16,
+        max_storage_buffer_binding_size: 16,
+        ..Default::default()
+    };
     assert_eq!(
         plan_initial_pool_floor(
             &base,

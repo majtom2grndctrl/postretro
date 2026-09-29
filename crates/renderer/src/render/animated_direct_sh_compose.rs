@@ -21,13 +21,14 @@ use super::renderer_types::PromotedShadowPoolKind;
 use super::renderer_types::{
     MAX_ANIMATED_BAKED_LIGHTS, PromotedBakedLightState, animated_baked_promotion_weight,
 };
+use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, compose_storage_payloads,
     probe_indirection_storage_payload,
 };
 use super::sh_compose_dispatch::{DynamicComposeDispatch, build_dynamic_compose_grid_upload};
 use super::sh_indirection::WGSL_DECODE_HELPER;
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
@@ -206,25 +207,25 @@ pub(super) fn build_animated_direct_pass(
         storage.delta_subblocks.allocation,
         &animated_sources,
         false,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     ledger.record_buffer(
         storage.compaction_metadata.allocation,
         &animated_sources,
         false,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     ledger.record_buffer(
         storage.affinity_offsets.allocation,
         &animated_sources,
         false,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     ledger.record_buffer(
         storage.affinity_lights.allocation,
         &animated_sources,
         false,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     ledger.record_buffer(
         storage
@@ -234,13 +235,13 @@ pub(super) fn build_animated_direct_pass(
             .allocation,
         &animated_sources,
         false,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     ledger.record_buffer(
         probe_indirection.allocation,
         &animated_sources,
         true,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Probe Indirection"),
@@ -277,7 +278,7 @@ pub(super) fn build_animated_direct_pass(
         grid_allocation,
         &animated_sources,
         false,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Grid Dims"),
@@ -294,7 +295,7 @@ pub(super) fn build_animated_direct_pass(
         animated_light_scale_allocation,
         &[45],
         true,
-        ShResidencyAllocationState::Data,
+        ResidencyAllocationState::Data,
     );
     let animated_light_scale_buffer =
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

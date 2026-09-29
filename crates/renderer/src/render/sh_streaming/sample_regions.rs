@@ -1,32 +1,35 @@
 //! GPU-free world-region to resident affinity-row planning.
+//!
+//! The per-frame gate reads the load-time caches in `sample_region_index`.
+//! The brick-walking `resolve_regions` remains as the test oracle those
+//! caches must reproduce exactly.
 
+use super::sample_region_index::GateInputs;
 use super::*;
+#[cfg(test)]
 use crate::render::ShSampleRegion;
 
 const SAMPLE_REGION_DILATION_CELLS: f32 = 1.1;
 
-struct SampleRegionGrid<'a> {
-    origin: [f32; 3],
-    cell_size: [f32; 3],
-    dimensions: [u32; 3],
-    dense_nodes: &'a [Option<StoredNode>],
+pub(super) struct SampleRegionGrid<'a> {
+    pub(super) origin: [f32; 3],
+    pub(super) cell_size: [f32; 3],
+    pub(super) dimensions: [u32; 3],
+    pub(super) dense_nodes: &'a [Option<StoredNode>],
 }
 
 impl ShResidencyState {
-    /// Resolve app-owned world bounds against current, post-drain residency.
-    /// `fog_draw_all` is the established empty-fog-reach sentinel. The caller
-    /// owns `rows`, retaining its allocation across warm frames.
+    /// Resolve this frame's gate inputs against current, post-drain
+    /// residency. The caller owns `rows`, retaining its allocation across
+    /// warm frames; the row order is unspecified.
     pub(super) fn resolve_sample_region_rows(
-        &self,
-        regions: &[ShSampleRegion],
-        fog_draw_all: bool,
+        &mut self,
+        inputs: GateInputs<'_>,
         rows: &mut Vec<u32>,
     ) -> Result<(), ShResidencyDrainError> {
-        resolve_regions(
-            self.sample_region_grid(),
-            regions,
-            fog_draw_all,
-            &[
+        self.sample_region_index.resolve(
+            inputs,
+            [
                 &self.indirect_resident_rows,
                 &self.direct_promotion_resident_rows,
                 &self.direct_animated_resident_rows,
@@ -40,17 +43,16 @@ impl ShResidencyState {
     pub(super) fn close_residency_rows_over_scaled_writers(
         &self,
         changed_rows: impl IntoIterator<Item = u32>,
-        resident_rows: &[u32],
+        is_resident: impl Fn(u32) -> bool,
         rows: &mut Vec<u32>,
     ) -> Result<(), ShResidencyDrainError> {
-        let grid = self.sample_region_grid();
         rows.clear();
         for row in changed_rows {
-            if resident_rows.binary_search(&row).is_ok() {
+            if is_resident(row) {
                 rows.push(row);
             }
-            if let Some(writer) = scaled_writer_row(&grid, row)?
-                && resident_rows.binary_search(&writer).is_ok()
+            if let Some(writer) = self.sample_region_index.writer_row(row)?
+                && is_resident(writer)
             {
                 rows.push(writer);
             }
@@ -59,18 +61,60 @@ impl ShResidencyState {
         rows.dedup();
         Ok(())
     }
-
-    fn sample_region_grid(&self) -> SampleRegionGrid<'_> {
-        SampleRegionGrid {
-            origin: self.base_metadata.grid_origin,
-            cell_size: self.base_metadata.cell_size,
-            dimensions: self.grid_dimensions,
-            dense_nodes: &self.dense_node,
-        }
-    }
 }
 
-fn resolve_regions(
+/// Inclusive affinity-brick bounds of the probes whose trilinear footprint
+/// `region` can sample: the region dilated by `SAMPLE_REGION_DILATION_CELLS`
+/// probe spacings and clamped to the grid. `None` when the grid or region
+/// is degenerate.
+pub(super) fn region_brick_bounds(
+    origin: [f32; 3],
+    cell_size: [f32; 3],
+    dimensions: [u32; 3],
+    region: crate::render::ShSampleRegion,
+) -> Option<([u32; 3], [u32; 3])> {
+    if dimensions.contains(&0)
+        || cell_size
+            .iter()
+            .any(|spacing| !spacing.is_finite() || *spacing <= 0.0)
+        || !region.min.is_finite()
+        || !region.max.is_finite()
+    {
+        return None;
+    }
+
+    let min = region.min.min(region.max);
+    let max = region.min.max(region.max);
+    let origin = glam::Vec3::from_array(origin);
+    let spacing = glam::Vec3::from_array(cell_size);
+    let dilation = spacing * SAMPLE_REGION_DILATION_CELLS;
+    let normalized_min = (min - dilation - origin) / spacing;
+    let normalized_max = (max + dilation - origin) / spacing;
+    let grid_max = dimensions.map(|dimension| dimension.saturating_sub(1));
+    let first = [
+        clamp_probe(normalized_min.x.floor(), grid_max[0]),
+        clamp_probe(normalized_min.y.floor(), grid_max[1]),
+        clamp_probe(normalized_min.z.floor(), grid_max[2]),
+    ];
+    // `floor + 1` includes the high trilinear corner on a probe plane.
+    let last = [
+        clamp_probe(normalized_max.x.floor() + 1.0, grid_max[0]),
+        clamp_probe(normalized_max.y.floor() + 1.0, grid_max[1]),
+        clamp_probe(normalized_max.z.floor() + 1.0, grid_max[2]),
+    ];
+    Some((first.map(|probe| probe / 4), last.map(|probe| probe / 4)))
+}
+
+/// Every brick in inclusive `bounds`, x fastest.
+pub(super) fn brick_rows_in((first, last): ([u32; 3], [u32; 3])) -> impl Iterator<Item = [u32; 3]> {
+    (first[2]..=last[2]).flat_map(move |z| {
+        (first[1]..=last[1]).flat_map(move |y| (first[0]..=last[0]).map(move |x| [x, y, z]))
+    })
+}
+
+/// Test oracle: the brick-walking gate the load-time caches replaced.
+#[cfg(test)]
+pub(super) fn resolve_regions(
     grid: SampleRegionGrid<'_>,
     regions: &[ShSampleRegion],
     fog_draw_all: bool,
@@ -108,6 +152,7 @@ fn resolve_regions(
     Ok(())
 }
 
+#[cfg(test)]
 fn append_region_rows(
     grid: &SampleRegionGrid<'_>,
     region: ShSampleRegion,
@@ -165,7 +210,7 @@ fn clamp_probe(value: f32, maximum: u32) -> u32 {
     value.max(0.0).min(maximum as f32) as u32
 }
 
-fn scaled_writer_row(
+pub(super) fn scaled_writer_row(
     grid: &SampleRegionGrid<'_>,
     sampled_row: u32,
 ) -> Result<Option<u32>, ShResidencyDrainError> {
@@ -204,7 +249,10 @@ fn scaled_writer_row(
     Ok(writer)
 }
 
-fn affinity_row(brick: [u32; 3], grid_dimensions: [u32; 3]) -> Result<u32, ShResidencyDrainError> {
+pub(super) fn affinity_row(
+    brick: [u32; 3],
+    grid_dimensions: [u32; 3],
+) -> Result<u32, ShResidencyDrainError> {
     let dims = grid_dimensions.map(|dimension| dimension.div_ceil(4));
     if brick[0] >= dims[0] || brick[1] >= dims[1] || brick[2] >= dims[2] {
         return Err(ShResidencyDrainError::SlotOverflow);
@@ -423,28 +471,34 @@ mod tests {
             promotion_override: DirectShDebugOverride::default(),
             animated_override: AnimatedDirectShDebugOverride::default(),
         };
-        let indirect_rows = [0];
-        let static_rows = [2];
-        let animated_rows = [2, 3];
-        let mut planner = StreamedComposePlanner::default();
+        let membership = |indirect: bool, static_direct: bool, animated: bool| {
+            let pass = |present: bool| compose_plan::PassMembership {
+                resident: present,
+                contributing: present,
+                upstream: false,
+            };
+            compose_plan::RowMembership {
+                indirect: pass(indirect),
+                static_direct: pass(static_direct),
+                animated_direct: compose_plan::PassMembership {
+                    upstream: static_direct,
+                    ..pass(animated)
+                },
+            }
+        };
+        let membership_changes = [
+            (0, membership(true, false, false)),
+            (2, membership(false, true, true)),
+            (3, membership(false, false, true)),
+        ];
+        let mut planner = StreamedComposePlanner::with_row_capacity(4);
         let initial_static_weights = [0.0];
         let animated_weights = [1.0];
         let initial = compose_plan::ComposePlannerFrame {
             records_compose: false,
             force_full_resident: false,
             gated_rows: &gated,
-            indirect_rows: compose_plan::ComposePassRows {
-                resident: &indirect_rows,
-                contributing: &indirect_rows,
-            },
-            static_direct_rows: compose_plan::ComposePassRows {
-                resident: &static_rows,
-                contributing: &static_rows,
-            },
-            animated_direct_rows: compose_plan::ComposePassRows {
-                resident: &animated_rows,
-                contributing: &animated_rows,
-            },
+            membership_changes: &membership_changes,
             indirect_active: false,
             animated_direct_active: false,
             effective_static_weights: &initial_static_weights,
@@ -458,18 +512,7 @@ mod tests {
             records_compose: true,
             force_full_resident: false,
             gated_rows: &gated,
-            indirect_rows: compose_plan::ComposePassRows {
-                resident: &indirect_rows,
-                contributing: &indirect_rows,
-            },
-            static_direct_rows: compose_plan::ComposePassRows {
-                resident: &static_rows,
-                contributing: &static_rows,
-            },
-            animated_direct_rows: compose_plan::ComposePassRows {
-                resident: &animated_rows,
-                contributing: &animated_rows,
-            },
+            membership_changes: &[],
             indirect_active: false,
             animated_direct_active: true,
             effective_static_weights: &changed_static_weights,

@@ -1068,6 +1068,19 @@ pub(crate) fn pack_layers(
     max_dim: u32,
     density_m_per_texel: f32,
 ) -> Result<PackOutput, LightmapBakeError> {
+    pack_layers_with_layer_limit(charts, max_dim, MAX_ATLAS_LAYERS, density_m_per_texel)
+}
+
+/// [`pack_layers`] with an explicit layer ceiling in place of
+/// [`MAX_ATLAS_LAYERS`]. Production always goes through `pack_layers`; the
+/// lightmap residency dry run raises the ceiling so a small capped layer size
+/// can be measured even when its layer count would exceed the runtime floor.
+pub(crate) fn pack_layers_with_layer_limit(
+    charts: &[Chart],
+    max_dim: u32,
+    max_layers: u32,
+    density_m_per_texel: f32,
+) -> Result<PackOutput, LightmapBakeError> {
     if charts.is_empty() {
         return Ok(PackOutput {
             layer_count: 1,
@@ -1122,10 +1135,10 @@ pub(crate) fn pack_layers(
             // place the whole leaf there. Sizing guarantees a leaf fits an empty
             // layer, so this single retry always succeeds.
             layer += 1;
-            if layer >= MAX_ATLAS_LAYERS {
+            if layer >= max_layers {
                 return Err(LightmapBakeError::LayerOverflow {
                     layer_count: layer + 1,
-                    max: MAX_ATLAS_LAYERS,
+                    max: max_layers,
                 });
             }
             packer = MaxRects::new(atlas_dim, atlas_dim);
@@ -1254,7 +1267,7 @@ fn place_leaf(
 /// splits it, and prunes any free rects now contained in another. This is the
 /// genuine MaxRects algorithm (Jylänki 2010), not a shelf fallback, so it reaches
 /// the 85–95% density target on mixed chart sets.
-struct MaxRects {
+pub(crate) struct MaxRects {
     free: Vec<Rect>,
 }
 
@@ -1267,7 +1280,7 @@ struct Rect {
 }
 
 impl MaxRects {
-    fn new(width: u32, height: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32) -> Self {
         MaxRects {
             free: vec![Rect {
                 x: 0,
@@ -1282,7 +1295,7 @@ impl MaxRects {
     /// Best-Short-Side-Fit: among free rects that can host it, pick the one
     /// leaving the smallest leftover short side (ties broken by long side, then
     /// position) for a deterministic, dense placement.
-    fn insert(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+    pub(crate) fn insert(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
         let mut best: Option<(usize, u32, u32)> = None; // (free idx, short leftover, long leftover)
         for (idx, r) in self.free.iter().enumerate() {
             if r.w >= w && r.h >= h {
@@ -2862,7 +2875,7 @@ mod tests {
         let straddled_region = scale_region([-0.1, -1.0, -0.1], [0.1, 1.0, 0.1], 0.5);
         let outside = scale_region([2.0, -1.0, 2.0], [3.0, 1.0, 3.0], 0.25);
         let baseline = plan_charts(&geo, 0.25, &[]).unwrap();
-        let straddled = plan_charts(&geo, 0.25, &[straddled_region.clone()]).unwrap();
+        let straddled = plan_charts(&geo, 0.25, std::slice::from_ref(&straddled_region)).unwrap();
         let outside_only = plan_charts(&geo, 0.25, &[outside]).unwrap();
         assert!(
             straddled[0].width_texels < baseline[0].width_texels,
@@ -3029,6 +3042,24 @@ mod tests {
             assert_eq!(a.x, b.x);
             assert_eq!(a.y, b.y);
             assert_eq!(a.layer, b.layer);
+        }
+    }
+
+    /// Pins the production ceiling: the layer-limit parameter must not have
+    /// loosened `pack_layers` itself.
+    #[test]
+    fn pack_layers_overflows_past_max_atlas_layers() {
+        let dim = MIN_ATLAS_DIMENSION;
+        let leaves = |count: u32| -> Vec<Chart> {
+            (0..count)
+                .map(|leaf| synthetic_chart_leaf(dim, dim, leaf))
+                .collect()
+        };
+        let full = pack_layers(&leaves(MAX_ATLAS_LAYERS), dim, 1.0).unwrap();
+        assert_eq!(full.layer_count, MAX_ATLAS_LAYERS);
+        match pack_layers(&leaves(MAX_ATLAS_LAYERS + 1), dim, 1.0) {
+            Err(LightmapBakeError::LayerOverflow { max, .. }) => assert_eq!(max, MAX_ATLAS_LAYERS),
+            other => panic!("expected LayerOverflow, got {other:?}"),
         }
     }
 
@@ -3461,7 +3492,7 @@ mod tests {
     fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
         let geometry = unit_quad_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![synthetic_chart_leaf(64, 64, 1)];
         let placements = vec![ChartPlacement {
@@ -3511,7 +3542,7 @@ mod tests {
     fn per_layer_parallel_scatter_joins_before_dilation() {
         let geometry = two_disjoint_quads_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![
             synthetic_chart_leaf(32, 64, 0),
@@ -3575,7 +3606,7 @@ mod tests {
     fn layered_cold_encode_retains_degenerate_layer_blob() {
         let geometry = unit_quad_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![synthetic_chart_leaf(64, 64, 0), empty_chart_for_leaf(1)];
         let placements = vec![
@@ -3635,7 +3666,7 @@ mod tests {
         let geometry = unit_quad_geometry();
         let bvh = Bvh { nodes: Vec::new() };
         let primitives = Vec::new();
-        let lights = vec![point_light_above()];
+        let lights = [point_light_above()];
         let light_refs: Vec<&MapLight> = lights.iter().collect();
         let charts = vec![empty_chart_for_leaf(0)];
         let placements = vec![ChartPlacement {
@@ -5121,7 +5152,7 @@ mod tests {
         let section = atlas.encode_section(0.25, true, 2);
         assert_eq!(section.layer_count, 2);
         assert_eq!((section.dir_width, section.dir_height), (2, 1));
-        assert_eq!(section.direction.len(), 2 * 2 * 1 * 2);
+        assert_eq!(section.direction.len(), 2 * 2 * 2);
     }
 
     #[test]

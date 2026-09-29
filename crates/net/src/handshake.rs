@@ -115,10 +115,12 @@ mod tests {
             PROTOCOL_ID, 0x_5052_4C37,
             "presentation vocabulary requires application protocol PRL7"
         );
-        assert!(
-            WIRE_VERSION > PRE_KNOCKBACK_WIRE_VERSION,
-            "protected knockback velocity changes the snapshot layout"
-        );
+        const {
+            assert!(
+                WIRE_VERSION > PRE_KNOCKBACK_WIRE_VERSION,
+                "protected knockback velocity changes the snapshot layout"
+            );
+        };
         assert_ne!(
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_KNOCKBACK_WIRE_VERSION),

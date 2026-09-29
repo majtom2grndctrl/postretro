@@ -277,6 +277,7 @@ mod tests {
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,
             kinematic_geometry: None,
+            cells: &[],
             texture_materials: &[],
         };
 

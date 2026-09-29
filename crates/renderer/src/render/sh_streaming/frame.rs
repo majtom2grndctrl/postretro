@@ -28,160 +28,148 @@ impl ShResidencyState {
         promoted_animated_states: &[PromotedBakedLightState],
     ) -> Result<(), ShResidencyDrainError> {
         let started = Instant::now();
-        self.indirect_compose_diagnostics = ShComposePassDiagnostics::default();
-        self.static_direct_compose_diagnostics = ShComposePassDiagnostics::default();
-        self.animated_direct_compose_diagnostics = ShComposePassDiagnostics::default();
-
-        self.compose_input_regions.clear();
-        self.compose_input_regions
-            .extend_from_slice(region_sets.visible_cells);
-        self.compose_input_regions.extend(
-            region_sets
-                .fog_cells
-                .iter()
-                .map(|&(min, max)| crate::render::ShSampleRegion::new(min, max)),
-        );
-        self.compose_input_regions
-            .extend_from_slice(region_sets.movers);
-        if let Some(plans) = mesh_frame_plans {
-            self.compose_input_regions.extend(
-                mesh_instances::planned_forward_sample_bounds(plans, include_viewmodels)
-                    .map(|bounds| crate::render::ShSampleRegion::new(bounds.min, bounds.max)),
-            );
-        }
+        // Scratch buffers leave `self` while borrowed alongside it and return
+        // on every path, so an erroring frame keeps their warmed capacity.
+        let mut dynamic_regions = std::mem::take(&mut self.compose_input_regions);
         let mut region_rows = std::mem::take(&mut self.compose_region_rows);
-        self.resolve_sample_region_rows(
-            &self.compose_input_regions,
-            fog_draw_all,
-            &mut region_rows,
-        )?;
-
-        self.compose_indirect_resident_rows.clear();
-        self.compose_indirect_resident_rows
-            .extend(self.indirect_resident_rows.iter().copied());
-        self.compose_direct_resident_rows.clear();
-        self.compose_direct_resident_rows
-            .extend(self.direct_promotion_resident_rows.iter().copied());
-        if self.animated_direct_compose_required {
-            self.compose_direct_resident_rows
-                .extend(self.direct_animated_resident_rows.iter().copied());
-        }
-        self.compose_direct_resident_rows.sort_unstable();
-        self.compose_direct_resident_rows.dedup();
-        self.compose_animated_resident_rows.clear();
-        if self.animated_direct_compose_required {
-            self.compose_animated_resident_rows
-                .extend(self.compose_direct_resident_rows.iter().copied());
-        }
-        self.prune_nonresident_dirty_rows();
-
         let mut residency_rows = std::mem::take(&mut self.compose_residency_rows);
-        self.close_residency_rows_over_scaled_writers(
-            self.indirect_dirty_rows.iter().copied(),
-            &self.compose_indirect_resident_rows,
-            &mut residency_rows,
-        )?;
-        self.compose_planner.mark_residency_rows(
-            compose_plan::ComposePass::Indirect,
-            residency_rows.iter().copied(),
-        );
+        let result: Result<(), ShResidencyDrainError> = (|| {
+            // Cells resolve through the load-time cell index; only regions
+            // that move with the frame walk bricks.
+            dynamic_regions.clear();
+            dynamic_regions.extend_from_slice(region_sets.movers);
+            if let Some(plans) = mesh_frame_plans {
+                dynamic_regions.extend(
+                    mesh_instances::planned_forward_sample_bounds(plans, include_viewmodels)
+                        .map(|bounds| crate::render::ShSampleRegion::new(bounds.min, bounds.max)),
+                );
+            }
+            self.resolve_sample_region_rows(
+                sample_region_index::GateInputs {
+                    visible_cells: region_sets.visible_cells,
+                    fog_cells: region_sets.fog_cells,
+                    dynamic_regions: &dynamic_regions,
+                    fog_draw_all,
+                },
+                &mut region_rows,
+            )?;
 
-        self.close_residency_rows_over_scaled_writers(
-            self.direct_promotion_dirty_rows
-                .iter()
-                .chain(&self.direct_animated_dirty_rows)
-                .copied(),
-            &self.compose_direct_resident_rows,
-            &mut residency_rows,
-        )?;
-        self.compose_planner.mark_residency_rows(
-            compose_plan::ComposePass::StaticDirect,
-            residency_rows.iter().copied(),
-        );
-        if self.animated_direct_compose_required {
+            self.prune_nonresident_dirty_rows();
+
+            self.close_residency_rows_over_scaled_writers(
+                self.indirect_dirty_rows.iter().copied(),
+                |row| self.indirect_resident_rows.contains(&row),
+                &mut residency_rows,
+            )?;
             self.compose_planner.mark_residency_rows(
-                compose_plan::ComposePass::AnimatedDirect,
+                compose_plan::ComposePass::Indirect,
                 residency_rows.iter().copied(),
             );
-        }
 
-        self.compose_animated_weights.clear();
-        self.compose_animated_weights
-            .extend((0..MAX_ANIMATED_BAKED_LIGHTS).map(|index| {
-                1.0 - animated_baked_promotion_weight(index, promoted_animated_states.get(index))
-            }));
+            // A level whose id-35 base has no id-41/id-45 data never
+            // dispatches the direct passes; it holds no direct dirty rows.
+            if self.direct_compose_required {
+                self.close_residency_rows_over_scaled_writers(
+                    self.direct_promotion_dirty_rows
+                        .iter()
+                        .chain(&self.direct_animated_dirty_rows)
+                        .copied(),
+                    |row| self.direct_compose_resident(row),
+                    &mut residency_rows,
+                )?;
+                self.compose_planner.mark_residency_rows(
+                    compose_plan::ComposePass::StaticDirect,
+                    residency_rows.iter().copied(),
+                );
+                if self.animated_direct_compose_required {
+                    self.compose_planner.mark_residency_rows(
+                        compose_plan::ComposePass::AnimatedDirect,
+                        residency_rows.iter().copied(),
+                    );
+                }
+            }
 
-        self.compose_indirect_contributing_rows.clear();
-        self.compose_indirect_contributing_rows
-            .extend(self.indirect_delta_row_refs.keys().copied());
-        self.compose_static_contributing_rows.clear();
-        self.compose_static_contributing_rows
-            .extend(self.direct_promotion_row_refs.keys().copied());
-        self.compose_animated_contributing_rows.clear();
-        self.compose_animated_contributing_rows
-            .extend(self.direct_animated_row_refs.keys().copied());
-        let mut frame_plan = self.compose_frame_plan.take().unwrap_or_default();
-        self.compose_planner.plan_frame_into(
-            compose_plan::ComposePlannerFrame {
-                records_compose,
-                force_full_resident,
-                gated_rows: &region_rows,
-                indirect_rows: compose_plan::ComposePassRows {
-                    resident: &self.compose_indirect_resident_rows,
-                    contributing: &self.compose_indirect_contributing_rows,
+            self.compose_animated_weights.clear();
+            self.compose_animated_weights
+                .extend((0..MAX_ANIMATED_BAKED_LIGHTS).map(|index| {
+                    1.0 - animated_baked_promotion_weight(
+                        index,
+                        promoted_animated_states.get(index),
+                    )
+                }));
+
+            // Only rows whose row-ref presence changed since the last plan
+            // can have changed membership; the planner re-observes just
+            // those. The queue holds each row once.
+            let mut membership_changes = std::mem::take(&mut self.compose_membership_changes);
+            membership_changes.clear();
+            membership_changes.extend(
+                self.compose_membership_touched
+                    .rows()
+                    .iter()
+                    .map(|&row| (row, self.compose_row_membership(row))),
+            );
+            self.compose_membership_touched.clear();
+            let mut frame_plan = self.compose_frame_plan.take().unwrap_or_default();
+            self.compose_planner.plan_frame_into(
+                compose_plan::ComposePlannerFrame {
+                    records_compose,
+                    force_full_resident,
+                    gated_rows: &region_rows,
+                    membership_changes: &membership_changes,
+                    indirect_active,
+                    animated_direct_active,
+                    effective_static_weights: promoted_static_weights,
+                    effective_animated_weights: &self.compose_animated_weights,
+                    controls: compose_plan::ComposeControlSnapshot {
+                        light_term_mask: frame_light_term_mask,
+                        promotion_override,
+                        animated_override,
+                    },
                 },
-                static_direct_rows: compose_plan::ComposePassRows {
-                    resident: &self.compose_direct_resident_rows,
-                    contributing: &self.compose_static_contributing_rows,
-                },
-                animated_direct_rows: compose_plan::ComposePassRows {
-                    resident: &self.compose_animated_resident_rows,
-                    contributing: &self.compose_animated_contributing_rows,
-                },
-                indirect_active,
-                animated_direct_active,
-                effective_static_weights: promoted_static_weights,
-                effective_animated_weights: &self.compose_animated_weights,
-                controls: compose_plan::ComposeControlSnapshot {
-                    light_term_mask: frame_light_term_mask,
-                    promotion_override,
-                    animated_override,
-                },
-            },
-            &mut frame_plan,
-        );
-        self.indirect_compose_diagnostics = lag_diagnostics(self.compose_planner.lagging_rows(
-            compose_plan::ComposePass::Indirect,
-            &self.compose_indirect_resident_rows,
-        ));
-        self.static_direct_compose_diagnostics =
-            lag_diagnostics(self.compose_planner.lagging_rows(
-                compose_plan::ComposePass::StaticDirect,
-                &self.compose_direct_resident_rows,
-            ));
-        self.animated_direct_compose_diagnostics =
-            lag_diagnostics(self.compose_planner.lagging_rows(
-                compose_plan::ComposePass::AnimatedDirect,
-                &self.compose_animated_resident_rows,
-            ));
-        self.compose_frame_plan = Some(frame_plan);
+                &mut frame_plan,
+            );
+            self.compose_frame_plan = Some(frame_plan);
+            self.compose_membership_changes = membership_changes;
+            Ok(())
+        })();
+        self.compose_input_regions = dynamic_regions;
         self.compose_region_rows = region_rows;
         self.compose_residency_rows = residency_rows;
+
+        // Lag counts are O(1) planner state, so an erroring frame still
+        // reports the rows it leaves lagging. A successful dispatch replaces
+        // these with its own counters.
+        self.indirect_compose_diagnostics = lag_diagnostics(
+            self.compose_planner
+                .lagging_rows(compose_plan::ComposePass::Indirect),
+        );
+        self.static_direct_compose_diagnostics = lag_diagnostics(
+            self.compose_planner
+                .lagging_rows(compose_plan::ComposePass::StaticDirect),
+        );
+        self.animated_direct_compose_diagnostics = lag_diagnostics(
+            self.compose_planner
+                .lagging_rows(compose_plan::ComposePass::AnimatedDirect),
+        );
         self.compose_planning_cpu_micros =
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        Ok(())
+        result
     }
 
+    /// O(dirty rows): each membership check is a bitset or map lookup.
     pub(super) fn prune_nonresident_dirty_rows(&mut self) {
         let indirect_resident_rows = &self.indirect_resident_rows;
         self.indirect_dirty_rows
             .retain(|row| indirect_resident_rows.contains(row));
-        let direct_resident_rows = &self.compose_direct_resident_rows;
-        self.direct_promotion_dirty_rows
-            .retain(|row| direct_resident_rows.binary_search(row).is_ok());
-        let animated_resident_rows = &self.compose_animated_resident_rows;
-        self.direct_animated_dirty_rows
-            .retain(|row| animated_resident_rows.binary_search(row).is_ok());
+        let mut dirty = std::mem::take(&mut self.direct_promotion_dirty_rows);
+        dirty.retain(|&row| self.direct_compose_resident(row));
+        self.direct_promotion_dirty_rows = dirty;
+        let mut dirty = std::mem::take(&mut self.direct_animated_dirty_rows);
+        dirty.retain(|&row| {
+            self.animated_direct_compose_required && self.direct_compose_resident(row)
+        });
+        self.direct_animated_dirty_rows = dirty;
         let indirect_delta_row_refs = &self.indirect_delta_row_refs;
         let direct_promotion_row_refs = &self.direct_promotion_row_refs;
         let direct_animated_row_refs = &self.direct_animated_row_refs;
@@ -243,10 +231,8 @@ impl ShResidencyState {
                 self.static_direct_compose_diagnostics = pass_diagnostics(
                     promotion_plan,
                     dispatches,
-                    self.compose_planner.lagging_rows(
-                        compose_plan::ComposePass::StaticDirect,
-                        &self.compose_direct_resident_rows,
-                    ),
+                    self.compose_planner
+                        .lagging_rows(compose_plan::ComposePass::StaticDirect),
                 );
                 self.direct_promotion_dirty_rows.clear();
                 // Planning Pass A already made the matching Pass-B work durable.
@@ -279,10 +265,8 @@ impl ShResidencyState {
                 self.animated_direct_compose_diagnostics = pass_diagnostics(
                     animated_plan,
                     dispatches,
-                    self.compose_planner.lagging_rows(
-                        compose_plan::ComposePass::AnimatedDirect,
-                        &self.compose_animated_resident_rows,
-                    ),
+                    self.compose_planner
+                        .lagging_rows(compose_plan::ComposePass::AnimatedDirect),
                 );
                 self.direct_animated_dirty_rows.clear();
                 self.dirty_rows
@@ -342,10 +326,8 @@ impl ShResidencyState {
             self.indirect_compose_diagnostics = pass_diagnostics(
                 plan,
                 dispatches,
-                self.compose_planner.lagging_rows(
-                    compose_plan::ComposePass::Indirect,
-                    &self.compose_indirect_resident_rows,
-                ),
+                self.compose_planner
+                    .lagging_rows(compose_plan::ComposePass::Indirect),
             );
             self.indirect_compose_epoch = self
                 .indirect_compose_epoch

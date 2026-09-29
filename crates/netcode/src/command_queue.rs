@@ -1651,11 +1651,13 @@ mod tests {
     // trim (a fortiori, since the freeze fires at depth 0).
     #[test]
     fn buffer_target_is_below_the_catch_up_max() {
-        assert!(
-            INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX,
-            "INPUT_BUFFER_TARGET ({INPUT_BUFFER_TARGET}) must be < INPUT_BUFFER_MAX ({INPUT_BUFFER_MAX}) \
-             so buildup depth stays clear of the catch-up trim"
-        );
+        const {
+            assert!(
+                INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX,
+                "INPUT_BUFFER_TARGET must be < INPUT_BUFFER_MAX so buildup depth stays clear \
+                 of the catch-up trim"
+            );
+        };
     }
 
     // Test #3 (coordinator-required): the bounded deep-yield walk plus the silent-client

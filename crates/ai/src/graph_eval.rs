@@ -459,17 +459,17 @@ mod statechart_tests {
                         activity("idle", Some(MotionVerb::Hold), None, BTreeMap::new()),
                     ),
                 ]),
-                transitions: outer_escape
-                    .then(|| {
-                        BTreeMap::from([(
-                            "*".to_string(),
-                            vec![GuardedRow {
-                                to: "rest".to_string(),
-                                when: constant(true),
-                            }],
-                        )])
-                    })
-                    .unwrap_or_default(),
+                transitions: if outer_escape {
+                    BTreeMap::from([(
+                        "*".to_string(),
+                        vec![GuardedRow {
+                            to: "rest".to_string(),
+                            when: constant(true),
+                        }],
+                    )])
+                } else {
+                    Default::default()
+                },
             },
             candidate_filter: None,
             retaliation: None,

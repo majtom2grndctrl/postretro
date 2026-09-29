@@ -199,7 +199,7 @@ fn forward_light_term_mask_gates_each_world_term_without_overriding_scale() {
     assert!(
         src.contains(
             "if use_baked_direct_static {\n            lm_irr = sample_lightmap_irradiance"
-        ) && src.contains("if use_baked_direct_animated && animated_slot != 0xffffffffu"),
+        ) && src.contains("if use_baked_direct_animated && animated.found"),
         "static and animated world lightmap contributions must be independently sampled",
     );
     assert!(

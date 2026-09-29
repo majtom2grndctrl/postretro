@@ -11,6 +11,7 @@ use postretro_render_cpu::sh_compose::{
 };
 use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
+use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, compose_origin_bytes, compose_storage_payloads,
     probe_indirection_storage_payload,
@@ -21,7 +22,7 @@ use super::sh_compose_dispatch::{
     DynamicComposeDispatch, build_dynamic_compose_grid_upload, should_dispatch,
 };
 use super::sh_indirection::WGSL_DECODE_HELPER;
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -132,21 +133,21 @@ impl ShComposeResources {
             delta_section_present.then_some(27),
         ]);
         let delta_state = match (delta_section_present, delta.is_some()) {
-            (true, true) => ShResidencyAllocationState::Data,
-            (true, false) => ShResidencyAllocationState::Fallback,
-            (false, _) => ShResidencyAllocationState::Dummy,
+            (true, true) => ResidencyAllocationState::Data,
+            (true, false) => ResidencyAllocationState::Fallback,
+            (false, _) => ResidencyAllocationState::Dummy,
         };
         let sh_state = match (sh_section_present, sh.present) {
-            (true, true) => ShResidencyAllocationState::Data,
-            (true, false) => ShResidencyAllocationState::Fallback,
-            (false, _) => ShResidencyAllocationState::Dummy,
+            (true, true) => ResidencyAllocationState::Data,
+            (true, false) => ResidencyAllocationState::Fallback,
+            (false, _) => ResidencyAllocationState::Dummy,
         };
         let compose_state = if sh.present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else if sh_section_present || delta_section_present {
-            ShResidencyAllocationState::Fallback
+            ResidencyAllocationState::Fallback
         } else {
-            ShResidencyAllocationState::Dummy
+            ResidencyAllocationState::Dummy
         };
         ledger.record_buffer(
             storage.delta_subblocks.allocation,

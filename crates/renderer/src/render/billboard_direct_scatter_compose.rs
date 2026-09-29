@@ -6,11 +6,12 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 use wgpu::util::DeviceExt;
 
 use super::billboard_direct_scatter::BillboardDirectScatterResources;
+use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
     ShAllocationKind, billboard_scatter_grid_bytes as scatter_grid_bytes,
     billboard_storage_payloads, buffer_allocation,
 };
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 use super::sh_volume::AnimatedLightBuffers;
 
 const BIND_BASE: u32 = 0;
@@ -85,31 +86,31 @@ impl BillboardDirectScatterComposeResources {
             grid_allocation,
             &scatter_sources,
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         ledger.record_buffer(
             delta_payload.allocation,
             &[48],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         ledger.record_buffer(
             offset_payload.allocation,
             &[48],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         ledger.record_buffer(
             light_payload.allocation,
             &[48],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         ledger.record_buffer(
             descriptor_index_payload.allocation,
             &[48],
             false,
-            ShResidencyAllocationState::Data,
+            ResidencyAllocationState::Data,
         );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose Grid"),

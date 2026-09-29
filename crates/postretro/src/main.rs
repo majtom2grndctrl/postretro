@@ -3637,7 +3637,6 @@ impl ApplicationHandler for App {
                     fog_reachable,
                     light_reachable_cell_mask,
                     reachable_cell_aabbs,
-                    visible_cell_aabbs,
                     stats,
                 } = visible_render;
                 // Walk time and counters (or the fallback marker) sit under the
@@ -4337,8 +4336,8 @@ impl ApplicationHandler for App {
                         &reachable_cell_aabbs,
                         &fog_reachable,
                         render::ShSampleRegionSets {
-                            visible_cells: &visible_cell_aabbs,
-                            fog_cells: &reachable_cell_aabbs,
+                            visible_cells: &visible_cells,
+                            fog_cells: &fog_reachable,
                             movers: self.kinematic_mover_render.sh_sample_regions(),
                         },
                         Some(stats.camera_cell),
@@ -5586,9 +5585,9 @@ impl App {
             &visible_render.reachable_cell_aabbs,
             &visible_render.fog_reachable,
             render::ShSampleRegionSets {
-                visible_cells: &visible_render.visible_cell_aabbs,
-                fog_cells: &visible_render.reachable_cell_aabbs,
-                ..Default::default()
+                visible_cells: &visible_render.visible_cells,
+                fog_cells: &visible_render.fog_reachable,
+                movers: &[],
             },
             None,
             glam::Mat4::IDENTITY,
@@ -12147,37 +12146,50 @@ mod tests {
             .expect("focused button exposes an onPress action")
     }
 
+    /// Install `scripts-build` beside the test binary, once per test process.
+    /// Parallel tests share the result, so none can spawn a half-copied
+    /// binary, and a copy older than the built one is replaced — a stale copy
+    /// would silently keep old bundler behavior.
     #[cfg(debug_assertions)]
     fn install_scripts_build_next_to_current_exe() -> bool {
-        let Ok(current_exe) = std::env::current_exe() else {
-            return false;
-        };
-        let Some(target_dir) = current_exe.parent() else {
-            return false;
-        };
-        let name = if cfg!(windows) {
-            "scripts-build.exe"
-        } else {
-            "scripts-build"
-        };
-        let dest = target_dir.join(name);
-        if dest.is_file() {
-            return true;
-        }
-        let source = ensure_scripts_build();
-        if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
-            if cs == cd {
-                return true;
+        static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *INSTALLED.get_or_init(|| {
+            let Ok(current_exe) = std::env::current_exe() else {
+                return false;
+            };
+            let Some(target_dir) = current_exe.parent() else {
+                return false;
+            };
+            let name = if cfg!(windows) {
+                "scripts-build.exe"
+            } else {
+                "scripts-build"
+            };
+            let dest = target_dir.join(name);
+            let source = ensure_scripts_build();
+            if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
+                if cs == cd {
+                    return true;
+                }
             }
-        }
-        std::fs::copy(&source, &dest).unwrap_or_else(|e| {
-            panic!(
-                "scripts-build found at {} but copy to {} failed: {e}",
-                source.display(),
-                dest.display()
-            )
-        });
-        true
+            let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+            if let (Some(dest_mtime), Some(source_mtime)) = (modified(&dest), modified(&source)) {
+                if dest_mtime >= source_mtime {
+                    return true;
+                }
+            }
+            let staging = dest.with_file_name(format!("{name}.tmp.{}", std::process::id()));
+            std::fs::copy(&source, &staging)
+                .and_then(|_| std::fs::rename(&staging, &dest))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "scripts-build found at {} but install to {} failed: {e}",
+                        source.display(),
+                        dest.display()
+                    )
+                });
+            true
+        })
     }
 
     fn ensure_scripts_build() -> PathBuf {

@@ -89,7 +89,7 @@ impl ShResidencyState {
         set: RowSet,
         row: u32,
     ) {
-        if self.row_set_mut(set).insert(row) {
+        if self.row_set_insert(set, row) {
             journal.undo.push(Undo::RowInserted { set, row });
         }
     }
@@ -103,8 +103,13 @@ impl ShResidencyState {
         row: u32,
         count: u32,
     ) -> Result<(), ShResidencyDrainError> {
-        increment_row_ref(self.row_ref_table_mut(table), row, count)?;
+        let refs = self.row_ref_table_mut(table);
+        let joins = !refs.contains_key(&row);
+        increment_row_ref(refs, row, count)?;
         journal.undo.push(Undo::RowRef { table, row, count });
+        if joins {
+            self.compose_membership_touched.push(row);
+        }
         for &set in table.resident_sets() {
             self.journal_insert_row(journal, set, row);
         }
@@ -145,11 +150,15 @@ impl ShResidencyState {
                     self.dirty_rows.remove(&key);
                 }
                 Undo::RowInserted { set, row } => {
-                    self.row_set_mut(set).remove(&row);
+                    self.row_set_remove(set, row);
                 }
                 Undo::RowRef { table, row, count } => {
-                    decrement_row_ref(self.row_ref_table_mut(table), row, count)
+                    let refs = self.row_ref_table_mut(table);
+                    decrement_row_ref(refs, row, count)
                         .expect("an install journal only releases row refs it added");
+                    if !refs.contains_key(&row) {
+                        self.compose_membership_touched.push(row);
+                    }
                 }
                 Undo::SparseRow { section_id, undo } => self
                     .sparse_pools

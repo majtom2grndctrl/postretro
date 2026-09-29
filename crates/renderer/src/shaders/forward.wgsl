@@ -239,8 +239,8 @@ struct AnimationDescriptor {
 // Animated-light contribution atlas (Rgba16Float). Composed each frame by
 // the compute pre-pass in `animated_lightmap.rs` from per-animated-light
 // baked weight maps + runtime descriptor curves. `.rgb` carries pre-shaded
-// irradiance. Array slices are dense animated slots, not static layers: the
-// binding-7 lookup maps each static lightmap layer to its animated slot.
+// irradiance. Array slices are compact pages, not static layers: the
+// binding-7 block table places each animated face's block on its page.
 @group(4) @binding(3) var animated_lm_atlas: texture_2d_array<f32>;
 // Filtering (Linear) sampler — used for the irradiance + animated atlases so
 // baked penumbra ramps read as continuous gradients under magnification.
@@ -255,13 +255,19 @@ struct AnimationDescriptor {
 @group(4) @binding(5) var animated_lm_direction: texture_2d_array<f32>;
 @group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;
 
-// Four static layers per vec4 avoid uniform-space's 16-byte scalar-array
-// stride. This 64-vec4 layout must match `STATIC_LIGHTMAP_LAYER_CAP` (256) in
-// `lighting/lightmap.rs`. An absent layer holds INVALID_SLOT (0xFFFF_FFFF).
-struct AnimatedLightmapSlots {
-    static_layer_to_animated_slot: array<vec4<u32>, 64>,
+// Animated block table. Header: static lightmap layer size, page size, block
+// count. Each block is two u32s — a packed (i16 dx, i16 dy) static→compact
+// texel offset, then its page — two blocks per vec4 because uniform arrays
+// stride 16 bytes. The array length is ANIMATED_BLOCK_CAP / 2 from
+// `level-format` (`animated_lightmap_atlas.rs`), the cap the compiler enforces.
+struct AnimatedBlockTable {
+    static_layer_size: u32,
+    page_size: u32,
+    block_count: u32,
+    _pad: u32,
+    blocks: array<vec4<u32>, 4095>,
 };
-@group(4) @binding(7) var<uniform> animated_lightmap_slots: AnimatedLightmapSlots;
+@group(4) @binding(7) var<uniform> animated_block_table: AnimatedBlockTable;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
 // linear sampler at binding 4. `layer` selects the atlas array slice.
@@ -270,17 +276,44 @@ fn sample_lightmap_irradiance(uv: vec2<f32>, layer: u32) -> vec3<f32> {
 }
 
 // Same for the animated-light contribution atlas.
-fn sample_lightmap_animated(uv: vec2<f32>, slot: u32) -> vec3<f32> {
-    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv, i32(slot)).rgb;
+fn sample_lightmap_animated(uv: vec2<f32>, page: u32) -> vec3<f32> {
+    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv, i32(page)).rgb;
 }
 
-fn animated_slot_for_static_layer(static_layer: u32) -> u32 {
-    const INVALID_SLOT: u32 = 0xffffffffu;
-    if static_layer >= 256u {
-        return INVALID_SLOT;
+// A face's animated block resolved to compact-atlas UV and page.
+struct AnimatedBlockUv {
+    uv: vec2<f32>,
+    page: u32,
+    found: bool,
+};
+
+// Resolve a vertex's flat block id (0 = none, n = block n - 1) to where its
+// static lightmap UV lands in the compact atlas: a texel translation plus a
+// page. Ids past the table resolve to none, so an inactive atlas (empty
+// table) never samples. Static and page sizes are powers of two, so the
+// scale and divide are exact in f32; the integer offset can round the
+// sub-texel fraction by at most ~2^-11 texel, far below one 8-bit step, so
+// the bilinear footprint lands on the same texels as in the static layer.
+fn animated_block_uv(static_uv: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
+    var out: AnimatedBlockUv;
+    out.uv = vec2<f32>(0.0);
+    out.page = 0u;
+    out.found = false;
+    if block_id == 0u || block_id > animated_block_table.block_count {
+        return out;
     }
-    let packed_slots = animated_lightmap_slots.static_layer_to_animated_slot[static_layer / 4u];
-    return packed_slots[static_layer % 4u];
+    let block = block_id - 1u;
+    let packed = animated_block_table.blocks[block / 2u];
+    let entry = select(packed.xy, packed.zw, (block & 1u) == 1u);
+    let offset = vec2<f32>(
+        f32(bitcast<i32>(entry.x << 16u) >> 16u),
+        f32(bitcast<i32>(entry.x) >> 16u),
+    );
+    let texel = static_uv * f32(animated_block_table.static_layer_size) + offset;
+    out.uv = texel / f32(animated_block_table.page_size);
+    out.page = entry.y;
+    out.found = true;
+    return out;
 }
 
 // Group 5 — dynamic spot light shadow maps.
@@ -330,7 +363,8 @@ struct VertexInput {
     @location(2) normal_oct: vec2<u32>,
     @location(3) tangent_packed: vec2<u32>,
     @location(4) lightmap_uv_packed: vec2<u32>,
-    @location(5) lightmap_layer: u32,
+    // (static lightmap layer, animated block id) from one Uint16x2 attribute.
+    @location(5) lightmap_layer_block: vec2<u32>,
 };
 
 struct VertexOutput {
@@ -345,6 +379,7 @@ struct VertexOutput {
     @location(4) world_position: vec3<f32>,
     @location(5) lightmap_uv: vec2<f32>,
     @location(6) @interpolate(flat) lightmap_layer: u32,
+    @location(7) @interpolate(flat) animated_block: u32,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -383,7 +418,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         f32(in.lightmap_uv_packed.x) / 65535.0,
         f32(in.lightmap_uv_packed.y) / 65535.0,
     );
-    out.lightmap_layer = in.lightmap_layer;
+    out.lightmap_layer = in.lightmap_layer_block.x;
+    out.animated_block = in.lightmap_layer_block.y;
 
     return out;
 }
@@ -1032,19 +1068,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if use_baked_direct_static {
             lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
         }
-        // Pre-shaded Lambert irradiance from the animated compose pre-pass.
-        // A static layer absent from section 25 resolves to INVALID_SLOT, so it
-        // contributes zero rather than accidentally sampling animated slot 0.
+        // Pre-shaded Lambert irradiance from the animated compose pre-pass. A
+        // face without an animated block (id 0, or any id while the atlas is
+        // inactive) contributes zero rather than sampling another block.
         var lm_anim = vec3<f32>(0.0);
         var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
-        let animated_slot = animated_slot_for_static_layer(in.lightmap_layer);
-        if use_baked_direct_animated && animated_slot != 0xffffffffu {
-            lm_anim = sample_lightmap_animated(in.lightmap_uv, animated_slot);
+        let animated = animated_block_uv(in.lightmap_uv, in.animated_block);
+        if use_baked_direct_animated && animated.found {
+            lm_anim = sample_lightmap_animated(animated.uv, animated.page);
             anim_dir_sample = textureSample(
                 animated_lm_direction,
                 lightmap_sampler,
-                in.lightmap_uv,
-                i32(animated_slot),
+                animated.uv,
+                i32(animated.page),
             );
         }
 
@@ -1078,8 +1114,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // coverage to 0.0 for uncovered/canceling texels (oct decode of those
         // yields a valid-but-meaningless direction, so a NaN sentinel no longer
         // works) — the use_correction_anim gate reads .a to skip them. The
-        // sample itself is hoisted above into the static-layer-to-slot lookup;
-        // layers without animated receivers keep the zero-coverage sentinel.
+        // sample itself is hoisted above into the block lookup; faces without
+        // an animated block keep the zero-coverage sentinel.
         let dom_anim = decode_lightmap_direction(anim_dir_sample);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
         let n_dot_l_bump_anim = max(dot(N_shade, dom_anim), 0.0);

@@ -3,14 +3,18 @@
 use super::*;
 
 impl ShResidencyState {
+    /// `cells` are the level's runtime cells; the sampled-row gate indexes
+    /// their bounds here once, and frames name cells by id.
     pub(in crate::render) fn from_manifest(
         manifest: &ShStreamManifest,
+        cells: &[postretro_level_loader::CellData],
     ) -> Result<Self, ShResidencyDrainError> {
         Self::from_parts(
             manifest.content_tag(),
             manifest.cluster_directory(),
             manifest.base(),
             manifest.sources(),
+            cells,
         )
     }
 
@@ -19,6 +23,7 @@ impl ShResidencyState {
         directory: &ClusterDirectorySection,
         base: &postretro_level_loader::ShStreamBaseMetadata,
         sources: &postretro_level_loader::ShStreamSourceMetadata,
+        cells: &[postretro_level_loader::CellData],
     ) -> Result<Self, ShResidencyDrainError> {
         let cluster_count = u32::try_from(directory.clusters.len()).map_err(|_| {
             ShResidencyDrainError::MalformedChunk {
@@ -213,6 +218,19 @@ impl ShResidencyState {
             }
         }
 
+        let row_capacity = compose_row_capacity(base.grid_dimensions, sources)?;
+        let sample_region_index = SampleRegionIndex::build(
+            &sample_regions::SampleRegionGrid {
+                origin: base.grid_origin,
+                cell_size: base.cell_size,
+                dimensions: base.grid_dimensions,
+                dense_nodes: &dense_node,
+            },
+            cells
+                .iter()
+                .map(|cell| crate::render::ShSampleRegion::new(cell.bounds_min, cell.bounds_max)),
+        )?;
+
         Ok(Self {
             content_tag,
             base_metadata: base.clone(),
@@ -240,13 +258,13 @@ impl ShResidencyState {
             pending_promotion: BTreeSet::new(),
             dirty_rows: BTreeSet::new(),
             indirect_dirty_rows: BTreeSet::new(),
-            indirect_resident_rows: BTreeSet::new(),
+            indirect_resident_rows: RowBitSet::with_row_capacity(row_capacity),
             indirect_base_row_refs: BTreeMap::new(),
             indirect_delta_row_refs: BTreeMap::new(),
             direct_promotion_dirty_rows: BTreeSet::new(),
             direct_animated_dirty_rows: BTreeSet::new(),
-            direct_promotion_resident_rows: BTreeSet::new(),
-            direct_animated_resident_rows: BTreeSet::new(),
+            direct_promotion_resident_rows: RowBitSet::with_row_capacity(row_capacity),
+            direct_animated_resident_rows: RowBitSet::with_row_capacity(row_capacity),
             direct_base_row_refs: BTreeMap::new(),
             direct_promotion_row_refs: BTreeMap::new(),
             direct_animated_row_refs: BTreeMap::new(),
@@ -260,18 +278,15 @@ impl ShResidencyState {
                 .map_or_else(Vec::new, |source| {
                     source.animation_descriptor_indices.clone()
                 }),
-            compose_planner: StreamedComposePlanner::default(),
+            compose_planner: StreamedComposePlanner::with_row_capacity(row_capacity),
             compose_frame_plan: None,
+            sample_region_index,
             compose_input_regions: Vec::new(),
             compose_region_rows: Vec::new(),
             compose_residency_rows: Vec::new(),
-            compose_indirect_resident_rows: Vec::new(),
-            compose_indirect_contributing_rows: Vec::new(),
-            compose_static_contributing_rows: Vec::new(),
-            compose_animated_contributing_rows: Vec::new(),
+            compose_membership_touched: RowQueue::with_row_capacity(row_capacity),
+            compose_membership_changes: Vec::new(),
             compose_animated_weights: Vec::new(),
-            compose_direct_resident_rows: Vec::new(),
-            compose_animated_resident_rows: Vec::new(),
             indirect_compose_diagnostics: ShComposePassDiagnostics::default(),
             static_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
             animated_direct_compose_diagnostics: ShComposePassDiagnostics::default(),
@@ -376,4 +391,28 @@ impl ShResidencyState {
     ) -> bool {
         animation.any_active_for_descriptor_indices(&self.direct_animation_descriptor_indices)
     }
+}
+
+/// Affinity-row id space for dense compose-planner state: the 4×4×4 brick
+/// grid over the base probes, widened to any sparse CSR row count (the loader
+/// already requires those to match the brick grid).
+fn compose_row_capacity(
+    grid_dimensions: [u32; 3],
+    sources: &postretro_level_loader::ShStreamSourceMetadata,
+) -> Result<usize, ShResidencyDrainError> {
+    let brick_rows = grid_dimensions
+        .iter()
+        .try_fold(1usize, |rows, &dimension| {
+            rows.checked_mul(usize::try_from(dimension.div_ceil(4)).ok()?)
+        })
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+    Ok([
+        sources.indirect_delta.as_ref(),
+        sources.direct_delta.as_ref(),
+        sources.animated_direct_delta.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|source| source.affinity_offsets.len().saturating_sub(1))
+    .fold(brick_rows, usize::max))
 }

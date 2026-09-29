@@ -299,9 +299,13 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // it is a layered atlas and `shadowmask_union_subtraction` forwards one
     // UV to every promoted light on the fragment.
     let forward_code = strip_line_comments(FORWARD);
+    // The animated atlas is read at the block-remapped UV, a pure atlas
+    // translation of the interpolated lightmap UV: `animated_block_uv` must
+    // receive that UV verbatim, and the animated sample must take its result.
     for call in [
         "sample_lightmap_irradiance(",
         "sample_lightmap_animated(",
+        "animated_block_uv(",
         "sample_shadowmask_atlas(",
         "shadowmask_union_subtraction(",
     ] {
@@ -324,9 +328,12 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
             // ..)` contains the token but is exactly the offset this forbids.
             // Its position varies — `shadowmask_union_subtraction` takes the
             // world position first — so match any argument, not the first.
-            let verbatim = args
-                .split(',')
-                .any(|arg| matches!(arg.trim(), "in.lightmap_uv" | "lightmap_uv"));
+            let accepted: &[&str] = if call == "sample_lightmap_animated(" {
+                &["animated.uv"]
+            } else {
+                &["in.lightmap_uv", "lightmap_uv"]
+            };
+            let verbatim = args.split(',').any(|arg| accepted.contains(&arg.trim()));
             assert!(
                 verbatim,
                 "forward: `{call}` must sample the atlas at the interpolated lightmap UV, unmodified — got `{}`",

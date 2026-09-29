@@ -44,7 +44,7 @@ pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 4;
 
 /// The shadowmask texture is `SHADOWMASK_GROUP_COUNT` lightmap widths wide and
 /// must fit the same pinned device texture dimension the lightmap does.
-const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
+pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ShadowmaskBakeError {
@@ -1566,9 +1566,9 @@ mod tests {
             if channel == SHADOWMASK_CHANNEL_DROPPED {
                 continue;
             }
-            for other in light + 1..graph.light_count() {
-                if graph.overlaps(light, other) && channels[other] != SHADOWMASK_CHANNEL_DROPPED {
-                    assert_ne!(channel, channels[other]);
+            for (other, &other_channel) in channels.iter().enumerate().skip(light + 1) {
+                if graph.overlaps(light, other) && other_channel != SHADOWMASK_CHANNEL_DROPPED {
+                    assert_ne!(channel, other_channel);
                 }
             }
         }
@@ -1672,7 +1672,7 @@ mod tests {
         }
     }
 
-    fn top_level_multilayer_five_way_inputs() -> (
+    type TopLevelMultilayerFiveWayInputs = (
         GeometryResult,
         bvh::bvh::Bvh<f32, 3>,
         Vec<BvhPrimitive>,
@@ -1680,7 +1680,9 @@ mod tests {
         Vec<ChartPlacement>,
         Vec<MapLight>,
         EntityShadowLightsSection,
-    ) {
+    );
+
+    fn top_level_multilayer_five_way_inputs() -> TopLevelMultilayerFiveWayInputs {
         let geometry = quad_geometry();
         let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
         let primitives = Vec::new();
@@ -2432,7 +2434,6 @@ mod tests {
             &mut exact_operations,
             &mut exact_checkpoint,
         );
-        drop(exact_checkpoint);
 
         assert_eq!(result, ExactColorResult::BudgetExhausted);
         assert!(
@@ -2460,7 +2461,6 @@ mod tests {
             &mut fallback_operations,
             &mut fallback_checkpoint,
         );
-        drop(fallback_checkpoint);
 
         assert_eq!(considered, LIGHT_COUNT);
         assert_eq!(fallback_operations, LIGHT_COUNT * (LIGHT_COUNT + 1));
@@ -2626,7 +2626,7 @@ mod tests {
         let mut exact_origin = light(4.0);
         exact_origin.origin = DVec3::new(16_777_216.0, 0.05, 0.5);
         exact_origin.falloff_range = 0.1;
-        let lights = vec![rounded_origin, exact_origin];
+        let lights = [rounded_origin, exact_origin];
         let selected: Vec<_> = lights
             .iter()
             .enumerate()

@@ -218,43 +218,7 @@ impl ShResidencyState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Result<(), ShResidencyDrainError> {
-        self.targets.clear();
-        self.node_slots.clear();
-        self.dense_slots = FirstFitRanges::default();
-        self.compose_words.fill(0);
-        self.sampled_words.fill(0);
-        self.installed.clear();
-        self.sampleable.clear();
-        self.pending_promotion.clear();
-        self.dirty_rows.clear();
-        self.indirect_dirty_rows.clear();
-        self.indirect_resident_rows.clear();
-        self.indirect_base_row_refs.clear();
-        self.indirect_delta_row_refs.clear();
-        self.direct_promotion_dirty_rows.clear();
-        self.direct_animated_dirty_rows.clear();
-        self.direct_promotion_resident_rows.clear();
-        self.direct_animated_resident_rows.clear();
-        self.direct_base_row_refs.clear();
-        self.direct_promotion_row_refs.clear();
-        self.direct_animated_row_refs.clear();
-        self.compose_planner.reset_generation();
-        self.compose_frame_plan = None;
-        self.compose_input_regions.clear();
-        self.compose_region_rows.clear();
-        self.compose_residency_rows.clear();
-        self.compose_animated_weights.clear();
-        self.compose_direct_resident_rows.clear();
-        self.compose_animated_resident_rows.clear();
-        self.indirect_compose_diagnostics = ShComposePassDiagnostics::default();
-        self.static_direct_compose_diagnostics = ShComposePassDiagnostics::default();
-        self.animated_direct_compose_diagnostics = ShComposePassDiagnostics::default();
-        self.compose_planning_cpu_micros = 0;
-        self.indirect_compose_epoch = 0;
-        self.direct_compose_epoch = 0;
-        for pool in self.sparse_pools.values_mut() {
-            *pool = SparsePool::new(pool.row_pairs.len());
-        }
+        self.clear_session_mirrors();
         let grid = self.grid_dimensions();
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.clear_all_indirect_sparse_rows(queue);
@@ -278,6 +242,50 @@ impl ShResidencyState {
             staged?;
         }
         Ok(())
+    }
+
+    /// The CPU half of a session clear: every residency mirror, the compose
+    /// planner, and the frame scratch return to their post-load state.
+    pub(super) fn clear_session_mirrors(&mut self) {
+        self.targets.clear();
+        self.node_slots.clear();
+        self.dense_slots = FirstFitRanges::default();
+        self.compose_words.fill(0);
+        self.sampled_words.fill(0);
+        self.installed.clear();
+        self.sampleable.clear();
+        self.pending_promotion.clear();
+        self.dirty_rows.clear();
+        self.indirect_dirty_rows.clear();
+        self.indirect_resident_rows.clear();
+        self.indirect_base_row_refs.clear();
+        self.indirect_delta_row_refs.clear();
+        self.direct_promotion_dirty_rows.clear();
+        self.direct_animated_dirty_rows.clear();
+        self.direct_promotion_resident_rows.clear();
+        self.direct_animated_resident_rows.clear();
+        self.direct_base_row_refs.clear();
+        self.direct_promotion_row_refs.clear();
+        self.direct_animated_row_refs.clear();
+        self.compose_planner.reset_generation();
+        // The ref tables were cleared wholesale, not row by row.
+        self.compose_planner.clear_membership();
+        self.compose_membership_touched.clear();
+        self.compose_membership_changes.clear();
+        self.compose_frame_plan = None;
+        self.compose_input_regions.clear();
+        self.compose_region_rows.clear();
+        self.compose_residency_rows.clear();
+        self.compose_animated_weights.clear();
+        self.indirect_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.static_direct_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.animated_direct_compose_diagnostics = ShComposePassDiagnostics::default();
+        self.compose_planning_cpu_micros = 0;
+        self.indirect_compose_epoch = 0;
+        self.direct_compose_epoch = 0;
+        for pool in self.sparse_pools.values_mut() {
+            *pool = SparsePool::new(pool.row_pairs.len());
+        }
     }
 }
 

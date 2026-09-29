@@ -337,6 +337,13 @@ impl Renderer {
     }
 }
 
+impl Renderer {
+    #[cfg(feature = "dev-tools")]
+    pub fn clear_debug_lines(&mut self) {
+        self.full_mut().debug_lines.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,12 +376,5 @@ mod tests {
             camera_space_clip.distance(world_space_clip) < 1.0e-5,
             "world-space shading placement must preserve the dedicated viewmodel clip placement",
         );
-    }
-}
-
-impl Renderer {
-    #[cfg(feature = "dev-tools")]
-    pub fn clear_debug_lines(&mut self) {
-        self.full_mut().debug_lines.clear();
     }
 }

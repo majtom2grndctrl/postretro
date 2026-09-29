@@ -346,7 +346,7 @@ mod tests {
             cone_angle_inner: None,
             cone_angle_outer: None,
             cone_direction: None,
-            animation: animated.then(|| LightAnimation {
+            animation: animated.then_some(LightAnimation {
                 period: 1.0,
                 phase: 0.0,
                 brightness: None,

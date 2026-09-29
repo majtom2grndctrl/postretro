@@ -150,21 +150,38 @@ physical light accumulates once and an owner cannot be evicted out from under a 
 boundary.
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
-the application hands the renderer `ShSampleRegionSets`: world AABBs for visible cells,
-fog-reachable cells, and drawn movers swept from their current to interpolated transform.
-Renderer-admitted `MeshFramePlan`s supply the accepted forward-mesh bounds; only the
-windowed path also supplies first-person viewmodel bounds, while capture excludes them.
-An empty fog-reachable set means every cell and therefore gates all resident rows. Only the
-renderer maps these regions to affinity rows; it expands them by 1.1 cell spacings for the
-sampler footprint, intersects them with resident rows, and closes the result over
-scaled-node writer rows. No row indices cross the application/renderer boundary. Rows are
+the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
+fog-reachable cells, and world AABBs for drawn movers swept from their current to
+interpolated transform. Renderer-admitted `MeshFramePlan`s supply the accepted forward-mesh
+bounds; only the windowed path also supplies first-person viewmodel bounds, while capture
+excludes them. An empty fog-reachable set means every cell and therefore gates all resident
+rows. Only the renderer maps these inputs to affinity rows; it expands each cell or region by
+1.1 cell spacings for the sampler footprint, intersects the result with resident rows, and
+closes it over scaled-node writer rows. Everything static about that mapping is cached at
+level install and dropped with the residency state: each row's scaled-node writer and each
+cell's covered rows, before residency filtering. Per affinity row this costs roughly 35
+bytes — a 4-byte writer-row cache entry, a 4-byte dedup stamp, and per pass (three passes)
+a 1-byte staleness flag, an 8-byte composed generation, and one resident bit — plus 4 bytes
+per (cell, covered row) entry in the per-cell row lists, the one term not bounded by row
+count, since large overlapping cells each list every row their dilated bounds cover: a
+36,000-row stress level with ~5,700 cells caches about 1.1 MB of cell lists this way.
+Building this index, and failing it with a slot overflow, happens at level install, not
+per frame. A frame therefore pays for the rows its
+cells list plus the bricks of its moving regions; resident membership is a dense bitset per
+pass, updated per touched row on install and eviction. No row indices cross the
+application/renderer boundary. Rows are
 also filtered per pass by whether the resident streamed data actually contributes: indirect
-section 27, static-direct section 41, or animated-direct section 45.
+section 27, static-direct section 41, or animated-direct section 45. A level with id-35 base
+direct SH but neither id 41 nor id 45 samples that base uncomposed, so its direct passes hold
+no rows; without id 45, Pass B holds none.
 
 Invariant: every stored slot a consumer can sample in frame N equals what full-resident
 compose would write in frame N, so no stale slot is sampled. Per-pass generations record
 changes while rows are outside the gate or a frame cannot encode; lagging rows compose on
-the frame they re-enter the gate, before any consumer samples them. Install, eviction, and
+the frame they re-enter the gate, before any consumer samples them. A trigger advances a
+per-pass change epoch rather than stamping rows: a row lags when a source it belonged to
+fired after the row was last composed, and dense per-row state lets planning, commit, and
+the lag counters visit only gated, pending, and residency-changed rows. Install, eviction, and
 slot-reuse rows bypass the view gate, including their scaled-node writers. Unlike the warm
 set, the gate is view-dependent: turning in place composes lagging rows as they come into
 view. Any new SH consumer (an alternate camera, GPU particles, reflection probes) adds its
@@ -277,7 +294,7 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
    - **Candidate cull** (`candidate_cull.wgsl`) — the fast path. Eligible iff a valid baked `CellDrawIndex` (build_pipeline.md, id 37) is loaded, this frame's visibility is `VisibleCells::Culled`, AND its provenance is portal traversal or the portal step-limit fallback. Non-empty BVH maps require the index at load time; absence or validation failure is a load error, not a runtime fallback. The CPU expands the visible cells' owned BVH-leaf spans from the CSR into a flat candidate-leaf list (deduping visible cell ids first, so a repeated cell never double-writes a slot), clears the camera indirect and cull-status ranges to zero, then dispatches one invocation per candidate leaf. Each invocation frustum-tests its leaf and writes that leaf's existing global slot (submit) or leaves it cleared (frustum reject). Non-candidate leaves stay cleared — so cull cost scales with *visible* geometry, not the whole tree. An out-of-range visible cell id falls back to the tree walk for that frame.
    - **Tree walk** (`bvh_cull.wgsl`) — the runtime fallback. Walks the whole global BVH in one invocation; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's slot. Selected for `DrawAll`, non-portal `Culled` fallbacks (solid-cell / exterior / no-portals), and the out-of-range visible-cell case above. Shadow cone cull (step 6) always uses the tree walk.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
-4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. One workgroup per 8×8 tile, laid out as a balanced row-major 2D grid (last row padded with skip records), so tile counts past `max_compute_workgroups_per_dimension` still dispatch. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
+4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. One workgroup per 8×8 tile, laid out as a balanced row-major 2D grid (last row padded with skip records), so tile counts past `max_compute_workgroups_per_dimension` still dispatch. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Compact atlas:** the atlas is an array of square power-of-two pages holding one block per animated face (its chart placement, padding as a zero gutter), not a slot per static layer. Compose writes chunks at their compact position on their block's page. Forward resolves each face's block in the fragment stage from the group-4 binding-7 block table (FRAGMENT-only uniform: static layer size, page size, block count, then a packed `i16` static→compact texel offset and page per block) through a flat per-vertex block id read with the lightmap layer as one `Uint16x2` attribute, so no fragment binding is added. Id 0, and every id while the atlas is inactive (dummy, placeholder or non-square static lightmap, nothing to compose, construction failure), resolves to no block. Power-of-two static and page sizes keep the remap an exact translation, so zero gutters give pixel parity with the full-layer layout. The compiler and the forward shader share one block cap (`ANIMATED_BLOCK_CAP`, the default 64 KiB uniform); section-25 consistency enforces it at load too. A vertex whose block id disagrees with the table — past it, on another static layer, or outside the block's static rect — rejects the level in debug builds and in any build with `dev-tools`; player release builds load the level with animated light off and log one error. See `build_pipeline.md` §PRL section IDs (AnimatedLightWeightMaps). **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
 5. **SH residency drain and compose passes** (compute) — legacy whole-load composition
    retains its full-affinity-grid dispatch whenever its composed atlas changes. In streamed
    mode, the renderer drains accepted cluster work once before every SH compose path. It
@@ -512,6 +529,8 @@ row's crossfade `w`; it neither grants a slot nor changes ranking or cache
 allocation. This makes a VM-free rest-pose sequence compare the v1 `w=0` flat
 delta byte-for-byte with known promoted splits. An omitted `force_promotion`
 leaves the legacy capture path unchanged.
+
+**Lightmap-family byte meter.** Every level install (including the empty install that unloads a level) rebuilds one report of resident bytes for the five group-4 lightmap textures — static irradiance, static direction, shadowmask, animated irradiance, animated direction — read back from the textures actually bound, so a rejected atlas reports its placeholder. It uses the same row model and Data/Dummy/Fallback and section-citation conventions as the SH report below. The load log (`[Renderer] Lightmap residency:`), the dev panel's Performance tab ("Lightmap memory") and the capture measurement JSON (`renderer_accounted_lightmap`) all print that one report.
 
 **Planned SH residency accounting.** The renderer records requested bytes for every
 level-owned SH texture and buffer at the allocation decision that creates it. Each physical

@@ -152,8 +152,12 @@ impl ShResidencyState {
             self.journal_insert_row(journal, RowSet::IndirectDirty, row);
             self.journal_add_row_refs(journal, RowRefTable::IndirectBase, row, count)?;
             if self.direct_required {
-                self.journal_insert_row(journal, RowSet::DirectPromotionDirty, row);
-                self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
+                // An id-35 base without id-41/id-45 is sampled directly: no
+                // direct pass will ever consume these dirty rows.
+                if self.direct_compose_required {
+                    self.journal_insert_row(journal, RowSet::DirectPromotionDirty, row);
+                    self.journal_insert_row(journal, RowSet::DirectAnimatedDirty, row);
+                }
                 self.journal_add_row_refs(journal, RowRefTable::DirectBase, row, count)?;
             }
         }

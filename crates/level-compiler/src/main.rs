@@ -2,6 +2,8 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 pub mod affinity_grid;
+pub mod animated_atlas_layout;
+pub mod animated_block_ids;
 pub mod animated_direct_sh_bake;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
@@ -34,6 +36,8 @@ pub mod kinematic_geometry;
 pub mod light_namespaces;
 pub mod lightmap_bake;
 pub mod lightmap_layer;
+#[cfg(test)]
+mod lightmap_residency_dry_run;
 pub mod logger;
 pub mod map_data;
 pub mod map_format;

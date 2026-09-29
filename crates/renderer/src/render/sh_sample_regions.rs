@@ -1,9 +1,11 @@
 //! Plain-data sampled-SH region inputs shared with the application.
 //!
-//! Regions deliberately carry only world-space bounds. Affinity-row addresses,
-//! residency, and scaled-node writer closure remain renderer-owned details.
+//! Inputs carry only world-space bounds and runtime cell ids. Affinity-row
+//! addresses, residency, and scaled-node writer closure remain renderer-owned
+//! details.
 
 use glam::Vec3;
+use postretro_visibility::VisibleCells;
 
 /// One world-space AABB whose drawn pixels may sample the SH probe volume.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,14 +20,19 @@ impl ShSampleRegion {
     }
 }
 
-/// App-owned non-mesh consumer bounds for one frame. Renderer-admitted mesh
-/// plans contribute separately, after budget and cache admission. The renderer
-/// resolves all world regions to private affinity rows after the residency drain.
-#[derive(Debug, Clone, Copy, Default)]
+/// App-owned non-mesh consumers for one frame. Cells are named by runtime
+/// cell id: the renderer indexed each cell's bounds at level install, so a
+/// frame's cell gate costs a lookup rather than a world-space walk.
+/// Renderer-admitted mesh plans contribute separately, after budget and cache
+/// admission. The renderer resolves all of these to private affinity rows
+/// after the residency drain.
+#[derive(Debug, Clone, Copy)]
 pub struct ShSampleRegionSets<'a> {
-    pub visible_cells: &'a [ShSampleRegion],
-    /// Portal/fog-reachable cell bounds already materialized by visibility
-    /// preparation. Empty retains the established DrawAll sentinel.
-    pub fog_cells: &'a [(Vec3, Vec3)],
+    /// Drawable cells from visibility; `DrawAll` names every runtime cell.
+    pub visible_cells: &'a VisibleCells,
+    /// Portal/fog-reachable cell ids from visibility. Empty retains the
+    /// established DrawAll sentinel.
+    pub fog_cells: &'a [u32],
+    /// Drawn movers' swept bounds.
     pub movers: &'a [ShSampleRegion],
 }

@@ -2175,7 +2175,7 @@ mod tests {
                 .unwrap();
             let manifest = manifest_from_js_value(&ctx, "/mod/start-script.js", returned)
                 .expect("staged QuickJS switching manifest should parse");
-            assert_eq!(manifest.switching.commit_on_direct_select, false);
+            assert!(!manifest.switching.commit_on_direct_select);
             assert_eq!(manifest.switching.cycle_commit_dwell_ms, 125.0);
             assert!(manifest.switching.block_during_reload);
 
@@ -2205,7 +2205,7 @@ mod tests {
             None,
         )
         .expect("staged Luau switching manifest should parse");
-        assert_eq!(manifest.switching.commit_on_direct_select, false);
+        assert!(!manifest.switching.commit_on_direct_select);
         assert_eq!(manifest.switching.cycle_commit_dwell_ms, 125.0);
         assert!(manifest.switching.block_during_reload);
 

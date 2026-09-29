@@ -33,6 +33,7 @@ use super::direct_sh_resources::{
     DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
 };
+use super::residency::{ResidencyAllocationState, source_ids};
 #[cfg(any(feature = "dev-tools", test))]
 use super::sh_allocation::texture_allocation_bytes;
 use super::sh_allocation::{
@@ -47,7 +48,7 @@ use super::sh_atlas::{
     upload_depth_moment_texture,
 };
 use super::sh_indirection::build_probe_indirection_words;
-use super::sh_residency::{ShAllocationLedger, ShResidencyAllocationState, source_ids};
+use super::sh_residency::ShAllocationLedger;
 
 /// Dev-tools marker color while the composed dense-atlas readback has not yet
 /// completed. This deliberately replaces the removed CPU-side base-atlas
@@ -220,6 +221,34 @@ pub struct AnimatedLightBuffers {
 }
 
 impl AnimatedLightBuffers {
+    /// Buffers over caller-packed descriptor records, for GPU tests that run
+    /// the animated compose pass without a whole SH volume. The sample pool is
+    /// one zeroed record: descriptors with zero-count curves never read it.
+    #[cfg(test)]
+    pub(crate) fn for_test(device: &wgpu::Device, descriptor_mirror: Vec<u8>) -> Self {
+        use wgpu::util::DeviceExt;
+        assert_eq!(descriptor_mirror.len() % ANIMATION_DESCRIPTOR_SIZE, 0);
+        let animated_light_count = (descriptor_mirror.len() / ANIMATION_DESCRIPTOR_SIZE) as u32;
+        let descriptors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test animation descriptors"),
+            contents: &descriptor_mirror,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let anim_samples = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test animation samples"),
+            contents: &[0u8; ANIMATION_DESCRIPTOR_SIZE],
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        Self {
+            descriptors,
+            anim_samples,
+            descriptor_mirror,
+            animated_light_count,
+            dirty: false,
+            oor_warned: false,
+        }
+    }
+
     /// 0 when the map has no animated lights (buffers still hold a single dummy record so wgpu accepts the binding).
     #[allow(dead_code)]
     pub fn animated_light_count(&self) -> u32 {
@@ -433,9 +462,9 @@ impl ShVolumeResources {
         let indirect_sources =
             source_ids([section.map(|_| 34), indirect_delta_present.then_some(27)]);
         let indirect_state = match (section.is_some(), usable.is_some()) {
-            (_, true) => ShResidencyAllocationState::Data,
-            (true, false) => ShResidencyAllocationState::Fallback,
-            (false, false) => ShResidencyAllocationState::Dummy,
+            (_, true) => ResidencyAllocationState::Data,
+            (true, false) => ResidencyAllocationState::Fallback,
+            (false, false) => ResidencyAllocationState::Dummy,
         };
         // Streamed id-34 retains animation descriptors/samples in the shared
         // group-3 resources even though it deliberately omits the legacy
@@ -444,7 +473,7 @@ impl ShVolumeResources {
         let animation_sources =
             source_ids([section.map(|_| 34).or(stream_base_present.then_some(34))]);
         let animation_state = if stream_base_present {
-            ShResidencyAllocationState::Data
+            ResidencyAllocationState::Data
         } else {
             indirect_state
         };
@@ -455,7 +484,7 @@ impl ShVolumeResources {
                 base_allocation,
                 &source_ids([section.map(|_| 34)]),
                 false,
-                ShResidencyAllocationState::Data,
+                ResidencyAllocationState::Data,
             );
             base_atlas_texture =
                 upload_compact_base_atlas_texture(device, queue, sec, base_allocation);
@@ -477,7 +506,7 @@ impl ShVolumeResources {
                 depth_allocation,
                 &source_ids([section.map(|_| 34)]),
                 false,
-                ShResidencyAllocationState::Data,
+                ResidencyAllocationState::Data,
             );
             depth_moment_texture =
                 upload_depth_moment_texture(device, queue, &moments, depth_allocation);
@@ -607,7 +636,7 @@ impl ShVolumeResources {
             &animation_sources,
             true,
             if scripted_light_capacity > 0 && usable.is_none() {
-                ShResidencyAllocationState::Data
+                ResidencyAllocationState::Data
             } else {
                 animation_state
             },
@@ -631,9 +660,9 @@ impl ShVolumeResources {
             &[],
             true,
             if scripted_light_capacity > 0 {
-                ShResidencyAllocationState::Data
+                ResidencyAllocationState::Data
             } else {
-                ShResidencyAllocationState::Dummy
+                ResidencyAllocationState::Dummy
             },
         );
         let scripted_light_descriptors_buffer = device.create_buffer_init_helper(

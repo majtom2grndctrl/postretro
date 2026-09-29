@@ -254,7 +254,7 @@ mod tests {
                 results.push((considered, vis.stats.walk_reach(), step_limit, origin, yaw));
             }
         }
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        results.sort_by_key(|r| std::cmp::Reverse(r.0));
         println!("considered | walk_reach | step_limit | --start-pose x,y,z,yaw_deg,0");
         for (considered, reach, step_limit, origin, yaw) in results.iter().take(12) {
             println!(

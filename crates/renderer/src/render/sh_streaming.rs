@@ -27,6 +27,9 @@ use super::renderer_types::{
 
 mod allocator;
 mod compose_plan;
+#[cfg(test)]
+mod compose_plan_oracle;
+mod compose_staleness;
 mod dense;
 mod diagnostics;
 mod direct_compose;
@@ -43,8 +46,10 @@ mod patches;
 mod payload;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
+mod row_bitset;
 mod row_refs;
 mod rows;
+mod sample_region_index;
 mod sample_regions;
 mod setup;
 mod sparse_install;
@@ -52,7 +57,7 @@ mod sparse_install;
 mod tests;
 
 use allocator::{FirstFitRanges, PoolRange, SparsePool};
-use compose_plan::{ComposeFramePlan, StreamedComposePlanner};
+use compose_plan::{ComposeFramePlan, RowMembership, StreamedComposePlanner};
 pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
 use direct_compose::DirectSparseRowUpload;
@@ -66,7 +71,9 @@ use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 #[cfg(feature = "dev-tools")]
 pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
+use row_bitset::{RowBitSet, RowQueue};
 use row_refs::{RowRefTable, RowSet, decrement_row_ref, increment_row_ref, row_counts};
+use sample_region_index::SampleRegionIndex;
 
 const PROBE_PATCH_BLOCK: u32 = 0;
 const ISOLATED_ATLAS_BLOCK: u32 = 1;
@@ -316,13 +323,13 @@ pub(super) struct ShResidencyState {
     pending_promotion: BTreeSet<u32>,
     dirty_rows: BTreeSet<(u32, u32)>,
     indirect_dirty_rows: BTreeSet<u32>,
-    indirect_resident_rows: BTreeSet<u32>,
+    indirect_resident_rows: RowBitSet,
     indirect_base_row_refs: BTreeMap<u32, u32>,
     indirect_delta_row_refs: BTreeMap<u32, u32>,
     direct_promotion_dirty_rows: BTreeSet<u32>,
     direct_animated_dirty_rows: BTreeSet<u32>,
-    direct_promotion_resident_rows: BTreeSet<u32>,
-    direct_animated_resident_rows: BTreeSet<u32>,
+    direct_promotion_resident_rows: RowBitSet,
+    direct_animated_resident_rows: RowBitSet,
     direct_base_row_refs: BTreeMap<u32, u32>,
     direct_promotion_row_refs: BTreeMap<u32, u32>,
     direct_animated_row_refs: BTreeMap<u32, u32>,
@@ -332,16 +339,20 @@ pub(super) struct ShResidencyState {
     direct_animation_descriptor_indices: Vec<u32>,
     compose_planner: StreamedComposePlanner,
     compose_frame_plan: Option<ComposeFramePlan>,
+    /// Load-time writer-row and per-cell row caches for the sampled-row gate.
+    sample_region_index: SampleRegionIndex,
+    /// This frame's dynamic (mover and forward-mesh) sample regions.
     compose_input_regions: Vec<crate::render::ShSampleRegion>,
     compose_region_rows: Vec<u32>,
     compose_residency_rows: Vec<u32>,
-    compose_indirect_resident_rows: Vec<u32>,
-    compose_indirect_contributing_rows: Vec<u32>,
-    compose_static_contributing_rows: Vec<u32>,
-    compose_animated_contributing_rows: Vec<u32>,
+    /// Rows whose row-ref presence changed since the last compose plan. The
+    /// planner re-observes only these, so membership stays O(residency delta).
+    /// Drains that run without a compose plan (non-rendering frames, a failed
+    /// prepare) keep adding to it, so each row is queued at most once: the
+    /// list never exceeds the planner row capacity.
+    compose_membership_touched: RowQueue,
+    compose_membership_changes: Vec<(u32, RowMembership)>,
     compose_animated_weights: Vec<f32>,
-    compose_direct_resident_rows: Vec<u32>,
-    compose_animated_resident_rows: Vec<u32>,
     indirect_compose_diagnostics: ShComposePassDiagnostics,
     static_direct_compose_diagnostics: ShComposePassDiagnostics,
     animated_direct_compose_diagnostics: ShComposePassDiagnostics,

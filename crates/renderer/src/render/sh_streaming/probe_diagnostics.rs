@@ -146,6 +146,7 @@ mod tests {
             &directory,
             &base,
             &ShStreamSourceMetadata::default(),
+            &[],
         )
         .expect("minimal single-cluster 4x4x4 dense grid is valid")
     }

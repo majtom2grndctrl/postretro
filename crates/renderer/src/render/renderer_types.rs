@@ -496,6 +496,9 @@ pub struct LevelGeometry<'a> {
     /// 43). Uploaded into a renderer-owned dynamic-object pass, never into the
     /// static world BVH/indirect buffers.
     pub kinematic_geometry: Option<&'a postretro_level_loader::KinematicGeometry>,
+    /// Runtime cells in id order. A streamed-SH level indexes their bounds
+    /// at install so per-frame sample gating names cells by id.
+    pub cells: &'a [postretro_level_loader::CellData],
     pub texture_materials: &'a [postretro_render_data::material::Material],
 }
 
@@ -814,6 +817,9 @@ pub(super) struct FullRenderer {
     /// Finished, plain-Rust accounting for the most recently installed level.
     /// It is absent until `install_level_geometry` crosses the level boundary.
     pub(super) sh_residency_report: Option<ShResidencyReport>,
+    /// Lightmap-family meter for the bound group-4 textures. Rebuilt by every
+    /// level install, so a level unload reports the placeholders.
+    pub(super) lightmap_residency_report: LightmapResidencyReport,
     /// Streaming-only residency ownership. The legacy whole-level path keeps
     /// this absent and continues using its existing resources unchanged.
     pub(super) sh_streaming: Option<sh_streaming::ShResidencyState>,
@@ -1290,6 +1296,11 @@ impl Renderer {
             }
             None => Some(report),
         }
+    }
+
+    /// Resident bytes of every lightmap-family texture currently bound.
+    pub fn lightmap_residency_report(&self) -> Option<&LightmapResidencyReport> {
+        Some(&self.full.as_ref()?.lightmap_residency_report)
     }
 
     /// Borrow the full-phase state. Panics if called before `finish_full_init`

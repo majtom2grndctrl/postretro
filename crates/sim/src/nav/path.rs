@@ -1018,7 +1018,8 @@ mod tests {
                     return None;
                 }
                 let t = (portal_z - segment[0].z) / dz;
-                (t >= -EPS && t <= 1.0 + EPS)
+                (-EPS..=1.0 + EPS)
+                    .contains(&t)
                     .then_some(segment[0].x + t * (segment[1].x - segment[0].x))
             });
             let crossing_x = crossing.expect("path must cross each corridor portal");
@@ -1118,7 +1119,9 @@ mod tests {
                         return None;
                     }
                     let t = (4.0 - seg[0].z) / dz;
-                    (t >= -EPS && t <= 1.0 + EPS).then_some(seg[0].x + t * (seg[1].x - seg[0].x))
+                    (-EPS..=1.0 + EPS)
+                        .contains(&t)
+                        .then_some(seg[0].x + t * (seg[1].x - seg[0].x))
                 })
                 .expect("path must cross the z=4 doorway line")
         };

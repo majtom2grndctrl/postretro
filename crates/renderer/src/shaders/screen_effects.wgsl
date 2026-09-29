@@ -16,7 +16,7 @@
 @group(0) @binding(0) var scene_color_tex: texture_2d<f32>;
 @group(0) @binding(1) var scene_color_sampler: sampler;
 
-// Mirrors `EffectUniform` in render/screen_effects.rs.
+// Mirrors `EffectUniform` in render-cpu/src/screen_effects.rs.
 //   flash    — rgba; `flash.a` is the over-blend weight (0 at rest → no-op).
 //   vignette — `xyz` linear tint + `w` strength (0 at rest → no edge tint).
 //   shake    — UV offset (px→UV conversion done CPU-side); (0,0) at rest.

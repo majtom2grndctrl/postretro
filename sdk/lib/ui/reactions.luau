@@ -292,6 +292,21 @@ UiReactionsSdk.EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop"
 --- frontend menu, and reload its optional backdrop level.
 UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
 
+--- Reserved button `onPress` action that opens the engine accessibility panel.
+--- The App intercepts this exact wire value before named-reaction dispatch; the
+--- panel is engine-owned and works under a mod that registers no reactions.
+UiReactionsSdk.OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility"
+
+--- The reserved `onPress` action for one accessibility field:
+--- `ui.accessibility.<op>.<field>`. Toggles (`reduceMotion`, `flashLimiter`,
+--- `monoAudio`) `cycle`; numeric fields (`screenShakeScale`, `viewFeelScale`,
+--- `masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume`) `increase` or
+--- `decrease`. The action writes the player's setting exactly as the engine
+--- accessibility panel's control does.
+function UiReactionsSdk.accessibilityAction(field: string, op: string): string
+	return `ui.accessibility.{op}.{field}`
+end
+
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
 --- Pure: returns a primitive reaction body wrapping `showDialog`. The keyboard is
 --- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to

@@ -250,6 +250,12 @@ impl UiDispatch {
     pub fn take_ready(&mut self) -> Vec<UiIntent> {
         std::mem::take(&mut self.ready)
     }
+
+    /// Drop every queued intent: frames that draw no UI never deliver input.
+    pub fn discard_all(&mut self) {
+        self.pending.clear();
+        self.ready.clear();
+    }
 }
 
 #[cfg(test)]

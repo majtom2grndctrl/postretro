@@ -28,7 +28,7 @@ pub use crate::ui::descriptor::{
     FocusPolicy, GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget,
     Predicate, PredicateValue, Priority, RepeatPolicy, RingRadiusRange, RingWidget, Role,
     ScalarValue, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, SpacingValue,
-    TextBind, TextTween, TextWidget, Widget,
+    TextBind, TextTween, TextWidget, ValueTextCase, Widget,
 };
 #[allow(unused_imports)]
 pub use crate::ui::layout::Anchor;

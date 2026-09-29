@@ -614,6 +614,7 @@ pub(crate) fn build_frame_timing(
             "billboard_direct_scatter_compose";
         pass_labels[TIMING_PAIR_DYNAMIC_SPOT_DEPTH] = "dynamic_spot_depth_upper";
         pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
+        pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None

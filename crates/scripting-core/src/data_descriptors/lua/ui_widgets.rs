@@ -213,7 +213,41 @@ pub fn button_widget_from_lua(table: &Table) -> Result<ButtonWidget, DescriptorE
         disabled: get_optional_bool_lua(table, "disabled")?.unwrap_or(false),
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
+        value_text: value_text_from_lua(table)?,
     })
+}
+
+/// Lua twin of `value_text_from_js`: an array of `{ when?, text }` cases.
+fn value_text_from_lua(table: &Table) -> Result<Vec<ValueTextCase>, DescriptorError> {
+    let raw: LuaValue = table.get("valueText").map_err(lua_err)?;
+    if matches!(raw, LuaValue::Nil) {
+        return Ok(Vec::new());
+    }
+    let cases = lua_table(raw, "`valueText`")?;
+    let len = validate_dense_lua_array(&cases, "`valueText`")?;
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let case = lua_table(cases.get(i).map_err(lua_err)?, "`valueText[]`")?;
+        let mut when = Vec::new();
+        let raw_when: LuaValue = case.get("when").map_err(lua_err)?;
+        if !matches!(raw_when, LuaValue::Nil) {
+            let conditions = lua_table(raw_when, "`valueText[].when`")?;
+            let count = validate_dense_lua_array(&conditions, "`valueText[].when`")?;
+            for j in 1..=(count as i64) {
+                let condition =
+                    lua_table(conditions.get(j).map_err(lua_err)?, "`valueText[].when[]`")?;
+                when.push(Predicate {
+                    source: bind_source_from_lua(&condition)?,
+                    equals: predicate_value_opt_from_lua(&condition, "valueText.when")?,
+                });
+            }
+        }
+        out.push(ValueTextCase {
+            when,
+            text: get_required_string_lua(&case, "text")?,
+        });
+    }
+    Ok(out)
 }
 
 pub fn slider_widget_from_lua(table: &Table) -> Result<SliderWidget, DescriptorError> {

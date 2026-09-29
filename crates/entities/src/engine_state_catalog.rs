@@ -353,6 +353,110 @@ const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
 const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "on"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
+    // Accessibility preferences: engine-owned, readonly, always-live resolved
+    // values, plus one `…FollowsSystem` source flag per OS-seedable field.
+    // Client-local presentation; never replicated.
+    // See `context/lib/player_options.md` §5.
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.reduceMotion",
+        sdk_path: &["accessibility", "reduceMotion"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.reduceMotionFollowsSystem",
+        sdk_path: &["accessibility", "reduceMotionFollowsSystem"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(true),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.screenShakeScale",
+        sdk_path: &["accessibility", "screenShakeScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.viewFeelScale",
+        sdk_path: &["accessibility", "viewFeelScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.flashLimiter",
+        sdk_path: &["accessibility", "flashLimiter"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(true),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.masterVolume",
+        sdk_path: &["accessibility", "masterVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.sfxVolume",
+        sdk_path: &["accessibility", "sfxVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.musicVolume",
+        sdk_path: &["accessibility", "musicVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.uiVolume",
+        sdk_path: &["accessibility", "uiVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "accessibility.monoAudio",
+        sdk_path: &["accessibility", "monoAudio"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
     EngineStateCatalogEntry {
         wire_name: "player.health",
         sdk_path: &["player", "health"],
@@ -633,6 +737,78 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         capability: EngineStateCapability::Writable,
         network: ReplicationScope::None,
     },
+    // Accessibility working copies. The flash limiter has none: only the
+    // engine panel changes it.
+    EngineStateCatalogEntry {
+        wire_name: "options.reduceMotion",
+        sdk_path: &["options", "reduceMotion"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.screenShakeScale",
+        sdk_path: &["options", "screenShakeScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.masterVolume",
+        sdk_path: &["options", "masterVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.sfxVolume",
+        sdk_path: &["options", "sfxVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.musicVolume",
+        sdk_path: &["options", "musicVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.uiVolume",
+        sdk_path: &["options", "uiVolume"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.monoAudio",
+        sdk_path: &["options", "monoAudio"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
     EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
         sdk_path: &["ui", "textEntry"],
@@ -810,13 +986,30 @@ mod tests {
         assert_eq!(
             wire_names,
             vec![
+                "accessibility.flashLimiter",
+                "accessibility.masterVolume",
+                "accessibility.monoAudio",
+                "accessibility.musicVolume",
+                "accessibility.reduceMotion",
+                "accessibility.reduceMotionFollowsSystem",
+                "accessibility.screenShakeScale",
+                "accessibility.sfxVolume",
+                "accessibility.uiVolume",
+                "accessibility.viewFeelScale",
                 "input.mode",
                 "options.crouchMode",
                 "options.fogQuality",
                 "options.invertY",
+                "options.masterVolume",
+                "options.monoAudio",
                 "options.mouseSensitivity",
+                "options.musicVolume",
+                "options.reduceMotion",
+                "options.screenShakeScale",
+                "options.sfxVolume",
                 "options.shadowQuality",
                 "options.surfaceDepthQuality",
+                "options.uiVolume",
                 "options.viewFeelScale",
                 "player.ammo",
                 "player.ammoReserve",
@@ -852,6 +1045,13 @@ mod tests {
             "options.shadowQuality",
             "options.fogQuality",
             "options.surfaceDepthQuality",
+            "options.reduceMotion",
+            "options.screenShakeScale",
+            "options.masterVolume",
+            "options.sfxVolume",
+            "options.musicVolume",
+            "options.uiVolume",
+            "options.monoAudio",
         ] {
             let entry = entries
                 .iter()
@@ -986,6 +1186,40 @@ mod tests {
             assert_eq!(entry.default, default);
             assert_eq!(entry.network, ReplicationScope::None);
         }
+    }
+
+    /// Accessibility preferences are client-local presentation: every
+    /// `accessibility.*` slot, and every `options.*` working copy of one, stays
+    /// unreplicated. Derived from the catalog, so a later field is covered too.
+    #[test]
+    fn accessibility_slots_and_their_working_copies_never_replicate() {
+        let catalog = engine_state_catalog().unwrap();
+        let entries = catalog.entries();
+        let accessibility: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.wire_name.starts_with("accessibility."))
+            .collect();
+        assert!(!accessibility.is_empty());
+        for entry in &accessibility {
+            assert_eq!(entry.network, ReplicationScope::None, "{}", entry.wire_name);
+            assert_eq!(
+                entry.capability,
+                EngineStateCapability::Readonly,
+                "{} is engine-owned and readonly",
+                entry.wire_name
+            );
+            let suffix = entry.wire_name.trim_start_matches("accessibility.");
+            let working_copy = format!("options.{suffix}");
+            if let Some(copy) = entries.iter().find(|e| e.wire_name == working_copy) {
+                assert_eq!(copy.network, ReplicationScope::None, "{working_copy}");
+            }
+        }
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.wire_name == "options.flashLimiter"),
+            "the flash limiter has no script-writable working copy"
+        );
     }
 
     #[test]

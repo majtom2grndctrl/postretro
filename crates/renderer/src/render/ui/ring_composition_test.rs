@@ -1,8 +1,8 @@
 // Headless regression for ring painter depth and opaque-quad occlusion. Rings
 // use a second pipeline but must still ride the one whole-composition encode.
 
-use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::{UiComposition, UiImageRegistry, UiInstance, UiPass, UiRingInstance, UiText, tree};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 
 const TARGET: u32 = 64;
 const RING_SAMPLE: (u32, u32) = (32, 13);

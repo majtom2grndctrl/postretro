@@ -244,7 +244,57 @@ pub fn button_widget_from_js<'js>(
         disabled: get_optional_bool_js(obj, "disabled")?.unwrap_or(false),
         visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
         role: role_opt_from_js(obj)?,
+        value_text: value_text_from_js(obj)?,
     })
+}
+
+/// A button's optional `valueText`: an array of `{ when?, text }` cases, each
+/// `when` an array of predicates. Absent or null reads as no cases.
+fn value_text_from_js<'js>(obj: &Object<'js>) -> Result<Vec<ValueTextCase>, DescriptorError> {
+    if !obj.contains_key("valueText").map_err(js_err)? {
+        return Ok(Vec::new());
+    }
+    let raw: JsValue = obj.get("valueText").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let cases: Array = obj
+        .get("valueText")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "`valueText` must be an array".to_string(),
+        })?;
+    let mut out = Vec::with_capacity(cases.len());
+    for i in 0..cases.len() {
+        let item: JsValue = cases.get(i).map_err(js_err)?;
+        let case = Object::from_value(item).map_err(|_| DescriptorError::InvalidShape {
+            reason: format!("`valueText[{i}]` must be an object"),
+        })?;
+        let mut when = Vec::new();
+        let raw_when: JsValue = case.get("when").map_err(js_err)?;
+        if !raw_when.is_null() && !raw_when.is_undefined() {
+            let conditions: Array =
+                case.get("when")
+                    .map_err(|_| DescriptorError::InvalidShape {
+                        reason: format!("`valueText[{i}].when` must be an array of predicates"),
+                    })?;
+            for j in 0..conditions.len() {
+                let item: JsValue = conditions.get(j).map_err(js_err)?;
+                let condition =
+                    Object::from_value(item).map_err(|_| DescriptorError::InvalidShape {
+                        reason: format!("`valueText[{i}].when[{j}]` must be a predicate object"),
+                    })?;
+                when.push(Predicate {
+                    source: bind_source_from_js(&condition)?,
+                    equals: predicate_value_opt_from_js(&condition, "valueText.when")?,
+                });
+            }
+        }
+        out.push(ValueTextCase {
+            when,
+            text: get_required_string_js(&case, "text")?,
+        });
+    }
+    Ok(out)
 }
 
 pub fn slider_widget_from_js<'js>(

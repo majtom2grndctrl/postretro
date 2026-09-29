@@ -564,3 +564,70 @@ fn untweened_bound_text_unaffected_by_time() {
         panic!("root must be a text node");
     }
 }
+
+#[test]
+fn reduce_motion_snaps_starting_and_running_tweens_to_their_target() {
+    use crate::tree::TweenClock;
+    let tree = AnchoredTree {
+        anchor: Anchor::TopLeft,
+        offset: [0.0, 0.0],
+        root: tweened_text(
+            "0",
+            "player.health",
+            None,
+            TextTween {
+                duration_ms: 1000.0,
+                easing: Easing::Linear,
+                from: Some(0.0),
+            },
+        ),
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
+        accessible_name: None,
+        role: None,
+    };
+    let build = |ui: &mut UiTree, fs: &mut _, value: f32, clock: TweenClock| {
+        let slots = number_slots("player.health", value);
+        let draw = ui.build_draw_data_retained_with_image_generation(
+            [1280, 720],
+            fs,
+            &no_images(),
+            0,
+            &slots,
+            &no_cells(),
+            clock,
+        );
+        text_value(&draw)
+    };
+    let mut fs = font_system();
+
+    // Switch on at first resolve: the `from` flourish reaches its target the
+    // frame it starts.
+    let mut snapped = UiTree::from_descriptor(&tree, &theme());
+    let on = TweenClock {
+        now: 0.0,
+        snap: true,
+    };
+    assert_eq!(build(&mut snapped, &mut fs, 100.0, on), 100.0);
+
+    // Switch turned on mid-tween: the running tween reaches its target that
+    // frame; later retargets snap too.
+    let mut running = UiTree::from_descriptor(&tree, &theme());
+    assert_eq!(
+        build(&mut running, &mut fs, 100.0, TweenClock::easing(0.0)),
+        0.0
+    );
+    let mid = build(&mut running, &mut fs, 100.0, TweenClock::easing(0.5));
+    assert!(mid > 0.0 && mid < 100.0, "easing mid-flight: {mid}");
+    let switched = TweenClock {
+        now: 0.5,
+        snap: true,
+    };
+    assert_eq!(build(&mut running, &mut fs, 100.0, switched), 100.0);
+    let retarget = TweenClock {
+        now: 0.6,
+        snap: true,
+    };
+    assert_eq!(build(&mut running, &mut fs, 40.0, retarget), 40.0);
+}

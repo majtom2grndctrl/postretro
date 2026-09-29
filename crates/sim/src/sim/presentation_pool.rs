@@ -15,6 +15,16 @@ use super::presentation_projection::project_world_to_screen;
 /// their own independently bounded map configured by their descriptor.
 pub const DEFAULT_PRESENTATION_SPAWN_CAPACITY: usize = 32;
 
+/// Whether presentation instances animate their rise. The App passes the
+/// player's resolved reduce-motion switch at its frame-time call site; nothing
+/// in simulation reads the preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MotionPreference {
+    #[default]
+    Full,
+    Reduced,
+}
+
 /// Fixed-capacity, app-side lifetime owner for transient world-anchored
 /// presentation. It accepts registry intake only; producers never access this
 /// pool or renderer state directly.
@@ -81,6 +91,7 @@ impl PresentationPool {
         frame_dt_seconds: f32,
         view_projection: Mat4,
         viewport_size: [u32; 2],
+        motion: MotionPreference,
     ) -> Vec<PresentationDrawInput> {
         registry.drain_presentation_spawns_into(&mut self.pending_spawns);
         let mut pending_spawns = std::mem::take(&mut self.pending_spawns);
@@ -98,7 +109,7 @@ impl PresentationPool {
             frame_time_seconds - overlay.last_damaged_time_seconds < overlay.linger_seconds
         });
 
-        self.collect_draw_inputs(view_projection, viewport_size)
+        self.collect_draw_inputs(view_projection, viewport_size, motion)
     }
 
     /// Accept the renderer's previous frame buffer after it swaps in the newly
@@ -148,6 +159,7 @@ impl PresentationPool {
         &mut self,
         view_projection: Mat4,
         viewport_size: [u32; 2],
+        motion: MotionPreference,
     ) -> Vec<PresentationDrawInput> {
         let mut inputs = std::mem::take(&mut self.draw_inputs);
         let required = self.spawns.len().saturating_add(self.overlays.len());
@@ -161,10 +173,15 @@ impl PresentationPool {
 
             let lifetime = lifetime_seconds(&live.spawn);
             let age = self.age_seconds(live);
-            let progress = eased_progress(
-                (age / lifetime).clamp(0.0, 1.0) as f32,
-                live.spawn.motion.easing,
-            );
+            // Reduced motion: the instance sits at its end-of-life rise from
+            // spawn. Scatter (a fixed offset) and fade (opacity) are not motion.
+            let progress = match motion {
+                MotionPreference::Full => eased_progress(
+                    (age / lifetime).clamp(0.0, 1.0) as f32,
+                    live.spawn.motion.easing,
+                ),
+                MotionPreference::Reduced => 1.0,
+            };
             let rise = finite_or_zero(live.spawn.motion.rise_pixels) * progress;
             let alpha = fade_alpha(&live.spawn, age, lifetime);
 
@@ -605,10 +622,22 @@ mod tests {
         let mut pool = PresentationPool::new(2);
         registry.push_presentation_spawn(spawn("first", Vec3::ZERO, 1.0));
         registry.push_presentation_spawn(spawn("second", Vec3::ZERO, 1.0));
-        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.0,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
 
         registry.push_presentation_spawn(spawn("third", Vec3::ZERO, 1.0));
-        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.0,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
 
         assert_eq!(pool.live_template_names(), ["second", "third"]);
     }
@@ -619,15 +648,64 @@ mod tests {
         let mut pool = PresentationPool::new(1);
         registry.push_presentation_spawn(spawn("impact", Vec3::ZERO, 0.2));
 
-        let first = pool.advance_and_collect_inputs(&mut registry, 0.1, Mat4::IDENTITY, [800, 600]);
+        let first = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.1,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
         assert_eq!(first.len(), 1);
         assert!((pool.live_ages_seconds()[0] - 0.1).abs() < f64::from(EPSILON));
         assert!((first[0].opacity - 0.5).abs() < EPSILON);
 
-        let expired =
-            pool.advance_and_collect_inputs(&mut registry, 0.11, Mat4::IDENTITY, [800, 600]);
+        let expired = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.11,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
         assert!(expired.is_empty());
         assert!(pool.live_ages_seconds().is_empty());
+    }
+
+    #[test]
+    fn reduced_motion_spawns_at_full_rise_and_keeps_scatter_and_fade() {
+        let collect = |motion| {
+            let mut registry = EntityRegistry::new();
+            let mut pool = PresentationPool::new(1);
+            let mut hit = spawn("number", Vec3::new(0.0, 0.0, -2.0), 1.0);
+            hit.scatter_radius = 20.0;
+            registry.push_presentation_spawn(hit);
+            let first = pool.advance_and_collect_inputs(
+                &mut registry,
+                0.0,
+                camera_view_projection(),
+                [800, 600],
+                motion,
+            );
+            let late = pool.advance_and_collect_inputs(
+                &mut registry,
+                0.75,
+                camera_view_projection(),
+                [800, 600],
+                motion,
+            );
+            (first[0].anchor, late[0].anchor, late[0].opacity)
+        };
+        let (full_first, full_late, full_opacity) = collect(MotionPreference::Full);
+        let (reduced_first, reduced_late, reduced_opacity) = collect(MotionPreference::Reduced);
+
+        // Full motion rises over the lifetime; reduced sits at the full 12 px
+        // rise from its first frame and never moves.
+        assert!((full_first[1] - (full_late[1] + 9.0)).abs() < EPSILON);
+        assert!((reduced_first[1] - (full_first[1] - 12.0)).abs() < EPSILON);
+        assert_eq!(reduced_first, reduced_late);
+        // Scatter is the same fixed offset either way; fade is opacity, not motion.
+        assert!((reduced_first[0] - full_first[0]).abs() < EPSILON);
+        assert!((reduced_opacity - full_opacity).abs() < EPSILON);
+        assert!(reduced_opacity < 1.0, "the fade still runs");
     }
 
     #[test]
@@ -643,6 +721,7 @@ mod tests {
             0.0,
             camera_view_projection(),
             [800, 600],
+            MotionPreference::Full,
         );
 
         assert_eq!(inputs.len(), 3);
@@ -673,7 +752,13 @@ mod tests {
 
         assert_eq!(pool.overlay_ids(), [second, third]);
         registry.push_presentation_spawn(spawn("damage-number", Vec3::ZERO, 1.0));
-        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.0,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
 
         assert_eq!(pool.live_template_names(), ["damage-number"]);
         assert_eq!(pool.overlay_ids(), [second, third]);
@@ -693,7 +778,13 @@ mod tests {
         );
         registry.push_presentation_spawn(spawn("damage-number", Vec3::ZERO, 1.0));
 
-        let _ = pool.advance_and_collect_inputs(&mut registry, 0.11, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.11,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
 
         assert!(pool.overlay_ids().is_empty());
         assert_eq!(pool.live_template_names(), ["damage-number"]);
@@ -707,7 +798,13 @@ mod tests {
         let target = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(1);
         registry.push_presentation_spawn(spawn("old-number", Vec3::ZERO, 1.0));
-        let _ = pool.advance_and_collect_inputs(&mut registry, 0.0, Mat4::IDENTITY, [800, 600]);
+        let _ = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.0,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
         pool.refresh_overlay(
             target,
             PresentationTemplateHandle::from("old-bar"),

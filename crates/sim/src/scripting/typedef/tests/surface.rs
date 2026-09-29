@@ -219,6 +219,17 @@ fn luau_virtual_module_types_and_require_overloads_are_generated() {
         "luau output missing literal require overloads with string fallback:\n{luau}"
     );
 
+    // `PostretroUiModule.accessibilityAction` (virtual_module.luau) references
+    // these two aliases. They must survive `luau_public_sdk_lib_block`'s strip
+    // range, which removes the bare-global UI section of sdk_lib.luau — a
+    // regression here means the generated postretro.d.luau references an
+    // undeclared type name.
+    assert!(
+        luau.contains("export type AccessibilityToggleField =")
+            && luau.contains("export type AccessibilityNumericField ="),
+        "luau output must declare AccessibilityToggleField and AccessibilityNumericField (used by PostretroUiModule.accessibilityAction):\n{luau}"
+    );
+
     let root_module = luau
         .split_once("export type PostretroModule = {\n")
         .and_then(|(_, rest)| rest.split_once("\n}\n\ndeclare require:"))

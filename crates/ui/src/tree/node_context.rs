@@ -8,7 +8,7 @@ use taffy::prelude::Display;
 
 use super::super::descriptor::{
     BarExitFade, BarMax, Border, BoundScalar, PanelBind, Predicate, RingRadiusRange, SliderBind,
-    TextBind,
+    TextBind, ValueTextCase,
 };
 use super::super::style_ranges::{StyleEffectState, StyleRanges};
 use super::style::TweenState;
@@ -35,6 +35,14 @@ impl NumberPresentation {
         let normalized = ((value - self.input_min) / span).clamp(0.0, 1.0);
         self.output_min + normalized * (self.output_max - self.output_min)
     }
+}
+
+/// A button's `valueText` cases, carried on its text run with the nearest
+/// declaring `localState` scope its `{ local }` predicates resolve against.
+#[derive(Debug, Clone)]
+pub struct ValueText {
+    pub cases: Vec<ValueTextCase>,
+    pub scope: Option<String>,
 }
 
 /// One resolved radial scalar. Literals are immutable draw values; a bound
@@ -126,6 +134,11 @@ pub enum NodeContext {
         /// when `predicate_bind` and `style_ranges` are both present; a 0↔1
         /// change invalidates draw data without dirtying layout.
         last_predicate_resolved: Option<f32>,
+        /// A button's state-following visible text. When `Some`, the retained
+        /// diff stores the matching case's text (or `content` when none holds)
+        /// in `last_resolved`, so a change re-measures like a bound text change.
+        /// `None` on every other text run.
+        value_text: Option<ValueText>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by

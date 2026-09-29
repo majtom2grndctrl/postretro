@@ -776,6 +776,16 @@ declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
 --- intercepts this exact wire value before named-reaction dispatch.
 declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
 
+--- Reserved button `onPress` action that opens the engine accessibility panel.
+declare OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility"
+
+--- The reserved `onPress` action for one accessibility field. Toggles `cycle`;
+--- numeric fields `increase` or `decrease`. `AccessibilityToggleField` and
+--- `AccessibilityNumericField` are declared in virtual_module.luau — they type
+--- `PostretroUiModule.accessibilityAction` too, and this bare declaration falls
+--- inside the stripped UI range, while the two type aliases must survive it.
+declare accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string)
+
 --- Reserved button `onPress` action that returns to the frontend menu. The App
 --- intercepts this exact wire value before named-reaction dispatch. Same
 --- lifecycle path as `returnToFrontend()`: unload gameplay, show the declared
@@ -1130,8 +1140,10 @@ export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predica
 --- A `spacer` leaf claiming a proportional share of leftover space.
 declare function Spacer(props: SpacerProps?): WidgetDescriptor
 
---- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive.
-export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
+--- One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds.
+export type ValueTextCase = { when: { Predicate }?, text: LocalizedText }
+--- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`.
+export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole?, valueText: { ValueTextCase }? } & ({ label: LocalizedText } | { labelledBy: string })
 --- An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form. Exactly one of `label` / `labelledBy` is required.
 declare function Button(props: ButtonProps): WidgetDescriptor
 

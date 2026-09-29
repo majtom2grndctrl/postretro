@@ -179,7 +179,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
 /// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`,
-/// `QUIT_TO_MENU_ACTION`), and the text-edit
+/// `QUIT_TO_MENU_ACTION`, `OPEN_ACCESSIBILITY_ACTION`, `accessibilityAction`),
+/// and the text-edit
 /// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
 pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "onStateCrossing",
@@ -196,6 +197,8 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "CLOSE_DIALOG_ACTION",
     "EXIT_TO_DESKTOP_ACTION",
     "QUIT_TO_MENU_ACTION",
+    "OPEN_ACCESSIBILITY_ACTION",
+    "accessibilityAction",
     "loadLevel",
     "restartLevel",
     "returnToFrontend",
@@ -296,6 +299,8 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "CLOSE_DIALOG_ACTION",
     "EXIT_TO_DESKTOP_ACTION",
     "QUIT_TO_MENU_ACTION",
+    "OPEN_ACCESSIBILITY_ACTION",
+    "accessibilityAction",
     "loadLevel",
     "restartLevel",
     "returnToFrontend",

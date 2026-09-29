@@ -16,7 +16,7 @@ use super::super::descriptor::{
 use super::super::style_ranges::StyleEffectState;
 use super::super::theme::UiTheme;
 
-use super::node_context::{NodeContext, NumberPresentation, RingScalar};
+use super::node_context::{NodeContext, NumberPresentation, RingScalar, ValueText};
 use super::style::{
     build_node_style_ranges, container_base_style, resolve_border, resolve_color, resolve_font,
     resolve_spacing,
@@ -115,6 +115,7 @@ pub fn build_node(
                         predicate_bind: None,
                         predicate_scope: None,
                         last_predicate_resolved: None,
+                        value_text: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -243,9 +244,31 @@ fn build_button(
                 predicate_bind: button.bind.clone(),
                 predicate_scope,
                 last_predicate_resolved: None,
+                value_text: build_value_text(button, scope),
             },
         )
         .expect("taffy leaf creation must succeed")
+}
+
+/// A button's `valueText` cases for its text run, or `None` when it has none.
+/// `{ local }` predicates resolve against the nearest enclosing scope.
+fn build_value_text(button: &ButtonWidget, scope: Option<&str>) -> Option<ValueText> {
+    if button.value_text.is_empty() {
+        return None;
+    }
+    let reads_local = button.value_text.iter().any(|case| {
+        case.when
+            .iter()
+            .any(|condition| matches!(condition.source, BindSource::Local { .. }))
+    });
+    Some(ValueText {
+        cases: button.value_text.clone(),
+        scope: if reads_local {
+            scope.map(str::to_string)
+        } else {
+            None
+        },
+    })
 }
 
 /// Build an interactive slider as one focusable layout node with internal track
@@ -334,6 +357,7 @@ fn build_slider(
                 predicate_bind: None,
                 predicate_scope: None,
                 last_predicate_resolved: None,
+                value_text: None,
             },
         )
         .expect("taffy slider value creation must succeed");

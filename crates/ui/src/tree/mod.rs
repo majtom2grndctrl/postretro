@@ -39,11 +39,12 @@ mod tests;
 
 // Re-exports so external `tree::X` references keep resolving after the split.
 pub use draw::{
-    FocusGroup, FocusKind, FocusRect, FocusRectList, NodeInteraction, RepeatPolicy, UiDrawData,
-    UiPaintOp,
+    FocusGroup, FocusKind, FocusRect, FocusRectList, FocusRectOwner, NodeInteraction, RepeatPolicy,
+    UiDrawData, UiPaintOp,
 };
 // `FocusNeighbors` is consumed only from `#[cfg(test)]` modules elsewhere in the
 // crate (focus-engine tests), so the non-test build sees the re-export as unused.
+pub use bindings::TweenClock;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub use draw::FocusNeighbors;
 pub use presentation_layout::PresentationTemplateLayout;

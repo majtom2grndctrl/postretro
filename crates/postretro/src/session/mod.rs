@@ -211,6 +211,11 @@ pub(crate) struct Session {
     /// unloads and renderer suspend/resume.
     pub(crate) options_bridge: options::OptionsBridge,
 
+    /// OS accessibility preferences (reduced motion, contrast, Windows text
+    /// scale), polled at the top of every frame. Subscribed here, on the main
+    /// thread, after the first splash frame has presented.
+    pub(crate) os_preferences: crate::os_preferences::OsPreferenceFeed,
+
     /// Resolved `settings.toml` path. Inner `Option` is genuine runtime absence:
     /// `None` when the platform exposes no config directory (the engine then runs
     /// on in-memory defaults without persistence). `OptionsBridge` uses this path
@@ -223,6 +228,11 @@ pub(crate) struct Session {
     /// `None` falls back to the engine/default frontend behavior.
     /// See: context/lib/boot_sequence.md §4.
     pub(crate) frontend: Option<Frontend>,
+
+    /// Whether the mod's UI trees offer accessibility, re-evaluated when the
+    /// tree set changes so its load-time warning fires once per state.
+    /// See: context/lib/ui.md §4.1.
+    pub(crate) accessibility_entry_check: crate::app::accessibility_panel::AccessibilityEntryCheck,
 
     /// Network endpoint (M15 Phase 1). Inner `Option` is genuine runtime absence:
     /// `None` for single-player (net inert); `Host`/`Client` once a
@@ -448,8 +458,8 @@ impl Session {
         // working directory, unchanged.
         //
         // The HUD registers under `HUD_NAME` and resolves as the always-on bottom
-        // passthrough layer each frame. The pause menu, frontend menu, and
-        // keyboard register as pushed-only modals.
+        // passthrough layer each frame. The pause menu, frontend menu,
+        // keyboard, and accessibility panel register as pushed-only modals.
         let mut modal_stack = postretro_ui::modal_stack::ModalStack::new();
         {
             let registry = modal_stack.registry_mut();
@@ -479,6 +489,14 @@ impl Session {
                 core_root,
                 postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
+                false,
+            );
+            // The engine accessibility panel: reserved name, never shadowed.
+            postretro_ui::tree_asset::register_tree_from_disk(
+                registry,
+                core_root,
+                postretro_ui::demo::ACCESSIBILITY_PANEL_NAME,
+                "accessibilityPanel.json",
                 false,
             );
         }
@@ -556,6 +574,21 @@ impl Session {
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         boot_timings.record("net_endpoint_complete");
 
+        // Seed every accessibility working copy and `accessibility.*` slot once,
+        // so a mod menu under any tree name shows resolved values from the
+        // first frame.
+        let mut options_bridge = options::OptionsBridge::new();
+        let os_preferences = crate::os_preferences::OsPreferenceFeed::start();
+        boot_timings.record("os_reader_started");
+        let resolved = options_bridge.seed_accessibility(
+            &mut scripting.script_ctx.slot_table.borrow_mut(),
+            &player_options,
+        );
+        let mut audio = audio;
+        if let Some(audio) = audio.as_mut() {
+            options::apply_to_audio(&resolved, audio);
+        }
+
         Ok(Self {
             input_system,
             gameplay_input_latch: input::GameplayInputLatch::new(),
@@ -595,11 +628,13 @@ impl Session {
             sh_streaming: None,
             sh_worker_retirement: None,
             player_options,
-            options_bridge: options::OptionsBridge::new(),
+            options_bridge,
+            os_preferences,
             settings_path,
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.
             frontend: None,
+            accessibility_entry_check: Default::default(),
             net_endpoint,
             seat_table,
             audio,
@@ -632,6 +667,8 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
         match getrandom::fill(&mut player_id) {
             Ok(()) => {
                 player_options.player_id = Some(player_id);
+                // An unreadable stored id is useless; the new one replaces it.
+                player_options.mark_written(options::keys::PLAYER_ID);
                 generated_identity = true;
             }
             Err(err) => log::warn!(

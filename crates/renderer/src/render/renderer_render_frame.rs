@@ -873,12 +873,7 @@ impl Renderer {
         // nothing while the top animates. Painter's order is the stack order: a
         // later layer's quads composite over the earlier ones into the same view
         // (LoadOp::Load). Empty/empty-laying-out layers early-out individually.
-        let stack: Vec<ui::descriptor::AnchoredTree> = full
-            .ui_snapshot
-            .trees
-            .iter()
-            .map(|entry| entry.descriptor.clone())
-            .collect();
+        let stack_len = full.ui_snapshot.trees.len();
 
         // Lay out EVERY layer first into owned draw data, THEN compose all layers
         // into a SINGLE `encode` call. The glyphon text half (`UiTextRenderer`) is
@@ -890,7 +885,7 @@ impl Renderer {
         // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
         // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
         // with all layers' glyphs concatenated in painter order, sidesteps it.
-        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len() + 1);
+        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack_len + 1);
         // Presentation is a passive world-facing layer, not a retained modal.
         // Lower it first so HUD and modal trees remain visually above it, while
         // focus export continues to inspect only the retained top tree below.
@@ -902,20 +897,24 @@ impl Renderer {
             full.ui_images.image_sizes_generation(),
             &full.ui_theme,
             full.ui_theme_generation,
-            full.ui_snapshot.time_seconds,
+            ui::tree::TweenClock {
+                now: full.ui_snapshot.time_seconds,
+                snap: full.ui_snapshot.reduce_motion,
+            },
         );
         layer_draws.push(presentation_draw);
-        for (layer, tree) in stack.iter().enumerate() {
+        for (layer, entry) in full.ui_snapshot.trees.iter().enumerate() {
             // Image widgets measure from the renderer-owned image registry. A
             // missing key still collapses, but the registry now warns once when
             // the draw path tries to bind it instead of failing silently.
             // Bound text/panel nodes resolve against the snapshot's slot values
-            // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
-            // above already released the snapshot, so this borrow is clean.
+            // (disjoint field borrow from `&mut full.ui`). The entry carries the
+            // layer's owner, which the retained layer records for the focus
+            // export.
             let mut draw = full.ui.layout_gameplay_tree(
                 font_system,
                 layer,
-                tree,
+                entry,
                 ui_viewport,
                 full.ui_images.image_sizes(),
                 full.ui_images.image_sizes_generation(),
@@ -923,7 +922,10 @@ impl Renderer {
                 &full.ui_snapshot.cell_values,
                 &full.ui_theme,
                 full.ui_theme_generation,
-                full.ui_snapshot.time_seconds,
+                ui::tree::TweenClock {
+                    now: full.ui_snapshot.time_seconds,
+                    snap: full.ui_snapshot.reduce_motion,
+                },
             );
             // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
             // draw the engine ring around the focused node's rect on it. The
@@ -931,7 +933,7 @@ impl Renderer {
             // it may trail a focus change by one frame). The ring is a `focus.ring`
             // bordered frame inset by the `xs` spacing token; appended through
             // the layer's paint stream so it composites over the focused content.
-            let is_top = layer + 1 == stack.len();
+            let is_top = layer + 1 == stack_len;
             if is_top {
                 if let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
                     let focus_rects = full.ui.export_top_focus_rects(
@@ -983,7 +985,7 @@ impl Renderer {
         full.ui.recycle_presentation_draw_data(presentation_draw);
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.
-        full.ui.truncate_gameplay_stack(stack.len());
+        full.ui.truncate_gameplay_stack(stack_len);
 
         // Resolve HDR `scene_color` into the swapchain after UI, applying the
         // soft-knee tonemap before flash/vignette/shake. This is the gameplay
@@ -991,8 +993,18 @@ impl Renderer {
         // rest; timing query resolution follows it.
         drop(ui_scope);
         let _resolve_scope = cpu.scope(RenderStage::Resolve);
-        full.screen_effects
-            .encode_resolve(queue, encoder, view, &full.ui_snapshot.slot_values);
+        let resolve_timestamps = full
+            .frame_timing
+            .as_ref()
+            .map(|t| t.render_pass_writes(TIMING_PAIR_RESOLVE));
+        full.screen_effects.encode_resolve(
+            queue,
+            encoder,
+            view,
+            &full.ui_snapshot.slot_values,
+            full.limiter_frame.take(),
+            resolve_timestamps,
+        );
 
         if let Some(timing) = &mut full.frame_timing {
             timing.encode_resolve(encoder);
@@ -1132,6 +1144,7 @@ mod tests {
             "self.record_depth_and_sdf_passes(",
             "render_pass_writes(",
             "write_encoder_start(",
+            "render_pass_writes(TIMING_PAIR_RESOLVE)",
             "timing.encode_resolve(encoder)",
         ] {
             let at = body
@@ -1142,6 +1155,16 @@ mod tests {
                 "the timing prefill must precede `{pass}`: every timestamped pass and the resolve"
             );
         }
+    }
+
+    /// The resolve reports its own GPU timing entry under
+    /// `POSTRETRO_GPU_TIMING=1`.
+    #[test]
+    fn the_resolve_owns_a_labeled_timing_pair() {
+        const { assert!(TIMING_PAIR_RESOLVE < TIMING_PAIR_COUNT) }
+        let labels = include_str!("renderer_init_resources.rs");
+        let line = "pass_labels[TIMING_PAIR_RESOLVE] = \"resolve\"";
+        assert!(labels.contains(line), "missing timing label `{line}`");
     }
 
     #[test]

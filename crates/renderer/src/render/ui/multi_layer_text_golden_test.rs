@@ -27,11 +27,11 @@
 // See: context/lib/testing_guide.md §3, context/lib/ui.md
 
 use super::descriptor::{AnchoredTree, ColorValue, TextWidget, Widget};
-use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::layout::Anchor;
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData};
 use super::{UiComposition, UiInstance, UiPass, UiText};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 
 /// Offscreen target = the EXACT 1280x720 logical-reference canvas. At this size
 /// `layout::device_scale` is 1.0 with a zero letterbox origin, so a `TopLeft`
@@ -102,6 +102,17 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
     }
 }
 
+/// A stack entry for `tree`; the owner does not affect drawing.
+fn layer_entry(tree: AnchoredTree) -> postretro_ui::UiTreeEntry {
+    postretro_ui::UiTreeEntry {
+        name: "layer".into(),
+        tier: postretro_ui::modal_stack::ScopeTier::Engine,
+        capture_mode: tree.capture_mode,
+        descriptor: tree,
+        on_commit: None,
+    }
+}
+
 /// Lay both layers out through the pass's RETAINED gameplay path — layer 0
 /// (bottom) then layer 1 (top) against ONE `UiPass`, so each is independently
 /// retained under its own stack index. This is the exact modal-stack shape the
@@ -120,7 +131,7 @@ fn layout_two_layers(
     let lower = pass.layout_gameplay_tree(
         font_system,
         0,
-        &text_tree(S0, S0_OFFSET),
+        &layer_entry(text_tree(S0, S0_OFFSET)),
         viewport,
         &images,
         0,
@@ -128,12 +139,12 @@ fn layout_two_layers(
         &cells,
         &theme,
         0,
-        0.0,
+        postretro_ui::tree::TweenClock::easing(0.0),
     );
     let upper = pass.layout_gameplay_tree(
         font_system,
         1,
-        &text_tree(S1, S1_OFFSET),
+        &layer_entry(text_tree(S1, S1_OFFSET)),
         viewport,
         &images,
         0,
@@ -141,7 +152,7 @@ fn layout_two_layers(
         &cells,
         &theme,
         0,
-        0.0,
+        postretro_ui::tree::TweenClock::easing(0.0),
     );
     [lower, upper]
 }

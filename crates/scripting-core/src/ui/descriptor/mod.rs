@@ -27,7 +27,7 @@ pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
     GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
     RingWidget, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind, TextWidget,
-    Widget,
+    ValueTextCase, Widget,
 };
 
 #[cfg(test)]

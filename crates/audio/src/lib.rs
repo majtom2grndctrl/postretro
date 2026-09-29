@@ -6,23 +6,28 @@
 mod assets;
 mod boundary;
 mod buses;
+mod mono;
 mod orientation;
 mod playable;
 mod spatial;
 mod voices;
+mod volume;
 
 pub use boundary::{
     Attenuation, AttenuationCurve, AudioError, ListenerState, SoundAnchor, SoundRequest,
 };
 pub use buses::BusId;
 pub use voices::SoundHandle;
+pub use volume::linear_volume_to_decibels;
 
 use std::path::Path;
 use std::time::Duration;
 
 use buses::BusTree;
 use kira::listener::ListenerHandle;
+use kira::track::MainTrackBuilder;
 use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend, Tween};
+use mono::{MonoFoldBuilder, MonoFoldHandle};
 
 use assets::SoundRegistry;
 use boundary::parse_bus;
@@ -71,6 +76,8 @@ pub struct Audio<B: kira::backend::Backend = DefaultBackend> {
     /// The last finite listener position. A contact set resolves its nearest
     /// contact against it; a non-finite listener update leaves it unchanged.
     listener_position: [f32; 3],
+    /// Control for the main-track mono fold.
+    mono: MonoFoldHandle,
 }
 
 impl Audio {
@@ -94,8 +101,10 @@ impl Audio {
     /// anchor at the world origin. Returns `AudioError::Init` if the backend or
     /// listener allocation fails; the caller degrades to silent.
     pub fn new() -> Result<Self, AudioError> {
+        let mono = MonoFoldHandle::default();
         let settings = AudioManagerSettings::<DefaultBackend> {
             capacities: Self::CAPACITIES,
+            main_track_builder: Self::main_track_builder(&mono),
             ..Default::default()
         };
 
@@ -114,7 +123,13 @@ impl Audio {
         let buses =
             BusTree::build(&mut manager).map_err(|err| AudioError::Init(err.to_string()))?;
 
-        Ok(Self::from_parts(manager, listener, buses))
+        Ok(Self::from_parts(manager, listener, buses, mono))
+    }
+
+    /// The main track carries the mono fold, so it composes after every
+    /// sub-track, spatial panning included.
+    fn main_track_builder(mono: &MonoFoldHandle) -> MainTrackBuilder {
+        MainTrackBuilder::new().with_effect(MonoFoldBuilder::new(mono.clone()))
     }
 }
 
@@ -124,7 +139,12 @@ impl Audio {
 /// generic impl is what lets unit tests drive `play`/`stop`/`update` without a
 /// sound device.
 impl<B: kira::backend::Backend> Audio<B> {
-    fn from_parts(manager: AudioManager<B>, listener: ListenerHandle, buses: BusTree) -> Self {
+    fn from_parts(
+        manager: AudioManager<B>,
+        listener: ListenerHandle,
+        buses: BusTree,
+        mono: MonoFoldHandle,
+    ) -> Self {
         Self {
             manager,
             listener,
@@ -135,6 +155,7 @@ impl<B: kira::backend::Backend> Audio<B> {
             attenuation: Attenuation::DEFAULT,
             attached: None,
             listener_position: [0.0; 3],
+            mono,
         }
     }
 
@@ -175,6 +196,13 @@ impl<B: kira::backend::Backend> Audio<B> {
     /// cutting.
     pub fn set_main_volume(&mut self, db: f32) {
         self.manager.main_track().set_volume(db, Tween::default());
+    }
+
+    /// Fold left and right together (mono) or return to stereo. The change
+    /// crossfades on the audio thread, and a toggle reversed mid-crossfade
+    /// turns back from the current mix.
+    pub fn set_mono(&mut self, mono: bool) {
+        self.mono.set(mono);
     }
 
     /// Reserve a voice slot on `bus`, returning `true` on success (count

@@ -1253,6 +1253,18 @@ declare module "postretro" {
   export function worldSetGravity(value: number): void;
   /** Generated engine-owned state reference tree returned by `getGameState()`. */
   export type GameStateRefs = {
+    readonly accessibility: {
+      readonly flashLimiter: ComputedRef<boolean>;
+      readonly masterVolume: ComputedRef<number>;
+      readonly monoAudio: ComputedRef<boolean>;
+      readonly musicVolume: ComputedRef<number>;
+      readonly reduceMotion: ComputedRef<boolean>;
+      readonly reduceMotionFollowsSystem: ComputedRef<boolean>;
+      readonly screenShakeScale: ComputedRef<number>;
+      readonly sfxVolume: ComputedRef<number>;
+      readonly uiVolume: ComputedRef<number>;
+      readonly viewFeelScale: ComputedRef<number>;
+    };
     readonly input: {
       readonly mode: ComputedRef<"pointer" | "focus">;
     };
@@ -1260,9 +1272,16 @@ declare module "postretro" {
       readonly crouchMode: Ref<"hold" | "toggle">;
       readonly fogQuality: Ref<"low" | "medium" | "high">;
       readonly invertY: Ref<boolean>;
+      readonly masterVolume: Ref<number>;
+      readonly monoAudio: Ref<boolean>;
       readonly mouseSensitivity: Ref<number>;
+      readonly musicVolume: Ref<number>;
+      readonly reduceMotion: Ref<boolean>;
+      readonly screenShakeScale: Ref<number>;
+      readonly sfxVolume: Ref<number>;
       readonly shadowQuality: Ref<"low" | "medium" | "high">;
       readonly surfaceDepthQuality: Ref<"off" | "on">;
+      readonly uiVolume: Ref<number>;
       readonly viewFeelScale: Ref<number>;
     };
     readonly player: {
@@ -2360,8 +2379,10 @@ declare module "postretro/ui" {
   export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a spacer widget descriptor. */
   export function Spacer(props?: SpacerProps): WidgetDescriptor;
-  /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. */
-  export type ButtonProps = { id: string; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp; selected?: Predicate; checked?: Predicate; bind?: Predicate; styleRanges?: StyleRangesProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  /** One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds. */
+  export type ValueTextCase = { when?: Predicate[]; text: LocalizedText };
+  /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`. */
+  export type ButtonProps = { id: string; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp; selected?: Predicate; checked?: Predicate; bind?: Predicate; styleRanges?: StyleRangesProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole; valueText?: ValueTextCase[] } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
   /** Build an interactive button descriptor. Pure; activation is resolved by the app at runtime. */
   export function Button(props: ButtonProps): WidgetDescriptor;
   /** Props for `Slider`. `bind` must be writable numeric state/local cell. `min`, `max`, and `step` are finite numbers; navigation clamps writes into `[min, max]`. Exactly one of `label` or `labelledBy` is required. */
@@ -2454,6 +2475,15 @@ declare module "postretro/ui" {
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
   /** Reserved `Button.onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`. */
   export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
+  /** Reserved `Button.onPress` action that opens the engine accessibility panel. */
+  export const OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility";
+  /** Accessibility toggles a menu button may cycle. */
+  export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
+  /** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
+  export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume";
+  /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */
+  export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
+  export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;
   /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */
   export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
   /** Push a menu tree by registry name. Unknown tree names warn and no-op. */

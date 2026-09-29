@@ -1252,6 +1252,18 @@ declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEnt
 declare function worldSetGravity(value: number): ()
 --- Generated engine-owned state reference tree returned by `getGameState()`.
 export type GameStateRefs = {
+  accessibility: {
+    flashLimiter: ComputedRef<boolean>,
+    masterVolume: ComputedRef<number>,
+    monoAudio: ComputedRef<boolean>,
+    musicVolume: ComputedRef<number>,
+    reduceMotion: ComputedRef<boolean>,
+    reduceMotionFollowsSystem: ComputedRef<boolean>,
+    screenShakeScale: ComputedRef<number>,
+    sfxVolume: ComputedRef<number>,
+    uiVolume: ComputedRef<number>,
+    viewFeelScale: ComputedRef<number>,
+  },
   input: {
     mode: ComputedRef<"pointer" | "focus">,
   },
@@ -1259,9 +1271,16 @@ export type GameStateRefs = {
     crouchMode: Ref<"hold" | "toggle">,
     fogQuality: Ref<"low" | "medium" | "high">,
     invertY: Ref<boolean>,
+    masterVolume: Ref<number>,
+    monoAudio: Ref<boolean>,
     mouseSensitivity: Ref<number>,
+    musicVolume: Ref<number>,
+    reduceMotion: Ref<boolean>,
+    screenShakeScale: Ref<number>,
+    sfxVolume: Ref<number>,
     shadowQuality: Ref<"low" | "medium" | "high">,
     surfaceDepthQuality: Ref<"off" | "on">,
+    uiVolume: Ref<number>,
     viewFeelScale: Ref<number>,
   },
   player: {
@@ -2272,8 +2291,10 @@ export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeig
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
 export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 
---- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive.
-export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
+--- One `Button.valueText` case: `text` shows while every predicate in `when` holds. An absent or empty `when` always holds.
+export type ValueTextCase = { when: { Predicate }?, text: LocalizedText }
+--- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive. `valueText` makes the visible text follow state: the first case whose predicates all hold, else `label`.
+export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole?, valueText: { ValueTextCase }? } & ({ label: LocalizedText } | { labelledBy: string })
 
 --- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `disabled` makes it non-interactive.
 export type SliderValueDisplay = { min: number, max: number, suffix: string?, decimalPlaces: number? }
@@ -2583,6 +2604,12 @@ export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.
 -- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
 -- is typed directly from SDK function signatures instead of bare globals.
 
+--- Accessibility toggles a menu button may cycle.
+export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio"
+
+--- Accessibility numeric fields a mod menu button may step, each within [0, 1].
+export type AccessibilityNumericField = "screenShakeScale" | "viewFeelScale" | "masterVolume" | "sfxVolume" | "musicVolume" | "uiVolume"
+
 export type PostretroUiModule = {
   --- Build a `text` widget descriptor. `props.content` is fallback text; optional `bind` can replace rendered content from state.
   Text: (props: TextProps) -> WidgetDescriptor,
@@ -2677,6 +2704,10 @@ export type PostretroUiModule = {
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
+  --- Reserved button `onPress` action that opens the engine accessibility panel.
+  OPEN_ACCESSIBILITY_ACTION: "ui.openAccessibility",
+  --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`.
+  accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
   --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
   updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
   appendText: (ref: Ref<string>, text: string) -> PrimitiveReactionDescriptor,

@@ -106,6 +106,17 @@ impl GamepadSystem {
         }
     }
 
+    /// Drain buffered gilrs events without acting on them, keeping the active
+    /// gamepad current. Frames that draw no UI call this so a press made during
+    /// a splash or Loading frame never surfaces on the first frame that does.
+    pub fn discard_pending_events(&mut self) {
+        while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
+            if is_user_input(&event) {
+                self.active_gamepad = Some(id);
+            }
+        }
+    }
+
     /// Poll gilrs events and feed processed state into the input system,
     /// returning the UI nav intents produced this frame (D-pad / face / system
     /// button down-edges and a left-stick-past-dead-zone edge).

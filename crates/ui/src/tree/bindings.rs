@@ -31,6 +31,28 @@ pub struct DrawWalkCtx<'a> {
     pub inert_theme: &'a UiTheme,
 }
 
+/// The frame clock the tween drivers advance on, plus whether the player's
+/// reduce-motion switch is on. While it is, every tween reaches its target the
+/// frame it starts, a running one included: its duration reads as zero, and a
+/// zero-length segment samples exactly at its target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TweenClock {
+    /// Dt-accumulated UI time in seconds.
+    pub now: f64,
+    pub snap: bool,
+}
+
+impl TweenClock {
+    /// An ordinary frame: tweens ease over their authored durations.
+    pub fn easing(now: f64) -> Self {
+        Self { now, snap: false }
+    }
+
+    fn duration_ms(self, authored: f32) -> f32 {
+        if self.snap { 0.0 } else { authored }
+    }
+}
+
 /// Result of one retained-frame bound-value diff. Each flag is set when at least
 /// one bound node of that class changed since the previous diff. `content_changed`
 /// is layout-affecting (forces a relayout); `appearance_changed` is appearance-
@@ -56,7 +78,7 @@ pub struct BindingDiff {
 ///   (the node is visited once per `resolve_bindings` call; there is no cross-frame
 ///   dedup, matching the `resolve_panel_fill` precedent).
 ///
-/// `now` is the frame's `time_seconds`.
+/// `clock` is the frame's UI time and reduce-motion switch.
 // Wide by necessity: bind + its resolved scope + the node's mutable display state
 // (content/last_resolved/tween) + both value maps (slots, cells) + the frame
 // clock are all distinct per-node diff inputs; a struct would only obscure them.
@@ -70,7 +92,7 @@ pub fn drive_text_binding(
     number_presentation: Option<&NumberPresentation>,
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
-    now: f64,
+    clock: TweenClock,
 ) -> bool {
     let Some(cfg) = bind.tween.as_ref() else {
         // No tween config: the untweened path, byte-for-byte as before.
@@ -94,8 +116,14 @@ pub fn drive_text_binding(
             // Tweenable: the number is the eased target. Advance the display value
             // and apply the bind's display precision through the format template.
             let target = *n;
-            let display =
-                drive_tween_f32(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now);
+            let display = drive_tween_f32(
+                tween,
+                cfg.from,
+                target,
+                clock.duration_ms(cfg.duration_ms),
+                cfg.easing,
+                clock.now,
+            );
             let display = presented_slot_value_string(
                 &SlotValue::Number(display),
                 bind.decimal_places,
@@ -236,7 +264,7 @@ pub fn drive_panel_binding(
     tween: &mut Option<TweenState<[f32; 4]>>,
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
-    now: f64,
+    clock: TweenClock,
 ) -> bool {
     let Some(cfg) = bind.tween.as_ref() else {
         let resolved =
@@ -251,7 +279,14 @@ pub fn drive_panel_binding(
     let resolved = match lookup_bound(&bind.source, bind_scope, slot_values, cell_values) {
         Some(SlotValue::Array(rgba)) if rgba.len() == 4 => {
             let target = [rgba[0], rgba[1], rgba[2], rgba[3]];
-            drive_tween_rgba(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now)
+            drive_tween_rgba(
+                tween,
+                cfg.from,
+                target,
+                clock.duration_ms(cfg.duration_ms),
+                cfg.easing,
+                clock.now,
+            )
         }
         // Non-tweenable shape (absent, wrong variant, or wrong length): snap
         // through the unchanged fill-resolution path. `resolve_panel_fill` already
@@ -261,7 +296,7 @@ pub fn drive_panel_binding(
         _ => {
             let fallback =
                 resolve_panel_fill(Some(bind), bind_scope, fallback, slot_values, cell_values);
-            seed_tween(tween, fallback, now);
+            seed_tween(tween, fallback, clock.now);
             fallback
         }
     };
@@ -289,16 +324,21 @@ pub fn drive_bar_binding(
     tween: &mut Option<TweenState<f32>>,
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
-    now: f64,
+    clock: TweenClock,
 ) -> bool {
     let resolved = match bind.tween.as_ref() {
         Some(cfg) => match lookup_bound(&bind.source, bind_scope, slot_values, cell_values) {
-            Some(SlotValue::Number(n)) => {
-                drive_tween_f32(tween, cfg.from, *n, cfg.duration_ms, cfg.easing, now)
-            }
+            Some(SlotValue::Number(n)) => drive_tween_f32(
+                tween,
+                cfg.from,
+                *n,
+                clock.duration_ms(cfg.duration_ms),
+                cfg.easing,
+                clock.now,
+            ),
             _ => {
                 let fallback = bar_slot_value(bind, bind_scope, slot_values, cell_values);
-                seed_tween(tween, fallback, now);
+                seed_tween(tween, fallback, clock.now);
                 fallback
             }
         },
@@ -333,7 +373,7 @@ pub fn drive_ring_scalar_binding(
     scalar: &mut RingScalar,
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
-    now: f64,
+    clock: TweenClock,
 ) -> bool {
     let RingScalar::Bound {
         source,
@@ -352,16 +392,21 @@ pub fn drive_ring_scalar_binding(
             slot_values,
             cell_values,
         ) {
-            Some(SlotValue::Number(target)) if target.is_finite() => {
-                drive_tween_f32(tween, cfg.from, *target, cfg.duration_ms, cfg.easing, now)
-            }
+            Some(SlotValue::Number(target)) if target.is_finite() => drive_tween_f32(
+                tween,
+                cfg.from,
+                *target,
+                clock.duration_ms(cfg.duration_ms),
+                cfg.easing,
+                clock.now,
+            ),
             Some(SlotValue::Number(_)) => {
                 return clear_invalid_ring_scalar(last_resolved, tween);
             }
             _ => {
                 let fallback =
                     bound_scalar_value(source, bind_scope.as_deref(), slot_values, cell_values);
-                seed_tween(tween, fallback, now);
+                seed_tween(tween, fallback, clock.now);
                 fallback
             }
         },

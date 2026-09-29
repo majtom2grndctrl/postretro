@@ -7,6 +7,7 @@ use super::super::descriptor::{BindSource, PredicateValue};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
+use super::node_context::ValueText;
 
 pub(super) const PRESENTATION_FACT_SCOPE: &str = "\0postretro.presentation.fact";
 
@@ -101,4 +102,30 @@ pub fn predicate_value_matches(value: &SlotValue, comparand: &PredicateValue) ->
         | (SlotValue::Enum(s), PredicateValue::String(c)) => s == c,
         _ => false,
     }
+}
+
+/// The text a button's `valueText` shows this frame: the first case whose
+/// predicates all hold (an empty `when` always holds), else `fallback`.
+/// Borrows, so a settled frame compares without allocating.
+pub fn resolve_value_text<'a>(
+    value_text: &'a ValueText,
+    fallback: &'a str,
+    slots: &HashMap<String, SlotValue>,
+    cells: &CellValues,
+) -> &'a str {
+    value_text
+        .cases
+        .iter()
+        .find(|case| {
+            case.when.iter().all(|condition| {
+                resolve_predicate(
+                    &condition.source,
+                    condition.equals.as_ref(),
+                    value_text.scope.as_deref(),
+                    slots,
+                    cells,
+                ) >= 0.5
+            })
+        })
+        .map_or(fallback, |case| case.text.as_str())
 }

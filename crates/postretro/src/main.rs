@@ -5,6 +5,7 @@
 // separation, built on the `agent` harness and `nav::find_path`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
+mod app;
 mod camera;
 mod frame_eye;
 #[cfg(test)]
@@ -58,6 +59,7 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
+mod os_preferences;
 use postretro_sim::weapon;
 pub(crate) use postretro_sim::{
     presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
@@ -120,6 +122,11 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes};
 
+#[cfg(test)]
+use crate::app::ui_actions::{
+    UiButtonAction, apply_pause_menu_nav_policy, apply_running_cancel_policy,
+    classify_ui_button_action, focused_button_on_press, route_ui_button_action,
+};
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
@@ -801,6 +808,10 @@ pub(crate) struct App {
     /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
     pending_menu_toggle: bool,
 
+    /// Whether the engine accessibility panel was on the stack at the last
+    /// options update, so any close path is noticed once.
+    accessibility_panel_was_open: bool,
+
     /// App-local quit request raised by the reserved `ui.exitToDesktop` button
     /// action. The UI action classifier is generic, but only the event-loop owner
     /// actually exits, so this flag is drained in the redraw/game-logic phase
@@ -852,6 +863,21 @@ pub(crate) struct App {
     /// schedule the deferred `mod_init` and boot load request after the first
     /// visible splash frame; Loading owns worker polling.
     splash_frame: u32,
+
+    /// When deferred mod init finished this boot. Whatever follows mod init
+    /// waits for the OS preference reader's first reply up to
+    /// `os_preferences::OS_REPLY_WAIT` from here. `None` outside that wait.
+    os_wait_from: Option<Instant>,
+
+    /// When the App last handed the renderer a resolve frame's limiter input;
+    /// the channel clamp ages its window by presented-frame time measured from
+    /// here, splash frames included. A frame whose acquire fails still advances
+    /// it: the renderer merges that frame's unconsumed input into the next.
+    last_resolve_at: Option<Instant>,
+
+    /// Where boot continues when the first-launch hold ends. `Some` only
+    /// during the hold.
+    boot_destination: Option<crate::startup::BootDestination>,
 
     /// Set when `Loading → Running` transitions; consumed at the bottom of the
     /// first `Running` frame after `render_frame_indirect` returns. Ensures
@@ -971,25 +997,6 @@ struct WindowState {
     window: Arc<Window>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UiButtonAction {
-    CommitTextEntry,
-    CloseDialog,
-    ExitToDesktop,
-    QuitToMenu,
-    NamedReaction,
-}
-
-fn classify_ui_button_action(on_press: &str) -> UiButtonAction {
-    match on_press {
-        postretro_ui::actions::COMMIT_TEXT_ENTRY_ACTION => UiButtonAction::CommitTextEntry,
-        postretro_ui::actions::CLOSE_DIALOG_ACTION => UiButtonAction::CloseDialog,
-        postretro_ui::actions::EXIT_TO_DESKTOP_ACTION => UiButtonAction::ExitToDesktop,
-        postretro_ui::actions::QUIT_TO_MENU_ACTION => UiButtonAction::QuitToMenu,
-        _ => UiButtonAction::NamedReaction,
-    }
-}
-
 fn frontend_background_level_source(frontend: Option<&Frontend>) -> Option<LevelSource> {
     frontend
         .and_then(|frontend| frontend.background_level.as_ref())
@@ -1002,50 +1009,6 @@ fn frontend_return_requests(frontend: Option<&Frontend>) -> Vec<LevelRequest> {
         requests.push(LevelRequest::Load(source));
     }
     requests
-}
-
-fn focused_button_on_press(
-    rects: Option<&postretro_ui::tree::FocusRectList>,
-    focused_id: Option<&str>,
-) -> Option<String> {
-    use postretro_ui::tree::NodeInteraction;
-
-    let focused_id = focused_id?;
-    rects?
-        .rects
-        .iter()
-        .find(|r| r.id == focused_id)
-        // A disabled focused node is non-interactive (M13 G2-T3): block its
-        // activation regardless of how the focus arrived (a pre-existing focus
-        // that became disabled, or a click that fell through). The focus engine
-        // already keeps disabled nodes unreachable; this is the App-side gate on
-        // the activation path itself.
-        .filter(|r| !r.disabled)
-        .and_then(|r| match &r.interaction {
-            Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.clone()),
-            _ => None,
-        })
-}
-
-fn route_ui_button_action(
-    on_press: &str,
-    modal_stack: &mut postretro_ui::modal_stack::ModalStack,
-) -> UiButtonAction {
-    match classify_ui_button_action(on_press) {
-        UiButtonAction::CloseDialog => {
-            modal_stack.pop();
-            UiButtonAction::CloseDialog
-        }
-        other => other,
-    }
-}
-
-fn apply_pause_menu_nav_policy(modal_stack: &mut postretro_ui::modal_stack::ModalStack) {
-    match modal_stack.active_name() {
-        Some(postretro_ui::demo::PAUSE_MENU_NAME) => modal_stack.pop(),
-        None => modal_stack.push_named(postretro_ui::demo::PAUSE_MENU_NAME, None),
-        Some(_) => {}
-    }
 }
 
 fn gameplay_snapshot_for_capture_state(
@@ -1937,198 +1900,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                if let PhysicalKey::Code(code) = key_event.physical_key {
-                    let pressed = key_event.state.is_pressed();
-
-                    // Modifier-only key events always feed the diagnostic
-                    // resolver — even when egui consumes them — so its
-                    // modifier tracking stays current and `Alt+Shift+Backquote`
-                    // remains resolvable while the panel has focus.
-                    let is_modifier_key = matches!(
-                        code,
-                        winit::keyboard::KeyCode::ShiftLeft
-                            | winit::keyboard::KeyCode::ShiftRight
-                            | winit::keyboard::KeyCode::AltLeft
-                            | winit::keyboard::KeyCode::AltRight
-                            | winit::keyboard::KeyCode::ControlLeft
-                            | winit::keyboard::KeyCode::ControlRight
-                            | winit::keyboard::KeyCode::SuperLeft
-                            | winit::keyboard::KeyCode::SuperRight
-                    );
-
-                    if egui_consumed {
-                        // egui owns this event. Keep modifier tracking current
-                        // so the toggle chord still resolves once the panel is
-                        // open, but do not forward to the input system or fire
-                        // any other diagnostic chord.
-                        if is_modifier_key {
-                            let _ =
-                                self.diagnostic_inputs
-                                    .handle_key(code, pressed, key_event.repeat);
-                        }
-                        // The toggle chord (`Alt+Shift+Backquote`) is reachable
-                        // even when egui consumes the keypress — no egui widget
-                        // binds it, so a targeted check here is unambiguous.
-                        // See: context/lib/input.md §7
-                        #[cfg(feature = "dev-tools")]
-                        if !is_modifier_key {
-                            if let Some(action) =
-                                self.diagnostic_inputs
-                                    .handle_key(code, pressed, key_event.repeat)
-                            {
-                                if action == DiagnosticAction::ToggleDebugPanel {
-                                    self.handle_diagnostic_action(action);
-                                }
-                            }
-                        }
-                        return;
-                    }
-
-                    // Chord resolver runs first: owns Alt+Shift+ modifier
-                    // tracking and fires only on a clean rising edge.
-                    if let Some(action) =
-                        self.diagnostic_inputs
-                            .handle_key(code, pressed, key_event.repeat)
-                    {
-                        self.handle_diagnostic_action(action);
-                    }
-
-                    // UI-dispatch seam, ahead of the gameplay forward and
-                    // mirroring the `egui_consumed` gate: when the active UI
-                    // layer is in Capture mode the event is consumed (queued
-                    // for next-frame game logic) and NOT forwarded to the
-                    // action system this frame. `InputFocus::Menu` is the
-                    // intended structural home for this capture.
-                    //
-                    // Key-down edges resolve to a nav intent (arrows / enter /
-                    // escape / tab); the kinded payload rides the queue. Held
-                    // repeats and non-nav keys carry no intent (the seam still
-                    // suppresses the gameplay forward). Escape's menu-vs-cancel
-                    // split needs the "is a capturing tree on the stack?" flag,
-                    // sourced from the modal stack's top capture mode.
-                    // See: context/lib/input.md
-                    // The UI seam and gameplay forward are session-owned; boot
-                    // phase (pre-install) ignores gameplay/UI key input. The
-                    // diagnostic resolver above already ran so dev chords still
-                    // work during boot. Mode-signal / menu-toggle votes are
-                    // collected here and applied after the session borrow ends.
-                    let Some(session) = self.session.as_mut() else {
-                        return;
-                    };
-                    let mut record_nav_signal = false;
-                    let mut set_menu_toggle = false;
-
-                    // A directional key RELEASE stops the focus engine's
-                    // hold-to-repeat (the press-edge queue carries no release, so
-                    // the focus ring's repeat clock is cleared here). Cancel never
-                    // repeats, so only directional keys matter for nav repeat.
-                    if !pressed
-                        && matches!(
-                            code,
-                            winit::keyboard::KeyCode::ArrowUp
-                                | winit::keyboard::KeyCode::ArrowDown
-                                | winit::keyboard::KeyCode::ArrowLeft
-                                | winit::keyboard::KeyCode::ArrowRight
-                        )
-                    {
-                        session.ui_focus.release_repeat();
-                    }
-                    // A confirm key (Enter) RELEASE stops the activation-repeat clock
-                    // (M13 Text-Entry, Task 2): a held `repeatOnHold` button stops
-                    // re-firing once the confirm key is released, mirroring the
-                    // directional release above.
-                    if !pressed
-                        && matches!(
-                            code,
-                            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
-                        )
-                    {
-                        session.ui_focus.release_confirm_repeat();
-                    }
-                    // Text-entry routing (M13 Text-Entry, Task 3): while a text-entry
-                    // tree is the top of the modal stack, hardware key-down events
-                    // drive the edit surface instead of nav. The LOGICAL key resolves
-                    // Backspace/Enter/Escape first (so a `\u{8}` Backspace text or a
-                    // `\r` Enter text never leaks through the printable channel); only
-                    // a non-control printable `KeyEvent.text` becomes a `Text` intent.
-                    // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
-                    // the focus-resolution stage intercepts for commit/cancel.
-                    let text_entry_open = session.modal_stack.active_text_entry_target().is_some();
-                    // Text entry intentionally honors OS key-repeat (Text-Entry AC4:
-                    // hardware-key repeat comes from the OS): a held Backspace/letter
-                    // appends/deletes on each auto-repeat. All OTHER UI input stays
-                    // edge-only (`!key_event.repeat`) — nav intents must not re-fire on
-                    // a held key, since the focus engine's own dt clock owns nav repeat.
-                    let nav_intent = if pressed && (!key_event.repeat || text_entry_open) {
-                        if text_entry_open {
-                            // A key inside text entry is always a `focus`-mode signal.
-                            record_nav_signal = true;
-                            match input::text_entry_key(
-                                &key_event.logical_key,
-                                key_event.text.as_deref(),
-                            ) {
-                                Some(input::TextEntryKey::Append(s)) => {
-                                    Some(input::UiIntentPayload::Text(s))
-                                }
-                                Some(input::TextEntryKey::Backspace) => {
-                                    Some(input::UiIntentPayload::Backspace)
-                                }
-                                Some(input::TextEntryKey::Commit) => {
-                                    Some(input::UiIntentPayload::Nav(input::NavIntent::Confirm))
-                                }
-                                Some(input::TextEntryKey::Cancel) => {
-                                    Some(input::UiIntentPayload::Nav(input::NavIntent::Cancel))
-                                }
-                                None => None,
-                            }
-                        } else {
-                            // Escape's menu-vs-cancel split: a capturing tree on the
-                            // stack routes Escape to `nav.cancel`; from gameplay it
-                            // opens the menu (`nav.menu`). The seam's `Capture` mode is
-                            // set by `reconcile_ui_focus` from the modal stack's top
-                            // capture mode, so it IS the "capturing tree present"
-                            // predicate. See: context/lib/input.md §7
-                            let capturing =
-                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                            let intent = input::nav_intent_for_key(code, capturing);
-                            if intent.is_some() {
-                                // A nav key (arrows/enter/escape/tab) is a `focus`-mode
-                                // signal — it switches the interaction mode off pointer.
-                                record_nav_signal = true;
-                            }
-                            // Escape-from-gameplay maps to `nav.menu` (opens the pause
-                            // menu). The seam is `Passthrough` from gameplay and queues
-                            // nothing, so route the toggle through the punch-through flag.
-                            if intent == Some(input::NavIntent::Menu) {
-                                set_menu_toggle = true;
-                            }
-                            intent.map(input::UiIntentPayload::Nav)
-                        }
-                    } else {
-                        None
-                    };
-                    if session
-                        .ui_dispatch
-                        .dispatch_event(nav_intent)
-                        .forwards_to_gameplay()
-                        && session.input_focus == InputFocus::Gameplay
-                    {
-                        // Only Gameplay forwards keys to the action system. When
-                        // the debug panel (or future menu) owns focus, WASD must
-                        // not drive the camera even though egui leaves
-                        // `consumed = false` for non-text widgets like sliders.
-                        session.input_system.handle_keyboard_event(code, pressed);
-                    }
-
-                    if record_nav_signal {
-                        self.record_mode_signal(
-                            scripting_systems::input_mode::ModeSignal::NavInput,
-                        );
-                    }
-                    if set_menu_toggle {
-                        self.pending_menu_toggle = true;
-                    }
-                }
+                self.handle_keyboard_input(&key_event, egui_consumed);
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if egui_consumed {
@@ -2254,6 +2026,9 @@ impl ApplicationHandler for App {
                 // CPU stage timing: frontend and early-returned frames never
                 // commit. See: context/lib/rendering_pipeline.md §12
                 self.cpu_timer.begin_frame(now);
+                // OS preference replies land ahead of the Input stage, so a
+                // player write later this frame wins over them (UO1).
+                self.poll_os_preferences();
                 let cpu_stages = self.cpu_timer.stages();
                 let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Housekeeping);
 
@@ -2300,14 +2075,20 @@ impl ApplicationHandler for App {
                 }
                 let options_menu_was_open = self.options_menu_is_top();
 
-                if self.boot_state == BootState::Frontend {
+                if matches!(
+                    self.boot_state,
+                    BootState::Frontend | BootState::FirstLaunchHold
+                ) {
                     // Frontend has no world but is not a peerless state: keep an
                     // installed endpoint alive before frontend-only game logic.
+                    // The first-launch hold runs the same world-less frame with
+                    // only the accessibility panel on the stack.
                     let _ = self.poll_world_less_transport(frame_dt);
                     if !self.run_frontend_ui_logic(event_loop, frame_dt, options_menu_was_open) {
                         return;
                     }
                     self.render_frontend_frame(event_loop, now);
+                    self.finish_first_launch_hold_if_closed();
                     return;
                 }
 
@@ -2536,7 +2317,9 @@ impl ApplicationHandler for App {
                 // but never removes the frontend root. The capture-mode
                 // + cursor effect follows on this frame's `reconcile_ui_focus`
                 // below. The toggle flag is a punch-through from gameplay;
-                // `cancelled` rides the captured-intent queue.
+                // `cancelled` rides the captured-intent queue. While the
+                // accessibility panel is the active tree, `nav.cancel` closes it
+                // too.
                 if self.pending_menu_toggle {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
@@ -2544,12 +2327,10 @@ impl ApplicationHandler for App {
                     let close_frontend_submenu =
                         self.frontend_menu_is_present() && !self.frontend_menu_is_top();
                     if let Some(session) = self.session.as_mut() {
-                        if session.modal_stack.active_name()
-                            == Some(postretro_ui::demo::PAUSE_MENU_NAME)
-                            || close_frontend_submenu
-                        {
-                            session.modal_stack.pop();
-                        }
+                        crate::app::ui_actions::apply_running_cancel_policy(
+                            &mut session.modal_stack,
+                            close_frontend_submenu,
+                        );
                     }
                 }
 
@@ -3733,7 +3514,8 @@ impl ApplicationHandler for App {
                 let view_feel_scale = self
                     .session
                     .as_ref()
-                    .map(|session| session.player_options.view_feel_scale)
+                    .and_then(|session| session.options_bridge.resolved())
+                    .map(|resolved| resolved.presented_view_feel_scale())
                     .unwrap_or(1.0);
                 let eye = frame_eye::assemble_frame_eye(
                     frame_eye::FrameEyeInputs {
@@ -3918,6 +3700,17 @@ impl ApplicationHandler for App {
                     // borrow it once here (disjoint from the `renderer` borrow of
                     // `self.renderer` and from the other `self` fields read below).
                     let session = self.session.as_mut().expect("running session installed");
+                    // The player's reduce-motion switch reaches presentation
+                    // here, at the frame-time call site; simulation never reads it.
+                    let motion = if session
+                        .options_bridge
+                        .resolved()
+                        .is_some_and(|resolved| resolved.reduce_motion)
+                    {
+                        crate::presentation_pool::MotionPreference::Reduced
+                    } else {
+                        crate::presentation_pool::MotionPreference::Full
+                    };
                     let presentation_inputs = {
                         let mut registry = script_ctx.registry.borrow_mut();
                         session.presentation_pool.advance_and_collect_inputs(
@@ -3925,6 +3718,7 @@ impl ApplicationHandler for App {
                             frame_dt,
                             view_proj,
                             presentation_viewport,
+                            motion,
                         )
                     };
                     let recycled_inputs =
@@ -4527,6 +4321,8 @@ impl ApplicationHandler for App {
                         frontend_menu_is_present,
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
+                    let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, now);
+                    renderer.set_limiter_frame(limiter_frame);
 
                     drop(stage_scope.take());
                     let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);
@@ -5355,6 +5151,9 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.frontend = frontend;
         }
+        if let Some(session) = self.session.as_mut() {
+            session.check_accessibility_entry();
+        }
         if frontend_was_top || self.boot_state == BootState::Frontend {
             self.present_frontend_menu();
         }
@@ -5443,76 +5242,6 @@ impl App {
         frontend_root_is_pushed(&session.modal_stack, self.frontend_menu_tree_name())
     }
 
-    fn options_menu_is_top(&self) -> bool {
-        self.session.as_ref().is_some_and(|session| {
-            session.modal_stack.active_name() == Some(options::OPTIONS_MENU_TREE_NAME)
-        })
-    }
-
-    fn seed_options_menu_slots(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let crate::session::Session {
-            options_bridge,
-            player_options,
-            scripting,
-            ..
-        } = session;
-        options_bridge.seed_on_open(
-            &mut scripting.script_ctx.slot_table.borrow_mut(),
-            player_options,
-        );
-    }
-
-    /// Apply accepted option-slot writes after the frame's command drains.
-    /// Closing flushes only after those writes settle, so a change and Back in
-    /// the same frame cannot strand a pending value behind the debounce.
-    fn update_player_options(&mut self, frame_dt: f32, options_menu_was_open: bool) {
-        let effects = {
-            let Some(session) = self.session.as_mut() else {
-                return;
-            };
-            let crate::session::Session {
-                options_bridge,
-                player_options,
-                input_system,
-                settings_path,
-                scripting,
-                ..
-            } = session;
-            let slot_table = scripting.script_ctx.slot_table.borrow();
-            options_bridge.update(
-                frame_dt,
-                &slot_table,
-                player_options,
-                input_system,
-                settings_path.as_deref(),
-            )
-        };
-
-        if let Some(quality) = effects.fog_quality {
-            self.apply_player_fog_quality(quality);
-        }
-
-        // Live: the renderer rewrites every installed material's uniform
-        // buffer, so this takes effect on the next frame with no level reload
-        // and is a safe no-op when no level (or no renderer) is present.
-        if let Some(quality) = effects.surface_depth_quality {
-            self.apply_player_surface_depth_quality(quality);
-        }
-
-        if options_menu_was_open && !self.options_menu_is_top() {
-            let session = self
-                .session
-                .as_mut()
-                .expect("options close requires an installed session");
-            session
-                .options_bridge
-                .flush_on_options_close(&session.player_options, session.settings_path.as_deref());
-        }
-    }
-
     fn apply_frontend_menu_camera_pose_if_present(&mut self) {
         let Some(frontend) = self
             .session
@@ -5563,13 +5292,16 @@ impl App {
             ui_focused_id
         };
 
-        postretro_ui::UiReadSnapshot::with_trees(
+        let reduce_motion = options::reduce_motion_from_slots(&slot_values);
+        let mut snapshot = postretro_ui::UiReadSnapshot::with_trees(
             trees,
             slot_values,
             cell_values,
             script_time,
             ring_id,
-        )
+        );
+        snapshot.reduce_motion = reduce_motion;
+        snapshot
     }
 
     /// Install a mod manifest's theme tokens and font assets into the live UI
@@ -5622,6 +5354,23 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Presented-frame time for the frame about to resolve. Time runs from the
+    /// previous resolve frame, so a stretch of splash frames (a load) ages the
+    /// flash window by its whole length. If the frame then fails to acquire,
+    /// the renderer keeps its time for the next resolve
+    /// (`Renderer::set_limiter_frame`).
+    fn next_limiter_frame(
+        last_resolve_at: &mut Option<Instant>,
+        now: Instant,
+    ) -> postretro_render_cpu::flash_limiter::LimiterFrameInput {
+        use postretro_render_cpu::flash_limiter::{DEFAULT_FRAME_SECONDS, LimiterFrameInput};
+        let elapsed_seconds = last_resolve_at.map_or(DEFAULT_FRAME_SECONDS, |previous| {
+            now.saturating_duration_since(previous).as_secs_f32()
+        });
+        *last_resolve_at = Some(now);
+        LimiterFrameInput { elapsed_seconds }
     }
 
     /// Paint a single boot-splash frame through the renderer-owned splash pass:
@@ -5793,7 +5542,9 @@ impl App {
     fn render_frontend_frame(&mut self, event_loop: &ActiveEventLoop, frame_start: Instant) {
         self.apply_frontend_menu_camera_pose_if_present();
         self.reconcile_ui_focus();
-        let frontend_menu_is_present = self.frontend_menu_is_present();
+        // The first-launch hold shows the panel alone: no HUD beneath it.
+        let frontend_menu_is_present =
+            self.frontend_menu_is_present() || self.boot_state == BootState::FirstLaunchHold;
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -5819,6 +5570,8 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
+        let limiter_frame = Self::next_limiter_frame(&mut self.last_resolve_at, frame_start);
+        renderer.set_limiter_frame(limiter_frame);
         let recycled_inputs = renderer.set_presentation_draw_inputs(Vec::new());
         session
             .presentation_pool
@@ -5906,272 +5659,6 @@ impl App {
                 record.value.clone().map(|value| (name.to_string(), value))
             })
             .collect()
-    }
-
-    /// Apply slider nav-capture for the focused slider (M13 Goal F, Task 4).
-    ///
-    /// The currently focused node
-    /// (last frame's `ui_focused_id`, the focus going into this frame) is matched
-    /// against the exported focus rects; if it is a `slider`, each nav intent whose
-    /// wire name is in the slider's `captures_nav` is REMOVED from `nav_intents`
-    /// (the focus engine never sees it) and, when directional, steps the bound value
-    /// by `step` clamped to the slider's min/max, enqueuing a `setState` write
-    /// applied at the game-logic command drain (the bound slot changes on N+1).
-    fn apply_slider_nav_capture(&mut self, nav_intents: &mut Vec<input::NavIntent>) {
-        use postretro_ui::tree::NodeInteraction;
-
-        let Some(focused_id) = self.ui_focused_id.as_deref() else {
-            return;
-        };
-        let Some(rects) = self
-            .session
-            .as_ref()
-            .and_then(|session| session.ui_focus_rects.as_ref())
-        else {
-            return;
-        };
-        // Resolve the focused slider's interaction + its bound slot (clone out so
-        // the immutable borrow of the rect list drops before the slot/queue work).
-        let slider = rects
-            .rects
-            .iter()
-            .find(|r| r.id == focused_id)
-            .and_then(|r| match &r.interaction {
-                Some(interaction @ NodeInteraction::Slider { slot, min, .. }) => {
-                    Some((interaction.clone(), slot.clone(), *min))
-                }
-                _ => None,
-            });
-        let Some((interaction, slot, min)) = slider else {
-            return;
-        };
-
-        let script_ctx = self
-            .session
-            .as_ref()
-            .expect("frontend session installed")
-            .scripting
-            .script_ctx
-            .clone();
-        // The slider's current value: its bound slot reading, or `min` as a floor
-        // when the slot is unset or non-numeric (a sane starting point).
-        let current = {
-            let table = script_ctx.slot_table.borrow();
-            match table.get(&slot).and_then(|r| r.value.as_ref()) {
-                Some(postretro_entities::SlotValue::Number(n)) => *n,
-                _ => min,
-            }
-        };
-
-        // Peel off captured nav intents (mutating `nav_intents`) and compute the
-        // stepped value; emit one `setState` for the new clamped value.
-        if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
-            script_ctx
-                .system_commands
-                .push(SystemReactionCommand::SetState {
-                    slot,
-                    value: serde_json::json!(next),
-                    dispatch_source: "ui.slider".to_string(),
-                    dispatch_values: Vec::new(),
-                });
-        }
-    }
-
-    /// Fire a focused button's `onPress` on activation. Reserved `ui.*` actions
-    /// are handled App-side before ordinary names fall through to the shared
-    /// named-reaction path, so gamepad confirm and pointer click produce the same
-    /// observable effect.
-    fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
-        let on_press = focused_button_on_press(
-            self.session
-                .as_ref()
-                .and_then(|session| session.ui_focus_rects.as_ref()),
-            focused_id,
-        );
-        if let Some(on_press) = on_press {
-            let action = match self.session.as_mut() {
-                Some(session) => route_ui_button_action(&on_press, &mut session.modal_stack),
-                None => return,
-            };
-            match action {
-                UiButtonAction::CommitTextEntry => self.commit_text_entry(),
-                UiButtonAction::CloseDialog => {}
-                UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
-                UiButtonAction::QuitToMenu => self.return_to_frontend(),
-                UiButtonAction::NamedReaction => {
-                    if let Some(session) = self.session.as_ref() {
-                        let script_ctx = &session.scripting.script_ctx;
-                        // Capture chained names (a `fire` step's target or a fired
-                        // `Primitive`'s `on_complete`) and dispatch them, rather
-                        // than discarding as before. A `wait` step enrolls its tail
-                        // ahead of the tick loop; the frame-counter stamp keeps it
-                        // from advancing in this same redraw.
-                        let chained = fire_named_event_with_sequences(
-                            &on_press,
-                            &script_ctx.data_registry.borrow(),
-                            &session.scripting.sequence_registry,
-                            &session.scripting.reaction_registry,
-                            &session.scripting.system_registry,
-                            script_ctx,
-                            None,
-                        );
-                        if !chained.is_empty() {
-                            dispatch_deferred_named_events_with_sequences(
-                                chained,
-                                &script_ctx.data_registry.borrow(),
-                                &session.scripting.sequence_registry,
-                                &session.scripting.reaction_registry,
-                                &session.scripting.system_registry,
-                                script_ctx,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Resolve drained UI intents against the open text-entry surface (M13
-    /// Text-Entry, Task 3). Returns `true` when a `nav.confirm` (commit) or
-    /// `nav.cancel` (cancel) was consumed by text entry this frame, so the caller
-    /// filters those intents out of the focus engine and skips the pause-menu path.
-    ///
-    /// No-op (returns `false`) when text entry is closed — the top tree declares no
-    /// `text_entry_target`. While open:
-    /// - `Text(s)` → an `AppendText { slot, text: s }` edit against the target slot,
-    /// - `Backspace` → a `BackspaceText { slot }` edit against the target slot,
-    /// - `nav.confirm` → commit: fire the opener's `on_commit`, then `PopTree`,
-    /// - `nav.cancel` → cancel: `PopTree` only (edits stay in the slot; the opener
-    ///   simply does not act on them — no rollback).
-    ///
-    /// Edits ride Task 1's text-edit command path (pushed onto the system-command
-    /// queue, drained at `dispatch_system_commands`), so they land on the bound slot
-    /// on the N+1 frame — the system's defining N→N+1 ordering. Commit and cancel act
-    /// on the stack immediately at this game-logic phase; the seam reconciles next.
-    fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
-        let Some(target) = self.session.as_ref().and_then(|session| {
-            session
-                .modal_stack
-                .active_text_entry_target()
-                .map(str::to_string)
-        }) else {
-            return false;
-        };
-
-        // Thread the currently-focused node's interaction (last frame's exported
-        // focus, the focus going into this frame — same source `apply_slider_nav_capture`
-        // reads) so `resolve_text_entry` can distinguish a confirm that lands on an
-        // on-screen keyboard key from a keyboardless hardware Enter. A confirm on a
-        // focusable button must flow to the focus engine (Task 4 fires the key's
-        // `on_press` — `kbAppend_*` to type, or `done`'s commit sentinel); only a
-        // confirm NOT on a button commits here. Without this the confirm was consumed
-        // as Commit before the focus engine ran and the keyboard closed instead of
-        // typing.
-        let confirm_on_button = self.focused_node_is_activatable_button();
-
-        // Pure resolution: drained intents → ordered edits + a terminal disposition.
-        let resolution = input::resolve_text_entry(ui_intents, confirm_on_button);
-
-        // Apply the edits through Task 1's text-edit command path (the bound slot
-        // changes on the N+1 frame). Edits are queued before commit/cancel acts so a
-        // committing reaction observes the slot as last edited.
-        for edit in &resolution.edits {
-            let command = match edit {
-                input::TextEntryEdit::Append(text) => SystemReactionCommand::AppendText {
-                    slot: target.clone(),
-                    text: text.clone(),
-                },
-                input::TextEntryEdit::Backspace => SystemReactionCommand::BackspaceText {
-                    slot: target.clone(),
-                },
-            };
-            if let Some(session) = self.session.as_ref() {
-                session.scripting.script_ctx.system_commands.push(command);
-            }
-        }
-
-        match resolution.disposition {
-            input::TextEntryDisposition::Commit => self.commit_text_entry(),
-            input::TextEntryDisposition::Cancel => self.cancel_text_entry(),
-            input::TextEntryDisposition::Open => {}
-        }
-        resolution.consumed_commit_or_cancel()
-    }
-
-    /// Whether the currently-focused node (last frame's `ui_focused_id` on the
-    /// exported rect list) is an activatable `button`. The on-screen keyboard's
-    /// keys are buttons, so this is the predicate `resolve_text_entry_intents` uses
-    /// to keep a `nav.confirm` flowing to the focus engine (the key activates)
-    /// rather than consuming it as a text-entry commit. Reads the same
-    /// `ui_focused_id` + `ui_focus_rects` pair `apply_slider_nav_capture` does.
-    fn focused_node_is_activatable_button(&self) -> bool {
-        use postretro_ui::tree::NodeInteraction;
-        let Some(focused_id) = self.ui_focused_id.as_deref() else {
-            return false;
-        };
-        let Some(rects) = self
-            .session
-            .as_ref()
-            .and_then(|session| session.ui_focus_rects.as_ref())
-        else {
-            return false;
-        };
-        rects
-            .rects
-            .iter()
-            .find(|r| r.id == focused_id)
-            .is_some_and(|r| matches!(r.interaction, Some(NodeInteraction::Button { .. })))
-    }
-
-    /// Commit the open text-entry surface (M13 Text-Entry, Task 3): fire the top
-    /// tree's carried `on_commit` reaction (from the `PushTree` that opened it),
-    /// THEN pop the tree. This is the shared commit seam — the hardware Enter key
-    /// routes here, and Task 4's on-screen `done` button activation calls this same
-    /// method so commit is not keyboard-only. A no-op when no tree is open.
-    ///
-    /// The `on_commit` reaction reads the bound slot's value (the entered text); the
-    /// reaction fires synchronously here so it observes the slot as last edited.
-    fn commit_text_entry(&mut self) {
-        let on_commit = self
-            .session
-            .as_ref()
-            .and_then(|session| session.modal_stack.active_on_commit().map(str::to_string));
-        if let Some(on_commit) = on_commit {
-            if let Some(session) = self.session.as_ref() {
-                let script_ctx = &session.scripting.script_ctx;
-                let chained = fire_named_event_with_sequences(
-                    &on_commit,
-                    &script_ctx.data_registry.borrow(),
-                    &session.scripting.sequence_registry,
-                    &session.scripting.reaction_registry,
-                    &session.scripting.system_registry,
-                    script_ctx,
-                    None,
-                );
-                if !chained.is_empty() {
-                    dispatch_deferred_named_events_with_sequences(
-                        chained,
-                        &script_ctx.data_registry.borrow(),
-                        &session.scripting.sequence_registry,
-                        &session.scripting.reaction_registry,
-                        &session.scripting.system_registry,
-                        script_ctx,
-                    );
-                }
-            }
-        }
-        if let Some(session) = self.session.as_mut() {
-            session.modal_stack.pop();
-        }
-    }
-
-    /// Cancel the open text-entry surface (M13 Text-Entry, Task 3): pop the tree
-    /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
-    /// discarded simply by the opener not acting on them — there is no rollback.
-    fn cancel_text_entry(&mut self) {
-        if let Some(session) = self.session.as_mut() {
-            session.modal_stack.pop();
-        }
     }
 
     /// Drain the system-reaction command queue and route each typed command to
@@ -8703,82 +8190,6 @@ impl App {
             (Some(ModeSignal::NavInput), ModeSignal::MouseMotion) => Some(ModeSignal::NavInput),
             (_, ModeSignal::MouseMotion) => Some(ModeSignal::MouseMotion),
         };
-    }
-
-    /// Apply the `nav.menu` pause-menu policy: pop the pause menu if it is active,
-    /// open it when the modal stack is empty, and ignore the action while another
-    /// modal is active. Wired to gamepad Start / Escape-from-gameplay through
-    /// `pending_menu_toggle`. The capture-mode + cursor effect follows on the next
-    /// `reconcile_ui_focus` (this game-logic phase).
-    fn toggle_pause_menu(&mut self) {
-        if let Some(session) = self.session.as_mut() {
-            apply_pause_menu_nav_policy(&mut session.modal_stack);
-        }
-    }
-
-    /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
-    /// top capture mode. Called in the game-logic phase after the system-command
-    /// drains settle the stack, so the decision is in force for the NEXT frame's
-    /// Input stage (the N→N+1 ordering the seam guarantees: a UI event consumed on
-    /// frame N reaches game logic no earlier than N+1, and the capture/cursor side
-    /// flips here, one game-logic phase before that read).
-    ///
-    /// - A capturing top tree drives `UiCaptureMode::Capture` (the seam queues
-    ///   events for next-frame game logic instead of forwarding to gameplay) and
-    ///   `InputFocus::Menu` (cursor released, player controls gated).
-    /// - An empty or passthrough top hands input back: `Passthrough` at the seam,
-    ///   and focus returns to `Gameplay` if it was `Menu`.
-    ///
-    /// While a capturing tree is up (Menu focus), the OS cursor's VISIBILITY then
-    /// follows the interaction mode (M13 Goal F, Task 5): `pointer` shows it,
-    /// `focus` hides it. This is inert when no capturing tree is up — gameplay
-    /// owns the cursor (locked + hidden) and dev-tools owns its own.
-    ///
-    /// DevTools owns focus while the debug panel is open (it released the cursor
-    /// and set `DevTools`); this reconcile never overrides that — the modal stack
-    /// is gameplay UI, and the debug overlay is a separate, dev-only consumer.
-    fn reconcile_ui_focus(&mut self) {
-        // Read the session-owned inputs up front, then drop the borrow before
-        // `set_input_focus` (which re-borrows the session). No-op before install.
-        let (mode, current_focus) = {
-            let Some(session) = self.session.as_mut() else {
-                return;
-            };
-            let mode = session.modal_stack.top_capture_mode();
-            session.ui_dispatch.set_mode(mode.into());
-            (mode, session.input_focus)
-        };
-
-        // The debug overlay owns focus while open — don't fight it.
-        if current_focus == InputFocus::DevTools {
-            return;
-        }
-
-        let want_menu = matches!(mode, postretro_ui::descriptor::CaptureMode::Capture);
-        match (want_menu, current_focus) {
-            // A capturing tree opened (or stayed open): enter Menu, release cursor.
-            (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
-            // The capturing tree(s) closed: hand the cursor back to gameplay.
-            (false, InputFocus::Menu) => self.set_input_focus(InputFocus::Gameplay),
-            // Already in the right focus for the current capture mode.
-            _ => {}
-        }
-
-        // Cursor visibility follows the interaction mode WHILE a capturing tree
-        // is up. `set_input_focus(Menu)` released the cursor (visible) above; in
-        // `focus` mode we additionally hide it so directional nav isn't cluttered
-        // by a stray pointer. Mode is inert otherwise (no capturing tree).
-        let cursor_visible = self
-            .session
-            .as_ref()
-            .map(|session| (session.input_focus, session.ui_input_mode.cursor_visible()));
-        if let Some((InputFocus::Menu, visible)) = cursor_visible {
-            if want_menu {
-                if let Some(ws) = self.window_state.as_ref() {
-                    ws.window.set_cursor_visible(visible);
-                }
-            }
-        }
     }
 
     /// Release pointer lock as part of the exit path. Does not mutate
@@ -13092,7 +12503,9 @@ mod tests {
     #[test]
     fn production_title_and_options_trees_preserve_composed_control_contracts() {
         use postretro_entities::ReactionDescriptor;
-        use postretro_ui::descriptor::{BindSource, PredicateValue, Widget};
+        use postretro_ui::descriptor::{
+            BindSource, CellInit, Predicate, PredicateValue, Role, Widget,
+        };
 
         if !install_scripts_build_next_to_current_exe() {
             eprintln!("skipping: could not install scripts-build next to test binary");
@@ -13126,6 +12539,26 @@ mod tests {
             Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION)
         );
         assert_eq!(
+            button_action(&title.root, "frontendAccessibility"),
+            None,
+            "Options → Accessibility is the title menu's route to accessibility"
+        );
+        assert_eq!(
+            button_action(
+                &tree(postretro_ui::demo::PAUSE_MENU_NAME).root,
+                "pauseOptions"
+            ),
+            Some("frontend.openOptions"),
+            "the pause menu opens the same tabbed options screen"
+        );
+        assert_eq!(
+            button_action(
+                &tree(postretro_ui::demo::PAUSE_MENU_NAME).root,
+                "pauseAccessibility"
+            ),
+            None
+        );
+        assert_eq!(
             button_action(&tree("frontend.devLevelSelect").root, "levelSelectBack"),
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
         );
@@ -13143,33 +12576,314 @@ mod tests {
         let Widget::VStack(options_root) = &options_tree.root else {
             panic!("options root is a vstack")
         };
-        assert_eq!(options_root.width, Some(640.0));
-        let options_grids: Vec<_> = options_root
-            .children
-            .iter()
-            .filter_map(|section| match section {
-                Widget::VStack(section) => section.children.iter().find_map(|child| match child {
+        assert_eq!(
+            options_root.width,
+            Some(640.0),
+            "tabs replace the two-column layout with one column"
+        );
+        assert_eq!(
+            options_tree.initial_focus.as_deref(),
+            Some("optionsTabControls"),
+            "focus opens on the first tab"
+        );
+        assert!(
+            options_root.focus.is_some(),
+            "one focus group spans the tab strip, the visible panel and BACK"
+        );
+        assert!(
+            options_root.restore_on_return,
+            "closing a tree pushed above returns focus to the control it left"
+        );
+        let tab_state = options_root
+            .local_state
+            .as_ref()
+            .expect("the root declares the tab cell's scope over the strip and every panel");
+        assert_eq!(
+            tab_state.cells.get("tab"),
+            Some(&CellInit::String("controls".into())),
+            "the tab is presentation-local state that opens on CONTROLS"
+        );
+
+        /// Every widget in `widget`'s subtree, in tree order, `widget` included.
+        fn collect_widgets<'a>(widget: &'a Widget, out: &mut Vec<&'a Widget>) {
+            out.push(widget);
+            let children: &[Widget] = match widget {
+                Widget::VStack(container) | Widget::HStack(container) => &container.children,
+                Widget::Grid(grid) => &grid.children,
+                _ => return,
+            };
+            for child in children {
+                collect_widgets(child, out);
+            }
+        }
+        fn find_by_id<'a>(widget: &'a Widget, id: &str) -> Option<&'a Widget> {
+            let mut all = Vec::new();
+            collect_widgets(widget, &mut all);
+            all.into_iter().find(|candidate| {
+                let own = match candidate {
+                    Widget::Text(text) => text.id.as_deref(),
+                    Widget::VStack(container) | Widget::HStack(container) => {
+                        container.id.as_deref()
+                    }
+                    Widget::Grid(grid) => grid.id.as_deref(),
+                    Widget::Button(button) => Some(button.id.as_str()),
+                    Widget::Slider(slider) => Some(slider.id.as_str()),
+                    _ => None,
+                };
+                own == Some(id)
+            })
+        }
+        fn grids_in(widget: &Widget) -> Vec<&postretro_ui::descriptor::GridWidget> {
+            let mut all = Vec::new();
+            collect_widgets(widget, &mut all);
+            all.into_iter()
+                .filter_map(|candidate| match candidate {
                     Widget::Grid(grid) => Some(grid),
                     _ => None,
-                }),
+                })
+                .collect()
+        }
+        let tab_is = |key: &str| Predicate {
+            source: BindSource::Local {
+                local: "tab".into(),
+            },
+            equals: Some(PredicateValue::String(key.into())),
+        };
+
+        let tab_strip = options_root
+            .children
+            .iter()
+            .find_map(|child| match child {
+                Widget::HStack(strip) if strip.role == Some(Role::Tablist) => Some(strip),
                 _ => None,
+            })
+            .expect("the options root carries a tablist strip outside every panel");
+        assert!(
+            tab_strip.focus.is_none(),
+            "a focus policy on the strip would open a nested group and trap nav in it"
+        );
+        let tab_ids: Vec<&str> = tab_strip
+            .children
+            .iter()
+            .map(|child| match child {
+                Widget::Button(button) => button.id.as_str(),
+                other => panic!("the tab strip holds only tab buttons, found {other:?}"),
             })
             .collect();
         assert_eq!(
-            options_grids.len(),
-            2,
-            "controls and graphics use separate visual groups"
+            tab_ids,
+            [
+                "optionsTabControls",
+                "optionsTabGraphics",
+                "optionsTabAccessibility"
+            ]
         );
-        assert!(options_grids.iter().all(|grid| grid.cols == 2));
-        assert_eq!(options_grids[0].children.len(), 8);
-        assert_eq!(options_grids[1].children.len(), 6);
         assert!(
-            options_grids
+            options_root
+                .children
                 .iter()
-                .flat_map(|grid| &grid.children)
-                .all(|child| !matches!(child, Widget::Spacer(_))),
-            "label and control columns have no empty tracks"
+                .any(|child| matches!(child, Widget::Button(button) if button.id == "optionsBack")),
+            "BACK sits outside the tab panels, so every tab reaches it"
         );
+
+        for (tab_id, key, panel_id, grid_len, controls) in [
+            (
+                "optionsTabControls",
+                "controls",
+                "optionsPanelControls",
+                8,
+                &[
+                    "optionsMouseSensitivity",
+                    "optionsInvertYOff",
+                    "optionsInvertYOn",
+                    "optionsViewFeelScale",
+                    "optionsCrouchHold",
+                    "optionsCrouchToggle",
+                ][..],
+            ),
+            (
+                "optionsTabGraphics",
+                "graphics",
+                "optionsPanelGraphics",
+                6,
+                &[
+                    "optionsShadowLow",
+                    "optionsShadowMedium",
+                    "optionsShadowHigh",
+                    "optionsFogLow",
+                    "optionsFogMedium",
+                    "optionsFogHigh",
+                    "optionsSurfaceDepthOff",
+                    "optionsSurfaceDepthOn",
+                ][..],
+            ),
+            (
+                "optionsTabAccessibility",
+                "accessibility",
+                "optionsPanelAccessibility",
+                // A label and a control for each of the nine accessibility fields.
+                18,
+                &[
+                    "optionsReduceMotion",
+                    "optionsScreenShakeScale",
+                    "optionsA11yViewFeelScale",
+                    "optionsFlashLimiter",
+                    "optionsMasterVolume",
+                    "optionsSfxVolume",
+                    "optionsMusicVolume",
+                    "optionsUiVolume",
+                    "optionsMonoAudio",
+                ][..],
+            ),
+        ] {
+            let tab = find_button(&options_tree.root, tab_id)
+                .unwrap_or_else(|| panic!("{tab_id} is reachable in the options tree"));
+            assert_eq!(tab.role, Some(Role::Tab));
+            assert_eq!(tab.selected.as_ref(), Some(&tab_is(key)));
+            assert_eq!(
+                tab.bind.as_ref(),
+                tab.selected.as_ref(),
+                "{tab_id}: highlight and a11y selection share one predicate"
+            );
+            assert!(
+                tab.style_ranges.is_some(),
+                "{tab_id}: highlight is value-driven"
+            );
+            let reaction = manifest
+                .reactions
+                .iter()
+                .find(|reaction| reaction.reaction.name == tab.on_press)
+                .unwrap_or_else(|| panic!("{tab_id} names a registered reaction"));
+            let ReactionDescriptor::Primitive(primitive) = &reaction.reaction.descriptor else {
+                panic!("{tab_id} reaction is a primitive");
+            };
+            assert_eq!(
+                primitive.primitive, "cellWrite",
+                "{tab_id} writes the presentation cell, never a player option"
+            );
+            assert_eq!(
+                primitive.args,
+                serde_json::json!({ "scope": tab_state.scope, "cell": "tab", "value": key })
+            );
+
+            let panel_widget = find_by_id(&options_tree.root, panel_id)
+                .unwrap_or_else(|| panic!("{panel_id} is in the options tree"));
+            let Widget::VStack(panel) = panel_widget else {
+                panic!("{panel_id} is a vstack");
+            };
+            assert_eq!(
+                panel.visible_when.as_ref(),
+                Some(&tab_is(key)),
+                "{panel_id} shows only while its tab is selected"
+            );
+            let grids = grids_in(panel_widget);
+            assert_eq!(grids.len(), 1, "{panel_id} lays its rows out in one grid");
+            assert_eq!(grids[0].cols, 2);
+            assert_eq!(grids[0].children.len(), grid_len, "{panel_id} grid cells");
+            assert!(
+                grids[0]
+                    .children
+                    .iter()
+                    .all(|child| !matches!(child, Widget::Spacer(_))),
+                "{panel_id}: label and control columns have no empty tracks"
+            );
+            for control in controls {
+                assert!(
+                    find_button(panel_widget, control).is_some()
+                        || find_slider(panel_widget, control).is_some(),
+                    "{control} lives in the {key} tab"
+                );
+            }
+        }
+        assert_eq!(
+            grids_in(&options_tree.root).len(),
+            3,
+            "no grid sits outside the three tab panels"
+        );
+
+        // Every toggle is one value button on the right, named by its label on
+        // the left, firing the field's reserved action — the flash limiter's
+        // included — and showing the resolved value.
+        let accessibility_panel = find_by_id(&options_tree.root, "optionsPanelAccessibility")
+            .expect("accessibility panel is in the options tree");
+        let is = |slot: &str, value: bool| Predicate {
+            source: BindSource::Slot { slot: slot.into() },
+            equals: Some(PredicateValue::Boolean(value)),
+        };
+        for (id, field, cases) in [
+            (
+                "optionsReduceMotion",
+                "reduceMotion",
+                vec![
+                    (
+                        vec![
+                            is("accessibility.reduceMotionFollowsSystem", true),
+                            is("accessibility.reduceMotion", true),
+                        ],
+                        "SYSTEM (ON)",
+                    ),
+                    (
+                        vec![is("accessibility.reduceMotionFollowsSystem", true)],
+                        "SYSTEM (OFF)",
+                    ),
+                    (vec![is("accessibility.reduceMotion", true)], "ON"),
+                    (vec![], "OFF"),
+                ],
+            ),
+            (
+                "optionsFlashLimiter",
+                "flashLimiter",
+                vec![
+                    (vec![is("accessibility.flashLimiter", true)], "ON"),
+                    (vec![], "OFF"),
+                ],
+            ),
+            (
+                "optionsMonoAudio",
+                "monoAudio",
+                vec![
+                    (vec![is("accessibility.monoAudio", true)], "ON"),
+                    (vec![], "OFF"),
+                ],
+            ),
+        ] {
+            let button = find_button(accessibility_panel, id)
+                .unwrap_or_else(|| panic!("{id} is a button in the accessibility tab"));
+            assert_eq!(button.on_press, format!("ui.accessibility.cycle.{field}"));
+            assert_eq!(button.label, None);
+            let label_id = format!("{id}Label");
+            assert_eq!(button.labelled_by.as_deref(), Some(label_id.as_str()));
+            assert!(
+                matches!(
+                    find_by_id(accessibility_panel, &label_id),
+                    Some(Widget::Text(_))
+                ),
+                "{id} is named by a text label"
+            );
+            let actual: Vec<(Vec<Predicate>, &str)> = button
+                .value_text
+                .iter()
+                .map(|case| (case.when.clone(), case.text.as_str()))
+                .collect();
+            assert_eq!(actual, cases, "{id} shows the field's current value");
+        }
+        assert!(
+            find_by_id(accessibility_panel, "optionsAccessibilityPanel").is_none(),
+            "every field is in the tab; it needs no route to the engine panel"
+        );
+
+        for (slider, slot) in [
+            ("optionsScreenShakeScale", "options.screenShakeScale"),
+            ("optionsA11yViewFeelScale", "options.viewFeelScale"),
+            ("optionsMasterVolume", "options.masterVolume"),
+            ("optionsSfxVolume", "options.sfxVolume"),
+            ("optionsMusicVolume", "options.musicVolume"),
+            ("optionsUiVolume", "options.uiVolume"),
+        ] {
+            let slider = find_slider(&options_tree.root, slider)
+                .unwrap_or_else(|| panic!("{slider} is reachable in the options tree"));
+            assert_eq!(slider.bind.source, BindSource::Slot { slot: slot.into() });
+        }
         let sensitivity = find_slider(&options_tree.root, "optionsMouseSensitivity")
             .expect("mouse sensitivity slider is reachable in the options tree");
         assert_eq!(sensitivity.label, None);
@@ -13288,6 +13002,29 @@ mod tests {
             "nav.menu is ignored while another modal is active",
         );
         assert_eq!(stack.len(), 1);
+
+        // Cancel from a submenu opened from the pause menu (the options
+        // screen) returns to the pause menu; cancel again closes it.
+        stack.clear_pushed();
+        stack
+            .registry_mut()
+            .register("options", capturing_tree(), ScopeTier::Mod, false);
+        apply_pause_menu_nav_policy(&mut stack);
+        stack.push_named("options", None);
+        apply_running_cancel_policy(&mut stack, false);
+        assert_eq!(
+            stack.active_name(),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
+            "cancel pops the submenu and reveals the pause menu",
+        );
+        assert_eq!(stack.len(), 1, "the options tree is popped");
+        apply_running_cancel_policy(&mut stack, false);
+        assert!(stack.is_empty(), "cancel closes the pause menu as before");
+
+        // A tree with no pause menu beneath owns its own cancel policy.
+        stack.push_named("dialog", None);
+        apply_running_cancel_policy(&mut stack, false);
+        assert_eq!(stack.active_name(), Some("dialog"));
     }
 
     // --- resolve_crouch_intent (input-layer toggle/hold derivation) ---
@@ -14487,8 +14224,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            19,
-            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + seven options slots appear",
+            36,
+            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
         );
     }
 
@@ -14828,5 +14565,30 @@ mod tests {
             Some(&SlotValue::Number(42.0)),
             "popping options restores the title without reseeding its local state",
         );
+    }
+
+    // The first resolve of a renderer takes the default frame time; each later
+    // one takes the time since the previous resolve, a load's splash frames
+    // included.
+    #[test]
+    fn next_limiter_frame_measures_time_since_the_previous_resolve() {
+        use postretro_render_cpu::flash_limiter::DEFAULT_FRAME_SECONDS;
+        let start = Instant::now();
+        let mut last_resolve_at = None;
+
+        let first = App::next_limiter_frame(&mut last_resolve_at, start);
+        assert_eq!(first.elapsed_seconds, DEFAULT_FRAME_SECONDS);
+        assert_eq!(last_resolve_at, Some(start));
+
+        // A load: two seconds of splash frames between resolves.
+        let resolved_at = start + Duration::from_millis(2100);
+        let after_load = App::next_limiter_frame(&mut last_resolve_at, resolved_at);
+        assert!((after_load.elapsed_seconds - 2.1).abs() < 1e-4);
+
+        let next = App::next_limiter_frame(
+            &mut last_resolve_at,
+            resolved_at + Duration::from_millis(16),
+        );
+        assert!((next.elapsed_seconds - 0.016).abs() < 1e-4);
     }
 }

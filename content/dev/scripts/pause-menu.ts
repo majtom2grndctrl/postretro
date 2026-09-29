@@ -10,6 +10,7 @@ import {
   defineUiTree,
   getDesignTokens,
 } from "postretro/ui";
+import { openOptions } from "./frontend-menu";
 
 const pauseTheme = defineTheme({
   color: {
@@ -59,6 +60,13 @@ export const pauseMenu = defineUiTree({
           id: "pauseResume",
           label: "RESUME",
           onPress: CLOSE_DIALOG_ACTION,
+        }),
+        // The tabbed options screen, accessibility included. It hides this
+        // menu while open; its BACK returns here.
+        Button({
+          id: "pauseOptions",
+          label: "OPTIONS",
+          onPress: openOptions,
         }),
         Button({
           id: "pauseQuitToMenu",

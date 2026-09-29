@@ -14,12 +14,13 @@ use super::super::theme::UiTheme;
 use postretro_entities::SlotValue;
 
 use super::bindings::{
-    BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_ring_scalar_binding,
-    drive_text_binding,
+    BindingDiff, TweenClock, drive_bar_binding, drive_bar_max, drive_panel_binding,
+    drive_ring_scalar_binding, drive_text_binding,
 };
 use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
-use super::predicate::resolve_predicate;
+use super::node_context::ValueText;
+use super::predicate::{resolve_predicate, resolve_value_text};
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
 use super::{CellValues, ImageSizes};
 
@@ -208,7 +209,8 @@ impl UiTree {
     /// nodes resolve their drawn string/color against it at `collect_node` time;
     /// an absent slot falls back to the literal descriptor value. Layout never
     /// depends on it — only the drawn payload does — so binding never re-triggers
-    /// a recompute.
+    /// a recompute. The one exception is a button's `valueText`, whose resolved
+    /// text is measured and drawn alike, exactly as on the retained path.
     pub fn build_draw_data(
         &mut self,
         device_size: [u32; 2],
@@ -216,6 +218,21 @@ impl UiTree {
         image_sizes: &ImageSizes,
         slot_values: &HashMap<String, SlotValue>,
     ) -> UiDrawData {
+        let no_cells = CellValues::new();
+        let mut nodes: Vec<NodeId> = Vec::new();
+        self.collect_node_ids(self.root, &mut nodes);
+        for node in nodes {
+            if let Some(NodeContext::Text {
+                content,
+                last_resolved,
+                value_text: Some(value_text),
+                ..
+            }) = self.taffy.get_node_context_mut(node)
+                && sync_value_text(value_text, content, last_resolved, slot_values, &no_cells)
+            {
+                self.mark_dirty(node);
+            }
+        }
         // Gate: recompute only on a structural change (taffy's root cache is
         // empty after a rebuild) or a viewport change. taffy caches computed
         // layout internally and only recomputes dirtied subtrees; this gate
@@ -259,7 +276,6 @@ impl UiTree {
         // `time_seconds`. This path also carries no
         // `{ local }` binds (a fresh tree is transient and carries no scope cells),
         // so cell resolution sees an empty map.
-        let no_cells = CellValues::new();
         self.collect_draw_data(device_size, slot_values, &no_cells, 0.0)
     }
 
@@ -301,7 +317,7 @@ impl UiTree {
             0,
             slot_values,
             cell_values,
-            time_seconds,
+            TweenClock::easing(time_seconds),
         )
     }
 
@@ -320,11 +336,13 @@ impl UiTree {
         // against this the same way `{ slot }` binds resolve against `slot_values`;
         // it rides the snapshot, so a cell write never forces a rebuild.
         cell_values: &CellValues,
-        // Deterministic, dt-accumulated frame time (seconds). The tween driver
-        // (`resolve_bindings`) reads it to advance eased display values: a tween's
-        // normalized progress is `(time_seconds - start_time) / duration`.
-        time_seconds: f64,
+        // Deterministic, dt-accumulated frame time (seconds) plus the reduce-
+        // motion switch. The tween driver (`resolve_bindings`) advances eased
+        // display values on it: a tween's normalized progress is
+        // `(now - start_time) / duration`, and snapping makes every duration 0.
+        clock: TweenClock,
     ) -> UiDrawData {
+        let time_seconds = clock.now;
         // Subscriber-aware diff + tween driver: resolve bound nodes against the
         // new snapshot at this frame's time, easing tweened display values and
         // classifying each change. Runs before the gate so its `mark_dirty` is
@@ -332,7 +350,7 @@ impl UiTree {
         let BindingDiff {
             content_changed,
             appearance_changed,
-        } = self.resolve_bindings(slot_values, cell_values, time_seconds);
+        } = self.resolve_bindings(slot_values, cell_values, clock);
 
         let viewport_changed = self.last_viewport != Some(device_size);
         let image_sizes_changed = self.last_image_sizes_generation != Some(image_sizes_generation);
@@ -443,8 +461,9 @@ impl UiTree {
         &mut self,
         slot_values: &HashMap<String, SlotValue>,
         cell_values: &CellValues,
-        time_seconds: f64,
+        clock: TweenClock,
     ) -> BindingDiff {
+        let time_seconds = clock.now;
         // Collect node ids first (depth-first from the root) to avoid borrowing
         // the taffy tree while mutating node contexts / marking dirty in the loop.
         let mut nodes: Vec<NodeId> = Vec::new();
@@ -470,8 +489,23 @@ impl UiTree {
                     predicate_bind,
                     predicate_scope,
                     last_predicate_resolved,
+                    value_text,
                     ..
                 }) => {
+                    // A button's state-following text: a changed case re-measures
+                    // like a bound text change. A settled frame only compares.
+                    if let Some(value_text) = value_text
+                        && sync_value_text(
+                            value_text,
+                            content,
+                            last_resolved,
+                            slot_values,
+                            cell_values,
+                        )
+                    {
+                        diff.content_changed = true;
+                        dirty_text.push(node);
+                    }
                     if let Some(bind) = bind {
                         if drive_text_binding(
                             bind,
@@ -482,7 +516,7 @@ impl UiTree {
                             number_presentation.as_ref(),
                             slot_values,
                             cell_values,
-                            time_seconds,
+                            clock,
                         ) {
                             diff.content_changed = true;
                             dirty_text.push(node);
@@ -520,7 +554,7 @@ impl UiTree {
                         tween,
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     ) {
                         diff.appearance_changed = true;
                         // Appearance-only: no mark_dirty, no relayout.
@@ -542,7 +576,7 @@ impl UiTree {
                         tween,
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     );
                     let max_changed = drive_bar_max(max, last_max_resolved, slot_values);
                     if value_changed || max_changed {
@@ -562,21 +596,13 @@ impl UiTree {
                     // four even when an earlier property changes: `||` would
                     // short-circuit and freeze later arcs while another one moves.
                     let radius_changed =
-                        drive_ring_scalar_binding(radius, slot_values, cell_values, time_seconds);
-                    let thickness_changed = drive_ring_scalar_binding(
-                        thickness,
-                        slot_values,
-                        cell_values,
-                        time_seconds,
-                    );
-                    let start_angle_changed = drive_ring_scalar_binding(
-                        start_angle,
-                        slot_values,
-                        cell_values,
-                        time_seconds,
-                    );
+                        drive_ring_scalar_binding(radius, slot_values, cell_values, clock);
+                    let thickness_changed =
+                        drive_ring_scalar_binding(thickness, slot_values, cell_values, clock);
+                    let start_angle_changed =
+                        drive_ring_scalar_binding(start_angle, slot_values, cell_values, clock);
                     let sweep_changed =
-                        drive_ring_scalar_binding(sweep, slot_values, cell_values, time_seconds);
+                        drive_ring_scalar_binding(sweep, slot_values, cell_values, clock);
                     if radius_changed | thickness_changed | start_angle_changed | sweep_changed {
                         // A Ring's explicit diameter is its entire layout
                         // contract. Scalar values only alter its SDF draw data.
@@ -705,4 +731,23 @@ impl UiTree {
         }
         diff
     }
+}
+
+/// Store a button's resolved `valueText` in its text run's `last_resolved`,
+/// which both the measure seam and the draw read, so they always agree.
+/// Returns whether the text changed (the caller marks the node dirty). A
+/// settled frame only compares borrowed strings.
+fn sync_value_text(
+    value_text: &ValueText,
+    content: &str,
+    last_resolved: &mut Option<String>,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> bool {
+    let text = resolve_value_text(value_text, content, slot_values, cell_values);
+    if last_resolved.as_deref() == Some(text) {
+        return false;
+    }
+    *last_resolved = Some(text.to_string());
+    true
 }

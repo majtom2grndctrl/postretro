@@ -1,0 +1,324 @@
+{
+  "anchor": "center",
+  "offset": [
+    0.0,
+    0.0
+  ],
+  "root": {
+    "kind": "vstack",
+    "gap": 14.0,
+    "padding": 20.0,
+    "align": "start",
+    "fill": "panel.default",
+    "focus": {
+      "policy": "linear"
+    },
+    "children": [
+      {
+        "kind": "text",
+        "content": "ACCESSIBILITY",
+        "fontSize": 24,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "grid",
+        "gap": 10.0,
+        "padding": 0.0,
+        "align": "center",
+        "cols": 2,
+        "children": [
+          {
+            "kind": "text",
+            "content": "REDUCE MOTION",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_reduceMotionLabel"
+          },
+          {
+            "kind": "button",
+            "id": "a11y_reduceMotion",
+            "labelledBy": "a11y_reduceMotionLabel",
+            "onPress": "ui.accessibility.cycle.reduceMotion",
+            "valueText": [
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.reduceMotionFollowsSystem",
+                    "equals": true
+                  },
+                  {
+                    "slot": "accessibility.reduceMotion",
+                    "equals": true
+                  }
+                ],
+                "text": "SYSTEM (ON)"
+              },
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.reduceMotionFollowsSystem",
+                    "equals": true
+                  }
+                ],
+                "text": "SYSTEM (OFF)"
+              },
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.reduceMotion",
+                    "equals": true
+                  }
+                ],
+                "text": "ON"
+              },
+              {
+                "text": "OFF"
+              }
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "SCREEN SHAKE",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_screenShakeScaleLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_screenShakeScale",
+            "labelledBy": "a11y_screenShakeScaleLabel",
+            "bind": {
+              "slot": "accessibility.screenShakeScale"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.1,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "VIEW FEEL",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_viewFeelScaleLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_viewFeelScale",
+            "labelledBy": "a11y_viewFeelScaleLabel",
+            "bind": {
+              "slot": "accessibility.viewFeelScale"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.1,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "FLASH LIMITER",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_flashLimiterLabel"
+          },
+          {
+            "kind": "button",
+            "id": "a11y_flashLimiter",
+            "labelledBy": "a11y_flashLimiterLabel",
+            "onPress": "ui.accessibility.cycle.flashLimiter",
+            "valueText": [
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.flashLimiter",
+                    "equals": true
+                  }
+                ],
+                "text": "ON"
+              },
+              {
+                "text": "OFF"
+              }
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "MASTER VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_masterVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_masterVolume",
+            "labelledBy": "a11y_masterVolumeLabel",
+            "bind": {
+              "slot": "accessibility.masterVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "SFX VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_sfxVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_sfxVolume",
+            "labelledBy": "a11y_sfxVolumeLabel",
+            "bind": {
+              "slot": "accessibility.sfxVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "MUSIC VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_musicVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_musicVolume",
+            "labelledBy": "a11y_musicVolumeLabel",
+            "bind": {
+              "slot": "accessibility.musicVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "UI VOLUME",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_uiVolumeLabel"
+          },
+          {
+            "kind": "slider",
+            "id": "a11y_uiVolume",
+            "labelledBy": "a11y_uiVolumeLabel",
+            "bind": {
+              "slot": "accessibility.uiVolume"
+            },
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "valueDisplay": {
+              "min": 0.0,
+              "max": 100.0,
+              "suffix": "%",
+              "decimalPlaces": 0
+            },
+            "capturesNav": [
+              "nav.left",
+              "nav.right"
+            ]
+          },
+          {
+            "kind": "text",
+            "content": "MONO AUDIO",
+            "fontSize": 16,
+            "color": "ok",
+            "font": "mono",
+            "id": "a11y_monoAudioLabel"
+          },
+          {
+            "kind": "button",
+            "id": "a11y_monoAudio",
+            "labelledBy": "a11y_monoAudioLabel",
+            "onPress": "ui.accessibility.cycle.monoAudio",
+            "valueText": [
+              {
+                "when": [
+                  {
+                    "slot": "accessibility.monoAudio",
+                    "equals": true
+                  }
+                ],
+                "text": "ON"
+              },
+              {
+                "text": "OFF"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "button",
+        "id": "a11y_close",
+        "label": "CLOSE",
+        "onPress": "ui.closeDialog"
+      }
+    ]
+  },
+  "captureMode": "capture",
+  "initialFocus": "a11y_reduceMotion",
+  "accessibleName": "Accessibility"
+}

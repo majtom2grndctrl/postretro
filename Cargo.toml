@@ -151,6 +151,16 @@ toml = "1"
 directories = "6"
 getrandom = "0.3"
 
+# OS accessibility preferences (reduced motion, contrast) with change events,
+# behind the app-side OS-preference seam. Safe API; `unsafe` stays internal.
+# Only the two preferences the engine seeds are enabled. `async-io` is the
+# Linux portal runtime; `log` surfaces a missing desktop portal.
+mundy = { version = "0.2.3", default-features = false, features = ["reduced-motion", "contrast", "callback", "async-io", "log"] }
+# Windows text scale (`UISettings::TextScaleFactor`). Already in the lock through
+# wgpu-hal, cpal and gilrs-core; declared directly (Windows-only) for the
+# OS-preference seam.
+windows = { version = "0.62", features = ["UI_ViewManagement"] }
+
 # Scripting runtimes (embedded). Default features; `parallel` OFF — scripting
 # is single-threaded, `Runtime: Send` is not required. See
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2.

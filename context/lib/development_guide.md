@@ -154,6 +154,8 @@ In the per-frame hot path, three levers carry most of the weight:
 
 Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
 
+**Performance is part of the task, not a follow-up.** A change is done when it works *and* its hot-path cost is designed, bounded, and measured. A plan names each hot path the change touches and the constraint it carries: no per-frame allocation, writes driven by change rather than by frame, bounded GPU work with no stalls, and a measurement where a timing surface exists. Delegated work carries those constraints in its brief. Review checks them.
+
 **Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
 
 **Bound the full resource lifetime.** A working-set or disk bound spans the full lifecycle: production, buffering, serialization, cache or container writes, return, and cleanup. Count representations that coexist. Persistence can duplicate the output of an otherwise bounded algorithm.

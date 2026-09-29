@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use super::SCENE_COLOR_FORMAT;
 use postretro_entities::SlotValue;
+use postretro_render_cpu::flash_clamp::ChannelClamp;
+use postretro_render_cpu::flash_limiter::{LimiterFrameInput, flash_limiter_enabled};
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 
 /// The offscreen color target every gameplay scene + UI pass renders into, plus
@@ -25,6 +27,10 @@ use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 /// values into [`EffectUniform`] (binding 2 of group 0); the shader applies the
 /// math in `screen_effects.wgsl`. At-rest slot values pack to the identity
 /// uniform and every effect term ALU-collapses to a no-op after tonemapping.
+///
+/// **Photosensitivity limiter.** The channel clamp limits the packed flash and
+/// vignette before the uniform is written. It is CPU-only; the GPU sees an
+/// ordinary effect uniform.
 pub struct ScreenEffectsPass {
     /// Offscreen color target. The scene/UI passes render here; the resolve
     /// samples it. Recreated on resize at the surface size.
@@ -44,6 +50,9 @@ pub struct ScreenEffectsPass {
     /// the packed snapshot values; persists across resize (recreating the texture
     /// rebuilds the bind group, which re-references this buffer).
     effect_buffer: wgpu::Buffer,
+    /// The photosensitivity limiter: `screen.flash` / `screen.vignette` limited
+    /// as they pack. CPU-side history, advanced once per resolve frame.
+    channel_clamp: ChannelClamp,
 }
 
 impl ScreenEffectsPass {
@@ -148,6 +157,7 @@ impl ScreenEffectsPass {
             resolve_pipeline,
             capture_pipeline,
             effect_buffer,
+            channel_clamp: ChannelClamp::default(),
         }
     }
 
@@ -186,14 +196,23 @@ impl ScreenEffectsPass {
     /// Writes the per-frame effect uniform from the packed `slot_values` first.
     /// At rest all three effect slots collapse to no-ops (see [`pack_effect_uniform`]
     /// and the WGSL), so only the tonemap changes an at-rest scene.
-    pub fn encode_resolve(
-        &self,
+    ///
+    /// The channel clamp limits the packed flash and vignette against
+    /// `limiter_frame`'s presented-frame time before the uniform is written.
+    pub(crate) fn encode_resolve(
+        &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         swapchain_view: &wgpu::TextureView,
         slot_values: &HashMap<String, SlotValue>,
+        limiter_frame: LimiterFrameInput,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
-        let uniform = pack_effect_uniform(slot_values);
+        let frame = self
+            .channel_clamp
+            .begin_frame(limiter_frame, flash_limiter_enabled(slot_values));
+        let mut uniform = pack_effect_uniform(slot_values);
+        self.channel_clamp.apply(&mut uniform, &frame);
         queue.write_buffer(&self.effect_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -211,7 +230,7 @@ impl ScreenEffectsPass {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes,
             ..Default::default()
         });
         pass.set_pipeline(&self.resolve_pipeline);

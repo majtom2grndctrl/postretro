@@ -1,13 +1,21 @@
 // App-side bridge from writable option slots to session-owned player settings.
 // See: context/lib/player_options.md §4
 
+mod accessibility;
+#[cfg(test)]
+mod accessibility_tests;
+mod save_schedule;
+
 use std::io;
 use std::path::Path;
 
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
-use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality};
+use super::resolved::{OsPreferences, ResolvedAccessibility};
+use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality, keys};
 use crate::input::InputSystem;
+use accessibility::AccessibilitySync;
+use save_schedule::SaveSchedule;
 
 pub(crate) const MOUSE_SENSITIVITY_SLOT: &str = "options.mouseSensitivity";
 pub(crate) const INVERT_Y_SLOT: &str = "options.invertY";
@@ -17,13 +25,10 @@ pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
 pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
 pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
 
-const SAVE_DEBOUNCE_SECONDS: f32 = 0.250;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ObservedGenerations {
     mouse_sensitivity: u64,
     invert_y: u64,
-    view_feel_scale: u64,
     crouch_mode: u64,
     shadow_quality: u64,
     fog_quality: u64,
@@ -42,13 +47,18 @@ pub(crate) struct OptionsApplyEffects {
     pub(crate) invert_y: Option<bool>,
     pub(crate) fog_quality: Option<FogQuality>,
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
+    /// The resolved accessibility preferences, when they changed this frame.
+    pub(crate) accessibility: Option<ResolvedAccessibility>,
 }
 
 /// Deterministic, session-lifetime synchronization state for `options.*`.
 #[derive(Default)]
 pub(crate) struct OptionsBridge {
     observed: ObservedGenerations,
-    save_remaining_seconds: Option<f32>,
+    accessibility: AccessibilitySync,
+    /// Latest OS accessibility readings; unset fields follow them.
+    os: OsPreferences,
+    save: SaveSchedule,
 }
 
 impl OptionsBridge {
@@ -67,11 +77,6 @@ impl OptionsBridge {
         );
         self.observed.invert_y =
             seed_slot(table, INVERT_Y_SLOT, SlotValue::Boolean(options.invert_y));
-        self.observed.view_feel_scale = seed_slot(
-            table,
-            VIEW_FEEL_SCALE_SLOT,
-            SlotValue::Number(options.view_feel_scale),
-        );
         self.observed.crouch_mode = seed_slot(
             table,
             CROUCH_MODE_SLOT,
@@ -92,6 +97,35 @@ impl OptionsBridge {
             SURFACE_DEPTH_QUALITY_SLOT,
             SlotValue::Enum(options.surface_depth_quality.slot_value().to_string()),
         );
+        self.accessibility.seed_all(table, options, &self.os);
+    }
+
+    /// Seed every accessibility working copy and `accessibility.*` slot once at
+    /// session build, so a mod menu under any tree name shows resolved values.
+    pub(crate) fn seed_accessibility(
+        &mut self,
+        table: &mut SlotTable,
+        options: &PlayerOptions,
+    ) -> ResolvedAccessibility {
+        self.accessibility.seed_all(table, options, &self.os)
+    }
+
+    /// The current resolution, as last projected into `accessibility.*`.
+    /// `None` only before the session-build seed.
+    pub(crate) fn resolved(&self) -> Option<ResolvedAccessibility> {
+        self.accessibility.resolved()
+    }
+
+    /// Record the OS's latest accessibility readings. Unset fields follow them
+    /// from the next `update`, which reseeds their working copies.
+    pub(crate) fn set_os_preferences(&mut self, os: OsPreferences) {
+        self.os = os;
+    }
+
+    /// Schedule the settled save for an engine-side store write (a panel
+    /// action), exactly as an accepted menu change does.
+    pub(crate) fn schedule_save(&mut self, settings_path: Option<&Path>) {
+        self.save.arm(settings_path);
     }
 
     /// Observe writes once per app frame, apply live input changes immediately,
@@ -99,7 +133,7 @@ impl OptionsBridge {
     pub(crate) fn update(
         &mut self,
         frame_dt_seconds: f32,
-        table: &SlotTable,
+        table: &mut SlotTable,
         options: &mut PlayerOptions,
         input: &mut InputSystem,
         settings_path: Option<&Path>,
@@ -135,7 +169,7 @@ impl OptionsBridge {
     fn update_with_save<F>(
         &mut self,
         frame_dt_seconds: f32,
-        table: &SlotTable,
+        table: &mut SlotTable,
         options: &mut PlayerOptions,
         input: &mut InputSystem,
         settings_path: Option<&Path>,
@@ -145,20 +179,17 @@ impl OptionsBridge {
         F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
     {
         let mut effects = OptionsApplyEffects::default();
-        let changed = self.observe_changes(table, options, input, &mut effects);
+        let mut changed = self.observe_changes(table, options, input, &mut effects);
+        changed |= self.accessibility.observe(table, options);
+        // Projection and engine-write reseeds run every frame, but write only
+        // what changed.
+        effects.accessibility = self.accessibility.sync(table, options, &self.os);
 
         if changed {
-            self.save_remaining_seconds = settings_path.map(|_| SAVE_DEBOUNCE_SECONDS);
-        } else if let Some(remaining) = self.save_remaining_seconds.as_mut() {
-            let elapsed = if frame_dt_seconds.is_finite() {
-                frame_dt_seconds.max(0.0)
-            } else {
-                0.0
-            };
-            *remaining -= elapsed;
-            if *remaining <= 0.0 {
-                self.attempt_save(options, settings_path, &mut save);
-            }
+            self.save.arm(settings_path);
+        } else {
+            self.save
+                .tick(frame_dt_seconds, options, settings_path, &mut save);
         }
 
         effects
@@ -178,6 +209,7 @@ impl OptionsBridge {
             MOUSE_SENSITIVITY_SLOT,
             &mut self.observed.mouse_sensitivity,
         ) {
+            options.mark_written(keys::MOUSE_SENSITIVITY);
             if options.mouse_sensitivity != *value {
                 options.mouse_sensitivity = *value;
                 input.set_mouse_sensitivity(*value);
@@ -190,6 +222,7 @@ impl OptionsBridge {
         if let Some((generation, SlotValue::Boolean(value))) =
             changed_value(table, INVERT_Y_SLOT, &mut self.observed.invert_y)
         {
+            options.mark_written(keys::INVERT_Y);
             if options.invert_y != *value {
                 options.invert_y = *value;
                 input.set_invert_y(*value);
@@ -199,22 +232,11 @@ impl OptionsBridge {
             self.observed.invert_y = generation;
         }
 
-        if let Some((generation, SlotValue::Number(value))) = changed_value(
-            table,
-            VIEW_FEEL_SCALE_SLOT,
-            &mut self.observed.view_feel_scale,
-        ) {
-            if options.view_feel_scale != *value {
-                options.view_feel_scale = *value;
-                changed = true;
-            }
-            self.observed.view_feel_scale = generation;
-        }
-
         if let Some((generation, SlotValue::Enum(value))) =
             changed_value(table, CROUCH_MODE_SLOT, &mut self.observed.crouch_mode)
         {
             if let Some(mode) = CrouchMode::from_slot_value(value) {
+                options.mark_written(keys::CROUCH_MODE);
                 if options.crouch_mode != mode {
                     options.crouch_mode = mode;
                     changed = true;
@@ -229,6 +251,7 @@ impl OptionsBridge {
             &mut self.observed.shadow_quality,
         ) {
             if let Some(quality) = ShadowQuality::from_slot_value(value) {
+                options.mark_written(keys::SHADOW_QUALITY);
                 if options.shadow_quality != quality {
                     options.shadow_quality = quality;
                     changed = true;
@@ -241,6 +264,7 @@ impl OptionsBridge {
             changed_value(table, FOG_QUALITY_SLOT, &mut self.observed.fog_quality)
         {
             if let Some(quality) = FogQuality::from_slot_value(value) {
+                options.mark_written(keys::FOG_QUALITY);
                 if options.fog_quality != quality {
                     options.fog_quality = quality;
                     effects.fog_quality = Some(quality);
@@ -256,6 +280,7 @@ impl OptionsBridge {
             &mut self.observed.surface_depth_quality,
         ) {
             if let Some(quality) = SurfaceDepthQuality::from_slot_value(value) {
+                options.mark_written(keys::SURFACE_DEPTH_QUALITY);
                 if options.surface_depth_quality != quality {
                     options.surface_depth_quality = quality;
                     effects.surface_depth_quality = Some(quality);
@@ -276,29 +301,7 @@ impl OptionsBridge {
     ) where
         F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
     {
-        if self.save_remaining_seconds.is_some() {
-            self.attempt_save(options, settings_path, &mut save);
-        }
-    }
-
-    fn attempt_save<F>(
-        &mut self,
-        options: &PlayerOptions,
-        settings_path: Option<&Path>,
-        save: &mut F,
-    ) where
-        F: FnMut(&PlayerOptions, &Path) -> io::Result<()>,
-    {
-        self.save_remaining_seconds = None;
-        let Some(path) = settings_path else {
-            return;
-        };
-        if let Err(error) = save(options, path) {
-            log::warn!(
-                "[Options] failed to save changed settings to {}: {error}; keeping the in-memory value",
-                path.display()
-            );
-        }
+        self.save.flush(options, settings_path, &mut save);
     }
 }
 
@@ -501,7 +504,7 @@ mod tests {
         write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(0.006));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -532,7 +535,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(true));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -548,7 +551,7 @@ mod tests {
         write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(0.4));
         bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -561,7 +564,7 @@ mod tests {
         write(&ctx, CROUCH_MODE_SLOT, json!("toggle"));
         bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -573,7 +576,7 @@ mod tests {
         write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -585,7 +588,7 @@ mod tests {
         write(&ctx, FOG_QUALITY_SLOT, json!("high"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -602,7 +605,7 @@ mod tests {
         write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -620,7 +623,7 @@ mod tests {
         write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("on"));
         let effects = bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -643,7 +646,7 @@ mod tests {
             write(&ctx, MOUSE_SENSITIVITY_SLOT, json!(value));
             bridge.update_with_save(
                 0.016,
-                &ctx.slot_table.borrow(),
+                &mut ctx.slot_table.borrow_mut(),
                 &mut options,
                 &mut input,
                 Some(path),
@@ -655,7 +658,7 @@ mod tests {
         }
         bridge.update_with_save(
             0.249,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -667,7 +670,7 @@ mod tests {
         assert!(saved.is_empty());
         bridge.update_with_save(
             0.002,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -691,7 +694,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(true));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -708,7 +711,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(false));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(path),
@@ -732,7 +735,7 @@ mod tests {
         write(&ctx, FOG_QUALITY_SLOT, json!("high"));
         bridge.update(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             None,
@@ -766,7 +769,7 @@ mod tests {
         write(&ctx, INVERT_Y_SLOT, json!(true));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),
@@ -775,7 +778,7 @@ mod tests {
         let mut failed_attempts = 0;
         bridge.update_with_save(
             0.251,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),
@@ -792,7 +795,7 @@ mod tests {
         write(&ctx, VIEW_FEEL_SCALE_SLOT, json!(0.5));
         bridge.update_with_save(
             0.0,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),
@@ -800,7 +803,7 @@ mod tests {
         );
         bridge.update_with_save(
             0.251,
-            &ctx.slot_table.borrow(),
+            &mut ctx.slot_table.borrow_mut(),
             &mut options,
             &mut input,
             Some(&path),

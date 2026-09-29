@@ -74,6 +74,18 @@ impl Renderer {
         self.full_mut().ui_snapshot = snapshot;
     }
 
+    /// Store the elapsed presented-frame time the photosensitivity limiter
+    /// ages its window and rate allowance by. The App calls this beside
+    /// `set_ui_snapshot`. An input the resolve has not yet consumed (its frame's
+    /// acquire failed) is merged, not replaced, so a skipped frame never drops
+    /// presented time; the next resolve takes it once.
+    pub fn set_limiter_frame(
+        &mut self,
+        frame: postretro_render_cpu::flash_limiter::LimiterFrameInput,
+    ) {
+        self.full_mut().limiter_frame.set(frame);
+    }
+
     /// Store this frame's app-produced passive presentation instances. The
     /// renderer resolves their template draw data later, where it owns the
     /// `FontSystem`, UI theme, and image registry. They never enter the retained
@@ -113,6 +125,10 @@ impl Renderer {
         // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
         // against the same frame snapshot the draw build used, so the a11y readback
         // matches the author-wired highlight.
+        // The export carries the owner recorded with the retained top layer's
+        // layout, not this frame's snapshot: a frame that skipped layout after a
+        // stack change still attributes these rects to the tree that made them
+        // (`ui.md` §4.1).
         full.ui.export_top_focus_rects(
             viewport,
             &full.ui_snapshot.slot_values,

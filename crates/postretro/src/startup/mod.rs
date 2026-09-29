@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub(crate) mod audio_profile;
+pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
@@ -17,19 +18,24 @@ pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
 pub(crate) use session::{BootSession, PendingSessionInit, build_session};
+pub(crate) use splash_lifecycle::BootDestination;
 pub(crate) use worker::{LoadOutcome, spawn_level_worker};
 
 /// `Booting` = before `App::resumed()` (no window, no renderer).
 /// `Splash` = first paint, then deferred `mod_init` and boot load request.
 /// `Loading` = level worker in flight; main thread keeps painting while polling.
 /// `Frontend` = renderer + UI loop with no level installed.
+/// `FirstLaunchHold` = world-less frames showing only the accessibility panel,
+/// before any level loads on a profile that has never closed it. Drains no
+/// level requests; ends when the panel closes.
 /// `Running` = steady-state level loop.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BootState {
     Booting,
     Splash,
     Loading,
     Frontend,
+    FirstLaunchHold,
     Running,
 }
 
@@ -327,9 +333,10 @@ mod tests {
             "audio_init_complete", // session::Session::build (post-first-pixel, before scripting)
             "script_runtime_ctor", // session::Session::build (post-first-pixel, inside install)
             "net_endpoint_complete", // session::Session::build (post-first-pixel, after scripting)
+            "os_reader_started", // session::Session::build (OS preference subscription)
             "session_init_complete", // session::PendingSessionInit::install
             "renderer_full_init_complete", // splash_lifecycle::finish_renderer_full_init
-            "boot_worker_dispatch", // splash_lifecycle::run_splash_frame_one (boot-map path)
+            "boot_worker_dispatch", // splash_lifecycle::leave_splash (boot-map path)
         ]
     }
 
@@ -375,6 +382,12 @@ mod tests {
             index_of(&t.entries, "first_splash_frame")
                 < index_of(&t.entries, "script_runtime_ctor"),
             "script_runtime_ctor is built post-first-pixel, after the logo frame presents",
+        );
+        // The OS preference reader never delays the splash: it starts after
+        // the first splash frame presents.
+        assert!(
+            index_of(&t.entries, "first_splash_frame") < index_of(&t.entries, "os_reader_started"),
+            "the OS reader starts after the first splash frame presents",
         );
     }
 

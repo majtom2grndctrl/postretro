@@ -465,6 +465,24 @@ pub struct ButtonWidget {
     /// Optional a11y role override (M13 G2). See `TextWidget::role`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+    /// Visible text that follows state: the first case whose predicates all
+    /// hold supplies the button's text, so a toggle's one control can show its
+    /// current value ("ON", "SYSTEM (ON)") while `labelledBy` names the field.
+    /// When no case holds, the button shows its inline `label` (empty for a
+    /// `labelledBy` button). The node keeps its id as the text changes, so focus
+    /// stays on it. Skip-serialized when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_text: Vec<ValueTextCase>,
+}
+
+/// One `valueText` case: `text` shows while every predicate in `when` holds.
+/// An empty `when` always holds, so a final case can serve as the default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValueTextCase {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when: Vec<Predicate>,
+    pub text: String,
 }
 
 /// Interactive slider (M13 Goal F, Task 4). Focusable; nav steps it captures

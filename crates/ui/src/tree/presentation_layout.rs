@@ -9,7 +9,8 @@ use postretro_entities::{PresentationFact, PresentationFacts, SlotValue};
 use taffy::prelude::{AvailableSpace, Display, NodeId, Size, TaffyTree};
 
 use super::bindings::{
-    BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_text_binding,
+    BindingDiff, TweenClock, drive_bar_binding, drive_bar_max, drive_panel_binding,
+    drive_text_binding,
 };
 use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
@@ -121,7 +122,7 @@ impl PresentationTemplateLayout {
             image_sizes,
             image_sizes_generation,
             cell_values,
-            time_seconds,
+            TweenClock::easing(time_seconds),
             &mut draw,
         );
         draw
@@ -138,9 +139,10 @@ impl PresentationTemplateLayout {
         image_sizes: &ImageSizes,
         image_sizes_generation: u64,
         cell_values: &CellValues,
-        time_seconds: f64,
+        clock: TweenClock,
         draw: &mut UiDrawData,
     ) {
+        let time_seconds = clock.now;
         // Presentation templates are facts-only. Keeping the global slot map
         // physically absent from this entry point prevents a future caller from
         // accidentally making a transient re-read live game state.
@@ -148,7 +150,7 @@ impl PresentationTemplateLayout {
         let BindingDiff {
             content_changed,
             appearance_changed: _,
-        } = self.resolve_facts(&slot_values, cell_values, time_seconds);
+        } = self.resolve_facts(&slot_values, cell_values, clock);
 
         let viewport_changed = self.last_viewport != Some(device_size);
         let image_sizes_changed = self.last_image_sizes_generation != Some(image_sizes_generation);
@@ -218,8 +220,9 @@ impl PresentationTemplateLayout {
         &mut self,
         slot_values: &HashMap<String, SlotValue>,
         cell_values: &CellValues,
-        time_seconds: f64,
+        clock: TweenClock,
     ) -> BindingDiff {
+        let time_seconds = clock.now;
         let mut diff = BindingDiff::default();
         self.dirty_text.clear();
         for node in self.node_ids.iter().copied() {
@@ -242,7 +245,7 @@ impl PresentationTemplateLayout {
                         number_presentation.as_ref(),
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     ) {
                         diff.content_changed = true;
                         self.dirty_text.push(node);
@@ -264,7 +267,7 @@ impl PresentationTemplateLayout {
                         tween,
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     ) {
                         diff.appearance_changed = true;
                     }
@@ -285,7 +288,7 @@ impl PresentationTemplateLayout {
                         tween,
                         slot_values,
                         cell_values,
-                        time_seconds,
+                        clock,
                     );
                     let max_changed = drive_bar_max(max, last_max_resolved, slot_values);
                     if value_changed || max_changed {

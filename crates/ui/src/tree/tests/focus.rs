@@ -542,6 +542,7 @@ fn predicate_button(id: &str, bind: Predicate) -> Widget {
         disabled: false,
         visible_when: None,
         role: None,
+        value_text: Vec::new(),
     })
 }
 
@@ -681,6 +682,7 @@ fn a11y_button(
         disabled,
         visible_when: None,
         role: None,
+        value_text: Vec::new(),
     })
 }
 

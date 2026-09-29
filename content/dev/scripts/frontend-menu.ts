@@ -11,16 +11,21 @@ import {
   Grid,
   HStack,
   Slider,
+  Switch,
   Text,
   Tree,
   VStack,
+  accessibilityAction,
   defineUiTree,
   getGameState,
   loadLevel,
   openMenu,
   stateEquals,
+  ui,
   updateState,
   type Predicate,
+  type ValueTextCase,
+  type WidgetDescriptor,
 } from "postretro/ui";
 
 const TITLE_MENU_NAME = "frontend.menuTree";
@@ -137,7 +142,8 @@ export const devLevelSelectMenu = defineUiTree({
 });
 
 const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
-const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
+/** Opens the tabbed options screen; the pause menu opens it too. */
+export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
 
 export const frontendMenu = defineUiTree({
   name: TITLE_MENU_NAME,
@@ -197,6 +203,24 @@ const optionReactions: NamedReactionDescriptor[] = [
   ),
 ];
 
+const accessibility = getGameState().accessibility;
+
+/// A `[0, 1]` accessibility slider bound to its working copy.
+function unitSlider(id: string, labelledBy: string, bind: typeof options.screenShakeScale, step: number) {
+  return optionValue(
+    Slider({
+      id,
+      labelledBy,
+      bind,
+      min: 0,
+      max: 1,
+      step,
+      valueDisplay: { min: 0, max: 100, suffix: "%", decimalPlaces: 0 },
+      capturesNav: ["nav.left", "nav.right"],
+    }),
+  );
+}
+
 function radioChoice(id: string, label: string, checked: Predicate, onPress: string) {
   return Button({
     id,
@@ -227,6 +251,240 @@ function optionChoices(choices: ReturnType<typeof Button>[]) {
   return optionValue(HStack({ gap: 6, align: "stretch" }, choices));
 }
 
+// The options screen is tabbed. The selected tab is a presentation-local cell
+// (`ui.createLocalState`), never a player option: it lives only while the tree
+// is retained, so each open starts on CONTROLS. The pattern is the tabs demo's
+// (`tabs-demo.ts`): each tab button's predicate drives both the styleRanges
+// highlight and the a11y `selected` state, its `onPress` names a `cellWrite`
+// reaction, and `Switch` hides every panel but the active one.
+const optionsTabState = ui.createLocalState({ tab: "controls" });
+const optionsTab = optionsTabState.cells.tab;
+
+type OptionsTabKey = "controls" | "graphics" | "accessibility";
+
+const OPTIONS_TABS: ReadonlyArray<{ key: OptionsTabKey; id: string; label: string }> = [
+  { key: "controls", id: "optionsTabControls", label: "CONTROLS" },
+  { key: "graphics", id: "optionsTabGraphics", label: "GRAPHICS" },
+  { key: "accessibility", id: "optionsTabAccessibility", label: "ACCESSIBILITY" },
+];
+
+const optionsTabReactions: NamedReactionDescriptor[] = OPTIONS_TABS.map(({ key }) =>
+  defineReaction(`frontend.options.tab.${key}`, optionsTab.set(key)),
+);
+
+function optionsTabButton(tab: (typeof OPTIONS_TABS)[number], index: number) {
+  const active = optionsTab.is(tab.key);
+  return Button({
+    id: tab.id,
+    label: tab.label,
+    role: "tab",
+    bind: active,
+    selected: active,
+    styleRanges: {
+      max: 1,
+      entries: [{ upTo: 0, color: COLOR_INACTIVE }, { color: COLOR_ACCENT }],
+    },
+    onPress: optionsTabReactions[index],
+  });
+}
+
+function optionsPanel(id: string, children: WidgetDescriptor[]) {
+  return VStack({ id, gap: 10, align: "stretch", role: "group" }, children);
+}
+
+const controlsPanel = optionsPanel("optionsPanelControls", [
+  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+    optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
+    optionValue(
+      Slider({
+        id: "optionsMouseSensitivity",
+        labelledBy: "optionsMouseSensitivityLabel",
+        bind: options.mouseSensitivity,
+        min: 0.0005,
+        max: 0.01,
+        step: 0.0005,
+        valueDisplay: { min: 1, max: 100, suffix: "%", decimalPlaces: 0 },
+        capturesNav: ["nav.left", "nav.right"],
+      }),
+    ),
+    optionLabel("optionsInvertYLabel", "INVERT Y"),
+    optionChoices([
+      radioChoice(
+        "optionsInvertYOff",
+        "OFF",
+        stateEquals(options.invertY, false),
+        "frontend.options.invertY.off",
+      ),
+      radioChoice(
+        "optionsInvertYOn",
+        "ON",
+        stateEquals(options.invertY, true),
+        "frontend.options.invertY.on",
+      ),
+    ]),
+    optionLabel("optionsViewFeelScaleLabel", "VIEW FEEL"),
+    optionValue(
+      Slider({
+        id: "optionsViewFeelScale",
+        labelledBy: "optionsViewFeelScaleLabel",
+        bind: options.viewFeelScale,
+        min: 0,
+        max: 1,
+        step: 0.1,
+        capturesNav: ["nav.left", "nav.right"],
+      }),
+    ),
+    optionLabel("optionsCrouchModeLabel", "CROUCH MODE"),
+    optionChoices([
+      radioChoice(
+        "optionsCrouchHold",
+        "HOLD",
+        stateEquals(options.crouchMode, "hold"),
+        "frontend.options.crouchMode.hold",
+      ),
+      radioChoice(
+        "optionsCrouchToggle",
+        "TOGGLE",
+        stateEquals(options.crouchMode, "toggle"),
+        "frontend.options.crouchMode.toggle",
+      ),
+    ]),
+  ]),
+]);
+
+const graphicsPanel = optionsPanel("optionsPanelGraphics", [
+  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+    optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
+    optionChoices([
+      radioChoice(
+        "optionsShadowLow",
+        "LOW",
+        stateEquals(options.shadowQuality, "low"),
+        "frontend.options.shadowQuality.low",
+      ),
+      radioChoice(
+        "optionsShadowMedium",
+        "MEDIUM",
+        stateEquals(options.shadowQuality, "medium"),
+        "frontend.options.shadowQuality.medium",
+      ),
+      radioChoice(
+        "optionsShadowHigh",
+        "HIGH",
+        stateEquals(options.shadowQuality, "high"),
+        "frontend.options.shadowQuality.high",
+      ),
+    ]),
+    optionLabel("optionsFogQualityLabel", "FOG QUALITY"),
+    optionChoices([
+      radioChoice(
+        "optionsFogLow",
+        "LOW",
+        stateEquals(options.fogQuality, "low"),
+        "frontend.options.fogQuality.low",
+      ),
+      radioChoice(
+        "optionsFogMedium",
+        "MEDIUM",
+        stateEquals(options.fogQuality, "medium"),
+        "frontend.options.fogQuality.medium",
+      ),
+      radioChoice(
+        "optionsFogHigh",
+        "HIGH",
+        stateEquals(options.fogQuality, "high"),
+        "frontend.options.fogQuality.high",
+      ),
+    ]),
+    optionLabel("optionsSurfaceDepthQualityLabel", "SURFACE DEPTH"),
+    optionChoices([
+      radioChoice(
+        "optionsSurfaceDepthOff",
+        "OFF",
+        stateEquals(options.surfaceDepthQuality, "off"),
+        "frontend.options.surfaceDepthQuality.off",
+      ),
+      radioChoice(
+        "optionsSurfaceDepthOn",
+        "ON",
+        stateEquals(options.surfaceDepthQuality, "on"),
+        "frontend.options.surfaceDepthQuality.on",
+      ),
+    ]),
+  ]),
+]);
+
+/// A toggle's one control: a button showing the field's current value, named by
+/// its label on the left. Pressing it fires the field's reserved action, the
+/// same write the engine accessibility panel's control makes; the button keeps
+/// its id as its text changes, so focus stays on it.
+function valueButton(
+  id: string,
+  labelledBy: string,
+  field: "reduceMotion" | "flashLimiter" | "monoAudio",
+  valueText: ValueTextCase[],
+) {
+  return optionValue(
+    Button({ id, labelledBy, onPress: accessibilityAction(field, "cycle"), valueText }),
+  );
+}
+
+/// ON while the resolved `accessibility.<field>` slot is true, else OFF.
+function onOff(on: Predicate): ValueTextCase[] {
+  return [{ when: [on], text: "ON" }, { text: "OFF" }];
+}
+
+const followsSystem = stateEquals(accessibility.reduceMotionFollowsSystem, true);
+const motionReduced = stateEquals(accessibility.reduceMotion, true);
+
+const accessibilityPanel = optionsPanel("optionsPanelAccessibility", [
+  Grid({ gap: 12, align: "stretch", cols: 2 }, [
+    optionLabel("optionsReduceMotionLabel", "REDUCE MOTION"),
+    valueButton("optionsReduceMotion", "optionsReduceMotionLabel", "reduceMotion", [
+      { when: [followsSystem, motionReduced], text: "SYSTEM (ON)" },
+      { when: [followsSystem], text: "SYSTEM (OFF)" },
+      { when: [motionReduced], text: "ON" },
+      { text: "OFF" },
+    ]),
+    optionLabel("optionsScreenShakeScaleLabel", "SCREEN SHAKE"),
+    unitSlider(
+      "optionsScreenShakeScale",
+      "optionsScreenShakeScaleLabel",
+      options.screenShakeScale,
+      0.1,
+    ),
+    optionLabel("optionsA11yViewFeelScaleLabel", "VIEW FEEL"),
+    unitSlider(
+      "optionsA11yViewFeelScale",
+      "optionsA11yViewFeelScaleLabel",
+      options.viewFeelScale,
+      0.1,
+    ),
+    optionLabel("optionsFlashLimiterLabel", "FLASH LIMITER"),
+    valueButton(
+      "optionsFlashLimiter",
+      "optionsFlashLimiterLabel",
+      "flashLimiter",
+      onOff(stateEquals(accessibility.flashLimiter, true)),
+    ),
+    optionLabel("optionsMasterVolumeLabel", "MASTER VOLUME"),
+    unitSlider("optionsMasterVolume", "optionsMasterVolumeLabel", options.masterVolume, 0.05),
+    optionLabel("optionsSfxVolumeLabel", "SFX VOLUME"),
+    unitSlider("optionsSfxVolume", "optionsSfxVolumeLabel", options.sfxVolume, 0.05),
+    optionLabel("optionsMusicVolumeLabel", "MUSIC VOLUME"),
+    unitSlider("optionsMusicVolume", "optionsMusicVolumeLabel", options.musicVolume, 0.05),
+    optionLabel("optionsUiVolumeLabel", "UI VOLUME"),
+    unitSlider("optionsUiVolume", "optionsUiVolumeLabel", options.uiVolume, 0.05),
+    optionLabel("optionsMonoAudioLabel", "MONO AUDIO"),
+    valueButton(
+      "optionsMonoAudio",
+      "optionsMonoAudioLabel",
+      "monoAudio",
+      onOff(stateEquals(accessibility.monoAudio, true)),
+    ),
+  ]),
+]);
+
 export const optionsMenu = defineUiTree({
   name: OPTIONS_MENU_NAME,
   hideBelow: true,
@@ -235,143 +493,37 @@ export const optionsMenu = defineUiTree({
       anchor: "center",
       offset: [0, 0],
       captureMode: "capture",
-      initialFocus: "optionsMouseSensitivity",
+      initialFocus: OPTIONS_TABS[0].id,
       accessibleName: "Player options",
       role: "group",
     },
+    // One linear focus group spans the tab strip, the visible panel and BACK, so
+    // every stop is reachable from every tab. The tab strip deliberately declares
+    // no focus policy of its own: a nested group would trap nav inside the strip.
+    // Hidden panels drop out of the focus export. `restoreOnReturn` brings focus
+    // back to the last-focused control when a tree pushed above this one closes.
     VStack(
       {
+        localState: optionsTabState.scope,
         gap: 20,
         padding: 24,
         align: "stretch",
         width: 640,
         fill: COLOR_PANEL,
         focus: { policy: "linear", wrap: true },
+        restoreOnReturn: true,
       },
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),
-        VStack({ gap: 10, align: "stretch", role: "group" }, [
-          Text({ content: "CONTROLS", fontSize: 12, color: COLOR_MUTED }),
-          Grid({ gap: 12, align: "stretch", cols: 2 }, [
-            optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
-            optionValue(
-              Slider({
-                id: "optionsMouseSensitivity",
-                labelledBy: "optionsMouseSensitivityLabel",
-                bind: options.mouseSensitivity,
-                min: 0.0005,
-                max: 0.01,
-                step: 0.0005,
-                valueDisplay: { min: 1, max: 100, suffix: "%", decimalPlaces: 0 },
-                capturesNav: ["nav.left", "nav.right"],
-              }),
-            ),
-            optionLabel("optionsInvertYLabel", "INVERT Y"),
-            optionChoices([
-              radioChoice(
-                "optionsInvertYOff",
-                "OFF",
-                stateEquals(options.invertY, false),
-                "frontend.options.invertY.off",
-              ),
-              radioChoice(
-                "optionsInvertYOn",
-                "ON",
-                stateEquals(options.invertY, true),
-                "frontend.options.invertY.on",
-              ),
-            ]),
-            optionLabel("optionsViewFeelScaleLabel", "VIEW FEEL"),
-            optionValue(
-              Slider({
-                id: "optionsViewFeelScale",
-                labelledBy: "optionsViewFeelScaleLabel",
-                bind: options.viewFeelScale,
-                min: 0,
-                max: 1,
-                step: 0.1,
-                capturesNav: ["nav.left", "nav.right"],
-              }),
-            ),
-            optionLabel("optionsCrouchModeLabel", "CROUCH MODE"),
-            optionChoices([
-              radioChoice(
-                "optionsCrouchHold",
-                "HOLD",
-                stateEquals(options.crouchMode, "hold"),
-                "frontend.options.crouchMode.hold",
-              ),
-              radioChoice(
-                "optionsCrouchToggle",
-                "TOGGLE",
-                stateEquals(options.crouchMode, "toggle"),
-                "frontend.options.crouchMode.toggle",
-              ),
-            ]),
-          ]),
-        ]),
-        VStack({ gap: 10, align: "stretch", role: "group" }, [
-          Text({ content: "GRAPHICS", fontSize: 12, color: COLOR_MUTED }),
-          Grid({ gap: 12, align: "stretch", cols: 2 }, [
-            optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
-            optionChoices([
-              radioChoice(
-                "optionsShadowLow",
-                "LOW",
-                stateEquals(options.shadowQuality, "low"),
-                "frontend.options.shadowQuality.low",
-              ),
-              radioChoice(
-                "optionsShadowMedium",
-                "MEDIUM",
-                stateEquals(options.shadowQuality, "medium"),
-                "frontend.options.shadowQuality.medium",
-              ),
-              radioChoice(
-                "optionsShadowHigh",
-                "HIGH",
-                stateEquals(options.shadowQuality, "high"),
-                "frontend.options.shadowQuality.high",
-              ),
-            ]),
-            optionLabel("optionsFogQualityLabel", "FOG QUALITY"),
-            optionChoices([
-              radioChoice(
-                "optionsFogLow",
-                "LOW",
-                stateEquals(options.fogQuality, "low"),
-                "frontend.options.fogQuality.low",
-              ),
-              radioChoice(
-                "optionsFogMedium",
-                "MEDIUM",
-                stateEquals(options.fogQuality, "medium"),
-                "frontend.options.fogQuality.medium",
-              ),
-              radioChoice(
-                "optionsFogHigh",
-                "HIGH",
-                stateEquals(options.fogQuality, "high"),
-                "frontend.options.fogQuality.high",
-              ),
-            ]),
-            optionLabel("optionsSurfaceDepthQualityLabel", "SURFACE DEPTH"),
-            optionChoices([
-              radioChoice(
-                "optionsSurfaceDepthOff",
-                "OFF",
-                stateEquals(options.surfaceDepthQuality, "off"),
-                "frontend.options.surfaceDepthQuality.off",
-              ),
-              radioChoice(
-                "optionsSurfaceDepthOn",
-                "ON",
-                stateEquals(options.surfaceDepthQuality, "on"),
-                "frontend.options.surfaceDepthQuality.on",
-              ),
-            ]),
-          ]),
-        ]),
+        HStack({ gap: 6, align: "stretch", role: "tablist" }, OPTIONS_TABS.map(optionsTabButton)),
+        VStack(
+          { align: "stretch" },
+          Switch(optionsTab, {
+            controls: controlsPanel,
+            graphics: graphicsPanel,
+            accessibility: accessibilityPanel,
+          }),
+        ),
         Button({ id: "optionsBack", label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
       ],
     ),
@@ -383,4 +535,5 @@ export const frontendReactions: NamedReactionDescriptor[] = [
   openOptions,
   ...frontendStartReactions,
   ...optionReactions,
+  ...optionsTabReactions,
 ];

@@ -327,6 +327,44 @@ export const EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop";
 export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
 
 /**
+ * Reserved button `onPress` action that opens the engine accessibility panel.
+ * The App intercepts this exact wire value before named-reaction dispatch; the
+ * panel is engine-owned and works under a mod that registers no reactions.
+ */
+export const OPEN_ACCESSIBILITY_ACTION = "ui.openAccessibility";
+
+/** Accessibility toggles a menu button may cycle. */
+export type AccessibilityToggleField = "reduceMotion" | "flashLimiter" | "monoAudio";
+
+/** Accessibility numeric fields a mod menu button may step, each within [0, 1]. */
+export type AccessibilityNumericField =
+  | "screenShakeScale"
+  | "viewFeelScale"
+  | "masterVolume"
+  | "sfxVolume"
+  | "musicVolume"
+  | "uiVolume";
+
+/**
+ * The reserved `onPress` action for one accessibility field:
+ * `ui.accessibility.<op>.<field>`. Toggles `cycle` (an OS-seedable toggle
+ * cycles System → On → Off); numeric fields `increase` or `decrease` by one
+ * step. The action writes the player's setting exactly as the engine
+ * accessibility panel's control does.
+ */
+export function accessibilityAction<F extends AccessibilityToggleField>(
+  field: F,
+  op: "cycle",
+): `ui.accessibility.cycle.${F}`;
+export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(
+  field: F,
+  op: O,
+): `ui.accessibility.${O}.${F}`;
+export function accessibilityAction(field: string, op: string): string {
+  return `ui.accessibility.${op}.${field}`;
+}
+
+/**
  * Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
  * Pure — returns a primitive reaction body wrapping `showDialog`. The keyboard is
  * a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to

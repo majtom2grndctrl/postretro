@@ -44,7 +44,7 @@ pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 4;
 
 /// The shadowmask texture is `SHADOWMASK_GROUP_COUNT` lightmap widths wide and
 /// must fit the same pinned device texture dimension the lightmap does.
-const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
+pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum ShadowmaskBakeError {

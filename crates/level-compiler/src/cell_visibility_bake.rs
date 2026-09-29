@@ -22,7 +22,7 @@ use crate::{
     portals::Portal,
 };
 
-mod metrics;
+pub(crate) mod metrics;
 
 use metrics::{fixed_point_value, portal_metrics};
 

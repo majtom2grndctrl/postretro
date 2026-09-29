@@ -111,9 +111,18 @@ Leanings come from a read-only dry run (research below). None is decided.
   2. Ids 22 and 42 as one layer-keyed unit through the issuer. Existing layer-major
      payloads give per-layer file ranges, so there is no new section.
   3. Id 25 weight maps by chunk range.
-- Packing granularity. Lean: soft, cluster-ordered packing with a capped layer size.
-  Measured hard per-cluster boundaries cost 2.1–5.5× the texels. The packer must also
-  weigh animated-slot count, because cluster order can raise it.
+- Packing granularity. Earlier lean: soft, cluster-ordered packing with a capped layer
+  size. Measured hard per-cluster boundaries cost 2.1–5.5× the texels. The per-cell
+  mandatory dry run (below) tests it. Under cluster closure on the hallway map,
+  cluster-ordered 2048² beats today's packing at every bounded D, but only by 7–33%.
+  Cluster-ordered 1024² gives the lowest layer bytes at 64 and 128 m, but needs 344
+  layers against the 256-layer runtime limit. At 64 m, whole-layer residency's worst cell
+  needs 2.6–5.3× the texel-exact worst, depending on layout and granularity. Lean now:
+  residency finer than a whole layer, such as pages or a virtual-layer table, matters
+  more than a packer change alone.
+- Reach bound. The portal-path distance whose cells are mandatory. It is the design's
+  largest lever. On the hallway map under cluster closure, Low fits at 64 m but not at
+  128 m at full resolution, even texel-exact. Open for the owner.
 - Miss policy. Lean:
   - Visible-cluster layers are mandatory. The pool grows rather than refusing them.
   - A transient miss drops static direct light and keeps SH indirect.
@@ -152,17 +161,27 @@ bullets below are leanings, not decisions.
   - A vendor and device-id table. Catches known laptop parts; needs upkeep.
   - Native queries (DXGI, `VK_EXT_memory_budget`, Metal `recommendedMaxWorkingSetSize`)
     through raw backend handles. Three backend paths, and `unsafe` needs approval.
+- **Owner decisions (2026-09-28).**
+  - Target laptops running other apps.
+  - A player-facing quality tier sets the budget. Low is 256 MiB for lightmap-shaped
+    data, and higher tiers are opt-in for hardware that can hold them.
+  - No pop-in on interior maps, including large arenas. A tier is valid for a map only
+    when every camera cell's mandatory set fits it, so a miss fallback cannot stand in
+    for residency.
+  - Draw distance is limited: shorter than open-world games, longer than classic Quake.
+  - For scale, streamed SH has rarely exceeded about 40 MB in owner walks on Windows.
 - **Mandatory overshoot.** Visible, pinned and owner-closure data is never evicted, so a
   tier below a map's mandatory set is mostly overshoot. On `stress-warren-mini` the owner
-  closure covers most clusters. Judge tier values against mandatory bytes per resource
-  (unmeasured; see Still needed).
+  closure covers most clusters. For ids 22 and 42, offline mandatory bytes per camera
+  cell are now measured (see Pre-planning measurements). The runtime figures are still
+  unmeasured.
 - **Whole-resident resources.** They count against the tier but cannot yield. Until stage
   5, a tier shrinks only the SH pools. On `campaign-test`, lightmap-shaped data alone is
   about 235 MiB, near the whole SH floor. A pooled animated atlas, stage 5's first step, is
   the first change that lets a low tier bite there.
 - **Hardware floor.** `rendering_pipeline.md` §10 sets discrete-GPU floors; only adaptive
   base-probe spacing names a laptop iGPU floor. Tiers extend that divergence; record it.
-- **Open for the owner.** Tier byte values, and whether they scale per map. The auto
+- **Open for the owner.** Tier byte values above Low, and whether they scale per map. The auto
   heuristic. Whether a tier below mandatory warns, clamps, or stays silent. Whether tiers
   also drive load-time quality cuts, or residency alone.
 
@@ -190,6 +209,50 @@ Dry-run chart-to-cluster attribution on `campaign-test` (area estimated from UV 
 - An 8-cluster warm set touches most layers on average and all of them at worst.
 - Soft cluster-ordered packing at 1024² layers roughly halves the average touched share,
   for about 25% more texels.
+
+Per-cell mandatory bytes, ids 22 and 42, on the hallway map (2026-09-28). The test is
+`lightmap_residency_dry_run_from_prl`, an ignored `prl-build` test; its doc comment has the
+run command.
+- **Method.**
+  - Mandatory is the camera's cluster, plus pinned clusters, plus cells within a
+    portal-path distance D.
+  - Cluster closure admits the whole cluster of each reached cell. That is the
+    cluster-keyed design; the cell-granular figure is its lower bound.
+  - All 2,082 non-solid, non-exterior cells are camera cells.
+  - Self-checks: attribution matches each payload exactly, charts don't overlap, a
+    stored-order repack reproduces every placement, and the untruncated distance
+    recompute matches all 46,564 stored id 46 pairs.
+
+Worst camera cell, in MiB, under cluster closure and the untruncated distance recompute.
+Brackets count cells over Low's 256 MiB. Texel-exact counts the needed chart texels
+alone. The layout columns count whole layers.
+
+| D | Texel-exact | Half-res | Today's packing (2048²) | Cluster-ordered 1024² | Cluster-ordered 2048² |
+|---|---|---|---|---|---|
+| 16 m | 50 | 13 | 168 | 175 | 112 |
+| 32 m | 62 | 16 | 224 | 200 | 168 |
+| 64 m | 112 | 29 | 378 [261] | 287 [10] | 336 [41] |
+| 128 m | 321 [144] | 84 | 770 [1,849] | 578 [1,487] | 714 [1,801] |
+| Reach | 820 [2,081] | 215 | 1,022 [2,081] | 1,372 [2,081] | 1,036 [2,081] |
+
+Findings:
+- **Cell-granular sets are smaller.** They fit Low at 128 m even texel-exact: 227 MiB
+  worst, 187 MiB p95.
+- **Under cluster closure at full resolution, whole layers fit Low through 32 m.** At
+  64 m only sub-layer residency fits, and at 128 m only half resolution fits.
+- **Cluster-ordered 1024² exceeds the runtime limit.** It needs 344 layers plus 12
+  oversize cells, 1.34× the texels. Cluster-ordered 2048² needs 74 layers, 1.01×.
+- **Id 46 caps each source cell at its 32 nearest partners**
+  (`CELL_VISIBILITY_FANOUT_K`).
+  - A cell's stored set counts pairs kept from either end, so at 128 m it averages 42
+    cells, against 305 recomputed.
+  - The cap already binds at 16 m, where 178 cells hit it, and the stored and recomputed
+    sets diverge from 32 m.
+  - The error is large. At 128 m, stored pairs would put today's packing at 280 MiB,
+    with 8 cells over; the recompute gives 770 MiB, with 1,849 over.
+  - Any consumer that reads id 46 as "everything within D" undercounts. The SH warm set's
+    use of id 46 is unchecked.
+- **`campaign-test` never nears the limit.** Its whole lightmap plus shadowmask is 56 MiB.
 
 Still needed:
 

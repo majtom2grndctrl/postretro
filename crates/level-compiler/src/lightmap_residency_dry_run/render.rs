@@ -15,7 +15,8 @@ use super::{AtlasFormats, DryRunInput, ShadowmaskState};
 use crate::shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH;
 
 /// Low tier budget for lightmap + shadowmask data.
-pub(crate) const LOW_TIER_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const LOW_TIER_BUDGET_MIB: u64 = 256;
+pub(crate) const LOW_TIER_BUDGET_BYTES: u64 = LOW_TIER_BUDGET_MIB * 1024 * 1024;
 const TOP_CELLS: usize = 5;
 
 pub(super) fn input_summary(input: &DryRunInput) -> String {
@@ -96,7 +97,11 @@ pub(super) fn shadowmask_policy(formats: &AtlasFormats) -> String {
 }
 
 fn mib(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
+    mib_f64(bytes as f64)
+}
+
+pub(super) fn mib_f64(bytes: f64) -> f64 {
+    bytes / (1024.0 * 1024.0)
 }
 
 impl DryRunReport {
@@ -110,7 +115,7 @@ impl DryRunReport {
         names
     }
 
-    fn metric_values(bytes: &MandatoryBytes) -> Vec<f64> {
+    pub(super) fn metric_values(bytes: &MandatoryBytes) -> Vec<f64> {
         let mut values = vec![bytes.texel_exact, bytes.half_res];
         if let Some((texel_exact, half_res)) = bytes.with_omitted_mask {
             values.extend([texel_exact, half_res]);
@@ -253,7 +258,11 @@ impl DryRunReport {
             let _ = writeln!(
                 out,
                 "{:<6} {:<40} {:>9} {:>9} {:>7}  worst cells (id@center=MiB)",
-                "D", "metric", "max MiB", "p95 MiB", ">256MiB"
+                "D",
+                "metric",
+                "max MiB",
+                "p95 MiB",
+                format!(">{LOW_TIER_BUDGET_MIB}MiB")
             );
             for bound in &source.bounds {
                 let mean_set = bound
@@ -276,43 +285,50 @@ impl DryRunReport {
                         String::new()
                     }
                 );
-                for (metric, name) in names.iter().enumerate() {
-                    let mut values: Vec<(f64, u32)> = bound
-                        .cells
-                        .iter()
-                        .map(|(cell, bytes)| (Self::metric_values(bytes)[metric], *cell))
-                        .collect();
-                    let over = values
-                        .iter()
-                        .filter(|(v, _)| *v > LOW_TIER_BUDGET_BYTES as f64)
-                        .count();
-                    values.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-                    let max = values.first().map_or(0.0, |v| v.0);
-                    let p95 = percentile_desc(&values, 95);
-                    let worst: Vec<String> = values
-                        .iter()
-                        .take(TOP_CELLS)
-                        .map(|(v, cell)| {
-                            format!("{cell}@{}={:.1}", self.format_center(*cell), *v / 1048576.0)
-                        })
-                        .collect();
-                    let _ = writeln!(
-                        out,
-                        "{:<6} {:<40} {:>9.1} {:>9.1} {:>7}  {}",
-                        "",
-                        name,
-                        max / 1048576.0,
-                        p95 / 1048576.0,
-                        over,
-                        worst.join(" ")
-                    );
-                }
+                self.render_metric_rows(&mut out, &bound.cells, &names);
             }
+        }
+        if let Some(visible) = &self.visible_set {
+            self.render_visible_set(&mut out, visible, &names);
+            self.render_tiles(&mut out, visible);
+        }
+        self.render_cell_blocks(&mut out);
+        if let Some(visible) = &self.visible_set {
+            self.render_brief_set(&mut out, visible);
         }
         out
     }
 
-    fn format_center(&self, cell: u32) -> String {
+    /// One row per metric: worst and p95 camera cell, the count over Low, and
+    /// the worst cells.
+    pub(super) fn render_metric_rows(
+        &self,
+        out: &mut String,
+        cells: &[(u32, MandatoryBytes)],
+        names: &[String],
+    ) {
+        for (metric, name) in names.iter().enumerate() {
+            let summary = MetricSummary::of(cells, metric);
+            let worst: Vec<String> = summary
+                .sorted
+                .iter()
+                .take(TOP_CELLS)
+                .map(|(v, cell)| format!("{cell}@{}={:.1}", self.format_center(*cell), mib_f64(*v)))
+                .collect();
+            let _ = writeln!(
+                out,
+                "{:<6} {:<40} {:>9.1} {:>9.1} {:>7}  {}",
+                "",
+                name,
+                mib_f64(summary.max),
+                mib_f64(summary.p95),
+                summary.over,
+                worst.join(" ")
+            );
+        }
+    }
+
+    pub(super) fn format_center(&self, cell: u32) -> String {
         let [x, y, z] = self.cell_centers[cell as usize];
         format!("({x:.0},{y:.0},{z:.0})")
     }
@@ -358,8 +374,37 @@ impl DryRunReport {
     }
 }
 
+/// One metric over every camera cell.
+pub(super) struct MetricSummary {
+    /// `(bytes, cell)`, largest first, ties by ascending cell.
+    pub sorted: Vec<(f64, u32)>,
+    pub max: f64,
+    pub p95: f64,
+    /// Cells over the Low tier budget.
+    pub over: usize,
+}
+
+impl MetricSummary {
+    pub(super) fn of(cells: &[(u32, MandatoryBytes)], metric: usize) -> Self {
+        let mut sorted: Vec<(f64, u32)> = cells
+            .iter()
+            .map(|(cell, bytes)| (DryRunReport::metric_values(bytes)[metric], *cell))
+            .collect();
+        sorted.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        Self {
+            max: sorted.first().map_or(0.0, |v| v.0),
+            p95: percentile_desc(&sorted, 95),
+            over: sorted
+                .iter()
+                .filter(|(v, _)| *v > LOW_TIER_BUDGET_BYTES as f64)
+                .count(),
+            sorted,
+        }
+    }
+}
+
 /// Nearest-rank percentile of values sorted descending.
-fn percentile_desc(values: &[(f64, u32)], percentile: usize) -> f64 {
+pub(super) fn percentile_desc(values: &[(f64, u32)], percentile: usize) -> f64 {
     if values.is_empty() {
         return 0.0;
     }

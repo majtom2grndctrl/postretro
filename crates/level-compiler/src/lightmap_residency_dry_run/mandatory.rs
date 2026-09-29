@@ -76,10 +76,20 @@ impl Neighbors {
 
     /// Partners within `fixed` (inclusive), nearest first.
     pub(crate) fn within(&self, cell: u32, fixed: u32) -> impl Iterator<Item = u32> + '_ {
+        self.within_distances(cell, fixed).map(|(other, _)| other)
+    }
+
+    /// Partners within `fixed` (inclusive) with their fixed-point distance,
+    /// nearest first.
+    pub(crate) fn within_distances(
+        &self,
+        cell: u32,
+        fixed: u32,
+    ) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.per_cell[cell as usize]
             .iter()
             .take_while(move |&&(_, distance)| distance <= fixed)
-            .map(|&(other, _)| other)
+            .copied()
     }
 }
 
@@ -133,8 +143,6 @@ impl MandatoryContext {
         neighbors: &Neighbors,
         granularity: Granularity,
     ) -> Vec<u32> {
-        self.generation += 1;
-        let generation = self.generation;
         let mut reached = Vec::new();
         reached.push(camera);
         match bound.fixed() {
@@ -144,7 +152,20 @@ impl MandatoryContext {
                 reached.extend_from_slice(&self.component_members[component]);
             }
         }
+        self.set_from_reached(camera, &reached, granularity)
+    }
 
+    /// Mandatory cells for `camera` given the cells it reaches, ascending:
+    /// its own cluster, pinned clusters, and `reached` at `granularity`.
+    /// Duplicates in `reached` are harmless.
+    pub(crate) fn set_from_reached(
+        &mut self,
+        camera: u32,
+        reached: &[u32],
+        granularity: Granularity,
+    ) -> Vec<u32> {
+        self.generation += 1;
+        let generation = self.generation;
         let mut set = Vec::new();
         let stamp = &mut self.stamp;
         let mut add = |cell: u32| {
@@ -161,7 +182,7 @@ impl MandatoryContext {
         for &cell in &self.pinned_cells {
             add(cell);
         }
-        for &cell in &reached {
+        for &cell in reached {
             match granularity {
                 Granularity::Cell => add(cell),
                 Granularity::ClusterClosure => {
@@ -213,6 +234,17 @@ pub(crate) struct MandatoryBytes {
     pub with_omitted_mask: Option<(f64, f64)>,
     /// Distinct layers touched × their bytes, one entry per layout.
     pub layer: Vec<u64>,
+}
+
+impl MandatoryBytes {
+    /// Texel-exact bytes with id 42 charged whenever the level selects shadow
+    /// lights: the restored-mask column when the bake omitted id 42 for width. Blocks and tiles narrow enough to double charge id 42 the
+    /// same way (`AtlasFormats::layer_carries_shadowmask`), so this is the
+    /// matching denominator for them.
+    pub(crate) fn texel_exact_charging_mask(&self) -> f64 {
+        self.with_omitted_mask
+            .map_or(self.texel_exact, |(texel_exact, _)| texel_exact)
+    }
 }
 
 /// Per-cell chart areas and the combined id 22 + id 42 byte rate.

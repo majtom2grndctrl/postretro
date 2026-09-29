@@ -56,7 +56,7 @@ pub(crate) const MAX_ATLAS_DIMENSION: u32 = 8192;
 /// packer opens a new layer whenever a BVH leaf's charts don't fit the current
 /// one. Beyond this the packer errors so the caller can coarsen density or split
 /// the map. 256 is the `max_texture_array_layers` floor the runtime requires.
-const MAX_ATLAS_LAYERS: u32 = 256;
+pub(crate) const MAX_ATLAS_LAYERS: u32 = 256;
 
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
 /// same value — both bakers must agree or chunk boundaries show seams.

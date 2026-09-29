@@ -2,8 +2,11 @@
 
 > **Status:** Epic seed. SH is the first resource and ships through stages 1–4 below
 > (`context/plans/done/sh-probe-streaming/`). Generalizing to further resources is
-> unplanned. Not ready for `/build-spec`; a planning session turns stage 5 into scoped
-> specs after the listed measurements exist.
+> unplanned. Stage 5 (lightmap-shaped data first) is the resumable problem brief
+> `ready/spatial-residency--lightmap-cell-blocks/`, covering the full path: compiler cell blocks, a baked residency set, runtime pool and
+> remap, streaming through the issuer, and a dev-panel meter. Its budget is a debug-tool
+> pool-cap slider. The player-facing tier is a later spec: `experimental_spikes.md`
+> forbids user-facing settings in a spike. Not ready for `/build-spec`.
 > **Supporting research:** `context/research/spatial-streaming.md`. Shipped SH residency:
 > `context/lib/rendering_pipeline.md` §Cluster SH residency.
 
@@ -85,20 +88,22 @@ byte counts residency is designed around.
   Present. Renderer owns GPU upload, synchronization, and retirement.
 - Co-op admission preserves one logical level/content identity. Residency is
   local resource state, not divergent gameplay/collision/visibility content.
-- Lightmap charts pack by cell (next-fit; a cell never spans layers), but cell-id order
-  scatters a cluster's cells across layers. Layer size follows the largest cell, so one
-  huge cell can force a single 4096² layer that residency cannot split. Cluster residency
-  of lightmap-shaped data needs a packer that orders by cluster and caps the layer size.
-- Lightmap (id 22) and shadowmask (id 42) share the fragment's layer index. They are
-  resident together or not at all.
-- The forward fragment stage has no free binding. Layer indirection folds into the
-  existing binding-7 uniform, never a new fragment binding. The animated atlas resolves
-  per-face blocks there in the fragment stage; static-layer indirection may use the
-  vertex stage.
+- Lightmap charts pack by cell today (next-fit; a cell never spans layers), but cell-id
+  order scatters a cluster's cells across layers, and layer size follows the largest cell.
+  Whole layers are therefore the wrong residency unit. The unit is the cell block (see
+  Packing granularity).
+- Lightmap (id 22) and shadowmask (id 42) share the fragment's layer index and nothing
+  else. The shadowmask is twice the lightmap width (two mask groups side by side,
+  `sample_shadowmask_atlas`). They are resident together or not at all.
+- The forward fragment stage has no free binding. Indirection never adds a fragment
+  binding. The animated atlas resolves per-face blocks in the fragment stage from the
+  binding-7 uniform. Static cell blocks resolve in the vertex stage from a table in free
+  bind group 6.
 
 ## Decisions still open
 
-Leanings come from a read-only dry run (research below). None is decided.
+Reach bound and packing granularity are decided (owner, 2026-09-28). The rest are
+leanings from a read-only dry run (research below).
 
 - Byte-aware partition bounds, now that a second resource shares each cluster. Lean:
   bound by pre-pack chart texel area, and have the packer consume the partition. The
@@ -108,23 +113,29 @@ Leanings come from a read-only dry run (research below). None is decided.
      blocks resolved in the fragment stage from the binding-7 table replace the pooled
      animated-slot idea; pages are the load-and-evict unit for stage 5. No I/O, and it covers the largest byte class. A virtual-layer
      table for static layers remains open.
-  2. Ids 22 and 42 as one layer-keyed unit through the issuer. Existing layer-major
-     payloads give per-layer file ranges, so there is no new section.
+  2. Ids 22 and 42 as one block-keyed unit through the issuer. The compiler's cell-block
+     layout gives per-block file ranges.
   3. Id 25 weight maps by chunk range.
-- Packing granularity. Earlier lean: soft, cluster-ordered packing with a capped layer
-  size. Measured hard per-cluster boundaries cost 2.1–5.5× the texels. The per-cell
-  mandatory dry run (below) tests it. Under cluster closure on the hallway map,
-  cluster-ordered 2048² beats today's packing at every bounded D, but only by 7–33%.
-  Cluster-ordered 1024² gives the lowest layer bytes at 64 and 128 m, but needs 344
-  layers against the 256-layer runtime limit. At 64 m, whole-layer residency's worst cell
-  needs 2.6–5.3× the texel-exact worst, depending on layout and granularity. Lean now:
-  residency finer than a whole layer, such as pages or a virtual-layer table, matters
-  more than a packer change alone.
-- Reach bound. The portal-path distance whose cells are mandatory. It is the design's
-  largest lever. On the hallway map under cluster closure, Low fits at 64 m but not at
-  128 m at full resolution, even texel-exact. Open for the owner.
+- **Packing granularity. Decided: cell blocks.**
+  - Each cell's charts pack into one BC-aligned block. The runtime pool of 2048² layers
+    allocates blocks with a freeing allocator. A dense block id rides in the vertex's
+    `lightmap_layer` u16, and the vertex stage resolves it to (layer, offset) from a table
+    in free bind group 6. UVs become block-local.
+  - Rejected: whole layers (over Low from L = 16 m, and over it at L = 0 for
+    cluster-ordered layouts); fixed P² tiles (92% of hallway texels are in charts larger
+    than 128², so they'd need chart splitting); `first_instance` for cell identity (the
+    device feature isn't requested, and DX12 reads it as 0, gfx-rs/wgpu#2471).
+  - Half resolution is dropped from stage 5. Full-res cell blocks fit Low with room to
+    spare. It stays a later lever for maps whose worst cell outgrows Low.
+- **Reach bound. Decided: visibility-based.** The engine has no draw distance: `FAR = 4096`
+  in `camera.rs`, the portal walk has no distance term, and the frustum-all fallback can
+  draw the whole map. A portal-path distance D never bounded what is seen. Mandatory is
+  everything visible from anywhere in the cells reachable within a movement lead L, plus
+  those cells: M(c) = cluster(c) ∪ pinned ∪ ⋃_{c' within L} ({c'} ∪ PVS(c')). PVS is
+  sampled offline and is a lower bound. Movement is about 11–15 m/s sustained and about
+  50 m/s in dash bursts of 200 ms, so L is about 16–32 m.
 - Miss policy. Lean:
-  - Visible-cluster layers are mandatory. The pool grows rather than refusing them.
+  - Mandatory blocks are never refused. The pool grows rather than refusing them.
   - A transient miss drops static direct light and keeps SH indirect.
   - A low-resolution fallback tile is still a candidate. It needs a seam prototype.
 - Ownership. Texels belong to their receiver cell, so partitioning receivers cannot
@@ -132,7 +143,7 @@ Leanings come from a read-only dry run (research below). None is decided.
   global.
 - Residency budgets. See the next section.
 - Whether the next directory version drops solid and exterior cells from clustering. The
-  lightmap layer-range table can ride the same version bump.
+  baked residency set can ride the same version bump.
 
 ## Residency budget tiers
 
@@ -144,6 +155,8 @@ bullets below are leanings, not decisions.
   held twice (`DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES` in `plan_initial_pool_floor`,
   `DEFAULT_GPU_FLOOR_BYTES` in `ShResidencyAccounting`). Pools reserve the smaller of the
   whole map and their share at install.
+- **Stage 5 budget.** A debug-tool pool-cap slider. The player-facing tier below is a
+  later spec.
 - **Shape.** Lean: Low, Medium, High, and an auto default. One planner splits the tier into
   per-resource GPU caps and per-drain budgets, replacing both constants. Resource-neutral
   settings key. Options slot, menu control ("Applies after reload") and SDK type follow
@@ -214,50 +227,94 @@ Per-cell mandatory bytes, ids 22 and 42, on the hallway map (2026-09-28). The te
 `lightmap_residency_dry_run_from_prl`, an ignored `prl-build` test; its doc comment has the
 run command.
 - **Method.**
-  - Mandatory is the camera's cluster, plus pinned clusters, plus cells within a
-    portal-path distance D.
+  - Mandatory is M(c) from Reach bound. PVS comes from runtime portal walks from 27
+    sampled eye points per cell (3×3×3 inset lattice, six 94° cube faces). L uses the
+    untruncated distance recompute.
   - Cluster closure admits the whole cluster of each reached cell. That is the
     cluster-keyed design; the cell-granular figure is its lower bound.
   - All 2,082 non-solid, non-exterior cells are camera cells.
   - Self-checks: attribution matches each payload exactly, charts don't overlap, a
-    stored-order repack reproduces every placement, and the untruncated distance
-    recompute matches all 46,564 stored id 46 pairs.
+    stored-order repack reproduces every placement, and the distance recompute matches
+    all 46,564 stored id 46 pairs.
+- **Visibility.** Every figure is a lower bound.
+  - Sightline (farthest sampled-visible cell): p50 71.6 m, p95 127.1 m, max 237.5 m.
+  - Convergence: 9, 27 and 125 eye points. Worst-case bytes move at most 5% from 9 to
+    125; p95 moves 6.6% from 9 to 27 and up to 10.3% from 9 to 125.
+  - 0.28% of portal walks (941 of 335,898) overflow `MAX_PORTAL_WALK_STEPS`. The dry run
+    keeps the truncated walk.
 
-Worst camera cell, in MiB, under cluster closure and the untruncated distance recompute.
-Brackets count cells over Low's 256 MiB. Texel-exact counts the needed chart texels
-alone. The layout columns count whole layers.
+Visible-set table. Worst camera cell in MiB, texel-exact and whole layers in today's
+packing (2048²); p95 after the slash; brackets count cells over Low's 256 MiB.
 
-| D | Texel-exact | Half-res | Today's packing (2048²) | Cluster-ordered 1024² | Cluster-ordered 2048² |
-|---|---|---|---|---|---|
-| 16 m | 50 | 13 | 168 | 175 | 112 |
-| 32 m | 62 | 16 | 224 | 200 | 168 |
-| 64 m | 112 | 29 | 378 [261] | 287 [10] | 336 [41] |
-| 128 m | 321 [144] | 84 | 770 [1,849] | 578 [1,487] | 714 [1,801] |
-| Reach | 820 [2,081] | 215 | 1,022 [2,081] | 1,372 [2,081] | 1,036 [2,081] |
+| L | Cell-granular, texel-exact | Cell-granular, whole layers | Cluster closure, texel-exact | Cluster closure, whole layers |
+|---|---|---|---|---|
+| 0 m | 72.2 / 28.6 | 252 / 140 | 136.7 / 64.3 | 392 [93] / 252 |
+| 16 m | 84.3 / 50.8 | 280 [7] / 210 | 143.7 / 98.2 | 420 [512] / 350 |
+| 32 m | 96.4 / 75.0 | 336 [180] / 280 | 165.4 / 132.1 | 518 [1,124] / 420 |
+
+Fixed-tile table. P×P tiles, one owner unit each, L = 32 m. Tile/exact is tile texels over
+chart texels for the whole map.
+
+| Unit | P | Worst / p95 | Tile/exact |
+|---|---|---|---|
+| Cell | 128 | 153.6 / 127.4 | 1.72× |
+| Cell | 256 | 221.8 / 181.3 | 2.46× |
+| Cell | 512 | 438.4 [513] / 342.1 | 4.10× |
+| Cluster | 128 | 266.4 [6] / 219.5 | 1.69× |
+| Cluster | 256 | 336.9 [163] / 270.6 | 2.08× |
+| Cluster | 512 | 490.0 [770] / 396.4 | 2.58× |
+
+Charts larger than a tile need their own tiles: 91.7% of chart texels at P = 128, 72.4%
+at 256, 31.7% at 512. Tiles would force chart splitting.
+
+Cell-block table. Each cell's charts pack into one block (bake MaxRects, min area over up
+to 10 four-aligned widths). Cell-granular M(c); static layers pack M(c)'s blocks from
+scratch into 2048² layers, the no-fragmentation lower bound.
+
+| L | Worst / p95 MiB | Static layers, worst / p95 |
+|---|---|---|
+| 0 m | 97.0 / 35.3 | 8 / 3 |
+| 16 m | 111.7 / 64.2 | 9 / 6 |
+| 32 m | 125.7 / 94.1 | 10 / 8 |
+
+- Blocks cost 1.23× chart texels (per-cell p50 1.15×, p95 2.29×). Block bytes are 1.30–1.34×
+  texel-exact. No block exceeds 2048 in either dimension; the largest is 1144×1844.
+- **Pool walks.** L = 16 m, shelf allocator with free and merge, 20,000-step random walk
+  and far-point tour. A 12-layer pool (125% of the static worst) repacks on 0–0.3% of
+  steps with immediate free. LRU eviction repacks more often than immediate free: up to
+  1.33% at 12 layers, up to 5.2% at 9. Hard fails: none at 9 or 12 layers.
+- `campaign-test` blocks: worst 29.4 / 37.1 / 43.4 MiB at L = 0 / 16 / 32, static pool 3 / 3
+  / 4 layers. Its walk needs 1 layer of slack over the static worst for the shelf
+  allocator: a 3-layer pool hard-fails, a 4-layer pool does not.
 
 Findings:
-- **Cell-granular sets are smaller.** They fit Low at 128 m even texel-exact: 227 MiB
-  worst, 187 MiB p95.
-- **Under cluster closure at full resolution, whole layers fit Low through 32 m.** At
-  64 m only sub-layer residency fits, and at 128 m only half resolution fits.
-- **Cluster-ordered 1024² exceeds the runtime limit.** It needs 344 layers plus 12
-  oversize cells, 1.34× the texels. Cluster-ordered 2048² needs 74 layers, 1.01×.
+- **Cell granularity is what makes Low fit.** Cell blocks fit Low at every measured L with
+  a worst case near half of it. Cluster-keyed whole layers do not fit, and neither do
+  tiles at cluster granularity.
 - **Id 46 caps each source cell at its 32 nearest partners**
   (`CELL_VISIBILITY_FANOUT_K`).
-  - A cell's stored set counts pairs kept from either end, so at 128 m it averages 42
-    cells, against 305 recomputed.
+  - A cell's stored set counts pairs kept from either end. Measured against a
+    portal-path D of 128 m, it averages 42 cells, against 305 recomputed.
   - The cap already binds at 16 m, where 178 cells hit it, and the stored and recomputed
     sets diverge from 32 m.
-  - The error is large. At 128 m, stored pairs would put today's packing at 280 MiB,
-    with 8 cells over; the recompute gives 770 MiB, with 1,849 over.
-  - Any consumer that reads id 46 as "everything within D" undercounts. The SH warm set's
-    use of id 46 is unchecked.
+  - Any consumer that reads id 46 as "everything within D" undercounts: stored pairs
+    would put today's packing at 280 MiB worst at 128 m, against 770 MiB recomputed.
+  - The SH warm set does not read it that way. `WarmSource::from_cell_visibility` runs a
+    multi-hop Dijkstra over the stored pairs, capped at 8 clusters, so the ~42 vs ~305
+    one-hop gap doesn't cap it. What remains is inferred, not observed: a dropped hop can
+    inflate a composed distance and reorder the top 8, and the kept-pairs graph could
+    split. A missed cluster loads late as Visible demand with the ambient floor. It is
+    never lost. Smallest fix if ever needed: always keep direct portal-neighbour pairs
+    (about 16 B per portal, a stage-version bump).
 - **`campaign-test` never nears the limit.** Its whole lightmap plus shadowmask is 56 MiB.
 
 Still needed:
 
 - Resident and mandatory bytes per GPU resource, CPU frame time, and draw counts in the
   dev panel, before any stage 5 plan or tier value is judged.
+- A guillotine or merging pool allocator is unmeasured; the walks used a shelf allocator.
+- The portal-walk step-limit overflow on the hallway map (0.28% of walks) may warrant its
+  own look.
 - A rebuild of `stress-warren-mini`, whose PRL predates BC5.
 - A production-shaped map beyond the Stress Warren family and `campaign-test`.
 - Seam and miss prototypes for the first lightmap-shaped resource, including

@@ -5,6 +5,7 @@ use postretro_level_format::cell_visibility::CELL_VISIBILITY_FANOUT_K;
 
 use super::DryRunInput;
 use super::attribution::{Attribution, SectionAttribution, attribute};
+use super::cell_blocks::CellBlocks;
 use super::layouts::{
     Layout, RepackCheck, cluster_ordered_layout, stored_layout, stored_repack_matches,
 };
@@ -16,6 +17,8 @@ use super::portal_distance::{
     DistanceValidation, VALIDATION_TOLERANCE_FIXED, recompute_pairs, validate_against_stored,
 };
 use super::render::{input_summary, shadowmask_policy};
+use super::tiles::{TileLayout, tile_layouts};
+use super::visible_set::{VisibleSetInputs, VisibleSetResult, run_visible_set};
 
 /// Layer caps simulated for soft cluster-ordered packing.
 pub(crate) const SIMULATED_LAYER_CAPS: [u32; 2] = [1024, 2048];
@@ -77,6 +80,13 @@ pub(crate) struct DryRunReport {
     pub stored_total_texels: u64,
     pub validation: Option<DistanceValidation>,
     pub sources: Vec<SourceResult>,
+    /// Sampled visible-set bounds; needs the portal graph and the runtime
+    /// visibility world.
+    pub visible_set: Option<VisibleSetResult>,
+    /// Per-unit fixed-size tile packings the visible-set pass costs.
+    pub tile_layouts: Vec<TileLayout>,
+    /// Each cell's charts packed into one BC-aligned block.
+    pub cell_blocks: CellBlocks,
     /// Non-solid, non-exterior cells: every cell the camera can occupy.
     pub camera_cells: Vec<u32>,
     pub cluster_rows: Vec<ClusterRow>,
@@ -91,6 +101,8 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
         layouts.push(cluster_ordered_layout(input, cap));
     }
     let repack = stored_repack_matches(input);
+    let tile_layouts = tile_layouts(input);
+    let cell_blocks = CellBlocks::new(input);
     let footprint = CellFootprint::new(input);
 
     let mut chart_clusters = vec![false; input.cluster_count as usize];
@@ -111,6 +123,7 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
             .then_some("id 46 absent: conservative all-perceivable, every bound is the whole map"),
     }];
     let mut validation = None;
+    let mut visible_set = None;
     let recomputed_neighbors;
     if let Some(graph) = &input.portal_graph {
         let max_fixed = DistanceBound::max_fixed();
@@ -123,6 +136,19 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
             max_fixed,
         ));
         recomputed_neighbors = Neighbors::from_pairs(input.cell_count(), &recomputed);
+        if let Some(world) = &input.visibility_world {
+            visible_set = Some(run_visible_set(&VisibleSetInputs {
+                input,
+                world,
+                graph,
+                neighbors: &recomputed_neighbors,
+                camera_cells: &camera_cells,
+                footprint: &footprint,
+                layouts: &layouts,
+                tile_layouts: &tile_layouts,
+                cell_blocks: &cell_blocks,
+            }));
+        }
         specs.push(SourceSpec {
             name: "hub-metric recompute (untruncated)",
             neighbors: &recomputed_neighbors,
@@ -159,6 +185,9 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
         repack,
         validation,
         sources,
+        visible_set,
+        tile_layouts,
+        cell_blocks,
         camera_cells,
         cell_centers: input.cells.iter().map(|info| info.center).collect(),
         cell_clusters: input.cells.iter().map(|info| info.cluster).collect(),

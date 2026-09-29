@@ -7,20 +7,25 @@ use std::io::BufReader;
 use std::path::Path;
 
 use anyhow::{Context, bail, ensure};
+use glam::Vec3;
 use postretro_level_format::bvh::{BvhLeaf, BvhSection};
+use postretro_level_format::cell_locator::{self, CellLocatorSection};
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
-    CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection,
+    CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection, ClusterHintRecord,
 };
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::LightmapSection;
-use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
 };
 use postretro_level_format::{SectionId, read_container, read_section_data};
+use postretro_level_loader::{
+    CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld, PortalData,
+};
 
 use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use super::{
@@ -128,6 +133,11 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
     let portals =
         PortalsSection::from_bytes(&optional(SectionId::Portals)?.context("missing Portals")?)
             .context("parse Portals")?;
+    let locator = CellLocatorSection::from_bytes(
+        &optional(SectionId::CellLocator)?.context("missing CellLocator")?,
+        cell_count,
+    )
+    .context("parse CellLocator")?;
 
     let (charts, faces, reconstruction) =
         reconstruct_charts(&geometry, &bvh, &formats, cell_count)?;
@@ -160,17 +170,11 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
             ],
             cluster,
             camera_candidate: !record.is_solid() && !record.is_exterior(),
+            exterior: record.is_exterior(),
         })
         .collect();
 
-    let mut pinned_clusters: Vec<u32> = directory
-        .cluster_hints
-        .iter()
-        .filter(|hint| hint.flags & CLUSTER_HINT_FLAG_PINNED != 0)
-        .map(|hint| hint.cluster_id)
-        .collect();
-    pinned_clusters.sort_unstable();
-    pinned_clusters.dedup();
+    let pinned_clusters = pinned_clusters(&directory.cluster_hints);
 
     let portal_graph = PortalGraphInput {
         cells: cells
@@ -185,17 +189,22 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         portals: portals
             .portals
             .iter()
-            .map(|record| {
-                let start = record.vertex_start as usize;
-                let end = start + record.vertex_count as usize;
-                HubPortal {
-                    front: record.front_leaf,
-                    back: record.back_leaf,
-                    vertices: portals.vertices[start..end].to_vec(),
-                }
+            .map(|record| HubPortal {
+                front: record.front_leaf,
+                back: record.back_leaf,
+                vertices: portal_vertices(&portals, record)
+                    .unwrap_or_default()
+                    .to_vec(),
             })
             .collect(),
     };
+    let loader_rejected_portals = portals
+        .portals
+        .iter()
+        .filter(|record| loader_rejects_portal(portal_vertices(&portals, record)))
+        .count();
+
+    let visibility_world = visibility_world(&cells, &portals, locator)?;
 
     let cell_visibility_present = visibility.is_some();
     let (component_ids, coupled_pairs) = match visibility {
@@ -215,8 +224,117 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         component_ids,
         coupled_pairs,
         portal_graph: Some(portal_graph),
+        visibility_world: Some(visibility_world),
+        loader_rejected_portals,
         reconstruction,
     })
+}
+
+/// Clusters an id-49 hint flags pinned, ascending. The flag alone decides:
+/// a priority region's hint ranks prefetch and pins nothing, and SH's owner
+/// closure is SH-only.
+pub(super) fn pinned_clusters(hints: &[ClusterHintRecord]) -> Vec<u32> {
+    let mut pinned: Vec<u32> = hints
+        .iter()
+        .filter(|hint| hint.flags & CLUSTER_HINT_FLAG_PINNED != 0)
+        .map(|hint| hint.cluster_id)
+        .collect();
+    pinned.sort_unstable();
+    pinned.dedup();
+    pinned
+}
+
+/// A portal record's vertices, or `None` for a range outside the vertex
+/// buffer, so a bad record degrades to an empty polygon instead of panicking.
+fn portal_vertices<'a>(
+    portals: &'a PortalsSection,
+    record: &PortalRecord,
+) -> Option<&'a [[f32; 3]]> {
+    let start = record.vertex_start as usize;
+    let end = start.checked_add(record.vertex_count as usize)?;
+    portals.vertices.get(start..end)
+}
+
+/// Whether the runtime loader would reject this portal. Must match
+/// `convert_usable_portals` in `crates/level-loader/src/prl_loader.rs`: a bad
+/// vertex range, fewer than 3 vertices, a non-finite vertex, or zero area.
+pub(super) fn loader_rejects_portal(vertices: Option<&[[f32; 3]]>) -> bool {
+    let Some(vertices) = vertices else {
+        return true;
+    };
+    if vertices.len() < 3 || !vertices.iter().flatten().all(|c| c.is_finite()) {
+        return true;
+    }
+    let area = vertices
+        .iter()
+        .zip(vertices.iter().cycle().skip(1))
+        .take(vertices.len())
+        .fold(Vec3::ZERO, |sum, (a, b)| {
+            sum + Vec3::from(*a).cross(Vec3::from(*b))
+        });
+    area.length_squared() <= 1.0e-12
+}
+
+/// The runtime visibility world, built from ids 38, 15 and the cell locator
+/// with the field mapping `postretro-level-loader` applies on load. Loading
+/// the whole PRL would read every payload, over a gigabyte on large maps.
+fn visibility_world(
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    locator: CellLocatorSection,
+) -> anyhow::Result<LevelWorld> {
+    let cell_data = cells
+        .cells
+        .iter()
+        .map(|record| CellData {
+            bounds_min: record.bounds_min.into(),
+            bounds_max: record.bounds_max.into(),
+            face_start: record.face_start,
+            face_count: record.face_count,
+            portal_ref_start: record.portal_ref_start,
+            portal_ref_count: record.portal_ref_count,
+            is_solid: record.is_solid(),
+            is_exterior: record.is_exterior(),
+            is_drawable: record.is_drawable(),
+        })
+        .collect();
+    let portal_data: Vec<PortalData> = portals
+        .portals
+        .iter()
+        .map(|record| PortalData {
+            polygon: portal_vertices(portals, record)
+                .unwrap_or_default()
+                .iter()
+                .map(|&v| v.into())
+                .collect(),
+            front_cell: record.front_leaf as usize,
+            back_cell: record.back_leaf as usize,
+        })
+        .collect();
+    let child = |child: cell_locator::CellLocatorChild| match child {
+        cell_locator::CellLocatorChild::Cell(index) => CellLocatorChild::Cell(index as usize),
+        cell_locator::CellLocatorChild::Node(index) => CellLocatorChild::Node(index as usize),
+    };
+    let nodes = locator
+        .nodes
+        .iter()
+        .map(|node| CellLocatorNodeData {
+            plane_normal: node.plane_normal.into(),
+            plane_distance: node.plane_distance,
+            front: child(node.front),
+            back: child(node.back),
+        })
+        .collect();
+    let has_portals = !portal_data.is_empty();
+    LevelWorld::new_visibility_only(
+        cell_data,
+        cells.portal_refs.clone(),
+        child(locator.root),
+        nodes,
+        portal_data,
+        has_portals,
+    )
+    .map_err(|error| anyhow::anyhow!("build visibility world: {error}"))
 }
 
 /// Recover one padded chart rectangle per face, in the bake's chart order.

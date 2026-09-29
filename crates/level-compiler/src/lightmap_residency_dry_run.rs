@@ -4,22 +4,54 @@
 //! and clusters whose charts own them, then measures each camera cell's
 //! mandatory resident bytes under distance bounds and three atlas layouts:
 //! today's stored packing and soft cluster-ordered packing at two layer caps.
+//! A second pass bounds the mandatory set by sampled visibility instead of
+//! distance: everything visible from the cells a movement lead reaches, and
+//! costs those sets under fixed-size tiles owned by one cell or cluster each,
+//! and under per-cell blocks allocated into a pool of `POOL_LAYER_EDGE²` layers.
+//! A third pass measures the problem brief's own set: a baked lead map with
+//! one-hop dilation and no camera-cluster term, its prefetch band, and pool
+//! walks under the brief's miss policy.
 //! Measurement only; nothing here feeds a bake.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
 
 mod attribution;
+mod band_pool_sim;
+mod block_allocator;
+mod block_pool_sim;
+mod brief_set;
+mod brief_set_render;
+mod brief_set_residency;
+mod camera_walks;
+mod cell_block_residency;
+mod cell_blocks;
+mod cell_blocks_render;
 mod inputs;
 mod layouts;
 mod mandatory;
 mod portal_distance;
+mod pvs_sampling;
 mod render;
 mod report;
+mod tiles;
+mod tiles_render;
+mod visible_set;
+mod visible_set_render;
 
+#[cfg(test)]
+mod brief_set_tests;
+#[cfg(test)]
+mod cell_blocks_tests;
 #[cfg(test)]
 mod dry_run_test_fixtures;
 #[cfg(test)]
+mod real_prl_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tiles_tests;
+#[cfg(test)]
+mod visible_set_tests;
 
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::lightmap::{
@@ -27,6 +59,7 @@ use postretro_level_format::lightmap::{
     IRRADIANCE_FORMAT_RGBA16F,
 };
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
+use postretro_level_loader::LevelWorld;
 
 use crate::chart_raster::CHART_PADDING_TEXELS;
 use crate::shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH;
@@ -137,6 +170,23 @@ impl AtlasFormats {
                 .is_some_and(|doubled| doubled <= MAX_SHADOWMASK_TEXTURE_WIDTH)
     }
 
+    /// Grid a runtime block's origin and extent sit on: the BC block edge and
+    /// the irradiance-to-direction scale on each axis, so a block covers whole
+    /// BC blocks and whole direction texels (`layer_bytes_at` asserts the
+    /// latter).
+    pub(crate) fn block_alignment(&self) -> u32 {
+        let scale = |full: u32, dir: u32| {
+            assert!(
+                dir > 0 && full % dir == 0,
+                "direction extent {dir} does not divide irradiance extent {full}"
+            );
+            full / dir
+        };
+        let x = scale(self.irr_width, self.dir_width);
+        let y = scale(self.irr_height, self.dir_height);
+        lcm(lcm(BC_BLOCK_EDGE, x), y)
+    }
+
     /// Id 22 plus id 42 bytes for one layer of `width × height` irradiance
     /// texels, at the stored encodings and the stored direction scale.
     pub(crate) fn layer_bytes_at(&self, width: u32, height: u32) -> u64 {
@@ -215,6 +265,14 @@ impl AtlasFormats {
     }
 }
 
+fn lcm(a: u32, b: u32) -> u32 {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
+}
+
 /// One face chart's padded rectangle in irradiance texel space, recovered
 /// from the stored per-vertex lightmap UVs and layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +306,8 @@ pub(crate) struct CellInfo {
     /// Non-solid and non-exterior per the Cells (id 38) flags: a cell the
     /// camera can stand in, charted or not.
     pub camera_candidate: bool,
+    /// Exterior per the Cells (id 38) flags.
+    pub exterior: bool,
 }
 
 /// One entry per Geometry (id 17) face, in the bake's chart order.
@@ -284,7 +344,7 @@ pub(crate) struct ReconstructionStats {
 
 /// Everything the dry run reads from a PRL, decoupled from section types so
 /// synthetic fixtures can build it directly.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct DryRunInput {
     pub formats: AtlasFormats,
     /// Recovered charts in face order.
@@ -300,6 +360,13 @@ pub(crate) struct DryRunInput {
     /// Portal hub geometry for the untruncated distance recompute; absent in
     /// fixtures that exercise only the stored id-46 records.
     pub portal_graph: Option<PortalGraphInput>,
+    /// Runtime visibility world (cells, locator, portals) for the sampled
+    /// visible-set pass; absent in fixtures that skip it.
+    pub visibility_world: Option<LevelWorld>,
+    /// Portals the runtime loader would reject. It rejects all portals when
+    /// any one is bad, so a nonzero count means the shipped runtime takes its
+    /// no-portals fallback instead of the walks sampled here.
+    pub loader_rejected_portals: usize,
     pub reconstruction: ReconstructionStats,
 }
 

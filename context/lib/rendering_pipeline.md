@@ -149,6 +149,18 @@ reaches the ambient floor. Baked owners remain installed for dependent halo clus
 physical light accumulates once and an owner cannot be evicted out from under a resident
 boundary.
 
+**Lightmap cell-block residency (decided, not yet built).** The static lightmap and
+shadowmask (ids 22/42) will stream as per-cell blocks; a cell's lightmap and shadowmask
+block install together, in the same drain, or not at all. The mandatory set is the cells
+within a movement lead of the camera cell, plus their sampled visible sets dilated one
+portal hop, plus cells of id-49 flagged pins. It is baked as a streaming-owned cell
+relation, not an id-46 axis. Mandatory and visible blocks are never refused: the pool
+grows past its cap. A transient miss drops static direct and specular light and keeps SH
+indirect. SH and lightmap blocks share one read issuer and one drain-budget owner. Block
+identity resolves in the forward vertex stage from a vertex-only table, adding no fragment
+binding. Repack compacts in place through a spare layer; only growth allocates a new pool
+generation. Until built, ids 22/42 load whole.
+
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
 fog-reachable cells, and world AABBs for drawn movers swept from their current to

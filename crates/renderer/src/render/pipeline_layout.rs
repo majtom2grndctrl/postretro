@@ -61,6 +61,12 @@ use super::*;
 // `strip_point_shadow_cube` still neutralizes the cube path in the composed
 // no-`CUBE_ARRAY_TEXTURES` source; the `// CUBE_SHADOW_BINDING` binding
 // declaration stays with the consumer in `forward.wgsl`.
+//
+// `lightmap_sample.wgsl` owns the static, animated and shadowmask lightmap
+// atlas samplers (`sample_lightmap_irradiance`, `sample_lightmap_animated`,
+// `animated_block_uv`, `sample_shadowmask_atlas`). It declares no bindings: it
+// reads the group-4 lightmap textures, `lightmap_filtering_sampler`, and
+// `animated_block_table` declared in `forward.wgsl` by lexical name.
 pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -81,6 +87,8 @@ pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/shadow_sample.wgsl"),
     "\n",
     include_str!("../shaders/surface_depth.wgsl"),
+    "\n",
+    include_str!("../shaders/lightmap_sample.wgsl"),
     "\n",
 );
 

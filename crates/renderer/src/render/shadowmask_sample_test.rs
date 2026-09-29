@@ -1,9 +1,10 @@
-// GPU readback of forward.wgsl's shadowmask sampling helper and both decode
-// paths' slot selects, against a hand-built side-by-side BC5 atlas and the
-// 2×1 placeholder, uploaded through the renderer's own upload functions.
-// The WGSL helpers it calls are extracted verbatim from forward.wgsl; its own
-// entry point repeats the union path's skip-then-select order, which the
-// shader_tests grep gate pins in `shadowmask_union_subtraction` itself.
+// GPU readback of the forward shader's shadowmask sampling helper and both
+// decode paths' slot selects, against a hand-built side-by-side BC5 atlas and
+// the 2×1 placeholder, uploaded through the renderer's own upload functions.
+// The WGSL helpers it calls are extracted verbatim from forward.wgsl and
+// lightmap_sample.wgsl; its own entry point repeats the union path's
+// skip-then-select order, which the shader_tests grep gate pins in
+// `shadowmask_union_subtraction` itself.
 // See: context/lib/rendering_pipeline.md §4 (World specular shadowmask)
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
@@ -37,6 +38,7 @@ const OUTPUT_TEXEL_BYTES: u32 = 16;
 const TARGET_COUNT: usize = 2;
 const PIXELS_PER_PROBE: u32 = 2;
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
+const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../shaders/lightmap_sample.wgsl");
 
 struct GpuCtx {
     device: wgpu::Device,
@@ -96,7 +98,7 @@ fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
 fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
     let start = source
         .find(&format!("fn {name}("))
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{name}`"));
+        .unwrap_or_else(|| panic!("the WGSL source must declare `{name}`"));
     let open = start + source[start..].find('{').expect("function body");
     let mut depth = 0usize;
     for (offset, ch) in source[open..].char_indices() {
@@ -220,7 +222,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
         "shadowmask_union_channel",
     ]
     .into_iter()
-    .map(|name| wgsl_function(FORWARD_WGSL, name))
+    .map(|name| {
+        let source = if name == "sample_shadowmask_atlas" {
+            LIGHTMAP_SAMPLE_WGSL
+        } else {
+            FORWARD_WGSL
+        };
+        wgsl_function(source, name)
+    })
     .collect();
     format!("{prelude}\n{consts}\n{}\n{entry}", helpers.join("\n\n"))
 }

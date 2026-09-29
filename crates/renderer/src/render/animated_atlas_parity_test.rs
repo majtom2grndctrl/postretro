@@ -1,6 +1,6 @@
 // GPU parity of the compact animated lightmap atlas: one animated scene
-// composed by the real compose pass and sampled through forward.wgsl's block
-// lookup, once through the identity block table and once through a packed
+// composed by the real compose pass and sampled through the forward shader's
+// block lookup, once through the identity block table and once through a packed
 // one. Zero gutters must make the two indistinguishable.
 // See: context/lib/rendering_pipeline.md §7.1 (Animated lightmap compose)
 //
@@ -27,6 +27,7 @@ use super::sh_volume::AnimatedLightBuffers;
 use crate::lighting::lightmap::{animated_block_table_bytes, filtering_sampler_descriptor};
 
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
+const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../shaders/lightmap_sample.wgsl");
 const STATIC_SIZE: u32 = 64;
 const STATIC_LAYERS: u32 = 2;
 /// Probes per target row; three pixels each (irradiance, direction, remap).
@@ -85,7 +86,7 @@ fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
 fn wgsl_item<'a>(source: &'a str, header: &str) -> &'a str {
     let start = source
         .find(header)
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{header}`"));
+        .unwrap_or_else(|| panic!("the WGSL source must declare `{header}`"));
     let open = start + source[start..].find('{').expect("item body");
     let mut depth = 0usize;
     for (offset, ch) in source[open..].char_indices() {
@@ -103,8 +104,9 @@ fn wgsl_item<'a>(source: &'a str, header: &str) -> &'a str {
     panic!("`{header}` body never closes");
 }
 
-/// forward.wgsl's block table, block lookup and animated sample, verbatim,
-/// around a probe entry point that samples the way the fragment stage does.
+/// forward.wgsl's block table and lightmap_sample.wgsl's block lookup and
+/// animated sample, verbatim, around a probe entry point that samples the way
+/// the fragment stage does.
 fn shader_source() -> String {
     let prelude = r#"
 struct Probe {
@@ -156,9 +158,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 "#;
     let items = [
         wgsl_item(FORWARD_WGSL, "struct AnimatedBlockTable {"),
-        wgsl_item(FORWARD_WGSL, "struct AnimatedBlockUv {"),
-        wgsl_item(FORWARD_WGSL, "fn sample_lightmap_animated("),
-        wgsl_item(FORWARD_WGSL, "fn animated_block_uv("),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "struct AnimatedBlockUv {"),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "fn sample_lightmap_animated("),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "fn animated_block_uv("),
     ];
     // The block table struct must precede the binding that names it.
     format!(

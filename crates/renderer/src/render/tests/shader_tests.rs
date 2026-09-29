@@ -712,15 +712,13 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
 
 #[test]
 fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
-    let src = include_str!("../../shaders/forward.wgsl");
-    let helper_start = src
-        .find("fn sample_shadowmask_atlas(")
-        .expect("forward shader must centralize shadowmask atlas sampling");
-    let helper_end = src[helper_start..]
-        .find("fn shadowmask_visibility_for_spec_light(")
-        .map(|offset| helper_start + offset)
-        .expect("shadowmask sampling helper must precede spec-light visibility");
-    let helper = &src[helper_start..helper_end];
+    // The forward consumer plus the lightmap sampling snippet it composes.
+    let src = concat!(
+        include_str!("../../shaders/forward.wgsl"),
+        "\n",
+        include_str!("../../shaders/lightmap_sample.wgsl"),
+    );
+    let helper = wgsl_function(src, "sample_shadowmask_atlas");
 
     assert!(
         helper.contains("textureNumLayers(shadowmask_atlas) - 1u")

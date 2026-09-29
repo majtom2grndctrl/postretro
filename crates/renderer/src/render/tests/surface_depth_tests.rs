@@ -7,6 +7,7 @@ use postretro_render_cpu::surface_depth as sd;
 
 const SNIPPET: &str = include_str!("../../shaders/surface_depth.wgsl");
 const FORWARD: &str = include_str!("../../shaders/forward.wgsl");
+const LIGHTMAP_SAMPLE: &str = include_str!("../../shaders/lightmap_sample.wgsl");
 const KINEMATIC: &str = include_str!("../../shaders/kinematic_brush.wgsl");
 
 /// The composed source of every pipeline that shades a world material bundle
@@ -298,7 +299,8 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // the marched UV. The shadowmask path is the worse half of that hole, since
     // it is a layered atlas and `shadowmask_union_subtraction` forwards one
     // UV to every promoted light on the fragment.
-    let forward_code = strip_line_comments(FORWARD);
+    // Forward plus the lightmap sampling helpers it composes.
+    let forward_code = strip_line_comments(&format!("{FORWARD}\n{LIGHTMAP_SAMPLE}"));
     // The animated atlas is read at the block-remapped UV, a pure atlas
     // translation of the interpolated lightmap UV: `animated_block_uv` must
     // receive that UV verbatim, and the animated sample must take its result.

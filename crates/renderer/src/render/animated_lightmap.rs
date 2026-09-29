@@ -1321,8 +1321,9 @@ mod tests {
         assert!(src.contains("animated_block_uv(in.lightmap_uv, in.animated_block)"));
         assert!(src.contains("sample_lightmap_animated(animated.uv, animated.page)"));
         assert!(src.contains("i32(animated.page)"));
+        let helpers = include_str!("../shaders/lightmap_sample.wgsl");
         assert!(
-            src.contains("block_id == 0u || block_id > animated_block_table.block_count"),
+            helpers.contains("block_id == 0u || block_id > animated_block_table.block_count"),
             "id 0 and ids past an empty (inactive) table must resolve to no block",
         );
         assert!(

@@ -133,8 +133,6 @@ impl MandatoryContext {
         neighbors: &Neighbors,
         granularity: Granularity,
     ) -> Vec<u32> {
-        self.generation += 1;
-        let generation = self.generation;
         let mut reached = Vec::new();
         reached.push(camera);
         match bound.fixed() {
@@ -144,7 +142,20 @@ impl MandatoryContext {
                 reached.extend_from_slice(&self.component_members[component]);
             }
         }
+        self.set_from_reached(camera, &reached, granularity)
+    }
 
+    /// Mandatory cells for `camera` given the cells it reaches, ascending:
+    /// its own cluster, pinned clusters, and `reached` at `granularity`.
+    /// Duplicates in `reached` are harmless.
+    pub(crate) fn set_from_reached(
+        &mut self,
+        camera: u32,
+        reached: &[u32],
+        granularity: Granularity,
+    ) -> Vec<u32> {
+        self.generation += 1;
+        let generation = self.generation;
         let mut set = Vec::new();
         let stamp = &mut self.stamp;
         let mut add = |cell: u32| {
@@ -161,7 +172,7 @@ impl MandatoryContext {
         for &cell in &self.pinned_cells {
             add(cell);
         }
-        for &cell in &reached {
+        for &cell in reached {
             match granularity {
                 Granularity::Cell => add(cell),
                 Granularity::ClusterClosure => {

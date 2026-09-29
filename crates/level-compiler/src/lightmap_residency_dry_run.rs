@@ -4,6 +4,8 @@
 //! and clusters whose charts own them, then measures each camera cell's
 //! mandatory resident bytes under distance bounds and three atlas layouts:
 //! today's stored packing and soft cluster-ordered packing at two layer caps.
+//! A second pass bounds the mandatory set by sampled visibility instead of
+//! distance: everything visible from the cells a movement lead reaches.
 //! Measurement only; nothing here feeds a bake.
 //! See: context/plans/large-map-spatial-residency.md ·
 //! context/lib/build_pipeline.md §PRL section IDs
@@ -13,13 +15,18 @@ mod inputs;
 mod layouts;
 mod mandatory;
 mod portal_distance;
+mod pvs_sampling;
 mod render;
 mod report;
+mod visible_set;
+mod visible_set_render;
 
 #[cfg(test)]
 mod dry_run_test_fixtures;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod visible_set_tests;
 
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::lightmap::{
@@ -27,6 +34,7 @@ use postretro_level_format::lightmap::{
     IRRADIANCE_FORMAT_RGBA16F,
 };
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
+use postretro_level_loader::LevelWorld;
 
 use crate::chart_raster::CHART_PADDING_TEXELS;
 use crate::shadowmask_bake::MAX_SHADOWMASK_TEXTURE_WIDTH;
@@ -284,7 +292,7 @@ pub(crate) struct ReconstructionStats {
 
 /// Everything the dry run reads from a PRL, decoupled from section types so
 /// synthetic fixtures can build it directly.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct DryRunInput {
     pub formats: AtlasFormats,
     /// Recovered charts in face order.
@@ -300,6 +308,9 @@ pub(crate) struct DryRunInput {
     /// Portal hub geometry for the untruncated distance recompute; absent in
     /// fixtures that exercise only the stored id-46 records.
     pub portal_graph: Option<PortalGraphInput>,
+    /// Runtime visibility world (cells, locator, portals) for the sampled
+    /// visible-set pass; absent in fixtures that skip it.
+    pub visibility_world: Option<LevelWorld>,
     pub reconstruction: ReconstructionStats,
 }
 

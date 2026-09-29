@@ -8,6 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, bail, ensure};
 use postretro_level_format::bvh::{BvhLeaf, BvhSection};
+use postretro_level_format::cell_locator::{self, CellLocatorSection};
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
@@ -21,6 +22,9 @@ use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
 };
 use postretro_level_format::{SectionId, read_container, read_section_data};
+use postretro_level_loader::{
+    CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld, PortalData,
+};
 
 use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use super::{
@@ -128,6 +132,11 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
     let portals =
         PortalsSection::from_bytes(&optional(SectionId::Portals)?.context("missing Portals")?)
             .context("parse Portals")?;
+    let locator = CellLocatorSection::from_bytes(
+        &optional(SectionId::CellLocator)?.context("missing CellLocator")?,
+        cell_count,
+    )
+    .context("parse CellLocator")?;
 
     let (charts, faces, reconstruction) =
         reconstruct_charts(&geometry, &bvh, &formats, cell_count)?;
@@ -197,6 +206,8 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
             .collect(),
     };
 
+    let visibility_world = visibility_world(&cells, &portals, locator)?;
+
     let cell_visibility_present = visibility.is_some();
     let (component_ids, coupled_pairs) = match visibility {
         Some(section) => (section.component_ids, section.coupled_pairs),
@@ -215,8 +226,74 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
         component_ids,
         coupled_pairs,
         portal_graph: Some(portal_graph),
+        visibility_world: Some(visibility_world),
         reconstruction,
     })
+}
+
+/// The runtime visibility world, built from ids 38, 15 and the cell locator
+/// with the field mapping `postretro-level-loader` applies on load. Loading
+/// the whole PRL would read every payload, over a gigabyte on large maps.
+fn visibility_world(
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    locator: CellLocatorSection,
+) -> anyhow::Result<LevelWorld> {
+    let cell_data = cells
+        .cells
+        .iter()
+        .map(|record| CellData {
+            bounds_min: record.bounds_min.into(),
+            bounds_max: record.bounds_max.into(),
+            face_start: record.face_start,
+            face_count: record.face_count,
+            portal_ref_start: record.portal_ref_start,
+            portal_ref_count: record.portal_ref_count,
+            is_solid: record.is_solid(),
+            is_exterior: record.is_exterior(),
+            is_drawable: record.is_drawable(),
+        })
+        .collect();
+    let portal_data: Vec<PortalData> = portals
+        .portals
+        .iter()
+        .map(|record| {
+            let start = record.vertex_start as usize;
+            let end = start + record.vertex_count as usize;
+            PortalData {
+                polygon: portals.vertices[start..end]
+                    .iter()
+                    .map(|&v| v.into())
+                    .collect(),
+                front_cell: record.front_leaf as usize,
+                back_cell: record.back_leaf as usize,
+            }
+        })
+        .collect();
+    let child = |child: cell_locator::CellLocatorChild| match child {
+        cell_locator::CellLocatorChild::Cell(index) => CellLocatorChild::Cell(index as usize),
+        cell_locator::CellLocatorChild::Node(index) => CellLocatorChild::Node(index as usize),
+    };
+    let nodes = locator
+        .nodes
+        .iter()
+        .map(|node| CellLocatorNodeData {
+            plane_normal: node.plane_normal.into(),
+            plane_distance: node.plane_distance,
+            front: child(node.front),
+            back: child(node.back),
+        })
+        .collect();
+    let has_portals = !portal_data.is_empty();
+    LevelWorld::new_visibility_only(
+        cell_data,
+        cells.portal_refs.clone(),
+        child(locator.root),
+        nodes,
+        portal_data,
+        has_portals,
+    )
+    .map_err(|error| anyhow::anyhow!("build visibility world: {error}"))
 }
 
 /// Recover one padded chart rectangle per face, in the bake's chart order.

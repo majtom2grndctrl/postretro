@@ -113,6 +113,7 @@ pub(super) fn input(
         component_ids: vec![0; cell_clusters.len()],
         coupled_pairs: pairs,
         portal_graph: None,
+        visibility_world: None,
     }
 }
 

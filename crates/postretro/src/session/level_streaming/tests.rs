@@ -20,12 +20,17 @@ use crate::session::sh_residency::sync_manifest_test_fixture;
 use crate::sh_streaming::controller::ShClusterRequest;
 use crate::streaming::request::StreamResource;
 
-fn frame(visible_cells: &VisibleCells, camera_cell: usize) -> StreamingFrame<'_> {
+fn frame<'a>(
+    visible_cells: &'a VisibleCells,
+    camera_cell: usize,
+    cpu: &'a StageFrame<StreamingStage>,
+) -> StreamingFrame<'a> {
     StreamingFrame {
         visible_cells,
         camera_cell: Some(camera_cell),
         path: PORTAL,
         monotonic_seconds: 0.0,
+        cpu,
     }
 }
 
@@ -208,6 +213,7 @@ fn reload_discards_the_old_generations_pair_and_rereads_it() {
     let source = TestBlockSource::with_log(corridor_blocks(64, true), Arc::clone(&log));
     let set = corridor_set();
     let visible = VisibleCells::Culled(Vec::new());
+    let cpu = StageFrame::default();
     let mut level = LevelStreaming::default();
     level.install_lightmap(lightmap_session(&source));
     let old_ledger = Arc::downgrade(level.lightmap().unwrap().ledger());
@@ -217,7 +223,7 @@ fn reload_discards_the_old_generations_pair_and_rereads_it() {
     let held = source.spec(6).shadowmask.clone().unwrap().start;
     log.gate.hold(held);
     level
-        .prepare_drains(&mut None, Some(&set), frame(&visible, 6))
+        .prepare_drains(&mut None, Some(&set), frame(&visible, 6, &cpu))
         .unwrap();
     log.wait_for_reads(4);
 
@@ -230,7 +236,7 @@ fn reload_discards_the_old_generations_pair_and_rereads_it() {
     for _ in 0..3 {
         renderer_installs_lightmap_batch(&mut level);
         level
-            .prepare_drains(&mut None, Some(&set), frame(&visible, 6))
+            .prepare_drains(&mut None, Some(&set), frame(&visible, 6, &cpu))
             .unwrap();
         assert!(level.is_retiring(), "the held read has not returned");
     }
@@ -241,7 +247,7 @@ fn reload_discards_the_old_generations_pair_and_rereads_it() {
     wait_until("the reloaded level's pairs", || {
         installed.extend(renderer_installs_lightmap_batch(&mut level));
         level
-            .prepare_drains(&mut None, Some(&set), frame(&visible, 6))
+            .prepare_drains(&mut None, Some(&set), frame(&visible, 6, &cpu))
             .unwrap();
         installed.len() == 2
     });
@@ -286,10 +292,11 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
 
     // Cell 0 is SH's one cell and the corridor's camera 0.
     let visible = VisibleCells::Culled(vec![0]);
+    let cpu = StageFrame::default();
     let mut installed = BTreeSet::new();
     wait_until("SH and lightmap installs", || {
         let batch = level
-            .prepare_drains(&mut sh, Some(&set), frame(&visible, 0))
+            .prepare_drains(&mut sh, Some(&set), frame(&visible, 0, &cpu))
             .unwrap();
         sh.as_mut().unwrap().accept_drain_for_test(&batch).unwrap();
         installed.extend(renderer_installs_lightmap_batch(&mut level));

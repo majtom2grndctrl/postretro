@@ -1,6 +1,7 @@
 // Capture measurement report schema and CPU-only summary math.
 // See: context/lib/rendering_pipeline.md §7.8
 
+use postretro_renderer::LightmapStreamingLiveDiagnostics;
 #[cfg(test)]
 use postretro_renderer::ShStreamingAllocationSummary;
 use std::borrow::Cow;
@@ -377,7 +378,8 @@ impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
 }
 
 /// Lightmap block residency at the captured instant: the mode, blocks
-/// resident of the level's total, and the streamed pool's layers and cap.
+/// resident of the level's total, the streamed pool's layers and cap, and
+/// (streaming only) the AC 22 counters.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LightmapStreamingReportJson {
     mode: Cow<'static, str>,
@@ -386,6 +388,8 @@ struct LightmapStreamingReportJson {
     forced_missing_blocks: u32,
     pool_layers: Option<u32>,
     pool_cap_layers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    counters: Option<LightmapStreamingCountersJson>,
 }
 
 impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
@@ -397,6 +401,67 @@ impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
             forced_missing_blocks: residency.forced_missing_blocks,
             pool_layers: residency.pool_layers,
             pool_cap_layers: residency.pool_cap_layers,
+            counters: residency
+                .counters
+                .as_ref()
+                .map(LightmapStreamingCountersJson::from),
+        }
+    }
+}
+
+/// Streamed lightmap counters after the capture's preload drain. Bytes are
+/// per section: `lightmap` is id 22, `shadowmask` is id 42. Mandatory is the
+/// view's camera cell's baked set within `lead_metres`, plus the pins.
+/// Visible misses are the view's drawn blocks in two disjoint buckets.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct LightmapStreamingCountersJson {
+    lead_metres: f32,
+    resident_lightmap_bytes: u64,
+    resident_shadowmask_bytes: u64,
+    mandatory_blocks: u64,
+    mandatory_lightmap_bytes: u64,
+    mandatory_shadowmask_bytes: u64,
+    pool_bytes: u64,
+    peak_pool_layers: u32,
+    repacks: u64,
+    growths: u64,
+    growth_transient_peak_bytes: u64,
+    last_drain_install_micros: u64,
+    max_drain_install_micros: u64,
+    lightmap_bytes_read: u64,
+    shadowmask_bytes_read: u64,
+    visible_misses_outside_baked_set: u64,
+    visible_misses_not_resident: u64,
+    failed_installs: u64,
+    failed_reads: u64,
+    refusals: u64,
+    deferrals: u64,
+}
+
+impl From<&LightmapStreamingLiveDiagnostics> for LightmapStreamingCountersJson {
+    fn from(live: &LightmapStreamingLiveDiagnostics) -> Self {
+        Self {
+            lead_metres: live.lead_metres,
+            resident_lightmap_bytes: live.resident_lightmap_bytes,
+            resident_shadowmask_bytes: live.resident_shadowmask_bytes,
+            mandatory_blocks: live.mandatory_blocks,
+            mandatory_lightmap_bytes: live.mandatory_lightmap_bytes,
+            mandatory_shadowmask_bytes: live.mandatory_shadowmask_bytes,
+            pool_bytes: live.pool_bytes,
+            peak_pool_layers: live.peak_pool_layers,
+            repacks: live.repacks,
+            growths: live.growths,
+            growth_transient_peak_bytes: live.growth_transient_peak_bytes,
+            last_drain_install_micros: live.last_drain_install_micros,
+            max_drain_install_micros: live.max_drain_install_micros,
+            lightmap_bytes_read: live.lightmap_bytes_read,
+            shadowmask_bytes_read: live.shadowmask_bytes_read,
+            visible_misses_outside_baked_set: live.drawn_outside_baked_set,
+            visible_misses_not_resident: live.drawn_not_resident,
+            failed_installs: live.failed_installs,
+            failed_reads: live.failed_reads,
+            refusals: live.refusals,
+            deferrals: live.deferrals,
         }
     }
 }
@@ -784,6 +849,7 @@ mod tests {
             forced_missing_blocks: 1,
             pool_layers: Some(3),
             pool_cap_layers: Some(15),
+            counters: None,
         }));
         let lightmap = &json["lightmap_streaming"];
         assert_eq!(lightmap["mode"], "stream");
@@ -792,6 +858,74 @@ mod tests {
         assert_eq!(lightmap["forced_missing_blocks"], 1);
         assert_eq!(lightmap["pool_layers"], 3);
         assert_eq!(lightmap["pool_cap_layers"], 15);
+        assert!(lightmap.get("counters").is_none(), "no counters, no object");
+    }
+
+    // AC 22: a streamed capture records the residency counters under
+    // `lightmap_streaming.counters`, field for field.
+    #[test]
+    fn lightmap_streaming_counters_serialize_every_measured_field() {
+        let live = postretro_renderer::LightmapStreamingLiveDiagnostics {
+            lead_metres: 16.0,
+            resident_lightmap_bytes: 1,
+            resident_shadowmask_bytes: 2,
+            mandatory_blocks: 3,
+            mandatory_lightmap_bytes: 4,
+            mandatory_shadowmask_bytes: 5,
+            pool_bytes: 6,
+            peak_pool_layers: 7,
+            repacks: 8,
+            growths: 9,
+            growth_transient_peak_bytes: 10,
+            last_drain_install_micros: 11,
+            max_drain_install_micros: 12,
+            lightmap_bytes_read: 13,
+            shadowmask_bytes_read: 14,
+            drawn_outside_baked_set: 15,
+            drawn_not_resident: 16,
+            failed_installs: 17,
+            failed_reads: 18,
+            refusals: 19,
+            deferrals: 20,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(LightmapStreamingReportJson::from(
+            CaptureLightmapResidency {
+                mode: super::super::lightmap::CaptureLightmapMode::Stream,
+                block_count: 198,
+                resident_blocks: 41,
+                forced_missing_blocks: 0,
+                pool_layers: Some(7),
+                pool_cap_layers: Some(15),
+                counters: Some(live),
+            },
+        ))
+        .unwrap();
+        let expected = serde_json::json!({
+            "lead_metres": 16.0,
+            "resident_lightmap_bytes": 1,
+            "resident_shadowmask_bytes": 2,
+            "mandatory_blocks": 3,
+            "mandatory_lightmap_bytes": 4,
+            "mandatory_shadowmask_bytes": 5,
+            "pool_bytes": 6,
+            "peak_pool_layers": 7,
+            "repacks": 8,
+            "growths": 9,
+            "growth_transient_peak_bytes": 10,
+            "last_drain_install_micros": 11,
+            "max_drain_install_micros": 12,
+            "lightmap_bytes_read": 13,
+            "shadowmask_bytes_read": 14,
+            "visible_misses_outside_baked_set": 15,
+            "visible_misses_not_resident": 16,
+            "failed_installs": 17,
+            "failed_reads": 18,
+            "refusals": 19,
+            "deferrals": 20,
+        });
+        assert_eq!(json["counters"], expected);
+        assert_eq!(json["mode"], "stream");
     }
 
     #[test]

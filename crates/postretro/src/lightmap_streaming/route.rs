@@ -56,15 +56,12 @@ pub(crate) struct LightmapRouteLedger {
 }
 
 impl LightmapRouteLedger {
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "Task 11 reports lightmap read counters")
-    )]
     pub(crate) fn in_memory_bytes(&self) -> u64 {
         self.in_memory_bytes.load(Ordering::Acquire)
     }
 
-    #[allow(dead_code, reason = "Task 11 reports lightmap read counters")]
+    /// Positional reads the issuer performed for this route; a coalesced
+    /// read of several pairs counts once.
     pub(crate) fn physical_reads(&self) -> u64 {
         self.physical_reads.load(Ordering::Acquire)
     }

@@ -456,8 +456,8 @@ fn spawn_cell_with_an_empty_baked_range_starts_empty_and_requests_nothing() {
 }
 
 // P11: on the first portal-walk frame, a drawn cell outside the baked set is
-// demanded visible at the mandatory tier, counts as a miss both ways, and may
-// never be refused.
+// demanded visible at the mandatory tier, counts as a miss outside the baked
+// set (once, not also as not resident), and may never be refused.
 #[test]
 fn drawn_cell_outside_the_baked_set_is_visible_demand_never_refused() {
     let mut rig = Rig::corridor(None);
@@ -469,9 +469,10 @@ fn drawn_cell_outside_the_baked_set_is_visible_demand_never_refused() {
         .find(|request| request.key == 5)
         .unwrap();
     assert_eq!(request.tier, ReadTier::Mandatory);
+    rig.controller.count_visible_misses();
     let counters = rig.controller.counters();
-    assert_eq!(counters.last_frame_drawn_outside_baked_set, 1);
-    assert_eq!(counters.last_frame_drawn_not_resident, 2);
+    assert_eq!(counters.last_frame_drawn_outside_baked_set, 1, "block 5");
+    assert_eq!(counters.last_frame_drawn_not_resident, 1, "block 0");
     assert!(
         batch
             .target_reset

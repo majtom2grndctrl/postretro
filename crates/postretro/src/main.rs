@@ -3907,6 +3907,10 @@ impl ApplicationHandler for App {
                     // portal visibility this frame.
                     // One level-scope drain step for SH and lightmap blocks:
                     // one read issuer, one shared install budget.
+                    // Lightmap residency CPU, folded under `render_prep` below.
+                    let streaming_cpu = postretro_stage_timing::StageFrame::<
+                        cpu_timing::StreamingStage,
+                    >::new(self.cpu_timer.gate());
                     let sh_drain_batch = match session.prepare_streaming_drains(
                         sh_stream_manifest.as_ref(),
                         self.level.as_ref(),
@@ -3916,6 +3920,7 @@ impl ApplicationHandler for App {
                             camera_cell: self.level.as_ref().map(|_| stats.camera_cell as usize),
                             path: stats.path,
                             monotonic_seconds: self.script_time,
+                            cpu: &streaming_cpu,
                         },
                     ) {
                         Ok(batch) => batch,
@@ -3927,11 +3932,19 @@ impl ApplicationHandler for App {
                     };
                     // The lightmap drain runs now, before the forward pass is
                     // recorded, so this frame samples what it made resident.
-                    if let Err(err) = session.drain_lightmap_streaming(renderer) {
+                    if let Err(err) =
+                        session.drain_lightmap_streaming(renderer, &streaming_cpu, self.script_time)
+                    {
                         self.exit_result = Err(err);
                         event_loop.exit();
                         return;
                     }
+                    self.cpu_timer.nested_mut().extend_from(
+                        &streaming_cpu,
+                        Some(postretro_stage_timing::StageSet::label(
+                            cpu_timing::FrameStage::RenderPrep,
+                        )),
+                    );
                     let particle_collections: Vec<(&str, &[u8])> =
                         session.particle_render.iter_collections().collect();
 
@@ -4196,6 +4209,14 @@ impl ApplicationHandler for App {
                                     .sh_streaming
                                     .as_ref()
                                     .map(|streaming| streaming.live_diagnostics());
+                                // The tab edits a copy of the levers; changes
+                                // are written back after the UI runs.
+                                let lightmap_streaming =
+                                    session.level_streaming.lightmap().map(|streaming| {
+                                        (*streaming.live_diagnostics(), streaming.slider_levers())
+                                    });
+                                let mut lightmap_levers =
+                                    lightmap_streaming.map(|(_, levers)| levers);
                                 let ctx_clone = debug_ui.ctx.clone();
                                 let full_output = ctx_clone.run_ui(raw_input, |ui| {
                                     let ctx = ui.ctx();
@@ -4222,9 +4243,25 @@ impl ApplicationHandler for App {
                                             &door_occluder_diagnostics.mover_rows,
                                             &door_occluder_diagnostics.blocked_portal_ids,
                                             sh_streaming_live,
+                                            lightmap_streaming
+                                                .as_ref()
+                                                .zip(lightmap_levers.as_mut())
+                                                .map(|((diagnostics, _), levers)| {
+                                                    render::debug_ui::LightmapStreamingTab {
+                                                        diagnostics,
+                                                        levers,
+                                                    }
+                                                }),
                                         );
                                     }
                                 });
+                                if let (Some((_, before)), Some(after)) =
+                                    (lightmap_streaming, lightmap_levers)
+                                    && before != after
+                                    && let Some(streaming) = session.level_streaming.lightmap_mut()
+                                {
+                                    streaming.set_slider_levers(after);
+                                }
                                 debug_ui
                                     .winit_state
                                     .handle_platform_output(window, full_output.platform_output);

@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use postretro_level_loader::{LevelWorld, LightmapStreamingMode};
+use postretro_renderer::LightmapStreamingLiveDiagnostics;
 
 use super::scene::CaptureScene;
 use crate::lightmap_streaming::demand::DemandFrame;
@@ -30,7 +31,7 @@ impl CaptureLightmapMode {
 }
 
 /// The lightmap residency a capture rendered with, for its report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct CaptureLightmapResidency {
     pub(super) mode: CaptureLightmapMode,
     pub(super) block_count: u32,
@@ -40,6 +41,9 @@ pub(super) struct CaptureLightmapResidency {
     pub(super) pool_layers: Option<u32>,
     /// The cap every streamed drain carried; `None` unless streaming.
     pub(super) pool_cap_layers: Option<u32>,
+    /// The streaming counters after the preload, the captured view's visible
+    /// misses counted; `None` unless streaming.
+    pub(super) counters: Option<LightmapStreamingLiveDiagnostics>,
 }
 
 /// Reject lightmap overrides the loaded level cannot honour, before any GPU
@@ -101,15 +105,13 @@ pub(super) fn preload_capture_lightmap(
             forced_missing_blocks: 0,
             pool_layers: None,
             pool_cap_layers: None,
+            counters: None,
         });
     };
 
     let mut session = LightmapStreamingSession::new(view)?;
     if let Some(cap) = scene.lightmap_pool_cap_layers {
-        session
-            .controller_mut()
-            .levers_mut()
-            .set_pool_cap_layers(cap);
+        session.levers_mut().set_pool_cap_layers(cap);
     }
     session.update_demand(DemandFrame {
         residency_set: view.residency_set,
@@ -138,6 +140,9 @@ pub(super) fn preload_capture_lightmap(
         );
     }
     let counters = renderer.lightmap_stream_counters();
+    // The captured frame draws after this one drain: count its misses now.
+    session.refresh_diagnostics(counters.as_ref());
+    let live = *session.live_diagnostics();
     let mut forced = scene.force_missing_lightmap_blocks.clone();
     forced.sort_unstable();
     forced.dedup();
@@ -147,6 +152,7 @@ pub(super) fn preload_capture_lightmap(
         resident_blocks: summary.installed,
         forced_missing_blocks: forced.len() as u32,
         pool_layers: counters.map(|counters| counters.pool_layers),
-        pool_cap_layers: Some(session.controller().levers().pool_cap_layers()),
+        pool_cap_layers: Some(live.pool_cap_layers),
+        counters: Some(live),
     })
 }

@@ -9,12 +9,14 @@ mod tests;
 use anyhow::Result;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_loader::ShDrainBatch;
+use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 pub(crate) use io::{LevelReadIssuer, StreamingRetirement};
 
 use super::lightmap_residency::LightmapStreamingSession;
 use super::sh_residency::ShStreamingSession;
+use crate::cpu_timing::StreamingStage;
 use crate::lightmap_streaming::demand::DemandFrame;
 use crate::streaming::shared_drain::SharedDrain;
 
@@ -26,6 +28,9 @@ pub(crate) struct StreamingFrame<'a> {
     pub(crate) camera_cell: Option<usize>,
     pub(crate) path: VisibilityPath,
     pub(crate) monotonic_seconds: f64,
+    /// This frame's streaming CPU stages; the binary folds them under
+    /// `render_prep`.
+    pub(crate) cpu: &'a StageFrame<StreamingStage>,
 }
 
 /// Streaming state whose lifetime is one loaded level: the lightmap session,
@@ -135,6 +140,7 @@ impl LevelStreaming {
                 });
         let lightmap_drains = match (self.lightmap.as_mut(), lightmap_frame) {
             (Some(lightmap), Some(lightmap_frame)) => {
+                let _scope = frame.cpu.scope(StreamingStage::LightmapResidency);
                 lightmap.begin_drain(lightmap_frame, &mut self.drain)?;
                 true
             }
@@ -146,6 +152,7 @@ impl LevelStreaming {
             _ => ShDrainBatch::default(),
         };
         if lightmap_drains && let Some(lightmap) = self.lightmap.as_mut() {
+            let _scope = frame.cpu.scope(StreamingStage::LightmapResidency);
             lightmap.finish_drain(
                 &self.drain,
                 self.reads.as_ref().map(LevelReadIssuer::issuer),

@@ -273,10 +273,6 @@ impl BlockDemand {
         &self.drawn
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "Task 11 logs and captures the residency counters")
-    )]
     pub(crate) fn counters(&self) -> DemandCounters {
         self.counters
     }

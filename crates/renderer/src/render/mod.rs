@@ -137,7 +137,10 @@ pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
 };
-pub use lightmap_streaming::DEFAULT_LIGHTMAP_POOL_CAP_LAYERS;
+pub use lightmap_streaming::{
+    DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
+    MAX_LIGHTMAP_POOL_CAP_LAYERS,
+};
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::ShDrainFrameResult;
 pub use renderer_splash::PresentationDrawInput;
@@ -206,7 +209,7 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
-    AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow,
+    AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
     TriggerDiagnosticsRow, draw_diagnostics_panel,
 };
 #[cfg(feature = "dev-tools")]

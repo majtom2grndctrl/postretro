@@ -9,8 +9,10 @@ use postretro_level_loader::{
     LevelWorld, ShDrainBatch, ShStreamManifest, requested_streaming_mode,
 };
 use postretro_renderer::Renderer;
+use postretro_stage_timing::StageFrame;
 
 use super::StreamingFrame;
+use crate::cpu_timing::StreamingStage;
 use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
 use crate::session::sh_residency::{ShStreamingSession, require_loaded_streaming_mode};
 
@@ -167,20 +169,35 @@ impl crate::session::Session {
     }
 
     /// Hands this frame's lightmap batch to the renderer's lightmap drain and
-    /// takes back its outcome. Call once per frame after
-    /// [`Self::prepare_streaming_drains`] and before the frame records the
-    /// forward pass, so the frame samples what this drain made resident.
-    /// Without a streamed lightmap it does nothing.
-    pub(crate) fn drain_lightmap_streaming(&mut self, renderer: &mut Renderer) -> Result<()> {
+    /// takes back its outcome, then closes the lightmap frame: visible misses,
+    /// diagnostics, and the periodic `[Lightmap streaming]` log line. Call
+    /// once per frame after [`Self::prepare_streaming_drains`] and before the
+    /// frame records the forward pass, so the frame samples what this drain
+    /// made resident. Without a streamed lightmap it does nothing.
+    ///
+    /// `cpu` times the renderer drain and the controller's share apart;
+    /// `now_seconds` is the monotonic time the log window throttles on.
+    pub(crate) fn drain_lightmap_streaming(
+        &mut self,
+        renderer: &mut Renderer,
+        cpu: &StageFrame<StreamingStage>,
+        now_seconds: f64,
+    ) -> Result<()> {
         let Some(lightmap) = self.level_streaming.lightmap_mut() else {
             return Ok(());
         };
-        let Some(batch) = lightmap.take_drain_batch_for_renderer() else {
-            return Ok(());
-        };
-        let outcome = renderer
-            .drain_lightmap_residency(batch)
-            .context("[Lightmap streaming] renderer drain")?;
-        lightmap.apply_outcome(outcome)
+        if let Some(batch) = lightmap.take_drain_batch_for_renderer() {
+            let outcome = {
+                let _scope = cpu.scope(StreamingStage::LightmapDrain);
+                renderer
+                    .drain_lightmap_residency(batch)
+                    .context("[Lightmap streaming] renderer drain")?
+            };
+            let _scope = cpu.scope(StreamingStage::LightmapResidency);
+            lightmap.apply_outcome(outcome)?;
+        }
+        let _scope = cpu.scope(StreamingStage::LightmapResidency);
+        lightmap.finish_frame(renderer.lightmap_stream_counters().as_ref(), now_seconds);
+        Ok(())
     }
 }

@@ -2,10 +2,15 @@
 // drain and the pool counters.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+mod diagnostics;
+
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 
 use super::Renderer;
 use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
+pub use diagnostics::{
+    LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
+};
 
 /// Default pool cap in layers (15 × 14 MiB = 210 MiB of BC pool at the
 /// default lead). The first generation holds this many layers, or fewer

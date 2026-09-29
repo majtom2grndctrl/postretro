@@ -119,11 +119,13 @@ impl LightmapResidencyController {
     ) -> Result<(), LightmapResidencyError> {
         self.validate_outcome(&outcome)?;
         for &block in &outcome.evicted {
+            self.residency.remove_resident(self.map.facts(block));
             self.slots[block as usize].phase = BlockPhase::Absent;
             self.counters.evictions += 1;
             self.requests_due = true;
         }
         for &block in &outcome.installed {
+            self.residency.add_resident(self.map.facts(block));
             self.release_in_hand(block);
             self.slots[block as usize].phase = BlockPhase::Installed;
             self.counters.installs += 1;

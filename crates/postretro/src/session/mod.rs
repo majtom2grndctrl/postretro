@@ -51,6 +51,7 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 
 pub(crate) mod level_streaming;
 pub(crate) mod lightmap_residency;
+mod lightmap_streaming_diagnostics;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;

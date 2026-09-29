@@ -9,11 +9,17 @@ use anyhow::{Context, Result, bail};
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_loader::{
-    LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest,
+    LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest, PrlReadCounters,
 };
+use postretro_renderer::{LightmapStreamCounters, LightmapStreamingLiveDiagnostics};
 
+use super::lightmap_streaming_diagnostics::{
+    LightmapStreamingLogWindow, SectionReadBytes, assemble_live_diagnostics,
+};
 use crate::lightmap_streaming::controller::{LightmapPreloadReads, LightmapResidencyController};
 use crate::lightmap_streaming::demand::DemandFrame;
+#[cfg(feature = "capture")]
+use crate::lightmap_streaming::levers::LightmapLevers;
 use crate::lightmap_streaming::route::{
     LightmapCompletion, LightmapReadRoute, LightmapRouteLedger, lightmap_route,
 };
@@ -74,6 +80,10 @@ pub(crate) struct LightmapStreamingSession {
     /// The latest batch, waiting for the renderer's lightmap drain. While it
     /// waits, the controller builds no further batch.
     awaiting_renderer: Option<LightmapDrainBatch>,
+    /// The level file's per-section read counters; `None` for a test source.
+    read_counters: Option<Arc<PrlReadCounters>>,
+    live: LightmapStreamingLiveDiagnostics,
+    log_window: LightmapStreamingLogWindow,
 }
 
 impl std::fmt::Debug for LightmapStreamingSession {
@@ -93,6 +103,7 @@ impl LightmapStreamingSession {
             view.cluster_directory,
         )?;
         session.manifest = Some(Arc::downgrade(view.manifest));
+        session.read_counters = Some(Arc::clone(view.manifest.read_counters()));
         Ok(session)
     }
 
@@ -121,6 +132,9 @@ impl LightmapStreamingSession {
             completions,
             route: Some(route),
             awaiting_renderer: None,
+            read_counters: None,
+            live: LightmapStreamingLiveDiagnostics::default(),
+            log_window: LightmapStreamingLogWindow::default(),
         })
     }
 
@@ -254,17 +268,73 @@ impl LightmapStreamingSession {
         self.controller.apply_outcome(outcome).map_err(Into::into)
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "Task 11 reads the controller for diagnostics")
-    )]
-    pub(crate) fn controller(&self) -> &LightmapResidencyController {
-        &self.controller
+    /// Closes the frame after its drain outcome: counts the frame's visible
+    /// misses, reassembles the live diagnostics from the controller, the
+    /// route, the level's read counters and `renderer`, and offers them to
+    /// the periodic log. Allocation-free unless a log line is due.
+    pub(crate) fn finish_frame(
+        &mut self,
+        renderer: Option<&LightmapStreamCounters>,
+        now_seconds: f64,
+    ) {
+        self.refresh_diagnostics(renderer);
+        self.log_window.observe(now_seconds, &self.live);
     }
 
-    #[allow(dead_code, reason = "Task 11 wires the pool-cap and lead sliders")]
-    pub(crate) fn controller_mut(&mut self) -> &mut LightmapResidencyController {
-        &mut self.controller
+    /// Counts the latest frame's visible misses and reassembles the live
+    /// diagnostics, without the log: capture's fixed view after its preload.
+    pub(crate) fn refresh_diagnostics(&mut self, renderer: Option<&LightmapStreamCounters>) {
+        self.controller.count_visible_misses();
+        assemble_live_diagnostics(
+            &mut self.live,
+            &self.controller,
+            &self.ledger,
+            renderer,
+            self.read_counters
+                .as_deref()
+                .map(|counters| counters as &dyn SectionReadBytes),
+        );
+    }
+
+    /// The latest assembled view, for the Streaming tab and the capture report.
+    #[cfg(any(feature = "capture", feature = "dev-tools"))]
+    pub(crate) fn live_diagnostics(&self) -> &LightmapStreamingLiveDiagnostics {
+        &self.live
+    }
+
+    /// Capture's pool-cap override writes here; the dev-tools sliders go
+    /// through `set_slider_levers`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn levers_mut(&mut self) -> &mut LightmapLevers {
+        self.controller.levers_mut()
+    }
+
+    /// The levers as the dev-tools Streaming tab edits them.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn slider_levers(&self) -> postretro_renderer::LightmapStreamingLevers {
+        let levers = self.controller.levers();
+        postretro_renderer::LightmapStreamingLevers {
+            pool_cap_layers: levers.pool_cap_layers(),
+            lead_metres: levers.lead_metres(),
+            max_lead_metres: levers.max_lead_metres(),
+        }
+    }
+
+    /// Applies the Streaming tab's levers. The lead takes effect at the next
+    /// demand update; the cap rides the next drain batch.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn set_slider_levers(
+        &mut self,
+        sliders: postretro_renderer::LightmapStreamingLevers,
+    ) {
+        let levers = self.controller.levers_mut();
+        levers.set_pool_cap_layers(sliders.pool_cap_layers);
+        levers.set_lead_metres(sliders.lead_metres);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn controller(&self) -> &LightmapResidencyController {
+        &self.controller
     }
 
     /// Drops everything but the source, which the retiring issuer's route may

@@ -41,33 +41,30 @@ impl LightmapLevers {
         self.lead
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the Task 11 lead slider spans 0..=max")
-    )]
-    pub(crate) fn max_lead(&self) -> u32 {
-        self.max_lead
+    /// Lead L in metres, for the log line and the lead slider.
+    pub(crate) fn lead_metres(&self) -> f32 {
+        self.lead as f32 / LEAD_UNITS_PER_METRE as f32
+    }
+
+    /// The baked maximum lead in metres: the lead slider's upper end.
+    pub(crate) fn max_lead_metres(&self) -> f32 {
+        self.max_lead as f32 / LEAD_UNITS_PER_METRE as f32
     }
 
     /// At least one layer: a zero cap would refuse every band block while
     /// mandatory work grows the pool anyway.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the Task 11 pool-cap slider writes layers")
-    )]
+    #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
     pub(crate) fn set_pool_cap_layers(&mut self, layers: u32) {
         self.pool_cap_layers = layers.max(1);
     }
 
     /// Clamped to the baked maximum: the set holds no entry past it.
+    #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn set_lead(&mut self, lead: u32) {
         self.lead = lead.min(self.max_lead);
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the Task 11 lead slider writes metres")
-    )]
+    #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn set_lead_metres(&mut self, metres: f32) {
         let units = (metres.max(0.0) * LEAD_UNITS_PER_METRE as f32).round();
         self.set_lead(if units >= u32::MAX as f32 {
@@ -96,7 +93,8 @@ mod tests {
     fn lead_lever_clamps_to_the_baked_maximum_and_cap_to_one_layer() {
         let mut levers = LightmapLevers::new(32 * LEAD_UNITS_PER_METRE);
         levers.set_lead_metres(40.0);
-        assert_eq!(levers.lead(), levers.max_lead());
+        assert_eq!(levers.lead(), 32 * LEAD_UNITS_PER_METRE);
+        assert_eq!(levers.max_lead_metres(), 32.0);
         levers.set_lead_metres(-3.0);
         assert_eq!(levers.lead(), 0);
         levers.set_lead_metres(2.5);

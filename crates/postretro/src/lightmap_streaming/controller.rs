@@ -10,7 +10,7 @@ use postretro_level_loader::{
 };
 
 use super::LightmapResidencyError;
-use super::block_map::LevelBlockMap;
+use super::block_map::{BlockFacts, LevelBlockMap};
 use super::demand::{BlockDemand, BlockTarget, DemandFrame};
 use super::levers::LightmapLevers;
 use super::source::LightmapBlockSource;
@@ -111,13 +111,55 @@ pub(crate) struct LightmapResidencyCounters {
     pub(crate) stale_completions: u64,
     /// Completions for a block with no read in flight; dropped.
     pub(crate) duplicate_completions: u64,
-    /// Block-frames drawn on a portal walk while not mandatory at lead L
-    /// (demanded visible): "drawn but outside the baked set".
+    /// Visible misses, two disjoint buckets of block-frames drawn on a portal
+    /// walk, counted after the frame's drain. Outside the baked set: drawn
+    /// while not mandatory at lead L (demanded only because it was drawn),
+    /// resident or not; this is the check on the baked set's dilation.
     pub(crate) drawn_outside_baked_set: u64,
-    /// Block-frames drawn on a portal walk while not installed.
+    /// Drawn while mandatory at lead L but not installed: the stream lagged.
     pub(crate) drawn_not_resident: u64,
     pub(crate) last_frame_drawn_outside_baked_set: u32,
     pub(crate) last_frame_drawn_not_resident: u32,
+}
+
+/// Gauges of what is resident and what the current camera cell's mandatory
+/// set (lead L plus the pins) needs, in upload bytes per section: id 22
+/// (irradiance plus direction) and id 42 (both shadowmask groups). Kept
+/// incrementally on install, eviction and retarget, never recomputed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LightmapResidencyBytes {
+    pub(crate) resident_blocks: u32,
+    pub(crate) resident_lightmap_bytes: u64,
+    pub(crate) resident_shadowmask_bytes: u64,
+    pub(crate) mandatory_blocks: u32,
+    pub(crate) mandatory_lightmap_bytes: u64,
+    pub(crate) mandatory_shadowmask_bytes: u64,
+}
+
+impl LightmapResidencyBytes {
+    fn add_resident(&mut self, facts: &BlockFacts) {
+        self.resident_blocks += 1;
+        self.resident_lightmap_bytes += facts.lightmap_bytes;
+        self.resident_shadowmask_bytes += facts.shadowmask_bytes;
+    }
+
+    fn remove_resident(&mut self, facts: &BlockFacts) {
+        self.resident_blocks -= 1;
+        self.resident_lightmap_bytes -= facts.lightmap_bytes;
+        self.resident_shadowmask_bytes -= facts.shadowmask_bytes;
+    }
+
+    fn add_mandatory(&mut self, facts: &BlockFacts) {
+        self.mandatory_blocks += 1;
+        self.mandatory_lightmap_bytes += facts.lightmap_bytes;
+        self.mandatory_shadowmask_bytes += facts.shadowmask_bytes;
+    }
+
+    fn remove_mandatory(&mut self, facts: &BlockFacts) {
+        self.mandatory_blocks -= 1;
+        self.mandatory_lightmap_bytes -= facts.lightmap_bytes;
+        self.mandatory_shadowmask_bytes -= facts.shadowmask_bytes;
+    }
 }
 
 /// Session-local lightmap block policy. It owns demand, reads, and the
@@ -152,6 +194,10 @@ pub(crate) struct LightmapResidencyController {
     pool: LightmapPoolReport,
     refused_blocks: usize,
     counters: LightmapResidencyCounters,
+    residency: LightmapResidencyBytes,
+    /// The latest demand update was a portal walk whose drawn blocks have not
+    /// yet been counted for visible misses.
+    misses_due: bool,
     /// Reused by outcome validation.
     outcome_scratch: Vec<u32>,
 }
@@ -235,6 +281,8 @@ impl LightmapResidencyController {
             pool: LightmapPoolReport::default(),
             refused_blocks: 0,
             counters: LightmapResidencyCounters::default(),
+            residency: LightmapResidencyBytes::default(),
+            misses_due: false,
             outcome_scratch: Vec::new(),
         })
     }
@@ -249,28 +297,18 @@ impl LightmapResidencyController {
         &self.targets
     }
 
-    #[allow(
-        dead_code,
-        reason = "Task 11 shows the lever values in the Streaming tab"
-    )]
     pub(crate) fn levers(&self) -> LightmapLevers {
         self.levers
     }
 
-    /// The dev-tools sliders write here (Task 11). A lead change takes effect
-    /// at the next [`Self::update`]; the cap rides the next drain batch.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "Task 11 wires the pool-cap and lead sliders")
-    )]
+    /// The dev-tools sliders and capture's cap override write here. A lead
+    /// change takes effect at the next [`Self::update`]; the cap rides the
+    /// next drain batch.
+    #[cfg(any(test, feature = "capture", feature = "dev-tools"))]
     pub(crate) fn levers_mut(&mut self) -> &mut LightmapLevers {
         &mut self.levers
     }
 
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "Task 11 logs and captures the residency counters")
-    )]
     pub(crate) fn counters(&self) -> LightmapResidencyCounters {
         let demand = self.demand.counters();
         LightmapResidencyCounters {
@@ -280,10 +318,17 @@ impl LightmapResidencyController {
         }
     }
 
+    pub(crate) fn residency_bytes(&self) -> LightmapResidencyBytes {
+        self.residency
+    }
+
     /// The pool shape from the renderer's latest outcome.
-    #[allow(dead_code, reason = "Task 11 reports pool layers and headroom")]
     pub(crate) fn pool_report(&self) -> LightmapPoolReport {
         self.pool
+    }
+
+    pub(crate) fn block_count(&self) -> usize {
+        self.slots.len()
     }
 
     #[cfg(test)]
@@ -323,13 +368,13 @@ impl LightmapResidencyController {
 
     /// Applies one frame's visibility: recomputes baked demand only when the
     /// camera cell or lead changed, updates visible demand on a portal walk,
-    /// retargets every changed block, and counts visible misses.
+    /// and retargets every changed block. A portal walk's drawn blocks are
+    /// counted for visible misses by [`Self::count_visible_misses`], after
+    /// the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
         self.may_request = self.demand.update(&self.map, self.levers.lead(), frame);
         self.retarget_dirty();
-        if frame.is_portal_walk() {
-            self.count_visible_misses();
-        }
+        self.misses_due = frame.is_portal_walk();
     }
 
     /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
@@ -370,18 +415,25 @@ impl LightmapResidencyController {
         self.demand.clear_dirty();
     }
 
-    fn count_visible_misses(&mut self) {
+    /// Counts the latest portal walk's drawn blocks into the two visible-miss
+    /// buckets, once. Call after the frame's drain outcome is applied, so a
+    /// block that drain installed is resident for the frame that draws it.
+    /// Each drawn block lands in at most one bucket: outside the baked set
+    /// (not mandatory at lead L, resident or not), otherwise not resident. A
+    /// frame without a portal walk, or already counted, reports zero.
+    pub(crate) fn count_visible_misses(&mut self) {
         let (mut outside, mut not_resident) = (0u32, 0u32);
-        for &block in self.demand.drawn_blocks() {
-            let slot = &self.slots[block as usize];
-            if slot
-                .target
-                .is_some_and(|target| target.class == LightmapBlockClass::Visible)
-            {
-                outside += 1;
-            }
-            if slot.phase != BlockPhase::Installed {
-                not_resident += 1;
+        if std::mem::take(&mut self.misses_due) {
+            for &block in self.demand.drawn_blocks() {
+                let slot = &self.slots[block as usize];
+                if slot
+                    .target
+                    .is_some_and(|target| target.class == LightmapBlockClass::Visible)
+                {
+                    outside += 1;
+                } else if slot.phase != BlockPhase::Installed {
+                    not_resident += 1;
+                }
             }
         }
         let counters = &mut self.counters;
@@ -396,6 +448,14 @@ impl LightmapResidencyController {
         let previous = self.slots[index].target;
         if previous == next {
             return;
+        }
+        let mandatory = |target: Option<BlockTarget>| {
+            target.is_some_and(|t| t.class == LightmapBlockClass::Mandatory)
+        };
+        match (mandatory(previous), mandatory(next)) {
+            (false, true) => self.residency.add_mandatory(self.map.facts(block)),
+            (true, false) => self.residency.remove_mandatory(self.map.facts(block)),
+            _ => {}
         }
         self.slots[index].target = next;
         if previous.is_some() != next.is_some() {

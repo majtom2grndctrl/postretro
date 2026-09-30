@@ -491,18 +491,25 @@ this path. Projectile FIRE resolves the eye ray against static world and live ta
 entities to reconstruct an obstruction-safe origin and
 crosshair-converged direction. The firing client predicts its own cooldown and reconciles
 against an owner-private cooldown fact, the same pattern movement prediction uses.
-Client-side ammo and reload prediction/reconciliation remain out of scope. Owner-private
-state-slot projection supplies each owner with the host's authoritative magazine,
-reserve, reload progress, and reload-active state, each beside the host wieldable slot it describes.
+Client-side ammo, heat, cell, and reload prediction/reconciliation remain out of scope;
+connected clients never run the heat or cell update. Owner-private state-slot projection
+supplies each owner with the host's authoritative magazine, reserve, reload progress,
+reload-active, heat, overheat threshold, overheated latch, cell charge, and cell capacity,
+each read from that owner's own pawn and beside the host wieldable slot it describes.
 
 Each owner-private weapon value — cooldown, magazine, reserve, reload progress,
-reload-active — travels as a `[host wieldable slot, value]` sample; the store keeps a plain
+reload-active, heat, overheat threshold, overheated, cell charge, cell capacity — travels as a
+`[host wieldable slot, value]` sample; the store keeps a plain
 number or boolean, so HUD and script readers never see the slot. The slot names the weapon a
 value describes: the host projects its own active weapon, which lags a local switch by a
-round trip, and state records arrive per slot rather than atomically. A resourceless active
-weapon's magazine and reserve travel as the `[slot]` absence instead, which the client applies
-as the same store clear the host HUD makes; presentation reads it as no magazine to run dry
-(a fire) and reload edges as no reload-capable weapon. A pawn with no inventory sends the
+round trip, and state records arrive per slot rather than atomically. An active weapon
+without ammo sends its magazine and reserve as the `[slot]` absence instead, which the client
+applies as the same store clear the host HUD makes; presentation reads it as no magazine to run
+dry (a fire) and reload edges as no reload-capable weapon. Heat and cell numbers follow the
+same rule for a weapon of another kind; the overheated latch has no absence and reads false
+there. Which resource the active weapon runs is not replicated: every role publishes it from
+its own active weapon, as it does the weapon name, so it leads the host-correlated values by up
+to a round trip after a local switch. A pawn with no inventory sends the
 HUD's reload defaults (no progress, not reloading) attributed to slot 0. `Unset` skips the
 write for plain and correlated slots alike, and a correlated slot is sent only from its
 projection, never from a plain table value. **Client fire
@@ -512,7 +519,9 @@ hits (the first selected tick traced, later ticks of a multi-tick frame empty) �
 applies damage whenever it fires. The projection only chooses what the pull presents,
 trusting each value it reads only when that value names the client's own active slot;
 otherwise the pull presents a fire. An idle weapon whose magazine cannot pay the shot cost
-presents a dry fire: the dry-fire sound, with no fire sound, muzzle FX or impact. A magazine
+presents a dry fire: the dry-fire sound, with no fire sound, muzzle FX or impact. So does a cell
+weapon whose charge cannot pay it. An overheated heat weapon presents nothing; the shot that
+crosses the threshold presents a fire, since its latch arrives a round trip later. A magazine
 reload in progress, or a per-shell reload whose magazine cannot pay the cost, presents
 nothing; a per-shell reload the magazine covers presents a fire, since the shot cancels it. A
 reload flag held at full progress is the replayed Completed endpoint, so the weapon reads
@@ -533,7 +542,11 @@ the client wields that weapon. A rise that projects full progress replays a comp
 endpoint and is no start. A local switch the host refuses keeps the reload tracked; one it
 performs names another slot and presents nothing — including a switch away and back, when
 any sample of the other slot arrives in between. Any other fall is a cancel and presents
-nothing (`audio.md` §4). Presentation only; ammo stays unpredicted.
+nothing (`audio.md` §4). The overheat cue is the projected latch rising on the weapon the
+client holds in the named slot while that slot is its active one. Heat and threshold must
+name the same slot or the frame is held; a change of projected weapon resets the baseline, so
+a switch back to a weapon still locked out plays nothing. Presentation only; ammo, heat, and
+cell stay unpredicted.
 
 Projectile launch prediction is not rewind-synchronized. The firing client launches from
 its rendered local camera and rendered target state; the host later reconstructs from the
@@ -614,8 +627,8 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
   activation does (`audio.md` §4).
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
   scoped to the declaring client only and never broadcast. Owner-private state slots
-  carry the firing pawn's cooldown, magazine, reserve, reload progress, and reload-active
-  state, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
+  carry the firing pawn's cooldown, magazine, reserve, reload progress, reload-active
+  state, and heat or cell values, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
   client reconciles predicted fire and hitmarker state against the verdict and cooldown;
   ammo and reload remain authoritative projections rather than predicted state.
 

@@ -441,10 +441,45 @@ export type AmmoResource = {
   reloadStyle: ReloadStyle?,
 }
 
---- Optional resource model for a weapon. Omit the weapon resource to preserve unlimited-fire behavior.
+--- Valid values: `lockout`.
+export type OverheatBehavior =
+  --- Refuse fire until heat cools all the way to 0.
+  "lockout"
+
+--- Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat is a gate on top of `fireRateMs`, not a replacement; both must pass. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works.
+export type HeatResource = {
+  --- Heat added by each shot. Must be finite, > 0 and <= `overheatAt`.
+  heatPerShot: number,
+  --- Heat at which the weapon overheats; also the most heat it can hold. Must be finite and > 0.
+  overheatAt: number,
+  --- Heat removed per second once cooling applies. Must be finite and > 0.
+  coolPerSecond: number,
+  --- Milliseconds after the last shot before cooling starts. An overheated weapon ignores this delay and cools at once. Must be finite and >= 0; defaults to 0.
+  coolDelayMs: number?,
+  --- What overheating does. Defaults to `lockout`, the only value.
+  overheatBehavior: OverheatBehavior?,
+}
+
+--- Cell tuning for a weapon: a charge each shot drains and that regenerates over time. The weapon spawns full. A shot needs at least `costPerShot` charge; below that a pull dry-fires, exactly as an empty magazine does. A cell has no reserve, no pickups and no reload. Every copy of the weapon regenerates every tick, held or holstered.
+export type CellResource = {
+  --- Most charge the cell holds, and its charge at spawn. Must be finite and > 0.
+  capacity: number,
+  --- Charge drained by each shot. Must be finite, > 0 and <= `capacity`.
+  costPerShot: number,
+  --- Charge restored per second once regeneration applies. Must be finite and >= 0; 0 makes a battery that never recharges.
+  regenPerSecond: number,
+  --- Milliseconds after the last shot before regeneration starts. Must be finite and >= 0; defaults to 0.
+  regenDelayMs: number?,
+}
+
+--- Optional resource model for a weapon. Set `kind` to one of the values below; that choice decides which other keys are allowed. Omit the weapon resource to preserve unlimited-fire behavior. Heat and charge are unitless numbers on a scale you choose; rates are per second and delays are milliseconds.
 export type WeaponResource =
   --- Finite magazine-and-reserve ammunition.
   (AmmoResource & { kind: "ammo" })
+  --- Heat that builds per shot, dissipates over time, and locks the weapon out when it overheats.
+  | (HeatResource & { kind: "heat" })
+  --- A regenerating charge each shot drains.
+  | (CellResource & { kind: "cell" })
 
 --- First-person weapon position in metres from screen center. `right`, `up`, and `forward` map to camera-space +X, +Y, and -Z respectively. Omitted fields default to 0 within an authored placement; omitting the containing placement leaves that resolution tier absent.
 export type PlacementOffset = {
@@ -530,7 +565,7 @@ export type WeaponDescriptor = {
   blockDuringReload: boolean?,
 }
 
---- Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.
+--- Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.
 export type WeaponSounds = {
   --- Played on `activate`.
   fire: string?,
@@ -544,6 +579,8 @@ export type WeaponSounds = {
   reloadShell: string?,
   --- Played on `reload_completed`.
   reloadComplete: string?,
+  --- Played on `overheat`, once when a heat weapon's shot overheats it. Pulls during the lockout are silent.
+  overheat: string?,
 }
 
 --- Host-authoritative touch interaction preset for a world-placeable descriptor. Maps choose the placement; this descriptor owns mode and radius tuning.
@@ -1300,8 +1337,13 @@ export type GameStateRefs = {
   player: {
     ammo: ComputedRef<number>,
     ammoReserve: ComputedRef<number>,
+    cell: ComputedRef<number>,
+    cellCapacity: ComputedRef<number>,
     health: ComputedRef<number>,
+    heat: ComputedRef<number>,
     maxHealth: ComputedRef<number>,
+    overheatAt: ComputedRef<number>,
+    overheated: ComputedRef<boolean>,
     reloadActive: ComputedRef<boolean>,
     reloadProgress: ComputedRef<number>,
     spread: ComputedRef<number>,
@@ -1311,6 +1353,7 @@ export type GameStateRefs = {
       switching: ComputedRef<boolean>,
     },
     weaponCooldownMs: ComputedRef<number>,
+    weaponResource: ComputedRef<"none" | "ammo" | "heat" | "cell">,
   },
   screen: {
     flash: ComputedRef<{number}>,

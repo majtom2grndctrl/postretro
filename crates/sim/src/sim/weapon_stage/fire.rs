@@ -5,6 +5,7 @@ use crate::weapon::{WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::EntityId;
 
 use super::super::{ReloadDelivery, ReloadOutcome};
+use super::resource::{resource_fire_verdict, spend_shot_resource};
 use super::state::{StateTransition, WieldableStateEvent, transition_wieldable_state};
 
 pub(super) struct FireAuthorizationContext<'a> {
@@ -73,6 +74,7 @@ pub(super) fn authorize_fire(
             if let Some(cost_per_shot) = cost_per_shot {
                 weapon.magazine -= cost_per_shot;
             }
+            spend_shot_resource(weapon);
             weapon.cooldown_remaining_ms = cooldown_ms;
             WeaponFireAuthorization::Accepted
         }
@@ -100,6 +102,9 @@ pub(super) fn weapon_fire_authorization_verdict(
         if weapon.magazine < cost_per_shot {
             return WeaponFireAuthorization::Empty;
         }
+    }
+    if let Some(verdict) = resource_fire_verdict(weapon) {
+        return verdict;
     }
     WeaponFireAuthorization::Accepted
 }

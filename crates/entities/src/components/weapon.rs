@@ -1,4 +1,4 @@
-// Weapon descriptor tuning plus live magazine, cooldown, reload, and input-edge state.
+// Weapon descriptor tuning plus live resource, cooldown, reload, and input-edge state.
 // See: context/lib/entity_model.md §4, §5
 
 use glam::Vec3;
@@ -7,6 +7,9 @@ use std::collections::VecDeque;
 #[cfg(debug_assertions)]
 use std::sync::Once;
 
+use crate::components::weapon_resource::{
+    EffectiveCellStats, EffectiveHeatStats, WeaponCell, WeaponHeat, fresh_heat_cell,
+};
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
     FireMode, KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode,
@@ -51,6 +54,8 @@ pub struct EffectiveStats<'a> {
     pub block_during_reload: Option<bool>,
     pub credit_source: &'a str,
     pub ammo: Option<EffectiveAmmoStats<'a>>,
+    pub heat: Option<EffectiveHeatStats>,
+    pub cell: Option<EffectiveCellStats>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,6 +314,12 @@ pub struct WeaponComponent {
     pub ammo: Option<WeaponAmmoTuning>,
     #[serde(default)]
     pub magazine: u32,
+    /// Heat tuning and live state; exclusive with `ammo` and `cell`.
+    #[serde(default)]
+    pub heat: Option<WeaponHeat>,
+    /// Cell tuning and live charge; exclusive with `ammo` and `heat`.
+    #[serde(default)]
+    pub cell: Option<WeaponCell>,
     #[serde(default)]
     pub state: WieldableState,
     #[serde(default)]
@@ -349,6 +360,7 @@ impl WeaponComponent {
     ) -> Self {
         let ammo = ammo_tuning(desc);
         let magazine = ammo.as_ref().map_or(0, |ammo| ammo.capacity);
+        let (heat, cell) = fresh_heat_cell(desc);
         Self {
             damage: desc.damage,
             pellet_count: desc.pellet_count,
@@ -376,6 +388,8 @@ impl WeaponComponent {
             credit_source: resolve_credit_source(desc, canonical_name),
             ammo,
             magazine,
+            heat,
+            cell,
             state: WieldableState::Idle,
             state_remaining_ms: 0,
             state_total_ms: 0,
@@ -412,6 +426,8 @@ impl WeaponComponent {
                 reload_ms: ammo.reload_ms,
                 reload_style: ammo.reload_style,
             }),
+            heat: self.heat.as_ref().map(WeaponHeat::effective),
+            cell: self.cell.as_ref().map(WeaponCell::effective),
         }
     }
 
@@ -469,7 +485,7 @@ impl WeaponComponent {
         if let Some(credit_source) = desc.credit_source.as_ref() {
             self.credit_source = credit_source.clone();
         }
-        self.ammo = ammo_tuning(desc);
+        self.refresh_resource(desc);
         // Cooldown, input edges, magazine, state, timed-state fields, reload credit,
         // shell counter, and bloom state are live instance state. Hot reload changes authored tuning,
         // not the active state sample or whether this instance is mid-cooldown. An
@@ -566,16 +582,17 @@ impl WeaponComponent {
     }
 }
 
-fn ammo_tuning(desc: &WeaponDescriptor) -> Option<WeaponAmmoTuning> {
-    desc.resource.as_ref().map(|resource| match resource {
-        WeaponResource::Ammo(ammo) => WeaponAmmoTuning {
+pub(super) fn ammo_tuning(desc: &WeaponDescriptor) -> Option<WeaponAmmoTuning> {
+    match desc.resource.as_ref()? {
+        WeaponResource::Ammo(ammo) => Some(WeaponAmmoTuning {
             ammo_type: ammo.ammo_type.clone(),
             capacity: ammo.magazine,
             cost_per_shot: ammo.cost_per_shot,
             reload_ms: ammo.reload_ms,
             reload_style: ammo.reload_style,
-        },
-    })
+        }),
+        WeaponResource::Heat(_) | WeaponResource::Cell(_) => None,
+    }
 }
 
 fn resolve_credit_source(desc: &WeaponDescriptor, canonical_name: Option<&str>) -> String {

@@ -5,6 +5,7 @@ mod commands;
 mod fire;
 mod impact;
 mod machine;
+mod resource;
 mod state;
 
 pub(super) use commands::{
@@ -14,6 +15,7 @@ pub(super) use commands::{
 };
 pub use commands::{ProjectileSource, projectile_model_body_rotation, spawn_projectile};
 pub use impact::apply_authorized_weapon_impact_damage;
+pub(super) use resource::tick_weapon_resources;
 pub(crate) use state::transition_to_idle;
 
 #[cfg(test)]

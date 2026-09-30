@@ -158,6 +158,22 @@ export const xpReadout = defineUiTree({
   ),
 });
 
+// A cell weapon shows its charge as a bar in place of the ammo counts. Like
+// the health bar, the bar's max binds to the weapon's own capacity slot.
+const cellBar = Bar({
+  bind: bindState(player.cell),
+  max: player.cellCapacity,
+  width: 160.0,
+  height: 12.0,
+  visibleWhen: stateEquals(player.weaponResource, "cell"),
+  fill: color.ok,
+  background: color.hud.health.background,
+  styleRanges: {
+    max: 1.0,
+    entries: [{ upTo: 0.25, color: color.warning }, { color: color.ok }],
+  },
+});
+
 // Ammo lives in the lower-right corner, headed by the current weapon's name.
 export const ammoReadout = defineUiTree({
   name: "hud.ammo",
@@ -173,7 +189,15 @@ export const ammoReadout = defineUiTree({
       },
       [
         weaponLabel,
-        HStack({ gap: spacing.hud.gap, align: "center" }, [ammo, ammoReserve]),
+        HStack(
+          {
+            gap: spacing.hud.gap,
+            align: "center",
+            visibleWhen: stateEquals(player.weaponResource, "ammo"),
+          },
+          [ammo, ammoReserve],
+        ),
+        cellBar,
       ],
     ),
   ),

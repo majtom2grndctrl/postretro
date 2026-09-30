@@ -317,7 +317,7 @@ impl StateSlotHarness {
     }
 
     /// Set the authoritative equipped weapon's values on the host. This deliberately
-    /// writes components only: the assertion below proves `AmmoSlotProjection` feeds
+    /// writes components only: the assertion below proves `WeaponSlotProjection` feeds
     /// `ClientStateApply`, rather than a HUD or a client-local weapon component.
     fn set_host_ammo(&mut self, active_slot: usize, magazine: u32, reserve: u32) {
         let weapon = match active_slot {

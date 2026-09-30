@@ -7,6 +7,7 @@ use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::types::light::FalloffKind;
+use crate::data_descriptors::types::weapon_resource::{CellResource, HeatResource};
 use crate::data_descriptors::{
     DescriptorError, KnockbackDescriptor, SplashKnockbackDescriptor,
     is_portable_content_relative_asset_path, validate_ascii_identifier, validate_sound_key,
@@ -239,10 +240,12 @@ pub enum ReloadStyle {
     PerShell,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WeaponResource {
     Ammo(AmmoResource),
+    Heat(HeatResource),
+    Cell(CellResource),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,6 +480,9 @@ pub struct WeaponSounds {
     pub reload_shell: Option<String>,
     #[serde(default)]
     pub reload_complete: Option<String>,
+    /// Played at the firing pawn on `overheat`, once per latch.
+    #[serde(default)]
+    pub overheat: Option<String>,
 }
 
 impl WeaponSounds {
@@ -489,6 +495,7 @@ impl WeaponSounds {
             ("reloadStart", self.reload_start.as_deref()),
             ("reloadShell", self.reload_shell.as_deref()),
             ("reloadComplete", self.reload_complete.as_deref()),
+            ("overheat", self.overheat.as_deref()),
         ]
         .into_iter()
         .filter_map(|(field, key)| key.map(|key| (field, key)))
@@ -662,6 +669,12 @@ impl WeaponDescriptor {
                     });
                 }
             }
+        }
+        if let Some(WeaponResource::Heat(heat)) = self.resource.as_ref() {
+            heat.validate()?;
+        }
+        if let Some(WeaponResource::Cell(cell)) = self.resource.as_ref() {
+            cell.validate()?;
         }
         Ok(self)
     }
@@ -1886,7 +1899,9 @@ mod tests {
                 "reloadStyle": value,
             }))
             .unwrap();
-            let WeaponResource::Ammo(ammo) = resource;
+            let WeaponResource::Ammo(ammo) = resource else {
+                panic!("expected ammo resource");
+            };
             assert_eq!(ammo.reload_style, expected);
         }
 

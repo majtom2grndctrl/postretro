@@ -821,6 +821,7 @@ where
 
     drop(stage);
     let stage = cpu.scope(SimStage::Weapons);
+    weapon_stage::tick_weapon_resources(&mut registry.borrow_mut(), tick_dt);
     let remote_weapon_result = weapon_stage::run_remote_weapon_commands(
         &registry,
         remote_pawn_commands,

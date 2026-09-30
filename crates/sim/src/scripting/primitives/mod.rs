@@ -436,10 +436,33 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("reloadStyle?", "ReloadStyle", "Reload behavior. `magazine` reloads the whole magazine in one step; `perShell` reloads one shell per step. Defaults to `magazine`.")
         .finish();
     registry
+        .register_enum("OverheatBehavior")
+        .variant("lockout", "Refuse fire until heat cools all the way to 0.")
+        .finish();
+    registry
+        .register_type("HeatResource")
+        .doc("Heat tuning for a weapon. Each shot adds heat and heat cools over time. The shot that reaches `overheatAt` still fires, then the weapon overheats: pulls are refused silently until heat cools to exactly 0. The lockout lasts `overheatAt / coolPerSecond` seconds. Heat is a gate on top of `fireRateMs`, not a replacement; both must pass. Heat has no reserve, no pickups and no reload. Every copy of the weapon cools every tick, held or holstered, so switching away to cool a gun works.")
+        .field("heatPerShot", "f32", "Heat added by each shot. Must be finite, > 0 and <= `overheatAt`.")
+        .field("overheatAt", "f32", "Heat at which the weapon overheats; also the most heat it can hold. Must be finite and > 0.")
+        .field("coolPerSecond", "f32", "Heat removed per second once cooling applies. Must be finite and > 0.")
+        .field("coolDelayMs?", "f32", "Milliseconds after the last shot before cooling starts. An overheated weapon ignores this delay and cools at once. Must be finite and >= 0; defaults to 0.")
+        .field("overheatBehavior?", "OverheatBehavior", "What overheating does. Defaults to `lockout`, the only value.")
+        .finish();
+    registry
+        .register_type("CellResource")
+        .doc("Cell tuning for a weapon: a charge each shot drains and that regenerates over time. The weapon spawns full. A shot needs at least `costPerShot` charge; below that a pull dry-fires, exactly as an empty magazine does. A cell has no reserve, no pickups and no reload. Every copy of the weapon regenerates every tick, held or holstered.")
+        .field("capacity", "f32", "Most charge the cell holds, and its charge at spawn. Must be finite and > 0.")
+        .field("costPerShot", "f32", "Charge drained by each shot. Must be finite, > 0 and <= `capacity`.")
+        .field("regenPerSecond", "f32", "Charge restored per second once regeneration applies. Must be finite and >= 0; 0 makes a battery that never recharges.")
+        .field("regenDelayMs?", "f32", "Milliseconds after the last shot before regeneration starts. Must be finite and >= 0; defaults to 0.")
+        .finish();
+    registry
         .register_tagged_union("WeaponResource")
         .flat()
-        .doc("Optional resource model for a weapon. Omit the weapon resource to preserve unlimited-fire behavior.")
+        .doc("Optional resource model for a weapon. Set `kind` to one of the values below; that choice decides which other keys are allowed. Omit the weapon resource to preserve unlimited-fire behavior. Heat and charge are unitless numbers on a scale you choose; rates are per second and delays are milliseconds.")
         .variant("ammo", "AmmoResource", "Finite magazine-and-reserve ammunition.")
+        .variant("heat", "HeatResource", "Heat that builds per shot, dissipates over time, and locks the weapon out when it overheats.")
+        .variant("cell", "CellResource", "A regenerating charge each shot drains.")
         .finish();
     registry
         .register_type("PlacementOffset")
@@ -493,13 +516,14 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("WeaponSounds")
-        .doc("Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.")
+        .doc("Sound keys for a weapon's events. Every field is optional; an absent one plays nothing. Unknown keys are rejected. Fire, dry fire, overheat and reload play at the firing pawn; impact plays once per activation per tick, at the contact nearest the listener. An unknown sound key warns once when the level installs.")
         .field("fire?", "String", "Played on `activate`.")
         .field("dryFire?", "String", "Played on `dry_fire`.")
         .field("impact?", "String", "Played on `impact`, hitscan and projectile alike.")
         .field("reloadStart?", "String", "Played on `reload_started`.")
         .field("reloadShell?", "String", "Played on `reload_shell_loaded`, per shell of a per-shell reload.")
         .field("reloadComplete?", "String", "Played on `reload_completed`.")
+        .field("overheat?", "String", "Played on `overheat`, once when a heat weapon's shot overheats it. Pulls during the lockout are silent.")
         .finish();
     registry
         .register_type("TouchableDescriptor")

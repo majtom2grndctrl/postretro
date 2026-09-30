@@ -893,8 +893,8 @@ fn paired_weapon_ammo_resource_rejects_invalid_kind_type_and_positive_bounds() {
     let cases = [
         (
             "unknown kind",
-            r#"{ kind: "cell", type: "cells", magazine: 8, reserve: 32 }"#.to_string(),
-            r#"{ kind = "cell", type = "cells", magazine = 8, reserve = 32 }"#.to_string(),
+            r#"{ kind: "mana", type: "cells", magazine: 8, reserve: 32 }"#.to_string(),
+            r#"{ kind = "mana", type = "cells", magazine = 8, reserve = 32 }"#.to_string(),
             "unknown variant",
         ),
         (

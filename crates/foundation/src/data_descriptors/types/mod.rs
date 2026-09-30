@@ -5,6 +5,7 @@ pub mod knockback;
 pub mod light;
 pub mod manifest;
 pub mod movement;
+pub mod weapon_resource;
 
 pub use behavior::*;
 pub use behavior_lints::*;
@@ -13,3 +14,4 @@ pub use knockback::*;
 pub use light::*;
 pub use manifest::*;
 pub use movement::*;
+pub use weapon_resource::*;

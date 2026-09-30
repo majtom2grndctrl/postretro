@@ -52,6 +52,7 @@ pub(crate) enum WeaponCue {
     ReloadStart,
     ReloadShell,
     ReloadComplete,
+    Overheat,
 }
 
 impl WeaponCue {
@@ -65,6 +66,7 @@ impl WeaponCue {
             "reload_started" => Some(Self::ReloadStart),
             "reload_shell_loaded" => Some(Self::ReloadShell),
             "reload_completed" => Some(Self::ReloadComplete),
+            "overheat" => Some(Self::Overheat),
             _ => None,
         }
     }
@@ -77,6 +79,7 @@ impl WeaponCue {
             Self::ReloadStart => sounds.reload_start.as_deref(),
             Self::ReloadShell => sounds.reload_shell.as_deref(),
             Self::ReloadComplete => sounds.reload_complete.as_deref(),
+            Self::Overheat => sounds.overheat.as_deref(),
         }
     }
 }
@@ -357,6 +360,7 @@ mod tests {
             reload_start: Some("sfx/shotgun_open".to_string()),
             reload_shell: Some("sfx/shell_in".to_string()),
             reload_complete: Some("sfx/shotgun_pump".to_string()),
+            overheat: Some("sfx/shotgun_vent".to_string()),
         }
     }
 
@@ -417,6 +421,7 @@ mod tests {
             ("reload_started", "sfx/shotgun_open"),
             ("reload_shell_loaded", "sfx/shell_in"),
             ("reload_completed", "sfx/shotgun_pump"),
+            ("overheat", "sfx/shotgun_vent"),
         ] {
             let request = weapon_sound(&table, address, Some("shotgun"), &shooter, &mut scene)
                 .unwrap_or_else(|| panic!("{address} plays"));
@@ -707,6 +712,7 @@ mod tests {
             "sfx/shotgun_open",
             "sfx/shell_in",
             "sfx/shotgun_pump",
+            "sfx/shotgun_vent",
         ];
 
         let capture = LogCapture::start();

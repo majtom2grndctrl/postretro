@@ -275,7 +275,42 @@ defineEntity({
 | `knockback` | `{ speed, upwardBias? }` (optional) | Direct-hit push independent of damage. Applies per pellet or projectile entity contact; composes with `splash.knockback` when both are authored. |
 | `splash` | `{ radius, minFraction?, selfDamage?, knockback? }` (optional) | Radial damage at a projectile's impact point. It is currently valid only with `resolution: "projectile"`; hitscan weapons must omit it. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
-| `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1`; `reloadMs` defaults to `1000`; and `reloadStyle` defaults to `"magazine"`. With `"magazine"`, `reloadMs` times the complete reload; with `"perShell"`, it times one shell step. Omit the block for unlimited fire. |
+| `resource` | `{ kind: "ammo", … }`, `{ kind: "heat", … }`, or `{ kind: "cell", … }` (optional) | What each shot spends. Omit the block for unlimited fire. The three kinds are described below the table. |
+
+### Weapon resources
+
+A weapon carries at most one resource. Its `kind` picks one of three:
+
+- **Ammo** is spent from a magazine and reloaded from a reserve.
+- **Heat** builds with each shot and cools over time.
+- **Cell** charge is spent with each shot and refills over time.
+
+Heat and cell weapons have no reserve and never reload. The reload button does nothing on them.
+
+**Ammo** — `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }`
+- `type` is the reserve pool this weapon draws from. It follows the same identifier rules as `creditSource`.
+- `magazine`, `costPerShot` and `reloadMs` accept `1..=4,294,967,295`. `reserve` accepts `0..=4,294,967,295`.
+- `costPerShot` defaults to `1`, `reloadMs` to `1000`, and `reloadStyle` to `"magazine"`.
+- With `"magazine"`, `reloadMs` times the whole reload. With `"perShell"`, it times one shell.
+- A pull the magazine cannot pay for dry-fires.
+
+**Heat** — `{ kind: "heat", heatPerShot, overheatAt, coolPerSecond, coolDelayMs?, overheatBehavior? }`
+- Heat starts at `0` and rises by `heatPerShot` with each shot.
+- Once no shot has been fired for `coolDelayMs` milliseconds (default `0`), heat falls by `coolPerSecond` every second.
+- The shot that raises heat to `overheatAt` still fires. It then locks the weapon out and fires the `overheat` event.
+- While locked out, heat cools at `coolPerSecond` with no delay. The trigger does nothing, and makes no sound, until heat is back at `0`.
+- Switching away and back does not clear the lockout.
+- `overheatBehavior` defaults to `"lockout"`, which is currently its only value.
+- `overheatAt` and `coolPerSecond` must be greater than `0`. `heatPerShot` must be greater than `0` and no more than `overheatAt`.
+
+**Cell** — `{ kind: "cell", capacity, costPerShot, regenPerSecond, regenDelayMs? }`
+- The cell starts full at `capacity`.
+- Each shot spends `costPerShot`. A pull the charge cannot pay for dry-fires, the same as an empty magazine.
+- Once no shot has been fired for `regenDelayMs` milliseconds (default `0`), charge refills by `regenPerSecond` every second, up to `capacity`.
+- `regenPerSecond: 0` makes a battery that never refills.
+- `capacity` must be greater than `0`. `costPerShot` must be greater than `0` and no more than `capacity`.
+
+Heat and charge use whatever scale you choose. Rates are per second, and delays are in milliseconds. A weapon in the inventory keeps cooling or refilling while it is holstered, so a player can swap away to let a gun cool down. The dev mod's `reference_plasma_bolt` is a worked cell weapon.
 
 ### Projectile weapons
 
@@ -495,7 +530,7 @@ movement updates carry the resulting momentum through client reconciliation.
 
 ### Reserved engine-fired reaction addresses
 
-The engine owns the following 21 bare addresses. A mod may register one or more
+The engine owns the following 22 bare addresses. A mod may register one or more
 reactions at any of them, but should not use one as a private address: the
 engine may fire it whenever the listed gameplay event occurs. All other
 mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
@@ -503,7 +538,7 @@ mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
 | Source | Reserved addresses |
 |---|---|
 | Level lifecycle | `levelLoad` |
-| Weapon fire | `activate`, `dry_fire`, `impact`, `spawned` |
+| Weapon fire | `activate`, `dry_fire`, `overheat`, `impact`, `spawned` |
 | Weapon reload | `reload_started`, `reload_shell_loaded`, `reload_completed`, `reload_cancelled`, `reload_blocked_full`, `reload_blocked_empty` |
 | Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended` |
 | Enemy AI | `enemyAttack` |
@@ -2137,6 +2172,31 @@ identical boundaries produced in one simulation tick may publish as one endpoint
 if production outruns a consumer's bounded backlog, older samples may be dropped
 so stale feedback does not replay indefinitely. Ammo always publishes the latest
 authoritative count.
+
+### The readonly weapon-resource slots
+
+These slots describe the resource of the weapon you're holding. They are readonly, engine-owned, and visible only to the owning player. They follow the pattern the health bar uses: a raw value plus a companion maximum, so a `Bar` binds the value and takes its `max` from the capacity slot.
+
+| Slot | Type | Meaning |
+|---|---|---|
+| `player.weaponResource` | `"none" \| "ammo" \| "heat" \| "cell"` | The held weapon's resource kind. Use it with `visibleWhen: stateEquals(...)` to show the right readout. |
+| `player.heat` | `number` | Current heat, from `0` to `overheatAt`. |
+| `player.overheatAt` | `number` | The held heat weapon's `overheatAt`. |
+| `player.overheated` | `boolean` | True from the overheating shot until heat has cooled back to `0`. |
+| `player.cell` | `number` | Current cell charge, from `0` to `capacity`. It changes smoothly while refilling, so format it with `decimalPlaces`. |
+| `player.cellCapacity` | `number` | The held cell weapon's `capacity`. |
+
+When the held weapon uses a different resource, the number slots for heat and cell are cleared and `player.overheated` reads `false`. `player.ammo` and `player.ammoReserve` are cleared the same way.
+
+```typescript
+const cellBar = Bar({
+  bind: bindState(player.cell),
+  max: player.cellCapacity,
+  visibleWhen: stateEquals(player.weaponResource, "cell"),
+  fill: color.ok,
+  background: color.hud.panel,
+});
+```
 
 ### The readonly `player.weapon.*` slots
 

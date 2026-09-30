@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::components::weapon::MAX_EFFECTIVE_SPREAD_DEGREES;
+use crate::components::weapon_resource::WEAPON_RESOURCE_KIND_NAMES;
 use crate::slot_table::{
     NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
 };
@@ -514,6 +515,89 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.weaponResource",
+        sdk_path: &["player", "weaponResource"],
+        value_type: EngineStateValueType::Enum {
+            values: WEAPON_RESOURCE_KIND_NAMES,
+        },
+        default: EngineStateDefault::Enum("none"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Which resource the active weapon runs; `none` names a resourceless weapon.
+        // Every role publishes it from its own active weapon, like
+        // `player.weapon.current`: a replicated plain value would hand every
+        // client the host player's kind.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.heat",
+        sdk_path: &["player", "heat"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Active heat weapon's heat; absent for any other kind.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.overheatAt",
+        sdk_path: &["player", "overheatAt"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Companion max for `player.heat`.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.overheated",
+        sdk_path: &["player", "overheated"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Overheat latch of the active heat weapon; false for any other kind.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.cell",
+        sdk_path: &["player", "cell"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Active cell weapon's charge; absent for any other kind.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.cellCapacity",
+        sdk_path: &["player", "cellCapacity"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Companion max for `player.cell`.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.reloadActive",
         sdk_path: &["player", "reloadActive"],
         value_type: EngineStateValueType::Boolean,
@@ -1013,8 +1097,13 @@ mod tests {
                 "options.viewFeelScale",
                 "player.ammo",
                 "player.ammoReserve",
+                "player.cell",
+                "player.cellCapacity",
                 "player.health",
+                "player.heat",
                 "player.maxHealth",
+                "player.overheatAt",
+                "player.overheated",
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.spread",
@@ -1022,6 +1111,7 @@ mod tests {
                 "player.weapon.pending",
                 "player.weapon.switching",
                 "player.weaponCooldownMs",
+                "player.weaponResource",
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",
@@ -1238,6 +1328,11 @@ mod tests {
             "player.reloadActive",
             "player.reloadProgress",
             "player.weaponCooldownMs",
+            "player.heat",
+            "player.overheatAt",
+            "player.overheated",
+            "player.cell",
+            "player.cellCapacity",
         ] {
             let entry = entries
                 .iter()
@@ -1252,6 +1347,7 @@ mod tests {
 
         for wire_name in [
             "player.spread",
+            "player.weaponResource",
             "player.weapon.current",
             "player.weapon.pending",
             "player.weapon.switching",
@@ -1276,6 +1372,11 @@ mod tests {
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
+                "player.heat",
+                "player.overheatAt",
+                "player.overheated",
+                "player.cell",
+                "player.cellCapacity",
             ]
             .contains(&entry.wire_name)
             {
@@ -1286,6 +1387,69 @@ mod tests {
                     entry.wire_name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn weapon_resource_slots_are_readonly_with_health_style_defaults_and_a_local_kind() {
+        let catalog = engine_state_catalog().unwrap();
+        let find = |wire_name: &str| {
+            *catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap_or_else(|| panic!("{wire_name} declared"))
+        };
+        let unbounded = Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        });
+        let kind = find("player.weaponResource");
+        assert_eq!(
+            kind.value_type,
+            EngineStateValueType::Enum {
+                values: &["none", "ammo", "heat", "cell"]
+            }
+        );
+        assert_eq!(kind.default, EngineStateDefault::Enum("none"));
+        assert_eq!(kind.range, None);
+        let overheated = find("player.overheated");
+        assert_eq!(overheated.value_type, EngineStateValueType::Boolean);
+        assert_eq!(overheated.default, EngineStateDefault::Boolean(false));
+        for wire_name in [
+            "player.heat",
+            "player.overheatAt",
+            "player.cell",
+            "player.cellCapacity",
+        ] {
+            let entry = find(wire_name);
+            assert_eq!(
+                entry.value_type,
+                EngineStateValueType::Number,
+                "{wire_name}"
+            );
+            assert_eq!(entry.default, EngineStateDefault::None, "{wire_name}");
+            assert_eq!(entry.range, unbounded, "{wire_name}");
+        }
+        for wire_name in [
+            "player.weaponResource",
+            "player.heat",
+            "player.overheatAt",
+            "player.overheated",
+            "player.cell",
+            "player.cellCapacity",
+        ] {
+            let entry = find(wire_name);
+            assert_eq!(entry.sdk_path.join("."), wire_name);
+            assert_eq!(entry.capability, EngineStateCapability::Readonly);
+            assert!(!entry.persist, "{wire_name}");
+            let expected = if wire_name == "player.weaponResource" {
+                // Published locally on every role from its own active weapon.
+                ReplicationScope::None
+            } else {
+                ReplicationScope::OwnerPrivatePlayer
+            };
+            assert_eq!(entry.network, expected, "{wire_name}");
         }
     }
 }

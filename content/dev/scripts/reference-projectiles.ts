@@ -32,13 +32,15 @@ export const referencePlasmaBoltEntity = defineEntity({
       viewmodel: PLASMA_RIFLE_MODEL,
       placement: plasmaRiflePlacement,
       muzzleOffset: [0.0, 0.372, -0.984],
+      // The reference cell weapon: twenty bolts from a full cell, then a dry
+      // fire. Charge refills after a brief pause in fire, and keeps refilling
+      // while the rifle is holstered. There is no reserve and no reload.
       resource: {
-        kind: "ammo",
-        type: "cells.plasma",
-        magazine: 50,
-        reserve: 200,
-        reloadMs: 1800,
-        reloadStyle: "magazine",
+        kind: "cell",
+        capacity: 100,
+        costPerShot: 5,
+        regenPerSecond: 25,
+        regenDelayMs: 600,
       },
       projectile: {
         speed: 40.0,

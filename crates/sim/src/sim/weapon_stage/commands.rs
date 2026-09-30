@@ -182,7 +182,12 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             weapon: descriptor_name(&registry, weapon),
         };
         match machine.authorization {
-            WeaponFireAuthorization::Accepted => weapon_events.push(remote_emission("activate")),
+            WeaponFireAuthorization::Accepted => {
+                weapon_events.push(remote_emission("activate"));
+                if machine.overheat {
+                    weapon_events.push(remote_emission("overheat"));
+                }
+            }
             WeaponFireAuthorization::Empty => {
                 weapon_events.push(remote_emission("dry_fire"));
                 if projectile_fire_intended && let Some(shot_id) = remote.shot_id {
@@ -544,6 +549,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         anim_time,
         machine.authorization,
     );
+    events.overheat = machine.overheat;
     #[cfg(test)]
     // Determinism tests compare the cast set, including pellets a policy makes
     // inapplicable. Capture it before the first policy runs.

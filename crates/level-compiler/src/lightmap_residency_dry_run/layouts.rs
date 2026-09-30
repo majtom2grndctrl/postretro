@@ -5,11 +5,12 @@
 
 use glam::Vec3;
 
+use super::cell_blocks::POOL_LAYER_EDGE;
 use super::{ChartRect, DryRunInput, FaceSlot};
 use crate::chart_raster::ChartPlacement;
 use crate::lightmap_bake::{
-    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_cell_block, pack_layers,
-    pack_layers_with_layer_limit,
+    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_cell_blocks_within,
+    pack_layers, pack_layers_with_layer_limit,
 };
 
 /// Runtime `max_texture_array_layers` floor the bake packs under: the bake's
@@ -212,9 +213,11 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
 }
 
 /// Repack every cell's faces in stored order, 1×1 placeholders included, with
-/// the bake's own cell-block packer (`pack_cell_block`) at the stored
-/// alignment, and count recovered charts that land where the PRL says they
-/// are. Confirms the recovery and the packer reuse describe the same layout.
+/// the bake's own cell-block packer (`pack_cell_blocks_within`) at the stored
+/// alignment and the pool layer edge, and count recovered charts that land
+/// where the PRL says they are. A cell's repacked blocks match its stored
+/// blocks one for one, in block order. Confirms the recovery and the packer
+/// reuse describe the same layout.
 pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
     let formats = &input.formats;
     let align = formats.block_alignment();
@@ -227,17 +230,18 @@ pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
         };
         cell_faces[cell as usize].push(slot);
     }
-    let mut block_of_cell = vec![None; input.cell_count()];
+    // Stored blocks of each cell, in block order.
+    let mut blocks_of_cell: Vec<Vec<usize>> = vec![Vec::new(); input.cell_count()];
     for (block, stored) in formats.blocks.iter().enumerate() {
-        if let Some(slot) = block_of_cell.get_mut(stored.cell as usize) {
-            *slot = Some(block);
+        if let Some(blocks) = blocks_of_cell.get_mut(stored.cell as usize) {
+            blocks.push(block);
         }
     }
 
     let mut matched = 0;
     let mut dims_match = true;
     let mut blocks_packed = 0;
-    for (cell, faces) in cell_faces.iter().enumerate() {
+    for (faces, stored_blocks) in cell_faces.iter().zip(&blocks_of_cell) {
         let sizes: Vec<(u32, u32)> = faces
             .iter()
             .map(|slot| match **slot {
@@ -245,27 +249,25 @@ pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
                 FaceSlot::Placeholder { .. } => (1, 1),
             })
             .collect();
-        let Some(packed) = pack_cell_block(&sizes, align) else {
-            continue;
-        };
-        blocks_packed += 1;
-        let Some(block) = block_of_cell[cell] else {
-            dims_match = false;
-            continue;
-        };
-        let stored = &formats.blocks[block];
-        dims_match &= (packed.width, packed.height) == (stored.width, stored.height);
-        matched += faces
-            .iter()
-            .zip(&packed.placements)
-            .filter(|&(slot, &(x, y))| match **slot {
-                FaceSlot::Chart(index) => {
-                    let chart = &input.charts[index];
-                    chart.layer as usize == block && (chart.x, chart.y) == (x, y)
-                }
-                FaceSlot::Placeholder { .. } => false,
-            })
-            .count();
+        let packed = pack_cell_blocks_within(&sizes, align, POOL_LAYER_EDGE);
+        blocks_packed += packed.len();
+        dims_match &= packed.len() == stored_blocks.len();
+        for (sub, &block) in packed.iter().zip(stored_blocks) {
+            let stored = &formats.blocks[block];
+            dims_match &= (sub.block.width, sub.block.height) == (stored.width, stored.height);
+            matched += sub
+                .members
+                .iter()
+                .zip(&sub.block.placements)
+                .filter(|&(&member, &(x, y))| match *faces[member] {
+                    FaceSlot::Chart(index) => {
+                        let chart = &input.charts[index];
+                        chart.layer as usize == block && (chart.x, chart.y) == (x, y)
+                    }
+                    FaceSlot::Placeholder { .. } => false,
+                })
+                .count();
+        }
     }
     RepackCheck {
         matched,

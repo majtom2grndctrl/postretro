@@ -29,13 +29,13 @@ impl DryRunReport {
             out,
             "\n-- cell blocks: each cell's charts packed into one block on a {}-texel grid (BC \
              block edge and direction scale; bake MaxRects, padding kept; min area over up to \
-             {CANDIDATE_WIDTHS} aligned widths, each at its shortest aligned height) --",
+             {CANDIDATE_WIDTHS} aligned widths, each at its shortest aligned height), or into \
+             several when they do not fit one {POOL_LAYER_EDGE}² pool layer --",
             blocks.alignment
         );
         let _ = writeln!(
             out,
-            "single layer per cell today: the bake's leaf-cohesive packer keeps a BVH leaf (one \
-             cell) on one layer; recovered cells whose charts span >1 stored layer: {}",
+            "recovered cells whose charts span >1 stored block: {}",
             blocks.multi_layer_cells
         );
         let ratio_at = |p| percentile_desc(&overhead.ratios, p);
@@ -64,24 +64,24 @@ impl DryRunReport {
         let _ = writeln!(
             out,
             "largest block {largest}; pool layer {POOL_LAYER_EDGE}² = {:.1} MiB (id22 + id42); \
-             blocks over {POOL_LAYER_EDGE} in either dimension: {}",
+             cells packed into several blocks: {}",
             mib_f64(blocks.pool_layer_bytes as f64),
-            overhead.over_pool_edge.len()
+            overhead.multi_block_cells.len()
         );
-        for &(cell, dims) in &overhead.over_pool_edge {
-            let (widest, tallest) = blocks.largest_chart[cell as usize];
+        for &cell in &overhead.multi_block_cells {
+            let dims: Vec<String> = blocks
+                .cell_dims(cell)
+                .iter()
+                .map(|d| format!("{}x{}", d.width, d.height))
+                .collect();
             let _ = writeln!(
                 out,
-                "    cell {cell}@{}: block {}x{}, {} chart texels, largest chart {widest}x{tallest}{}",
+                "    cell {cell}@{}: {} blocks ({}), {} chart texels, {:.1} MiB",
                 self.format_center(cell),
-                dims.width,
-                dims.height,
+                dims.len(),
+                dims.join(", "),
                 blocks.chart_texels[cell as usize],
-                if widest > POOL_LAYER_EDGE || tallest > POOL_LAYER_EDGE {
-                    " (one chart alone exceeds a pool layer)"
-                } else {
-                    " (charts fit alone; no candidate width packed the cell under the edge)"
-                }
+                mib_f64(blocks.set_bytes(&[cell]) as f64)
             );
         }
         if let Some(visible) = &self.visible_set {

@@ -33,7 +33,9 @@ pub(crate) use atlas_pack::{pack_layers, pack_layers_with_layer_limit};
 
 pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
 #[cfg(test)]
-pub(crate) use cell_blocks::{CANDIDATE_WIDTHS, PackedBlock, pack_cell_block};
+pub(crate) use cell_blocks::{
+    CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_blocks_within,
+};
 pub use charts::Chart;
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 #[cfg(test)]

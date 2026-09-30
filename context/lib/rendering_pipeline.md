@@ -90,7 +90,7 @@ Compiler tests pin the seams that keep direct and indirect disjoint: tier routin
 
 **Ownership boundary.** Wgpu-free light packing, light spec packing, influence packing, and light-reachability CPU math may live in `postretro-lighting`. GPU pools/resources, uploads, bind groups, and wgpu-facing layout construction remain renderer-owned.
 
-**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from static_light_map-typed lights into a directional lightmap, packed as one block per cell (see "Lightmap cell-block residency" below). Static shadows are baked as **soft area-light penumbras** (bake-time stratified visibility, summed per light), not hard 1-texel steps. Static direction is always `Rg8Unorm` (the two octahedral components the forward shader reads), at the irradiance extent divided by an integral texel scale. Runtime samples the **irradiance** and animated atlases through a **linear** sampler (the baked penumbra ramp is texel-quantized; hardware bilinear de-blocks it under magnification) while the **direction** atlas stays on a nearest sampler (linear interpolation doesn't commute with octahedral slerp). Bumped-Lambert correction preserves normal-map response to baked static lights.
+**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from static_light_map-typed lights into a directional lightmap, packed as one or more blocks per cell (see "Lightmap cell-block residency" below). Static shadows are baked as **soft area-light penumbras** (bake-time stratified visibility, summed per light), not hard 1-texel steps. Static direction is always `Rg8Unorm` (the two octahedral components the forward shader reads), at the irradiance extent divided by an integral texel scale. Runtime samples the **irradiance** and animated atlases through a **linear** sampler (the baked penumbra ramp is texel-quantized; hardware bilinear de-blocks it under magnification) while the **direction** atlas stays on a nearest sampler (linear interpolation doesn't commute with octahedral slerp). Bumped-Lambert correction preserves normal-map response to baked static lights.
    - **`Rgba16Float` linear-filterability is a hard runtime requirement** (the irradiance + animated atlas format). Linear filtering of 16-bit-float textures is core WebGPU and mandated on every targeted backend — Vulkan/Metal/DX12 all provide it — so there is no software fallback path: the renderer checks the adapter at init and fails fast with a named renderer message if the flag is absent (rather than a deferred bind-group-creation crash). The only added cost over the prior nearest-only sampling is **one extra sampler binding** in lightmap bind group 4 — no new per-fragment loop.
    - **Irradiance atlas storage.** The baked irradiance atlas is stored BC6H (`Bc6hRgbUfloat`) at rest by default — hardware-decoded and hardware-filterable, ~8× smaller on disk and in VRAM than `Rgba16Float`, no shader change (the fetch already reads `.rgb`). The PRL `irradiance_format` tag selects BC6H vs an uncompressed `Rgba16Float` debug path; the runtime branches texture creation on the tag, both bound `Float { filterable: true }` on the same BGL and linear sampler. `TEXTURE_COMPRESSION_BC` (already required for BC5 normals) covers BC6H; the renderer fail-fasts at init if BC6H format-features are absent. The **animated** lightmap atlas stays `Rgba16Float` (compute-written each frame, not baked). The on-hardware perf-floor numbers (NVIDIA GTX 16-series framerate floor; AMD Radeon Pro 5500M compatibility floor must-run, not framerate-gated) are a **manual** check — GPU perf is verified by running the engine, not in CI.
 
@@ -152,9 +152,13 @@ physical light accumulates once and an owner cannot be evicted out from under a 
 boundary.
 
 **Lightmap cell-block residency.** The static lightmap and shadowmask (ids 22/42) are
-stored as per-cell blocks: each cell's charts pack into one BC-aligned block (formats:
-`build_pipeline.md` §PRL section IDs). A block's lightmap and shadowmask halves are one
-pair: they install and become sampleable in the same drain, or not at all. The renderer
+stored as per-cell blocks: each cell's charts pack into one or more contiguous BC-aligned
+blocks (formats: `build_pipeline.md` §PRL section IDs; several per cell is *not built yet*).
+A block's lightmap and shadowmask halves are one pair: they install and become sampleable in
+the same drain, or not at all. A cell's blocks are not a pair: demand for a cell demands all
+of its blocks, and each installs independently. A face cut across two blocks shows the
+ordinary miss until its second block lands. Whole-cell atomic install would make a huge cell
+one unbounded drain. The renderer
 places blocks in a pool of 2048² array layers plus one spare layer; each shadowmask layer
 holds both BC5 groups side by side. Block identity resolves in the forward vertex stage.
 Each world vertex carries block id + 1 (0 = no lightmap) and a block-local UV (§6). Group 6

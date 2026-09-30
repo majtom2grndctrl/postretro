@@ -626,8 +626,8 @@ mod tests {
         assert!(msg.contains("99"), "error should include version: {msg}");
     }
 
-    /// Pinned regression guard for the v3 → v4 bump made by the baked-texture-mips
-    /// plan (Task 1). Once `CURRENT_VERSION` was bumped, every previously-shipped
+    /// Pinned regression guard for the v3 → v4 bump made when PRLs gained
+    /// baked texture mips. Once `CURRENT_VERSION` was bumped, every previously-shipped
     /// v3 PRL must be rejected with a specific `UnsupportedVersion { version: 3 }`
     /// error. The generic `rejects_unsupported_version` test above uses `99` and
     /// derives the expected version from `CURRENT_VERSION`, so it does not pin

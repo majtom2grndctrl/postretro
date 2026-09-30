@@ -1,16 +1,26 @@
 //! CPU-only runtime PRL loading and level data.
 //! See: context/lib/build_pipeline.md §PRL Compilation
 
+#[cfg(feature = "load-prl")]
+mod lightmap_stream;
 mod prl;
 #[cfg(feature = "load-prl")]
 mod prl_animated_atlas;
 #[cfg(feature = "load-prl")]
 mod prl_container;
 #[cfg(feature = "load-prl")]
+mod prl_file;
+#[cfg(feature = "load-prl")]
 mod prl_lighting;
+#[cfg(feature = "load-prl")]
+mod prl_lightmap;
+#[cfg(all(test, feature = "load-prl"))]
+mod prl_load_test_fixtures;
 #[cfg(feature = "load-prl")]
 mod prl_loader;
 mod prl_queries;
+#[cfg(all(test, feature = "load-prl"))]
+mod prl_residency_set_tests;
 #[cfg(feature = "load-prl")]
 mod prl_streaming;
 #[cfg(feature = "load-prl")]
@@ -18,6 +28,12 @@ mod sh_stream;
 #[cfg(all(test, feature = "load-prl"))]
 mod sh_stream_tests;
 
+#[cfg(feature = "load-prl")]
+pub use lightmap_stream::{
+    LightmapBlockClass, LightmapBlockFileRanges, LightmapDrainBatch, LightmapDrainOutcome,
+    LightmapPoolReport, LightmapStorage, LightmapStreamManifest, LightmapStreamingMode,
+    LightmapTarget, PreparedLightmapBlock, requested_lightmap_streaming_mode,
+};
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
     CellLocatorTraceStep, CellVisibility, CoupledCellPair, CouplingTuple, FalloffModel, LevelWorld,
@@ -29,7 +45,11 @@ pub use prl::{
     LoadedKinematicWaypoint, LoadedMemberLight, PrlLoadError,
 };
 #[cfg(feature = "load-prl")]
-pub use prl_lighting::{GpuLightingPayloads, LevelWorldLighting};
+pub use prl_file::PrlReadCounters;
+#[cfg(feature = "load-prl")]
+pub use prl_lighting::LevelWorldLighting;
+#[cfg(feature = "load-prl")]
+pub use prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
 pub use prl_streaming::load_prl;
 #[cfg(feature = "load-prl")]

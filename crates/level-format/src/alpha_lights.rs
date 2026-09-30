@@ -55,7 +55,7 @@ impl AlphaFalloffModel {
 /// NOT a shadow-type value; it reaches the runtime via the separate
 /// `is_dynamic` field (set by classname). The direct techniques are disjoint —
 /// a light's direct shadow comes from exactly one — so no contribution is
-/// double-counted. See `context/plans/in-progress/sdf-per-light-shadows/`.
+/// double-counted. See `context/lib/rendering_pipeline.md` §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum AlphaShadowType {

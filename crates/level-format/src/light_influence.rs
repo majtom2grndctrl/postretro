@@ -1,6 +1,6 @@
 // LightInfluence PRL section (ID 21): per-light bounding volumes for
 // spatial culling in the fragment shader and CPU-side shadow-slot allocation.
-// See: context/plans/in-progress/lighting-foundation/4-light-influence-volumes.md
+// See: context/lib/rendering_pipeline.md §4
 
 use crate::FormatError;
 

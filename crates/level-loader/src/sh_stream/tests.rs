@@ -13,6 +13,7 @@ use super::metadata_base::{parse_animation_tail, read_base_metadata};
 use super::metadata_sparse::{read_optional_direct_metadata, read_optional_sparse_metadata};
 use super::positional_io::read_vec_at;
 use super::*;
+use crate::prl_file::PrlFile;
 
 fn empty_directory() -> ClusterDirectorySection {
     ClusterDirectorySection {
@@ -162,7 +163,7 @@ fn retained_file_reads_original_bytes_after_path_replacement() {
     let path = directory.path().join("map.prl");
     let replacement = directory.path().join("replacement.prl");
     std::fs::write(&path, b"original").unwrap();
-    let file = File::open(&path).unwrap();
+    let file = PrlFile::new(File::open(&path).unwrap());
     std::fs::write(&replacement, b"replaced").unwrap();
     std::fs::rename(&replacement, &path).unwrap();
 
@@ -187,7 +188,7 @@ fn id50_metadata_length_is_bounded_before_the_variable_read() {
     let mut bytes = vec![0; offset];
     bytes.extend(id50_header(1));
     std::fs::write(&path, bytes).unwrap();
-    let file = Arc::new(File::open(&path).unwrap());
+    let file = Arc::new(PrlFile::new(File::open(&path).unwrap()));
     let error = load_manifest_positionally(
         file,
         path,
@@ -210,7 +211,7 @@ fn id50_source_count_cap_is_checked_before_metadata_allocation() {
     let mut bytes = vec![0; offset];
     bytes.extend(id50_header(u32::MAX));
     std::fs::write(&path, bytes).unwrap();
-    let file = Arc::new(File::open(&path).unwrap());
+    let file = Arc::new(PrlFile::new(File::open(&path).unwrap()));
     let error = load_manifest_positionally(
         file,
         path,
@@ -230,7 +231,7 @@ fn fixed_metadata_headers_are_bounded_before_positional_reads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("short.prl");
     std::fs::write(&path, vec![0; 84]).unwrap();
-    let file = File::open(&path).unwrap();
+    let file = PrlFile::new(File::open(&path).unwrap());
 
     assert!(read_base_metadata(&file, &entry(SectionId::OctahedralShVolume, 83)).is_err());
     assert!(
@@ -262,7 +263,7 @@ fn sparse_header_geometry_is_checked_before_variable_tables() {
     std::fs::write(&path, header).unwrap();
 
     let error = read_optional_sparse_metadata(
-        &File::open(&path).unwrap(),
+        &PrlFile::new(File::open(&path).unwrap()),
         Some(&entry(SectionId::DirectShDeltaVolumes, 22)),
         SectionId::DirectShDeltaVolumes,
         &base_metadata_for_sparse_header_checks(),

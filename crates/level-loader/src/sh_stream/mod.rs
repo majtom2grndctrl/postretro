@@ -16,6 +16,7 @@ pub use manifest::{ShStreamManifest, ShStreamSeamPortal};
 pub(crate) use positional_io::observe_positional_reads;
 pub(crate) use positional_io::{
     read_container_positionally, read_section_positionally, read_vec_at,
+    validate_positional_entry_bounds,
 };
 pub use projection::{
     ShStreamBaseMetadata, ShStreamDirectMetadata, ShStreamSourceMetadata, ShStreamSparseMetadata,

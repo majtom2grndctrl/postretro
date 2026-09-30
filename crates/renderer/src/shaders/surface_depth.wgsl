@@ -31,7 +31,7 @@
 //    and the forward pass runs `depth_compare: Equal` with depth writes off; a
 //    fragment that wrote depth would fail its own equality test. The technique
 //    is depth-free by construction.
-//  * It offsets `base_uv` ONLY. `lightmap_uv` is never touched — lightmap
+//  * It offsets `base_uv` ONLY. `lightmap_texel` is never touched — lightmap
 //    charts carry just `CHART_PADDING_TEXELS = 2` of gutter, so an offset would
 //    pull a neighbouring chart. `base_uv` has no atlas and uses
 //    `AddressMode::Repeat`, so marching it freely is safe.

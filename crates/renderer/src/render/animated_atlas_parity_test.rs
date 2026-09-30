@@ -1,14 +1,14 @@
 // GPU parity of the compact animated lightmap atlas: one animated scene
-// composed by the real compose pass and sampled through forward.wgsl's block
-// lookup, once through the identity block table and once through a packed
+// composed by the real compose pass and sampled through the forward shader's
+// block lookup, once through the identity block table and once through a packed
 // one. Zero gutters must make the two indistinguishable.
 // See: context/lib/rendering_pipeline.md §7.1 (Animated lightmap compose)
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
 // compose pass and the forward lookup are WGSL, so verifying the layout means
 // running them. The scene is a set of probes, one per fragment of a one-row-
-// per-512-probes target, each sampling a face at a static lightmap UV the way
-// the forward fragment stage does. The harness self-skips without an adapter
+// per-512-probes target, each sampling a face at a block-local lightmap texel
+// the way the forward fragment stage does. The harness self-skips without an adapter
 // and says so; a skipped run proves nothing. Set `POSTRETRO_REQUIRE_GPU` to any
 // non-empty value other than `0` to make a missing adapter fail the test.
 
@@ -27,8 +27,10 @@ use super::sh_volume::AnimatedLightBuffers;
 use crate::lighting::lightmap::{animated_block_table_bytes, filtering_sampler_descriptor};
 
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
+const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../shaders/lightmap_sample.wgsl");
+/// Edge of the two square lightmap cell blocks the animated faces key on.
 const STATIC_SIZE: u32 = 64;
-const STATIC_LAYERS: u32 = 2;
+const STATIC_BLOCKS: [(u32, u32); 2] = [(STATIC_SIZE, STATIC_SIZE); 2];
 /// Probes per target row; three pixels each (irradiance, direction, remap).
 const PROBES_PER_ROW: u32 = 512;
 const PIXELS_PER_PROBE: u32 = 3;
@@ -85,7 +87,7 @@ fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
 fn wgsl_item<'a>(source: &'a str, header: &str) -> &'a str {
     let start = source
         .find(header)
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{header}`"));
+        .unwrap_or_else(|| panic!("the WGSL source must declare `{header}`"));
     let open = start + source[start..].find('{').expect("item body");
     let mut depth = 0usize;
     for (offset, ch) in source[open..].char_indices() {
@@ -103,12 +105,13 @@ fn wgsl_item<'a>(source: &'a str, header: &str) -> &'a str {
     panic!("`{header}` body never closes");
 }
 
-/// forward.wgsl's block table, block lookup and animated sample, verbatim,
-/// around a probe entry point that samples the way the fragment stage does.
+/// forward.wgsl's block table and lightmap_sample.wgsl's block lookup and
+/// animated sample, verbatim, around a probe entry point that samples the way
+/// the fragment stage does.
 fn shader_source() -> String {
     let prelude = r#"
 struct Probe {
-    uv: vec2<f32>,
+    texel: vec2<f32>,
     block: u32,
     _pad: u32,
 };
@@ -132,7 +135,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let column = u32(position.x);
     let probe_index = u32(position.y) * 512u + column / 3u;
     let probe = probes[probe_index];
-    let animated = animated_block_uv(probe.uv, probe.block);
+    let animated = animated_block_uv(probe.texel, probe.block);
     var irradiance = vec4<f32>(0.0);
     var direction = vec4<f32>(0.5, 1.0, 0.5, 0.0);
     if animated.found {
@@ -156,9 +159,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 "#;
     let items = [
         wgsl_item(FORWARD_WGSL, "struct AnimatedBlockTable {"),
-        wgsl_item(FORWARD_WGSL, "struct AnimatedBlockUv {"),
-        wgsl_item(FORWARD_WGSL, "fn sample_lightmap_animated("),
-        wgsl_item(FORWARD_WGSL, "fn animated_block_uv("),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "struct AnimatedBlockUv {"),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "fn sample_lightmap_animated("),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "fn animated_block_uv("),
     ];
     // The block table struct must precede the binding that names it.
     format!(
@@ -168,15 +171,15 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     )
 }
 
-/// The test scene in static space: three animated faces on two static layers
-/// of a 64² lightmap, as `(static layer, placement rect)`. Face 0 has one lit
-/// chunk and a culled neighbour (absent); face 1 has two chunks; face 2 one.
+/// The test scene in the block frame: three animated faces in two 64² lightmap
+/// cell blocks, as `(cell block, block-local placement rect)`. Face 0 has one
+/// lit chunk and a culled neighbour (absent); face 1 has two chunks; face 2 one.
 const FACES: [(u32, [u32; 4]); 3] = [
     (0, [4, 4, 24, 16]),
     (1, [30, 8, 24, 24]),
     (1, [0, 40, 16, 16]),
 ];
-/// Surviving chunks as `(face, static rect)`.
+/// Surviving chunks as `(face, block-local rect)`.
 const CHUNKS: [(u32, [u32; 4]); 4] = [
     (0, [6, 6, 10, 12]),
     (1, [32, 10, 10, 20]),
@@ -198,16 +201,18 @@ fn section(placements: &[(u32, u32, u32); 3], page_size: u32) -> AnimatedLightWe
     let blocks: Vec<AnimatedBlock> = FACES
         .iter()
         .zip(placements)
-        .map(|(&(layer, [x, y, w, h]), &(page, cx, cy))| AnimatedBlock {
-            static_layer: layer,
-            static_x: x,
-            static_y: y,
-            compact_x: cx,
-            compact_y: cy,
-            compact_layer: page,
-            width: w,
-            height: h,
-        })
+        .map(
+            |(&(cell_block, [x, y, w, h]), &(page, cx, cy))| AnimatedBlock {
+                lightmap_block: cell_block,
+                block_x: x as u16,
+                block_y: y as u16,
+                compact_x: cx,
+                compact_y: cy,
+                compact_layer: page,
+                width: w,
+                height: h,
+            },
+        )
         .collect();
     let mut chunk_rects = Vec::new();
     let mut offset_counts = Vec::new();
@@ -215,8 +220,8 @@ fn section(placements: &[(u32, u32, u32); 3], page_size: u32) -> AnimatedLightWe
     for &(face, [x, y, w, h]) in &CHUNKS {
         let block = blocks[face as usize];
         chunk_rects.push(ChunkAtlasRect {
-            compact_x: x - block.static_x + block.compact_x,
-            compact_y: y - block.static_y + block.compact_y,
+            compact_x: x - u32::from(block.block_x) + block.compact_x,
+            compact_y: y - u32::from(block.block_y) + block.compact_y,
             width: w,
             height: h,
             texel_offset: offset_counts.len() as u32,
@@ -230,7 +235,7 @@ fn section(placements: &[(u32, u32, u32); 3], page_size: u32) -> AnimatedLightWe
                 for light in 0..lights {
                     texel_lights.push(TexelLight {
                         light_index: light,
-                        weight: weight(tx, ty + 64 * block.static_layer, light),
+                        weight: weight(tx, ty + 64 * block.lightmap_block, light),
                         direction_oct: [
                             (20_000 + 97 * tx) as u16,
                             (30_000 + 131 * ty + 1_000 * light) as u16,
@@ -258,7 +263,8 @@ fn section(placements: &[(u32, u32, u32); 3], page_size: u32) -> AnimatedLightWe
     }
 }
 
-/// Identity: every block at its static position, one page per static layer.
+/// Identity: every block at its block-local position, one page per cell
+/// block.
 fn identity_section() -> AnimatedLightWeightMapsSection {
     let placements = [0, 1, 2].map(|face: usize| {
         let (layer, [x, y, _, _]) = FACES[face];
@@ -317,7 +323,8 @@ fn descriptors(active: bool) -> Vec<u8> {
 
 #[derive(Clone, Copy)]
 struct Probe {
-    uv: [f32; 2],
+    /// Block-local lightmap texel, as the vertex stage interpolates it.
+    texel: [f32; 2],
     block: u32,
 }
 
@@ -345,7 +352,7 @@ fn probes() -> (Vec<Probe>, Vec<usize>) {
                     culled.push(probes.len());
                 }
                 probes.push(Probe {
-                    uv: [tx / STATIC_SIZE as f32, ty / STATIC_SIZE as f32],
+                    texel: [tx, ty],
                     block: face as u32 + 1,
                 });
                 tx += 0.37;
@@ -398,13 +405,13 @@ fn run(
         &[],
         &animation,
         &uniform_layout,
-        Some((STATIC_SIZE, STATIC_LAYERS)),
+        Some(&STATIC_BLOCKS),
         AnimatedLmDebugConfig::disabled(),
     )
     .expect("parity scene builds a real compact atlas");
     assert!(resources.is_active(), "the scene must compose");
 
-    let table = animated_block_table_bytes(Some(section), STATIC_SIZE);
+    let table = animated_block_table_bytes(Some(section));
     let table_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("parity block table"),
         contents: &table,
@@ -414,8 +421,8 @@ fn run(
         .iter()
         .flat_map(|probe| {
             let mut bytes = [0u8; PROBE_BYTES];
-            bytes[0..4].copy_from_slice(&probe.uv[0].to_ne_bytes());
-            bytes[4..8].copy_from_slice(&probe.uv[1].to_ne_bytes());
+            bytes[0..4].copy_from_slice(&probe.texel[0].to_ne_bytes());
+            bytes[4..8].copy_from_slice(&probe.texel[1].to_ne_bytes());
             bytes[8..12].copy_from_slice(&probe.block.to_ne_bytes());
             bytes
         })
@@ -700,9 +707,9 @@ fn identity_and_packed_block_tables_render_the_same_forced_animated_frame() {
         let direction = max_difference(a.direction, b.direction);
         assert!(
             irradiance <= EIGHT_BIT_STEP && direction <= EIGHT_BIT_STEP,
-            "probe {index} (block {}, uv {:?}): identity {:?}/{:?} vs packed {:?}/{:?}",
+            "probe {index} (block {}, texel {:?}): identity {:?}/{:?} vs packed {:?}/{:?}",
             probe.block,
-            probe.uv,
+            probe.texel,
             a.irradiance,
             a.direction,
             b.irradiance,
@@ -719,26 +726,32 @@ fn identity_and_packed_block_tables_render_the_same_forced_animated_frame() {
 }
 
 #[test]
-fn identity_block_table_samples_each_face_at_its_static_uv_and_layer_page() {
-    let Some(ctx) =
-        gpu_or_skip("identity_block_table_samples_each_face_at_its_static_uv_and_layer_page")
-    else {
+fn identity_block_table_samples_each_face_at_its_block_texel_and_cell_block_page() {
+    let Some(ctx) = gpu_or_skip(
+        "identity_block_table_samples_each_face_at_its_block_texel_and_cell_block_page",
+    ) else {
         return;
     };
     let identity = identity_section();
     let (probes, _) = probes();
     let results = run(&ctx, &identity, true, &probes);
     for (probe, result) in probes.iter().zip(&results) {
-        let (layer, _) = FACES[probe.block as usize - 1];
+        let (cell_block, _) = FACES[probe.block as usize - 1];
+        let size = STATIC_SIZE as f32;
         assert_eq!(
             result.remap,
-            [probe.uv[0], probe.uv[1], layer as f32, 1.0],
-            "identity remap must be the static UV on the static layer's page",
+            [
+                probe.texel[0] / size,
+                probe.texel[1] / size,
+                cell_block as f32,
+                1.0
+            ],
+            "identity remap must be the block-local texel on the cell block's page",
         );
     }
-    // Every chunk composes at its static layer's page and static position.
+    // Every chunk composes at its cell block's page and block-local position.
     for index in 0..identity.chunk_rects.len() {
-        let (layer, x, y) = identity.chunk_static_origin(index).unwrap();
+        let (layer, x, y) = identity.chunk_block_origin(index).unwrap();
         let rect = identity.chunk_rects[index];
         let block = identity.blocks[rect.block as usize];
         assert_eq!((rect.compact_x, rect.compact_y), (x, y));

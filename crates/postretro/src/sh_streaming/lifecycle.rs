@@ -7,7 +7,8 @@ use super::*;
 
 impl ShResidencyController {
     /// Reads at most one target chunk synchronously. This is intentionally a
-    /// proof-only entry point; Task 11 replaces production use with workers.
+    /// proof-only entry point (sync-proof mode); in async mode the workers
+    /// read.
     pub(crate) fn read_one_sync_at_target_time(
         &mut self,
     ) -> Result<SyncReadResult, ShResidencyControllerError> {
@@ -209,143 +210,6 @@ impl ShResidencyController {
         Ok(ShDrainAdmission::Ready)
     }
 
-    /// Emits a decoded-byte-bounded set of renderer-ready chunks plus an
-    /// initial reset or sorted target deltas for the sync-proof path. This path
-    /// deliberately never emits evictions or changes targets for budget
-    /// pressure: Task 10's proof gate remains a stable no-eviction baseline.
-    pub(crate) fn take_drain_batch(&mut self) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        self.take_drain_batch_with_eviction(false)
-    }
-
-    /// Async-only drain policy. Departed residents leave before pressure can
-    /// suppress cold prefetch, and every eviction remains only a request until
-    /// the renderer confirms that no installed dependent pins its owner.
-    pub(crate) fn take_async_drain_batch(
-        &mut self,
-    ) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        self.take_drain_batch_with_eviction(true)
-    }
-
-    /// One async frame's controller work after completions are admitted: the
-    /// drain batch first, then new read requests. The drain's budget policy
-    /// may suppress optional targets, so requests taken before it could name
-    /// a cluster this same frame has already dropped.
-    pub(crate) fn take_async_drain_batch_and_requests(
-        &mut self,
-    ) -> Result<(ShDrainBatch, Vec<ShClusterRequest>), ShResidencyControllerError> {
-        let batch = self.take_async_drain_batch()?;
-        let mut requests = Vec::new();
-        while let Some(request) = self.take_next_request()? {
-            requests.push(request);
-        }
-        Ok((batch, requests))
-    }
-
-    fn take_drain_batch_with_eviction(
-        &mut self,
-        eviction_enabled: bool,
-    ) -> Result<ShDrainBatch, ShResidencyControllerError> {
-        if !self.in_drain.is_empty() || !self.in_drain_evictions.is_empty() {
-            return Err(ShResidencyControllerError::InvalidDrainOutcome(
-                "previous drain outcome was not applied before preparing another batch".into(),
-            ));
-        }
-        if eviction_enabled {
-            self.apply_budget_policy()?;
-        }
-        let mut batch = ShDrainBatch {
-            generation: self.generation,
-            content_tag: self.content_tag,
-            ..ShDrainBatch::default()
-        };
-        if self.needs_target_reset {
-            batch.target_reset = Some(target_bitset(self.topology.cluster_count(), &self.targets)?);
-            self.needs_target_reset = false;
-            self.sent_targets = self.targets.clone();
-        } else {
-            batch.target_add = self
-                .targets
-                .difference(&self.sent_targets)
-                .copied()
-                .collect();
-            batch.target_remove = self
-                .sent_targets
-                .difference(&self.targets)
-                .copied()
-                .collect();
-            self.sent_targets = self.targets.clone();
-        }
-        self.drop_departed_ready(&self.targets.clone())?;
-
-        if eviction_enabled {
-            batch.evictions = self.departed_eviction_order();
-        }
-        self.in_drain_evictions = batch.evictions.iter().copied().collect();
-        let mut ready_ids: Vec<_> = self
-            .ready
-            .keys()
-            .copied()
-            .filter(|&cluster_id| self.ready_for_install(cluster_id))
-            .collect();
-        ready_ids.sort_by_key(|&cluster_id| {
-            (
-                self.states[cluster_id as usize]
-                    .class
-                    .unwrap_or(TargetClass::Hysteresis),
-                std::cmp::Reverse(self.states[cluster_id as usize].effective_priority),
-                cluster_id,
-            )
-        });
-        let (admitted, drain_bytes) = self.select_install_budget(&ready_ids)?;
-        let mut counters = self.counters;
-        Self::add_to_counter(
-            &mut counters.decoded_bytes_installed,
-            drain_bytes,
-            "decoded bytes installed",
-        )?;
-        if admitted > 0 {
-            counters.last_drain_decoded_bytes = drain_bytes;
-            counters.max_drain_decoded_bytes = counters.max_drain_decoded_bytes.max(drain_bytes);
-        }
-        if admitted < ready_ids.len() {
-            Self::increment_counter(&mut counters.budget_limited_drains, "budget-limited drains")?;
-        }
-        self.counters = counters;
-        for cluster_id in ready_ids.into_iter().take(admitted) {
-            let ready = self
-                .ready
-                .remove(&cluster_id)
-                .expect("ready id came from map");
-            self.in_drain.insert(cluster_id, ready.byte_charge);
-            batch.ready.push(ready.prepared);
-        }
-        Ok(batch)
-    }
-
-    /// Returns how many leading clusters of `ordered` fit the decoded-byte
-    /// budget, and their byte sum. The first always fits whatever its size, so
-    /// an oversized chunk cannot stall residency. Selection stops at the first
-    /// cluster over budget rather than skipping ahead to smaller, lower-priority
-    /// work.
-    fn select_install_budget(
-        &self,
-        ordered: &[u32],
-    ) -> Result<(usize, u64), ShResidencyControllerError> {
-        let mut total = 0u64;
-        for (admitted, cluster_id) in ordered.iter().enumerate() {
-            let next = total
-                .checked_add(self.ready[cluster_id].byte_charge)
-                .ok_or(ShResidencyControllerError::AccountingOverflow(
-                    "drain decoded bytes",
-                ))?;
-            if admitted > 0 && next > MAX_INSTALL_DECODED_BYTES_PER_DRAIN {
-                return Ok((admitted, total));
-            }
-            total = next;
-        }
-        Ok((ordered.len(), total))
-    }
-
     /// Applies renderer ownership transfer after one drain. Deferred chunks
     /// are returned intact by the renderer and continue retaining their permit.
     pub(crate) fn apply_drain_outcome(
@@ -482,7 +346,7 @@ impl ShResidencyController {
         let mut counters = self.counters;
 
         for &cluster_id in &outcome.evicted {
-            if self.topology.pinned_clusters.contains(&cluster_id)
+            if self.topology.hints.pinned.contains(&cluster_id)
                 || matches!(
                     self.states[cluster_id as usize].class,
                     Some(TargetClass::Visible | TargetClass::Pinned)

@@ -444,6 +444,11 @@ impl Renderer {
                 render_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
                 render_pass.set_bind_group(4, &self.full().lightmap_resources.bind_group, &[]);
                 render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
+                render_pass.set_bind_group(
+                    LIGHTMAP_BLOCK_TABLE_GROUP,
+                    &self.full().lightmap_resources.block_table_bind_group,
+                    &[],
+                );
                 render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
                 render_pass.set_index_buffer(
                     self.full().index_buffer.slice(..),

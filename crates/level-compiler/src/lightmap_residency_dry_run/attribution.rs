@@ -1,9 +1,10 @@
 //! Byte attribution of the stored id-22 and id-42 payloads to receiver cells.
 //!
-//! Every stored grid unit (a BC 4×4 block, or a raw texel) goes to exactly one
-//! owner: the cell whose charts cover most of the irradiance texels under it,
-//! ties to the lowest cell id. A unit no chart touches is unattributed, so
-//! attributed plus unattributed equals each payload exactly.
+//! Every stored grid unit of every block (a BC 4×4 block, or a raw texel)
+//! goes to exactly one owner: the cell whose charts cover most of the
+//! irradiance texels under it, ties to the lowest cell id. A unit no chart
+//! touches is unattributed, so attributed plus unattributed equals each
+//! payload exactly.
 
 use super::{AtlasFormats, ChartRect, EncodingUnit};
 
@@ -47,31 +48,33 @@ pub(crate) fn attribute(
     cell_count: usize,
 ) -> Attribution {
     let mut result = Attribution {
-        irradiance: SectionAttribution::new(cell_count, formats.irr_payload_bytes),
-        direction: SectionAttribution::new(cell_count, formats.dir_payload_bytes),
+        irradiance: SectionAttribution::new(cell_count, formats.irr_payload_bytes()),
+        direction: SectionAttribution::new(cell_count, formats.dir_payload_bytes()),
         shadowmask: formats
             .stored_shadowmask()
             .map(|sm| SectionAttribution::new(cell_count, sm.payload_bytes)),
         overlap_texels: 0,
     };
-    let width = formats.irr_width as usize;
-    let height = formats.irr_height as usize;
-    let mut by_layer: Vec<Vec<&ChartRect>> = vec![Vec::new(); formats.layer_count as usize];
+    let mut by_block: Vec<Vec<&ChartRect>> = vec![Vec::new(); formats.blocks.len()];
     for chart in charts {
-        by_layer[chart.layer as usize].push(chart);
+        by_block[chart.layer as usize].push(chart);
     }
 
     let irr_unit = formats.irradiance_unit();
     let dir_unit = EncodingUnit {
         width: 1,
         height: 1,
-        bytes: formats.direction_texel_bytes(),
+        bytes: formats.direction_texel_bytes,
     };
-    let mut owners = vec![NO_OWNER; width * height];
+    let scale = formats.direction_texel_scale.max(1);
+    let mut owners = Vec::new();
     let mut tally = Vec::with_capacity(16);
-    for layer_charts in &by_layer {
-        owners.fill(NO_OWNER);
-        for chart in layer_charts {
+    for (block, block_charts) in formats.blocks.iter().zip(&by_block) {
+        let width = block.width as usize;
+        let height = block.height as usize;
+        owners.clear();
+        owners.resize(width * height, NO_OWNER);
+        for chart in block_charts {
             for y in chart.y..chart.y + chart.height {
                 let row = y as usize * width;
                 for x in chart.x..chart.x + chart.width {
@@ -89,27 +92,25 @@ pub(crate) fn attribute(
             width,
             height,
         };
-        let irr_cols = formats.irr_width.div_ceil(irr_unit.width);
-        let irr_rows = formats.irr_height.div_ceil(irr_unit.height);
         grid.attribute_units(
-            irr_cols,
-            irr_rows,
+            block.width.div_ceil(irr_unit.width),
+            block.height.div_ceil(irr_unit.height),
             irr_unit.bytes,
             &mut result.irradiance,
             &mut tally,
         );
         grid.attribute_units(
-            formats.dir_width,
-            formats.dir_height,
+            block.width / scale,
+            block.height / scale,
             dir_unit.bytes,
             &mut result.direction,
             &mut tally,
         );
-        if let (Some(sm), Some(out)) = (formats.stored_shadowmask(), result.shadowmask.as_mut()) {
+        if let Some(out) = result.shadowmask.as_mut() {
             let unit = AtlasFormats::shadowmask_unit();
             grid.attribute_units(
-                sm.width.div_ceil(unit.width),
-                sm.height.div_ceil(unit.height),
+                block.width.div_ceil(unit.width),
+                block.height.div_ceil(unit.height),
                 unit.bytes,
                 out,
                 &mut tally,

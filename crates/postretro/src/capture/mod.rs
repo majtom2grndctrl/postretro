@@ -3,6 +3,7 @@
 
 mod cpu_windows;
 mod driver;
+mod lightmap;
 mod prepared;
 mod report;
 mod scene;

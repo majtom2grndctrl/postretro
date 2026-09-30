@@ -39,7 +39,7 @@ enum StagedCopy {
 
 /// Recorded residency writes awaiting one staging allocation and submission.
 #[derive(Default)]
-pub(in crate::render::sh_streaming) struct StagedUploads {
+pub(crate) struct StagedUploads {
     bytes: Vec<u8>,
     copies: Vec<StagedCopy>,
 }
@@ -49,10 +49,7 @@ impl StagedUploads {
     /// discarded), with room for about `reserve` bytes. Reusing one scratch
     /// vector keeps large cluster uploads from reallocating and faulting in
     /// fresh pages every drain.
-    pub(in crate::render::sh_streaming) fn from_scratch(
-        mut scratch: Vec<u8>,
-        reserve: usize,
-    ) -> Self {
+    pub(crate) fn from_scratch(mut scratch: Vec<u8>, reserve: usize) -> Self {
         scratch.clear();
         scratch.reserve(reserve);
         Self {
@@ -64,7 +61,7 @@ impl StagedUploads {
     /// Stage `data` for `target[offset..]`. Offset and length follow the
     /// `Queue::write_buffer` rules (multiples of four bytes). A write that
     /// continues the previous one in the same buffer extends its copy.
-    pub(in crate::render::sh_streaming) fn write_buffer(
+    pub(crate) fn write_buffer(
         &mut self,
         target: &wgpu::Buffer,
         offset: u64,
@@ -78,7 +75,7 @@ impl StagedUploads {
     /// Stage f16 halves packed two per little-endian word, the low half
     /// first, with an odd tail padded by zero. Writes the halves straight
     /// into staging; sparse tile payloads are most of a cluster's bytes.
-    pub(in crate::render::sh_streaming) fn write_buffer_f16(
+    pub(crate) fn write_buffer_f16(
         &mut self,
         target: &wgpu::Buffer,
         offset: u64,
@@ -136,7 +133,7 @@ impl StagedUploads {
     /// Stage one texture region. `data` is tightly packed exactly as
     /// `Queue::write_texture` takes it: `rows_per_image` block rows of
     /// `bytes_per_row` bytes per depth slice.
-    pub(in crate::render::sh_streaming) fn write_texture(
+    pub(crate) fn write_texture(
         &mut self,
         target: &wgpu::Texture,
         origin: wgpu::Origin3d,
@@ -166,14 +163,38 @@ impl StagedUploads {
     /// Copy every staged write through one recycled staging buffer and one
     /// command buffer, then hand back the scratch vector. An empty batch
     /// allocates and submits nothing.
-    pub(in crate::render::sh_streaming) fn submit(
-        mut self,
+    pub(crate) fn submit(
+        self,
         pool: &mut StagingPool,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Vec<u8> {
         if self.copies.is_empty() {
             return self.bytes;
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Streamed SH Upload Copies"),
+        });
+        let recorded = self.record(pool, device, &mut encoder);
+        queue.submit(std::iter::once(encoder.finish()));
+        recorded.finish(pool)
+    }
+
+    /// Record every staged write into `encoder` after whatever it already
+    /// holds, through one recycled staging buffer. The caller submits the
+    /// encoder, then hands the result back with [`RecordedUploads::finish`].
+    /// An empty batch acquires no staging buffer.
+    pub(crate) fn record(
+        mut self,
+        pool: &mut StagingPool,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> RecordedUploads {
+        if self.copies.is_empty() {
+            return RecordedUploads {
+                scratch: self.bytes,
+                staging: None,
+            };
         }
         self.bytes
             .resize(self.bytes.len().next_multiple_of(BUFFER_ALIGNMENT), 0);
@@ -183,9 +204,6 @@ impl StagedUploads {
             .get_mapped_range_mut(..len)
             .copy_from_slice(&self.bytes);
         staging.unmap();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Streamed SH Upload Copies"),
-        });
         for copy in &self.copies {
             match copy {
                 StagedCopy::Buffer {
@@ -226,9 +244,29 @@ impl StagedUploads {
                 ),
             }
         }
-        queue.submit(std::iter::once(encoder.finish()));
-        pool.recycle(staging);
-        self.bytes
+        RecordedUploads {
+            scratch: self.bytes,
+            staging: Some(staging),
+        }
+    }
+}
+
+/// A batch recorded into a caller's encoder. Its staging buffer rejoins the
+/// pool only after the submission that reads it.
+#[must_use = "finish after submitting the encoder, or the staging buffer is lost"]
+pub(crate) struct RecordedUploads {
+    scratch: Vec<u8>,
+    staging: Option<wgpu::Buffer>,
+}
+
+impl RecordedUploads {
+    /// Recycle the staging buffer (call after `Queue::submit`) and hand back
+    /// the scratch vector.
+    pub(crate) fn finish(self, pool: &StagingPool) -> Vec<u8> {
+        if let Some(staging) = self.staging {
+            pool.recycle(staging);
+        }
+        self.scratch
     }
 }
 

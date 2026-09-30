@@ -2,15 +2,16 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
+    SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
+use crate::lightmap_bake::CellBlock;
 use crate::lightmap_layer::{LayerTexel, LightmapLayer};
 use crate::map_data::MapLight;
 
 use super::assignment::*;
-use super::encode::encode_side_by_side_bc5;
+use super::encode::encode_blocks_bc5;
 use super::{
     ResidentLayerTracker, SHADOWMASK_FILL_CHECKPOINT_TEXELS, allocate_shadowmask_raw_fill,
 };
@@ -23,6 +24,8 @@ pub(super) struct ShadowmaskFill<'a> {
     width: u32,
     height: u32,
     layer_count: u32,
+    /// Cell blocks the encoder slices out of the bake layers, in block order.
+    blocks: Vec<CellBlock>,
     plane: usize,
     compact_channels: Vec<u8>,
     channels: Vec<u8>,
@@ -37,6 +40,7 @@ impl<'a> ShadowmaskFill<'a> {
         width: u32,
         height: u32,
         layer_count: u32,
+        blocks: &[CellBlock],
         selected_light_count: usize,
         selected: &[(usize, u32, &MapLight)],
         graph: &OverlapGraph,
@@ -47,6 +51,7 @@ impl<'a> ShadowmaskFill<'a> {
             width,
             height,
             layer_count,
+            blocks,
             selected_light_count,
             selected,
             graph,
@@ -65,6 +70,7 @@ impl<'a> ShadowmaskFill<'a> {
         width: u32,
         height: u32,
         layer_count: u32,
+        blocks: &[CellBlock],
         selected_light_count: usize,
         selected: &[(usize, u32, &MapLight)],
         graph: &OverlapGraph,
@@ -104,6 +110,7 @@ impl<'a> ShadowmaskFill<'a> {
             width,
             height,
             layer_count,
+            blocks: blocks.to_vec(),
             plane,
             compact_channels,
             channels,
@@ -160,6 +167,7 @@ impl<'a> ShadowmaskFill<'a> {
             width,
             height,
             layer_count,
+            blocks,
             channels,
             data: raw,
             ..
@@ -168,16 +176,9 @@ impl<'a> ShadowmaskFill<'a> {
         // is not a `RawFillBuffer`, so the residency counters never see it.
         #[cfg(test)]
         super::record_raw_fill(&raw);
-        let data = encode_side_by_side_bc5(&raw, width, height, layer_count);
+        let blocks = encode_blocks_bc5(&raw, width, height, layer_count, &blocks);
         drop(raw);
-        ShadowmaskAtlasSection {
-            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width,
-            height,
-            layer_count,
-            channels,
-            data,
-        }
+        ShadowmaskAtlasSection { channels, blocks }
     }
 
     #[cfg(test)]

@@ -30,12 +30,19 @@ pub(super) fn prepare(
     geometry: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
     config: &LightmapConfig,
+    cell_clusters: &[u32],
+    control: &BakeControl,
 ) -> anyhow::Result<PreparedAtlas> {
-    lightmap_bake::prepare_atlas(
+    lightmap_bake::prepare_atlas_ordered(
         geometry,
         static_lights,
         config.lightmap_density,
         &map_data.lightmap_scale_regions,
+        lightmap_bake::BlockOrdering {
+            direction_texel_scale: config.direction_texel_scale,
+            cell_clusters,
+        },
+        control,
     )
     .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))
 }
@@ -61,12 +68,11 @@ pub(crate) fn bake_fused_prepared(
         placements: &prepared.placements,
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
     };
     // P1: the shadowmask whole-section memo and channel assignment are both
     // resolved before the lightmap memo can choose to skip the walk.
-    let level_label = args.input.display().to_string();
     let mut shadowmask = shadowmask_bake::prepare_fused_shadowmask(
-        &level_label,
         shadow_selection,
         alpha_lights,
         &shared,
@@ -86,12 +92,15 @@ pub(crate) fn bake_fused_prepared(
         } = shadowmask.finish();
         return Ok(FusedLightingOutput {
             lightmap: LightmapBakeOutput {
-                section: postretro_level_format::lightmap::LightmapSection::placeholder(),
+                section: postretro_level_format::lightmap::LightmapSection::empty(
+                    prepared.layout.direction_texel_scale,
+                ),
                 charts: prepared.charts,
                 placements: prepared.placements,
                 atlas_width: prepared.atlas_width,
                 atlas_height: prepared.atlas_height,
                 layer_count: prepared.layer_count,
+                layout: prepared.layout,
             },
             shadowmask,
             shadowmask_elapsed,
@@ -122,11 +131,6 @@ pub(crate) fn bake_fused_prepared(
             ));
         }
     }
-    let expected_layer_count = if layer_lights.is_empty() {
-        1
-    } else {
-        prepared.layer_count
-    };
     let section_key = stage_cache.map(|_| {
         let input_hash = lightmap_layer::section_input_hash(
             &layer_input_hashes,
@@ -149,10 +153,7 @@ pub(crate) fn bake_fused_prepared(
                 Ok(section) => match lightmap_layer::validate_cached_lightmap_section(
                     &section,
                     &shared,
-                    expected_layer_count,
-                    density,
                     config.uncompressed_irradiance,
-                    config.direction_texel_scale,
                 ) {
                     Ok(()) => Some(section),
                     Err(reason) => {
@@ -176,20 +177,17 @@ pub(crate) fn bake_fused_prepared(
         );
     }
 
-    let section = if layer_lights.is_empty() && compose_lightmap {
-        let mut fallback =
-            lightmap_layer::empty_composite(prepared.atlas_width, prepared.atlas_height);
-        fallback.dilate();
-        fallback.encode_section(
-            density,
-            config.uncompressed_irradiance,
-            config.direction_texel_scale,
-        )
-    } else if let Some(section) = cached_section {
+    let section = if let Some(section) = cached_section {
         section
     } else {
-        let mut irradiance = Vec::new();
-        let mut direction = Vec::new();
+        // Every bake layer is composed, dilated, encoded, and sliced into its
+        // blocks before the next begins. With no direct layer-bearing light
+        // (all static lights resolve through the SDF) the fold is empty and
+        // every block encodes zero irradiance and neutral direction.
+        let mut builder = lightmap_bake::BlockSectionBuilder::new(
+            &prepared.layout,
+            config.uncompressed_irradiance,
+        );
         let mut completed_work = 0usize;
         for target_layer in 0..prepared.layer_count {
             let target_chart_count = prepared
@@ -197,51 +195,42 @@ pub(crate) fn bake_fused_prepared(
                 .iter()
                 .filter(|placement| placement.layer == target_layer)
                 .count();
-            let mut accumulator =
-                lightmap_layer::IncrementalLayerAccumulator::for_atlas_layer(&shared, target_layer);
-            let hash_offset = target_layer as usize * layer_lights.len();
-            for (entry, input_hash) in layer_lights
-                .iter()
-                .zip(&layer_input_hashes[hash_offset..hash_offset + layer_lights.len()])
-            {
-                let partition = load_or_bake_partition(
-                    args,
-                    stage_cache,
-                    lightmap_control,
-                    geometry,
-                    bvh,
-                    primitives,
+            let mut plane = if layer_lights.is_empty() {
+                lightmap_layer::empty_composite(prepared.atlas_width, prepared.atlas_height)
+            } else {
+                let mut accumulator = lightmap_layer::IncrementalLayerAccumulator::for_atlas_layer(
                     &shared,
-                    entry.light,
-                    input_hash,
                     target_layer,
-                    target_chart_count,
                 );
-                completed_work = completed_work.saturating_add(target_chart_count);
-                accumulator.fold_partition(entry.light, &partition, &shared);
-                shadowmask.consume_partition(entry.source_index, &partition);
-            }
-            let mut plane = accumulator.finish();
+                let hash_offset = target_layer as usize * layer_lights.len();
+                for (entry, input_hash) in layer_lights
+                    .iter()
+                    .zip(&layer_input_hashes[hash_offset..hash_offset + layer_lights.len()])
+                {
+                    let partition = load_or_bake_partition(
+                        args,
+                        stage_cache,
+                        lightmap_control,
+                        geometry,
+                        bvh,
+                        primitives,
+                        &shared,
+                        entry.light,
+                        input_hash,
+                        target_layer,
+                        target_chart_count,
+                    );
+                    completed_work = completed_work.saturating_add(target_chart_count);
+                    accumulator.fold_partition(entry.light, &partition, &shared);
+                    shadowmask.consume_partition(entry.source_index, &partition);
+                }
+                accumulator.finish()
+            };
             plane.dilate();
-            let (mut layer_irradiance, mut layer_direction) = lightmap_bake::encode_atlas_layer(
-                &plane,
-                config.uncompressed_irradiance,
-                config.direction_texel_scale,
-            );
-            irradiance.append(&mut layer_irradiance);
-            direction.append(&mut layer_direction);
+            builder.push_layer(target_layer, &plane);
         }
         debug_assert_eq!(completed_work, total);
-        lightmap_bake::assemble_layered_section(
-            prepared.atlas_width,
-            prepared.atlas_height,
-            prepared.layer_count,
-            density,
-            config.uncompressed_irradiance,
-            config.direction_texel_scale,
-            irradiance,
-            direction,
-        )
+        builder.finish()
     };
 
     // If the lightmap memo hit but the shadowmask memo missed, consume only the
@@ -303,6 +292,7 @@ pub(crate) fn bake_fused_prepared(
             atlas_width: prepared.atlas_width,
             atlas_height: prepared.atlas_height,
             layer_count: prepared.layer_count,
+            layout: prepared.layout,
         },
         shadowmask,
         shadowmask_elapsed,
@@ -704,6 +694,7 @@ mod tests {
             placements: &lightmap.placements,
             atlas_width: lightmap.atlas_width,
             atlas_height: lightmap.atlas_height,
+            layout: &lightmap.layout,
         };
         let shadowmask = shadowmask_bake::bake_shadowmask_atlas(
             Some(selection),
@@ -719,30 +710,40 @@ mod tests {
         (lightmap.section.to_bytes(), shadowmask.to_bytes())
     }
 
-    fn assert_two_selected_channels_overlap_on_layer_one(bytes: &[u8]) {
-        let shadowmask =
-            ShadowmaskAtlasSection::from_bytes(bytes).expect("fused shadowmask bytes must decode");
-        assert_eq!(shadowmask.layer_count, 2);
+    /// Per-texel mask slots `[g0.r, g0.g, g1.r, g1.g]` of one block.
+    fn decode_block_slots(groups: &[Vec<u8>; 2], width: u32, height: u32) -> Vec<[u8; 4]> {
+        let a = crate::bc5::decode_bc5_rg(&groups[0], width, height);
+        let b = crate::bc5::decode_bc5_rg(&groups[1], width, height);
+        a.chunks_exact(2)
+            .zip(b.chunks_exact(2))
+            .map(|(a, b)| [a[0], a[1], b[0], b[1]])
+            .collect()
+    }
+
+    fn assert_two_selected_channels_overlap_in_block_one(lightmap: &[u8], bytes: &[u8]) {
+        let lightmap = postretro_level_format::lightmap::LightmapSection::from_bytes(lightmap)
+            .expect("fused lightmap bytes must decode");
+        let shadowmask = ShadowmaskAtlasSection::from_bytes(bytes, &lightmap.index())
+            .expect("fused shadowmask bytes must decode");
+        assert_eq!(shadowmask.blocks.len(), 2);
         assert_ne!(shadowmask.channels[0], SHADOWMASK_CHANNEL_DROPPED);
         assert_ne!(shadowmask.channels[1], SHADOWMASK_CHANNEL_DROPPED);
         assert_ne!(
             shadowmask.channels[0], shadowmask.channels[1],
             "overlapping selected lights must occupy distinct channels"
         );
-        let masks = shadowmask_bake::decode_side_by_side(
-            &shadowmask.data,
-            shadowmask.width,
-            shadowmask.height,
-            shadowmask.layer_count,
+        let block = &lightmap.blocks[1];
+        let texels = decode_block_slots(
+            &shadowmask.blocks[1],
+            u32::from(block.width),
+            u32::from(block.height),
         );
-        let layer_plane_bytes = shadowmask.width as usize * shadowmask.height as usize * 4;
-        let layer_one = &masks[layer_plane_bytes..];
         assert!(
-            layer_one.chunks_exact(4).any(|texel| {
+            texels.iter().any(|texel| {
                 texel[shadowmask.channels[0] as usize] != 0
                     && texel[shadowmask.channels[1] as usize] != 0
             }),
-            "both selected lights must write their assigned channels at one overlapping layer-1 texel"
+            "both selected lights must write their assigned channels at one overlapping block-1 texel"
         );
     }
 
@@ -782,7 +783,7 @@ mod tests {
             assert_eq!(cold.1, reference.1, "cold fused shadowmask bytes changed");
             assert_eq!(parallel_cold, cold);
 
-            assert_two_selected_channels_overlap_on_layer_one(&cold.1);
+            assert_two_selected_channels_overlap_in_block_one(&cold.0, &cold.1);
 
             let dir = fresh_cache_dir(if uncompressed { "rgba16f" } else { "bc6h" });
             let cache = StageCache::new(&dir).expect("create fused test cache");
@@ -863,7 +864,7 @@ mod tests {
                 selection_only.1, edited_reference.1,
                 "selection-only fused shadowmask must match cold reference bytes"
             );
-            assert_two_selected_channels_overlap_on_layer_one(&selection_only.1);
+            assert_two_selected_channels_overlap_in_block_one(&selection_only.0, &selection_only.1);
             selection_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
             selection_logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
             selection_logs.assert_not_logged(Level::Info, "[cache] lightmap_layer miss");
@@ -970,7 +971,14 @@ mod tests {
             &BakeControl::new(Arc::new(Governor::new(1, false)), &second_progress),
             &BakeControl::unrestricted(),
         );
-        assert_eq!(first.lightmap.section.layer_count, 1);
+        assert_eq!(first.lightmap.section.blocks.len(), 1);
+        assert!(
+            first.lightmap.section.blocks[0]
+                .direction
+                .chunks_exact(2)
+                .all(|texel| texel == [128, 255]),
+            "an all-SDF bake keeps its block with neutral direction"
+        );
         assert_eq!(
             first.lightmap.section.to_bytes(),
             second.lightmap.section.to_bytes()

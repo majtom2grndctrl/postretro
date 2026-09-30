@@ -24,8 +24,9 @@ pub enum SectionId {
     /// Flat list of texture name strings, indexed by `FaceMeta.texture_index`.
     TextureNames = 16,
 
-    /// Geometry section: 28-byte vertices (position + UV + octahedral normal
-    /// + octahedral tangent with bitangent sign) and 8-byte `FaceMeta`.
+    /// Geometry section: 36-byte vertices (position, UV, octahedral normal,
+    /// octahedral tangent with bitangent sign, block-local lightmap UV,
+    /// lightmap cell block id + 1, animated block id) and 8-byte `FaceMeta`.
     Geometry = 17,
 
     /// AlphaLights section (interim). Flat per-light record array for the
@@ -48,10 +49,11 @@ pub enum SectionId {
     /// See `light_influence::LightInfluenceSection`.
     LightInfluence = 21,
 
-    /// Directional lightmap atlas: per-texel irradiance + dominant incoming
-    /// direction from static (non-dynamic) lights. Sampled at runtime via
-    /// per-vertex lightmap UVs; bumped-Lambert correction applies normal-map
-    /// response to the baked direction. See `lightmap::LightmapSection`.
+    /// Directional lightmap as per-cell blocks: per-texel irradiance +
+    /// dominant incoming direction from static (non-dynamic) lights. A vertex
+    /// names its block and a block-local UV; bumped-Lambert correction applies
+    /// normal-map response to the baked direction. See
+    /// `lightmap::LightmapSection`.
     Lightmap = 22,
 
     /// World-space uniform chunk grid with per-chunk static-light index lists.
@@ -176,8 +178,8 @@ pub enum SectionId {
     DirectShDeltaVolumes = 41,
 
     /// Per-selected-light baked world-visibility masks for up to four
-    /// overlapping selected lights, packed as two BC5 `.rg` mask groups
-    /// side by side per layer (slot `s` in group `s / 2`, channel `s % 2`).
+    /// overlapping selected lights, stored per id-22 cell block as two BC5
+    /// `.rg` group planes (slot `s` in group `s / 2`, channel `s % 2`).
     /// See `shadowmask_atlas::ShadowmaskAtlasSection`.
     ShadowmaskAtlas = 42,
 
@@ -216,6 +218,12 @@ pub enum SectionId {
     /// streaming residency path. Older loaders skip this section and retain
     /// their whole-section SH behavior.
     ClusterShPayloads = 50,
+
+    /// Streaming-owned cell relation: each camera cell's mandatory cells and
+    /// the smallest movement lead that makes each one mandatory. Resources
+    /// map these cells to their own residency units.
+    /// See `cell_residency_set::CellResidencySetSection`.
+    CellResidencySet = 51,
 }
 
 impl SectionId {
@@ -259,6 +267,7 @@ impl SectionId {
             48 => Some(Self::AnimatedBillboardDirectScatterDeltaVolumes),
             49 => Some(Self::ClusterDirectory),
             50 => Some(Self::ClusterShPayloads),
+            51 => Some(Self::CellResidencySet),
             _ => None,
         }
     }
@@ -309,6 +318,7 @@ mod tests {
             SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
             SectionId::ClusterDirectory,
             SectionId::ClusterShPayloads,
+            SectionId::CellResidencySet,
         ];
 
         for section_id in registered {
@@ -316,6 +326,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(51), None);
+        assert_eq!(SectionId::from_u32(52), None);
     }
 }

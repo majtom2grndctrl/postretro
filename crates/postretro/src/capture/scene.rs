@@ -4,6 +4,8 @@
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::render::LightTermMask;
+
 /// Default horizontal field of view in degrees, matching `camera::HFOV`.
 pub(crate) const DEFAULT_FOV_DEG: f32 = 100.0;
 use crate::camera::{MAX_FOV_DEG, MIN_FOV_DEG};
@@ -37,6 +39,33 @@ pub(crate) struct CaptureScene {
     /// Optional stepped-frame measurement. Warmup and samples advance renderer
     /// animation at fixed 1/60-second steps; omission keeps the single readback.
     pub(crate) measurement: Option<CaptureMeasurement>,
+    /// Capture-only light-term mask, as `LightTermMask` bits (bit 3 static
+    /// baked direct, bit 6 specular, ...). Omitted keeps every term, so a
+    /// capture can drop terms without dev-tools.
+    pub(crate) light_term_mask: Option<u32>,
+    /// Capture-only forced lightmap misses: these streamed block ids stay
+    /// non-resident through the capture. Requires a streamed lightmap.
+    #[serde(default)]
+    pub(crate) force_missing_lightmap_blocks: Vec<u32>,
+    /// Capture-only streamed-lightmap pool cap in layers, for the first pool
+    /// generation and every drain. Omitted keeps the engine default. Requires
+    /// a streamed lightmap.
+    pub(crate) lightmap_pool_cap_layers: Option<u32>,
+}
+
+impl CaptureScene {
+    /// The scene's light-term mask; validated bits only.
+    pub(crate) fn light_term_mask(&self) -> Option<LightTermMask> {
+        self.light_term_mask.map(light_term_mask_from_bits)
+    }
+}
+
+fn light_term_mask_from_bits(bits: u32) -> LightTermMask {
+    let mut mask = LightTermMask::ALL;
+    for term in LightTermMask::ALL_TERMS {
+        mask.set_enabled(term, bits & term.bits() != 0);
+    }
+    mask
 }
 
 /// Author-controlled output and bounds for a stepped capture measurement.
@@ -124,6 +153,13 @@ pub(crate) enum SceneError {
     PitchOutOfRange { value: f32 },
     #[error("invalid capture scene: camera position is too large to form a stable view matrix")]
     DegenerateCamera,
+    #[error(
+        "invalid capture scene: light_term_mask {bits:#x} sets bits outside the wired terms {:#x}",
+        LightTermMask::ALL.bits()
+    )]
+    LightTermMaskOutOfRange { bits: u32 },
+    #[error("invalid capture scene: lightmap_pool_cap_layers must be at least 1")]
+    LightmapPoolCapZero,
 }
 
 /// Parse a scene document and validate all GPU-independent authoring limits.
@@ -184,6 +220,14 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
                 });
             }
         }
+    }
+    if let Some(bits) = scene.light_term_mask
+        && bits & !LightTermMask::ALL.bits() != 0
+    {
+        return Err(SceneError::LightTermMaskOutOfRange { bits });
+    }
+    if scene.lightmap_pool_cap_layers == Some(0) {
+        return Err(SceneError::LightmapPoolCapZero);
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -250,6 +294,57 @@ mod tests {
             "an omitted measurement block must retain the legacy one-frame capture path"
         );
         assert!(!scene.force_full_resident_sh_compose);
+    }
+
+    #[test]
+    fn parse_scene_defaults_leave_lighting_and_lightmap_residency_untouched() {
+        let scene = parse_scene(SCENE_WITH_DEFAULT_FOV).expect("scene must parse");
+        assert_eq!(scene.light_term_mask(), None);
+        assert!(scene.force_missing_lightmap_blocks.is_empty());
+        assert_eq!(scene.lightmap_pool_cap_layers, None);
+    }
+
+    #[test]
+    fn parse_scene_accepts_capture_only_light_mask_and_lightmap_overrides() {
+        let masked = LightTermMask::ALL.bits()
+            & !(LightTermMask::BAKED_DIRECT_STATIC.bits() | LightTermMask::SPECULAR.bits());
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            &format!(
+                "\"output\": \"capture.png\", \"light_term_mask\": {masked}, \
+                 \"force_missing_lightmap_blocks\": [3, 7], \"lightmap_pool_cap_layers\": 128"
+            ),
+        );
+
+        let scene = parse_scene(&json).expect("lightmap override scene must parse");
+        let mask = scene.light_term_mask().expect("mask set");
+        assert_eq!(mask.bits(), masked);
+        assert!(!mask.contains(LightTermMask::BAKED_DIRECT_STATIC));
+        assert!(!mask.contains(LightTermMask::SPECULAR));
+        assert!(mask.contains(LightTermMask::INDIRECT_STATIC));
+        assert_eq!(scene.force_missing_lightmap_blocks, vec![3, 7]);
+        assert_eq!(scene.lightmap_pool_cap_layers, Some(128));
+    }
+
+    #[test]
+    fn parse_scene_rejects_unwired_mask_bits_and_a_zero_pool_cap() {
+        // Bit 7 is the reserved, unwired emissive term.
+        let reserved = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"light_term_mask\": 128",
+        );
+        assert!(matches!(
+            parse_scene(&reserved),
+            Err(SceneError::LightTermMaskOutOfRange { bits: 128 })
+        ));
+        let zero_cap = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"lightmap_pool_cap_layers\": 0",
+        );
+        assert!(matches!(
+            parse_scene(&zero_cap),
+            Err(SceneError::LightmapPoolCapZero)
+        ));
     }
 
     #[test]
@@ -490,6 +585,9 @@ mod tests {
             force_promotion: None,
             force_full_resident_sh_compose: false,
             measurement: None,
+            light_term_mask: None,
+            force_missing_lightmap_blocks: Vec::new(),
+            lightmap_pool_cap_layers: None,
         };
         assert!(matches!(
             validate_scene(&scene),

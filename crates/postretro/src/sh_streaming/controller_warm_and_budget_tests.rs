@@ -14,6 +14,7 @@ use super::tests::{
 };
 use super::*;
 use crate::sh_streaming::generation::FixedGenerationClock;
+use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 
 const METRE: u32 = 1024;
 const MIB: usize = 1024 * 1024;

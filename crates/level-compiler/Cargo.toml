@@ -33,9 +33,13 @@ crossterm = "0.28"
 tempfile.workspace = true
 same-file.workspace = true
 fs4.workspace = true
+# The CellResidencySet bake (id 51) samples visibility with the runtime portal
+# walk over the world the runtime loader builds, so the baked set is what the
+# runtime sees.
+postretro-level-loader.workspace = true
+postretro-visibility.workspace = true
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
-postretro-level-loader.workspace = true
-postretro-visibility.workspace = true
+postretro-render-cpu.workspace = true
 proptest = { workspace = true }

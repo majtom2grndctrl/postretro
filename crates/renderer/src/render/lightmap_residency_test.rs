@@ -64,9 +64,9 @@ fn one_block_per_page(pages: u32) -> (AnimatedLightWeightMapsSection, AnimatedLi
         compact_layers: pages,
         blocks: (0..pages)
             .map(|page| AnimatedBlock {
-                static_layer: 0,
-                static_x: 0,
-                static_y: 0,
+                lightmap_block: 0,
+                block_x: 0,
+                block_y: 0,
                 compact_x: 0,
                 compact_y: 0,
                 compact_layer: page,
@@ -120,7 +120,7 @@ fn install_animated(
     device: &wgpu::Device,
     section: &AnimatedLightWeightMapsSection,
     chunks: &AnimatedLightChunksSection,
-    static_layers: (u32, u32),
+    static_blocks: &[(u32, u32)],
 ) -> (Result<(), String>, AnimatedLightmapResources) {
     let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("meter uniforms layout"),
@@ -134,7 +134,7 @@ fn install_animated(
         &[],
         &animation,
         &uniform_layout,
-        Some(static_layers),
+        Some(static_blocks),
         AnimatedLmDebugConfig::disabled(),
     );
     let outcome = built.as_ref().map(|_| ()).map_err(Clone::clone);
@@ -161,7 +161,7 @@ fn a_real_compact_atlas_meters_page_count_times_page_bytes() {
         return;
     };
     let (section, chunks) = one_block_per_page(3);
-    let (outcome, resources) = install_animated(&device, &section, &chunks, (64, 1));
+    let (outcome, resources) = install_animated(&device, &section, &chunks, &[(64, 64)]);
     assert_eq!(outcome, Ok(()));
     let [irradiance, direction] = resources.residency_rows();
     assert_eq!(irradiance.name, LIGHTMAP_ANIMATED_IRRADIANCE);
@@ -182,7 +182,7 @@ fn a_rejected_atlas_meters_its_placeholder_not_the_rejected_size() {
     };
     let pages = device.limits().max_texture_array_layers + 1;
     let (section, chunks) = one_block_per_page(pages);
-    let (outcome, resources) = install_animated(&device, &section, &chunks, (64, 1));
+    let (outcome, resources) = install_animated(&device, &section, &chunks, &[(64, 64)]);
     let error = outcome.expect_err("more pages than the device allows must be rejected");
     assert!(error.contains("maxTextureArrayLayers"), "{error}");
     let [irradiance, direction] = resources.residency_rows();
@@ -199,8 +199,9 @@ fn a_rejected_atlas_meters_its_placeholder_not_the_rejected_size() {
 #[test]
 #[ignore = "on-demand GPU coverage"]
 fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
+    use crate::lighting::lightmap::test_fixtures::{block_fixture, zero_texels};
     use crate::render::Renderer;
-    use postretro_level_format::lightmap::{LightmapPayloads, LightmapSection};
+    use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
     let mut renderer = match Renderer::new_offscreen(8, 8) {
         Ok(renderer) => renderer,
@@ -213,21 +214,13 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
         .expect("full renderer");
     assert_eq!(boot.allocations.len(), 5);
 
-    // A 64² two-layer static lightmap and no animated sections.
-    let static_size = 64_u32;
-    let section = LightmapSection {
-        layer_count: 2,
-        irr_width: static_size,
-        irr_height: static_size,
-        irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
-        irradiance: vec![0u8; (static_size * static_size * 2 * 8) as usize],
-        dir_width: static_size,
-        dir_height: static_size,
-        direction: vec![0u8; (static_size * static_size * 2 * 2) as usize],
-        ..LightmapSection::placeholder()
-    };
-    let (header, payloads) = section.into_parts();
-    let install = |renderer: &mut Renderer, header: Option<&_>, payloads| {
+    // Five 1024² Rgba16Float cell blocks fill two pool layers; no animated
+    // sections.
+    let level_a_blocks = block_fixture(&[(1024, 1024); 5], 2, &zero_texels());
+    let layer_bytes = u64::from(LIGHTMAP_POOL_LAYER_EDGE * LIGHTMAP_POOL_LAYER_EDGE * 8);
+    let install = |renderer: &mut Renderer,
+                   index: Option<&postretro_level_format::lightmap::LightmapBlockIndex>,
+                   payloads| {
         let empty_bvh = crate::render::BvhTree {
             nodes: Vec::new(),
             leaves: Vec::new(),
@@ -241,7 +234,8 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
             light_influences: &[],
             sh_volume: None,
             sh_storage: crate::render::LevelGeometryShStorage::Legacy,
-            lightmap: header,
+            lightmap: index,
+            lightmap_streaming: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
@@ -265,16 +259,16 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
 
     install(
         &mut renderer,
-        Some(&header),
+        Some(&level_a_blocks.index),
         postretro_level_loader::GpuLightingPayloads {
-            lightmap: Some(payloads),
-            shadowmask: None,
+            blocks: level_a_blocks.payloads.clone(),
         },
     );
     let level_a = renderer.lightmap_residency_report().cloned().unwrap();
     assert_eq!(
         level_a.bytes(super::LIGHTMAP_STATIC_IRRADIANCE),
-        Some(u64::from(static_size * static_size * 2 * 8))
+        Some(2 * layer_bytes),
+        "the pool meters its layers, not the block bytes"
     );
     for name in [LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_ANIMATED_DIRECTION] {
         assert_eq!(
@@ -295,30 +289,18 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
         );
     }
 
-    // Level B: a one-layer atlas; its rows are its own, not A's.
-    let section_b = LightmapSection {
-        layer_count: 1,
-        irr_width: static_size,
-        irr_height: static_size,
-        irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
-        irradiance: vec![0u8; (static_size * static_size * 8) as usize],
-        dir_width: static_size,
-        dir_height: static_size,
-        direction: vec![0u8; (static_size * static_size * 2) as usize],
-        ..LightmapSection::placeholder()
-    };
-    let (header_b, payloads_b): (_, LightmapPayloads) = section_b.into_parts();
+    // Level B: one small block on one pool layer; its rows are its own.
+    let level_b_blocks = block_fixture(&[(64, 64)], 2, &zero_texels());
     install(
         &mut renderer,
-        Some(&header_b),
+        Some(&level_b_blocks.index),
         postretro_level_loader::GpuLightingPayloads {
-            lightmap: Some(payloads_b),
-            shadowmask: None,
+            blocks: level_b_blocks.payloads.clone(),
         },
     );
     let level_b = renderer.lightmap_residency_report().cloned().unwrap();
     assert_eq!(
         level_b.bytes(super::LIGHTMAP_STATIC_IRRADIANCE),
-        Some(u64::from(static_size * static_size * 8))
+        Some(layer_bytes)
     );
 }

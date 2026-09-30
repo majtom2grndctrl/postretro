@@ -2,10 +2,11 @@
 
 > **Status:** Epic seed. SH is the first resource and ships through stages 1–4 below
 > (`context/plans/done/sh-probe-streaming/`). Generalizing to further resources is
-> unplanned. Stage 5 (lightmap-shaped data first) is the resumable problem brief
-> `ready/spatial-residency--lightmap-cell-blocks/`, covering the full path: compiler cell blocks, a baked residency set, runtime pool and
-> remap, streaming through the issuer, and a dev-panel meter. Its budget is a debug-tool
-> pool-cap slider. The player-facing tier is a later spec: `experimental_spikes.md`
+> unplanned. Stage 5 (lightmap-shaped data first) shipped as the brief
+> `done/spatial-residency--lightmap-cell-blocks/`: compiler cell blocks, a baked residency set (id 51), a runtime pool and
+> vertex block table, streaming through the shared issuer, and a dev-panel meter. Its budget is a debug-tool
+> pool-cap slider. Its findings recommend a pool-policy change before the Low tier fits, and moving the
+> payload split off the frame thread. The player-facing tier is a later spec: `experimental_spikes.md`
 > forbids user-facing settings in a spike. Not ready for `/build-spec`.
 > **Supporting research:** `context/research/spatial-streaming.md`. Shipped SH residency:
 > `context/lib/rendering_pipeline.md` §Cluster SH residency.

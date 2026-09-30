@@ -14,7 +14,7 @@ use postretro_level_format::cluster_sh_payloads::{
     source_metadata_from_sections,
 };
 use postretro_level_format::fog_volumes::FogVolumesSection;
-use postretro_level_format::geometry::GeometrySection;
+use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::octahedral::{MAX_SH_ATLAS_DIMENSION, irradiance_atlas_array_layout};
 use postretro_level_format::sh_volume::{
@@ -23,7 +23,7 @@ use postretro_level_format::sh_volume::{
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
 
-pub(super) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
+pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("sync-proof.prl");
     let cells = CellsSection {
@@ -187,7 +187,7 @@ pub(super) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
     let sections = vec![
         blob(
             SectionId::Geometry,
-            1,
+            GEOMETRY_CONTAINER_VERSION,
             GeometrySection {
                 vertices: Vec::new(),
                 indices: Vec::new(),

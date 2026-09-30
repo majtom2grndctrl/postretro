@@ -596,7 +596,7 @@ mod tests {
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0,
+            lightmap_block: 0,
             animated_block: 0,
         };
         // Wall geometry (referenced by triangles) plus four bounds-only
@@ -911,7 +911,7 @@ mod tests {
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0,
+            lightmap_block: 0,
             animated_block: 0,
         };
         // Floor quad at y=0 spanning x,z in [-6, 6]. Two triangles.

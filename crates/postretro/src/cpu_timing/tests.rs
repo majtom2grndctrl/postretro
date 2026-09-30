@@ -277,6 +277,10 @@ fn drive_timer_frames(timer: &mut CpuFrameTimer, frames: u32) {
                     let visibility = every_stage::<VisibilityStage>(gate);
                     timer.nested_mut().extend_from(&visibility, anchor);
                 }
+                FrameStage::RenderPrep => {
+                    let streaming = every_stage::<super::StreamingStage>(gate);
+                    timer.nested_mut().extend_from(&streaming, anchor);
+                }
                 FrameStage::Render => {
                     let render = every_stage::<RenderStage>(gate);
                     timer.nested_mut().extend_from(&render, anchor);
@@ -481,6 +485,7 @@ fn shared_timing_crate_source_names_no_engine_stage() {
     }
     let stage_labels: Vec<&str> = labels::<FrameStage>()
         .chain(labels::<super::PredictionStage>())
+        .chain(labels::<super::StreamingStage>())
         .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
         .chain(labels::<postretro_visibility::VisibilityStage>())
         .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
@@ -517,6 +522,7 @@ fn every_folded_stage_label_is_unique() {
     }
     let all: Vec<&str> = labels::<FrameStage>()
         .chain(labels::<super::PredictionStage>())
+        .chain(labels::<super::StreamingStage>())
         .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
         .chain(labels::<postretro_visibility::VisibilityStage>())
         .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
@@ -559,4 +565,45 @@ fn totals_are_marked_as_aggregates_and_excluded_from_the_stage_sum() {
         record.top_level_time(),
         record.value(derived::TOTAL).unwrap()
     );
+}
+
+// AC 23: the lightmap residency stages reach the `[CpuTiming]` line under
+// `render_prep`, the controller's work apart from the renderer drain.
+#[test]
+fn lightmap_residency_stages_sit_under_render_prep_in_the_log_line() {
+    use postretro_stage_timing::StageFrame;
+
+    use super::StreamingStage;
+
+    // Drift guard: a new variant must be placed here and given a label.
+    for &stage in StreamingStage::ALL {
+        let expected = match stage {
+            StreamingStage::LightmapResidency => "lightmap_residency",
+            StreamingStage::LightmapDrain => "lightmap_drain",
+        };
+        assert_eq!(stage.label(), expected);
+        assert_eq!(stage.parent(), None, "{expected} is a root");
+        assert_eq!(stage.kind(), StageKind::Time);
+    }
+
+    let capture = LogCapture::start();
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    for _ in 0..WINDOW_FRAMES {
+        let start = Instant::now();
+        timer.begin_frame(start);
+        timer.stages().add_nanos(FrameStage::RenderPrep, 3 * MS);
+        let streaming = StageFrame::<StreamingStage>::new(timer.gate());
+        streaming.add_nanos(StreamingStage::LightmapResidency, MS);
+        streaming.add_nanos(StreamingStage::LightmapDrain, 2 * MS);
+        timer
+            .nested_mut()
+            .extend_from(&streaming, Some(FrameStage::RenderPrep.label()));
+        timer.finish_frame(start + Duration::from_nanos(4 * MS));
+    }
+    let window = timer.last_window().expect("window closed");
+    for label in ["lightmap_residency", "lightmap_drain"] {
+        assert_eq!(window.row(label).unwrap().parent, Some("render_prep"));
+    }
+    capture.assert_logged_once(log::Level::Info, "lightmap_residency=1.000/1.000ms");
+    capture.assert_logged_once(log::Level::Info, "lightmap_drain=2.000/2.000ms");
 }

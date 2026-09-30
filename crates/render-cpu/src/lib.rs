@@ -7,6 +7,7 @@ pub mod flash_clamp;
 pub mod flash_limiter;
 pub mod fog_mask;
 pub mod frame_uniforms;
+pub mod lightmap_pool;
 pub mod loaded_texture;
 pub mod material_plan;
 pub mod mesh_instances;

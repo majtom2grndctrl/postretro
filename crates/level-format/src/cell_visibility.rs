@@ -1,5 +1,5 @@
 // CellVisibility PRL section (ID 46): static cell-to-cell portal-graph coupling.
-// See: context/plans/in-progress/cell-visibility-relation/index.md
+// See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
 

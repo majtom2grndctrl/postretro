@@ -1,133 +1,75 @@
-// Directional lightmap GPU resources: irradiance + direction atlas upload,
-// sampler, and bind group (group 4).
-// See: context/lib/rendering_pipeline.md §4
+// Static lightmap GPU resources: the all-resident or streamed cell-block pool
+// (or the neutral placeholders), the group-4 bind group, and the group-6
+// vertex block table.
+// See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
+
+mod bindings;
+mod plan;
+mod pool;
+#[cfg(test)]
+mod pool_sample_test;
+mod stream;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+#[cfg(test)]
+mod tests;
+mod upload;
 
 use postretro_level_format::SectionId;
-use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::animated_lightmap_atlas::{
-    ANIMATED_BLOCK_CAP, ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK, ANIMATED_BLOCK_TABLE_HEADER_BYTES,
-    ANIMATED_BLOCK_TABLE_UNIFORM_BYTES,
-};
-use postretro_level_format::lightmap::{
-    DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapHeader,
-};
-use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasHeader,
-    ShadowmaskAtlasSection,
-};
+use postretro_level_format::lightmap::LightmapBlockIndex;
+use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
+use postretro_render_cpu::lightmap_pool::{block_table_bytes, placeholder_block_table};
 use wgpu::util::DeviceExt;
 
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use crate::render::{LIGHTMAP_SHADOWMASK, LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE};
 
-/// Group 4 bindings. The layout is fixed — the fragment shader's
-/// `@binding` decorators must match these values.
-pub const BIND_IRRADIANCE: u32 = 0;
-pub const BIND_DIRECTION: u32 = 1;
-/// Non-filtering (Nearest) sampler. Used for the octahedral direction texture:
-/// linear interpolation of octahedral-encoded unit vectors does not commute
-/// with slerp, so the direction channel must stay nearest.
-pub const BIND_SAMPLER: u32 = 2;
-/// Animated-light contribution atlas (Rgba16Float). Composed each frame by
-/// `render::animated_lightmap`; forward pass samples alongside the static
-/// atlas. See: context/lib/rendering_pipeline.md §4
-pub const BIND_ANIMATED_ATLAS: u32 = 3;
-/// Filtering (Linear) sampler. Used for the irradiance and animated atlases so
-/// baked penumbra ramps read as continuous gradients under magnification
-/// instead of stair-stepping at atlas-texel boundaries. `Rgba16Float`
-/// linear-filterability is a hard runtime requirement checked at init
-/// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
-pub const BIND_FILTERING_SAMPLER: u32 = 4;
-/// Animated dominant-direction atlas (Rgba8Unorm: octahedral direction in `.rg`,
-/// coverage flag in `.a`). Composed each frame alongside the animated irradiance
-/// atlas; the forward pass samples it to apply bumped-Lambert normal-map correction
-/// to the animated term. Sampled through the nearest sampler at binding 2 — oct
-/// directions must not be linearly interpolated. Binding 5 here (group 4, forward
-/// pass) and binding 8 in the compose shader are independent numbering spaces for
-/// the same atlas.
-pub const BIND_ANIMATED_DIRECTION: u32 = 5;
-/// Static-light shadowmask atlas (BC5 `.rg`, two mask groups side by side at
-/// twice the lightmap width), layer-matched to the lightmap irradiance atlas.
-/// Sampled by forward union-subtraction and static world-specular visibility.
-pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
-/// Animated block table for the forward shader: where each animated face's
-/// block sits in the compact atlas. FRAGMENT-only uniform.
-pub const BIND_ANIMATED_BLOCK_TABLE: u32 = 7;
+use bindings::{ANIMATED_BLOCK_TABLE_BYTES, BIND_BLOCK_TABLE, Group4Bindings};
+pub(crate) use bindings::{
+    animated_block_table_bytes, bind_group_layout_entries, block_table_bind_group_layout_entries,
+    filtering_sampler_descriptor,
+};
+#[cfg(test)]
+pub(crate) use plan::StaticPoolPlan;
+pub(crate) use plan::{StaticPool, StreamingPoolPlan, plan_static_pool, plan_streaming_pool};
+pub(crate) use pool::upload_static_pool;
+use stream::{DrainEffects, LightmapStreamState};
+pub use stream::{LightmapResidencyDrainError, LightmapStreamCounters};
+pub(crate) use upload::upload_placeholder_shadowmask;
+pub use upload::{atlas_format_filterable, bc6h_irradiance_filterable};
+use upload::{upload_placeholder_direction, upload_placeholder_irradiance};
 
-/// Bytes of the binding-7 uniform, the same for every level: the forward
-/// shader declares a fixed-length table sized to the shared block cap.
-pub(crate) const ANIMATED_BLOCK_TABLE_BYTES: usize = ANIMATED_BLOCK_TABLE_UNIFORM_BYTES as usize;
-
-/// Build the binding-7 block-table uniform for the installed section, or an
-/// empty table when `section` is `None`. An empty table resolves every vertex
-/// to no block, whatever ids the level's vertices carry. Layout (native-endian
-/// u32s, as the GPU reads them, mirroring `AnimatedBlockTable` in forward.wgsl):
-/// `static_layer_size, page_size, block_count, 0`, then per block the packed
-/// `(i16 dx, i16 dy)` static→compact texel offset and the page.
-pub(crate) fn animated_block_table_bytes(
-    section: Option<&AnimatedLightWeightMapsSection>,
-    static_layer_size: u32,
-) -> Vec<u8> {
-    let mut bytes = vec![0_u8; ANIMATED_BLOCK_TABLE_BYTES];
-    let Some(section) = section else {
-        return bytes;
-    };
-    assert!(
-        section.blocks.len() <= ANIMATED_BLOCK_CAP as usize,
-        "section 25 consistency validation bounds the block count to the table cap"
-    );
-    let mut write = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
-    write(0, static_layer_size);
-    write(4, section.page_size);
-    write(8, section.blocks.len() as u32);
-    for (index, block) in section.blocks.iter().enumerate() {
-        let dx = texel_offset(block.static_x, block.compact_x);
-        let dy = texel_offset(block.static_y, block.compact_y);
-        let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
-            + index * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
-        write(at, u32::from(dx as u16) | (u32::from(dy as u16) << 16));
-        write(at + 4, block.compact_layer);
-    }
-    bytes
-}
-
-/// Static→compact translation on one axis. Both coordinates lie inside an
-/// 8192-texel layer, so the difference always fits an `i16`.
-fn texel_offset(static_coord: u32, compact_coord: u32) -> i16 {
-    i16::try_from(i64::from(compact_coord) - i64::from(static_coord))
-        .expect("static and compact coordinates lie within one 8192-texel layer")
-}
-
-/// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
-/// and the bind group that exposes them to the forward shader.
+/// Static lightmap GPU resources for one level install.
 ///
-/// Always allocated. When the level has no `Lightmap` PRL section, a 1×1
-/// white/neutral placeholder is uploaded so the shader path is identical in
-/// every case. That matches the runtime fallback the SH volume uses and keeps
-/// the bind group layout independent of map content.
+/// Always allocated. A level with blocks binds the all-resident or streamed
+/// pool; a level without them (no id 22, zero blocks, or a pool the device
+/// rejected) binds the 1×1 neutral placeholders, so the shader path is
+/// identical in every case and the bind group layouts stay independent of
+/// map content.
 ///
-/// The bind-group-layout is returned separately from `new()` because the
-/// pipeline layout needs it before the bind group is populated — storing it
-/// alongside the bind group would have two owners of the same logical handle.
+/// The bind group layouts are built separately (`bind_group_layout`,
+/// `block_table_bind_group_layout`) because the pipeline layout needs them
+/// before any level exists.
 pub struct LightmapResources {
     pub bind_group: wgpu::BindGroup,
-    /// Whether a real lightmap atlas was uploaded (false = 1×1 placeholder).
-    /// Read by future debug UIs; kept public so it doesn't drift with dead-code
-    /// elimination in release builds.
-    #[allow(dead_code)]
-    pub present: bool,
-    /// Whether a real ShadowmaskAtlas was uploaded (false = 2x1x1 fully-visible
+    /// Group 6: the vertex-stage block table.
+    pub block_table_bind_group: wgpu::BindGroup,
+    /// Whether the shadowmask pool is bound (false = 2x1x1 fully-visible
     /// placeholder). Rejected or absent shadowmask data uses this all-visible
     /// fallback so static specular remains fully lit.
     pub shadowmask_present: bool,
-    /// Static dominant-direction atlas texture (Rg8Unorm for current sections,
-    /// Rgba8Unorm for accepted legacy sections; octahedral in rg).
-    /// Forward shading samples it for bumped-Lambert normal-map correction.
-    #[allow(dead_code)]
-    direction_texture: wgpu::Texture,
     /// Static irradiance, static direction and shadowmask meter rows, read
     /// from the textures this set actually binds.
     pub residency: [ResidencyAllocation; 3],
+    group4: Group4Bindings,
+    /// The streamed pool, when the level streams its blocks.
+    stream: Option<LightmapStreamState>,
+    /// The all-visible placeholder a streamed pool without id 42 keeps bound
+    /// across growth rebinds.
+    streamed_shadowmask_placeholder: Option<wgpu::Texture>,
+    /// Highest drain generation this set or an earlier level accepted.
+    generation_high_water: u64,
 }
 
 /// Build the lightmap bind group layout. Callable before resources exist so
@@ -139,95 +81,147 @@ pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
+/// Build the group-6 block-table layout. Callable before resources exist.
+pub fn block_table_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Lightmap Block Table Bind Group Layout"),
+        entries: &block_table_bind_group_layout_entries(),
+    })
+}
+
 impl LightmapResources {
-    /// Builds one coherent group-4 resource set. Its independently constructed
-    /// static, animated, and layout inputs are intentionally kept explicit at
-    /// this renderer boundary rather than wrapped in a one-use parameter type.
+    /// Builds one coherent group-4/group-6 resource set. Its independently
+    /// constructed static, animated, and layout inputs are intentionally kept
+    /// explicit at this renderer boundary rather than wrapped in a one-use
+    /// parameter type.
     ///
-    /// The upload owns the GPU-only payloads and drops them once the textures
-    /// exist; the level keeps only the headers.
+    /// `pool` is the plan `plan_static_pool` or `plan_streaming_pool` made,
+    /// or `StaticPool::Absent` before any level; the animated atlas was built
+    /// against the same plan. The all-resident
+    /// upload owns the GPU-only payloads and drops them once the pool holds
+    /// their texels; the level keeps only the block indices. A streamed pool
+    /// starts empty and rejects drain generations at or below
+    /// `generation_floor`, the previous set's
+    /// [`generation_high_water`](Self::generation_high_water).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        section: Option<&LightmapHeader>,
-        shadowmask_section: Option<&ShadowmaskAtlasHeader>,
+        index: Option<&LightmapBlockIndex>,
+        shadowmask: Option<&ShadowmaskBlockIndex>,
+        pool: &StaticPool,
         payloads: postretro_level_loader::GpuLightingPayloads,
         bind_group_layout: &wgpu::BindGroupLayout,
+        block_table_bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
         animated_direction_view: &wgpu::TextureView,
         animated_block_table: &[u8],
+        generation_floor: u64,
     ) -> Self {
-        // Nearest sampler for the octahedral direction texture (binding 1):
-        // linear interpolation of octahedral-encoded unit vectors does not
-        // commute with slerp, so direction must stay nearest.
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Lightmap Sampler (Nearest)"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        debug_assert_eq!(animated_block_table.len(), ANIMATED_BLOCK_TABLE_BYTES);
+        let group4 = Group4Bindings {
+            layout: bind_group_layout.clone(),
+            // Nearest sampler for the octahedral direction texture (binding
+            // 1): linear interpolation of octahedral-encoded unit vectors
+            // does not commute with slerp, so direction must stay nearest.
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Lightmap Sampler (Nearest)"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            }),
+            // Linear sampler for the irradiance pool, the animated atlas and
+            // the BC5 shadowmask pool. Turns baked penumbra ramps into continuous
+            // gradients under magnification. Always used — Rgba16Float
+            // linear-filterability is a hard runtime requirement;
+            // non-filterable adapters are rejected at init (see
+            // `atlas_format_filterable`). See rendering_pipeline.md §4.
+            filtering_sampler: device.create_sampler(&filtering_sampler_descriptor()),
+            animated_atlas_view: animated_atlas_view.clone(),
+            animated_direction_view: animated_direction_view.clone(),
+            animated_block_table: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Animated LM Block Table"),
+                contents: animated_block_table,
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
+        };
 
-        // Linear sampler for the irradiance + animated atlases (both
-        // Rgba16Float) and the BC5 shadowmask. Turns baked penumbra ramps into
-        // continuous gradients under magnification. Always used — Rgba16Float
-        // linear-filterability is a hard runtime requirement; non-filterable
-        // adapters are rejected at init (see `atlas_format_filterable`). See
-        // rendering_pipeline.md §4.
-        let filtering_sampler = device.create_sampler(&filtering_sampler_descriptor());
-
-        // Defensive runtime guard: the init adapter pre-check guarantees the
-        // device grants at least 8192² and at least 256 array layers (see
-        // `render::renderer_init_resources.rs`), and the bake's
-        // `MAX_ATLAS_DIMENSION` matches that ceiling. A baked atlas larger than
-        // the granted limit — or with more layers than the device allows — can
-        // only come from future content or a corrupt section. Drop to the
-        // neutral placeholder with a logged error rather than panicking on
-        // texture creation. Mirrors `render::sh_volume`'s atlas-fits-device filter.
-        let limits = device.limits();
-        let usable = filter_usable_section(
-            section,
-            limits.max_texture_dimension_2d,
-            limits.max_texture_array_layers,
-        );
-        let postretro_level_loader::GpuLightingPayloads {
-            lightmap: lightmap_payloads,
-            shadowmask: shadowmask_payload,
-        } = payloads;
-        let usable = paired_with_payload(usable, lightmap_payloads, "Lightmap");
-        let present = usable.is_some();
-
-        let (irradiance_tex, direction_tex) = match usable {
-            Some((sec, payloads)) => (
-                upload_irradiance_texture(device, queue, sec, &payloads.irradiance),
-                upload_direction_texture(device, queue, sec, &payloads.direction),
-            ),
-            None => (
+        let mut stream = None;
+        let mut streamed_shadowmask_placeholder = None;
+        let (irradiance_tex, direction_tex, shadowmask_tex, table_buffer) = match pool {
+            StaticPool::Blocks(plan) => {
+                let textures = upload_static_pool(device, queue, plan, &payloads.blocks);
+                let placements: Vec<_> = plan.pool.placements.iter().copied().map(Some).collect();
+                log::info!(
+                    "[Renderer] Lightmap pool: {} cell block(s) on {} layer(s) of {}², \
+                     shadowmask {}",
+                    plan.extents.len(),
+                    plan.pool.layer_count,
+                    postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE,
+                    if textures.shadowmask.is_some() {
+                        "resident"
+                    } else {
+                        "placeholder"
+                    },
+                );
+                (
+                    textures.irradiance,
+                    textures.direction,
+                    textures
+                        .shadowmask
+                        .unwrap_or_else(|| upload_placeholder_shadowmask(device, queue)),
+                    table_buffer(device, &block_table_bytes(&plan.extents, &placements)),
+                )
+            }
+            StaticPool::Streaming(plan) => {
+                let state = LightmapStreamState::new(device, plan, generation_floor);
+                let textures = state.textures();
+                let shadowmask = match &textures.shadowmask {
+                    Some(shadowmask) => shadowmask.clone(),
+                    None => streamed_shadowmask_placeholder
+                        .insert(upload_placeholder_shadowmask(device, queue))
+                        .clone(),
+                };
+                let bound = (
+                    textures.irradiance.clone(),
+                    textures.direction.clone(),
+                    shadowmask,
+                    state.table().clone(),
+                );
+                stream = Some(state);
+                bound
+            }
+            StaticPool::Absent | StaticPool::Empty | StaticPool::Rejected => (
                 upload_placeholder_irradiance(device, queue),
                 upload_placeholder_direction(device, queue),
+                upload_placeholder_shadowmask(device, queue),
+                table_buffer(device, &placeholder_block_table()),
             ),
         };
-        let usable_shadowmask = filter_usable_shadowmask_section(
-            shadowmask_section,
-            limits.max_texture_dimension_2d,
-            limits.max_texture_array_layers,
-        );
-        let usable_shadowmask =
-            paired_with_payload(usable_shadowmask, shadowmask_payload, "ShadowmaskAtlas")
-                .filter(|(sec, data)| shadowmask_payload_matches_header(sec, data));
-        let shadowmask_present = usable_shadowmask.is_some();
-        let shadowmask_tex = match usable_shadowmask {
-            Some((sec, data)) => upload_shadowmask_texture(device, queue, sec, &data),
-            None => upload_placeholder_shadowmask(device, queue),
+        // The pool now holds every all-resident texel; the payloads end here.
+        drop(payloads);
+        let shadowmask_present = match pool {
+            StaticPool::Blocks(plan) => plan.with_shadowmask,
+            StaticPool::Streaming(plan) => plan.with_shadowmask,
+            _ => false,
         };
-        let lightmap_state = residency_state(section.is_some(), present);
-        let lightmap_sources = section_source(SectionId::Lightmap, section.is_some());
-        let shadowmask_sources =
-            section_source(SectionId::ShadowmaskAtlas, shadowmask_section.is_some());
+
+        let lightmap_state = match pool {
+            StaticPool::Blocks(_) | StaticPool::Streaming(_) => ResidencyAllocationState::Data,
+            StaticPool::Rejected => ResidencyAllocationState::Fallback,
+            StaticPool::Absent | StaticPool::Empty => ResidencyAllocationState::Dummy,
+        };
+        let shadowmask_state = match (shadowmask.is_some(), shadowmask_present, pool) {
+            (_, true, _) => ResidencyAllocationState::Data,
+            (true, false, StaticPool::Empty) | (false, _, _) => ResidencyAllocationState::Dummy,
+            (true, false, _) => ResidencyAllocationState::Fallback,
+        };
+        let lightmap_sources = section_source(SectionId::Lightmap, index.is_some());
+        let shadowmask_sources = section_source(SectionId::ShadowmaskAtlas, shadowmask.is_some());
         let residency = [
             texture_row(
                 LIGHTMAP_STATIC_IRRADIANCE,
@@ -245,91 +239,121 @@ impl LightmapResources {
                 LIGHTMAP_SHADOWMASK,
                 &shadowmask_tex,
                 &shadowmask_sources,
-                residency_state(shadowmask_section.is_some(), shadowmask_present),
+                shadowmask_state,
             ),
         ];
 
-        // The irradiance + direction atlases are `texture_2d_array` (group-4
-        // bindings 0/1 declare `D2Array`), so their views must declare the same
-        // dimension explicitly — the default view dimension follows the texture's
-        // layer count, but pinning it keeps the view contract aligned with the BGL.
-        let irr_view = irradiance_tex.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        let dir_view = direction_tex.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        let shadowmask_view = shadowmask_tex.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        debug_assert_eq!(animated_block_table.len(), ANIMATED_BLOCK_TABLE_BYTES);
-        let animated_block_table_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Animated LM Block Table"),
-                contents: animated_block_table,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Lightmap Bind Group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: BIND_IRRADIANCE,
-                    resource: wgpu::BindingResource::TextureView(&irr_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_DIRECTION,
-                    resource: wgpu::BindingResource::TextureView(&dir_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_SAMPLER,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_ANIMATED_ATLAS,
-                    resource: wgpu::BindingResource::TextureView(animated_atlas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_FILTERING_SAMPLER,
-                    resource: wgpu::BindingResource::Sampler(&filtering_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_ANIMATED_DIRECTION,
-                    resource: wgpu::BindingResource::TextureView(animated_direction_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_SHADOWMASK_ATLAS,
-                    resource: wgpu::BindingResource::TextureView(&shadowmask_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BIND_ANIMATED_BLOCK_TABLE,
-                    resource: animated_block_table_buffer.as_entire_binding(),
-                },
-            ],
+        let bind_group = group4.bind(device, &irradiance_tex, &direction_tex, &shadowmask_tex);
+        let block_table_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Lightmap Block Table Bind Group"),
+            layout: block_table_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: BIND_BLOCK_TABLE,
+                resource: table_buffer.as_entire_binding(),
+            }],
         });
 
         Self {
             bind_group,
-            present,
+            block_table_bind_group,
             shadowmask_present,
-            direction_texture: direction_tex,
             residency,
+            group4,
+            generation_high_water: stream
+                .as_ref()
+                .map_or(generation_floor, LightmapStreamState::generation_high_water),
+            stream,
+            streamed_shadowmask_placeholder,
         }
+    }
+
+    /// The generation floor the next level install hands its streamed pool.
+    pub(crate) fn generation_high_water(&self) -> u64 {
+        self.stream
+            .as_ref()
+            .map_or(self.generation_high_water, |stream| {
+                stream.generation_high_water()
+            })
+    }
+
+    /// Counters of the streamed pool, `None` when the level does not stream.
+    pub(crate) fn stream_counters(&self) -> Option<LightmapStreamCounters> {
+        self.stream.as_ref().map(LightmapStreamState::counters)
+    }
+
+    /// Bytes of a grown-out streamed generation awaiting release.
+    pub(crate) fn retiring_bytes(&self) -> u64 {
+        self.stream
+            .as_ref()
+            .map_or(0, LightmapStreamState::retiring_bytes)
+    }
+
+    /// Execute one streamed drain. On growth, group 4 rebinds the new
+    /// generation and the static meter rows follow it. Returns whether the
+    /// byte meter changed.
+    pub(crate) fn drain_streaming(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        batch: LightmapDrainBatch,
+    ) -> Result<(LightmapDrainOutcome, bool), LightmapResidencyDrainError> {
+        let stream = self
+            .stream
+            .as_mut()
+            .ok_or(LightmapResidencyDrainError::NotStreaming)?;
+        let (
+            outcome,
+            DrainEffects {
+                pool_replaced,
+                meter_changed,
+            },
+        ) = stream.drain(device, queue, batch)?;
+        if pool_replaced {
+            let textures = stream.textures();
+            let [irradiance_row, direction_row, shadowmask_row] = &mut self.residency;
+            refresh_row(irradiance_row, &textures.irradiance);
+            refresh_row(direction_row, &textures.direction);
+            if let Some(shadowmask) = &textures.shadowmask {
+                refresh_row(shadowmask_row, shadowmask);
+            }
+            // Without id 42 the install's placeholder stays bound.
+            let shadowmask = textures
+                .shadowmask
+                .as_ref()
+                .or(self.streamed_shadowmask_placeholder.as_ref())
+                .expect("a streamed pool without a shadowmask keeps its placeholder");
+            self.bind_group = self.group4.bind(
+                device,
+                &textures.irradiance,
+                &textures.direction,
+                shadowmask,
+            );
+        }
+        Ok((outcome, meter_changed))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stream_state(&self) -> Option<&LightmapStreamState> {
+        self.stream.as_ref()
     }
 }
 
-/// Data when the section's texture is bound, Dummy when the section is
-/// absent, Fallback when a present section was rejected for its placeholder.
-fn residency_state(section_present: bool, texture_present: bool) -> ResidencyAllocationState {
-    match (section_present, texture_present) {
-        (_, true) => ResidencyAllocationState::Data,
-        (true, false) => ResidencyAllocationState::Fallback,
-        (false, false) => ResidencyAllocationState::Dummy,
-    }
+fn table_buffer(device: &wgpu::Device, table: &[u8]) -> wgpu::Buffer {
+    // `COPY_DST` leaves room for per-entry residency writes; only a streamed
+    // pool's drains write it after install.
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Lightmap Block Table"),
+        contents: table,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    })
+}
+
+/// Re-read a meter row's bytes and shape from the texture now bound in its
+/// place; its name, sources and state stand.
+fn refresh_row(row: &mut ResidencyAllocation, texture: &wgpu::Texture) {
+    let fresh = texture_row(row.name, texture, &[], row.state);
+    row.bytes = fresh.bytes;
+    row.shape = fresh.shape;
 }
 
 /// A row cites its section whenever the level supplied it, as the SH ledger's
@@ -339,1133 +363,5 @@ fn section_source(section: SectionId, section_present: bool) -> Vec<u16> {
         vec![section as u16]
     } else {
         Vec::new()
-    }
-}
-
-/// A usable header with the payload install moved in. A header that arrives
-/// without its payload — hand-built geometry with default payloads, or a
-/// payload already taken — falls back to the placeholder rather than
-/// panicking. A payload whose header was filtered out is dropped here, at the
-/// upload that owns it.
-fn paired_with_payload<'a, H, P>(
-    header: Option<&'a H>,
-    payload: Option<P>,
-    section_name: &str,
-) -> Option<(&'a H, P)> {
-    match (header, payload) {
-        (Some(header), Some(payload)) => Some((header, payload)),
-        (Some(_), None) => {
-            log::error!(
-                "[Renderer] {section_name} header arrived without its payload; using the \
-                 neutral placeholder"
-            );
-            None
-        }
-        (None, _) => None,
-    }
-}
-
-/// The linear lightmap sampler. Clamp-to-edge is what the shadowmask
-/// helper's per-group clamp reproduces inside each half of the atlas.
-pub(crate) fn filtering_sampler_descriptor() -> wgpu::SamplerDescriptor<'static> {
-    wgpu::SamplerDescriptor {
-        label: Some("Lightmap Sampler (Linear)"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-        ..Default::default()
-    }
-}
-
-pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
-    // Two samplers (binding 2 nearest, binding 4 linear), split by what each
-    // texture needs:
-    //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
-    //     filterable in core WebGPU (only 32-bit float formats need the
-    //     `float32-filterable` feature). Marked `filterable: true` and always
-    //     sampled through the linear sampler so baked penumbra ramps read as
-    //     continuous gradients instead of stair-stepping at texel boundaries.
-    //   - Direction (1) and animated direction (5) stay `filterable: false` on
-    //     the nearest sampler: linear interpolation of direction vectors does
-    //     not commute with slerp (both atlases are octahedral-encoded, so
-    //     both must read nearest).
-    // There is one pipeline variant; the BGL is fixed. No fallback path.
-    [
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_IRRADIANCE,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                // `texture_2d_array`: charts that overflow one layer spill into
-                // additional layers; the forward shader samples by `lightmap_layer`.
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_DIRECTION,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                // `texture_2d_array`, sharing `layer_count` with the irradiance atlas.
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_SAMPLER,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-            count: None,
-        },
-        // Animated-light contribution atlas (Rgba16Float) — filterable in core
-        // WebGPU, always sampled through the linear sampler at binding 4.
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_ANIMATED_ATLAS,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_FILTERING_SAMPLER,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        },
-        // Animated dominant-direction atlas (Rgba8Unorm: octahedral in `.rg`,
-        // coverage in `.a`) — `filterable: false`, nearest sampler at binding 2,
-        // mirroring the static direction atlas (1).
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_ANIMATED_DIRECTION,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_SHADOWMASK_ATLAS,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-            binding: BIND_ANIMATED_BLOCK_TABLE,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        },
-    ]
-}
-
-/// The static lightmap layer the animated atlas lives beside, as
-/// `(layer size, layer count)`, using the same usability filter as `new()`.
-/// Returns `None` when the section is absent, zero-area, oversize, non-square,
-/// or the 1×1 placeholder: the block table translates both UV axes by one
-/// layer size, so without a real square static atlas it has no coordinate
-/// space, and the level takes the no-animated-light path. `new()`
-/// also falls back to the placeholder when a usable header arrives without its
-/// payload, so level installs pass the header only when its payload is
-/// present (renderer boot passes no level); the two then fall back together.
-pub(crate) fn usable_static_layers(
-    section: Option<&LightmapHeader>,
-    max_texture_dimension_2d: u32,
-    max_texture_array_layers: u32,
-) -> Option<(u32, u32)> {
-    filter_usable_section(section, max_texture_dimension_2d, max_texture_array_layers)
-        .filter(|s| !s.is_placeholder() && s.irr_width == s.irr_height)
-        .map(|s| (s.irr_width, s.layer_count))
-}
-
-/// Filter out an absent (`None`), invalid, or device-incompatible
-/// `LightmapSection`, returning `None` so the caller falls through to the
-/// neutral placeholder. Pure dimension-vs-limit comparison — unit-testable
-/// without a real wgpu device.
-fn filter_usable_section(
-    section: Option<&LightmapHeader>,
-    max_texture_dimension_2d: u32,
-    max_texture_array_layers: u32,
-) -> Option<&LightmapHeader> {
-    section
-        .filter(|s| s.irr_width > 0 && s.irr_height > 0)
-        .filter(|s| s.dir_width > 0 && s.dir_height > 0)
-        .filter(|s| s.layer_count > 0)
-        .filter(|s| {
-            let fits =
-                s.irr_width <= max_texture_dimension_2d && s.irr_height <= max_texture_dimension_2d;
-            if !fits {
-                log::error!(
-                    "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
-                         degrading to neutral placeholder for this level",
-                    s.irr_width,
-                    s.irr_height,
-                    max_texture_dimension_2d,
-                );
-            }
-            fits
-        })
-        .filter(|s| {
-            let fits =
-                s.dir_width <= max_texture_dimension_2d && s.dir_height <= max_texture_dimension_2d;
-            if !fits {
-                log::error!(
-                    "[Renderer] Lightmap direction atlas {}x{} exceeds device \
-                         maxTextureDimension2D {}; degrading to neutral placeholder for this level",
-                    s.dir_width,
-                    s.dir_height,
-                    max_texture_dimension_2d,
-                );
-            }
-            fits
-        })
-        .filter(|s| {
-            let fits = s.layer_count <= max_texture_array_layers;
-            if !fits {
-                log::error!(
-                    "[Renderer] Lightmap atlas has {} layer(s), exceeding device \
-                         maxTextureArrayLayers {}; degrading to neutral placeholder for this level",
-                    s.layer_count,
-                    max_texture_array_layers,
-                );
-            }
-            fits
-        })
-}
-
-fn filter_usable_shadowmask_section(
-    section: Option<&ShadowmaskAtlasHeader>,
-    max_texture_dimension_2d: u32,
-    max_texture_array_layers: u32,
-) -> Option<&ShadowmaskAtlasHeader> {
-    section
-        .filter(|s| s.width > 0 && s.height > 0 && s.layer_count > 0)
-        .filter(|s| {
-            // `from_bytes` rejects unknown tags; this guards hand-built
-            // sections, since the upload decodes only the one BC5 layout.
-            let known = s.format == SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE;
-            if !known {
-                log::error!(
-                    "[Renderer] ShadowmaskAtlas format tag {:#010x} is not BC5 side-by-side; \
-                         disabling entity-to-world static-light shadowmask; static world \
-                         specular falls back to fully lit for this level",
-                    s.format,
-                );
-            }
-            known
-        })
-        .filter(|s| {
-            // The compiler never emits misaligned data and `from_bytes` rejects
-            // it; this guards hand-built sections before BC5 texture creation.
-            let aligned = s.width % 4 == 0 && s.height % 4 == 0;
-            if !aligned {
-                log::error!(
-                    "[Renderer] ShadowmaskAtlas {}x{} is not BC5 block-aligned; disabling \
-                         entity-to-world static-light shadowmask; static world specular falls \
-                         back to fully lit for this level",
-                    s.width,
-                    s.height,
-                );
-            }
-            aligned
-        })
-        .filter(|s| {
-            let texture_width = s.texture_width();
-            let fits = texture_width.is_some_and(|w| w <= max_texture_dimension_2d)
-                && s.height <= max_texture_dimension_2d;
-            if !fits {
-                log::error!(
-                    "[Renderer] ShadowmaskAtlas texture {}x{} (two {}-wide mask groups) exceeds \
-                         device maxTextureDimension2D {}; disabling entity-to-world static-light \
-                         shadowmask; static world specular falls back to fully lit for this level",
-                    u64::from(s.width) * u64::from(SHADOWMASK_GROUP_COUNT),
-                    s.height,
-                    s.width,
-                    max_texture_dimension_2d,
-                );
-            }
-            fits
-        })
-        .filter(|s| {
-            let fits = s.layer_count <= max_texture_array_layers;
-            if !fits {
-                log::error!(
-                    "[Renderer] ShadowmaskAtlas has {} layer(s), exceeding device \
-                         maxTextureArrayLayers {}; disabling entity-to-world static-light \
-                         shadowmask; static world specular falls back to fully lit for this level",
-                    s.layer_count,
-                    max_texture_array_layers,
-                );
-            }
-            fits
-        })
-}
-
-/// Whether a paired shadowmask payload holds exactly the BC5 bytes its header
-/// describes. `from_bytes` enforces this on the wire; hand-built geometry can
-/// still pair a header with a payload of another shape, which would fail
-/// texture creation, so it degrades to the placeholder instead.
-fn shadowmask_payload_matches_header(sec: &ShadowmaskAtlasHeader, data: &[u8]) -> bool {
-    let expected = ShadowmaskAtlasSection::payload_len(sec.width, sec.height, sec.layer_count);
-    let matches = expected == Some(data.len());
-    if !matches {
-        log::error!(
-            "[Renderer] ShadowmaskAtlas payload is {} bytes, expected {:?} for {}x{}x{}; \
-                 disabling entity-to-world static-light shadowmask; static world specular \
-                 falls back to fully lit for this level",
-            data.len(),
-            expected,
-            sec.width,
-            sec.height,
-            sec.layer_count,
-        );
-    }
-    matches
-}
-
-/// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
-/// hardware bilinear filtering on this adapter. Checked once at init: the
-/// forward pass samples the irradiance + animated atlases through the linear
-/// sampler, so a non-filterable adapter is rejected (see `Renderer::new`).
-/// Linear 16-bit-float filtering is core WebGPU and mandated on all targeted
-/// backends, so this holds everywhere the engine is supported.
-pub fn atlas_format_filterable(adapter: &wgpu::Adapter) -> bool {
-    adapter
-        .get_texture_format_features(wgpu::TextureFormat::Rgba16Float)
-        .flags
-        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-}
-
-fn upload_irradiance_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sec: &LightmapHeader,
-    irradiance: &[u8],
-) -> wgpu::Texture {
-    // Branch the texture format on the section's stored tag. Both formats bind
-    // through the same group-4 BGL slot (`Float { filterable: true }`) and
-    // sample through the existing linear sampler — `Bc6hRgbUfloat` is hardware-
-    // decoded before filtering, so the shader's sample call is identical and
-    // requires no second pipeline variant. RGBA16F retains its alpha (legacy
-    // padding); BC6H is RGB-only and the shader's `.rgb` swizzle never reads
-    // alpha. `create_texture_with_data` accepts the block-compressed payload
-    // verbatim — the dimensions are the texel-space size and the data slice is
-    // `ceil(w/4)·ceil(h/4)·16` bytes.
-    let format = match sec.irradiance_format {
-        IRRADIANCE_FORMAT_BC6H => wgpu::TextureFormat::Bc6hRgbUfloat,
-        // `IRRADIANCE_FORMAT_RGBA16F` (or any value `from_bytes` already
-        // gated to one of the two known tags).
-        _ => wgpu::TextureFormat::Rgba16Float,
-    };
-    // `texture_2d_array`: the on-disk `irradiance` blob is layer-major (layer 0's
-    // texels, then layer 1's, …), exactly the `LayerMajor` order
-    // `create_texture_with_data` expects, so a single upload covers all layers.
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Lightmap Irradiance"),
-            size: wgpu::Extent3d {
-                width: sec.irr_width,
-                height: sec.irr_height,
-                depth_or_array_layers: sec.layer_count,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        irradiance,
-    )
-}
-
-/// Whether `Bc6hRgbUfloat` (the default irradiance storage on disk) advertises
-/// the texture-binding and linear-filtering features the runtime relies on.
-/// Mirrors `atlas_format_filterable` for the BC6H sibling check: BC6H is the
-/// default storage and a `TEXTURE_COMPRESSION_BC`-granted adapter that fails
-/// to advertise filterable BC6H here would fail later at bind-group creation
-/// with an opaque error. `TEXTURE_COMPRESSION_BC` is already a required
-/// feature (see `render::renderer_init_resources.rs`'s adapter pre-check); this
-/// check confirms the format that feature unlocks supports the usages we need.
-pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
-    adapter
-        .get_texture_format_features(wgpu::TextureFormat::Bc6hRgbUfloat)
-        .flags
-        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
-}
-
-fn upload_direction_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sec: &LightmapHeader,
-    direction: &[u8],
-) -> wgpu::Texture {
-    // `texture_2d_array`, sharing `layer_count` with the irradiance atlas. The
-    // `direction` blob is layer-major, so one `LayerMajor` upload covers all layers.
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Lightmap Direction"),
-            size: wgpu::Extent3d {
-                width: sec.dir_width,
-                height: sec.dir_height,
-                depth_or_array_layers: sec.layer_count,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: direction_texture_format(sec.direction_format),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        direction,
-    )
-}
-
-/// Select the texture format from the strictly parsed section tag. Current
-/// compilers write Rg8; Rgba8 remains loadable for existing PRLs whose static
-/// direction bytes carried unused padding channels.
-fn direction_texture_format(direction_format: u32) -> wgpu::TextureFormat {
-    match direction_format {
-        DIRECTION_FORMAT_OCT_RG8 => wgpu::TextureFormat::Rg8Unorm,
-        DIRECTION_FORMAT_OCT_RGBA8 => wgpu::TextureFormat::Rgba8Unorm,
-        unknown => panic!("unsupported lightmap direction format tag {unknown}"),
-    }
-}
-
-/// The texture a usable shadowmask section uploads as: BC5 `.rg`, both mask
-/// groups side by side, one layer per lightmap layer. Callers pass a section
-/// that `filter_usable_shadowmask_section` kept.
-pub(crate) fn shadowmask_texture_descriptor(
-    sec: &ShadowmaskAtlasHeader,
-) -> wgpu::TextureDescriptor<'static> {
-    wgpu::TextureDescriptor {
-        label: Some("Shadowmask Atlas"),
-        size: wgpu::Extent3d {
-            width: sec
-                .texture_width()
-                .expect("usable shadowmask width fits the device texture limit"),
-            height: sec.height,
-            depth_or_array_layers: sec.layer_count,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bc5RgUnorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    }
-}
-
-pub(crate) fn upload_shadowmask_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sec: &ShadowmaskAtlasHeader,
-    data: &[u8],
-) -> wgpu::Texture {
-    // The payload is layer-major BC5 blocks, exactly the `LayerMajor` order
-    // `create_texture_with_data` expects for a block-compressed array.
-    device.create_texture_with_data(
-        queue,
-        &shadowmask_texture_descriptor(sec),
-        wgpu::util::TextureDataOrder::LayerMajor,
-        data,
-    )
-}
-
-fn upload_placeholder_irradiance(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    // 1×1 white RGBA16Float texel (1.0, 1.0, 1.0, 1.0). f16(1.0) = 0x3c00.
-    let white = 0x3c00u16;
-    let mut bytes = Vec::with_capacity(8);
-    for _ in 0..4 {
-        bytes.extend_from_slice(&white.to_le_bytes());
-    }
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Lightmap Irradiance Placeholder"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &bytes,
-    )
-}
-
-fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    // Neutral direction: +Y encoded octahedral (0, 1) maps to (0.5, 1.0) →
-    // 8-bit quantization (128, 255).
-    let bytes = [128u8, 255];
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Lightmap Direction Placeholder"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rg8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &bytes,
-    )
-}
-
-pub(crate) fn upload_placeholder_shadowmask(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> wgpu::Texture {
-    // Two white texels: the shader splits the width into two mask groups, so
-    // each group reads one real, fully visible texel.
-    let bytes = [255u8; 8];
-    device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("Shadowmask Atlas Placeholder"),
-            size: wgpu::Extent3d {
-                width: SHADOWMASK_GROUP_COUNT,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        &bytes,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use log::Level;
-    use postretro_level_format::lightmap::LightmapMode;
-
-    fn capture_logs(f: impl FnOnce()) -> Vec<(Level, String)> {
-        let capture = postretro_test_log_capture::LogCapture::start();
-        f();
-        capture
-            .records()
-            .into_iter()
-            .map(|record| (record.level, record.message))
-            .collect()
-    }
-
-    fn fake_section(width: u32, height: u32) -> LightmapHeader {
-        fake_section_layers(width, height, 1)
-    }
-
-    fn fake_section_layers(width: u32, height: u32, layer_count: u32) -> LightmapHeader {
-        LightmapHeader {
-            layer_count,
-            irr_width: width,
-            irr_height: height,
-            irr_texel_density: 0.04,
-            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: width,
-            dir_height: height,
-            dir_texel_density: 0.04,
-            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
-            mode: LightmapMode::Shadowed,
-        }
-    }
-
-    fn fake_shadowmask_section(width: u32, height: u32, layer_count: u32) -> ShadowmaskAtlasHeader {
-        ShadowmaskAtlasHeader {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width,
-            height,
-            layer_count,
-            channels: vec![0],
-        }
-    }
-
-    /// Atlas-fits-device guard: a section that exceeds the granted
-    /// `max_texture_dimension_2d` is dropped so the caller falls through to the
-    /// neutral placeholder, rather than panicking on texture creation. Pure
-    /// dimension comparison — no real oversize allocation needed.
-    #[test]
-    fn oversize_section_filtered_out() {
-        let oversize = fake_section(16_384, 8192);
-        assert!(
-            filter_usable_section(Some(&oversize), 8192, 256).is_none(),
-            "atlas wider than the granted limit must drop to placeholder",
-        );
-
-        let tall = fake_section(8192, 16_384);
-        assert!(
-            filter_usable_section(Some(&tall), 8192, 256).is_none(),
-            "atlas taller than the granted limit must drop to placeholder",
-        );
-    }
-
-    /// Regression: a byte-valid direction atlas wider than the device limit
-    /// reached `upload_direction_texture` and failed wgpu validation.
-    #[test]
-    fn oversize_direction_section_filtered_out() {
-        let mut oversize_direction = fake_section(64, 64);
-        oversize_direction.dir_width = 16_384;
-
-        assert!(
-            filter_usable_section(Some(&oversize_direction), 8192, 256).is_none(),
-            "direction atlas wider than the granted limit must drop to placeholder",
-        );
-    }
-
-    #[test]
-    fn oversize_section_logs_renderer_prefixed_error() {
-        let oversize = fake_section(16_384, 8192);
-        let captured = capture_logs(|| {
-            assert!(filter_usable_section(Some(&oversize), 8192, 256).is_none());
-        });
-
-        assert!(
-            captured.iter().any(|(level, message)| {
-                *level == Level::Error
-                    && message.starts_with("[Renderer] Lightmap atlas 16384x8192")
-                    && message.contains("maxTextureDimension2D 8192")
-            }),
-            "oversize lightmap rejection should log one renderer-prefixed error, got {captured:?}",
-        );
-    }
-
-    #[test]
-    fn at_or_under_limit_section_kept() {
-        let at_limit = fake_section(8192, 8192);
-        assert!(
-            filter_usable_section(Some(&at_limit), 8192, 256).is_some(),
-            "atlas exactly at the granted limit must be retained",
-        );
-
-        let under = fake_section(4096, 2048);
-        assert!(
-            filter_usable_section(Some(&under), 8192, 256).is_some(),
-            "atlas under the granted limit must be retained",
-        );
-    }
-
-    #[test]
-    fn zero_dimension_section_filtered_out() {
-        let empty = fake_section(0, 0);
-        assert!(
-            filter_usable_section(Some(&empty), 8192, 256).is_none(),
-            "zero-dimension section must drop to placeholder regardless of limit",
-        );
-    }
-
-    /// Format contract (`postretro_level_format::lightmap`) requires
-    /// `layer_count >= 1`; `from_bytes` reads the field raw without gating. A
-    /// corrupt section with `layer_count == 0` must drop to the neutral
-    /// placeholder rather than reach `upload_irradiance_texture`, which would
-    /// build a zero-extent wgpu texture and panic in validation.
-    #[test]
-    fn zero_layer_count_section_filtered_out() {
-        let no_layers = fake_section_layers(64, 64, 0);
-        assert!(
-            filter_usable_section(Some(&no_layers), 8192, 256).is_none(),
-            "zero-layer section must drop to placeholder regardless of limit",
-        );
-    }
-
-    #[test]
-    fn missing_section_filtered_out() {
-        assert!(
-            filter_usable_section(None, 8192, 256).is_none(),
-            "absent section drops to placeholder",
-        );
-    }
-
-    /// Array-layer-fits-device guard: a section whose `layer_count` exceeds the
-    /// granted `max_texture_array_layers` is dropped to the neutral placeholder.
-    /// No real adapter exposes a limit below 256, so this guards corrupt or
-    /// future multi-layer sections against an under-spec/clamped limit. Pure
-    /// comparison — no real array texture allocated.
-    #[test]
-    fn too_many_layers_section_filtered_out() {
-        // 8 layers under a tiny 4-layer limit, with in-bounds dimensions so the
-        // layer guard (not the dimension guard) is what rejects it.
-        let many_layers = fake_section_layers(64, 64, 8);
-        assert!(
-            filter_usable_section(Some(&many_layers), 8192, 4).is_none(),
-            "atlas with more layers than the granted limit must drop to placeholder",
-        );
-
-        // Exactly at the layer limit is retained.
-        let at_limit = fake_section_layers(64, 64, 4);
-        assert!(
-            filter_usable_section(Some(&at_limit), 8192, 4).is_some(),
-            "atlas exactly at the granted layer limit must be retained",
-        );
-    }
-
-    #[test]
-    fn rejected_multilayer_shadowmask_uses_placeholder_path() {
-        // Regression: a rejected two-layer atlas used to bind a one-layer
-        // placeholder while the shader still sampled baked layer 1 directly.
-        let oversize = fake_shadowmask_section(16_384, 64, 2);
-        assert!(
-            filter_usable_shadowmask_section(Some(&oversize), 8192, 256).is_none(),
-            "oversize multi-layer shadowmask must use the all-visible placeholder path",
-        );
-
-        let too_many_layers = fake_shadowmask_section(64, 64, 8);
-        assert!(
-            filter_usable_shadowmask_section(Some(&too_many_layers), 8192, 4).is_none(),
-            "over-layer-limit shadowmask must use the all-visible placeholder path",
-        );
-    }
-
-    /// The device limit the renderer pins at acquisition.
-    const PINNED_TEXTURE_DIMENSION: u32 = 8192;
-
-    fn shadowmask_filter_errors(section: &ShadowmaskAtlasHeader) -> (bool, Vec<String>) {
-        let mut kept = false;
-        let captured = capture_logs(|| {
-            kept = filter_usable_shadowmask_section(Some(section), PINNED_TEXTURE_DIMENSION, 256)
-                .is_some();
-        });
-        let errors = captured
-            .into_iter()
-            .filter(|(level, message)| *level == Level::Error && message.starts_with("[Renderer]"))
-            .map(|(_, message)| message)
-            .collect();
-        (kept, errors)
-    }
-
-    // Pin: width-boundary. `W` is 4-aligned, so the smallest texture over the
-    // limit is one block wider than it.
-    #[test]
-    fn shadowmask_texture_at_the_pinned_width_is_kept_and_one_block_wider_degrades() {
-        let (kept, errors) = shadowmask_filter_errors(&fake_shadowmask_section(4096, 64, 2));
-        assert!(
-            kept && errors.is_empty(),
-            "2W == 8192 must be kept: {errors:?}"
-        );
-
-        let (kept, errors) = shadowmask_filter_errors(&fake_shadowmask_section(4100, 64, 2));
-        assert!(!kept, "2W == 8200 must degrade to the placeholder");
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(
-            errors[0].contains("texture 8200x64")
-                && errors[0].contains("maxTextureDimension2D 8192"),
-            "{errors:?}"
-        );
-    }
-
-    // Pin: width-boundary. A `W`-only compare would keep this one.
-    #[test]
-    fn eight_k_lightmap_width_shadowmask_degrades_and_four_k_is_kept() {
-        let (kept, errors) = shadowmask_filter_errors(&fake_shadowmask_section(8192, 8192, 1));
-        assert!(!kept, "W == 8192 means a 16384-wide texture");
-        assert!(
-            errors.len() == 1 && errors[0].contains("texture 16384x8192"),
-            "{errors:?}"
-        );
-        let (kept, _) = shadowmask_filter_errors(&fake_shadowmask_section(4096, 4096, 1));
-        assert!(kept);
-    }
-
-    #[test]
-    fn hand_built_misaligned_shadowmask_degrades_with_a_renderer_error() {
-        for (width, height) in [(6, 8), (8, 6)] {
-            let (kept, errors) =
-                shadowmask_filter_errors(&fake_shadowmask_section(width, height, 1));
-            assert!(!kept, "{width}x{height} must reach the placeholder");
-            assert!(
-                errors.len() == 1 && errors[0].contains("is not BC5 block-aligned"),
-                "{width}x{height}: {errors:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn shadowmask_texture_description_is_bc5_double_width_at_half_the_raw_bytes() {
-        let (width, height, layer_count) = (64, 32, 3);
-        let section = fake_shadowmask_section(width, height, layer_count);
-        let descriptor = shadowmask_texture_descriptor(&section);
-        assert_eq!(descriptor.format, wgpu::TextureFormat::Bc5RgUnorm);
-        assert_eq!(
-            descriptor.size,
-            wgpu::Extent3d {
-                width: 2 * width,
-                height,
-                depth_or_array_layers: layer_count,
-            }
-        );
-        assert_eq!(descriptor.mip_level_count, 1);
-        assert_eq!(descriptor.dimension, wgpu::TextureDimension::D2);
-
-        let texture_bytes = |format: wgpu::TextureFormat, size: wgpu::Extent3d| {
-            let (block_width, block_height) = format.block_dimensions();
-            let block_bytes = format.block_copy_size(None).expect("color format");
-            u64::from(size.width.div_ceil(block_width))
-                * u64::from(size.height.div_ceil(block_height))
-                * u64::from(block_bytes)
-                * u64::from(size.depth_or_array_layers)
-        };
-        let raw_bytes = texture_bytes(
-            wgpu::TextureFormat::Rgba8Unorm,
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: layer_count,
-            },
-        );
-        let bc5_bytes = texture_bytes(descriptor.format, descriptor.size);
-        assert_eq!(bc5_bytes * 2, raw_bytes);
-        assert_eq!(
-            bc5_bytes,
-            postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection::payload_len(
-                width,
-                height,
-                layer_count
-            )
-            .unwrap() as u64,
-            "the upload's texture must hold exactly the section payload"
-        );
-    }
-
-    // Pin: partial-lighting-install, plus the header-without-payload fallback.
-    // The upload pairs a usable header with the payload install moved in;
-    // nothing else uploads, and a header with no payload degrades loudly.
-    #[test]
-    fn upload_pairs_usable_headers_with_their_moved_payloads_only() {
-        let header = fake_shadowmask_section(64, 64, 1);
-        assert_eq!(
-            paired_with_payload(Some(&header), Some(vec![7u8]), "ShadowmaskAtlas"),
-            Some((&header, vec![7u8]))
-        );
-        assert_eq!(
-            paired_with_payload::<ShadowmaskAtlasHeader, Vec<u8>>(
-                None,
-                Some(vec![7u8]),
-                "ShadowmaskAtlas"
-            ),
-            None,
-            "a filtered-out header's payload is dropped at the upload"
-        );
-        assert_eq!(
-            paired_with_payload::<ShadowmaskAtlasHeader, Vec<u8>>(None, None, "ShadowmaskAtlas"),
-            None,
-            "a level with neither section installs placeholders"
-        );
-        let captured = capture_logs(|| {
-            assert_eq!(
-                paired_with_payload::<_, Vec<u8>>(Some(&header), None, "ShadowmaskAtlas"),
-                None
-            );
-        });
-        assert!(
-            captured
-                .iter()
-                .any(|(level, message)| *level == Level::Error
-                    && message.starts_with(
-                        "[Renderer] ShadowmaskAtlas header arrived without its payload"
-                    )),
-            "a header whose payload is gone degrades loudly: {captured:?}"
-        );
-    }
-
-    #[test]
-    fn hand_built_unknown_shadowmask_format_degrades_with_a_renderer_error() {
-        let mut section = fake_shadowmask_section(64, 64, 1);
-        section.format = 0;
-        let (kept, errors) = shadowmask_filter_errors(&section);
-        assert!(!kept, "an unknown tag must reach the placeholder");
-        assert!(
-            errors.len() == 1 && errors[0].contains("is not BC5 side-by-side"),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn hand_built_shadowmask_payload_of_the_wrong_length_degrades_with_a_renderer_error() {
-        let (width, height, layer_count) = (8, 8, 2);
-        let section = fake_shadowmask_section(width, height, layer_count);
-        let expected = ShadowmaskAtlasSection::payload_len(width, height, layer_count)
-            .expect("fixture dimensions have a payload length");
-
-        let captured = capture_logs(|| {
-            assert!(shadowmask_payload_matches_header(
-                &section,
-                &vec![0u8; expected]
-            ));
-        });
-        assert!(
-            !captured.iter().any(|(level, _)| *level == Level::Error),
-            "{captured:?}"
-        );
-
-        for len in [0, expected - 16, expected + 16, expected / 2] {
-            let captured = capture_logs(|| {
-                assert!(
-                    !shadowmask_payload_matches_header(&section, &vec![0u8; len]),
-                    "a {len}-byte payload must reach the placeholder"
-                );
-            });
-            assert!(
-                captured
-                    .iter()
-                    .any(|(level, message)| *level == Level::Error
-                        && message.starts_with("[Renderer] ShadowmaskAtlas payload is")
-                        && message.contains(&format!("expected Some({expected})"))),
-                "{len} bytes: {captured:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn usable_multilayer_shadowmask_keeps_real_resource() {
-        let section = fake_shadowmask_section(64, 64, 2);
-        assert!(
-            filter_usable_shadowmask_section(Some(&section), 8192, 256).is_some(),
-            "in-limit multi-layer shadowmask must keep its authored atlas",
-        );
-        assert!(
-            filter_usable_shadowmask_section(None, 8192, 256).is_none(),
-            "absent shadowmask must use the all-visible placeholder path",
-        );
-    }
-
-    // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`
-    // decorators. This pins which textures are filterable, and the two sampler
-    // bindings (nearest + linear).
-    #[test]
-    fn bgl_entries_pin_sampler_split() {
-        let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 8, "group-4 BGL must expose eight bindings");
-
-        let tex_sample = |b: u32| {
-            entries
-                .iter()
-                .find(|e| e.binding == b)
-                .and_then(|e| match e.ty {
-                    wgpu::BindingType::Texture { sample_type, .. } => Some(sample_type),
-                    _ => None,
-                })
-        };
-        let sampler_ty = |b: u32| {
-            entries
-                .iter()
-                .find(|e| e.binding == b)
-                .and_then(|e| match e.ty {
-                    wgpu::BindingType::Sampler(t) => Some(t),
-                    _ => None,
-                })
-        };
-        let texture_view_dimension = |b: u32| {
-            entries
-                .iter()
-                .find(|e| e.binding == b)
-                .and_then(|e| match e.ty {
-                    wgpu::BindingType::Texture { view_dimension, .. } => Some(view_dimension),
-                    _ => None,
-                })
-        };
-
-        // Irradiance + animated atlas filter linear (Rgba16Float is filterable).
-        assert_eq!(
-            tex_sample(BIND_IRRADIANCE),
-            Some(wgpu::TextureSampleType::Float { filterable: true })
-        );
-        assert_eq!(
-            tex_sample(BIND_ANIMATED_ATLAS),
-            Some(wgpu::TextureSampleType::Float { filterable: true })
-        );
-        assert_eq!(
-            tex_sample(BIND_SHADOWMASK_ATLAS),
-            Some(wgpu::TextureSampleType::Float { filterable: true })
-        );
-        // Both direction atlases stay nearest (direction lerp ≠ slerp): both are
-        // octahedral-encoded (static atlas 1, animated atlas 5), and oct vectors
-        // must not be linearly interpolated.
-        assert_eq!(
-            tex_sample(BIND_DIRECTION),
-            Some(wgpu::TextureSampleType::Float { filterable: false })
-        );
-        assert_eq!(
-            tex_sample(BIND_ANIMATED_DIRECTION),
-            Some(wgpu::TextureSampleType::Float { filterable: false })
-        );
-        assert_eq!(
-            texture_view_dimension(BIND_ANIMATED_ATLAS),
-            Some(wgpu::TextureViewDimension::D2Array),
-            "animated irradiance must bind as texture_2d_array",
-        );
-        assert_eq!(
-            texture_view_dimension(BIND_ANIMATED_DIRECTION),
-            Some(wgpu::TextureViewDimension::D2Array),
-            "animated direction must bind as texture_2d_array",
-        );
-        let block_table_entry = entries
-            .iter()
-            .find(|entry| entry.binding == BIND_ANIMATED_BLOCK_TABLE)
-            .expect("animated block table binding must exist");
-        assert_eq!(
-            block_table_entry.visibility,
-            wgpu::ShaderStages::FRAGMENT,
-            "the block table is read in the fragment stage only",
-        );
-        assert!(matches!(
-            block_table_entry.ty,
-            wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                ..
-            }
-        ));
-        // Two samplers: nearest at binding 2, linear at binding 4.
-        assert_eq!(
-            sampler_ty(BIND_SAMPLER),
-            Some(wgpu::SamplerBindingType::NonFiltering)
-        );
-        assert_eq!(
-            sampler_ty(BIND_FILTERING_SAMPLER),
-            Some(wgpu::SamplerBindingType::Filtering)
-        );
-    }
-
-    #[test]
-    fn static_direction_texture_format_follows_section_tag() {
-        assert_eq!(
-            direction_texture_format(DIRECTION_FORMAT_OCT_RG8),
-            wgpu::TextureFormat::Rg8Unorm,
-            "current static direction sections must upload exactly their RG bytes",
-        );
-        assert_eq!(
-            direction_texture_format(DIRECTION_FORMAT_OCT_RGBA8),
-            wgpu::TextureFormat::Rgba8Unorm,
-            "legacy static direction sections must retain their padded upload format",
-        );
-    }
-
-    /// CPU mirror of forward.wgsl's `animated_block_uv` entry decode.
-    fn decode_block(bytes: &[u8], block: usize) -> (i32, i32, u32) {
-        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
-        let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
-            + block * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
-        let packed = word(at);
-        (
-            i32::from(packed as u16 as i16),
-            i32::from((packed >> 16) as u16 as i16),
-            word(at + 4),
-        )
-    }
-
-    #[test]
-    fn block_table_packs_header_and_signed_offsets_per_block() {
-        use postretro_level_format::animated_light_weight_maps::AnimatedBlock;
-        let block = |static_x, static_y, compact_x, compact_y, compact_layer| AnimatedBlock {
-            static_layer: 0,
-            static_x,
-            static_y,
-            compact_x,
-            compact_y,
-            compact_layer,
-            width: 4,
-            height: 4,
-        };
-        let section = AnimatedLightWeightMapsSection {
-            page_size: 1024,
-            compact_layers: 2,
-            blocks: vec![block(2000, 10, 0, 1000, 0), block(5, 7000, 900, 20, 1)],
-            ..AnimatedLightWeightMapsSection::empty()
-        };
-        let bytes = animated_block_table_bytes(Some(&section), 8192);
-        assert_eq!(bytes.len(), ANIMATED_BLOCK_TABLE_BYTES);
-        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
-        assert_eq!((word(0), word(4), word(8)), (8192, 1024, 2));
-        assert_eq!(decode_block(&bytes, 0), (-2000, 990, 0));
-        assert_eq!(decode_block(&bytes, 1), (895, -6980, 1));
-    }
-
-    #[test]
-    fn empty_block_table_names_no_block() {
-        let bytes = animated_block_table_bytes(None, 2048);
-        assert_eq!(bytes.len(), ANIMATED_BLOCK_TABLE_BYTES);
-        assert!(
-            bytes.iter().all(|&b| b == 0),
-            "block_count 0 resolves every id to none"
-        );
-    }
-
-    /// The table the renderer requests, the forward shader's declared array,
-    /// and the compiler's cap are one number (pin P10).
-    #[test]
-    fn block_table_capacity_matches_forward_wgsl_and_the_compiler_cap() {
-        let forward = include_str!("../shaders/forward.wgsl");
-        let declared = forward
-            .split("blocks: array<vec4<u32>, ")
-            .nth(1)
-            .and_then(|rest| rest.split('>').next())
-            .and_then(|len| len.trim().parse::<u32>().ok())
-            .expect("forward.wgsl declares the block table array");
-        let blocks_per_vec4 = 16 / ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK;
-        assert_eq!(declared * blocks_per_vec4, ANIMATED_BLOCK_CAP);
-        let shader_table_bytes = ANIMATED_BLOCK_TABLE_HEADER_BYTES + declared * 16;
-        assert_eq!(shader_table_bytes, ANIMATED_BLOCK_TABLE_UNIFORM_BYTES);
-        assert!(
-            u64::from(ANIMATED_BLOCK_TABLE_UNIFORM_BYTES)
-                <= wgpu::Limits::default().max_uniform_buffer_binding_size,
-            "the renderer requests default limits; the table must fit them",
-        );
-        assert!(ANIMATED_BLOCK_CAP < u32::from(u16::MAX));
-    }
-
-    #[test]
-    fn placeholder_static_lightmap_offers_no_static_layer_to_the_animated_atlas() {
-        let mut header = fake_section_layers(2048, 2048, 3);
-        assert_eq!(
-            usable_static_layers(Some(&header), 8192, 256),
-            Some((2048, 3))
-        );
-        header.irr_width = 1;
-        header.irr_height = 1;
-        header.layer_count = 1;
-        header.dir_width = 1;
-        header.dir_height = 1;
-        assert!(header.is_placeholder());
-        assert_eq!(usable_static_layers(Some(&header), 8192, 256), None);
-        assert_eq!(usable_static_layers(None, 8192, 256), None);
     }
 }

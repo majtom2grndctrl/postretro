@@ -7,4 +7,6 @@ pub(crate) mod generation;
 mod topology;
 #[cfg(test)]
 mod topology_test_fixtures;
+#[cfg(test)]
+pub(crate) mod trace_fixture;
 mod warm_set;

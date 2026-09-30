@@ -113,13 +113,17 @@ impl WarmSource {
         let Some(camera_cell) = camera_cell else {
             return Ok(WarmSet::default());
         };
-        let camera_cluster = *topology.cell_to_cluster.get(camera_cell).ok_or_else(|| {
-            ShResidencyControllerError::InvalidTopology(format!(
-                "camera cell {camera_cell} is outside the id-49 cell map"
-            ))
-        })?;
+        let camera_cluster = *topology
+            .hints
+            .cell_to_cluster
+            .get(camera_cell)
+            .ok_or_else(|| {
+                ShResidencyControllerError::InvalidTopology(format!(
+                    "camera cell {camera_cell} is outside the id-49 cell map"
+                ))
+            })?;
         let ranks = match self {
-            Self::CellGraph(graph) => graph.walk(&topology.cell_to_cluster, camera_cell),
+            Self::CellGraph(graph) => graph.walk(&topology.hints.cell_to_cluster, camera_cell),
             Self::ClusterHops => cluster_hops(&topology.adjacency, camera_cluster)?,
         };
         Ok(WarmSet {

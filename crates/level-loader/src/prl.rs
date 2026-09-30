@@ -1,5 +1,4 @@
-// Shared runtime LevelWorld data model for slim visibility-only worlds and
-// full PRL loads. File decoding lives in prl_loader.rs behind `load-prl`.
+// Runtime LevelWorld data model, shared by slim visibility-only worlds and full PRL loads.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::error::Error as StdError;
@@ -20,6 +19,8 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
+#[cfg(feature = "load-prl")]
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 #[cfg(feature = "load-prl")]
@@ -43,7 +44,7 @@ use postretro_level_format::kinematic_geometry::{
     KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
 };
 #[cfg(feature = "load-prl")]
-use postretro_level_format::lightmap::LightmapHeader;
+use postretro_level_format::lightmap::LightmapBlockIndex;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
@@ -53,7 +54,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasHeader;
+use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
@@ -62,9 +63,13 @@ use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 use thiserror::Error;
 
 #[cfg(feature = "load-prl")]
-use crate::prl_lighting::{GpuLightingPayloads, LoadedLighting};
+use crate::prl_lighting::LoadedLighting;
+#[cfg(feature = "load-prl")]
+use crate::prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
 use crate::sh_stream::ShStorage;
+#[cfg(feature = "load-prl")]
+use crate::{lightmap_stream::LightmapStorage, prl_file::PrlReadCounters};
 #[cfg(feature = "load-prl")]
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
 #[cfg(feature = "load-prl")]
@@ -415,25 +420,32 @@ pub struct MapLight {
 }
 
 /// Whether the lightmap section's baked irradiance already includes the
-/// static-light visibility (shadow) term, or carries unshadowed irradiance
-/// for runtime SDF visibility to multiply in.
+/// static-light visibility (shadow) term.
 ///
-/// Current bakes load as `Shadowed`: a missing lightmap-mode marker decodes
-/// that way, and shadowed bakes omit the marker for wire compatibility.
-/// `Unshadowed` remains for legacy wire compatibility, not as current bake
-/// output.
+/// Read from the id-22 header in both load modes; a level without id 22
+/// loads as `Shadowed`. The compiler bakes only `Shadowed`. `Unshadowed` is a
+/// valid header value that is recorded but not honoured: the forward pass
+/// never multiplies SDF visibility into the static term, and load warns.
 #[cfg(feature = "load-prl")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
-    /// Static-light visibility folded into the bake. Forward must NOT multiply
-    /// by SDF visibility.
+    /// Static-light visibility folded into the bake.
     #[default]
     Shadowed,
-    /// Visibility term removed from the bake. Forward MUST multiply by SDF
-    /// visibility to recover shadowed lighting. Retained for legacy wire
-    /// compatibility.
-    #[allow(dead_code)]
+    /// Visibility term left out of the bake. Recovering it needs SDF
+    /// visibility in the forward pass, which does not exist, so the static
+    /// term renders unshadowed.
     Unshadowed,
+}
+
+#[cfg(feature = "load-prl")]
+impl From<prl_format::lightmap::LightmapMode> for LightmapMode {
+    fn from(mode: prl_format::lightmap::LightmapMode) -> Self {
+        match mode {
+            prl_format::lightmap::LightmapMode::Shadowed => Self::Shadowed,
+            prl_format::lightmap::LightmapMode::Unshadowed => Self::Unshadowed,
+        }
+    }
 }
 
 /// Runtime view of the `CellDrawIndex` PRL section (id 37): each cell's owned
@@ -606,14 +618,14 @@ pub struct LevelWorld {
     /// ids 27/34/35/41/45.
     #[cfg(feature = "load-prl")]
     pub sh_storage: ShStorage,
-    /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
-    /// The header only: the blobs live in `gpu_lighting_payloads` until install.
+    /// Id-22 cell-block index: header plus one record per block. `None` or
+    /// zero blocks is placeholder mode (no static baked light). The texels
+    /// live in `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
-    pub lightmap: Option<LightmapHeader>,
-    /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
-    /// or carries unshadowed irradiance that requires runtime SDF visibility
-    /// multiplication (`Unshadowed`). Legacy PRLs without the on-disk marker
-    /// parse as `Shadowed`.
+    pub lightmap: Option<LightmapBlockIndex>,
+    /// Whether the lightmap bake includes static-light visibility. Taken from
+    /// the id-22 header; `Shadowed` when id 22 is absent. Recorded only:
+    /// `Unshadowed` is not honoured (see [`LightmapMode`]).
     #[cfg(feature = "load-prl")]
     pub lightmap_mode: LightmapMode,
     /// `None` → no static-occluder SDF atlas (legacy PRL or empty-geometry
@@ -669,14 +681,22 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub entity_shadow_lights: Vec<u32>,
     /// Per-selected-light world visibility masks for entity→world static-light
-    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`. The header
-    /// only: the BC5 blocks live in `gpu_lighting_payloads` until install.
+    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`; one block
+    /// record per id-22 cell block. The BC5 groups live in
+    /// `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
-    pub shadowmask_atlas: Option<ShadowmaskAtlasHeader>,
-    /// Id-22 and id-42 payloads, held only until install moves them into the
-    /// GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
+    pub shadowmask_atlas: Option<ShadowmaskBlockIndex>,
+    /// Id-22 and id-42 block payloads, held only until install moves them
+    /// into the GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
     #[cfg(feature = "load-prl")]
     pub gpu_lighting_payloads: GpuLightingPayloads,
+    /// Id-22/42 block ownership. `AllResident` keeps the texels in
+    /// `gpu_lighting_payloads`; `Streaming` keeps only the manifest (indexes,
+    /// section offsets, the retained file) and leaves the payloads empty.
+    /// Dropping the world drops the manifest and, with its last clone, the
+    /// retained file.
+    #[cfg(feature = "load-prl")]
+    pub lightmap_storage: LightmapStorage,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     #[cfg(feature = "load-prl")]
@@ -721,6 +741,16 @@ pub struct LevelWorld {
     /// data until the residency slice adds an explicit consumer.
     #[cfg(feature = "load-prl")]
     pub cluster_directory: Option<ClusterDirectorySection>,
+    /// Baked per-camera-cell lightmap residency relation (PRL section 51),
+    /// validated against the cell count. `None` when the level carries no
+    /// usable portals, which runs lightmaps all-resident.
+    #[cfg(feature = "load-prl")]
+    pub cell_residency_set: Option<CellResidencySetSection>,
+    /// Always-on per-section byte counters of the positional reader the
+    /// level was read through, shared with its streaming manifests. `None`
+    /// for a world not loaded through it.
+    #[cfg(feature = "load-prl")]
+    pub prl_read_counters: Option<std::sync::Arc<PrlReadCounters>>,
 }
 
 impl LevelWorld {
@@ -818,6 +848,8 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             gpu_lighting_payloads: GpuLightingPayloads::default(),
             #[cfg(feature = "load-prl")]
+            lightmap_storage: LightmapStorage::AllResident,
+            #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
             map_entities: Vec::new(),
@@ -839,7 +871,40 @@ impl LevelWorld {
             cell_draw_index: None,
             #[cfg(feature = "load-prl")]
             cluster_directory: lighting.cluster_directory,
+            #[cfg(feature = "load-prl")]
+            cell_residency_set: None,
+            #[cfg(feature = "load-prl")]
+            prl_read_counters: None,
         })
+    }
+
+    /// The runtime visibility world (cells, cell locator, portals) built from
+    /// the Cells, Portals and CellLocator sections through the conversions
+    /// `load_prl` applies. As on load, a Portals section the loader would
+    /// reject (empty, or any one portal unusable) is dropped whole and the
+    /// world takes the no-portals fallback (`has_portals == false`). Bake-time
+    /// consumers build from this so they walk exactly what the runtime walks.
+    #[cfg(feature = "load-prl")]
+    pub fn visibility_only_from_sections(
+        cells: &prl_format::cells::CellsSection,
+        portals: &prl_format::portals::PortalsSection,
+        locator: &prl_format::cell_locator::CellLocatorSection,
+    ) -> Result<Self, LevelWorldValidationError> {
+        let (cells, cell_portal_refs) = crate::prl_loader::convert_cells_section(cells.clone());
+        let (locator_root, locator_nodes) =
+            crate::prl_loader::convert_cell_locator_section(locator.clone());
+        let (portals, has_portals) = match crate::prl_loader::convert_usable_portals(portals) {
+            Some(portals) => (portals, true),
+            None => (Vec::new(), false),
+        };
+        Self::new_visibility_only(
+            cells,
+            cell_portal_refs,
+            locator_root,
+            locator_nodes,
+            portals,
+            has_portals,
+        )
     }
 }
 
@@ -1240,8 +1305,8 @@ mod tests {
     use postretro_level_format::fog_volumes::{
         FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES,
     };
-    use postretro_level_format::geometry::NO_TEXTURE;
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, NO_TEXTURE};
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavRegion};
     use postretro_level_format::portals::{PortalRecord, PortalsSection};
     use postretro_render_data::geometry::BvhLeaf;
@@ -1886,6 +1951,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -1897,6 +1963,8 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
+            prl_read_counters: None,
         }
     }
 
@@ -1985,6 +2053,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -1996,6 +2065,8 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
+            prl_read_counters: None,
         };
         assert_eq!(world.locate_cell(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -2038,6 +2109,7 @@ mod tests {
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
@@ -2049,6 +2121,8 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
+            prl_read_counters: None,
         };
 
         let spawn = world.spawn_position();
@@ -2222,7 +2296,7 @@ mod tests {
     fn geometry_blob(section: GeometrySection) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::Geometry as u32,
-            version: 1,
+            version: GEOMETRY_CONTAINER_VERSION,
             data: section.to_bytes(),
         }
     }
@@ -2376,27 +2450,62 @@ mod tests {
         }
     }
 
-    fn lightmap_blob(width: u32, height: u32, layer_count: u32) -> prl_format::SectionBlob {
-        let texels = (width * height * layer_count) as usize;
-        let section = postretro_level_format::lightmap::LightmapSection {
-            layer_count,
-            irr_width: width,
-            irr_height: height,
-            irr_texel_density: 0.04,
-            irradiance: vec![0; texels * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES],
-            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: width,
-            dir_height: height,
-            dir_texel_density: 0.04,
-            direction: vec![255; texels * postretro_level_format::lightmap::DIRECTION_TEXEL_BYTES],
-            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
-            mode: postretro_level_format::lightmap::LightmapMode::Shadowed,
+    /// An id-22 section of `Rgba16Float` cell blocks at these extents (each a
+    /// multiple of 4), one per cell in order, with distinct bytes per block.
+    fn lightmap_section(
+        extents: &[(u16, u16)],
+    ) -> postretro_level_format::lightmap::LightmapSection {
+        use postretro_level_format::lightmap::{
+            DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES,
+            LightmapBlock, LightmapMode, LightmapSection,
         };
+        LightmapSection {
+            direction_texel_scale: 2,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            mode: LightmapMode::Shadowed,
+            blocks: extents
+                .iter()
+                .enumerate()
+                .map(|(cell, &(width, height))| {
+                    let texels = usize::from(width) * usize::from(height);
+                    LightmapBlock {
+                        cell_id: cell as u32,
+                        width,
+                        height,
+                        irradiance: vec![cell as u8; texels * IRRADIANCE_TEXEL_BYTES],
+                        direction: vec![255 - cell as u8; texels / 4 * DIRECTION_TEXEL_BYTES],
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn lightmap_blob(extents: &[(u16, u16)]) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::Lightmap as u32,
             version: 1,
-            data: section.to_bytes(),
+            data: lightmap_section(extents).to_bytes(),
         }
+    }
+
+    /// An id-42 section pairing [`lightmap_section`] of the same extents.
+    fn shadowmask_section(
+        extents: &[(u16, u16)],
+        channels: Vec<u8>,
+    ) -> postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+        use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
+        let blocks = extents
+            .iter()
+            .enumerate()
+            .map(|(block, &(width, height))| {
+                let len = group_plane_len(u32::from(width), u32::from(height)).unwrap() as usize;
+                [
+                    (0..len).map(|t| (t + block) as u8).collect(),
+                    (0..len).map(|t| (t * 3 + block) as u8).collect(),
+                ]
+            })
+            .collect();
+        ShadowmaskAtlasSection { channels, blocks }
     }
 
     fn shadowmask_blob(
@@ -2567,7 +2676,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2638,7 +2747,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2683,7 +2792,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2723,7 +2832,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2784,7 +2893,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2850,7 +2959,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2916,7 +3025,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -2990,7 +3099,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3058,7 +3167,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: vec![0],
             },
             default_texture_cache_keys_blob(),
@@ -3085,7 +3194,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry,
             },
             default_texture_cache_keys_blob(),
@@ -3112,7 +3221,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3145,7 +3254,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3179,7 +3288,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3237,7 +3346,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3295,7 +3404,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3330,7 +3439,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3362,7 +3471,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             default_texture_cache_keys_blob(),
@@ -3384,7 +3493,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3410,7 +3519,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3437,7 +3546,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3465,7 +3574,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3495,7 +3604,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3526,7 +3635,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3554,7 +3663,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3582,7 +3691,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3613,7 +3722,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3644,7 +3753,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3671,7 +3780,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3698,7 +3807,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3725,7 +3834,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3753,7 +3862,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3779,7 +3888,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3813,7 +3922,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3850,7 +3959,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3884,7 +3993,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3920,7 +4029,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -3959,7 +4068,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4000,7 +4109,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4035,7 +4144,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4072,7 +4181,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4174,7 +4283,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4260,7 +4369,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: empty_geometry().to_bytes(),
             },
             empty_bvh_blob(),
@@ -4291,7 +4400,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: empty_geometry().to_bytes(),
             },
             empty_bvh_blob(),
@@ -4330,7 +4439,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             empty_bvh_blob(),
@@ -4405,7 +4514,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4453,7 +4562,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4508,7 +4617,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4583,7 +4692,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4637,7 +4746,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4686,7 +4795,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4711,7 +4820,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4844,7 +4953,7 @@ mod tests {
         let mut sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -4980,7 +5089,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5023,7 +5132,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5061,7 +5170,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5109,7 +5218,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5153,7 +5262,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5190,7 +5299,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5229,7 +5338,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5291,7 +5400,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5333,7 +5442,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5356,8 +5465,8 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// AC 12/13 (loader half): a DirectShVolume section round-trips through the
-    /// PRL container and is surfaced on `LevelWorld`, BC6H tag preserved.
+    /// A DirectShVolume section round-trips through the PRL container and is
+    /// surfaced on `LevelWorld`, BC6H tag preserved.
     #[test]
     fn load_prl_parses_direct_sh_volume_section() {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
@@ -5395,7 +5504,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -5437,7 +5546,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6017,7 +6126,7 @@ mod tests {
         assert_eq!(
             world.animated_billboard_direct_scatter_delta_volumes,
             Some(animated_scatter),
-            "P7 requires an animated compose path that can seed the base with an empty sum"
+            "the animated compose path keeps an empty pair to seed the base with an empty sum"
         );
         assert!(
             world.animated_direct_sh_delta_volumes.is_none(),
@@ -6287,7 +6396,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6333,15 +6442,10 @@ mod tests {
     }
 
     #[test]
-    fn load_prl_exposes_shadowmask_atlas_multi_layer_payload() {
-        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 2,
-            channels: vec![0],
-            data: (0..64).collect(),
-        };
+    fn load_prl_joins_shadowmask_groups_into_each_block_payload() {
+        let extents = [(4, 4), (8, 4)];
+        let lightmap = lightmap_section(&extents);
+        let shadowmask = shadowmask_section(&extents, vec![0]);
         let direct_sh = minimal_direct_sh_volume_section();
         let direct_sh_delta = direct_delta_section_for(
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
@@ -6358,7 +6462,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(4, 4, 2),
+            lightmap_blob(&extents),
             shadowmask_blob(shadowmask.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6366,75 +6470,45 @@ mod tests {
 
         let tmp = write_prl_fixture(sections, "postretro_test_shadowmask_atlas.prl");
         let world = load_prl(tmp.to_str().unwrap()).expect("PRL with ShadowmaskAtlas must load");
-        let loaded = world
-            .shadowmask_atlas
-            .as_ref()
-            .expect("ShadowmaskAtlas section must be exposed");
-
-        assert_eq!(loaded.layer_count, 2);
-        assert_eq!(loaded.channels, shadowmask.channels);
-        assert_eq!(
-            world.gpu_lighting_payloads.shadowmask.as_ref(),
-            Some(&shadowmask.data),
-            "the payload waits beside the header for the GPU upload"
-        );
-
         std::fs::remove_file(&tmp).ok();
+
+        assert_eq!(world.lightmap, Some(lightmap.index()));
+        assert_eq!(world.shadowmask_atlas, Some(shadowmask.index()));
+        let payloads = &world.gpu_lighting_payloads.blocks;
+        assert_eq!(payloads.len(), extents.len(), "one payload per cell block");
+        for (block, payload) in payloads.iter().enumerate() {
+            assert_eq!(payload.irradiance, lightmap.blocks[block].irradiance);
+            assert_eq!(payload.direction, lightmap.blocks[block].direction);
+            assert_eq!(
+                payload.shadowmask.as_ref(),
+                Some(&shadowmask.blocks[block]),
+                "block {block}'s groups wait beside its texels for the GPU upload"
+            );
+        }
     }
 
+    // Id 42 pairs with id 22 block for block, so a malformed section fails the
+    // load rather than degrading to fully lit.
     #[test]
-    fn load_prl_ignores_malformed_shadowmask_without_clearing_direct_selection() {
-        // Regression: malformed optional shadowmask data must disable only
-        // baked world visibility; static-light entity promotion remains valid.
-        let direct_sh = minimal_direct_sh_volume_section();
-        let direct_sh_delta = direct_delta_section_for(
-            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
-            vec![0],
-        );
-        let mut malformed_shadowmask = shadowmask_blob(
-            postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-                format:
-                    postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-                width: 4,
-                height: 4,
-                layer_count: 2,
-                channels: vec![0],
-                data: vec![255; 64],
-            },
-        );
-        malformed_shadowmask
+    fn load_prl_rejects_malformed_shadowmask() {
+        let mut malformed = shadowmask_blob(shadowmask_section(&[(4, 4)], vec![0]));
+        malformed
             .data
             .pop()
             .expect("fixture shadowmask payload must be non-empty");
-        let sections = vec![
-            geometry_blob(sample_geometry()),
-            bvh_blob(sample_bvh_section()),
-            prl_format::SectionBlob {
-                section_id: SectionId::AlphaLights as u32,
-                version: 1,
-                data: sample_alpha_lights().to_bytes(),
-            },
-            direct_sh_volume_blob(direct_sh),
-            entity_shadow_lights_blob(vec![0]),
-            direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(4, 4, 2),
-            malformed_shadowmask,
-            default_texture_cache_keys_blob(),
-            default_fog_volumes_blob(),
-        ];
-
-        let tmp = write_prl_fixture(sections, "postretro_test_malformed_shadowmask_atlas.prl");
-        let world = load_prl(tmp.to_str().unwrap())
-            .expect("malformed ShadowmaskAtlas must degrade without failing load");
-
-        assert_eq!(world.entity_shadow_lights, vec![0]);
-        assert!(world.direct_sh_delta_volumes.is_some());
-        assert!(
-            world.shadowmask_atlas.is_none(),
-            "malformed optional shadowmask must degrade to absence"
+        let tmp = write_prl_fixture(
+            selected_light_sections_with(malformed),
+            "postretro_test_malformed_shadowmask_atlas.prl",
         );
-
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("a malformed ShadowmaskAtlas must fail the load");
         std::fs::remove_file(&tmp).ok();
+        assert!(
+            error
+                .to_string()
+                .contains("ShadowmaskAtlas validation error"),
+            "{error}"
+        );
     }
 
     fn selected_light_sections_with(
@@ -6456,7 +6530,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(4, 4, 2),
+            lightmap_blob(&[(4, 4)]),
             shadowmask,
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -6485,21 +6559,11 @@ mod tests {
         }
     }
 
-    // Lifecycle: the loaded world keeps the id-42 slot table and dimensions and
-    // the id-22 header; the payloads leave in one take and cannot be taken twice.
+    // Lifecycle: the loaded world keeps the id-42 slot table and both block
+    // indices; the payloads leave in one take and cannot be taken twice.
     #[test]
-    fn taking_gpu_lighting_payloads_leaves_headers_and_nothing_to_take_twice() {
-        use postretro_level_format::shadowmask_atlas::{
-            SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasSection,
-        };
-        let section = ShadowmaskAtlasSection {
-            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 2,
-            channels: vec![2],
-            data: (0..64).collect(),
-        };
+    fn taking_gpu_lighting_payloads_leaves_indices_and_nothing_to_take_twice() {
+        let section = shadowmask_section(&[(4, 4)], vec![2]);
         let tmp = write_prl_fixture(
             selected_light_sections_with(shadowmask_blob(section.clone())),
             "postretro_test_take_gpu_lighting_payloads.prl",
@@ -6507,18 +6571,18 @@ mod tests {
         let mut world = load_prl(tmp.to_str().unwrap()).expect("fixture loads");
         std::fs::remove_file(&tmp).ok();
 
-        let lightmap_header = world.lightmap.clone().expect("fixture has id 22");
+        let lightmap_index = world.lightmap.clone().expect("fixture has id 22");
         let taken = world.take_gpu_lighting_payloads();
-        let lightmap = taken.lightmap.expect("id-22 payloads move out");
+        assert_eq!(taken.blocks.len(), 1, "id-22 payloads move out");
         assert_eq!(
-            lightmap.irradiance.len(),
-            4 * 4 * 2 * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES
+            taken.blocks[0].irradiance.len(),
+            4 * 4 * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES
         );
-        assert_eq!(taken.shadowmask, Some(section.data.clone()));
+        assert_eq!(taken.blocks[0].shadowmask, Some(section.blocks[0].clone()));
 
-        assert_eq!(world.lightmap, Some(lightmap_header), "id-22 header stays");
-        let kept = world.shadowmask_atlas.as_ref().expect("id-42 header stays");
-        assert_eq!((kept.width, kept.height, kept.layer_count), (4, 4, 2));
+        assert_eq!(world.lightmap, Some(lightmap_index), "id-22 index stays");
+        let kept = world.shadowmask_atlas.as_ref().expect("id-42 index stays");
+        assert_eq!(kept.records.len(), 1);
         assert_eq!(
             kept.channels,
             vec![2],
@@ -6532,55 +6596,31 @@ mod tests {
         );
     }
 
-    // Pin: partial-lighting-install. Whatever is present moves; absence stays absent.
-    #[test]
-    fn splitting_partial_lighting_moves_only_the_present_payloads() {
-        let lightmap = postretro_level_format::lightmap::LightmapSection::from_bytes(
-            &lightmap_blob(4, 4, 1).data,
-        )
-        .expect("fixture lightmap parses");
-        let (lightmap_header, shadowmask_header, payloads) =
-            crate::prl_lighting::split_gpu_lighting(Some(lightmap), None);
-        assert!(lightmap_header.is_some() && shadowmask_header.is_none());
-        assert!(payloads.lightmap.is_some() && payloads.shadowmask.is_none());
-
-        let (lightmap_header, shadowmask_header, payloads) =
-            crate::prl_lighting::split_gpu_lighting(None, None);
-        assert!(lightmap_header.is_none() && shadowmask_header.is_none());
-        assert_eq!(payloads, GpuLightingPayloads::default());
-    }
-
     // Pins: stale-payload, stale-payload-tag-collision. A pre-change id 42
-    // loads fully lit (no section) with a warning naming the format mismatch;
-    // bytes that read as a valid tag must not fall through to a length error.
+    // fails the load; bytes that read as a valid tag must fail too.
     #[test]
-    fn load_prl_rejects_pre_bc5_shadowmask_by_format_and_keeps_entity_shadow_selection() {
-        use postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE;
+    fn load_prl_rejects_a_pre_bc5_shadowmask_layout() {
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_BLOCKS;
         for (label, blob) in [
             ("raw", pre_bc5_shadowmask_blob(4, 4, 2)),
             (
                 "tag-collision",
-                pre_bc5_shadowmask_blob(SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, 0, 2),
+                pre_bc5_shadowmask_blob(SHADOWMASK_FORMAT_BC5_RG_BLOCKS, 0, 2),
             ),
         ] {
             let tmp = write_prl_fixture(
                 selected_light_sections_with(blob),
                 &format!("postretro_test_pre_bc5_shadowmask_{label}.prl"),
             );
-            let capture = LogCapture::start();
-            let world = load_prl(tmp.to_str().unwrap())
-                .unwrap_or_else(|err| panic!("{label}: a stale id 42 must not fail load: {err}"));
-            capture.assert_logged_once(
-                log::Level::Warn,
-                "ShadowmaskAtlas malformed; ignoring section",
-            );
-            capture.assert_logged_once(log::Level::Warn, "shadowmask atlas format mismatch");
-            assert!(
-                world.shadowmask_atlas.is_none(),
-                "{label}: must degrade to absence"
-            );
-            assert_eq!(world.entity_shadow_lights, vec![0], "{label}");
+            let error =
+                load_prl(tmp.to_str().unwrap()).expect_err("a stale id 42 must fail the load");
             std::fs::remove_file(&tmp).ok();
+            assert!(
+                error
+                    .to_string()
+                    .contains("ShadowmaskAtlas validation error"),
+                "{label}: {error}"
+            );
         }
     }
 
@@ -6588,39 +6628,23 @@ mod tests {
     // section, which loads; every slot is the sentinel, so it reads fully lit.
     #[test]
     fn load_prl_keeps_an_all_sentinel_shadowmask_section() {
-        use postretro_level_format::shadowmask_atlas::{
-            SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            ShadowmaskAtlasSection,
-        };
-        let section = ShadowmaskAtlasSection {
-            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 2,
-            channels: vec![SHADOWMASK_CHANNEL_DROPPED],
-            data: [255u8, 255, 0, 0, 0, 0, 0, 0].repeat(8),
-        };
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
+        let section = shadowmask_section(&[(4, 4)], vec![SHADOWMASK_CHANNEL_DROPPED]);
         let tmp = write_prl_fixture(
             selected_light_sections_with(shadowmask_blob(section.clone())),
             "postretro_test_all_sentinel_shadowmask.prl",
         );
         let world = load_prl(tmp.to_str().unwrap()).expect("all-sentinel id 42 must load");
-        let (header, payload) = section.into_parts();
-        assert_eq!(world.shadowmask_atlas, Some(header));
-        assert_eq!(world.gpu_lighting_payloads.shadowmask, Some(payload));
         std::fs::remove_file(&tmp).ok();
+        assert_eq!(world.shadowmask_atlas, Some(section.index()));
+        assert_eq!(
+            world.gpu_lighting_payloads.blocks[0].shadowmask,
+            Some(section.blocks[0].clone())
+        );
     }
 
     #[test]
     fn load_prl_clears_direct_selection_set_when_id41_validity_disagrees_with_id34() {
-        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 2,
-            channels: vec![0],
-            data: (0..64).collect(),
-        };
         let direct_sh = minimal_direct_sh_volume_section();
         let mut direct_sh_delta = direct_delta_section_for(
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
@@ -6642,8 +6666,8 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            lightmap_blob(4, 4, 2),
-            shadowmask_blob(shadowmask),
+            lightmap_blob(&[(4, 4)]),
+            shadowmask_blob(shadowmask_section(&[(4, 4)], vec![0])),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -6658,27 +6682,26 @@ mod tests {
         assert!(world.entity_shadow_lights.is_empty());
         assert!(world.direct_sh_delta_volumes.is_none());
         assert!(world.shadowmask_atlas.is_none());
+        assert!(
+            world
+                .gpu_lighting_payloads
+                .blocks
+                .iter()
+                .all(|block| block.shadowmask.is_none()),
+            "a dropped id 42 leaves no groups in the payloads"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }
 
+    // Id 42 has no frame without id 22's blocks, so the pair is malformed.
     #[test]
-    fn load_prl_ignores_shadowmask_atlas_without_lightmap_only() {
-        // Regression: ShadowmaskAtlas without its defining Lightmap must disable
-        // only the entity-to-world union term, not static-light entity receipt.
+    fn load_prl_rejects_shadowmask_atlas_without_lightmap() {
         let direct_sh = minimal_direct_sh_volume_section();
         let direct_sh_delta = direct_delta_section_for(
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
             vec![0],
         );
-        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 2,
-            channels: vec![0],
-            data: (0..64).collect(),
-        };
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -6690,7 +6713,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            shadowmask_blob(shadowmask),
+            shadowmask_blob(shadowmask_section(&[(4, 4)], vec![0])),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -6699,17 +6722,15 @@ mod tests {
             sections,
             "postretro_test_shadowmask_atlas_without_lightmap.prl",
         );
-        let world = load_prl(tmp.to_str().unwrap())
-            .expect("ShadowmaskAtlas without Lightmap must degrade without failing load");
-
-        assert_eq!(world.entity_shadow_lights, vec![0]);
-        assert!(world.direct_sh_delta_volumes.is_some());
-        assert!(
-            world.shadowmask_atlas.is_none(),
-            "ShadowmaskAtlas depends on Lightmap dimensions and must be ignored when Lightmap is absent"
-        );
-
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("ShadowmaskAtlas without Lightmap must fail the load");
         std::fs::remove_file(&tmp).ok();
+        assert!(
+            error
+                .to_string()
+                .contains("present without a Lightmap section"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -6722,7 +6743,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6763,7 +6784,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6801,7 +6822,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6842,7 +6863,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6886,7 +6907,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6933,7 +6954,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -6973,7 +6994,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -7011,7 +7032,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geom.to_bytes(),
             },
             prl_format::SectionBlob {
@@ -7314,7 +7335,7 @@ mod tests {
         vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: sample_geometry().to_bytes(),
             },
             prl_format::SectionBlob {
@@ -7353,7 +7374,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: empty_geometry().to_bytes(),
             },
             empty_bvh_blob(),
@@ -7555,7 +7576,7 @@ mod tests {
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
-                version: 1,
+                version: GEOMETRY_CONTAINER_VERSION,
                 data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {

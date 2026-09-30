@@ -9,14 +9,14 @@ use super::dry_run_test_fixtures::{
 };
 use super::inputs::reconstruct_charts;
 use super::layouts::{cluster_ordered_layout, stored_repack_matches};
-use super::mandatory::{DistanceBound, Granularity, MandatoryContext, Neighbors};
-use super::portal_distance::{
-    HubCell, HubPortal, PortalGraphInput, recompute_pairs, validate_against_stored,
-};
+use super::mandatory::{DistanceBound, Granularity, MandatoryContext};
+use super::portal_distance::validate_against_stored;
 use super::{ChartRect, FaceSlot, ShadowmaskState, run_dry_run};
+use crate::cell_residency_bake::portal_distance::{
+    HubCell, HubPortal, Neighbors, PortalGraphInput, recompute_pairs,
+};
 use crate::chart_raster::CHART_PADDING_TEXELS;
-use crate::lightmap_bake::{Chart, MAX_ATLAS_DIMENSION, pack_layers};
-use glam::Vec3;
+use crate::lightmap_bake::pack_cell_block;
 
 #[test]
 fn attribution_accounts_for_every_payload_byte_across_formats() {
@@ -277,11 +277,11 @@ fn cluster_ordered_packing_keeps_each_cell_on_one_capped_layer() {
     // Every placement lies inside its layer and no two charts overlap.
     let mut occupied = BTreeSet::new();
     for (rect, placement) in fixture.charts.iter().zip(&layout.placements) {
-        let dim = layout.layer_dims[placement.layer as usize];
+        let (width, height) = layout.layer_dims[placement.layer as usize];
         if placement.layer < layout.regular_layer_count {
-            assert!(dim <= 64);
+            assert!(width <= 64 && height <= 64);
         }
-        assert!(placement.x + rect.width <= dim && placement.y + rect.height <= dim);
+        assert!(placement.x + rect.width <= width && placement.y + rect.height <= height);
         for y in placement.y..placement.y + rect.height {
             for x in placement.x..placement.x + rect.width {
                 assert!(
@@ -323,8 +323,9 @@ fn identical_input_renders_identical_report() {
 }
 
 /// Encode one face exactly as the bake's UV assignment does: extreme vertices
-/// on the padded placement's interior edges.
-fn face_vertices(x: u32, y: u32, w: u32, h: u32, layer: u16, atlas: f32) -> Vec<Vertex> {
+/// on the padded block-local placement's interior edges, naming block slot
+/// `block_slot` (block id + 1; 0 is none) over a square `extent`-texel block.
+fn face_vertices(x: u32, y: u32, w: u32, h: u32, block_slot: u16, extent: f32) -> Vec<Vertex> {
     let pad = CHART_PADDING_TEXELS as f32;
     let (x0, y0) = (x as f32 + pad, y as f32 + pad);
     let (x1, y1) = ((x + w) as f32 - pad, (y + h) as f32 - pad);
@@ -337,8 +338,8 @@ fn face_vertices(x: u32, y: u32, w: u32, h: u32, layer: u16, atlas: f32) -> Vec<
                 [0.0, 1.0, 0.0],
                 [1.0, 0.0, 0.0],
                 true,
-                [u / atlas, v / atlas],
-                layer,
+                [u / extent, v / extent],
+                block_slot,
             )
         })
         .collect()
@@ -359,7 +360,11 @@ fn face_leaf(index_offset: u32, index_count: u32, cell_id: u32) -> BvhLeaf {
 
 #[test]
 fn chart_reconstruction_recovers_padded_placements_from_vertex_uvs() {
-    let formats = bc6h_formats(2048, 3, true);
+    let mut formats = bc6h_formats(2048, 3, true);
+    // Block `b` holds the chart whose `layer` is `b`.
+    for (block, cell) in formats.blocks.iter_mut().zip([3, 1, 0]) {
+        block.cell = cell;
+    }
     let expected = [
         chart(0, 2, 17, 905, 133, 9),
         chart(3, 0, 2040 - 45, 7, 45, 61),
@@ -377,7 +382,7 @@ fn chart_reconstruction_recovers_padded_placements_from_vertex_uvs() {
             rect.y,
             rect.width,
             rect.height,
-            rect.layer as u16,
+            rect.layer as u16 + 1,
             2048.0,
         ));
         leaves.push(face_leaf(indices.len() as u32, 6, rect.cell));
@@ -472,22 +477,23 @@ fn hub_metric_recompute_matches_hand_computed_chain_distance() {
 
 #[test]
 fn stored_repack_places_degenerate_face_placeholders_like_the_bake() {
-    // Cell 0: a 62² chart plus a degenerate face; cell 1: a 2² chart. The
-    // placeholder takes the corner beside the 62² chart, which moves cell 1.
-    let face_charts = [
-        placeholder_free_chart(0, 62),
-        placeholder_free_chart(0, 1),
-        placeholder_free_chart(1, 2),
-    ];
-    let pack = pack_layers(&face_charts, MAX_ATLAS_DIMENSION, 0.0).unwrap();
-    let stored = |face: usize, cell: u32, side: u32| {
-        let at = pack.placements[face];
-        chart(cell, at.layer, at.x, at.y, side, side)
-    };
+    // Cell 0: an aligned 64² chart plus a degenerate face, packed into one
+    // block with the bake's cell-block packer, so the placeholder grows the
+    // block past the chart; cell 1: a 2² chart alone.
+    let cell0 = pack_cell_block(&[(64, 64), (1, 1)], 4).unwrap();
+    assert!(cell0.area() > 64 * 64, "the placeholder must take room");
+    let cell1 = pack_cell_block(&[(2, 2)], 4).unwrap();
+    let mut formats = bc6h_formats(64, 2, false);
+    for (block, packed) in formats.blocks.iter_mut().zip([&cell0, &cell1]) {
+        block.width = packed.width;
+        block.height = packed.height;
+    }
+    let (x0, y0) = cell0.placements[0];
+    let (x1, y1) = cell1.placements[0];
     let mut fixture = input(
-        bc6h_formats(pack.atlas_width, pack.layer_count, false),
+        formats,
         &[0, 1],
-        vec![stored(0, 0, 62), stored(2, 1, 2)],
+        vec![chart(0, 0, x0, y0, 64, 64), chart(1, 1, x1, y1, 2, 2)],
         Vec::new(),
     );
     fixture.faces = vec![
@@ -499,31 +505,12 @@ fn stored_repack_places_degenerate_face_placeholders_like_the_bake() {
     assert!(check.reproduces_stored(), "{check:?}");
     assert_eq!((check.matched, check.total), (2, 2));
 
-    // Dropping the placeholder is exactly the mismatch the check exists for.
+    // Dropping the placeholder shrinks cell 0's block: the stored extent no
+    // longer matches, which is exactly the mismatch the check exists for.
     fixture.faces = vec![FaceSlot::Chart(0), FaceSlot::Chart(1)];
     let check = stored_repack_matches(&fixture);
     assert!(check.error.is_none());
-    assert_eq!(check.matched, 1, "{check:?}");
-    assert!(!check.reproduces_stored());
-
-    // A chart the packer refuses reports an error, not a mismatch count.
-    fixture.charts[0].width = MAX_ATLAS_DIMENSION + 1;
-    let check = stored_repack_matches(&fixture);
-    assert!(check.error.is_some(), "{check:?}");
-}
-
-fn placeholder_free_chart(cell: u32, side: u32) -> Chart {
-    Chart {
-        origin: Vec3::ZERO,
-        u_axis: Vec3::X,
-        v_axis: Vec3::Y,
-        uv_min: [0.0, 0.0],
-        uv_extent: [0.0, 0.0],
-        normal: Vec3::Y,
-        width_texels: side,
-        height_texels: side,
-        leaf_index: cell,
-    }
+    assert!(!check.reproduces_stored(), "{check:?}");
 }
 
 #[test]
@@ -561,7 +548,7 @@ fn shadowmask_charges_follow_the_bake_width_rule() {
     // simulated layer narrow enough to double is charged.
     formats.shadowmask = ShadowmaskState::OmittedForWidth;
     assert_eq!(formats.shadowmask_bytes_per_texel(), 0.0);
-    assert_eq!(formats.stored_layer_bytes(), lightmap_only(8192));
+    assert_eq!(formats.stored_block_bytes(0), lightmap_only(8192));
     assert_eq!(formats.layer_bytes_at(1024, 1024), with_mask(1024));
     assert_eq!(formats.layer_bytes_at(8192, 8192), lightmap_only(8192));
 
@@ -690,4 +677,65 @@ fn recompute_and_cluster_closure_grow_monotonically_and_deterministically() {
     assert_eq!(report, again);
     assert_eq!(report.render(), again.render());
     assert_eq!(report.csv(), again.csv());
+}
+
+/// The yardstick reads new-format PRLs: charts recovered from a real
+/// compiler layout's block ids and block-local UVs attribute every block
+/// byte, and the moved `pack_cell_block` repack reproduces the stored blocks.
+#[test]
+fn dry_run_recovers_charts_and_repacks_a_compiler_cell_block_layout() {
+    use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapHeader, LightmapMode};
+
+    let mut fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");
+    let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&fixture.lights);
+    let prepared =
+        crate::lightmap_bake::prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[])
+            .unwrap();
+    let (_, _, bvh) = crate::bvh_build::build_bvh(&fixture.geometry).unwrap();
+    let layout = &prepared.layout;
+    assert!(layout.blocks.len() > 1);
+
+    let header = LightmapHeader {
+        block_count: layout.blocks.len() as u32,
+        direction_texel_scale: layout.direction_texel_scale,
+        irradiance_format: IRRADIANCE_FORMAT_BC6H,
+        mode: LightmapMode::Shadowed,
+    };
+    let mut formats = bc6h_formats(64, 0, false);
+    formats.direction_texel_scale = layout.direction_texel_scale;
+    formats.blocks = layout
+        .blocks
+        .iter()
+        .map(|block| super::StoredBlock {
+            cell: block.cell_id,
+            width: block.width,
+            height: block.height,
+            irradiance_bytes: header.irradiance_len(block.width, block.height).unwrap(),
+            direction_bytes: header.direction_len(block.width, block.height).unwrap(),
+        })
+        .collect();
+    let cell_count = fixture.tree.leaves.len() as u32;
+    let (charts, faces, stats) =
+        reconstruct_charts(&fixture.geometry.geometry, &bvh, &formats, cell_count).unwrap();
+    assert_eq!(
+        (
+            stats.mixed_layer_faces,
+            stats.out_of_bounds_faces,
+            stats.unmatched_bvh_faces
+        ),
+        (0, 0, 0),
+        "{stats:?}"
+    );
+    assert!(!charts.is_empty());
+
+    let mut dry_run = input(formats, &vec![0; cell_count as usize], charts, Vec::new());
+    dry_run.faces = faces;
+    let check = stored_repack_matches(&dry_run);
+    assert!(check.reproduces_stored(), "{check:?}");
+
+    let attribution = attribute(&dry_run.formats, &dry_run.charts, dry_run.cell_count());
+    assert_eq!(attribution.overlap_texels, 0);
+    for section in [&attribution.irradiance, &attribution.direction] {
+        assert_eq!(section.attributed() + section.unattributed, section.payload);
+    }
 }

@@ -251,7 +251,7 @@ fn pack_vertex(
         normal_oct: vertex.normal_oct,
         tangent_packed: vertex.tangent_packed,
         lightmap_uv: vertex.lightmap_uv,
-        lightmap_layer: vertex.lightmap_layer,
+        lightmap_block: vertex.lightmap_block,
         // Movers never sample the animated lightmap atlas.
         animated_block: 0,
     }
@@ -971,7 +971,7 @@ mod tests {
         ch == '_' || ch.is_ascii_alphanumeric()
     }
 
-    fn vertex(lightmap_uv: [f32; 2], lightmap_layer: u16) -> Vertex {
+    fn vertex(lightmap_uv: [f32; 2], lightmap_block: u16) -> Vertex {
         Vertex::new(
             [1.0, 2.0, 3.0],
             [4.0, 5.0],
@@ -979,7 +979,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             lightmap_uv,
-            lightmap_layer,
+            lightmap_block,
         )
     }
 
@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(packed.position, [1.0, 2.0, 3.0]);
         assert_eq!(packed.base_uv, [4.0, 5.0]);
         assert_eq!(packed.lightmap_uv, [0, 0]);
-        assert_eq!(packed.lightmap_layer, 0);
+        assert_eq!(packed.lightmap_block, 0);
     }
 
     #[test]

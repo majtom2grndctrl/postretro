@@ -1584,6 +1584,10 @@ mod tests {
             // mirrors the runtime `SHADER_SOURCE`.
             include_str!("../shaders/surface_depth.wgsl"),
             "\n",
+            // Forward calls the shared lightmap sampling helpers, so the
+            // composed source mirrors the runtime `SHADER_SOURCE`.
+            include_str!("../shaders/lightmap_sample.wgsl"),
+            "\n",
         );
         const BILLBOARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/billboard.wgsl"),

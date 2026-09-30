@@ -67,17 +67,18 @@ impl AnimatedLmDebugConfig {
 }
 
 /// Cross-check a decoded section 25 against the sections it relies on and the
-/// static lightmap it lives beside: chunk count against section 24, internal
-/// layout consistency, every block's static rect inside a static layer, the
-/// paging bounds, and every light index inside the animated descriptor
-/// buffer. `static_atlas` is the usable static layer `(size, layer_count)`.
+/// static lightmap cell blocks it keys on: chunk count against section 24,
+/// internal layout consistency, every animated block's static rect inside its
+/// cell block, the paging rules, and every light index inside the animated
+/// descriptor buffer. `static_blocks` holds each installed id-22 cell block's
+/// `(width, height)`, indexed by block id.
 pub fn validate_cross_section(
     section: &postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection,
     animated_chunks: Option<
         &postretro_level_format::animated_light_chunks::AnimatedLightChunksSection,
     >,
     animated_light_count: u32,
-    static_atlas: (u32, u32),
+    static_blocks: &[(u32, u32)],
 ) -> Result<(), String> {
     match animated_chunks {
         Some(chunks) => {
@@ -104,24 +105,32 @@ pub fn validate_cross_section(
         return Err(format!("animated light weight maps layout: {error}"));
     }
 
-    let (static_size, static_layers) = static_atlas;
     for (i, block) in section.blocks.iter().enumerate() {
-        let inside = block.static_layer < static_layers
-            && u64::from(block.static_x) + u64::from(block.width) <= u64::from(static_size)
-            && u64::from(block.static_y) + u64::from(block.height) <= u64::from(static_size);
+        let Some(&(block_width, block_height)) = static_blocks.get(block.lightmap_block as usize)
+        else {
+            return Err(format!(
+                "blocks[{i}] names lightmap cell block {} past the {}-block table",
+                block.lightmap_block,
+                static_blocks.len(),
+            ));
+        };
+        let inside = u64::from(block.block_x) + u64::from(block.width) <= u64::from(block_width)
+            && u64::from(block.block_y) + u64::from(block.height) <= u64::from(block_height);
         if !inside {
             return Err(format!(
-                "blocks[{i}] static rect ({}, {}) {}x{} on layer {} exceeds static atlas \
-                 {static_size}x{static_size}x{static_layers}",
-                block.static_x, block.static_y, block.width, block.height, block.static_layer,
+                "blocks[{i}] static rect ({}, {}) {}x{} exceeds lightmap cell block {} \
+                 ({block_width}x{block_height})",
+                block.block_x, block.block_y, block.width, block.height, block.lightmap_block,
             ));
         }
     }
+    // The compiler bounds pages by its internal bake layer, which the runtime
+    // never sees; the device texture limits bound them at allocation.
     if !section.chunk_rects.is_empty() {
         postretro_level_format::animated_lightmap_atlas::validate_animated_page_size(
             section.page_size,
             section.largest_block_side(),
-            Some(static_size),
+            None,
         )?;
     }
 
@@ -175,8 +184,8 @@ mod tests {
         }
     }
 
-    /// Chunks all inside one 8×8 block on static layer 0, identity-placed on
-    /// one 8² page (the static layer size used throughout these tests).
+    /// Chunks all inside one 8×8 animated block at the origin of lightmap cell
+    /// block 0, identity-placed on one 8² page.
     fn mk_section(
         chunk_rects: Vec<ChunkAtlasRect>,
         offset_counts: Vec<TexelLightEntry>,
@@ -188,9 +197,9 @@ mod tests {
             compact_layers: u32::from(has_chunks),
             blocks: if has_chunks {
                 vec![AnimatedBlock {
-                    static_layer: 0,
-                    static_x: 0,
-                    static_y: 0,
+                    lightmap_block: 0,
+                    block_x: 0,
+                    block_y: 0,
                     compact_x: 0,
                     compact_y: 0,
                     compact_layer: 0,
@@ -252,7 +261,7 @@ mod tests {
     fn validate_cross_section_accepts_valid_section() {
         let chunks = mk_chunks(1);
         assert_eq!(
-            validate_cross_section(&one_lit_texel_section(), Some(&chunks), 1, (8, 1)),
+            validate_cross_section(&one_lit_texel_section(), Some(&chunks), 1, &[(8, 8)]),
             Ok(())
         );
     }
@@ -271,7 +280,7 @@ mod tests {
             vec![],
         );
         let chunks = mk_chunks(2);
-        let err = validate_cross_section(&section, Some(&chunks), 0, (8, 1)).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 0, &[(8, 8)]).unwrap_err();
         assert!(err.contains("partition"), "unexpected error: {err}");
     }
 
@@ -280,7 +289,7 @@ mod tests {
         let mut section = one_lit_texel_section();
         section.texel_lights[0].light_index = 42;
         let chunks = mk_chunks(1);
-        let err = validate_cross_section(&section, Some(&chunks), 5, (8, 1)).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 5, &[(8, 8)]).unwrap_err();
         assert!(err.contains("light_index"), "unexpected error: {err}");
     }
 
@@ -289,7 +298,7 @@ mod tests {
         let mut section = one_lit_texel_section();
         section.offset_counts[0].count = 5;
         let chunks = mk_chunks(1);
-        let err = validate_cross_section(&section, Some(&chunks), 1, (8, 1)).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 1, &[(8, 8)]).unwrap_err();
         assert!(err.contains("texel_lights"), "unexpected error: {err}");
     }
 
@@ -298,7 +307,7 @@ mod tests {
         let mut section = one_lit_texel_section();
         section.offset_counts.pop();
         let chunks = mk_chunks(1);
-        let err = validate_cross_section(&section, Some(&chunks), 1, (8, 1)).unwrap_err();
+        let err = validate_cross_section(&section, Some(&chunks), 1, &[(8, 8)]).unwrap_err();
         assert!(
             err.contains("offset_counts length"),
             "unexpected error: {err}"
@@ -307,46 +316,49 @@ mod tests {
 
     #[test]
     fn validate_cross_section_rejects_missing_chunks_when_weight_maps_present() {
-        let err = validate_cross_section(&one_lit_texel_section(), None, 1, (8, 1)).unwrap_err();
+        let err = validate_cross_section(&one_lit_texel_section(), None, 1, &[(8, 8)]).unwrap_err();
         assert!(err.contains("AnimatedLightChunks") && err.contains("malformed"));
     }
 
     #[test]
     fn validate_cross_section_accepts_empty_weight_maps_without_chunks() {
         let section = mk_section(vec![], vec![], vec![]);
-        assert_eq!(validate_cross_section(&section, None, 0, (8, 1)), Ok(()));
+        assert_eq!(validate_cross_section(&section, None, 0, &[(8, 8)]), Ok(()));
     }
 
     #[test]
-    fn validate_cross_section_rejects_a_block_outside_the_static_atlas() {
+    fn validate_cross_section_rejects_a_block_outside_its_cell_block() {
         let chunks = mk_chunks(1);
         let mut past_edge = one_lit_texel_section();
-        past_edge.blocks[0].static_x = 1;
-        let err = validate_cross_section(&past_edge, Some(&chunks), 1, (8, 1)).unwrap_err();
-        assert!(err.contains("exceeds static atlas"), "{err}");
+        past_edge.blocks[0].block_x = 1;
+        let err = validate_cross_section(&past_edge, Some(&chunks), 1, &[(8, 8)]).unwrap_err();
+        assert!(err.contains("exceeds lightmap cell block"), "{err}");
 
-        let mut past_layer = one_lit_texel_section();
-        past_layer.blocks[0].static_layer = 1;
-        let err = validate_cross_section(&past_layer, Some(&chunks), 1, (8, 1)).unwrap_err();
-        assert!(err.contains("exceeds static atlas"), "{err}");
+        // The same rect fits a wider cell block: the check is per block.
+        assert_eq!(
+            validate_cross_section(&past_edge, Some(&chunks), 1, &[(12, 8)]),
+            Ok(())
+        );
+
+        let mut past_table = one_lit_texel_section();
+        past_table.blocks[0].lightmap_block = 1;
+        let err = validate_cross_section(&past_table, Some(&chunks), 1, &[(8, 8)]).unwrap_err();
+        assert!(err.contains("past the 1-block table"), "{err}");
     }
 
     #[test]
     fn validate_cross_section_rejects_a_chunk_naming_a_block_past_the_table() {
         let mut section = one_lit_texel_section();
         section.chunk_rects[0].block = 1;
-        let err = validate_cross_section(&section, Some(&mk_chunks(1)), 1, (8, 1)).unwrap_err();
+        let err = validate_cross_section(&section, Some(&mk_chunks(1)), 1, &[(8, 8)]).unwrap_err();
         assert!(err.contains("past the table"), "{err}");
     }
 
     #[test]
-    fn validate_cross_section_rejects_a_page_size_outside_the_bounds() {
+    fn validate_cross_section_rejects_a_page_size_outside_the_paging_rules() {
         let mut section = one_lit_texel_section();
-        section.page_size = 16;
-        let err = validate_cross_section(&section, Some(&mk_chunks(1)), 1, (8, 1)).unwrap_err();
-        assert!(
-            err.contains("exceeds the static lightmap layer size"),
-            "{err}"
-        );
+        section.page_size = 12;
+        let err = validate_cross_section(&section, Some(&mk_chunks(1)), 1, &[(8, 8)]).unwrap_err();
+        assert!(err.contains("not a power of two"), "{err}");
     }
 }

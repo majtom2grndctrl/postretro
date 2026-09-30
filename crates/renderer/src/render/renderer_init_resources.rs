@@ -636,8 +636,8 @@ pub(crate) fn build_initial_uniform_data(
         light_term_mask: LightTermMask::ALL,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         // No level loaded yet — per-frame uniform upload in
-        // `update_per_frame_uniforms` reflects `has_sdf_atlas()` +
-        // `lightmap_mode()` once geometry installs.
+        // `update_per_frame_uniforms` reflects `has_sdf_atlas()` once
+        // geometry installs.
         sdf_shadow_flags: 0,
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: false,

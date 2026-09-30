@@ -90,7 +90,7 @@ Compiler tests pin the seams that keep direct and indirect disjoint: tier routin
 
 **Ownership boundary.** Wgpu-free light packing, light spec packing, influence packing, and light-reachability CPU math may live in `postretro-lighting`. GPU pools/resources, uploads, bind groups, and wgpu-facing layout construction remain renderer-owned.
 
-**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from static_light_map-typed lights into a directional lightmap atlas. Static shadows are baked as **soft area-light penumbras** (bake-time stratified visibility, summed per light), not hard 1-texel steps. Current static direction bytes are `Rg8Unorm` (the two octahedral components the forward shader reads); legacy `Rgba8Unorm` sections remain accepted and select that upload format. Runtime samples the **irradiance** and animated atlases through a **linear** sampler (the baked penumbra ramp is texel-quantized; hardware bilinear de-blocks it under magnification) while the **direction** atlas stays on a nearest sampler (linear interpolation doesn't commute with octahedral slerp). Bumped-Lambert correction preserves normal-map response to baked static lights.
+**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from static_light_map-typed lights into a directional lightmap, packed as one block per cell (see "Lightmap cell-block residency" below). Static shadows are baked as **soft area-light penumbras** (bake-time stratified visibility, summed per light), not hard 1-texel steps. Static direction is always `Rg8Unorm` (the two octahedral components the forward shader reads), at the irradiance extent divided by an integral texel scale. Runtime samples the **irradiance** and animated atlases through a **linear** sampler (the baked penumbra ramp is texel-quantized; hardware bilinear de-blocks it under magnification) while the **direction** atlas stays on a nearest sampler (linear interpolation doesn't commute with octahedral slerp). Bumped-Lambert correction preserves normal-map response to baked static lights.
    - **`Rgba16Float` linear-filterability is a hard runtime requirement** (the irradiance + animated atlas format). Linear filtering of 16-bit-float textures is core WebGPU and mandated on every targeted backend — Vulkan/Metal/DX12 all provide it — so there is no software fallback path: the renderer checks the adapter at init and fails fast with a named renderer message if the flag is absent (rather than a deferred bind-group-creation crash). The only added cost over the prior nearest-only sampling is **one extra sampler binding** in lightmap bind group 4 — no new per-fragment loop.
    - **Irradiance atlas storage.** The baked irradiance atlas is stored BC6H (`Bc6hRgbUfloat`) at rest by default — hardware-decoded and hardware-filterable, ~8× smaller on disk and in VRAM than `Rgba16Float`, no shader change (the fetch already reads `.rgb`). The PRL `irradiance_format` tag selects BC6H vs an uncompressed `Rgba16Float` debug path; the runtime branches texture creation on the tag, both bound `Float { filterable: true }` on the same BGL and linear sampler. `TEXTURE_COMPRESSION_BC` (already required for BC5 normals) covers BC6H; the renderer fail-fasts at init if BC6H format-features are absent. The **animated** lightmap atlas stays `Rgba16Float` (compute-written each frame, not baked). The on-hardware perf-floor numbers (NVIDIA GTX 16-series framerate floor; AMD Radeon Pro 5500M compatibility floor must-run, not framerate-gated) are a **manual** check — GPU perf is verified by running the engine, not in CI.
 
@@ -131,8 +131,9 @@ warm rank, then cluster ID. Under pressure, among equal class and priority, the 
 warm cluster yields first. Owner closure propagates class and optional priority to a fixed
 point, taking the maximum of an owner's authored value and same-class dependents. This
 policy stops at the CPU planner: it adds no renderer binding, shader branch, portal
-traversal, or visibility behavior. One issuer thread performs every id-50 read from the
-validated open file, off the frame path: visible and pinned work (owner closure included)
+traversal, or visibility behavior. One issuer thread, shared with lightmap blocks (below),
+performs every id-50 read from the validated open file, off the frame path: visible and
+pinned work (owner closure included)
 before optional work, each tier in ascending file offset, with nearby chunks coalesced
 into one read. It takes new requests after every read, so fresh visible demand preempts
 queued prefetch, and it skips any request whose cluster has left the target set. A small
@@ -140,7 +141,8 @@ pool decodes and verifies chunks. A completion installs only when generation, co
 target, and chunk hash still match. At the one renderer drain before SH compose, evictions
 first invalidate sample words; admitted clusters install base and sparse data, then
 compose only their affected affinity rows. Each drain admits ready clusters in priority
-order up to a decoded-byte budget, always at least one, and stops rather than skipping
+order up to the decoded-byte budget it shares with lightmap blocks, always at least one,
+and stops rather than skipping
 ahead to smaller lower-priority work, so frame cost tracks bytes rather than cluster
 count. A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
@@ -149,17 +151,87 @@ reaches the ambient floor. Baked owners remain installed for dependent halo clus
 physical light accumulates once and an owner cannot be evicted out from under a resident
 boundary.
 
-**Lightmap cell-block residency (decided, not yet built).** The static lightmap and
-shadowmask (ids 22/42) will stream as per-cell blocks; a cell's lightmap and shadowmask
-block install together, in the same drain, or not at all. The mandatory set is the cells
-within a movement lead of the camera cell, plus their sampled visible sets dilated one
-portal hop, plus cells of id-49 flagged pins. It is baked as a streaming-owned cell
-relation, not an id-46 axis. Mandatory and visible blocks are never refused: the pool
-grows past its cap. A transient miss drops static direct and specular light and keeps SH
-indirect. SH and lightmap blocks share one read issuer and one drain-budget owner. Block
-identity resolves in the forward vertex stage from a vertex-only table, adding no fragment
-binding. Repack compacts in place through a spare layer; only growth allocates a new pool
-generation. Until built, ids 22/42 load whole.
+**Lightmap cell-block residency.** The static lightmap and shadowmask (ids 22/42) are
+stored as per-cell blocks: each cell's charts pack into one BC-aligned block (formats:
+`build_pipeline.md` §PRL section IDs). A block's lightmap and shadowmask halves are one
+pair: they install and become sampleable in the same drain, or not at all. The renderer
+places blocks in a pool of 2048² array layers plus one spare layer; each shadowmask layer
+holds both BC5 groups side by side. Block identity resolves in the forward vertex stage.
+Each world vertex carries block id + 1 (0 = no lightmap) and a block-local UV (§6). Group 6
+binding 0 is a VERTEX-only storage table of one `vec4<u32>` per id: pool layer, packed pool
+offset, packed block extent, and flags (RESIDENT, NONE). The vertex stage fetches its entry
+once, interpolates the block-local texel (UV × extent), and passes layer, flags, offset and
+extent flat, so no fragment binding is added. The fragment clamps the texel to the block's
+half-texel rect, snaps it to 1/256 texel, then adds the pool offset (`lightmap_pool_uv`).
+A block therefore samples identically wherever the pool places it, and bilinear taps never
+reach a neighbour. Table writes happen on install, eviction and repack, never per frame.
+
+In a level with blocks, entry 0 means no lightmap: zero static irradiance, neutral
+direction, all-visible shadowmask. A real block whose entry is not resident is a miss. A miss drops exactly the
+terms that read the block: lightmap irradiance, shadowmask-gated static specular, and the
+shadowmask union subtraction. SH indirect and SDF-shadowed static light stay. A level with
+no id 22, or zero blocks, runs placeholder mode: every vertex reads 1×1 neutral textures
+(white irradiance, +Y direction, all-visible shadowmask).
+
+Demand comes from the baked CellResidencySet (id 51), a streaming-owned cell relation keyed
+by cell, not an id-46 axis. For each camera cell it lists every cell within portal-path lead
+L, plus each such cell's visible set (the runtime portal walk sampled from eye points,
+dilated one portal hop), tagged with the smallest lead at which it becomes mandatory. The
+mandatory set is the camera cell's entries within L plus the cells of id-49 pinned
+clusters. Entries between L and the baked maximum form a prefetch band, which id-49
+priority regions rank. Baked demand is recomputed only when the camera cell or L changes;
+this frame's drawn cells add visible demand. Mandatory and visible blocks are never
+refused: the pool grows past its cap to hold them. The cap bounds band blocks, which stay
+resident while they remain in the band. Blocks outside both are freed at the next drain.
+Every non-portal visibility path demands only the camera cell's baked set, and nothing new
+from a solid or exterior camera cell. On those frames, drawn blocks already resident stay
+resident without new reads, and the frames count visible misses. Dev-tools Streaming-tab
+sliders set the pool cap (1–255 layers, default 15) and L (default 16 m, up to the baked
+maximum of 32 m). Neither is a player setting.
+
+SH clusters and lightmap blocks share one read issuer thread and one per-drain byte
+budget. The issuer reads the mandatory tier (SH visible and pinned; block visible, pinned
+and lead) before the optional tier (SH seam-warm, prefetch and hysteresis; the lightmap
+band) across both resources, each tier in ascending file offset. Lightmap reads merge only
+byte-contiguous ranges, so bytes read from ids 22/42 equal the requested ranges plus the
+index. The drain admits ready work in tier order up to the shared budget, always at least
+one item. Blocks upload in their stored formats with no decode, and a pair is admitted or
+deferred whole.
+
+The renderer owns the pool, its placement, upload, growth, repack and retirement; the
+placement policy is wgpu-free logic in `postretro-render-cpu`. Each drain frees untargeted
+blocks, refuses band pairs past the cap, and evicts resident band blocks farthest lead
+first. Before growing, it repacks in place: blocks move between layers of the same texture
+through the spare layer, because WebGPU copies within one texture only between distinct
+subresources. A repack never moves a block to a higher layer, so one spare suffices and no
+second pool is allocated. Only mandatory or visible pairs grow the pool. Growth allocates a
+new generation and copies the old layers into it GPU-side, so every placement keeps its
+address. At most one generation retires at a time, released on submitted-work-done. A pair
+that needs growth while a generation retires, or past the device's array-layer limit, is
+deferred and counts as a miss. The first generation holds the cap or what the level needs
+all-resident, whichever is smaller. One drain's copies, uploads and table writes reach the
+GPU in one submission.
+
+Level install reads the spawn cell's set within L, plus pins, synchronously through the
+positional reader and installs it in one drain before the first frame; play never waits on
+a block. `lightmap_residency_settled()` answers whether the camera cell's mandatory set is
+resident (true when the level does not stream): the lightmap answer a settle chokepoint
+asks. Capture preloads the view's mandatory and visible blocks synchronously, as it preloads
+SH. A renderer drain that fails rolls back whole, and its pairs are read again. Eight
+consecutive rolled-back drains, or a renderer holding no streamed pool, decline lightmap
+streaming for the level; blocks not yet resident then stay misses. A mid-level decline parks
+the lightmap session (untargeted, draining its queue) while SH keeps its own session and
+residency.
+
+`POSTRETRO_LIGHTMAP_STREAMING=all-resident|stream` selects the mode. Unset or `stream`
+streams a level with blocks, a usable id 51 and usable portals. A level with blocks that
+lacks either, or runs `all-resident`, places every block at install: the parity baseline
+that mirrors SH's `off`. A streaming load keeps only the id-22/42 indexes and a retained file handle, never
+either whole payload. The id-22 header `mode` is recorded, but the renderer does not honour
+it; `Unshadowed` logs a load warning. Lightmap streaming reports through a throttled
+`[Lightmap streaming]` log line, the dev-tools Streaming tab, the capture report's
+`lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
+stages (§12).
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
@@ -238,7 +310,7 @@ Runtime dynamic lights may attach to a **moving** gameplay entity (e.g. a projec
 
 Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer storage buffers. Validity stays in masks and kept-probe metadata. Compose derives the texel stride from the format-fed probe stride and handles odd f16 word offsets; it never assumes RGBA alignment.
 
-**Per-term lighting mask (dev-tools).** `LightTermMask` is the single per-frame diagnostic instrument for world, mesh, mover, billboard, and fog consumers. Bits 0–6 independently select ambient floor, static/animated indirect, static/animated baked direct, dynamic direct, and specular; bit 7 remains reserved for the intentionally unwired emissive category; bit 8 selects Surface Depth ambient occlusion (§7.3), which modulates the SH indirect term only and therefore needs a gate separate from the indirect bits that own the probe lookup itself. The renderer snapshots this mask before the diagnostics UI runs and every consumer reads that snapshot, so a toggle lands atomically on the next frame. Ambient, world lightmap, dynamic, and specular terms are gated in their consumer shaders. Indirect SH, direct-SH, and billboard-scatter compose consume their corresponding mask bits; direct-SH promotion subtraction occurs only while dynamic direct is enabled. Billboard scatter never subtracts promotion. The all-on default is unchanged. Wire format / bake detail: `crates/level-format/src/delta_sh_volumes.rs`.
+**Per-term lighting mask (dev-tools, capture).** `LightTermMask` is the single per-frame diagnostic instrument for world, mesh, mover, billboard, and fog consumers; a capture scene sets it through `light_term_mask`. Bits 0–6 independently select ambient floor, static/animated indirect, static/animated baked direct, dynamic direct, and specular; bit 7 remains reserved for the intentionally unwired emissive category; bit 8 selects Surface Depth ambient occlusion (§7.3), which modulates the SH indirect term only and therefore needs a gate separate from the indirect bits that own the probe lookup itself. The renderer snapshots this mask before the diagnostics UI runs and every consumer reads that snapshot, so a toggle lands atomically on the next frame. Ambient, world lightmap, dynamic, and specular terms are gated in their consumer shaders. Indirect SH, direct-SH, and billboard-scatter compose consume their corresponding mask bits; direct-SH promotion subtraction occurs only while dynamic direct is enabled. Billboard scatter never subtracts promotion. The all-on default is unchanged. Wire format / bake detail: `crates/level-format/src/delta_sh_volumes.rs`.
 
 **Baked direct for dynamic receivers.** Kinematic movers and skinned meshes sample the composed direct-SH atlas at binding 15, gated by `has_direct`. `DirectShVolume` (PRL section 35) supplies its static base; world geometry and fog bind but do not sample this atlas. The atlas is directional (L2 SH sampled with the fragment normal) but cannot encode cast self-shadowing — probes know nothing of the receiver's own geometry. Crisp entity shadowing under a selected static light comes from pool promotion.
 
@@ -255,7 +327,7 @@ Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer stora
 | Skinned mesh | direct-SH base | id 45 composed delta; promoted animated tier crossfades to pool self-shadow at rest direction | runtime direct loop |
 | Billboard | id 47 direct scatter (legacy: direct-SH base) | id 48 composed scatter delta (legacy: id 45 direct-SH delta) | dynamic prefix only (legacy: total light count) |
 
-**World specular shadowmask.** Compiler-selected non-SDF static world specular is multiplied by its baked `ShadowmaskAtlas` mask slot; absent, rejected, or dropped shadowmask data is fully lit, and this world-only signal remains independent of pool-shadow promotion and its crossfade. With the atlas as BC5 groups side by side per layer (`build_pipeline.md` §PRL), one sampling path reads both groups at the fragment's own layer and returns the four masks in one vector, so the per-light select and both consumers — world specular and the promoted-union subtraction — are layout-blind. Each group samples as its own clamp-to-edge texture; bilinear never blends groups. Samples stay hoisted outside every light loop, costing at most one extra sample per consumer per fragment regardless of light count. A too-wide, misaligned, unknown-format or wrong-length atlas resolves to the all-visible placeholder with a `[Renderer]` error; the placeholder is two texels wide so each group reads a real texel.
+**World specular shadowmask.** Compiler-selected non-SDF static world specular is multiplied by its baked `ShadowmaskAtlas` mask slot; absent, rejected, or dropped shadowmask data is fully lit, and this world-only signal remains independent of pool-shadow promotion and its crossfade. With the shadowmask pool as BC5 groups side by side per layer (`build_pipeline.md` §PRL), one sampling path reads both groups at the fragment's block's pool layer and returns the four masks in one vector, so the per-light select and both consumers — world specular and the promoted-union subtraction — are layout-blind. Each group samples as its own clamp-to-edge texture; bilinear never blends groups. Samples stay hoisted outside every light loop, costing at most one extra sample per consumer per fragment regardless of light count. A too-wide, misaligned, unknown-format or wrong-length atlas resolves to the all-visible placeholder with a `[Renderer]` error; the placeholder is two texels wide so each group reads a real texel.
 
 **Promoted static lights (entity shadows).** Every occlusion fact is computed once, by the source that knows it best, and never re-derived: the bake owns static-onto-static and static-onto-probe occlusion; the runtime owns only the facts that involve a dynamic body — entity onto world, entity onto entity, and world onto entity at near-tier resolution — and a promoted slot exists to supply those three. Compiler-selected static lights (heuristic selection, no per-light KVP; dim, short-falloff, directional, SDF, and decorative wall/ceiling fixtures excluded) and runtime-eligible animated-baked lights promote into the shadow pool when a shadow-relevant receiver intersects their influence and the light is portal-reachable. Relevance includes skinned meshes and active movers; a mover remains active while present, including when docked or camera-PVS-culled. Both receiver kinds share the existing ranker and fixed promotion budget: 8 spot slots and 2 cube slots. Promotion is budget-capped and crossfaded by a weight `w`: a mover or mesh receives the light as `(1 − w) × baked direct SH + w × runtime term × pool shadow map` — the SH atlas is the far LOD (occlusion-tested, directional light/dark space), the pool slot the near tier (true self-shadowing), and no receiver sums the light twice. Per-light baked direct SH delta tiles make the subtraction possible. Billboard scatter deliberately drops promoted records rather than applying this direct-SH subtraction/handoff. Mover specular is part of the promoted runtime term, so it fades with `w`; baked direct SH remains diffuse-only. World receivers keep their direct term in the lightmap; promotion reaches them only as the shadowmask union subtraction — the reconstructed direct term attenuated by baked visibility times (1 − entity visibility), weighted by `w` and removed from the accumulated static direct term — never as an appended runtime light record. The subtrahend is bounded by what the lightmap holds for that light and is exactly zero where no entity occludes, by construction rather than by threshold. Fog excludes promoted slots. A promoted slot holds entity-occluder depth only; the static world is never rendered into it. The light's static world depth is rendered once per assignment into a promoted-depth cache (static lights never move) and sampled by entity receivers, which combine it with the slot per tap, so movers and skinned meshes keep near-tier static shadows while world receivers never compare against the world.
 
@@ -291,9 +363,10 @@ Custom format for all world geometry. Non-position attributes are quantized wher
 | Base UV | Diffuse and normal-map texture sampling |
 | Normal | Per-fragment shading normal |
 | Tangent | Tangent-space basis for normal-map sampling |
-| Lightmap UV | Static direct lighting atlas sampling |
+| Lightmap UV | Block-local lightmap coordinate over its cell block's extent |
+| Lightmap block ids | Cell block id + 1 (0 = no lightmap) and animated block id, one `Uint16x2` |
 
-UVs computed from face projection data at compile time; GPU sampler uses repeat addressing. Normals and tangents use octahedral encoding — half the storage of a full float vector at visually-indistinguishable precision. Both generated in prl-build. No per-vertex lighting channel — direct and indirect both accumulate per fragment (§4).
+Base UVs computed from face projection data at compile time; GPU sampler uses repeat addressing. Lightmap UVs are block-local, resolved to the pool through the group-6 block table in the vertex stage and `lightmap_pool_uv`'s 1/256-texel snap in the fragment stage (§4 "Lightmap cell-block residency"). Normals and tangents use octahedral encoding — half the storage of a full float vector at visually-indistinguishable precision. Both generated in prl-build. No per-vertex lighting channel — direct and indirect both accumulate per fragment (§4).
 
 ---
 
@@ -306,7 +379,7 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
    - **Candidate cull** (`candidate_cull.wgsl`) — the fast path. Eligible iff a valid baked `CellDrawIndex` (build_pipeline.md, id 37) is loaded, this frame's visibility is `VisibleCells::Culled`, AND its provenance is portal traversal or the portal step-limit fallback. Non-empty BVH maps require the index at load time; absence or validation failure is a load error, not a runtime fallback. The CPU expands the visible cells' owned BVH-leaf spans from the CSR into a flat candidate-leaf list (deduping visible cell ids first, so a repeated cell never double-writes a slot), clears the camera indirect and cull-status ranges to zero, then dispatches one invocation per candidate leaf. Each invocation frustum-tests its leaf and writes that leaf's existing global slot (submit) or leaves it cleared (frustum reject). Non-candidate leaves stay cleared — so cull cost scales with *visible* geometry, not the whole tree. An out-of-range visible cell id falls back to the tree walk for that frame.
    - **Tree walk** (`bvh_cull.wgsl`) — the runtime fallback. Walks the whole global BVH in one invocation; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's slot. Selected for `DrawAll`, non-portal `Culled` fallbacks (solid-cell / exterior / no-portals), and the out-of-range visible-cell case above. Shadow cone cull (step 6) always uses the tree walk.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
-4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. One workgroup per 8×8 tile, laid out as a balanced row-major 2D grid (last row padded with skip records), so tile counts past `max_compute_workgroups_per_dimension` still dispatch. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Compact atlas:** the atlas is an array of square power-of-two pages holding one block per animated face (its chart placement, padding as a zero gutter), not a slot per static layer. Compose writes chunks at their compact position on their block's page. Forward resolves each face's block in the fragment stage from the group-4 binding-7 block table (FRAGMENT-only uniform: static layer size, page size, block count, then a packed `i16` static→compact texel offset and page per block) through a flat per-vertex block id read with the lightmap layer as one `Uint16x2` attribute, so no fragment binding is added. Id 0, and every id while the atlas is inactive (dummy, placeholder or non-square static lightmap, nothing to compose, construction failure), resolves to no block. Power-of-two static and page sizes keep the remap an exact translation, so zero gutters give pixel parity with the full-layer layout. The compiler and the forward shader share one block cap (`ANIMATED_BLOCK_CAP`, the default 64 KiB uniform); section-25 consistency enforces it at load too. A vertex whose block id disagrees with the table — past it, on another static layer, or outside the block's static rect — rejects the level in debug builds and in any build with `dev-tools`; player release builds load the level with animated light off and log one error. See `build_pipeline.md` §PRL section IDs (AnimatedLightWeightMaps). **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
+4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. One workgroup per 8×8 tile, laid out as a balanced row-major 2D grid (last row padded with skip records), so tile counts past `max_compute_workgroups_per_dimension` still dispatch. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Compact atlas:** the atlas is an array of square power-of-two pages holding one block per animated face (its chart placement, padding as a zero gutter), not a slot per static cell block. Section-25 blocks are keyed by lightmap cell block and block-local texel. Compose writes chunks at their compact position on their block's page. Forward resolves each face's block in the fragment stage from the group-4 binding-7 block table (FRAGMENT-only uniform: a reserved zero word, page size, block count, then a packed `i16` compact − block-local texel offset and page per block) through a flat per-vertex animated block id read with the lightmap block id as one `Uint16x2` attribute, so no fragment binding is added. The static and animated lookups add integer offsets to the same interpolated block-local texel, so the animated remap is an integer texel translation, needs no power-of-two static size, and keeps the bilinear footprint on the same texels as the static block. Id 0, and every id while the atlas is inactive (dummy, placeholder mode, nothing to compose, construction failure), resolves to no block. The compiler and the forward shader share one block cap (`ANIMATED_BLOCK_CAP`, the default 64 KiB uniform); section-25 consistency enforces it at load too. Load rejects an animated block outside its cell block in every build. A vertex whose animated block id disagrees with the table — past it, in another cell block than the vertex samples, or with its block-local texel outside the block's rect — rejects the level in debug builds and in any build with `dev-tools`; player release builds load the level with animated light off and log one error. See `build_pipeline.md` §PRL section IDs (AnimatedLightWeightMaps). **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
 5. **SH residency drain and compose passes** (compute) — legacy whole-load composition
    retains its full-affinity-grid dispatch whenever its composed atlas changes. In streamed
    mode, the renderer drains accepted cluster work once before every SH compose path. It
@@ -347,7 +420,7 @@ Both the depth pre-pass and the forward vertex shader declare `@invariant` on `c
 One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from the pre-pass buffer (`LoadOp::Load`); depth compare is `Equal`, depth writes disabled — each fragment is shaded exactly once. Per-fragment:
 
 - Sample albedo and normal map; reconstruct world-space normal from TBN and normal-map sample.
-- Sample lightmap atlas (irradiance + dominant direction); apply bumped-Lambert correction for normal-map response to static lights.
+- Sample the lightmap pool at the fragment's cell block (irradiance + dominant direction; a missed block contributes none, §4); apply bumped-Lambert correction for normal-map response to static lights.
 - Sample octahedral irradiance atlas (8-probe weighted bilinear reads) for indirect lighting.
 - Loop over dynamic lights; evaluate direct contribution with influence-volume early-out.
 - Output: `albedo × (static_direct + indirect_sh + Σ dynamic_direct)`.
@@ -542,7 +615,7 @@ allocation. This makes a VM-free rest-pose sequence compare the v1 `w=0` flat
 delta byte-for-byte with known promoted splits. An omitted `force_promotion`
 leaves the legacy capture path unchanged.
 
-**Lightmap-family byte meter.** Every level install (including the empty install that unloads a level) rebuilds one report of resident bytes for the five group-4 lightmap textures — static irradiance, static direction, shadowmask, animated irradiance, animated direction — read back from the textures actually bound, so a rejected atlas reports its placeholder. It uses the same row model and Data/Dummy/Fallback and section-citation conventions as the SH report below. The load log (`[Renderer] Lightmap residency:`), the dev panel's Performance tab ("Lightmap memory") and the capture measurement JSON (`renderer_accounted_lightmap`) all print that one report.
+**Lightmap-family byte meter.** Every level install (including the empty install that unloads a level) rebuilds one report of resident bytes for the five group-4 lightmap textures — static irradiance, static direction, shadowmask, animated irradiance, animated direction — read back from the textures actually bound, so a rejected pool or atlas reports its placeholder. The three static rows are pool layers: all-resident, every layer the level's blocks fill; streamed, the active generation's layers plus the spare. A streamed pool's growth and its retirement release rebuild the static rows, and a retiring generation's bytes report apart from the total. It uses the same row model and Data/Dummy/Fallback and section-citation conventions as the SH report below. The load log (`[Renderer] Lightmap residency:`), the dev panel's Performance tab ("Lightmap memory") and the capture measurement JSON (`renderer_accounted_lightmap`) all print that one report.
 
 **Planned SH residency accounting.** The renderer records requested bytes for every
 level-owned SH texture and buffer at the allocation decision that creates it. Each physical
@@ -627,16 +700,17 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
 | 3 | Octahedral irradiance atlas array (sampled total `texture_2d_array`, grid/tile/layer uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) + direct static-light atlas array (`BIND_SH_DIRECT_ATLAS = 15`; billboards use it only on their legacy fallback) + billboard direct-scatter 3D texture (binding 17, VERTEX-only) |
-| 4 | Lightmap atlas (irradiance + dominant direction textures; nearest + linear samplers) |
+| 4 | Lightmap pool (irradiance, dominant direction, shadowmask array layers), animated atlas pair, nearest + linear samplers, animated block table uniform (binding 7) |
 | 5 | Shadow resources: binding 0 = `spot_shadow_depth` (depth 2D-array, spot pool); binding 1 = comparison sampler (shared by spot and cube paths); binding 2 = `light_space_matrices` uniform (spot slots); binding 3 = SDF shadow factor (half-res `Rgba8Unorm`); binding 4 = full-res scene depth; binding 5 = `point_shadow_cube` (`texture_depth_cube_array`, point-light cube shadows) |
+| 6 | Forward: lightmap block table (binding 0, VERTEX-only storage; §4 "Lightmap cell-block residency"). Pipeline-local: billboard binds its sprite instances here (§7.4), fog its volume resources |
 
-Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. When a new pipeline stage consumes a shared BGL, each accessed binding's `visibility` must include that stage (e.g. `FRAGMENT → FRAGMENT | COMPUTE`) — wgpu validates this at pipeline creation, not compile time. Two budget slots remain; a pass needing a ninth group must consolidate, not raise the limit.
+Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. When a new pipeline stage consumes a shared BGL, each accessed binding's `visibility` must include that stage (e.g. `FRAGMENT → FRAGMENT | COMPUTE`) — wgpu validates this at pipeline creation, not compile time. Group 7 is the one budget slot left; a pass needing a ninth group must consolidate, not raise the limit.
 
 **Widen visibility minimally.** The converse also bites: wgpu charges the per-stage binding-type limits (`max_storage_buffers_per_shader_stage`, `max_sampled_textures_per_shader_stage`) against the BGL *entry* set per stage, not against what a given shader reads. Adding `VERTEX` (or `COMPUTE`) to a shared entry that the new stage does **not** read still spends a slot in that stage's budget. The renderer does **not** raise `max_storage_buffers_per_shader_stage` above the downlevel/WebGPU default of 8 (broad hardware compat for a modder-friendly retro FPS), so an entry must carry a stage only when a shader in that stage genuinely reads it. The billboard pipeline sits at exactly six VERTEX-visible storage buffers against that ceiling of 8 (see §7.4); the `billboard_pipeline_vertex_storage_request_matches_bgl_definitions` test guards it headlessly.
 
 The mapping above is the world-geometry path. The skinned model pass (§9) owns its own pipeline layout with a **distinct group mapping** — groups 0/1 carry the same camera/material bind groups, but groups 2 and 3 differ. No collision: each pipeline declares its own layout. See §9.
 
-The renderer also requires `max_texture_dimension_2d ≥ 8192` (per-layer lightmap and SH atlas cap; wgpu's default already grants 8192) and `max_texture_array_layers ≥ 256` (lightmap and SH array-atlas layer cap; wgpu's default grants 256). Lightmaps and SH irradiance/direct atlases are `texture_2d_array` resources; PRL caps each layer to the 2D floor and spills overflow into array layers. An adapter pre-check fail-fasts with a named `[Renderer]` error if either limit is below its floor. Per-atlas runtime guards degrade oversized lightmaps to the neutral placeholder and disable oversized SH volumes cleanly, rather than panicking during texture creation or upload.
+The renderer also requires `max_texture_dimension_2d ≥ 8192` (per-layer lightmap and SH atlas cap; wgpu's default already grants 8192) and `max_texture_array_layers ≥ 256` (lightmap and SH array-atlas layer cap; wgpu's default grants 256). Lightmap pools and SH irradiance/direct atlases are `texture_2d_array` resources. Lightmap pool layers are a fixed 2048² (the shadowmask layer twice as wide); SH atlases cap each PRL layer to the 2D floor and spill overflow into array layers. An adapter pre-check fail-fasts with a named `[Renderer]` error if either limit is below its floor. Runtime guards degrade a lightmap pool the device cannot hold to the neutral placeholder (a streamed pool instead defers growth past the array-layer limit) and disable oversized SH volumes cleanly, rather than panicking during texture creation or upload.
 
 **Target hardware.** The renderer targets mid-2020 mid-range discrete GPUs — the envelope the lean wgpu pipeline is built toward. **Perf floor** (must hold an acceptable framerate): NVIDIA GTX 16-series (Turing, e.g. GTX 1660 Super). No RT cores at this tier, so SDF shadows sphere-trace in compute (§4) and hardware ray tracing stays a non-goal (§13). **Compatibility floor** (must run, not perf-tuned): AMD Radeon Pro 5500M-class (RDNA1, the 2020 16-inch MacBook Pro discrete GPU) on the Metal backend; a live-tunable quality panel (dev-tools) explores settings on this class. Perf-gated renderer decisions — SDF shadow budgets and the like (§4) — are measured against this envelope; measured per-pass numbers live with the `POSTRETRO_GPU_TIMING` diagnostics (§12), not here. *(Adaptive base-probe spacing sets a lower binding floor for its own footprint work: laptop shared-memory iGPU smoothness, below this desktop perf floor — an owner-stated divergence for that feature, not a change to the renderer-wide target. See §4 "Adaptive base-probe spacing".)*
 

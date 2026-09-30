@@ -1,13 +1,14 @@
-//! Atlas layouts the dry run compares: the stored packing, and soft
-//! cluster-ordered packing at a capped layer size driven through the bake's own
-//! leaf-cohesive packer (`pack_layers_with_layer_limit`).
+//! Atlas layouts the dry run compares: the stored cell blocks (each block one
+//! region), and soft cluster-ordered whole-layer packing at a capped layer size
+//! driven through the bake's leaf-cohesive chart packer
+//! (`pack_layers_with_layer_limit`).
 
 use glam::Vec3;
 
 use super::{ChartRect, DryRunInput, FaceSlot};
 use crate::chart_raster::ChartPlacement;
 use crate::lightmap_bake::{
-    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_layers,
+    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_cell_block, pack_layers,
     pack_layers_with_layer_limit,
 };
 
@@ -29,8 +30,9 @@ pub(crate) struct Layout {
     pub name: String,
     /// Sorted distinct layers each cell's charts occupy.
     pub cell_layers: Vec<Vec<u32>>,
-    /// Square edge of each layer, in irradiance texels.
-    pub layer_dims: Vec<u32>,
+    /// `(width, height)` of each layer, in irradiance texels. Simulated
+    /// layers are square; a stored block is its own rectangle.
+    pub layer_dims: Vec<(u32, u32)>,
     /// Id 22 + id 42 bytes of each layer.
     pub layer_bytes: Vec<u64>,
     /// Layers of the shared capped array (excludes oversize layers).
@@ -44,7 +46,7 @@ impl Layout {
     pub(crate) fn total_layer_texels(&self) -> u64 {
         self.layer_dims
             .iter()
-            .map(|&d| u64::from(d) * u64::from(d))
+            .map(|&(w, h)| u64::from(w) * u64::from(h))
             .sum()
     }
 
@@ -53,9 +55,9 @@ impl Layout {
     }
 }
 
+/// The stored layout: every id-22 block is its own region.
 pub(crate) fn stored_layout(input: &DryRunInput) -> Layout {
     let formats = &input.formats;
-    let layer_count = formats.layer_count as usize;
     let mut cell_layers = vec![Vec::new(); input.cell_count()];
     for chart in &input.charts {
         cell_layers[chart.cell as usize].push(chart.layer);
@@ -65,11 +67,13 @@ pub(crate) fn stored_layout(input: &DryRunInput) -> Layout {
         layers.dedup();
     }
     Layout {
-        name: "stored".to_string(),
+        name: "stored blocks".to_string(),
         cell_layers,
-        layer_dims: vec![formats.irr_width; layer_count],
-        layer_bytes: vec![formats.stored_layer_bytes(); layer_count],
-        regular_layer_count: formats.layer_count,
+        layer_dims: formats.blocks.iter().map(|b| (b.width, b.height)).collect(),
+        layer_bytes: (0..formats.blocks.len())
+            .map(|block| formats.stored_block_bytes(block))
+            .collect(),
+        regular_layer_count: formats.blocks.len() as u32,
         oversize_cells: Vec::new(),
         placements: input
             .charts
@@ -149,7 +153,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
     for (slot, &chart_index) in packed.iter().enumerate() {
         placements[chart_index] = pack.placements[slot];
     }
-    let mut layer_dims = vec![pack.atlas_width; regular_layer_count as usize];
+    let mut layer_dims = vec![(pack.atlas_width, pack.atlas_width); regular_layer_count as usize];
 
     let mut oversize_cells = Vec::new();
     for cell in (0..input.cell_count()).filter(|&c| oversize[c]) {
@@ -165,7 +169,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
         let alone = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.0)
             .expect("a stored cell packs alone within the bake's maximum layer");
         let layer = layer_dims.len() as u32;
-        layer_dims.push(alone.atlas_width);
+        layer_dims.push((alone.atlas_width, alone.atlas_width));
         for (slot, &chart_index) in members.iter().enumerate() {
             placements[chart_index] = ChartPlacement {
                 layer,
@@ -198,7 +202,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
         cell_layers,
         layer_bytes: layer_dims
             .iter()
-            .map(|&dim| formats.layer_bytes_at(dim, dim))
+            .map(|&(w, h)| formats.layer_bytes_at(w, h))
             .collect(),
         layer_dims,
         regular_layer_count,
@@ -207,47 +211,67 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
     }
 }
 
-/// Repack every face in stored order, 1×1 placeholders included, with the
-/// bake's own packer and count recovered charts that land where the PRL
-/// says they are. Confirms the recovery and the packer reuse describe the
-/// same layout.
+/// Repack every cell's faces in stored order, 1×1 placeholders included, with
+/// the bake's own cell-block packer (`pack_cell_block`) at the stored
+/// alignment, and count recovered charts that land where the PRL says they
+/// are. Confirms the recovery and the packer reuse describe the same layout.
 pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
-    let charts: Vec<Chart> = input
-        .faces
-        .iter()
-        .map(|slot| match *slot {
-            FaceSlot::Chart(index) => chart_for(&input.charts[index]),
-            FaceSlot::Placeholder { cell } => placeholder_chart(cell),
-        })
-        .collect();
-    let total = input.charts.len();
-    match pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.0) {
-        Ok(pack) => RepackCheck {
-            matched: input
-                .faces
-                .iter()
-                .zip(&pack.placements)
-                .filter(|(slot, placement)| match **slot {
-                    FaceSlot::Chart(index) => {
-                        let chart = &input.charts[index];
-                        chart.x == placement.x
-                            && chart.y == placement.y
-                            && chart.layer == placement.layer
-                    }
-                    FaceSlot::Placeholder { .. } => false,
-                })
-                .count(),
-            total,
-            dims_match: pack.atlas_width == input.formats.irr_width
-                && pack.layer_count == input.formats.layer_count,
-            error: None,
-        },
-        Err(error) => RepackCheck {
-            matched: 0,
-            total,
-            dims_match: false,
-            error: Some(error.to_string()),
-        },
+    let formats = &input.formats;
+    let align = formats.block_alignment();
+    // Faces of each cell, in face order.
+    let mut cell_faces: Vec<Vec<&FaceSlot>> = vec![Vec::new(); input.cell_count()];
+    for slot in &input.faces {
+        let cell = match *slot {
+            FaceSlot::Chart(index) => input.charts[index].cell,
+            FaceSlot::Placeholder { cell } => cell,
+        };
+        cell_faces[cell as usize].push(slot);
+    }
+    let mut block_of_cell = vec![None; input.cell_count()];
+    for (block, stored) in formats.blocks.iter().enumerate() {
+        if let Some(slot) = block_of_cell.get_mut(stored.cell as usize) {
+            *slot = Some(block);
+        }
+    }
+
+    let mut matched = 0;
+    let mut dims_match = true;
+    let mut blocks_packed = 0;
+    for (cell, faces) in cell_faces.iter().enumerate() {
+        let sizes: Vec<(u32, u32)> = faces
+            .iter()
+            .map(|slot| match **slot {
+                FaceSlot::Chart(index) => (input.charts[index].width, input.charts[index].height),
+                FaceSlot::Placeholder { .. } => (1, 1),
+            })
+            .collect();
+        let Some(packed) = pack_cell_block(&sizes, align) else {
+            continue;
+        };
+        blocks_packed += 1;
+        let Some(block) = block_of_cell[cell] else {
+            dims_match = false;
+            continue;
+        };
+        let stored = &formats.blocks[block];
+        dims_match &= (packed.width, packed.height) == (stored.width, stored.height);
+        matched += faces
+            .iter()
+            .zip(&packed.placements)
+            .filter(|&(slot, &(x, y))| match **slot {
+                FaceSlot::Chart(index) => {
+                    let chart = &input.charts[index];
+                    chart.layer as usize == block && (chart.x, chart.y) == (x, y)
+                }
+                FaceSlot::Placeholder { .. } => false,
+            })
+            .count();
+    }
+    RepackCheck {
+        matched,
+        total: input.charts.len(),
+        dims_match: dims_match && blocks_packed == formats.blocks.len(),
+        error: None,
     }
 }
 
@@ -264,18 +288,6 @@ impl RepackCheck {
     pub(crate) fn reproduces_stored(&self) -> bool {
         self.error.is_none() && self.dims_match && self.matched == self.total
     }
-}
-
-/// The 1×1 chart the bake plans for a degenerate face.
-fn placeholder_chart(cell: u32) -> Chart {
-    chart_for(&ChartRect {
-        cell,
-        layer: 0,
-        x: 0,
-        y: 0,
-        width: 1,
-        height: 1,
-    })
 }
 
 /// The packer reads only size and leaf; the projection fields are inert.

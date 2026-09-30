@@ -121,8 +121,10 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
 }
 
 /// Regression: animated receivers packed onto a second static-atlas layer
-/// were previously skipped by the 2D animated lightmap atlas. Read the baked
-/// PRL rather than inferring atlas placement from the authoring map.
+/// were previously skipped by the 2D animated lightmap atlas. Static layers
+/// are now internal bake layers; the PRL-visible analogue is a receiver keyed
+/// to a lightmap cell block past the first. Read the baked PRL rather than
+/// inferring placement from the authoring map.
 #[test]
 #[ignore = "cold prl-build bake; run on demand with -- --ignored"]
 fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
@@ -162,9 +164,9 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
         .expect("read Lightmap section")
         .expect("Lightmap section present on spill fixture");
     let lightmap = LightmapSection::from_bytes(&lightmap_bytes).expect("Lightmap decodes");
-    assert_eq!(
-        lightmap.layer_count, 2,
-        "spill fixture must use two static lightmap atlas layers",
+    assert!(
+        lightmap.blocks.len() >= 2,
+        "spill fixture must bake more than one lightmap cell block",
     );
 
     let weight_map_bytes = read_section_data(
@@ -196,16 +198,16 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
             .iter()
             .enumerate()
             .any(|(index, rect)| {
-                let (static_layer, _, _) = weight_maps
-                    .chunk_static_origin(index)
+                let (lightmap_block, _, _) = weight_maps
+                    .chunk_block_origin(index)
                     .expect("every chunk resolves through its block");
-                static_layer >= 1
+                lightmap_block >= 1
                     && weight_maps.offset_counts[rect.texel_offset as usize
                         ..(rect.texel_offset + rect.width * rect.height) as usize]
                         .iter()
                         .any(|entry| entry.count > 0)
             }),
-        "a static layer >= 1 must contain an animated receiver with covered texels: {:?}",
+        "a lightmap block >= 1 must contain an animated receiver with covered texels: {:?}",
         weight_maps.blocks,
     );
 
@@ -357,17 +359,18 @@ fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
         .expect("Lightmap section present on soft-shadow map");
     let lightmap = LightmapSection::from_bytes(&lightmap_bytes).expect("lightmap from_bytes");
 
-    // A real (non-placeholder) atlas: the six static lights bake into it, so it
-    // must be larger than the 1x1 placeholder and carry irradiance bytes.
+    // Real blocks: the six static lights bake into them, so the section is not
+    // the zero-block no-light section and carries irradiance bytes.
     assert!(
-        lightmap.irr_width > 1 && lightmap.irr_height > 1,
-        "soft-shadow map must bake a real lightmap atlas, got {}x{}",
-        lightmap.irr_width,
-        lightmap.irr_height,
+        !lightmap.blocks.is_empty(),
+        "soft-shadow map must bake real lightmap blocks",
     );
     assert!(
-        !lightmap.irradiance.is_empty(),
-        "baked lightmap must carry irradiance data",
+        lightmap
+            .blocks
+            .iter()
+            .all(|block| !block.irradiance.is_empty()),
+        "baked lightmap blocks must carry irradiance data",
     );
 
     let _ = std::fs::remove_file(&output);

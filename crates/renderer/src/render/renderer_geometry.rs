@@ -36,7 +36,7 @@ pub(crate) fn cast_world_vertices_to_bytes(
         for &c in &vertex.lightmap_uv {
             bytes.extend_from_slice(&c.to_ne_bytes());
         }
-        bytes.extend_from_slice(&vertex.lightmap_layer.to_ne_bytes());
+        bytes.extend_from_slice(&vertex.lightmap_block.to_ne_bytes());
         bytes.extend_from_slice(&vertex.animated_block.to_ne_bytes());
     }
     bytes
@@ -86,6 +86,12 @@ pub fn level_world_to_geometry<'a>(
         sh_volume: world.sh_volume(),
         sh_storage,
         lightmap: world.lightmap.as_ref(),
+        lightmap_streaming: world.lightmap_stream_manifest().map(|manifest| {
+            LevelGeometryLightmapStreaming {
+                content_tag: manifest.content_tag(),
+                pool_cap_layers: DEFAULT_LIGHTMAP_POOL_CAP_LAYERS,
+            }
+        }),
         chunk_light_list: world.chunk_light_list.as_ref(),
         animated_light_chunks: world.animated_light_chunks.as_ref(),
         animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
@@ -113,14 +119,14 @@ mod tests {
     use postretro_render_data::geometry::WorldVertex;
 
     #[test]
-    fn lightmap_layer_and_animated_block_serialize_as_u16x2_at_byte_offset_32() {
+    fn lightmap_block_and_animated_block_serialize_as_u16x2_at_byte_offset_32() {
         let vertex = WorldVertex {
             position: [0.0, 0.0, 0.0],
             base_uv: [0.0, 0.0],
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0x1234,
+            lightmap_block: 0x1234,
             animated_block: 0xBEEF,
         };
         let bytes = cast_world_vertices_to_bytes(&[vertex]);

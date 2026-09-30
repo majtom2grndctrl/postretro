@@ -13,10 +13,10 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 ## Layers
 
 - **Layer 0 (leaves):** audio, foundation, level-format, net, render-data, stage-timing, test-log-capture, xtask
-- **Layer 1:** entities, level-compiler, level-loader, model, script-compiler
-- **Layer 2:** combat-model, physics, scripting-core, tool, visibility
-- **Layer 3:** lighting, render-cpu, ui
-- **Layer 4:** renderer, sim
+- **Layer 1:** entities, level-loader, model, script-compiler
+- **Layer 2:** combat-model, physics, scripting-core, visibility
+- **Layer 3:** level-compiler, lighting, render-cpu, ui
+- **Layer 4:** renderer, sim, tool
 - **Layer 5:** ai, netcode
 - **Layer 6:** postretro
 
@@ -29,17 +29,17 @@ recompiles every dependent.
 - **level-format** — 12 dependents (postretro, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, tool)
 - **entities** — 11 dependents (postretro, ai, combat-model, lighting, netcode, physics, render-cpu, renderer, scripting-core, sim, ui)
 - **foundation** — 11 dependents (postretro, ai, combat-model, entities, lighting, model, netcode, physics, renderer, scripting-core, sim)
-- **level-loader** — 7 dependents (postretro, lighting, physics, render-cpu, renderer, sim, visibility)
+- **level-loader** — 8 dependents (postretro, level-compiler, lighting, physics, render-cpu, renderer, sim, visibility)
 - **render-data** — 7 dependents (postretro, level-loader, lighting, model, render-cpu, renderer, sim)
 - **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, tool)
 - **scripting-core** — 6 dependents (postretro, lighting, netcode, renderer, sim, ui)
 - **net** — 4 dependents (postretro, combat-model, netcode, sim)
 - **physics** — 4 dependents (postretro, ai, netcode, sim)
 - **stage-timing** — 4 dependents (postretro, renderer, sim, visibility)
+- **visibility** — 4 dependents (postretro, level-compiler, render-cpu, renderer)
 - **combat-model** — 3 dependents (postretro, netcode, sim)
 - **lighting** — 3 dependents (postretro, renderer, sim)
 - **sim** — 3 dependents (postretro, ai, netcode)
-- **visibility** — 3 dependents (postretro, render-cpu, renderer)
 - **render-cpu** — 2 dependents (postretro, renderer)
 - **ui** — 2 dependents (postretro, renderer)
 - **ai** — 1 dependent (postretro)

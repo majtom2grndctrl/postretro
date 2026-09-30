@@ -1052,8 +1052,8 @@ fn verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_no
     );
     assert!(
         cold_lines[0].contains("4 selected light(s) at one texel")
-            && cold_lines[0].contains("layer(s), BC5 .rg side by side (4 slots)"),
-        "four overlapping lights must report peak 4 with layer count and format: {}",
+            && cold_lines[0].contains("cell block(s), BC5 .rg in 2 groups (4 slots)"),
+        "four overlapping lights must report peak 4 with block count and format: {}",
         cold_lines[0]
     );
 

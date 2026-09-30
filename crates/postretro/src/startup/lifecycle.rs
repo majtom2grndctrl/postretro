@@ -5,6 +5,8 @@
 mod lifecycle_boot_state;
 #[path = "lifecycle_net.rs"]
 mod lifecycle_net;
+#[path = "lifecycle_spawn_residency.rs"]
+mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
 mod lifecycle_sprite_collections;
 #[path = "lifecycle_world_cpu.rs"]
@@ -382,6 +384,14 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                // The spawn cell's lightmap blocks are resident before the
+                // first level frame renders.
+                if let Err(err) = self.install_spawn_streaming() {
+                    log::error!("[Loader] level streaming install failed: {err:#}");
+                    self.exit_result = Err(err);
+                    event_loop.exit();
+                    return false;
+                }
                 // The install frame never counts, and no CPU timing surface may
                 // show a window from the previous level.
                 self.cpu_timer.level_changed();
@@ -866,12 +876,9 @@ impl App {
             // angles is engine-convention radians (YXZ): x=pitch, y=yaw.
             self.camera.yaw = angles.y;
             self.camera.pitch = angles.x;
-            self.frame_timing.push_state(InterpolableState::new(pos));
         } else if let Some(world) = self.level.as_ref() {
             // Fallback when no player_spawn: center on level geometry.
             self.camera.position = world.spawn_position();
-            self.frame_timing
-                .push_state(InterpolableState::new(self.camera.position));
         }
         // `--start-pose` moves the local pawn (or, pawnless, the fly camera)
         // to a checked-in measurement probe instead of the map spawn, on the
@@ -892,8 +899,6 @@ impl App {
             self.camera.position = pose.position;
             self.camera.yaw = pose.yaw;
             self.camera.pitch = pose.pitch;
-            self.frame_timing
-                .push_state(InterpolableState::new(pose.position));
             log::info!(
                 "[Startup] start pose {:?} yaw {:.1}° pitch {:.1}° ({})",
                 pose.position,
@@ -902,6 +907,16 @@ impl App {
                 if moved { "local pawn" } else { "camera only" },
             );
         }
+        // The spawn eye, computed once: the followed local pawn's eye (the
+        // point every tick moves the camera to), else the camera placed above.
+        // Both interpolation endpoints hold it, so a frame before the first
+        // tick renders from this eye, the one the spawn preload made
+        // resident, and the first tick blends from it rather than from the
+        // pawn's origin or the previous level's pose.
+        let spawn_eye = self.followed_pawn_eye().unwrap_or(self.camera.position);
+        self.camera.position = spawn_eye;
+        self.frame_timing
+            .hold_state(InterpolableState::new(spawn_eye));
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
         // were created in segment B; this is the windowed GPU half.
@@ -1596,7 +1611,7 @@ pub(crate) mod tests {
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
                 sh_streaming: None,
-                sh_worker_retirement: None,
+                level_streaming: crate::session::level_streaming::LevelStreaming::default(),
                 options_bridge: options::OptionsBridge::new(),
                 os_preferences: crate::os_preferences::OsPreferenceFeed::fake().0,
                 player_options: options::PlayerOptions::default(),
@@ -1935,7 +1950,7 @@ pub(crate) mod tests {
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
-            lightmap_layer: 0,
+            lightmap_block: 0,
             animated_block: 0,
         }
     }
@@ -2003,6 +2018,7 @@ pub(crate) mod tests {
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
             gpu_lighting_payloads: Default::default(),
+            lightmap_storage: Default::default(),
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
@@ -2014,6 +2030,8 @@ pub(crate) mod tests {
             navmesh: None,
             cell_draw_index: None,
             cluster_directory: None,
+            cell_residency_set: None,
+            prl_read_counters: None,
         }
     }
 
@@ -2627,6 +2645,37 @@ pub(crate) mod tests {
         );
     }
 
+    // Regression: unload left the streaming sessions alive, so the level's
+    // manifest and its retained file lived on until the next install.
+    #[test]
+    fn unload_level_releases_the_level_streaming_state() {
+        use crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl;
+        use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
+
+        let mut app = test_app();
+        let prl = StreamedLightmapPrl::write();
+        let world = prl.load();
+        let view = LightmapLevelView::of(&world).expect("the fixture streams its lightmap");
+        let manifest = std::sync::Arc::downgrade(view.manifest);
+        let session = LightmapStreamingSession::new(view, None).unwrap();
+        app.session
+            .as_mut()
+            .expect("test app session installed")
+            .level_streaming
+            .install_lightmap(session);
+        app.level = Some(world);
+
+        app.unload_level();
+
+        let session = app.session.as_ref().expect("test app session installed");
+        assert!(session.level_streaming.lightmap().is_none());
+        assert!(!session.level_streaming.is_retiring());
+        assert!(
+            manifest.upgrade().is_none(),
+            "the manifest and its retained file are released at unload"
+        );
+    }
+
     #[test]
     fn reinstall_after_unload_leaves_no_fixture_a_cpu_residue() {
         let mut app = test_app();
@@ -2708,43 +2757,44 @@ pub(crate) mod tests {
     // an install with no renderer uploads nothing, so the world keeps them.
     #[test]
     fn install_without_renderer_keeps_gpu_lighting_payloads_in_the_world() {
-        use postretro_level_format::lightmap::{LightmapHeader, LightmapMode, LightmapPayloads};
-        use postretro_level_format::shadowmask_atlas::{
-            SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE, ShadowmaskAtlasHeader,
+        use postretro_level_format::lightmap::{
+            IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapBlockPayload, LightmapMode,
+            LightmapSection,
         };
+        use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
         let mut app = test_app();
         assert!(app.renderer.is_none());
         let mut world = level_world("payloads", 1);
-        world.lightmap = Some(LightmapHeader {
-            layer_count: 1,
-            irr_width: 4,
-            irr_height: 4,
-            irr_texel_density: 0.04,
-            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
-            dir_width: 4,
-            dir_height: 4,
-            dir_texel_density: 0.04,
-            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
+        let lightmap = LightmapSection {
+            direction_texel_scale: 2,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             mode: LightmapMode::Shadowed,
-        });
-        world.shadowmask_atlas = Some(ShadowmaskAtlasHeader {
-            format: SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 1,
-            channels: vec![0],
-        });
-        let payloads = postretro_level_loader::GpuLightingPayloads {
-            lightmap: Some(LightmapPayloads {
+            blocks: vec![LightmapBlock {
+                cell_id: 0,
+                width: 4,
+                height: 4,
                 irradiance: vec![1; 128],
-                direction: vec![2; 32],
-            }),
-            shadowmask: Some(vec![3; 32]),
+                direction: vec![2; 8],
+            }],
+        };
+        world.lightmap = Some(lightmap.index());
+        world.shadowmask_atlas = Some(
+            ShadowmaskAtlasSection {
+                channels: vec![0],
+                blocks: vec![[vec![3; 16], vec![4; 16]]],
+            }
+            .index(),
+        );
+        let payloads = postretro_level_loader::GpuLightingPayloads {
+            blocks: vec![LightmapBlockPayload {
+                irradiance: vec![1; 128],
+                direction: vec![2; 8],
+                shadowmask: Some([vec![3; 16], vec![4; 16]]),
+            }],
         };
         world.gpu_lighting_payloads = postretro_level_loader::GpuLightingPayloads {
-            lightmap: payloads.lightmap.clone(),
-            shadowmask: payloads.shadowmask.clone(),
+            blocks: payloads.blocks.clone(),
         };
 
         app.install_level_payload(world, PathBuf::from("baked"));

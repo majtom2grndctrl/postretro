@@ -167,6 +167,13 @@ impl ShStreamingSession {
         self.workers = Some(workers);
     }
 
+    /// The controller's residency generation: a recreated session gets a new
+    /// one, so tests can tell a kept session from a replaced one.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.controller.generation()
+    }
+
     pub(in crate::session) fn begin_worker_retirement(&mut self) -> Option<ShWorkerRetirement> {
         self.workers.as_mut().map(ShAsyncWorkers::begin_retirement)
     }

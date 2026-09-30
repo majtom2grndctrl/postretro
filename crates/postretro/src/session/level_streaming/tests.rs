@@ -662,11 +662,17 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
         .accept_drain_for_test(&sh_batch)
         .unwrap();
 
-    // Later frames retire the declined session with the issuer and stream SH
-    // alone; the lightmap session never returns.
+    // Later frames keep SH's session (and its residency): the declined
+    // lightmap session stays parked, and the lightmap never returns.
+    let sh_generation = sh.as_ref().unwrap().generation();
     for _ in 0..3 {
         assert!(level.ensure_sessions(&mut sh, wanted, &make_sh).unwrap());
         assert!(level.lightmap().is_none());
+        assert_eq!(
+            sh.as_ref().unwrap().generation(),
+            sh_generation,
+            "SH is kept, not recreated"
+        );
         let sh_batch = level
             .prepare_drains(&mut sh, Some(view.residency_set), frame(&visible, 0, &cpu))
             .unwrap();

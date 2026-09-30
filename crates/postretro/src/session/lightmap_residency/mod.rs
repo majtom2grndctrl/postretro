@@ -376,6 +376,22 @@ impl LightmapStreamingSession {
     pub(in crate::session) fn park_declined(&mut self) {
         self.declined = true;
         self.awaiting_renderer = None;
+        // Untarget every block so the shared issuer cancels this session's
+        // pending reads at once instead of reading them for nothing.
+        self.controller
+            .target_bitset()
+            .publish(&std::collections::BTreeSet::new());
+    }
+
+    /// A parked, declined session is an inert sink for the rest of the level:
+    /// the shared issuer SH reads through keeps running and may still deliver
+    /// cancelled or finished lightmap reads into this queue. Each frame this
+    /// releases their bytes so the queue never fills and the ledger stays
+    /// exact.
+    pub(in crate::session) fn drain_declined_completions(&mut self) {
+        while let Ok(completion) = self.completions.try_recv() {
+            self.ledger.release(completion.result.read_bytes());
+        }
     }
 
     /// Whether the level declined this lightmap; see [`Self::park_declined`].

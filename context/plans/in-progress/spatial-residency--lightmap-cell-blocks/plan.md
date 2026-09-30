@@ -234,6 +234,17 @@ Split-first commits precede the task that extends each file. Every task ends wit
   - the AC 4 and AC 7 captures pass;
   - clippy is clean.
 
+- **Pass 3 (2026-09-29).** 3 agents on the pass-2 diff. No 🔴 findings; 2 🟡 plus nits.
+- **Fixed:**
+  - the device-limit victim-walk skip now applies only to pairs at least as large as the deferred one, so an oversized pair never starves smaller mandatory pairs;
+  - a mid-level lightmap decline parks the session as an inert sink for the level (untargeted, draining its queue, no route on a new issuer), so SH keeps its session and residency;
+  - doc nits.
+- **Gate:** fmt and clippy are clean, and the full workspace passes 8,848 tests.
+- **Resume here:**
+  - Before Report results, run `cargo check --release`, `crate-graph --check` and the AC 4/7 captures (`cargo test -p postretro --features capture --test capture_lightmap_streaming -- --ignored`).
+  - Then decide whether pass 3's fixes warrant a narrow pass 4. The findings shrink each pass: pass 3 found 2 🟡.
+  - Then add the AC-to-proof results column and report.
+
 ## Findings log
 
 Raw measurements for the findings note (AC 22–25), recorded as they arrive.

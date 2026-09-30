@@ -65,6 +65,15 @@ impl LevelStreaming {
         let lightmap_current = match (&lightmap, &self.lightmap) {
             (Some(view), Some(streaming)) => streaming.is_for(view.manifest),
             (None, None) => true,
+            // A session parked by a mid-level decline stays for its level, so
+            // the issuer SH reads through keeps running and SH keeps its
+            // residency.
+            (None, Some(streaming)) => {
+                streaming.is_declined()
+                    && wanted
+                        .lightmap
+                        .is_some_and(|view| streaming.is_for(view.manifest))
+            }
             _ => false,
         };
         if sh_current && lightmap_current {
@@ -143,12 +152,12 @@ impl LevelStreaming {
     /// no later frame recreates its session. The caller logs why.
     ///
     /// SH is untouched: this may run between SH's drain batch and its
-    /// outcome. Without a running issuer the session drops whole, its route
-    /// with it. With one, the issuer's lightmap route delivers into the
-    /// session's queue, and a closed queue would stop the issuer SH reads
-    /// through too. The session is then parked, inert, until the next
-    /// frame's [`Self::ensure_sessions`] retires it with the issuer and
-    /// recreates SH alone.
+    /// outcome, and SH keeps its session and residency afterwards. Without a
+    /// running issuer the session drops whole, its route with it. With one,
+    /// the issuer's lightmap route delivers into the session's queue, and a
+    /// closed queue would stop the issuer SH reads through too. The session
+    /// is then parked for the rest of the level: untargeted, inert, draining
+    /// its queue each frame, and given no route by a later issuer.
     pub(crate) fn decline_lightmap(&mut self) {
         let Some(lightmap) = self.lightmap.as_mut() else {
             return;

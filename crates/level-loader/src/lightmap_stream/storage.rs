@@ -54,8 +54,9 @@ pub(crate) enum LightmapResidencyReason {
     NoResidencySet,
     /// The container was read from a whole-file image with no retained
     /// handle: the load path taken when neither SH nor the section table can
-    /// stream. With the checks above passed, the table lacks only id 22, so
-    /// a level with no blocks reports `NoLightmapBlocks` instead.
+    /// stream. `blocker()` reaches this reason only after the id-51 and
+    /// portal checks pass, so the table then lacks id 22, and a level with no
+    /// blocks reports `NoLightmapBlocks` instead.
     NoRetainedFile,
     /// No id 22, or zero blocks: placeholder mode.
     NoLightmapBlocks,

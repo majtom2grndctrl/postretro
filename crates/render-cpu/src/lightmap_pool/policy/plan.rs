@@ -89,11 +89,12 @@ pub struct DrainPlan {
     pub refused: Vec<u32>,
     /// Mandatory or visible pairs that needed growth while a generation was
     /// still retiring, or a layer past the device limit: a counted miss.
-    /// Transient while retiring; at the device limit it lasts until the
-    /// resident set shrinks (see `device_limited`).
+    /// Transient while retiring; at the device limit it lasts while that
+    /// pair stays wanted and the resident set leaves it no room.
     pub deferred: Vec<u32>,
     /// A pair was deferred because the pool holds the device's every usable
-    /// layer. The pairs after it this drain skipped the victim walk.
+    /// layer. Later pairs this drain at least that large skipped the victim
+    /// walk; smaller ones still walked.
     pub device_limited: bool,
     /// Uploads the GPU layer failed and the model rolled back.
     pub failed: Vec<u32>,

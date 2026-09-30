@@ -555,34 +555,42 @@ fn a_pair_needing_a_layer_past_the_device_limit_is_deferred_not_grown() {
 }
 
 // One usable layer at the device limit: mandatory block 0 fills the top-left,
-// band block 1 the bottom shelf. Full-layer block 2 is deferred at the limit;
-// the pairs after it this drain skip the victim walk. Block 3 fits only by
-// evicting band block 1, so it is deferred; block 4 fits free space beside 0.
-// The next drain walks again and places 3.
+// band block 1 the bottom shelf. Full-layer block 2 is deferred at the limit.
+// Block 5 is as large as 2, so it skips the victim walk and is deferred.
+// Block 3 is smaller: it still walks, evicting band block 1, so an oversized
+// pair that stays wanted never starves it. Block 4 fits free space beside 0.
 #[test]
-fn after_a_deferral_at_the_device_limit_the_rest_of_the_drain_skips_the_victim_walk() {
-    let extents = [(48, 32), (64, 32), (64, 64), (64, 32), (16, 16)];
+fn after_a_deferral_at_the_device_limit_only_pairs_as_large_skip_the_victim_walk() {
+    let extents = [(48, 32), (64, 32), (64, 64), (64, 32), (16, 16), (64, 64)];
     let mut h = Harness::with_layer_limit(&extents, 1, 1);
     let plan = h.drain(&[mandatory(0), band(1, 1)], &[], &[0, 1]);
     assert_eq!(plan.installed, vec![0, 1]);
-    let band_region = h.model.placement(1);
-    assert_eq!(band_region.map(|p| (p.x, p.y)), Some((0, 32)));
 
-    let set = [mandatory(2), mandatory(3), mandatory(4)];
-    let plan = h.drain(&set, &[], &[2, 3, 4]);
+    let set = [mandatory(2), mandatory(3), mandatory(4), mandatory(5)];
+    let plan = h.drain(&set, &[], &[2, 3, 4, 5]);
     assert!(plan.device_limited);
-    assert_eq!(plan.deferred, vec![2, 3], "3 would need the walk");
-    assert_eq!(plan.installed, vec![4], "4 takes free space as is");
-    assert_eq!(plan.uploads[0].placement.x, 48);
-    assert!(plan.evicted.is_empty(), "{:?}", plan.evicted);
-    assert!(plan.growth.is_none() && !plan.report.repacked);
-    assert_eq!(h.model.placement(1), band_region, "band block 1 stays put");
-
-    // Block 2 leaves; the next drain walks again for 3.
-    let plan = h.drain(&[], &[2], &[3]);
-    assert!(!plan.device_limited && plan.deferred.is_empty());
-    assert_eq!(plan.installed, vec![3]);
+    let mut deferred = plan.deferred.clone();
+    deferred.sort_unstable();
+    assert_eq!(
+        deferred,
+        vec![2, 5],
+        "5 is as large as 2 and skips the walk"
+    );
+    let mut installed = plan.installed.clone();
+    installed.sort_unstable();
+    assert_eq!(installed, vec![3, 4], "3 walks and evicts band block 1");
+    assert!(plan.growth.is_none());
     assert_eq!(h.evicted(), vec![(1, EvictionReason::Pressure)]);
+    assert_disjoint_within_layers(&h.model);
+
+    // Blocks 2 and 5 stay wanted and come back ready: still deferred, and
+    // nothing already placed moves.
+    let plan = h.drain(&[], &[], &[2, 5]);
+    assert!(plan.device_limited);
+    let mut deferred = plan.deferred.clone();
+    deferred.sort_unstable();
+    assert_eq!(deferred, vec![2, 5]);
+    assert!(h.model.is_resident(3) && h.model.is_resident(4));
     assert_disjoint_within_layers(&h.model);
 }
 

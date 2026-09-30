@@ -156,6 +156,13 @@ impl LevelStreaming {
                     path: frame.path,
                     visible_cells: frame.visible_cells,
                 });
+        if let Some(parked) = self
+            .lightmap
+            .as_mut()
+            .filter(|session| session.is_declined())
+        {
+            parked.drain_declined_completions();
+        }
         let lightmap = self
             .lightmap
             .as_mut()
@@ -193,9 +200,11 @@ impl LevelStreaming {
             Some(streaming) => streaming.prepare_async_workers()?,
             None => None,
         };
+        // A declined session reads nothing: the new issuer gets no route for it.
         let lightmap_route = self
             .lightmap
             .as_mut()
+            .filter(|session| !session.is_declined())
             .and_then(LightmapStreamingSession::take_route);
         if sh_prepared.is_none() && lightmap_route.is_none() {
             return Ok(());

@@ -264,7 +264,7 @@ impl Renderer {
     /// writes only `Shadowed` (visibility baked in). `Unshadowed` is not
     /// honoured: the forward pass never multiplies SDF visibility into the
     /// static term, so it renders as the baked irradiance with no shadow
-    /// term. No caller reads it yet.
+    /// term. A public diagnostic accessor; the forward pass does not consume it.
     pub fn lightmap_mode(&self) -> postretro_level_loader::LightmapMode {
         self.full().lightmap_mode
     }

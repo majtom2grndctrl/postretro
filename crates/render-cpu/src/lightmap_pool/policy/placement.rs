@@ -260,18 +260,22 @@ impl LightmapPoolModel {
     /// still retiring, and never past the device's layer limit; a pair that
     /// needs growth then is deferred.
     ///
-    /// Once one pair is deferred at the device limit, the pool cannot grow
-    /// again this drain, so the pairs after it skip the victim walk: each
-    /// takes free space it fits as is, or is deferred. Without the skip, a
-    /// level past the device limit repeats a full walk per pair on every
-    /// drain, since its deferred pairs come back ready. A later drain walks
-    /// again, so a changed resident set still gets its chance.
+    /// Once a pair is deferred at the device limit, it failed with every
+    /// band victim evicted, so a later pair this drain at least as wide and
+    /// as tall cannot fit either: it skips the victim walk, taking free space
+    /// it fits as is or being deferred. A smaller pair still walks, so one
+    /// oversized pair that stays wanted never starves pairs that fit by
+    /// evicting band blocks. Without the skip, a level past the device limit
+    /// repeats a full walk per such pair on every drain, since its deferred
+    /// pairs come back ready.
     fn place_with_growth(&mut self, list: &[u32]) {
         let retiring = self.retiring;
         let start_layers = self.layers;
+        // Smallest extent deferred at the device limit this drain.
+        let mut limited: Option<(u32, u32)> = None;
         for &block in list {
             let (width, height) = self.alloc_extent(block);
-            if self.plan.device_limited {
+            if limited.is_some_and(|(w, h)| width >= w && height >= h) {
                 match self.allocate_in_layers(width, height) {
                     Some(slot) => self.place(block, slot),
                     None => self.plan.deferred.push(block),
@@ -289,6 +293,10 @@ impl LightmapPoolModel {
             let Some(slot) = self.pool.allocate_within(width, height, limit) else {
                 self.plan.deferred.push(block);
                 self.plan.device_limited = true;
+                limited = Some(match limited {
+                    Some((w, h)) => (w.min(width), h.min(height)),
+                    None => (width, height),
+                });
                 continue;
             };
             self.place(block, slot);

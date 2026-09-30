@@ -149,6 +149,7 @@ Converted to m/texel. Quake unit ≈ 2.54 cm (±25%), Source unit 1.905 cm, Unre
 | P16 | Cut face whose sub-charts sit in two blocks: one arrives and the other is evicted or pending | Per-block install | A lit/unlit split along the cut while the second block is missing. It lasts only until the visible-tier read lands |
 | P17 | Density edit A → B that moves a cut, then B → A | Three warm builds | Pre-atlas caches hit on both edits. The third build equals the first byte for byte and, within the cache budget, hits what the first wrote |
 | P18 | Density edit that moves a cell past the cluster primitive limit | P1 reruns the partition | Cluster membership and block order follow the new partition. Ids 49/50 rebuild and id 51 hits (its key excludes face ranges) |
+| P19 | Map with no static lights and an oversize face | Atlas preparation | No cut; the packer never receives an oversize chart; placements stay empty as today; the compile succeeds |
 | P20 | Vertex on a cut line | UV assignment on each side | Both sides map it to the same parent-grid texel position, within vertex UV quantization |
 
-P9 (the full-edge split loop) and P19 (an oversize face on a map with no static lights) wait on owner rulings.
+P9 is retired: the split is a bound, and its packing shape is Path.

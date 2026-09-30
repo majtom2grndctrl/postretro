@@ -416,27 +416,43 @@ fn a_malformed_heat_or_cell_sample_rejects_the_batch() {
         (OVERHEATED_SLOT, absent(0)),
         (OVERHEATED_SLOT, present(0, 0.5)),
         (HEAT_SLOT, WireSlotValue::Number(10.0)),
-        (CELL_SLOT, present(0, -1.0)),
+        (CELL_SLOT, WireSlotValue::Array(vec![0.0, 1.0, 2.0])),
     ] {
         let mut client_table = SlotTable::new();
-        let record = RawStateSlotRecord {
-            slot_id: schema.id_for(name).unwrap().0,
-            kind: STATE_RECORD_KIND_FULL_BASELINE,
-            has_baseline_ref: false,
-            baseline_ref: 0,
-            baseline_id: 1,
-            value: value.clone(),
-        };
-        let outcome = ClientStateApply::new().apply_snapshot_state(
-            &mut client_table,
-            &identity(),
-            0,
-            schema.fingerprint(),
-            &[record],
-        );
+        let outcome = apply_one(&schema, &mut client_table, name, value.clone());
         assert!(
             outcome.slot_baselines.is_empty(),
             "{name} {value:?} is rejected"
         );
     }
+
+    // The store enforces a numeric range by clamping rather than rejecting,
+    // as it does for every correlated number slot.
+    let mut client_table = SlotTable::new();
+    let outcome = apply_one(&schema, &mut client_table, CELL_SLOT, present(0, -1.0));
+    assert_eq!(outcome.slot_baselines.len(), 1);
+    assert_eq!(slot(&client_table, CELL_SLOT), Some(SlotValue::Number(0.0)));
+}
+
+fn apply_one(
+    schema: &ReplicatedSlotSchema,
+    client_table: &mut SlotTable,
+    name: &str,
+    value: WireSlotValue,
+) -> crate::state_slots::StateApplyOutcome {
+    let record = RawStateSlotRecord {
+        slot_id: schema.id_for(name).unwrap().0,
+        kind: STATE_RECORD_KIND_FULL_BASELINE,
+        has_baseline_ref: false,
+        baseline_ref: 0,
+        baseline_id: 1,
+        value,
+    };
+    ClientStateApply::new().apply_snapshot_state(
+        client_table,
+        &identity(),
+        0,
+        schema.fingerprint(),
+        &[record],
+    )
 }

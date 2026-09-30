@@ -712,6 +712,7 @@ mod tests {
             "sfx/shotgun_open",
             "sfx/shell_in",
             "sfx/shotgun_pump",
+            "sfx/shotgun_vent",
         ];
 
         let capture = LogCapture::start();

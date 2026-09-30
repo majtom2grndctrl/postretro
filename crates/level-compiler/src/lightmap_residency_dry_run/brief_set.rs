@@ -1,29 +1,20 @@
-//! The brief's mandatory set, in the shape its baked cell residency section
-//! would store: per camera cell `c`, each cell `x` with `lead(c, x)`, the
-//! smallest lead `L` at which `x` joins
+//! The brief's mandatory set as a formula, for checking the baked relation:
+//! per camera cell `c`, each cell `x` with `lead(c, x)`, the smallest lead
+//! `L` at which `x` joins
 //!
 //! `M(c, L) = W(c, L) ∪ ⋃_{c' ∈ W(c, L)} Dil(PVS(c')) ∪ Pinned`
 //!
-//! `W(c, L)` is `c` plus every cell within untruncated hub-metric distance
-//! `L`; `PVS` is the sampled set from `pvs_sampling`; `Dil(S)` adds every
-//! one-hop portal neighbour of a cell in `S`; `Pinned` is the cells of the
-//! clusters id 49 flags pinned. There is no camera-cluster term. The lead map
-//! omits `Pinned`, as the brief's wire format does: pins come from id 49.
-//! See: context/plans/large-map-spatial-residency.md
+//! The lead map itself is the CellResidencySet bake's
+//! (`cell_residency_bake::lead_map`); this module adds the undilated variant,
+//! the pins the runtime adds from id 49, and direct evaluation of the formula.
+//! There is no camera-cluster term. See: context/plans/large-map-spatial-residency.md
 
-use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use rayon::prelude::*;
 
 use super::DryRunInput;
-use super::mandatory::Neighbors;
-use super::portal_distance::PortalGraphInput;
-
-/// Baked maximum lead: the brief's lean.
-pub(crate) const BRIEF_MAX_LEAD_METERS: u32 = 32;
-
-pub(crate) fn meters_fixed(meters: u32) -> u32 {
-    meters * CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE
-}
+use crate::cell_residency_bake::lead_map::{LeadMap, LeadSources, dilate_one_hop};
+use crate::cell_residency_bake::portal_distance::Neighbors;
 
 /// Whether each visible set grows by one portal hop (PVS to PHS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,30 +34,6 @@ impl Dilation {
     }
 }
 
-/// Portal neighbours of every cell id, ascending: the id-15 portals the
-/// runtime walk traverses, minus self-loops and out-of-range endpoints. On a
-/// PRL the loader accepts it agrees with `HubGraph`'s portal adjacency,
-/// since the loader rejects the solid endpoints and degenerate polygons
-/// `HubGraph` skips. It can reach exterior cells. Those hold no charts, so
-/// they cost no block bytes, only set cells and section entries; the section
-/// line reports those entries, and a bake can drop them.
-pub(crate) fn portal_neighbours(graph: &PortalGraphInput) -> Vec<Vec<u32>> {
-    let cell_count = graph.cells.len();
-    let mut neighbours = vec![Vec::new(); cell_count];
-    for portal in &graph.portals {
-        let (front, back) = (portal.front as usize, portal.back as usize);
-        if front < cell_count && back < cell_count && front != back {
-            neighbours[front].push(portal.back);
-            neighbours[back].push(portal.front);
-        }
-    }
-    for cells in &mut neighbours {
-        cells.sort_unstable();
-        cells.dedup();
-    }
-    neighbours
-}
-
 /// Per cell id, the set `W` contributes for that cell besides itself: its
 /// sampled PVS, dilated by one portal hop when asked. Ascending. A cell with
 /// no sampled PVS contributes nothing, so `Dil(∅) = ∅`.
@@ -77,18 +44,7 @@ pub(crate) fn visible_sources(
 ) -> Vec<Vec<u32>> {
     match dilation {
         Dilation::None => pvs.to_vec(),
-        Dilation::OneHop => pvs
-            .par_iter()
-            .map(|visible| {
-                let mut dilated = visible.clone();
-                for &cell in visible {
-                    dilated.extend_from_slice(&neighbours[cell as usize]);
-                }
-                dilated.sort_unstable();
-                dilated.dedup();
-                dilated
-            })
-            .collect(),
+        Dilation::OneHop => dilate_one_hop(pvs, neighbours),
     }
 }
 
@@ -107,7 +63,7 @@ pub(crate) fn pinned_cells(input: &DryRunInput) -> Vec<u32> {
 
 /// What the formula reads, shared by the lead map and direct evaluation.
 pub(crate) struct BriefSetSources<'a> {
-    /// Untruncated hub-metric partners covering `BRIEF_MAX_LEAD_METERS`.
+    /// Untruncated hub-metric partners covering `MAX_LEAD_METERS`.
     pub neighbors: &'a Neighbors,
     /// `visible_sources` output for one dilation.
     pub visible: &'a [Vec<u32>],
@@ -116,18 +72,30 @@ pub(crate) struct BriefSetSources<'a> {
     pub cell_count: usize,
 }
 
-/// The baked relation: CSR over every cell id (non-camera cells have empty
-/// ranges); each camera cell's `(cell, lead)` entries sorted by lead, then
-/// cell. Leads are id-46 fixed point.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LeadMap {
-    pub max_lead_fixed: u32,
-    /// `cell_count + 1` offsets into `entries`.
-    pub offsets: Vec<u32>,
-    pub entries: Vec<(u32, u32)>,
+impl BriefSetSources<'_> {
+    fn lead_sources(&self) -> LeadSources<'_> {
+        LeadSources {
+            neighbors: self.neighbors,
+            visible: self.visible,
+            cell_count: self.cell_count,
+        }
+    }
 }
 
 impl LeadMap {
+    /// The lead map a decoded id-51 section encodes.
+    pub(crate) fn from_section(section: &CellResidencySetSection) -> Self {
+        Self {
+            max_lead_fixed: section.max_lead,
+            offsets: section.offsets.clone(),
+            entries: section
+                .entries
+                .iter()
+                .map(|entry| (entry.cell_id, entry.lead))
+                .collect(),
+        }
+    }
+
     pub(crate) fn entries_of(&self, camera: u32) -> &[(u32, u32)] {
         let start = self.offsets[camera as usize] as usize;
         let end = self.offsets[camera as usize + 1] as usize;
@@ -159,53 +127,17 @@ impl LeadMap {
     }
 }
 
-/// Every camera cell's lead map up to `max_lead_fixed`. `W`'s origins arrive
-/// nearest first, so the first origin to reach a cell sets its lead.
+/// The bake's lead map over these sources; pins are never baked.
 pub(crate) fn build_lead_map(
     sources: &BriefSetSources<'_>,
     camera_cells: &[u32],
     max_lead_fixed: u32,
 ) -> LeadMap {
-    let per_camera: Vec<Vec<(u32, u32)>> = camera_cells
-        .par_iter()
-        .map_init(
-            || (vec![0u32; sources.cell_count], 0u32),
-            |(stamp, generation), &camera| {
-                *generation += 1;
-                let mut entries = Vec::new();
-                let origins = std::iter::once((camera, 0))
-                    .chain(sources.neighbors.within_distances(camera, max_lead_fixed));
-                for (origin, lead) in origins {
-                    let reached = std::iter::once(origin)
-                        .chain(sources.visible[origin as usize].iter().copied());
-                    for cell in reached {
-                        if stamp[cell as usize] != *generation {
-                            stamp[cell as usize] = *generation;
-                            entries.push((cell, lead));
-                        }
-                    }
-                }
-                entries.sort_unstable_by_key(|&(cell, lead)| (lead, cell));
-                entries
-            },
-        )
-        .collect();
-    let mut ranges = vec![Vec::new(); sources.cell_count];
-    for (&camera, entries) in camera_cells.iter().zip(per_camera) {
-        ranges[camera as usize] = entries;
-    }
-    let mut offsets = Vec::with_capacity(sources.cell_count + 1);
-    let mut entries = Vec::new();
-    offsets.push(0);
-    for range in ranges {
-        entries.extend(range);
-        offsets.push(u32::try_from(entries.len()).expect("entry count fits u32"));
-    }
-    LeadMap {
+    crate::cell_residency_bake::lead_map::build_lead_map(
+        &sources.lead_sources(),
+        camera_cells,
         max_lead_fixed,
-        offsets,
-        entries,
-    }
+    )
 }
 
 /// `M(c, L)` straight from the formula, pins included, ascending.

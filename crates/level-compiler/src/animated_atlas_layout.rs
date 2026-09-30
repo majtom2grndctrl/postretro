@@ -7,7 +7,7 @@ use postretro_level_format::animated_lightmap_atlas::{
     animated_atlas_byte_estimate, animated_page_size_lower_bound,
 };
 
-use crate::lightmap_bake::MaxRects;
+use crate::lightmap_bake::{BlockLayout, MaxRects};
 
 /// Where one block lands: page, then top-left texel on that page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,37 +57,54 @@ pub(crate) fn apply_block_placements(
         .unwrap_or(0);
 }
 
-/// The identity layout: every block at its static position, one page per
-/// static layer that holds a block, in ascending static-layer order, at the
-/// static layer size. It reproduces the full-layer atlas exactly, so it is the
-/// size ceiling for any packed layout and the parity reference.
-pub(crate) fn identity_placements(section: &AnimatedLightWeightMapsSection) -> Vec<BlockPlacement> {
+/// The identity layout: every block at its bake-layer position (its cell
+/// block's origin plus its block-local key), one page per bake layer that
+/// holds a block, in ascending bake-layer order, at the bake-layer size. It
+/// reproduces the full-layer atlas exactly, so it is the size ceiling for any
+/// packed layout and the parity reference.
+pub(crate) fn identity_placements(
+    section: &AnimatedLightWeightMapsSection,
+    layout: &BlockLayout,
+) -> Vec<BlockPlacement> {
+    let bake_origin =
+        |block: &postretro_level_format::animated_light_weight_maps::AnimatedBlock| {
+            let cell = &layout.blocks[block.lightmap_block as usize];
+            (
+                cell.layer,
+                cell.x + u32::from(block.block_x),
+                cell.y + u32::from(block.block_y),
+            )
+        };
     let mut layers: Vec<u32> = section
         .blocks
         .iter()
-        .map(|block| block.static_layer)
+        .map(|block| bake_origin(block).0)
         .collect();
     layers.sort_unstable();
     layers.dedup();
     section
         .blocks
         .iter()
-        .map(|block| BlockPlacement {
-            page: layers
-                .binary_search(&block.static_layer)
-                .expect("block layer is in the layer list") as u32,
-            x: block.static_x,
-            y: block.static_y,
+        .map(|block| {
+            let (layer, x, y) = bake_origin(block);
+            BlockPlacement {
+                page: layers
+                    .binary_search(&layer)
+                    .expect("block layer is in the layer list") as u32,
+                x,
+                y,
+            }
         })
         .collect()
 }
 
 pub(crate) fn apply_identity_layout(
     section: &mut AnimatedLightWeightMapsSection,
-    static_layer_size: u32,
+    layout: &BlockLayout,
+    bake_layer_size: u32,
 ) {
-    let placements = identity_placements(section);
-    apply_block_placements(section, &placements, static_layer_size);
+    let placements = identity_placements(section, layout);
+    apply_block_placements(section, &placements, bake_layer_size);
 }
 
 /// Pack block `(width, height)` extents in the given (cell) order onto
@@ -135,20 +152,28 @@ pub(crate) enum ChosenLayout {
 }
 
 /// Relayout a section (in any layout) into the smallest compact atlas: every
-/// power-of-two page size from the lower bound up to the static layer size is
+/// power-of-two page size from the lower bound up to the bake-layer size is
 /// packed in cell order, and the fewest-bytes result wins (ties keep the
 /// smaller page). A packed layout larger than the identity layout is never
 /// written; the identity layout ships instead.
+///
+/// The bake-layer size stands in for the retired static-layer size in both
+/// page bounds. The ceiling: the identity layout's pages are bake layers, so
+/// no packed page needs to be larger. The floor: the paging minimum keeps
+/// page quantization from fragmenting, but a map whose largest cell block
+/// fits a smaller bake layer has no use for pages above that layer, so the
+/// minimum is capped by it exactly as it was by a small static layer.
 pub(crate) fn choose_compact_layout(
     section: &mut AnimatedLightWeightMapsSection,
-    static_layer_size: u32,
+    layout: &BlockLayout,
+    bake_layer_size: u32,
 ) -> ChosenLayout {
     if section.blocks.is_empty() {
         return ChosenLayout::Identity;
     }
-    let identity = identity_placements(section);
+    let identity = identity_placements(section, layout);
     let identity_pages = identity.iter().map(|p| p.page + 1).max().unwrap_or(0);
-    let identity_bytes = layout_bytes(static_layer_size, identity_pages);
+    let identity_bytes = layout_bytes(bake_layer_size, identity_pages);
 
     // Blocks are indexed in cell order (ascending face index; faces are
     // ordered by cell), which is the packing order.
@@ -157,13 +182,12 @@ pub(crate) fn choose_compact_layout(
         .iter()
         .map(|block| (block.width, block.height))
         .collect();
-    let lower =
-        animated_page_size_lower_bound(section.largest_block_side(), Some(static_layer_size))
-            .next_power_of_two();
+    let lower = animated_page_size_lower_bound(section.largest_block_side(), Some(bake_layer_size))
+        .next_power_of_two();
 
     let mut best: Option<(u64, u32, Vec<BlockPlacement>)> = None;
     let mut page_size = lower;
-    while page_size <= static_layer_size {
+    while page_size <= bake_layer_size {
         if let Some(placements) = pack_blocks_in_order(&extents, page_size) {
             let pages = placements.iter().map(|p| p.page + 1).max().unwrap_or(0);
             let bytes = layout_bytes(page_size, pages);
@@ -183,7 +207,7 @@ pub(crate) fn choose_compact_layout(
             ChosenLayout::Packed
         }
         _ => {
-            apply_block_placements(section, &identity, static_layer_size);
+            apply_block_placements(section, &identity, bake_layer_size);
             ChosenLayout::Identity
         }
     }
@@ -197,19 +221,44 @@ mod tests {
     };
     use postretro_level_format::animated_lightmap_atlas::ANIMATED_PAGE_MIN_SIZE;
 
+    use crate::lightmap_bake::CellBlock;
+
+    /// One lightmap cell block per bake layer, covering it; block id = layer.
+    fn layer_blocks(layers: u32, bake_size: u32) -> BlockLayout {
+        BlockLayout {
+            direction_texel_scale: 2,
+            blocks: (0..layers)
+                .map(|layer| CellBlock {
+                    cell_id: layer,
+                    width: bake_size,
+                    height: bake_size,
+                    layer,
+                    x: 0,
+                    y: 0,
+                })
+                .collect(),
+            chart_blocks: Vec::new(),
+        }
+    }
+
     /// A section in identity layout: one chunk per block covering the block's
     /// interior (the placement minus a 2-texel gutter), weights one per texel.
+    /// Blocks are `(bake layer, x, y, width, height)`; the lightmap cell block
+    /// of layer `l` covers the whole layer, so block-local keys equal the
+    /// bake-layer position.
     fn identity_section(
         blocks: &[(u32, u32, u32, u32, u32)],
-        static_size: u32,
-    ) -> AnimatedLightWeightMapsSection {
+        bake_size: u32,
+    ) -> (AnimatedLightWeightMapsSection, BlockLayout) {
+        let layers = blocks.iter().map(|b| b.0 + 1).max().unwrap_or(1);
+        let layout = layer_blocks(layers, bake_size);
         let mut section = AnimatedLightWeightMapsSection::empty();
         let mut texel_offset = 0;
         for (index, &(layer, x, y, width, height)) in blocks.iter().enumerate() {
             section.blocks.push(AnimatedBlock {
-                static_layer: layer,
-                static_x: x,
-                static_y: y,
+                lightmap_block: layer,
+                block_x: x as u16,
+                block_y: y as u16,
                 compact_x: x,
                 compact_y: y,
                 compact_layer: 0,
@@ -241,8 +290,8 @@ mod tests {
             }
             texel_offset += chunk_w * chunk_h;
         }
-        apply_identity_layout(&mut section, static_size);
-        section
+        apply_identity_layout(&mut section, &layout, bake_size);
+        (section, layout)
     }
 
     fn pages(section: &AnimatedLightWeightMapsSection) -> u32 {
@@ -250,8 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn identity_layout_keeps_static_positions_one_page_per_occupied_layer() {
-        let section = identity_section(
+    fn identity_layout_keeps_bake_layer_positions_one_page_per_occupied_layer() {
+        let (section, _) = identity_section(
             &[(5, 10, 20, 30, 30), (2, 0, 0, 16, 16), (5, 100, 100, 8, 8)],
             2048,
         );
@@ -265,16 +314,16 @@ mod tests {
         for (index, block) in section.blocks.iter().enumerate() {
             assert_eq!(
                 (block.compact_x, block.compact_y),
-                (block.static_x, block.static_y)
+                (u32::from(block.block_x), u32::from(block.block_y))
             );
             assert_eq!(
-                section.chunk_static_origin(index),
+                section.chunk_block_origin(index),
                 Some((
-                    block.static_layer,
+                    block.lightmap_block,
                     section.chunk_rects[index].compact_x,
                     section.chunk_rects[index].compact_y
                 )),
-                "identity chunks compose at their static position"
+                "identity chunks compose at their bake-layer position"
             );
         }
         assert_eq!(section.consistency_error(), None);
@@ -282,7 +331,7 @@ mod tests {
 
     #[test]
     fn repack_rewrites_positions_only_and_keeps_chunk_offsets_inside_blocks() {
-        let mut section = identity_section(
+        let (mut section, layout) = identity_section(
             &[
                 (0, 1500, 1500, 300, 200),
                 (3, 40, 900, 120, 500),
@@ -291,12 +340,12 @@ mod tests {
             2048,
         );
         let before = section.clone();
-        let static_origins: Vec<_> = (0..before.chunk_rects.len())
-            .map(|i| before.chunk_static_origin(i))
+        let block_origins: Vec<_> = (0..before.chunk_rects.len())
+            .map(|i| before.chunk_block_origin(i))
             .collect();
 
         assert_eq!(
-            choose_compact_layout(&mut section, 2048),
+            choose_compact_layout(&mut section, &layout, 2048),
             ChosenLayout::Packed
         );
 
@@ -324,25 +373,25 @@ mod tests {
                     old.compact_y - old_block.compact_y
                 ),
             );
-            assert_eq!(section.chunk_static_origin(index), static_origins[index]);
+            assert_eq!(section.chunk_block_origin(index), block_origins[index]);
         }
         for (block, old) in section.blocks.iter().zip(&before.blocks) {
             assert_eq!(
                 (
-                    block.static_layer,
-                    block.static_x,
-                    block.static_y,
+                    block.lightmap_block,
+                    block.block_x,
+                    block.block_y,
                     block.width,
                     block.height
                 ),
                 (
-                    old.static_layer,
-                    old.static_x,
-                    old.static_y,
+                    old.lightmap_block,
+                    old.block_x,
+                    old.block_y,
                     old.width,
                     old.height
                 ),
-                "blocks keep their full static placement"
+                "blocks keep their full cell-block key"
             );
         }
         assert_eq!(section.consistency_error(), None);
@@ -351,9 +400,9 @@ mod tests {
     #[test]
     fn blocks_that_fit_one_page_allocate_one_page_across_many_static_layers() {
         let blocks: Vec<_> = (0..6).map(|layer| (layer, 64, 64, 200, 200)).collect();
-        let mut section = identity_section(&blocks, 2048);
+        let (mut section, layout) = identity_section(&blocks, 2048);
         assert_eq!(section.compact_layers, 6);
-        choose_compact_layout(&mut section, 2048);
+        choose_compact_layout(&mut section, &layout, 2048);
         assert_eq!(section.page_size, ANIMATED_PAGE_MIN_SIZE);
         assert_eq!(pages(&section), 1);
         assert_eq!(section.consistency_error(), None);
@@ -363,15 +412,15 @@ mod tests {
     fn overflowing_blocks_spill_into_a_second_page_with_no_empty_page() {
         // Five 600² blocks: at 1024² one fits per page; at 2048² nine fit.
         let blocks: Vec<_> = (0..5).map(|layer| (layer, 0, 0, 600, 600)).collect();
-        let mut section = identity_section(&blocks, 2048);
-        choose_compact_layout(&mut section, 2048);
+        let (mut section, layout) = identity_section(&blocks, 2048);
+        choose_compact_layout(&mut section, &layout, 2048);
         // One 600² block per 1024² page (five pages) loses to one 2048² page.
         assert_eq!(section.page_size, 2048);
         assert_eq!(pages(&section), 1);
 
         let blocks: Vec<_> = (0..12).map(|layer| (layer, 0, 0, 600, 600)).collect();
-        let mut section = identity_section(&blocks, 2048);
-        choose_compact_layout(&mut section, 2048);
+        let (mut section, layout) = identity_section(&blocks, 2048);
+        choose_compact_layout(&mut section, &layout, 2048);
         assert_eq!(section.page_size, 2048);
         assert_eq!(pages(&section), 2, "nine per 2048² page, then a second");
         let on_second: Vec<_> = section
@@ -412,8 +461,9 @@ mod tests {
     #[test]
     fn page_size_is_a_power_of_two_within_the_decided_bounds() {
         for &(largest, static_size) in &[(645, 2048), (1500, 2048), (78, 128), (10, 8192)] {
-            let mut section = identity_section(&[(0, 0, 0, largest, largest)], static_size);
-            choose_compact_layout(&mut section, static_size);
+            let (mut section, layout) =
+                identity_section(&[(0, 0, 0, largest, largest)], static_size);
+            choose_compact_layout(&mut section, &layout, static_size);
             let page = section.page_size;
             assert!(page.is_power_of_two(), "{page}");
             assert!(
@@ -429,7 +479,7 @@ mod tests {
         // 128² static atlas: the page floor is the static size itself. Cell
         // order interleaves layers, so in-order packing needs three pages
         // where the identity layout needs two.
-        let mut section = identity_section(
+        let (mut section, layout) = identity_section(
             &[(0, 0, 0, 128, 64), (1, 0, 0, 128, 100), (0, 0, 64, 128, 64)],
             128,
         );
@@ -439,7 +489,7 @@ mod tests {
         assert_eq!(packed.iter().map(|p| p.page).max(), Some(2));
 
         assert_eq!(
-            choose_compact_layout(&mut section, 128),
+            choose_compact_layout(&mut section, &layout, 128),
             ChosenLayout::Identity
         );
         assert_eq!(section, identity);
@@ -448,10 +498,10 @@ mod tests {
     #[test]
     fn a_packed_layout_is_never_larger_than_identity() {
         let blocks: Vec<_> = (0..4).map(|layer| (layer, 8, 8, 40, 40)).collect();
-        let mut section = identity_section(&blocks, 128);
+        let (mut section, layout) = identity_section(&blocks, 128);
         let identity_bytes = layout_bytes(128, section.compact_layers);
         assert_eq!(
-            choose_compact_layout(&mut section, 128),
+            choose_compact_layout(&mut section, &layout, 128),
             ChosenLayout::Packed
         );
         assert_eq!(section.compact_layers, 1);

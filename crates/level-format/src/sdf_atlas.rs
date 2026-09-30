@@ -22,8 +22,7 @@
 // the PRL is also valid — the runtime treats "no atlas" as a degradation
 // path, not an error.
 //
-// See: context/plans/done/sdf-static-occluder-shadows/index.md (foundation)
-//      context/plans/in-progress/sdf-filterable-atlas/index.md (current change)
+// See: context/lib/rendering_pipeline.md §4, build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
 

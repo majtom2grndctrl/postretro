@@ -7,6 +7,7 @@ use postretro_render_cpu::surface_depth as sd;
 
 const SNIPPET: &str = include_str!("../../shaders/surface_depth.wgsl");
 const FORWARD: &str = include_str!("../../shaders/forward.wgsl");
+const LIGHTMAP_SAMPLE: &str = include_str!("../../shaders/lightmap_sample.wgsl");
 const KINEMATIC: &str = include_str!("../../shaders/kinematic_brush.wgsl");
 
 /// The composed source of every pipeline that shades a world material bundle
@@ -287,23 +288,27 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
          piecewise-constant property the DDA's exactness rests on",
     );
 
-    // `lightmap_uv` is offset nowhere. Charts carry only CHART_PADDING_TEXELS = 2
-    // of gutter, so a parallax offset would pull a neighbouring chart across it.
+    // The lightmap texel is offset nowhere. Charts carry only
+    // CHART_PADDING_TEXELS = 2 of gutter, so a parallax offset would pull a
+    // neighbouring chart across it.
     //
     // Asserted POSITIVELY, per call site, because the negative form this
     // replaced — no line contains both `lightmap_uv` and `depth.` — was vacuous
     // against the one refactor that actually breaks the constraint:
-    // `sample_lightmap_irradiance(shade_uv, in.lightmap_layer)` contains
-    // neither token, so the test stayed green while the atlas was sampled at
-    // the marched UV. The shadowmask path is the worse half of that hole, since
+    // `sample_lightmap_irradiance(shade_uv, ...)` in place of
+    // `in.lightmap_texel` contains neither token, so the test stayed green
+    // while the atlas was sampled at the marched UV. The shadowmask path is the worse half of that hole, since
     // it is a layered atlas and `shadowmask_union_subtraction` forwards one
     // UV to every promoted light on the fragment.
-    let forward_code = strip_line_comments(FORWARD);
+    // Forward plus the lightmap sampling helpers it composes.
+    let forward_code = strip_line_comments(&format!("{FORWARD}\n{LIGHTMAP_SAMPLE}"));
     // The animated atlas is read at the block-remapped UV, a pure atlas
-    // translation of the interpolated lightmap UV: `animated_block_uv` must
-    // receive that UV verbatim, and the animated sample must take its result.
+    // translation of the interpolated block-local lightmap texel:
+    // `animated_block_uv` must receive that texel verbatim, and the animated
+    // sample must take its result.
     for call in [
         "sample_lightmap_irradiance(",
+        "sample_lightmap_direction(",
         "sample_lightmap_animated(",
         "animated_block_uv(",
         "sample_shadowmask_atlas(",
@@ -319,24 +324,21 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
             }
             call_sites += 1;
             let args = &cursor[..cursor.find(')').unwrap_or(cursor.len())];
-            // The FIRST argument must be the UV itself, verbatim. Asserting
-            // only that the token appears somewhere in the window would pass
-            // `sample_lightmap_irradiance(in.lightmap_uv + parallax, ..)`,
-            // which is precisely the offset this constraint forbids.
-            // The UV must appear as a WHOLE argument, not merely somewhere in
-            // the window: `sample_lightmap_irradiance(in.lightmap_uv + parallax,
-            // ..)` contains the token but is exactly the offset this forbids.
+            // The texel must appear as a WHOLE argument, not merely somewhere
+            // in the window: `sample_lightmap_irradiance(in.lightmap_texel +
+            // parallax, ..)` contains the token but is exactly the offset this
+            // forbids.
             // Its position varies — `shadowmask_union_subtraction` takes the
             // world position first — so match any argument, not the first.
             let accepted: &[&str] = if call == "sample_lightmap_animated(" {
                 &["animated.uv"]
             } else {
-                &["in.lightmap_uv", "lightmap_uv"]
+                &["in.lightmap_texel", "lightmap_texel"]
             };
             let verbatim = args.split(',').any(|arg| accepted.contains(&arg.trim()));
             assert!(
                 verbatim,
-                "forward: `{call}` must sample the atlas at the interpolated lightmap UV, unmodified — got `{}`",
+                "forward: `{call}` must sample the atlas at the interpolated lightmap texel, unmodified — got `{}`",
                 args.trim(),
             );
             assert!(
@@ -351,13 +353,12 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
         );
     }
 
-    // A floor under the per-call-site assertions above: they name four helpers,
-    // but the atlas is ALSO read through raw `textureSample` (the
-    // `lightmap_direction` decode at forward.wgsl:1032), which no named-helper
-    // list covers. Scanning every line keeps those sites guarded without having
-    // to enumerate them — this is the coverage the positive rewrite dropped.
+    // A floor under the per-call-site assertions above: any line naming the
+    // lightmap UV or texel — a raw `textureSample` a future edit adds outside
+    // the named helpers included — must not mix in a marched UV. Scanning every
+    // line keeps those sites guarded without having to enumerate them.
     for line in forward_code.lines() {
-        if !line.contains("lightmap_uv") {
+        if !line.contains("lightmap_uv") && !line.contains("lightmap_texel") {
             continue;
         }
         assert!(
@@ -370,8 +371,9 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // The mover has no lightmap path at all, so it has nothing to offset. Pin
     // that fact rather than looping the checks above over it, which is what the
     // previous form did — vacuously, since the token never appears there.
+    let kinematic_code = strip_line_comments(KINEMATIC);
     assert!(
-        !strip_line_comments(KINEMATIC).contains("lightmap_uv"),
+        !kinematic_code.contains("lightmap_uv") && !kinematic_code.contains("lightmap_texel"),
         "the mover grew a lightmap path — extend the per-call-site assertions to it",
     );
 

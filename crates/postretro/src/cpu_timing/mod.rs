@@ -138,6 +138,34 @@ impl StageSet for PredictionStage {
     }
 }
 
+/// Streamed lightmap residency inside the render-prep stage. Both are roots,
+/// placed under `render_prep` by label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamingStage {
+    /// The lightmap controller's per-frame CPU: demand update, completion
+    /// admission and ready offers, batch assembly and read requests, then
+    /// outcome apply, miss counting and diagnostics after the drain.
+    LightmapResidency,
+    /// The renderer's lightmap drain: placement planning, staging, recording
+    /// and submission of the frame's batch.
+    LightmapDrain,
+}
+
+impl StageSet for StreamingStage {
+    const ALL: &'static [Self] = &[Self::LightmapResidency, Self::LightmapDrain];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::LightmapResidency => "lightmap_residency",
+            Self::LightmapDrain => "lightmap_drain",
+        }
+    }
+}
+
 /// Labels of the frame split the binary derives at commit. `total` and `work`
 /// are aggregates; `wait` and `unattributed` sit beside the top-level stages
 /// and together with them sum to `total`.

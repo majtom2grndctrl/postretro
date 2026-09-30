@@ -15,7 +15,7 @@
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
 - **SH probe streaming / cluster residency / warm set / read scheduling / streaming diagnostics** → `rendering_pipeline.md` §Cluster SH residency · ids 46/49/50: `build_pipeline.md` §PRL section IDs
-- **Lightmap/shadowmask residency, cell blocks (decided, not yet built)** → `rendering_pipeline.md` §Cluster SH residency
+- **Lightmap/shadowmask residency / cell blocks / lightmap pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
 - **Projectile visuals / emissive billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / animated light radius** → `rendering_pipeline.md` §4, §7.4 · `resource_management.md` §6
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation

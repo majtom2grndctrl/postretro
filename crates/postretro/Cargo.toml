@@ -179,6 +179,11 @@ path = "tests/capture_shadowmask_groups.rs"
 required-features = ["capture"]
 
 [[test]]
+name = "capture_lightmap_streaming"
+path = "tests/capture_lightmap_streaming.rs"
+required-features = ["capture"]
+
+[[test]]
 name = "headless_byte_identity"
 path = "tests/headless_byte_identity.rs"
 required-features = ["observability"]

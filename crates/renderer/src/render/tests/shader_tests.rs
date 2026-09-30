@@ -712,21 +712,19 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
 
 #[test]
 fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
-    let src = include_str!("../../shaders/forward.wgsl");
-    let helper_start = src
-        .find("fn sample_shadowmask_atlas(")
-        .expect("forward shader must centralize shadowmask atlas sampling");
-    let helper_end = src[helper_start..]
-        .find("fn shadowmask_visibility_for_spec_light(")
-        .map(|offset| helper_start + offset)
-        .expect("shadowmask sampling helper must precede spec-light visibility");
-    let helper = &src[helper_start..helper_end];
+    // The forward consumer plus the lightmap sampling snippet it composes.
+    let src = concat!(
+        include_str!("../../shaders/forward.wgsl"),
+        "\n",
+        include_str!("../../shaders/lightmap_sample.wgsl"),
+    );
+    let helper = wgsl_function(src, "sample_shadowmask_atlas");
 
     assert!(
         helper.contains("textureNumLayers(shadowmask_atlas) - 1u")
-            && helper.contains("min(lightmap_layer, last_layer)")
+            && helper.contains("min(lightmap_block_layer(layer_flags), last_layer)")
             && helper.matches("i32(safe_layer)").count() == 2,
-        "both group samples must read the fragment's one clamped layer",
+        "both group samples must read the fragment's one clamped pool layer",
     );
     // Every read of the atlas binding — samples, dimension and layer queries —
     // sits inside the helper's brace-matched body; only the binding
@@ -755,7 +753,7 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         "all shadowmask reads must route through the layer-safe helper; stray uses at {stray:?}",
     );
     let atlas_samples = |text: &str| {
-        text.match_indices("textureSample(")
+        text.match_indices("textureSampleLevel(")
             .filter(|(at, call)| {
                 let args = text[at + call.len()..].trim_start();
                 args.starts_with("shadowmask_atlas")
@@ -774,15 +772,21 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         2,
         "all shadowmask samples must route through the layer-safe helper",
     );
-    // Each group's coordinate derives only from the lightmap UV and the bound
-    // texture's width: clamp half a group texel inside, then map into a half.
+    // Each group's coordinate derives only from the block-local texel and the
+    // block's pool rect: clamp to the block's half-texel rect in U and V, then
+    // map into a group half.
+    let pool_uv = wgsl_function(src, "lightmap_pool_uv");
     assert!(
-        helper.contains("1.0 / f32(textureDimensions(shadowmask_atlas).x)")
-            && helper.contains("clamp(lightmap_uv.x, group_half_texel, 1.0 - group_half_texel)")
-            && helper.contains("vec2<f32>(group_u * 0.5, lightmap_uv.y)")
-            && helper.contains("vec2<f32>((1.0 + group_u) * 0.5, lightmap_uv.y)")
+        pool_uv.contains("clamp(texel, vec2<f32>(0.5), extent - vec2<f32>(0.5))")
+            && pool_uv.contains("(vec2<f32>(rect.xy) + local) / LIGHTMAP_POOL_LAYER_EDGE"),
+        "the pool UV must clamp the texel to the block's half-texel rect on both axes",
+    );
+    assert!(
+        helper.contains("let uv = lightmap_pool_uv(texel, rect);")
+            && helper.contains("vec2<f32>(uv.x * 0.5, uv.y)")
+            && helper.contains("vec2<f32>((1.0 + uv.x) * 0.5, uv.y)")
             && helper.contains("return vec4<f32>(group0.rg, group1.rg);"),
-        "group coordinates must come from lightmap UV and texture width alone",
+        "group coordinates must come from the block-clamped pool UV alone",
     );
 
     assert_eq!(
@@ -793,11 +797,11 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
     for (function, call) in [
         (
             "fn shadowmask_union_subtraction(",
-            "sample_shadowmask_atlas(lightmap_uv, lightmap_layer)",
+            "sample_shadowmask_atlas(lightmap_texel, lightmap_layer_flags, lightmap_rect)",
         ),
         (
             "fn fs_main(",
-            "sample_shadowmask_atlas(in.lightmap_uv, in.lightmap_layer)",
+            "sample_shadowmask_atlas(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect)",
         ),
         // The union samples once per call, so its one call must sit outside
         // every fs_main loop too.

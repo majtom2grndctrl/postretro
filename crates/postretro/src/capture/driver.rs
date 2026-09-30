@@ -133,7 +133,8 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             prepared.measurement_partial_timing_frames(),
             gpu_windows,
             cpu_windows.report(),
-        );
+        )
+        .with_lightmap_streaming(prepared.lightmap_streaming());
         let staged_report = stage_measurement_report(
             report_path.expect("measurement report path was preflighted"),
             &report,

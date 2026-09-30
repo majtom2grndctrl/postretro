@@ -19,6 +19,7 @@ mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
 mod lightmap_residency;
+mod lightmap_streaming;
 mod loaded_texture;
 mod mesh_depth;
 mod mesh_pass;
@@ -120,6 +121,7 @@ use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
 
+pub use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use billboard_direct_scatter_compose::BillboardDirectScatterComposeResources;
 use bloom::BloomPass;
@@ -134,6 +136,10 @@ use frame_timing::FrameTiming;
 pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
+};
+pub use lightmap_streaming::{
+    DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
+    MAX_LIGHTMAP_POOL_CAP_LAYERS,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::ShDrainFrameResult;
@@ -153,6 +159,7 @@ pub use sh_streaming::{
     ShComposePassDiagnostics, ShResidencyDrainError, ShResidencySnapshot,
     ShStreamingLiveDiagnostics,
 };
+pub(crate) use sh_streaming::{StagedUploads, StagingPool};
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
@@ -193,16 +200,16 @@ pub use renderer_types::{
     CameraCullDiagnostics, CameraCullPath, CaptureAdapterIdentity, CaptureGpuTimingPass,
     CaptureGpuTimingState, CaptureGpuTimingWindow, CellOverlayState, ClearColor,
     DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, LevelGeometry,
-    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentHandle,
-    RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SpatialCellSetDiagnostics, SpatialDiagnostics,
-    WorldWireframeMode,
+    LevelGeometryLightmapStreaming, LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState,
+    PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SpatialCellSetDiagnostics,
+    SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;
 
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
-    AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow,
+    AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
     TriggerDiagnosticsRow, draw_diagnostics_panel,
 };
 #[cfg(feature = "dev-tools")]

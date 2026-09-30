@@ -12,6 +12,7 @@ pub mod bsp;
 pub mod bvh;
 pub mod cell_draw_index;
 pub mod cell_locator;
+pub mod cell_residency_set;
 pub mod cell_visibility;
 pub mod cells;
 pub mod chunk_light_list;

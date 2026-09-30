@@ -143,6 +143,7 @@ impl App {
     /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
+    /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     pub(crate) fn unload_level(&mut self) {
         self.cpu_timer.level_changed();
         self.clear_net_level_parity();
@@ -162,6 +163,11 @@ impl App {
 
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.release_level_resources();
+        }
+        // Streaming state is level-scoped: the manifests, the retained file,
+        // the issuer and SH's workers go now, not at the next install.
+        if let Some(session) = self.session.as_mut() {
+            session.clear_level_streaming();
         }
 
         self.level = None;

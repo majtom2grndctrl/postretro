@@ -15,6 +15,7 @@ use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScat
 use postretro_level_format::bsp::BspLeavesSection;
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
@@ -36,12 +37,11 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 
-use super::{pack, portals};
+use super::cell_partition::CellPartitionPlan;
+use super::pack;
 use crate::cluster_directory_bake::ClusterDirectoryBake;
 use crate::geometry::GeometryResult;
-use crate::map_data::{MapStreamingHintRegion, MapStreamingPriorityRegion};
 use crate::partition::BspTree;
-use crate::streaming_hints::resolve_streaming_hints;
 
 /// Final post-bake data shared by directory construction and serialization.
 ///
@@ -56,13 +56,9 @@ pub(super) struct FinalizedClusterMetadata<'a> {
 
 /// Inputs that determine the final cluster-directory metadata inventory.
 pub(super) struct FinalizedClusterMetadataInputs<'a> {
-    pub(super) generated_portals: &'a [portals::Portal],
-    pub(super) streaming_seam_regions: &'a [MapStreamingHintRegion],
-    pub(super) stream_resident_regions: &'a [MapStreamingHintRegion],
-    pub(super) stream_priority_regions: &'a [MapStreamingPriorityRegion],
-    pub(super) leaves: &'a BspLeavesSection,
+    /// Cells, portals, hints, and partition resolved before atlas preparation.
+    pub(super) partition: CellPartitionPlan,
     pub(super) tree: &'a BspTree,
-    pub(super) exterior_leaves: &'a HashSet<usize>,
     pub(super) bvh: &'a BvhSection,
     pub(super) bvh_chunk_ranges: &'a [(u32, u32)],
     pub(super) packed_sh_volume: &'a OctahedralShVolumeSection,
@@ -83,8 +79,12 @@ pub(super) struct FinalizedClusterMetadataInputs<'a> {
 pub(super) fn build_finalized_cluster_metadata<'a>(
     inputs: FinalizedClusterMetadataInputs<'a>,
 ) -> anyhow::Result<FinalizedClusterMetadata<'a>> {
-    let portals = pack::encode_portals(inputs.generated_portals)?;
-    let cells = pack::encode_cells(inputs.leaves, &portals, inputs.exterior_leaves)?;
+    let CellPartitionPlan {
+        portals,
+        cells,
+        streaming_hints,
+        partition,
+    } = inputs.partition;
     let locator = pack::encode_cell_locator(inputs.tree)?;
     let bvh = pack::bvh_with_chunk_ranges(inputs.bvh, inputs.bvh_chunk_ranges);
     let sources = pack::FinalizedShPackSources::new(inputs.packed_sh_volume, inputs.packed_direct)?;
@@ -99,21 +99,14 @@ pub(super) fn build_finalized_cluster_metadata<'a>(
         inputs.animated_billboard_direct_scatter_delta_volumes,
     )?;
     let sh_pack = pack::FinalizedShPack::new(emission, sources)?;
-    let streaming_hints = resolve_streaming_hints(
-        inputs.streaming_seam_regions,
-        inputs.stream_resident_regions,
-        inputs.stream_priority_regions,
-        inputs.generated_portals,
-        &portals,
-        &cells,
-    )?;
-    let cluster_directory = crate::cluster_directory_bake::bake_cluster_directory(
+    let cluster_directory = crate::cluster_directory_bake::bake_cluster_directory_from_partition(
         &cells,
         &portals,
         &bvh,
         &locator,
         sh_pack.emission,
         &streaming_hints,
+        partition,
     )?;
 
     Ok(FinalizedClusterMetadata {
@@ -156,6 +149,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
+    /// CellResidencySet (id 51), or `None` when the level has no usable portals.
+    pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
     pub(super) animated_direct_sh_delta_volumes: Option<&'a AnimatedDirectShDeltaVolumesSection>,
     pub(super) billboard_direct_scatter_volume: Option<&'a BillboardDirectScatterVolumeSection>,
     pub(super) animated_billboard_direct_scatter_delta_volumes:
@@ -197,6 +192,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         trigger_volumes,
         cell_draw_index,
         cell_visibility,
+        cell_residency_set,
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
@@ -241,6 +237,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         trigger_volumes,
         cell_draw_index,
         cell_visibility,
+        cell_residency_set,
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,

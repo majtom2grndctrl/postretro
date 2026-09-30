@@ -1,7 +1,7 @@
 //! Metadata-only id-34 projection parsing, excluding the compact atlas body.
 //! See: context/lib/build_pipeline.md §PRL Compilation.
 
-use std::fs::File;
+use crate::prl_file::PrlFile;
 
 use postretro_level_format::SectionEntry;
 use postretro_level_format::sh_volume::{
@@ -13,7 +13,7 @@ use super::positional_io::read_vec_at;
 use super::projection::ShStreamBaseMetadata;
 use super::{PrlLoadError, stream_error};
 pub(super) fn read_base_metadata(
-    file: &File,
+    file: &PrlFile,
     entry: &SectionEntry,
 ) -> Result<ShStreamBaseMetadata, PrlLoadError> {
     const HEADER: u64 = 84;

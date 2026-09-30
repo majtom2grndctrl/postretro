@@ -145,7 +145,7 @@ impl ShResidencyController {
                 TargetDirective::new(TargetClass::Visible, 0),
             );
         }
-        for &cluster_id in &self.topology.pinned_clusters {
+        for &cluster_id in &self.topology.hints.pinned {
             Self::merge_directive(
                 &mut classes,
                 cluster_id,
@@ -232,6 +232,7 @@ impl ShResidencyController {
                 .iter()
                 .map(|&cell_id| {
                     self.topology
+                        .hints
                         .cell_to_cluster
                         .get(cell_id as usize)
                         .copied()
@@ -330,9 +331,10 @@ impl ShResidencyController {
 
     fn authored_priority(&self, cluster_id: u32) -> Result<u32, ShResidencyControllerError> {
         self.topology
-            .authored_priorities
+            .hints
+            .priority
             .get(cluster_id as usize)
-            .copied()
+            .map(|&priority| u32::from(priority))
             .ok_or_else(|| {
                 ShResidencyControllerError::InvalidTopology(
                     "target cluster exceeds authored priority table".into(),

@@ -419,6 +419,18 @@ pub enum LevelGeometryShStorage<'a> {
     Streaming(&'a postretro_level_loader::ShStreamManifest),
 }
 
+/// A level whose lightmap cell blocks (ids 22/42) stream. Install builds an
+/// empty pool; blocks arrive through `Renderer::drain_lightmap_residency`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelGeometryLightmapStreaming {
+    /// The level's content identity, which every drain batch must carry
+    /// (`LightmapStreamManifest::content_tag`).
+    pub content_tag: [u8; 32],
+    /// The first pool generation's layer cap. Later drains carry the live
+    /// cap; raising it past this takes effect at the next growth.
+    pub pool_cap_layers: u32,
+}
+
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
     pub indices: &'a [u32],
@@ -429,9 +441,14 @@ pub struct LevelGeometry<'a> {
     /// 1×1 atlas resources and shader skips octahedral SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     pub sh_storage: LevelGeometryShStorage<'a>,
-    /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
-    /// The header only; install hands the blobs to `install_level_geometry`.
-    pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapHeader>,
+    /// Id-22 cell-block index. `None` or zero blocks is placeholder mode: the
+    /// 1×1 white placeholder, and bumped-Lambert falls back to flat white.
+    /// The index only; install hands the blobs to `install_level_geometry`.
+    pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapBlockIndex>,
+    /// `Some` when the level streams its cell blocks: install hands no
+    /// payloads and builds an empty streamed pool over `lightmap` and
+    /// `shadowmask_atlas`. `None` installs every block at once.
+    pub lightmap_streaming: Option<LevelGeometryLightmapStreaming>,
     /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
     pub chunk_light_list:
         Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,
@@ -473,17 +490,18 @@ pub struct LevelGeometry<'a> {
     /// entity-shadow promotion.
     pub entity_shadow_lights: &'a [u32],
     /// Optional per-selected-light baked visibility masks for promoted
-    /// static-light entity shadows onto world surfaces.
-    /// The header only; install hands the payload to `install_level_geometry`.
+    /// static-light entity shadows onto world surfaces, one record per id-22
+    /// cell block. The index only; install hands the groups to
+    /// `install_level_geometry` inside each block's payload.
     pub shadowmask_atlas:
-        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskAtlasHeader>,
+        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
-    /// Whether baked static-direct lightmap samples already include static-light
-    /// visibility. `Shadowed` atlases contain the visibility term; `Unshadowed`
-    /// atlases leave it for runtime SDF shadowing so the forward pass does not
-    /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
+    /// Lightmap bake mode from the id-22 header: whether baked static-direct
+    /// samples include static-light visibility. The compiler writes only
+    /// `Shadowed`. `Unshadowed` is recorded but not honoured; it renders as
+    /// the baked irradiance with no shadow term.
     pub lightmap_mode: postretro_level_loader::LightmapMode,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
     /// `None` only for no installed level or an empty-BVH map. Non-empty BVHs
@@ -834,13 +852,12 @@ pub(super) struct FullRenderer {
     /// Dispatch is gated on `sdf_atlas_resources.present` and the active
     /// `SdfShadowMode`.
     pub(super) sdf_shadow_pass: SdfShadowPass,
-    /// Lightmap bake mode read from the PRL (records whether visibility was
-    /// folded into the bake). Under the disjoint-direct design, `sdf` lights
-    /// are excluded from `lm_irr` at bake time, so the forward pass never
-    /// multiplies SDF visibility into the static-lightmap term; this field
-    /// is retained only for legacy-PRL compatibility. Defaults to `Shadowed`
-    /// so legacy PRLs decode without error.
-    #[allow(dead_code)]
+    /// Lightmap bake mode, recorded from the id-22 header; `Shadowed` when
+    /// no level is installed. The compiler writes only `Shadowed`
+    /// (visibility baked in). `Unshadowed` is not honoured: the forward pass
+    /// never multiplies SDF visibility into the static term, so it renders
+    /// as the baked irradiance with no shadow term. Surfaced by
+    /// `Renderer::lightmap_mode`.
     pub(super) lightmap_mode: postretro_level_loader::LightmapMode,
 
     /// CPU mirror of animated-light delta volume placements, one entry per

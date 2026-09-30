@@ -39,7 +39,11 @@ const SH_LIGHTING_STAGES: &[StageId] = &[
     StageId::DirectShDeltaBake,
     StageId::BillboardDirectScatterBake,
 ];
-const ATLAS_WORLD_STAGES: &[StageId] = &[StageId::ChunkLightList, StageId::AtlasPreparation];
+const ATLAS_WORLD_STAGES: &[StageId] = &[
+    StageId::ChunkLightList,
+    StageId::AtlasPreparation,
+    StageId::CellResidencySet,
+];
 const LIGHTMAP_LIGHTING_STAGES: &[StageId] = &[
     StageId::LightmapBake,
     StageId::ShadowmaskAtlas,
@@ -418,7 +422,7 @@ mod tests {
         assert!(text.contains("Parse 0/3"));
         assert!(text.contains("World 0/6"));
         assert!(text.contains("Lighting 0/7"));
-        assert!(text.contains("World 0/2"));
+        assert!(text.contains("World 0/3"));
         assert!(text.contains("Lighting 0/4"));
         assert!(text.contains("Pack 0/4"));
         assert!(text.contains("Lightmap Bake"));

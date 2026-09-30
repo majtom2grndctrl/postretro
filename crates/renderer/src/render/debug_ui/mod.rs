@@ -25,6 +25,7 @@ mod cpu_timing_block;
 mod streaming_tab;
 
 pub use cpu_timing_block::CpuTimingPanel;
+pub use streaming_tab::LightmapStreamingTab;
 
 /// GPU-side egui state. Lives on `Renderer` (the GPU boundary), constructed
 /// lazily on first panel open via `Renderer::ensure_debug_ui_gpu`. The CPU
@@ -269,8 +270,9 @@ impl DebugUi {
 /// "unavailable" line still renders — defensive against an empty
 /// `pass_labels` vec slipping past construction.
 ///
-/// `sh_streaming` feeds the Streaming tab; `None` means the level does not
-/// stream SH clusters.
+/// `sh_streaming` and `lightmap_streaming` feed the Streaming tab; `None`
+/// means the level does not stream that resource. The tab edits the lightmap
+/// levers in place for the caller to apply.
 #[expect(
     clippy::too_many_arguments,
     reason = "Each tab receives its own prepared plain-data input at the renderer boundary."
@@ -287,6 +289,7 @@ pub fn draw_diagnostics_panel(
     door_occluder_rows: &[DoorOccluderDiagnosticsRow],
     blocked_portal_ids: &[u32],
     sh_streaming: Option<&ShStreamingLiveDiagnostics>,
+    lightmap_streaming: Option<LightmapStreamingTab<'_>>,
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -344,7 +347,7 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
             DiagnosticsTab::Triggers => draw_triggers_tab(ui, trigger_rows),
             DiagnosticsTab::Streaming => {
-                streaming_tab::draw_streaming_tab(ui, renderer, sh_streaming)
+                streaming_tab::draw_streaming_tab(ui, renderer, sh_streaming, lightmap_streaming)
             }
         }
     });

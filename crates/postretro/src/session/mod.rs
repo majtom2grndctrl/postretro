@@ -49,10 +49,13 @@ use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
+pub(crate) mod level_streaming;
+pub(crate) mod lightmap_residency;
+mod lightmap_streaming_diagnostics;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
-use sh_async_workers::ShWorkerRetirement;
+use level_streaming::LevelStreaming;
 use sh_residency::ShStreamingSession;
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
@@ -188,14 +191,20 @@ pub(crate) struct Session {
     /// CPU-only — no wgpu. See: context/lib/entity_model.md §7.
     pub(crate) hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
-    /// Session-owned streamed-SH controller. `None` for a legacy level and
-    /// until the first streaming frame can observe the renderer's real pool
-    /// allocation snapshot.
+    /// Session-owned streamed-SH controller. `None` for a legacy level; a
+    /// streamed level creates it at install, after the renderer's pool
+    /// allocation snapshot exists.
+    ///
+    /// Declared before `level_streaming`: fields drop in order, and SH's
+    /// workers must drop their handle on the level's shared issuer before
+    /// the issuer's owner joins its thread.
     pub(crate) sh_streaming: Option<ShStreamingSession>,
 
-    /// Cancelled prior-generation workers. The frame path polls these handles
-    /// and never joins a live positional read; session teardown still joins.
-    pub(crate) sh_worker_retirement: Option<ShWorkerRetirement>,
+    /// The level's lightmap residency session, the one read issuer SH and
+    /// lightmaps share, and a replaced level's retiring threads. The frame
+    /// path polls retirement and never joins a live positional read; session
+    /// teardown still joins.
+    pub(crate) level_streaming: LevelStreaming,
 
     // --- Remaining session state: player options, settings path, frontend
     // declaration, net endpoint, audio subsystem, and (dev-tools) debug-UI. ---
@@ -626,7 +635,7 @@ impl Session {
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
             hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
             sh_streaming: None,
-            sh_worker_retirement: None,
+            level_streaming: LevelStreaming::default(),
             player_options,
             options_bridge,
             os_preferences,

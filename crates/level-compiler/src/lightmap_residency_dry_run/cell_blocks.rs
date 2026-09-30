@@ -1,40 +1,19 @@
 //! Cell blocks: each cell's charts packed into one tight aligned rectangle
 //! the runtime would allocate, free, and remap with a single UV translation.
+//! Packing is the bake's own `pack_cell_block`.
 //!
 //! A block is costed as its own `width × height` layer region at the stored
-//! encodings (`AtlasFormats::layer_bytes_at`), so the doubled-width id 42 is
-//! charged exactly as a layer of that width would carry it.
+//! encodings (`AtlasFormats::layer_bytes_at`).
 
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use rayon::prelude::*;
 
 use super::{ChartRect, DryRunInput};
-use crate::lightmap_bake::MaxRects;
+pub(crate) use crate::lightmap_bake::CANDIDATE_WIDTHS;
+use crate::lightmap_bake::pack_cell_block;
 
 /// Edge of one runtime pool layer, in irradiance texels.
-pub(crate) const POOL_LAYER_EDGE: u32 = 2048;
-
-/// Candidate block widths as multiples of `sqrt(chart area)`, each floored at
-/// the widest chart.
-const WIDTH_FACTORS: [f64; 8] = [0.5, 0.7, 0.85, 1.0, 1.15, 1.3, 1.6, 2.0];
-
-/// Widths tried per cell: every factor, the widest chart alone, and the pool
-/// layer edge.
-pub(crate) const CANDIDATE_WIDTHS: usize = WIDTH_FACTORS.len() + 2;
-
-/// One cell's packed block, in irradiance texels.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PackedBlock {
-    pub width: u32,
-    pub height: u32,
-    /// Top-left of each input chart inside the block, in input order.
-    pub placements: Vec<(u32, u32)>,
-}
-
-impl PackedBlock {
-    pub(crate) fn area(&self) -> u64 {
-        u64::from(self.width) * u64::from(self.height)
-    }
-}
+pub(crate) const POOL_LAYER_EDGE: u32 = LIGHTMAP_POOL_LAYER_EDGE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BlockDims {
@@ -85,7 +64,8 @@ impl CellBlocks {
         let dims: Vec<Option<BlockDims>> = per_cell
             .par_iter()
             .map(|charts| {
-                pack_cell_block(charts, alignment).map(|block| BlockDims {
+                let sizes: Vec<(u32, u32)> = charts.iter().map(|c| (c.width, c.height)).collect();
+                pack_cell_block(&sizes, alignment).map(|block| BlockDims {
                     width: block.width,
                     height: block.height,
                 })
@@ -182,114 +162,4 @@ pub(crate) struct PackingOverhead {
     pub largest: Option<(u32, BlockDims)>,
     /// Blocks wider or taller than one pool layer, ascending by cell.
     pub over_pool_edge: Vec<(u32, BlockDims)>,
-}
-
-/// Pack one cell's padded charts into the smallest-area block found whose
-/// extent is a multiple of `align`, preferring one that fits a pool layer.
-/// Each candidate width takes the shortest aligned height the bake's MaxRects
-/// (largest-first, as `place_leaf` orders a leaf) fits every chart into.
-/// `None` for a cell without charts.
-pub(crate) fn pack_cell_block(charts: &[ChartRect], align: u32) -> Option<PackedBlock> {
-    if charts.is_empty() {
-        return None;
-    }
-    assert!(
-        align > 0 && POOL_LAYER_EDGE % align == 0,
-        "block alignment {align} does not divide the pool layer edge"
-    );
-    let align_up = |value: u32| value.div_ceil(align) * align;
-    let mut order: Vec<usize> = (0..charts.len()).collect();
-    order.sort_by(|&a, &b| charts[b].area().cmp(&charts[a].area()).then(a.cmp(&b)));
-    let area: u64 = charts.iter().map(ChartRect::area).sum();
-    let max_width = charts.iter().map(|c| c.width).max().unwrap_or(0);
-    let max_height = charts.iter().map(|c| c.height).max().unwrap_or(0);
-    let side = (area as f64).sqrt();
-
-    let mut widths: Vec<u32> = WIDTH_FACTORS
-        .iter()
-        .map(|&f| align_up(((side * f).ceil() as u32).max(max_width)))
-        .collect();
-    widths.push(align_up(max_width));
-    if align_up(max_width) <= POOL_LAYER_EDGE {
-        widths.push(POOL_LAYER_EDGE);
-    }
-    widths.sort_unstable();
-    widths.dedup();
-
-    let mut best: Option<PackedBlock> = None;
-    for width in widths {
-        let floor = align_up(max_height.max(area.div_ceil(u64::from(width)) as u32));
-        let block = shortest_block(charts, &order, width, floor, align);
-        // A block that fits a pool layer beats any that does not; then the
-        // smaller area, then the squarer shape.
-        let key = |b: &PackedBlock| {
-            let dims = BlockDims {
-                width: b.width,
-                height: b.height,
-            };
-            (!dims.fits_pool_layer(), b.area(), b.width.max(b.height))
-        };
-        let better = best.as_ref().is_none_or(|b| key(&block) < key(b));
-        if better {
-            best = Some(block);
-        }
-    }
-    best
-}
-
-/// Shortest `align`-multiple height at `width` that packs every chart,
-/// searched upward geometrically from `floor` and then bisected.
-fn shortest_block(
-    charts: &[ChartRect],
-    order: &[usize],
-    width: u32,
-    floor: u32,
-    align: u32,
-) -> PackedBlock {
-    let align_up = |value: u32| value.div_ceil(align) * align;
-    let mut fail = None;
-    let mut height = floor;
-    let mut placed = loop {
-        match try_pack(charts, order, width, height) {
-            Some(placements) => break placements,
-            None => {
-                fail = Some(height);
-                height = align_up(height + (height / 8).max(align));
-            }
-        }
-    };
-    if let Some(mut low) = fail {
-        // `low` fails and `height` packs, both aligned; bisect on the
-        // alignment grid. MaxRects fit is not strictly monotone in height, so
-        // this finds a short packing height, not provably the shortest.
-        while height - low > align {
-            let mid = align_up(low + (height - low) / 2);
-            match try_pack(charts, order, width, mid) {
-                Some(placements) => {
-                    height = mid;
-                    placed = placements;
-                }
-                None => low = mid,
-            }
-        }
-    }
-    PackedBlock {
-        width,
-        height,
-        placements: placed,
-    }
-}
-
-fn try_pack(
-    charts: &[ChartRect],
-    order: &[usize],
-    width: u32,
-    height: u32,
-) -> Option<Vec<(u32, u32)>> {
-    let mut bin = MaxRects::new(width, height);
-    let mut placements = vec![(0, 0); charts.len()];
-    for &index in order {
-        placements[index] = bin.insert(charts[index].width, charts[index].height)?;
-    }
-    Some(placements)
 }

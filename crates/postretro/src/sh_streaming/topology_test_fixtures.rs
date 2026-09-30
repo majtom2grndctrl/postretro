@@ -1,6 +1,8 @@
 //! Minimal manifest-view fixtures for topology boundary tests.
 //! See: context/lib/testing_guide.md §4
 
+use std::sync::Arc;
+
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
     ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
@@ -17,6 +19,7 @@ use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSeamPortal};
 
 use super::controller::ShResidencyControllerError;
 use super::topology::{ManifestTopologyView, PlannerTopology};
+use crate::streaming::cluster_hints::ClusterHints;
 
 pub(super) struct ManifestFixture {
     directory: ClusterDirectorySection,
@@ -147,14 +150,21 @@ impl ManifestFixture {
         self.adjacency[0] = vec![2];
     }
 
+    /// Decodes the fixture's hints as level scope does, then builds the
+    /// topology over them.
     pub(super) fn build_topology(&self) -> Result<PlannerTopology, ShResidencyControllerError> {
-        PlannerTopology::from_manifest_view(ManifestTopologyView {
-            directory: &self.directory,
-            payloads: &self.payloads,
-            base: &self.base,
-            adjacency: &self.adjacency,
-            seam_portals: &self.seam_portals,
-        })
+        let hints = ClusterHints::decode(&self.directory)
+            .map_err(|error| ShResidencyControllerError::InvalidTopology(error.to_string()))?;
+        PlannerTopology::from_manifest_view(
+            ManifestTopologyView {
+                directory: &self.directory,
+                payloads: &self.payloads,
+                base: &self.base,
+                adjacency: &self.adjacency,
+                seam_portals: &self.seam_portals,
+            },
+            Arc::new(hints),
+        )
     }
 }
 

@@ -8,9 +8,9 @@ use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
-    CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection,
-    ClusterDirectoryValidationInputs, ClusterHintRecord, ClusterRecord, canonical_cell_partition,
-    populate_canonical_resource_ranges,
+    CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, CLUSTER_HINT_FLAG_PINNED, CanonicalCellPartition,
+    ClusterDirectorySection, ClusterDirectoryValidationInputs, ClusterHintRecord, ClusterRecord,
+    canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::portals::PortalsSection;
 
@@ -47,6 +47,48 @@ pub(crate) fn bake_cluster_directory(
     sh: FinalizedShEmissionView<'_>,
     streaming_hints: &ResolvedStreamingHints,
 ) -> anyhow::Result<ClusterDirectoryBake> {
+    let partition = default_cell_partition(cells, portals, bvh, streaming_hints)?;
+    bake_cluster_directory_from_partition(
+        cells,
+        portals,
+        bvh,
+        cell_locator,
+        sh,
+        streaming_hints,
+        partition,
+    )
+}
+
+/// The canonical cell partition at the production limits. The pipeline runs
+/// it once, before atlas preparation, because lightmap blocks are stored in
+/// its cluster order; the directory bake then consumes the same result.
+pub(crate) fn default_cell_partition(
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    bvh: &BvhSection,
+    streaming_hints: &ResolvedStreamingHints,
+) -> anyhow::Result<CanonicalCellPartition> {
+    Ok(canonical_cell_partition(
+        cells,
+        portals,
+        bvh,
+        DEFAULT_PRIMITIVE_LIMIT,
+        DEFAULT_CELL_LIMIT,
+        &streaming_hints.seam_portal_ids,
+    )?)
+}
+
+/// Bake the directory over a partition [`default_cell_partition`] produced
+/// from these same cells, portals, BVH, and hints.
+pub(crate) fn bake_cluster_directory_from_partition(
+    cells: &CellsSection,
+    portals: &PortalsSection,
+    bvh: &BvhSection,
+    cell_locator: &CellLocatorSection,
+    sh: FinalizedShEmissionView<'_>,
+    streaming_hints: &ResolvedStreamingHints,
+    partition: CanonicalCellPartition,
+) -> anyhow::Result<ClusterDirectoryBake> {
     bake_cluster_directory_with_hints_and_limits(
         cells,
         portals,
@@ -54,6 +96,7 @@ pub(crate) fn bake_cluster_directory(
         cell_locator,
         sh,
         streaming_hints,
+        partition,
         (DEFAULT_PRIMITIVE_LIMIT, DEFAULT_CELL_LIMIT),
     )
 }
@@ -69,6 +112,13 @@ pub(crate) fn bake_cluster_directory_with_limits(
     cell_limit: u32,
 ) -> anyhow::Result<ClusterDirectoryBake> {
     let empty_streaming_hints = ResolvedStreamingHints::default();
+    anyhow::ensure!(
+        primitive_limit > 0,
+        "cluster primitive limit must be positive"
+    );
+    anyhow::ensure!(cell_limit > 0, "cluster cell limit must be positive");
+    let partition =
+        canonical_cell_partition(cells, portals, bvh, primitive_limit, cell_limit, &[])?;
     bake_cluster_directory_with_hints_and_limits(
         cells,
         portals,
@@ -76,10 +126,12 @@ pub(crate) fn bake_cluster_directory_with_limits(
         cell_locator,
         sh,
         &empty_streaming_hints,
+        partition,
         (primitive_limit, cell_limit),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bake_cluster_directory_with_hints_and_limits(
     cells: &CellsSection,
     portals: &PortalsSection,
@@ -87,22 +139,10 @@ fn bake_cluster_directory_with_hints_and_limits(
     cell_locator: &CellLocatorSection,
     sh: FinalizedShEmissionView<'_>,
     streaming_hints: &ResolvedStreamingHints,
+    partition: CanonicalCellPartition,
     (primitive_limit, cell_limit): (u32, u32),
 ) -> anyhow::Result<ClusterDirectoryBake> {
-    anyhow::ensure!(
-        primitive_limit > 0,
-        "cluster primitive limit must be positive"
-    );
-    anyhow::ensure!(cell_limit > 0, "cluster cell limit must be positive");
     let started = Instant::now();
-    let partition = canonical_cell_partition(
-        cells,
-        portals,
-        bvh,
-        primitive_limit,
-        cell_limit,
-        &streaming_hints.seam_portal_ids,
-    )?;
     let mut oversize_singletons = 0usize;
     for cluster in &partition.clusters {
         if cluster.flags != CLUSTER_FLAG_INDIVISIBLE_OVERSIZE {

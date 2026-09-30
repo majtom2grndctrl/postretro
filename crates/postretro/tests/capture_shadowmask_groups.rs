@@ -1,12 +1,13 @@
-// GPU-backed proof that side-by-side BC5 shadowmask groups route every
-// selected light to its own mask slot in the world-specular decode path.
+// GPU-backed proof that the BC5 shadowmask groups of every cell block route
+// each selected light to its own mask slot in the world-specular decode path.
 // See: context/lib/rendering_pipeline.md §4 (World specular shadowmask)
 //
 // The fixture's four coloured static lights overlap, so the bake gives them
-// all four slots: two per BC5 group. Each variant rewrites id 42 of the
-// compiled PRL with constant per-slot planes (exact under BC5) and a chosen
-// slot table, so the only thing that differs between captures is which slot
-// gates which light. Captures are compared on one adapter; no golden images.
+// all four slots: two per BC5 group. Each variant rewrites every cell block's
+// id-42 group planes in the compiled PRL with constant per-slot planes (exact
+// under BC5) and a chosen slot table, so the only thing that differs between
+// captures is which slot gates which light. Captures are compared on one
+// adapter; no golden images.
 
 use std::fs;
 use std::path::Path;
@@ -14,6 +15,7 @@ use std::path::Path;
 use image::RgbaImage;
 use postretro_level_format as prl_format;
 use postretro_level_format::SectionId;
+use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection,
 };
@@ -41,49 +43,59 @@ fn read_sections(path: &Path) -> Vec<prl_format::SectionBlob> {
         .collect()
 }
 
+/// Id 42 parsed against the id-22 block index it pairs with.
 fn shadowmask_of(sections: &[prl_format::SectionBlob]) -> ShadowmaskAtlasSection {
-    let blob = sections
-        .iter()
-        .find(|blob| blob.section_id == SectionId::ShadowmaskAtlas as u32)
-        .expect("fixture must ship a ShadowmaskAtlas section");
-    ShadowmaskAtlasSection::from_bytes(&blob.data).expect("fixture ShadowmaskAtlas must parse")
+    let section = |id: SectionId| {
+        sections
+            .iter()
+            .find(|blob| blob.section_id == id as u32)
+            .unwrap_or_else(|| panic!("fixture must ship a {id:?} section"))
+    };
+    let lightmap = section(SectionId::Lightmap);
+    let index = LightmapBlockIndex::from_prefix(&lightmap.data, lightmap.data.len() as u64)
+        .expect("fixture Lightmap index must parse");
+    ShadowmaskAtlasSection::from_bytes(&section(SectionId::ShadowmaskAtlas).data, &index)
+        .expect("fixture ShadowmaskAtlas must parse")
 }
 
-/// A payload whose every texel holds `slots[s]` in slot `s`. A constant BC4
-/// block is `[v, v, 0, 0, 0, 0, 0, 0]`, which decodes to exactly `v`.
-fn constant_payload(section: &ShadowmaskAtlasSection, slots: [u8; 4]) -> Vec<u8> {
-    let block_columns_per_group = (section.width / 4) as usize;
-    let block_rows = (section.height / 4) as usize;
+/// Per cell block, the group A then group B BC5 planes.
+type GroupPlanes = Vec<[Vec<u8>; 2]>;
+
+/// Group planes whose every texel holds `slots[s]` in slot `s`, block for
+/// block at the baked lengths. A constant BC4 block is
+/// `[v, v, 0, 0, 0, 0, 0, 0]`, which decodes to exactly `v`.
+fn constant_payload(section: &ShadowmaskAtlasSection, slots: [u8; 4]) -> GroupPlanes {
     let bc4 = |value: u8| [value, value, 0, 0, 0, 0, 0, 0];
-    let mut payload = Vec::with_capacity(section.data.len());
-    for _layer in 0..section.layer_count {
-        for _row in 0..block_rows {
-            for group in 0..SHADOWMASK_GROUP_COUNT as usize {
-                for _column in 0..block_columns_per_group {
-                    payload.extend_from_slice(&bc4(slots[group * 2]));
-                    payload.extend_from_slice(&bc4(slots[group * 2 + 1]));
-                }
-            }
-        }
-    }
-    assert_eq!(payload.len(), section.data.len());
-    payload
+    section
+        .blocks
+        .iter()
+        .map(|groups| {
+            std::array::from_fn(|group| {
+                let bc5: Vec<u8> = bc4(slots[group * 2])
+                    .into_iter()
+                    .chain(bc4(slots[group * 2 + 1]))
+                    .collect();
+                let plane = bc5.repeat(groups[group].len() / 16);
+                assert_eq!(plane.len(), groups[group].len());
+                plane
+            })
+        })
+        .collect()
 }
 
-/// Write a copy of the fixture whose id 42 carries `channels` and `data`.
+/// Write a copy of the fixture whose id 42 carries `channels` and `blocks`.
 /// Both keep their original lengths, so no other section moves.
 fn write_variant(
     sections: &[prl_format::SectionBlob],
-    base: &ShadowmaskAtlasSection,
     channels: Vec<u8>,
-    data: Vec<u8>,
+    blocks: GroupPlanes,
     path: &Path,
 ) {
-    let variant = ShadowmaskAtlasSection {
-        channels,
-        data,
-        ..base.clone()
-    };
+    assert!(
+        SHADOWMASK_GROUP_COUNT == 2,
+        "a block carries group A and group B"
+    );
+    let variant = ShadowmaskAtlasSection { channels, blocks };
     let blobs: Vec<_> = sections
         .iter()
         .map(|blob| prl_format::SectionBlob {
@@ -211,14 +223,14 @@ fn every_selected_light_reads_its_own_slot_in_either_group() {
         .expect("fixture has a parent")
         .to_path_buf();
     let mut written = Vec::new();
-    let mut capture_variant = |label: &str, channels: Vec<u8>, data: Vec<u8>| {
+    let mut capture_variant = |label: &str, channels: Vec<u8>, blocks: GroupPlanes| {
         let path = tempfile::Builder::new()
             .prefix(&format!(".shadowmask-groups-{label}-"))
             .suffix(".prl")
             .tempfile_in(&maps_dir)
             .expect("reserve variant PRL path")
             .into_temp_path();
-        write_variant(&sections, &baked, channels, data, &path);
+        write_variant(&sections, channels, blocks, &path);
         let image = capture(&workspace, scratch.path(), &path, label);
         written.push(path);
         image
@@ -297,33 +309,37 @@ fn every_selected_light_reads_its_own_slot_in_either_group() {
     }
 }
 
-/// Swap the BC4 sub-blocks of slots `a` and `b` everywhere in a side-by-side
-/// BC5 payload: slot `s` is group `s / 2`'s R (`s % 2 == 0`) or G block.
-fn swap_slot_blocks(section: &ShadowmaskAtlasSection, a: u8, b: u8) -> Vec<u8> {
-    let columns_per_group = (section.width / 4) as usize;
-    let block_rows = (section.height * section.layer_count / 4) as usize;
-    let sub_block = |row: usize, column: usize, slot: u8| {
-        let block = row * columns_per_group * 2 + (slot as usize / 2) * columns_per_group + column;
-        block * 16 + (slot as usize % 2) * 8
-    };
-    let mut data = section.data.clone();
-    for row in 0..block_rows {
-        for column in 0..columns_per_group {
-            let (x, y) = (sub_block(row, column, a), sub_block(row, column, b));
-            for byte in 0..8 {
-                data.swap(x + byte, y + byte);
+/// Swap the BC4 sub-blocks of slots `a` and `b` (in different groups)
+/// everywhere in every cell block: slot `s` is group `s / 2`'s R
+/// (`s % 2 == 0`) or G sub-block of each 16-byte BC5 block.
+fn swap_slot_blocks(blocks: &GroupPlanes, a: u8, b: u8) -> GroupPlanes {
+    let (group_a, group_b) = (a as usize / 2, b as usize / 2);
+    assert_ne!(group_a, group_b, "the swap crosses the group seam");
+    let (offset_a, offset_b) = ((a as usize % 2) * 8, (b as usize % 2) * 8);
+    blocks
+        .iter()
+        .map(|groups| {
+            let mut groups = groups.clone();
+            for bc5 in 0..groups[0].len() / 16 {
+                for byte in 0..8 {
+                    let x = bc5 * 16 + offset_a + byte;
+                    let y = bc5 * 16 + offset_b + byte;
+                    let held = groups[group_a][x];
+                    groups[group_a][x] = groups[group_b][y];
+                    groups[group_b][y] = held;
+                }
             }
-        }
-    }
-    data
+            groups
+        })
+        .collect()
 }
 
 // Pins: seam-bleed and M4. Group placement must not change what any light
 // reads: swapping which half holds the open and closed groups, or moving a
 // light's baked mask from group 0 to group 1, renders byte-identically.
-// Baked chart gutters keep UVs off each half's outer columns, so this proves
-// routing and placement in a real frame. Driven edge UVs are proven by the
-// renderer's `shadowmask_sample_test` readback.
+// Each block's half-texel clamp keeps taps inside its own texels in each
+// half, so this proves routing and placement in a real frame. Driven edge
+// texels are proven by the renderer's `shadowmask_sample_test` readback.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
 fn group_placement_never_changes_what_a_light_reads() {
@@ -337,14 +353,14 @@ fn group_placement_never_changes_what_a_light_reads() {
         .expect("fixture has a parent")
         .to_path_buf();
     let mut written = Vec::new();
-    let mut capture_variant = |label: &str, channels: Vec<u8>, data: Vec<u8>| {
+    let mut capture_variant = |label: &str, channels: Vec<u8>, blocks: GroupPlanes| {
         let path = tempfile::Builder::new()
             .prefix(&format!(".shadowmask-groups-{label}-"))
             .suffix(".prl")
             .tempfile_in(&maps_dir)
             .expect("reserve variant PRL path")
             .into_temp_path();
-        write_variant(&sections, &baked, channels, data, &path);
+        write_variant(&sections, channels, blocks, &path);
         let image = capture(&workspace, scratch.path(), &path, label);
         written.push(path);
         image
@@ -385,13 +401,10 @@ fn group_placement_never_changes_what_a_light_reads() {
         .iter()
         .map(|&slot| (slot + 2) % SLOT_COUNT)
         .collect();
-    let moved_masks = ShadowmaskAtlasSection {
-        data: swap_slot_blocks(&baked, 0, 2),
-        ..baked.clone()
-    };
+    let moved_masks = swap_slot_blocks(&baked.blocks, 0, 2);
     let moved_masks = swap_slot_blocks(&moved_masks, 1, 3);
     assert!(
-        moved_masks != baked.data,
+        moved_masks != baked.blocks,
         "the group move must change the payload, or the frame comparison proves nothing"
     );
     let moved = capture_variant("groups-moved", moved_table, moved_masks);
@@ -403,11 +416,11 @@ fn group_placement_never_changes_what_a_light_reads() {
 }
 
 // Pins: animated-after-take and capture-install. The animated contribution
-// atlas is sized from the lightmap header install keeps; the payloads have
-// already moved into the upload. A mismatch would fall back to the dummy atlas
-// with a renderer error. A capture install that left a header without its
-// payload would log `[Renderer] ... header arrived without its payload`; the
-// no-`[Renderer]` check below covers both.
+// atlas keys on the cell blocks the pool plan installs from the block index
+// and the payloads install moved into the upload. A mismatch would fall back
+// to the dummy atlas with a renderer error. A capture install that left the
+// index without its payloads would log `[Renderer] Lightmap cell blocks
+// rejected`; the no-`[Renderer]` check below covers both.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
 fn animated_lights_render_after_lightmap_payloads_move_into_the_upload() {
@@ -452,8 +465,8 @@ fn animated_lights_render_after_lightmap_payloads_move_into_the_upload() {
 }
 
 /// No lighting resource degraded at install. This includes the capture-install
-/// failure, `[Renderer] ... header arrived without its payload`, which a
-/// capture that borrowed or lost the moved payloads would log.
+/// failure, `[Renderer] Lightmap cell blocks rejected: ...`, which a capture
+/// that borrowed or lost the moved payloads would log.
 fn assert_no_renderer_errors(stderr: &str) {
     assert!(
         !stderr.contains("[Renderer]"),
@@ -480,7 +493,7 @@ fn write_without_shadowmask(sections: &[prl_format::SectionBlob], path: &Path) {
 // Pins: partial-lighting-install and capture-install. A level with a lightmap
 // but no shadowmask installs through capture: its lightmap payloads move into
 // the upload with no mask to pair, and the specular path takes its neutral
-// placeholder. A panic fails the capture; a header left without its payload
+// placeholder. A panic fails the capture; an index left without its payloads
 // logs a `[Renderer]` error. The level with neither is covered by the loader's
 // take-seam unit tests.
 #[test]
@@ -538,7 +551,6 @@ fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
         .into_temp_path();
     write_variant(
         &sections,
-        &baked,
         baked.channels.clone(),
         constant_payload(&baked, [255; 4]),
         &open_masks,

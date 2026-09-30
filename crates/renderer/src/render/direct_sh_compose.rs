@@ -882,9 +882,9 @@ mod tests {
     fn delta_loader_and_upload_paths_add_no_payload_clone() {
         let loader = include_str!("../../../level-loader/src/prl_loader.rs");
         for decode in [
-            "DeltaShVolumesSection::from_bytes(data)?",
-            "AnimatedDirectShDeltaVolumesSection::from_bytes(data)",
-            "DirectShDeltaVolumesSection::from_bytes(data)",
+            "DeltaShVolumesSection::from_bytes(&data)?",
+            "AnimatedDirectShDeltaVolumesSection::from_bytes(&data)",
+            "DirectShDeltaVolumesSection::from_bytes(&data)",
         ] {
             assert!(
                 loader.contains(decode),

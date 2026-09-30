@@ -21,6 +21,7 @@ use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
 };
+use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::{
     CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
@@ -481,6 +482,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         trigger_volumes,
         cell_draw_index_section,
         cell_visibility_section,
+        None,
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
@@ -526,6 +528,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     // CellVisibility (id 46). The section stays optional for old PRLs; current
     // compiler output always provides it.
     cell_visibility_section: Option<&CellVisibilitySection>,
+    // CellResidencySet (id 51); `None` when the level has no usable portals.
+    cell_residency_set_section: Option<&CellResidencySetSection>,
     animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
     billboard_direct_scatter_volume: Option<&BillboardDirectScatterVolumeSection>,
     animated_billboard_direct_scatter_delta_volumes: Option<
@@ -657,6 +661,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         trigger_volumes,
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
+        cell_residency_set: cell_residency_set_section,
         cluster_bake,
         cluster_payload,
     })?;
@@ -1114,18 +1119,49 @@ mod tests {
     }
 
     fn placeholder_lightmap() -> LightmapSection {
-        LightmapSection::placeholder()
+        LightmapSection::empty(2)
+    }
+
+    /// `extents.len()` BC6H blocks at the given extents, direction scale 2.
+    fn lightmap_with_blocks(extents: &[(u16, u16)]) -> LightmapSection {
+        use postretro_level_format::lightmap::LightmapBlock;
+        let mut section = LightmapSection::empty(2);
+        let header = section.header();
+        section.blocks = extents
+            .iter()
+            .enumerate()
+            .map(|(cell, &(w, h))| LightmapBlock {
+                cell_id: cell as u32,
+                width: w,
+                height: h,
+                irradiance: vec![0; header.irradiance_len(w.into(), h.into()).unwrap() as usize],
+                direction: vec![0; header.direction_len(w.into(), h.into()).unwrap() as usize],
+            })
+            .collect();
+        section
+    }
+
+    /// Fully visible groups for each of `lightmap`'s blocks.
+    fn shadowmask_for(lightmap: &LightmapSection) -> ShadowmaskAtlasSection {
+        ShadowmaskAtlasSection {
+            channels: vec![0],
+            blocks: lightmap
+                .blocks
+                .iter()
+                .map(|block| {
+                    let len = postretro_level_format::shadowmask_atlas::group_plane_len(
+                        block.width.into(),
+                        block.height.into(),
+                    )
+                    .unwrap() as usize;
+                    [vec![255; len], vec![255; len]]
+                })
+                .collect(),
+        }
     }
 
     fn minimal_shadowmask_atlas() -> ShadowmaskAtlasSection {
-        ShadowmaskAtlasSection {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width: 4,
-            height: 4,
-            layer_count: 1,
-            channels: vec![0],
-            data: vec![255; ShadowmaskAtlasSection::payload_len(4, 4, 1).unwrap()],
-        }
+        shadowmask_for(&lightmap_with_blocks(&[(4, 4)]))
     }
 
     fn placeholder_chunk_light_list() -> ChunkLightListSection {
@@ -1662,28 +1698,25 @@ mod tests {
 
     #[test]
     fn shadowmask_footprint_payload_is_half_the_raw_rgba_arithmetic() {
-        let (width, height, layer_count) = (64u32, 32u32, 3u32);
-        let raw_payload = (width * height * layer_count * 4) as usize;
-        let shadowmask = ShadowmaskAtlasSection {
-            format: postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_BC5_RG_SIDE_BY_SIDE,
-            width,
-            height,
-            layer_count,
-            channels: vec![0],
-            data: vec![
-                255;
-                ShadowmaskAtlasSection::payload_len(width, height, layer_count).unwrap()
-            ],
-        };
-        let header_and_slots = shadowmask.byte_len() - shadowmask.data.len();
+        let (width, height, block_count) = (64u32, 32u32, 3u32);
+        let raw_payload = (width * height * block_count * 4) as usize;
+        let lightmap = lightmap_with_blocks(&[(64, 32); 3]);
+        let shadowmask = shadowmask_for(&lightmap);
+        let blob_bytes: usize = shadowmask
+            .blocks
+            .iter()
+            .map(|[a, b]| a.len() + b.len())
+            .sum();
+        let header_and_slots = shadowmask.byte_len() - blob_bytes;
         let output = std::env::temp_dir().join(format!(
             "postretro_test_pack_shadowmask_footprint_{}.prl",
             std::process::id()
         ));
 
         let capture = postretro_test_log_capture::LogCapture::start();
-        write_pack_with_shadowmask(
+        write_pack_with_lightmap_and_shadowmask(
             &output,
+            &lightmap,
             Some(&minimal_direct_sh_volume()),
             Some(&EntityShadowLightsSection {
                 light_indices: vec![0],
@@ -1694,7 +1727,7 @@ mod tests {
         let expected_payload = raw_payload / 2;
         assert_eq!(
             expected_payload,
-            (2 * width * height * layer_count) as usize
+            (2 * width * height * block_count) as usize
         );
         capture.assert_logged_once(
             log::Level::Info,
@@ -1708,6 +1741,24 @@ mod tests {
 
     fn write_pack_with_shadowmask(
         output: &Path,
+        direct_sh_volume: Option<&DirectShVolumeSection>,
+        entity_shadow_lights: Option<&EntityShadowLightsSection>,
+        direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+        shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+    ) {
+        write_pack_with_lightmap_and_shadowmask(
+            output,
+            &lightmap_with_blocks(&[(4, 4)]),
+            direct_sh_volume,
+            entity_shadow_lights,
+            direct_sh_delta_volumes,
+            shadowmask_atlas,
+        );
+    }
+
+    fn write_pack_with_lightmap_and_shadowmask(
+        output: &Path,
+        lightmap: &LightmapSection,
         direct_sh_volume: Option<&DirectShVolumeSection>,
         entity_shadow_lights: Option<&EntityShadowLightsSection>,
         direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
@@ -1734,7 +1785,7 @@ mod tests {
             entity_shadow_lights,
             direct_sh_delta_volumes,
             shadowmask_atlas,
-            &placeholder_lightmap(),
+            lightmap,
             &placeholder_chunk_light_list(),
             None,
             None,

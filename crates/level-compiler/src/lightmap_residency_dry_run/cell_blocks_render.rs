@@ -9,10 +9,10 @@ use super::camera_walks::STALL_TELEPORT_STEPS;
 use super::cell_block_residency::SIM_LEAD_METERS;
 use super::cell_blocks::{CANDIDATE_WIDTHS, POOL_LAYER_EDGE};
 use super::mandatory::Granularity;
-use super::pvs_sampling::SampleDensity;
 use super::render::{LOW_TIER_BUDGET_BYTES, LOW_TIER_BUDGET_MIB, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::visible_set::VisibleSetResult;
+use crate::cell_residency_bake::pvs_sampling::SampleDensity;
 
 /// `(value, cell)` pairs sorted largest first, ties by ascending cell.
 fn sorted_desc(values: impl Iterator<Item = (f64, u32)>) -> Vec<(f64, u32)> {

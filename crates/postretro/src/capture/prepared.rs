@@ -26,7 +26,11 @@ use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
 use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
+use crate::streaming::cluster_hints::decode_level_hints;
 
+use super::lightmap::{
+    CaptureLightmapResidency, preload_capture_lightmap, validate_lightmap_overrides,
+};
 use super::scene::CaptureScene;
 use super::setup::{
     capture_level_geometry, capture_static_lights_and_shadow_selection, capture_view_projection,
@@ -79,6 +83,7 @@ pub(super) struct PreparedCapture {
     mover_sample_regions: Vec<ShSampleRegion>,
     measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
+    lightmap_residency: CaptureLightmapResidency,
 }
 
 impl PreparedCapture {
@@ -90,15 +95,20 @@ impl PreparedCapture {
         let mut world = postretro_level_loader::load_prl(&scene.map)
             .with_context(|| format!("failed to load `{}`", scene.map))?;
         if world.sh_stream_manifest().is_some() {
-            // Validate the PRL first, then enforce Task 10's explicit-mode
-            // gate before GPU initialization can mask its named error.
+            // Validate the PRL first, then enforce the sync-proof mode gate
+            // (`require_sync_proof_mode`) before GPU initialization can mask
+            // its named error.
             require_sync_proof_mode(requested_streaming_mode()?)?;
         }
+        validate_lightmap_overrides(scene, &world)?;
 
         let [width, height] = scene.resolution;
         let mut renderer = Renderer::new_offscreen(width, height)
             .context("failed to initialize offscreen frame capture renderer")?;
         renderer.set_force_full_resident_sh_compose(scene.force_full_resident_sh_compose);
+        if let Some(mask) = scene.light_term_mask() {
+            renderer.set_light_term_mask(mask);
+        }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
@@ -120,13 +130,19 @@ impl PreparedCapture {
         // Capture installs the way the game does: the payloads move into the
         // upload and the world keeps headers only.
         let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
-        let geometry = capture_level_geometry(
+        let mut geometry = capture_level_geometry(
             &world,
             &texture_materials,
             &static_lights,
             &static_light_influences,
             &static_entity_shadow_lights,
         );
+        if let (Some(streaming), Some(cap)) = (
+            geometry.lightmap_streaming.as_mut(),
+            scene.lightmap_pool_cap_layers,
+        ) {
+            streaming.pool_cap_layers = cap;
+        }
         renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
         let forced_active_writes = install_forced_active_animation_descriptors(
             &mut renderer,
@@ -152,11 +168,29 @@ impl PreparedCapture {
             &mut scratch,
             postretro_visibility::TimingGate::OFF,
         );
+        // The level's id 49, decoded once for SH and lightmaps.
+        let hints = decode_level_hints(world.cluster_directory())
+            .context("[Capture] id-49 cluster hints")?;
+        let lightmap_residency = preload_capture_lightmap(
+            &world,
+            &mut renderer,
+            &visible_render,
+            scene,
+            hints.as_deref(),
+        )?;
         let sh_streaming = world
             .sh_stream_manifest()
             .cloned()
             .map(|manifest| {
-                ShStreamingSession::for_capture(manifest, world.cell_visibility.as_ref(), &renderer)
+                let hints = hints
+                    .clone()
+                    .context("[Capture] a streamed SH level carries no id 49")?;
+                ShStreamingSession::for_capture(
+                    manifest,
+                    world.cell_visibility.as_ref(),
+                    &renderer,
+                    hints,
+                )
             })
             .transpose()?;
         let max_preload_frames = world
@@ -212,6 +246,7 @@ impl PreparedCapture {
             mover_sample_regions,
             measurement_animation: CaptureMeasurementAnimationClock::default(),
             resolution: [width, height],
+            lightmap_residency,
         };
         prepared.preload_visible_sh(max_preload_frames)?;
         Ok(prepared)
@@ -397,6 +432,10 @@ impl PreparedCapture {
 
     pub(super) fn lightmap_residency_report(&self) -> Option<LightmapResidencyReport> {
         self.renderer.lightmap_residency_report().cloned()
+    }
+
+    pub(super) const fn lightmap_streaming(&self) -> CaptureLightmapResidency {
+        self.lightmap_residency
     }
 
     pub(super) const fn resolution(&self) -> [u32; 2] {

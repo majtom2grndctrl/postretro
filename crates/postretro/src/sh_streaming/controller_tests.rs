@@ -1,6 +1,7 @@
 use super::super::topology::SeamPortalEndpoint;
 use super::*;
 use crate::sh_streaming::generation::FixedGenerationClock;
+use crate::streaming::cluster_hints::ClusterHints;
 use glam::{Mat4, Vec3};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
@@ -40,18 +41,23 @@ pub(super) fn hinted_topology(
     let cluster_count = adjacency.len();
     assert_eq!(owners.len(), cluster_count);
     assert_eq!(requested_resident_bytes.len(), cluster_count);
-    let authored_priorities = if authored_priorities.is_empty() {
+    let priority = if authored_priorities.is_empty() {
         vec![0; cluster_count]
     } else {
         assert_eq!(authored_priorities.len(), cluster_count);
         authored_priorities
+            .into_iter()
+            .map(|priority| u8::try_from(priority).unwrap())
+            .collect()
     };
     PlannerTopology {
-        cell_to_cluster,
+        hints: Arc::new(ClusterHints {
+            cell_to_cluster,
+            pinned: pinned_clusters,
+            priority,
+        }),
         adjacency,
         seam_portals,
-        pinned_clusters,
-        authored_priorities,
         owners,
         requested_resident_bytes,
         // Distinct from `prepared`'s four decoded bytes, so tests can tell
@@ -447,10 +453,12 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         world.cell_visibility.is_some(),
         "fixture carries id 46, so the planner runs the real warm walk"
     );
+    let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
     let mut controller = ShResidencyController::with_clock(
         manifest,
         ShGpuBudgetInputs::default(),
         world.cell_visibility.as_ref(),
+        hints,
         &FixedGenerationClock::new(1),
     )
     .unwrap();
@@ -458,7 +466,7 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
     controller
         .update_targets(&visible, Some(near_cell as usize), 0.0)
         .unwrap();
-    let far_cluster = controller.topology.cell_to_cluster[far_cell as usize];
+    let far_cluster = controller.topology.hints.cell_to_cluster[far_cell as usize];
     assert_eq!(
         controller.states[far_cluster as usize].class,
         Some(TargetClass::SeamWarm),
@@ -762,10 +770,12 @@ fn sync_proof_reads_retained_manifest_and_releases_cpu_phases_after_install() {
     let index = &manifest.payloads().index[0];
     let payload_len = index.payload_len;
     let decoded_bytes = index.decoded_bytes;
+    let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
     let mut controller = ShResidencyController::with_clock(
         manifest,
         ShGpuBudgetInputs::default(),
         world.cell_visibility.as_ref(),
+        hints,
         &FixedGenerationClock::new(1),
     )
     .unwrap();

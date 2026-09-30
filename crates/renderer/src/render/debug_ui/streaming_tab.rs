@@ -1,4 +1,5 @@
-//! Streaming tab: SH cluster residency gauges and cumulative counters.
+//! Streaming tab: SH cluster residency and lightmap cell-block residency
+//! gauges, cumulative counters, and the lightmap pool-cap and lead levers.
 //!
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.
@@ -7,8 +8,79 @@ use super::super::Renderer;
 #[cfg(test)]
 use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
+use super::super::{
+    LightmapStreamingLevers, LightmapStreamingLiveDiagnostics, MAX_LIGHTMAP_POOL_CAP_LAYERS,
+};
+
+/// The Streaming tab's lightmap input: the live counters, shown read-only,
+/// and the two levers, edited in place. The caller writes changed levers
+/// back to the residency controller after the frame's UI runs.
+#[derive(Debug)]
+pub struct LightmapStreamingTab<'a> {
+    pub diagnostics: &'a LightmapStreamingLiveDiagnostics,
+    pub levers: &'a mut LightmapStreamingLevers,
+}
 
 pub(super) fn draw_streaming_tab(
+    ui: &mut egui::Ui,
+    renderer: &mut Renderer,
+    diagnostics: Option<&ShStreamingLiveDiagnostics>,
+    lightmap: Option<LightmapStreamingTab<'_>>,
+) {
+    egui::CollapsingHeader::new("Lightmap blocks")
+        .default_open(true)
+        .show(ui, |ui| match lightmap {
+            Some(tab) => draw_lightmap_streaming(ui, tab),
+            None => {
+                ui.label("Lightmap streaming inactive");
+            }
+        });
+    ui.separator();
+    draw_sh_streaming(ui, renderer, diagnostics);
+}
+
+fn draw_lightmap_streaming(ui: &mut egui::Ui, tab: LightmapStreamingTab<'_>) {
+    let LightmapStreamingTab {
+        diagnostics,
+        levers,
+    } = tab;
+    ui.label("Pool cap (layers)");
+    ui.add(
+        egui::Slider::new(
+            &mut levers.pool_cap_layers,
+            1..=MAX_LIGHTMAP_POOL_CAP_LAYERS,
+        )
+        .logarithmic(true),
+    );
+    ui.label("Lead L (m)");
+    let max_lead = levers.max_lead_metres.max(0.0);
+    ui.add(egui::Slider::new(&mut levers.lead_metres, 0.0..=max_lead).step_by(0.5));
+    ui.label(
+        egui::RichText::new(
+            "Dev-tools levers: the cap rides the next drain, the lead the next frame.",
+        )
+        .weak(),
+    );
+    for section in lightmap_sections(diagnostics) {
+        egui::CollapsingHeader::new(section.title)
+            .id_salt(("lightmap_streaming", section.title))
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new(("lightmap_streaming_grid", section.title))
+                    .num_columns(2)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for (label, value) in &section.rows {
+                            ui.label(*label);
+                            ui.label(egui::RichText::new(value).monospace());
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+}
+
+fn draw_sh_streaming(
     ui: &mut egui::Ui,
     renderer: &mut Renderer,
     diagnostics: Option<&ShStreamingLiveDiagnostics>,
@@ -213,6 +285,100 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
     ]
 }
 
+fn lightmap_sections(d: &LightmapStreamingLiveDiagnostics) -> [StreamingSection; 4] {
+    let split = |lightmap: u64, shadowmask: u64| {
+        format!(
+            "{} (id 22 {}, id 42 {})",
+            format_bytes(lightmap + shadowmask),
+            format_bytes(lightmap),
+            format_bytes(shadowmask),
+        )
+    };
+    [
+        StreamingSection {
+            title: "Residency",
+            rows: vec![
+                (
+                    "Resident blocks",
+                    format!("{} of {}", d.resident_blocks, d.block_count),
+                ),
+                (
+                    "Resident bytes",
+                    split(d.resident_lightmap_bytes, d.resident_shadowmask_bytes),
+                ),
+                ("Mandatory blocks", d.mandatory_blocks.to_string()),
+                (
+                    "Mandatory bytes",
+                    split(d.mandatory_lightmap_bytes, d.mandatory_shadowmask_bytes),
+                ),
+                (
+                    "Visible misses (outside set / not resident)",
+                    format!(
+                        "{} / {} (last frame {} / {})",
+                        d.drawn_outside_baked_set,
+                        d.drawn_not_resident,
+                        d.last_frame_drawn_outside_baked_set,
+                        d.last_frame_drawn_not_resident,
+                    ),
+                ),
+            ],
+        },
+        StreamingSection {
+            title: "Pool",
+            rows: vec![
+                (
+                    "Layers (peak / cap)",
+                    format!(
+                        "{} ({} / {})",
+                        d.pool_layers, d.peak_pool_layers, d.pool_cap_layers
+                    ),
+                ),
+                ("Pool bytes", format_bytes(d.pool_bytes)),
+                ("Retiring bytes", format_bytes(d.retiring_pool_bytes)),
+                (
+                    "Growth transient peak",
+                    format_bytes(d.growth_transient_peak_bytes),
+                ),
+                ("Band headroom (texels)", d.band_headroom_texels.to_string()),
+                ("Repacks", d.repacks.to_string()),
+                ("Growths", d.growths.to_string()),
+            ],
+        },
+        StreamingSection {
+            title: "Reads",
+            rows: vec![
+                ("Pairs requested", d.reads_requested.to_string()),
+                ("Physical reads", d.physical_reads.to_string()),
+                (
+                    "Bytes read",
+                    split(d.lightmap_bytes_read, d.shadowmask_bytes_read),
+                ),
+                ("In flight", format_bytes(d.in_flight_read_bytes)),
+                ("Failed reads", d.failed_reads.to_string()),
+                ("Cancelled reads", d.cancelled_reads.to_string()),
+            ],
+        },
+        StreamingSection {
+            title: "Installs",
+            rows: vec![
+                ("Installs", d.installs.to_string()),
+                ("Evictions", d.evictions.to_string()),
+                ("Refusals", d.refusals.to_string()),
+                ("Deferrals", d.deferrals.to_string()),
+                ("Failed installs", d.failed_installs.to_string()),
+                (
+                    "Install CPU last/max drain",
+                    format!(
+                        "{} / {}",
+                        format_micros(d.last_drain_install_micros),
+                        format_micros(d.max_drain_install_micros),
+                    ),
+                ),
+            ],
+        },
+    ]
+}
+
 /// Binary units, one decimal place above bytes.
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
@@ -274,6 +440,42 @@ mod tests {
     fn percentages_tolerate_an_empty_denominator() {
         assert_eq!(format_percent(5, 0), "-");
         assert_eq!(format_percent(1, 4), "25%");
+    }
+
+    #[test]
+    fn lightmap_sections_split_bytes_by_section_and_show_both_miss_buckets() {
+        let diagnostics = LightmapStreamingLiveDiagnostics {
+            block_count: 198,
+            resident_blocks: 41,
+            resident_lightmap_bytes: 1024 * 1024,
+            resident_shadowmask_bytes: 2 * 1024 * 1024,
+            drawn_outside_baked_set: 3,
+            drawn_not_resident: 5,
+            last_frame_drawn_not_resident: 1,
+            pool_layers: 7,
+            peak_pool_layers: 9,
+            pool_cap_layers: 15,
+            ..LightmapStreamingLiveDiagnostics::default()
+        };
+        let sections = lightmap_sections(&diagnostics);
+        let value = |title: &str, label: &str| {
+            sections
+                .iter()
+                .find(|section| section.title == title)
+                .and_then(|section| section.rows.iter().find(|(row, _)| *row == label))
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        assert_eq!(value("Residency", "Resident blocks"), "41 of 198");
+        assert_eq!(
+            value("Residency", "Resident bytes"),
+            "3.0 MiB (id 22 1.0 MiB, id 42 2.0 MiB)"
+        );
+        assert_eq!(
+            value("Residency", "Visible misses (outside set / not resident)"),
+            "3 / 5 (last frame 0 / 1)"
+        );
+        assert_eq!(value("Pool", "Layers (peak / cap)"), "7 (9 / 15)");
     }
 
     #[test]

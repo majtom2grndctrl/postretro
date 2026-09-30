@@ -642,7 +642,7 @@ fn write_vertex(buf: &mut Vec<u8>, vertex: &Vertex) {
     for component in vertex.lightmap_uv {
         buf.extend_from_slice(&component.to_le_bytes());
     }
-    buf.extend_from_slice(&vertex.lightmap_layer.to_le_bytes());
+    buf.extend_from_slice(&vertex.lightmap_block.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes());
 }
 
@@ -705,10 +705,10 @@ fn read_vertex(
             &format!("mover {mover_idx} vertex {vertex_idx} lightmap.v"),
         )?,
     ];
-    let lightmap_layer = read_u16(
+    let lightmap_block = read_u16(
         data,
         offset,
-        &format!("mover {mover_idx} vertex {vertex_idx} lightmap_layer"),
+        &format!("mover {mover_idx} vertex {vertex_idx} lightmap_block"),
     )?;
     let _padding = read_u16(
         data,
@@ -721,7 +721,7 @@ fn read_vertex(
         normal_oct,
         tangent_packed,
         lightmap_uv,
-        lightmap_layer,
+        lightmap_block,
         animated_block: 0,
     })
 }
@@ -825,7 +825,7 @@ fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> cr
                 vertex.uv
             ));
         }
-        if vertex.lightmap_uv != [0, 0] || vertex.lightmap_layer != 0 {
+        if vertex.lightmap_uv != [0, 0] || vertex.lightmap_block != 0 {
             return invalid_data(format!(
                 "kinematic geometry: mover {mover_idx} vertex {vertex_idx} carries lightmap data"
             ));
@@ -1605,7 +1605,7 @@ mod tests {
                         normal_oct: [0; 2],
                         tangent_packed: [0; 2],
                         lightmap_uv: [0; 2],
-                        lightmap_layer: 0,
+                        lightmap_block: 0,
                         animated_block: 0,
                     };
                     3

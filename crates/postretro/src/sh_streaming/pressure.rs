@@ -126,7 +126,7 @@ impl ShResidencyController {
             .filter_map(|(cluster_id, state)| {
                 (state.state == ClusterResidencyState::Sampleable
                     && !self.targets.contains(&(cluster_id as u32))
-                    && !self.topology.pinned_clusters.contains(&(cluster_id as u32))
+                    && !self.topology.hints.pinned.contains(&(cluster_id as u32))
                     && !matches!(
                         state.class,
                         Some(TargetClass::Visible | TargetClass::Pinned)

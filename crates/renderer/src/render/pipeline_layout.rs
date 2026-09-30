@@ -61,6 +61,14 @@ use super::*;
 // `strip_point_shadow_cube` still neutralizes the cube path in the composed
 // no-`CUBE_ARRAY_TEXTURES` source; the `// CUBE_SHADOW_BINDING` binding
 // declaration stays with the consumer in `forward.wgsl`.
+//
+// `lightmap_sample.wgsl` owns the vertex-stage block resolve
+// (`resolve_lightmap_block`) and the static, animated and shadowmask lightmap
+// samplers (`sample_lightmap_irradiance`, `sample_lightmap_direction`,
+// `sample_lightmap_animated`, `animated_block_uv`, `sample_shadowmask_atlas`).
+// It declares no bindings: it reads the group-4 lightmap textures, the two
+// lightmap samplers, `animated_block_table` and the group-6
+// `lightmap_block_table` declared in `forward.wgsl` by lexical name.
 pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -81,6 +89,8 @@ pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/shadow_sample.wgsl"),
     "\n",
     include_str!("../shaders/surface_depth.wgsl"),
+    "\n",
+    include_str!("../shaders/lightmap_sample.wgsl"),
     "\n",
 );
 
@@ -499,7 +509,9 @@ pub(crate) fn billboard_pipeline_vertex_sampled_texture_count() -> u32 {
 /// sources of truth from drifting (the bug this guards against). Asserted in
 /// `Renderer::new` and the
 /// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
-pub(crate) const FORWARD_BIND_GROUP_COUNT: usize = 6;
+pub(crate) const FORWARD_BIND_GROUP_COUNT: usize = 7;
+/// Forward group 6: the VERTEX-only lightmap block table.
+pub(crate) const LIGHTMAP_BLOCK_TABLE_GROUP: u32 = 6;
 pub(crate) const FORWARD_SAMPLED_TEXTURE_BUDGET: u32 = 16;
 
 pub(crate) fn forward_bind_group_layout_entries(
@@ -512,6 +524,7 @@ pub(crate) fn forward_bind_group_layout_entries(
         sh_volume::sh_bind_group_layout_entries().to_vec(),
         crate::lighting::lightmap::bind_group_layout_entries().to_vec(),
         SpotShadowPool::bind_group_layout_entries(cube_array_supported).to_vec(),
+        crate::lighting::lightmap::block_table_bind_group_layout_entries().to_vec(),
     ]
 }
 

@@ -4208,6 +4208,7 @@ dependencies = [
  "postcard",
  "postretro-level-format",
  "postretro-level-loader",
+ "postretro-render-cpu",
  "postretro-test-log-capture",
  "postretro-visibility",
  "proptest",
@@ -4350,6 +4351,7 @@ dependencies = [
  "postretro-model",
  "postretro-render-data",
  "postretro-visibility",
+ "proptest",
 ]
 
 [[package]]

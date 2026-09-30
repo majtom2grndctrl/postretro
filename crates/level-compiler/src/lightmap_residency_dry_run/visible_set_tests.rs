@@ -6,9 +6,11 @@ use postretro_level_loader::{
 use super::dry_run_test_fixtures::{METER, bc6h_formats, chart, input};
 use super::inputs::loader_rejects_portal;
 use super::mandatory::Granularity;
-use super::portal_distance::{HubCell, HubPortal, PortalGraphInput, recompute_pairs};
-use super::pvs_sampling::{SamplingStats, eye_points, sample_pvs};
 use super::{DryRunInput, run_dry_run};
+use crate::cell_residency_bake::portal_distance::{
+    HubCell, HubPortal, PortalGraphInput, recompute_pairs,
+};
+use crate::cell_residency_bake::pvs_sampling::{SamplingStats, eye_points, sample_pvs};
 
 /// A U-turn, 4 m tall: corridor 0 (x 0–10) opens at x = 10 into shaft 1
 /// (x 10–14, z 0–14), which opens back at x = 10 into corridor 2 (z 10–14).
@@ -164,7 +166,11 @@ fn eye_points_locate_into_their_own_cell_after_inset() {
 #[test]
 fn sampled_pvs_holds_its_own_cell_and_hides_the_u_turn() {
     let world = u_turn_world();
-    let pvs = sample_pvs(&world, &[0, 1, 2]);
+    let pvs = sample_pvs(
+        &world,
+        &[0, 1, 2],
+        &crate::bake_control::BakeControl::unrestricted(),
+    );
     assert_eq!(
         pvs.dense[0],
         vec![0, 1],

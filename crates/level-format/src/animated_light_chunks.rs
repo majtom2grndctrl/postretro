@@ -1,11 +1,11 @@
 // AnimatedLightChunks PRL section (ID 24): per-face spatial partition where
 // every chunk carries a bounded list of animated-light indices influencing it.
-// Prerequisite for the future per-light weight-map animated-lightmap pipeline.
+// Feeds the per-light animated weight maps (ID 25).
 // Uses the offset-table + flat-pool *pattern* from `ChunkLightListSection`
 // (ID 23); structurally distinct (leaf-range-indexed per-face records, not a
 // world-space uniform grid).
 //
-// See: context/plans/in-progress/animated-light-chunks/index.md
+// See: context/lib/build_pipeline.md §PRL section IDs, rendering_pipeline.md §4
 
 use crate::FormatError;
 

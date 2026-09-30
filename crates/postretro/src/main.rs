@@ -27,6 +27,9 @@ mod door_occluder_diagnostics;
 pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
 mod input;
+// App-side lightmap cell-block residency: demand from the baked set, block
+// reads through the shared issuer, and bounded renderer drain batches.
+mod lightmap_streaming;
 use postretro_physics::kinematic_mover;
 use postretro_sim::mover_commands;
 mod mod_digest;
@@ -78,6 +81,9 @@ mod session;
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
 mod sound_events;
+// Resource-neutral read issuer, drain budget, and id-49 hint decode shared by
+// every streamed resource.
+mod streaming;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;
@@ -1551,18 +1557,31 @@ fn follow_camera_to_local_pawn(
     registry: &postretro_entities::EntityRegistry,
     presentation_offset: Vec3,
 ) {
+    if let Some(eye) = local_pawn_eye_position(registry, presentation_offset) {
+        camera.position = eye;
+    }
+}
+
+/// The followed local pawn's eye: its registry position, plus the presentation
+/// offset, plus the capsule's eye height. The one place the eye offset is
+/// applied, so level install holds, and preloads lightmaps for, the same
+/// point the first tick moves the camera to.
+fn local_pawn_eye_position(
+    registry: &postretro_entities::EntityRegistry,
+    presentation_offset: Vec3,
+) -> Option<Vec3> {
     use postretro_entities::Transform;
 
-    if let Some(id) = followed_player_pawn(registry) {
-        if let (Ok(component), Ok(transform)) = (
-            registry.get_component::<postretro_foundation::PlayerMovementComponent>(id),
-            registry.get_component::<Transform>(id),
-        ) {
-            camera.position = transform.position
-                + presentation_offset
-                + Vec3::new(0.0, component.capsule.eye_height, 0.0);
-        }
-    }
+    let id = followed_player_pawn(registry)?;
+    let component = registry
+        .get_component::<postretro_foundation::PlayerMovementComponent>(id)
+        .ok()?;
+    let transform = registry.get_component::<Transform>(id).ok()?;
+    Some(
+        transform.position
+            + presentation_offset
+            + Vec3::new(0.0, component.capsule.eye_height, 0.0),
+    )
 }
 
 #[cfg(feature = "dev-tools")]
@@ -3888,15 +3907,23 @@ impl ApplicationHandler for App {
                     // inside `render_frame_indirect`, before scene recording.
                     // The warm set follows the same locator cell that seeded
                     // portal visibility this frame.
-                    let sh_drain_batch = match session.prepare_sh_streaming_drain(
+                    // One level-scope drain step for SH and lightmap blocks:
+                    // one read issuer, one shared install budget.
+                    // Lightmap residency CPU, folded under `render_prep` below.
+                    let streaming_cpu = postretro_stage_timing::StageFrame::<
+                        cpu_timing::StreamingStage,
+                    >::new(self.cpu_timer.gate());
+                    let sh_drain_batch = match session.prepare_streaming_drains(
                         sh_stream_manifest.as_ref(),
-                        self.level
-                            .as_ref()
-                            .and_then(|world| world.cell_visibility.as_ref()),
+                        self.level.as_ref(),
                         renderer,
-                        &visible_cells,
-                        self.level.as_ref().map(|_| stats.camera_cell as usize),
-                        self.script_time,
+                        crate::session::level_streaming::StreamingFrame {
+                            visible_cells: &visible_cells,
+                            camera_cell: self.level.as_ref().map(|_| stats.camera_cell as usize),
+                            path: stats.path,
+                            monotonic_seconds: self.script_time,
+                            cpu: &streaming_cpu,
+                        },
                     ) {
                         Ok(batch) => batch,
                         Err(err) => {
@@ -3905,6 +3932,21 @@ impl ApplicationHandler for App {
                             return;
                         }
                     };
+                    // The lightmap drain runs now, before the forward pass is
+                    // recorded, so this frame samples what it made resident.
+                    if let Err(err) =
+                        session.drain_lightmap_streaming(renderer, &streaming_cpu, self.script_time)
+                    {
+                        self.exit_result = Err(err);
+                        event_loop.exit();
+                        return;
+                    }
+                    self.cpu_timer.nested_mut().extend_from(
+                        &streaming_cpu,
+                        Some(postretro_stage_timing::StageSet::label(
+                            cpu_timing::FrameStage::RenderPrep,
+                        )),
+                    );
                     let particle_collections: Vec<(&str, &[u8])> =
                         session.particle_render.iter_collections().collect();
 
@@ -4169,6 +4211,14 @@ impl ApplicationHandler for App {
                                     .sh_streaming
                                     .as_ref()
                                     .map(|streaming| streaming.live_diagnostics());
+                                // The tab edits a copy of the levers; changes
+                                // are written back after the UI runs.
+                                let lightmap_streaming =
+                                    session.level_streaming.lightmap().map(|streaming| {
+                                        (*streaming.live_diagnostics(), streaming.slider_levers())
+                                    });
+                                let mut lightmap_levers =
+                                    lightmap_streaming.map(|(_, levers)| levers);
                                 let ctx_clone = debug_ui.ctx.clone();
                                 let full_output = ctx_clone.run_ui(raw_input, |ui| {
                                     let ctx = ui.ctx();
@@ -4195,9 +4245,25 @@ impl ApplicationHandler for App {
                                             &door_occluder_diagnostics.mover_rows,
                                             &door_occluder_diagnostics.blocked_portal_ids,
                                             sh_streaming_live,
+                                            lightmap_streaming
+                                                .as_ref()
+                                                .zip(lightmap_levers.as_mut())
+                                                .map(|((diagnostics, _), levers)| {
+                                                    render::debug_ui::LightmapStreamingTab {
+                                                        diagnostics,
+                                                        levers,
+                                                    }
+                                                }),
                                         );
                                     }
                                 });
+                                if let (Some((_, before)), Some(after)) =
+                                    (lightmap_streaming, lightmap_levers)
+                                    && before != after
+                                    && let Some(streaming) = session.level_streaming.lightmap_mut()
+                                {
+                                    streaming.set_slider_levers(after);
+                                }
                                 debug_ui
                                     .winit_state
                                     .handle_platform_output(window, full_output.platform_output);
@@ -5579,7 +5645,7 @@ impl App {
             .presentation_pool
             .recycle_draw_inputs(recycled_inputs);
         let visible_render = render_preparation::VisibleRenderPreparation::empty_world();
-        session.clear_sh_streaming();
+        session.clear_level_streaming();
         let sh_frame_result = match renderer.render_frame_indirect(
             &mut session.font_system,
             visible_render.camera_cull(),

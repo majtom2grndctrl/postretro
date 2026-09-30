@@ -6,7 +6,41 @@ Brief · resumable · **gated** · reads: `context/lib/rendering_pipeline.md` §
 `shadowmask-atlas-compress-at-rest` lands first. It changes bytes, never masks, and
 it ships the measurement this brief is gated on.
 
-## Re-anchor before building
+## Re-anchor to cell blocks (supersedes the section below)
+
+`spatial-residency--lightmap-cell-blocks` replaced the whole-layer atlas. Ids 22 and
+42 are now per-cell blocks, placed at runtime in a pool of fixed 2048² layers.
+Contract: `level-format` `shadowmask_atlas.rs` (`SMB6`) and `lightmap.rs`, and
+`rendering_pipeline.md` §4 once that brief lands.
+
+**The problem still stands.** Each block carries exactly two BC5 groups, so a texel
+still holds four mask slots. The gate is unchanged.
+
+**What is stale:**
+- **Capacity model and layout analysis.** Layer width `W`, layer count `L`, and
+  in-layer group tiling up to the 8192 dimension all describe the retired atlas.
+  - Group placement is now a pool question. The shadowmask pool is 4096 × 2048 per
+    layer, with group A at `x` and group B at `2048 + x`.
+  - Four groups would reach the 8192 limit exactly. Beyond that the options are a
+    second texture or extra pool space per block.
+- **Where the cost lands.** Every added group grows every streamed block pair and its
+  per-drain upload. Capacity now spends the residency budget (Low is 256 MiB for
+  lightmap-shaped data), not only file bytes.
+- **The inherited `W` = 8192 no-shadowmask band is gone.** No block exceeds a pool
+  layer, and the compiler no longer omits the shadowmask for width.
+- **Mechanics.** The fragment stage already clamps U and V to each block within each
+  group half, and resolves the block through the vertex-stage table. "Correct tile"
+  becomes "correct block", and the device-limit filter checks pool dimensions.
+
+**A new lever to evaluate, unverified.** Slot assignment is global today: one channel
+per selected light across the whole map. Per-block slot tables could relieve
+four-colour conflicts between lights that never share a texel. The price is a
+per-light slot remap in the fragment stage, which has no free binding. It would ride
+the existing per-block data.
+
+Rework this brief against the cell-block pool before reading the gate's measurement.
+
+## Re-anchor before building (pre-cell-block; stale)
 
 `shadowmask-atlas-compress-at-rest` (in `ready/`) places its two BC5 groups **side by
 side within each layer** — a `2W × H × L` texture, `W` the lightmap layer width — not

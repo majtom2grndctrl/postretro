@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-use super::block_allocator::{BlockPool, ShelfLayer, StaleFree};
 use super::block_pool_sim::{
     Eviction, SimInputs, run_walks, shelf_layers_from_scratch, simulate_fixed,
 };
@@ -8,12 +7,19 @@ use super::camera_walks::{
     STALL_TELEPORT_STEPS, WalkKind, camera_adjacency, component_count, walk_path,
 };
 use super::cell_block_residency::static_maxrects_layers;
-use super::cell_blocks::{BlockDims, CellBlocks, POOL_LAYER_EDGE, pack_cell_block};
+use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{bc6h_formats, chart, input};
 use super::mandatory::Granularity;
-use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use super::visible_set_tests::u_turn_input;
-use super::{ShadowmaskState, run_dry_run};
+use super::{ChartRect, ShadowmaskState, run_dry_run};
+use crate::cell_residency_bake::portal_distance::{HubCell, HubPortal, PortalGraphInput};
+use crate::lightmap_bake::{PackedBlock, pack_cell_block as pack_sizes};
+
+/// The bake's packer over recovered chart rects.
+fn pack_cell_block(charts: &[ChartRect], align: u32) -> Option<PackedBlock> {
+    let sizes: Vec<(u32, u32)> = charts.iter().map(|c| (c.width, c.height)).collect();
+    pack_sizes(&sizes, align)
+}
 
 #[test]
 fn cell_block_holds_every_chart_of_its_cell_without_overlap() {
@@ -79,90 +85,12 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
 }
 
 #[test]
-fn freeing_a_block_makes_its_space_reusable() {
-    let mut pool = BlockPool::new(POOL_LAYER_EDGE, Some(1));
-    let whole = pool
-        .allocate(2048, 2048)
-        .expect("empty layer holds a full block");
-    assert!(pool.allocate(4, 4).is_none(), "the one layer is full");
-    pool.free(whole).unwrap();
-    assert_eq!(pool.extent(), 0);
-    assert!(pool.allocate(2048, 2048).is_some());
-
-    // Two half-height shelves merge back into one full-height shelf.
-    let mut layer = ShelfLayer::new(2048, 2048);
-    let top = layer.allocate(2048, 1024, 0).unwrap();
-    let bottom = layer.allocate(2048, 1024, 1).unwrap();
-    assert!(layer.allocate(4, 4, 2).is_none());
-    layer.free(top.0, top.1, 2048, 1024, 0).unwrap();
-    layer.free(bottom.0, bottom.1, 2048, 1024, 1).unwrap();
-    assert!(layer.is_empty());
-    assert_eq!(layer.allocate(2048, 2048, 3), Some((0, 0)));
-
-    // Freed spans merge within a shelf whichever order they free in.
-    let mut layer = ShelfLayer::new(2048, 2048);
-    let spans: Vec<_> = (0..3)
-        .map(|owner| layer.allocate(680, 2048, owner).unwrap())
-        .collect();
-    assert!(layer.allocate(700, 4, 3).is_none());
-    for i in [1, 0, 2] {
-        layer
-            .free(spans[i].0, spans[i].1, 680, 2048, i as u64)
-            .unwrap();
-    }
-    assert_eq!(layer.allocate(2048, 2048, 4), Some((0, 0)));
-}
-
-#[test]
-fn stale_double_and_mis_sized_frees_are_refused_without_freeing_the_new_owner() {
-    let mut pool = BlockPool::new(POOL_LAYER_EDGE, Some(1));
-    let first = pool.allocate(1024, 1024).unwrap();
-    pool.free(first).unwrap();
-    assert_eq!(pool.free(first), Err(StaleFree), "double free");
-
-    // The new owner reuses the old origin; the stale slot must not free it.
-    let second = pool.allocate(1024, 1024).unwrap();
-    assert_eq!(
-        (second.layer, second.x, second.y),
-        (first.layer, first.x, first.y)
-    );
-    assert_eq!(pool.free(first), Err(StaleFree), "stale free");
-    let mis_sized = super::block_allocator::Slot {
-        width: 512,
-        ..second
-    };
-    assert_eq!(pool.free(mis_sized), Err(StaleFree), "wrong width");
-    assert_eq!(pool.extent(), 1, "the new owner's block is still resident");
-    pool.free(second).unwrap();
-    assert_eq!(pool.extent(), 0);
-
-    // An owner id outlives `clear`, so a pre-clear slot cannot free a new one.
-    let before = pool.allocate(64, 64).unwrap();
-    pool.clear();
-    let after = pool.allocate(64, 64).unwrap();
-    assert_eq!(pool.free(before), Err(StaleFree));
-    pool.free(after).unwrap();
-}
-
-#[test]
-fn zero_size_allocations_are_refused() {
-    let mut pool = BlockPool::new(POOL_LAYER_EDGE, None);
-    assert!(pool.allocate(0, 16).is_none());
-    assert!(pool.allocate(16, 0).is_none());
-    assert_eq!(pool.extent(), 0, "no layer opened for a refused request");
-    let mut layer = ShelfLayer::new(64, 64);
-    assert!(layer.allocate(0, 0, 0).is_none());
-    assert!(layer.is_empty());
-}
-
-#[test]
 fn cell_blocks_align_to_the_direction_scale_above_the_bc_block_edge() {
     // Direction at 1/8 of irradiance: a 4-aligned 36-texel edge would not map
     // to whole direction texels and `layer_bytes_at` would refuse it.
     let mut formats = bc6h_formats(2048, 1, true);
-    formats.dir_width = 2048 / 8;
-    formats.dir_height = 2048 / 8;
-    formats.dir_payload_bytes = 256 * 256 * 2;
+    formats.direction_texel_scale = 8;
+    formats.blocks[0].direction_bytes = 256 * 256 * 2;
     assert_eq!(formats.block_alignment(), 8);
     assert_eq!(bc6h_formats(2048, 1, true).block_alignment(), 4);
 

@@ -1,19 +1,20 @@
 use postretro_level_format::cluster_directory::{CLUSTER_HINT_FLAG_PINNED, ClusterHintRecord};
 
 use super::band_pool_sim::{BandPolicy, BandRun, BandSimInputs, simulate_band};
-use super::block_pool_sim::shelf_layers_from_scratch;
 use super::brief_set::{
-    BriefSetSources, Dilation, LeadMap, build_lead_map, check_against_direct,
-    check_every_breakpoint, direct_set, meters_fixed, pinned_cells, portal_neighbours,
-    visible_sources,
+    BriefSetSources, Dilation, build_lead_map, check_against_direct, check_every_breakpoint,
+    direct_set, pinned_cells, visible_sources,
 };
 use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{METER, bc6h_formats, chart, input, pair};
 use super::inputs::pinned_clusters;
-use super::mandatory::{Granularity, MandatoryContext, Neighbors};
-use super::portal_distance::{HubCell, HubPortal, PortalGraphInput};
+use super::mandatory::{Granularity, MandatoryContext};
 use super::run_dry_run;
 use super::visible_set_tests::u_turn_input;
+use crate::cell_residency_bake::lead_map::{LeadMap, meters_fixed, portal_neighbours};
+use crate::cell_residency_bake::portal_distance::{
+    HubCell, HubPortal, Neighbors, PortalGraphInput,
+};
 
 /// `n` unit cubes chained along X by portals `k ↔ k + 1`.
 fn chain_graph(n: u32) -> PortalGraphInput {
@@ -275,15 +276,10 @@ fn band_retention_keeps_a_block_exactly_in_the_band() {
     let blocks = CellBlocks::new(&fixture);
     let mandatory: Vec<Vec<u32>> = (0..2).map(|c| map.mandatory(c, fixed, &[])).collect();
     let band: Vec<Vec<u32>> = (0..2).map(|c| map.band(c, fixed, &[])).collect();
-    let shelf: Vec<u32> = mandatory
-        .iter()
-        .map(|set| shelf_layers_from_scratch(&blocks, set))
-        .collect();
     let inputs = BandSimInputs {
         blocks: &blocks,
         mandatory: &mandatory,
         band: &band,
-        mandatory_shelf_layers: &shelf,
     };
     // A, B, A: cell 2 leaves M(A) for B's band, then re-enters M(A).
     let path = [0, 1, 0];
@@ -334,15 +330,10 @@ fn band_walk(
     path: &[u32],
     cap: u32,
 ) -> BandRun {
-    let shelf: Vec<u32> = mandatory
-        .iter()
-        .map(|set| shelf_layers_from_scratch(blocks, set))
-        .collect();
     let inputs = BandSimInputs {
         blocks,
         mandatory,
         band,
-        mandatory_shelf_layers: &shelf,
     };
     simulate_band(&inputs, path, Some(cap), BandPolicy::BandRetain)
 }

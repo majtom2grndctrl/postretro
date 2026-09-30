@@ -209,7 +209,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Infrastructure
 
-- **Large-map spatial residency** — future epic seed for clustered-cell, portal-driven residency of baked resources (SH, geometry, lightmap layers, and related spatial data). Distinct from regional-BVH culling. Research and staged planning seed: `context/plans/large-map-spatial-residency.md`.
+- **Large-map spatial residency** — future epic seed for clustered-cell, portal-driven residency of baked resources (SH, geometry, lightmap layers, and related spatial data). Distinct from regional-BVH culling. Research and staged planning seed: `context/plans/large-map-spatial-residency.md`. SH residency (stages 1–4) and lightmap/shadowmask cell blocks (stage 5, `done/spatial-residency--lightmap-cell-blocks/`) have shipped.
 - **Sector Graph + Portal Culling** — replace the compiler-derived runtime cell/portal graph with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
 - **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.

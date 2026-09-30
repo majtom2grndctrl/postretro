@@ -4,11 +4,11 @@
 use std::fmt::Write as _;
 
 use super::mandatory::Granularity;
-use super::pvs_sampling::SampleDensity;
 use super::render::{LOW_TIER_BUDGET_BYTES, LOW_TIER_BUDGET_MIB, mib_f64, percentile_desc};
 use super::report::DryRunReport;
 use super::tiles::{TILE_SIZES, TileLayout, TileUnit};
 use super::visible_set::{GranularityResult, VisibleSetResult};
+use crate::cell_residency_bake::pvs_sampling::SampleDensity;
 
 /// The mandatory set a unit's residency follows. A cluster tile is resident
 /// when any member is mandatory, so cluster units read the same bytes from

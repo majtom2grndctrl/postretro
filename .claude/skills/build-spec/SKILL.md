@@ -13,6 +13,10 @@ argument-hint: "[plan-name]"
 
 Execute a spec from `context/plans/ready/`. Coordinate — don't produce. Dispatch agents, track progress.
 
+## Disk space
+
+After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
+
 ## Available plans
 
 !`ls context/plans/ready/ 2>/dev/null || echo "(none)"`

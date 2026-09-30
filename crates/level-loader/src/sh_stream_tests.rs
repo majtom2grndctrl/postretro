@@ -36,7 +36,7 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
-use postretro_level_format::geometry::GeometrySection;
+use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::octahedral::{MAX_SH_ATLAS_DIMENSION, irradiance_atlas_array_layout};
 use postretro_level_format::portals::PortalsSection;
@@ -406,7 +406,7 @@ fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
     let sections = vec![
         blob(
             SectionId::Geometry,
-            1,
+            GEOMETRY_CONTAINER_VERSION,
             GeometrySection {
                 vertices: Vec::new(),
                 indices: Vec::new(),

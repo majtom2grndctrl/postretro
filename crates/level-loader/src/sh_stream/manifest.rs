@@ -20,6 +20,7 @@ use super::metadata_sparse::{read_optional_direct_metadata, read_optional_sparse
 use super::positional_io::{read_vec_at, validate_positional_entry_bounds};
 use super::projection::{ShStreamBaseMetadata, ShStreamSourceMetadata, validate_projected_sources};
 use super::{PrlLoadError, stream_error};
+use crate::prl_file::{PrlFile, PrlReadCounters};
 
 /// One validated id-49 seam portal projected to the clusters at its two
 /// endpoints. The controller needs this alongside ordinary cluster adjacency:
@@ -42,7 +43,7 @@ struct ClusterPortalTopology {
 /// and never reopen the diagnostic path.
 #[derive(Debug)]
 pub struct ShStreamManifest {
-    file: Arc<File>,
+    file: Arc<PrlFile>,
     diagnostic_path: PathBuf,
     container: ContainerMeta,
     cluster_directory: ClusterDirectorySection,
@@ -86,6 +87,17 @@ impl ShStreamManifest {
         &self.container
     }
 
+    /// The level's per-section read counters, shared with the loader and
+    /// the lightmap manifest through the one retained file.
+    pub fn read_counters(&self) -> &Arc<PrlReadCounters> {
+        self.file.read_counters()
+    }
+
+    /// The retained handle, for a lightmap manifest to share.
+    pub(crate) fn retained_file(&self) -> &Arc<PrlFile> {
+        &self.file
+    }
+
     /// Canonical cluster-neighbor graph derived from the validated portal
     /// topology. It is installed exactly once during the successful level
     /// load, after directory semantic validation.
@@ -127,9 +139,13 @@ impl ShStreamManifest {
         &self,
         cluster_id: u32,
     ) -> Result<DecodedClusterShPayload, PrlLoadError> {
-        let bytes = self.read_encoded_cluster_with(cluster_id, |file, offset, len| {
-            read_vec_at(file, offset, len, "id-50 chunk")
-        })?;
+        let range = self.chunk_file_range(cluster_id)?;
+        let bytes = read_vec_at(
+            &self.file,
+            range.start,
+            range.end - range.start,
+            "id-50 chunk",
+        )?;
         self.decode_encoded_cluster(cluster_id, bytes)
     }
 
@@ -170,14 +186,15 @@ impl ShStreamManifest {
 
     /// Read one encoded chunk through an injectable positional reader. Tests
     /// can delay this seam without introducing a cursor or reopening the file;
-    /// production uses `read_vec_at` and platform `FileExt`.
+    /// production reads go through `read_vec_at`, which counts them. Bytes an
+    /// injected reader reads are not counted.
     pub fn read_encoded_cluster_with(
         &self,
         cluster_id: u32,
         reader: impl FnOnce(&File, u64, u64) -> Result<Vec<u8>, PrlLoadError>,
     ) -> Result<Vec<u8>, PrlLoadError> {
         let range = self.chunk_file_range(cluster_id)?;
-        reader(&self.file, range.start, range.end - range.start)
+        reader(self.file.file(), range.start, range.end - range.start)
     }
 
     /// Absolute file range of the id-50 chunk bodies: the section minus its
@@ -223,7 +240,7 @@ impl ShStreamManifest {
 /// codec-defined metadata ranges of streamed source sections. The caller
 /// continues loading non-streamed sections through the same retained file.
 pub(crate) fn load_manifest_positionally(
-    file: Arc<File>,
+    file: Arc<PrlFile>,
     diagnostic_path: PathBuf,
     container: ContainerMeta,
     cluster_directory: ClusterDirectorySection,

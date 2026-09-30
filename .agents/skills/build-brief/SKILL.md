@@ -10,9 +10,17 @@ argument-hint: "[brief-name]"
 
 # Build Brief
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. Integrating executor: GPT-6.1 Sol at medium; high for planning and xhigh for shared contracts. Bounded workers: Sol at medium. Prescribed mechanical edits: GPT-6 Luna at low or medium. Use GPT-6 Astra at high or xhigh for unresolved architecture or subtle lifecycle invariants.
+
 Build one promoted brief. Read its `compact` or `resumable` mode from the header. Both modes preserve the same Decisions and Acceptance contract. Mode changes coordination weight.
 
 The integrating executor owns `plan.md`, shared contracts, commits, and final verification. It may delegate bounded implementation slices. Every worker reads the whole brief and relevant context. Never dispatch a task paragraph alone.
+
+## Disk space
+
+After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
 
 ## Locate the brief
 

@@ -265,7 +265,7 @@ The raw run outputs lived in the measuring session's scratchpad and were not ret
 
 Pending. Walk the hallway and campaign-test at the default lead with the Streaming-tab pool-cap and lead sliders live. Check for pop-in, seams at block edges and animated-light correctness. While there, read the `[Startup]` line (`RUST_LOG=info`) for `streaming_preload` and `first_level_frame` in both `POSTRETRO_LIGHTMAP_STREAMING` modes, which this session could not reach.
 
-- **Windows (owner, 2026-09-29, GTX 1660 Super):** the hallway and campaign-test run in both modes. Animated lights behave as expected on campaign-test. The owner's read is positive: streaming gives the memory headroom for laptops, and the stress map runs well either way on this card. The `[Startup]` load line was read on Windows (see AC 27).
+- **Windows (owner, 2026-09-29, GTX 1660 Super):** the hallway runs in both modes, and campaign-test runs too. Animated lights behave as expected on campaign-test. The owner's read is positive: streaming gives the memory headroom for laptops, and the stress map runs well either way on this card. The `[Startup]` load line was read on Windows (see AC 27).
 - **Mac:** a quick visual pass is pending. The Mac has a performance problem that predates this branch, so Mac frame rate does not gate this brief (owner).
 
 ## Handoff: Windows GPU timing (AC 27)
@@ -300,5 +300,5 @@ This Mac lacks `TIMESTAMP_QUERY`, so the timing ran on the owner's Windows box. 
     - `texture_upload`: 143.5 ms against 156.1 ms (+12.6 ms, which includes the spawn preload).
 
     This is the windowed number AC 24 could not read on the Mac, and it agrees with the headless proxies.
-- **Not measured:** campaign-test timing (the owner ran it in both modes for visuals only and waived its timing), and repack drain GPU time. `[GpuTiming]` has no scope around the lightmap drain's copies.
+- **Not measured:** campaign-test timing (the owner ran it for visuals only and waived its timing), and repack drain GPU time. `[GpuTiming]` has no scope around the lightmap drain's copies.
 - **Owner impression:** positive. The memory headroom leaves the engine room to grow, and streaming gives the margin laptops need. One more Mac visual pass is planned. The Mac's separate performance drain predates this branch and will be pursued on its own.

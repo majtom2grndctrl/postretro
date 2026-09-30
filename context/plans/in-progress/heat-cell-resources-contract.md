@@ -82,16 +82,20 @@ Field names are camelCase on the author surface. Rust mirrors them in snake_case
 - `WeaponSounds` gains `overheat` (author key `overheat`), played at the firing pawn.
 - On a connected client, the owner's cue comes from the rising edge of the replicated `player.overheated` flag for the active slot, following the pattern in `sound_events/client_reload.rs`.
 
-**Engine state slots.** Every slot is `Readonly`, `persist: false` and `ReplicationScope::OwnerPrivatePlayer`, and describes the sampled active weapon.
+**Engine state slots.** Every slot is `Readonly` and `persist: false`, and describes the sampled active weapon. The five value slots are `ReplicationScope::OwnerPrivatePlayer`. `player.weaponResource` is `ReplicationScope::None` (amended after Track A).
 
 | Wire name | SDK path | Type | Default | Range | Wire shape |
 |---|---|---|---|---|---|
-| `player.weaponResource` | `player.weaponResource` | Enum `none` / `ammo` / `heat` / `cell` | `"none"` | — | Plain |
+| `player.weaponResource` | `player.weaponResource` | Enum `none` / `ammo` / `heat` / `cell` | `"none"` | — | not replicated; published locally on every role |
 | `player.heat` | `player.heat` | Number | None | `0..inf` | WieldableSlotOptionalNumber |
 | `player.overheatAt` | `player.overheatAt` | Number | None | `0..inf` | WieldableSlotOptionalNumber |
 | `player.overheated` | `player.overheated` | Boolean | `false` | — | WieldableSlotBoolean |
 | `player.cell` | `player.cell` | Number | None | `0..inf` | WieldableSlotOptionalNumber |
 | `player.cellCapacity` | `player.cellCapacity` | Number | None | `0..inf` | WieldableSlotOptionalNumber |
+
+**Kind slot amendment (after Track A).** A Plain owner-private slot falls back to the slot table's global value in `owner_private_source_value`. A remote client would therefore receive the host player's kind, not its own. `player.weaponResource` instead follows `player.weapon.current` and `player.spread`: every role publishes it locally, from its own active wieldable's `WeaponComponent`. Connected clients included. So a connected client's kind leads the host-correlated value slots by up to one round trip after a local switch, which is the same lag the weapon-name label already has.
+
+**Value slot sourcing.** Each connected owner receives its own pawn's heat, cell and overheat values. They are sourced per pawn in `owner_private_source_value`, as `AmmoSlotProjection` does for the magazine, and never from the slot table's global value. When the host's active weapon has no heat, `player.heat` and `player.overheatAt` travel as the `[slot]` absence; the cell slots do the same. `player.overheated` travels as `[slot, 0]`.
 
 Publish and absence rules mirror `player.ammo`:
 - A live active weapon of another kind **clears** that kind's number slots and writes `player.overheated = false`. The kind slot is written for every live active weapon, and `"none"` means a resourceless weapon.
@@ -107,7 +111,7 @@ Publish and absence rules mirror `player.ammo`:
 | Track | Model | Owns | Depends on |
 |---|---|---|---|
 | **A — authoritative core** | opus | `crates/foundation`, `crates/entities`, `crates/sim` (except `sim/src/weapon/client_pull.rs`), the local overheat sound in `crates/postretro/src/sound_events/descriptors.rs`, `sdk/types/*`, typedef fixtures | — |
-| **B — connected client** | sonnet | `crates/netcode` wire shapes and projection, `crates/sim/src/weapon/client_pull.rs`, the connected-client overheat cue in `crates/postretro/src/sound_events/` | A merged |
+| **B — connected client** | opus | `crates/netcode` wire shapes and projection, `crates/sim/src/weapon/client_pull.rs`, the connected-client overheat cue in `crates/postretro/src/sound_events/` | A merged |
 | **Orchestrator** | — | `content/dev/**`, `docs/**`, `context/**` | A (and B for docs) |
 
 Module layout: heat and cell land in new modules, not appended to large files:
@@ -146,6 +150,7 @@ Run every command from the worktree root. Each command must report a nonzero tes
 - `cargo test -p postretro-sim --lib client_pull` covers overheated → Silent, a cell below cost → DryFire, and a mismatched slot → Fire.
 - `cargo test -p postretro --bin postretro sound_events` covers the overheat rising edge; a held flag and a mixed-slot frame produce no cue.
 - `cargo check --workspace --all-targets` passes.
+- Two checks carried over from Track A: `cargo test -p postretro --bin postretro sound_events` covers the local `overheat` cue, and `cargo clippy -p postretro-foundation -p postretro-entities -p postretro-sim -p postretro-netcode --all-targets -- -D warnings` passes.
 
 **Orchestrator**
 - The plasma rifle descriptor loads (dev scripts build).

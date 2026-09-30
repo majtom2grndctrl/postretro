@@ -12,6 +12,10 @@ argument-hint: "[plan-name/task-name | task description]"
 
 # Implement Task
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. GPT-6.1 Sol at medium for bounded implementation; xhigh for GPU/layout/persistence contracts or producer/consumer seams. Prescribed mechanical edits can use GPT-6 Luna at low or medium. Use GPT-6 Astra at high or xhigh for unresolved architecture or subtle lifecycle invariants.
+
 Implement a single task. Read the spec, load context, understand dependencies, build the feature. Do not commit — the caller handles integration.
 
 ## Disk space

@@ -11,6 +11,10 @@ argument-hint: "[plan-name]"
 
 # Review Implementability
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. Reviewer: GPT-6.1 Sol at high. Use GPT-6 Astra at xhigh when task isolation hides subtle lifecycle or contract interactions.
+
 One reviewer, one lens: execution. This is not a general spec review. Run it
 only after the spec is structurally sound: no contradictions, no AC to task
 gaps, scope settled. Implementability findings are keyed to specific task
@@ -41,7 +45,7 @@ Read the full spec yourself before delegating.
 
 ### 2. Spawn One Reviewer
 
-Spawn one high-reasoning read-only reviewer. Inline the full spec content in
+Spawn one read-only reviewer with `model: "gpt-6.1-sol"` and `reasoning_effort: "high"`, escalating as described above. Inline the full spec content in
 the prompt; paths drift. Also pass:
 
 - Locked owner decisions, marked do-not-relitigate

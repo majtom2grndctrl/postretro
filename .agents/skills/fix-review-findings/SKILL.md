@@ -1,9 +1,9 @@
 ---
 name: fix-review-findings
 description: >
-  Acts on review panel findings by dispatching concurrent GPT-5.6 Terra workers
+  Acts on review panel findings by dispatching concurrent GPT-6 Luna workers
   with medium reasoning effort for small-blast-radius items (one per file), then
-  a GPT-5.6 Sol worker with high reasoning effort for remaining issues with
+  a GPT-6.1 Sol worker with high reasoning effort for remaining issues with
   knock-on effects. All agents read relevant context files.
   Use after /review-panel produces findings.
 allowed-tools: Read, Glob, Grep, Bash, Agent
@@ -11,6 +11,10 @@ argument-hint: ""
 ---
 
 # Fix Findings
+
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. Coordinator: GPT-6.1 Sol at medium. Worker defaults follow the triage below.
 
 Triage review panel findings and dispatch agents to fix them. Coordinate — don't produce.
 
@@ -32,13 +36,13 @@ After every numbered workflow step or task, check free space on the workspace fi
 
 Classify each finding from the review panel output:
 
-**Small blast radius** — GPT-5.6 Terra at medium reasoning effort, concurrent:
+**Small blast radius** — GPT-6 Luna at medium reasoning effort, concurrent:
 - Confined to a single file
 - No interface or contract changes
 - No knock-on effects in other packages
 - Examples: missing error handling, nit, stale comment, dead code
 
-**Everything else** — GPT-5.6 Sol at high reasoning effort, sequential:
+**Everything else** — GPT-6.1 Sol at high reasoning effort, sequential:
 - Crosses file or package boundaries
 - Interface, contract, or exported type changes
 - Knock-on effects likely
@@ -48,7 +52,7 @@ Group small findings by file. Each file gets one agent.
 
 ### 2. Medium-reasoning workers (parallel)
 
-Spawn one `worker` agent per file in a single message. Use `model: "gpt-5.6-terra"` with `reasoning_effort: "medium"`. Provide the agent brief above.
+Spawn one `worker` agent per file in a single message. Use `model: "gpt-6-luna"` with `reasoning_effort: "medium"`. Provide the agent brief above. Escalate to Sol if the repair exposes ambiguity or downstream consumers.
 
 ### 3. Wait and assess
 
@@ -56,11 +60,11 @@ Review outputs. Note unresolved findings.
 
 ### 4. High-reasoning workers (sequential)
 
-Spawn 1–2 `worker` agents, one at a time. Use `model: "gpt-5.6-sol"` with `reasoning_effort: "high"`. Provide the agent brief, plus an enumeration of likely knock-on targets. Edit-only, same as above. If Sol is unavailable, use `gpt-5.6-terra` at high; reserve `max` for unusually consequential or subtle repairs.
+Spawn 1–2 `worker` agents, one at a time. Use `model: "gpt-6.1-sol"` with `reasoning_effort: "high"`. Provide the agent brief, plus an enumeration of likely knock-on targets. Edit-only, same as above. Use `gpt-6-astra` at high or xhigh for unresolved architecture, subtle invariants, or a failed focused Sol retry. Apply shared availability fallbacks; reserve `max` for a named hard question.
 
 ### 5. Compile-and-test gate
 
-Once all edits land, spawn **one** test-runner `worker` (`model: "gpt-5.6-terra"`, `reasoning_effort: "low"`). On the warm cache it runs:
+Once all edits land, spawn **one** test-runner `worker` (`model: "gpt-6-luna"`, `reasoning_effort: "low"`). On the warm cache it runs:
 - `cargo check` for touched crates
 - focused tests for the touched crate/module — `cargo test -p <crate> <name_filter>` (`--lib` skips integration tests). WARN: never run a bare `cargo test -p postretro-level-compiler` — its integration suite triggers cold `prl-build` bakes (~1h).
 
@@ -68,7 +72,7 @@ It reports which crates fail to compile and which tests fail, mapped to the resp
 
 ### 6. Fix failures
 
-Dispatch a fix `worker` per failure — one per file for independent failures (`model: "gpt-5.6-terra"`, `reasoning_effort: "medium"`, concurrent, edit-only), sequential `model: "gpt-5.6-sol"` with `reasoning_effort: "high"` for cross-cutting ones. Re-run step 5 until clean, or until a failure needs a user decision. Fix workers don't run cargo either — same lock contention.
+Dispatch a fix `worker` per failure — one per file for independent failures (`model: "gpt-6-luna"`, `reasoning_effort: "medium"`, concurrent, edit-only), sequential `model: "gpt-6.1-sol"` with `reasoning_effort: "high"` for cross-cutting ones. Re-run step 5 until clean, or until a failure needs a user decision. Fix workers don't run cargo either — same lock contention.
 
 ### 7. Report
 

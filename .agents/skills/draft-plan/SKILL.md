@@ -8,6 +8,10 @@ description: >
 
 # Draft Plan
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. Drafter: GPT-6.1 Sol at high. Use GPT-6 Astra at high or xhigh for ambiguous architecture or conflicting evidence. Exploration workers: GPT-6 Luna at low for exact source lookup; Sol at high for architectural synthesis.
+
 Explore scope, write specs. Output lives in `context/plans/drafts/<feature-name>/index.md`.
 
 A drafting session may produce 0, 1, or N plans. Scope often shifts during planning — let it. Don't lock a feature name before scope settles.

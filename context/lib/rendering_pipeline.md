@@ -763,6 +763,9 @@ GPU intervals by pass. Record headless with `xcrun xctrace record --template 'Me
 System Trace' --launch -- <postretro binary> <map>.prl`, then read its tables with
 `xctrace export`. The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
+Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
+`$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once
+the export is parsed.
 
 **Machine-state confounders.** On a discrete GPU shared with other processes, Mac frame
 time can depend as much on machine state as on code. Other processes can hold much of the

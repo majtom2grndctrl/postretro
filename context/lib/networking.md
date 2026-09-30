@@ -627,8 +627,8 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
   activation does (`audio.md` §4).
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
   scoped to the declaring client only and never broadcast. Owner-private state slots
-  carry the firing pawn's cooldown, magazine, reserve, reload progress, and reload-active
-  state, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
+  carry the firing pawn's cooldown, magazine, reserve, reload progress, reload-active
+  state, and heat or cell values, each beside the host wieldable slot it describes, following the same per-owner projection pattern as `player.health`. The firing
   client reconciles predicted fire and hitmarker state against the verdict and cooldown;
   ammo and reload remain authoritative projections rather than predicted state.
 

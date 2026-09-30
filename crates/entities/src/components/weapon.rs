@@ -1,4 +1,4 @@
-// Weapon descriptor tuning plus live magazine, cooldown, reload, and input-edge state.
+// Weapon descriptor tuning plus live resource, cooldown, reload, and input-edge state.
 // See: context/lib/entity_model.md §4, §5
 
 use glam::Vec3;
@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Once;
 
 use crate::components::weapon_resource::{
-    EffectiveCellStats, EffectiveHeatStats, WeaponCell, WeaponHeat, WeaponResourceKind,
+    EffectiveCellStats, EffectiveHeatStats, WeaponCell, WeaponHeat, fresh_heat_cell,
 };
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
@@ -431,24 +431,6 @@ impl WeaponComponent {
         }
     }
 
-    /// The resource model this instance runs. Construction and hot reload keep
-    /// at most one present.
-    pub fn resource_kind(&self) -> WeaponResourceKind {
-        debug_assert!(
-            usize::from(self.ammo.is_some())
-                + usize::from(self.heat.is_some())
-                + usize::from(self.cell.is_some())
-                <= 1,
-            "weapon carries more than one resource"
-        );
-        match (&self.ammo, &self.heat, &self.cell) {
-            (Some(_), _, _) => WeaponResourceKind::Ammo,
-            (None, Some(_), _) => WeaponResourceKind::Heat,
-            (None, None, Some(_)) => WeaponResourceKind::Cell,
-            (None, None, None) => WeaponResourceKind::None,
-        }
-    }
-
     /// Advance sustained-fire bloom recovery by one simulation or prediction step.
     pub fn tick_bloom(&mut self, dt_ms: f32) {
         let dt_ms = dt_ms.max(0.0);
@@ -503,33 +485,12 @@ impl WeaponComponent {
         if let Some(credit_source) = desc.credit_source.as_ref() {
             self.credit_source = credit_source.clone();
         }
-        self.ammo = ammo_tuning(desc);
-        self.refresh_heat_cell(desc);
+        self.refresh_resource(desc);
         // Cooldown, input edges, magazine, state, timed-state fields, reload credit,
         // shell counter, and bloom state are live instance state. Hot reload changes authored tuning,
         // not the active state sample or whether this instance is mid-cooldown. An
         // absent `creditSource` also keeps the already-resolved spawn-time default so
         // canonical defaults do not regress to `weapon.unknown` on reload.
-    }
-
-    /// Same-kind reload retunes and keeps the live values; a kind change
-    /// rebuilds the resource fresh.
-    fn refresh_heat_cell(&mut self, desc: &WeaponDescriptor) {
-        match (
-            desc.resource.as_ref(),
-            self.heat.as_mut(),
-            self.cell.as_mut(),
-        ) {
-            (Some(WeaponResource::Heat(tuning)), Some(heat), _) => {
-                heat.retune(*tuning);
-                self.cell = None;
-            }
-            (Some(WeaponResource::Cell(tuning)), _, Some(cell)) => {
-                cell.retune(*tuning);
-                self.heat = None;
-            }
-            _ => (self.heat, self.cell) = fresh_heat_cell(desc),
-        }
     }
 
     pub fn reload_status(&self) -> (f32, bool) {
@@ -621,7 +582,7 @@ impl WeaponComponent {
     }
 }
 
-fn ammo_tuning(desc: &WeaponDescriptor) -> Option<WeaponAmmoTuning> {
+pub(super) fn ammo_tuning(desc: &WeaponDescriptor) -> Option<WeaponAmmoTuning> {
     match desc.resource.as_ref()? {
         WeaponResource::Ammo(ammo) => Some(WeaponAmmoTuning {
             ammo_type: ammo.ammo_type.clone(),
@@ -631,14 +592,6 @@ fn ammo_tuning(desc: &WeaponDescriptor) -> Option<WeaponAmmoTuning> {
             reload_style: ammo.reload_style,
         }),
         WeaponResource::Heat(_) | WeaponResource::Cell(_) => None,
-    }
-}
-
-fn fresh_heat_cell(desc: &WeaponDescriptor) -> (Option<WeaponHeat>, Option<WeaponCell>) {
-    match desc.resource.as_ref() {
-        Some(WeaponResource::Heat(tuning)) => (Some(WeaponHeat::fresh(*tuning)), None),
-        Some(WeaponResource::Cell(tuning)) => (None, Some(WeaponCell::fresh(*tuning))),
-        Some(WeaponResource::Ammo(_)) | None => (None, None),
     }
 }
 

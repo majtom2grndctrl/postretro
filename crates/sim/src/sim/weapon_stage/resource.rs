@@ -1,5 +1,5 @@
 // Heat and cell: the per-tick resource update, their fire-gate terms, and per-shot cost.
-// See: context/lib/entity_model.md §Components (Weapon state)
+// See: context/lib/entity_model.md §Components (Weapon resources)
 
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry};

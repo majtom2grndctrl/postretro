@@ -1,9 +1,12 @@
 // Heat and cell live state carried by a weapon instance, beside its authored tuning.
-// See: context/lib/entity_model.md §Components (Weapon vocabulary, Weapon state)
+// See: context/lib/entity_model.md §Components (Weapon resources)
 
 use serde::{Deserialize, Serialize};
 
-use crate::data_descriptors::{CellResource, HeatResource, OverheatBehavior};
+use crate::components::weapon::{WeaponComponent, ammo_tuning};
+use crate::data_descriptors::{
+    CellResource, HeatResource, OverheatBehavior, WeaponDescriptor, WeaponResource,
+};
 
 /// Which resource model a weapon instance runs. At most one is present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +106,57 @@ impl WeaponHeat {
     }
 }
 
+impl WeaponComponent {
+    /// The resource model this instance runs. Construction and hot reload keep
+    /// at most one present.
+    pub fn resource_kind(&self) -> WeaponResourceKind {
+        debug_assert!(
+            usize::from(self.ammo.is_some())
+                + usize::from(self.heat.is_some())
+                + usize::from(self.cell.is_some())
+                <= 1,
+            "weapon carries more than one resource"
+        );
+        match (&self.ammo, &self.heat, &self.cell) {
+            (Some(_), _, _) => WeaponResourceKind::Ammo,
+            (None, Some(_), _) => WeaponResourceKind::Heat,
+            (None, None, Some(_)) => WeaponResourceKind::Cell,
+            (None, None, None) => WeaponResourceKind::None,
+        }
+    }
+
+    /// Hot reload of the resource tuning. Same-kind heat or cell retunes and
+    /// keeps the live values; a kind change rebuilds heat and cell fresh. The
+    /// magazine is live state and is left alone.
+    pub(super) fn refresh_resource(&mut self, desc: &WeaponDescriptor) {
+        self.ammo = ammo_tuning(desc);
+        match (
+            desc.resource.as_ref(),
+            self.heat.as_mut(),
+            self.cell.as_mut(),
+        ) {
+            (Some(WeaponResource::Heat(tuning)), Some(heat), _) => {
+                heat.retune(*tuning);
+                self.cell = None;
+            }
+            (Some(WeaponResource::Cell(tuning)), _, Some(cell)) => {
+                cell.retune(*tuning);
+                self.heat = None;
+            }
+            _ => (self.heat, self.cell) = fresh_heat_cell(desc),
+        }
+    }
+}
+
+/// Spawn-state heat or cell for a descriptor; both `None` for any other kind.
+pub(super) fn fresh_heat_cell(desc: &WeaponDescriptor) -> (Option<WeaponHeat>, Option<WeaponCell>) {
+    match desc.resource.as_ref() {
+        Some(WeaponResource::Heat(tuning)) => (Some(WeaponHeat::fresh(*tuning)), None),
+        Some(WeaponResource::Cell(tuning)) => (None, Some(WeaponCell::fresh(*tuning))),
+        Some(WeaponResource::Ammo(_)) | None => (None, None),
+    }
+}
+
 impl WeaponCell {
     pub fn fresh(tuning: CellResource) -> Self {
         Self {
@@ -132,10 +186,7 @@ impl WeaponCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::weapon::WeaponComponent;
-    use crate::data_descriptors::{
-        AmmoResource, FireMode, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
-    };
+    use crate::data_descriptors::{AmmoResource, FireMode, ReloadStyle, ResolutionMode};
 
     fn descriptor(resource: Option<WeaponResource>) -> WeaponDescriptor {
         let mut descriptor: WeaponDescriptor = serde_json::from_value(serde_json::json!({

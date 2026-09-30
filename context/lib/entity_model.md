@@ -65,7 +65,7 @@ Type-specific data lives in the component. An entity is "a player" by virtue of 
 - **Overheat is a latch on the heat resource, not a weapon state.** Switching away lowers the weapon, which would overwrite a state variant; a latch survives the round trip. The shot that reaches the threshold still fires. The latch then refuses pulls silently until heat returns to zero, cooling without the usual delay.
 - **Their gates join the state-blind fire verdict beside the magazine check.** Overheated is a silent refusal. A cell that cannot pay for a shot dry-fires, exactly as an empty magazine does.
 
-Heat and cell have no reserve and ignore reload input. HUD state follows the health pattern of a raw value plus a companion max (`docs/scripting-reference.md` §The readonly weapon-resource slots). Design intent: `context/research/weapon-model.md` §3–§4.
+Heat and cell have no reserve and ignore reload input. HUD state follows the health pattern of a raw value plus a companion max (`scripting.md` §5), and a local slot names the active weapon's resource kind so a HUD can pick its readout.
 
 **Splash / area effects.** Splash is a `splash` block on `WeaponDescriptor`, beside the projectile block rather than nested in its travel tuning. Current use is projectile impacts; descriptors reject splash on hitscan weapons. A blast damages each visible live damageable volume in radius once through the damage chokepoint, using authored linear distance falloff and optional owner exclusion. Static world geometry occludes; movers and entities do not. Host-authoritative results reach clients through replicated Health, and remote explosion VFX use the Presentation channel with the predicted owner excluded. See [Networking](./networking.md) §Channel model and §Combat authority.
 

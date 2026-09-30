@@ -82,7 +82,7 @@ There are two authoring paths. When both name the same event, both play; neither
 
 | Kind | Descriptor field | Plays on |
 |------|------------------|----------|
-| Weapon | `sounds` { `fire`, `dryFire`, `impact`, `reloadStart`, `reloadShell`, `reloadComplete` } | Fire, dry fire, impact, reload start / shell loaded / completed |
+| Weapon | `sounds` { `fire`, `dryFire`, `impact`, `reloadStart`, `reloadShell`, `reloadComplete`, `overheat` } | Fire, dry fire, impact, reload start / shell loaded / completed, overheat |
 | Player movement | `movement.sounds` { `land`, `jump` } | Landing, jumping |
 | Enemy attack | the attack's `sound` | That attack's `enemyAttack` |
 | Behavior activity | the activity's `sound` | Entry, whether or not `onEnter` is authored |
@@ -93,7 +93,7 @@ Every field is optional; an unknown key inside `sounds` is rejected. An event wh
 - **Weapon sounds follow the weapon, whoever wields it.** An enemy attack that names a weapon plays that weapon's fire sound at the enemy, plus the attack's own `sound` when authored. A projectile records at spawn the weapon it was fired from and its activation, so its contact resolves sounds from the projectile, not from the shooter.
 - **An impact is one event per activation per tick**, carrying every contact of that tick. A multi-pellet hitscan shot yields one impact sound; projectile contacts sharing an activation on one tick yield one; a shot with no contact yields none. Splash is not a contact. Projectile and hitscan contacts both fire `impact` reactions, whoever fired them, enemy projectiles included. On the host, a remote client's shot yields one impact carrying every validated contact (`networking.md` §Combat authority).
 - **Anchors:**
-  - Fire, dry fire and reload anchor at the firing pawn.
+  - Fire, dry fire, overheat and reload anchor at the firing pawn.
   - Enemy attack and activity entry anchor at the enemy.
   - Movement events anchor at the local pawn.
   - An impact anchors at its contact set.
@@ -102,8 +102,9 @@ Every field is optional; an unknown key inside `sounds` is rejected. An event wh
   - An anchor's point is captured at fire time from the emitter's current pose, falling back to the origin stamped at the tick, so an emitter despawned the same tick still has a position.
 - **Unknown sound keys** are checked after the registry loads, at level install and at each committed hot reload. The check covers descriptor fields, mover keys, and `playSound` reactions. An unknown key warns once, and the level still loads. The play-time drop remains as a backstop.
 - **A connected client hears its own actions.**
-  - Fire, dry fire and impacts come from its fire prediction. Every pull the fire gate passes is predicted and declared as a fire; the replicated magazine and reload state choose only its presentation, and only while each value names the client's own active slot. An idle, empty magazine presents a dry fire (the dry-fire sound alone); a pull a running reload refuses presents nothing; otherwise the fire sound, muzzle FX and impact play. Predicted hitscan keeps world contacts and every contact's normal; predicted projectiles supply their own contacts, and a dry or silent pull shows none (`networking.md` §Combat authority).
+  - Fire, dry fire and impacts come from its fire prediction. Every pull the fire gate passes is predicted and declared as a fire; the replicated resource and reload state choose only its presentation, and only while each value names the client's own active slot. An idle, empty magazine or a cell that cannot pay the shot presents a dry fire (the dry-fire sound alone); a pull a running reload or an overheat refuses presents nothing; otherwise the fire sound, muzzle FX and impact play. Predicted hitscan keeps world contacts and every contact's normal; predicted projectiles supply their own contacts, and a dry or silent pull shows none (`networking.md` §Combat authority).
   - Reload edges derive from the replicated owner-private reload and ammo slots, attributed to the weapon the client holds in the host wieldable slot the reload flag names (every value read must name that slot; a frame mixing slots is held), plus that weapon's reload style and capacity, one round trip late. Start is the reload flag rising, unless the rise shows full progress — a replayed completion endpoint. A shell is ammo rising during a per-shell reload; shells that arrive in one snapshot sound once. Complete is the flag falling after the last sample held while reloading showed completion — magazine full, reserve empty, or a magazine reload at full progress — or a fall in which ammo rose by exactly what the reserve fell while the client wields that weapon. Any other fall — a cancel, a switch the host performs — plays nothing; a switch the host refuses keeps the reload tracked. Only a reload whose start the client saw on the projected weapon yields shells or a complete.
+  - The overheat cue is the replicated overheat latch rising on the weapon the client holds in the named slot, while that slot is its active one. A frame whose heat values name different slots is held, and a latch first seen already raised plays nothing.
   - Landing and jumping come from its predicted movement. Movement sounds never ride the tuning payload, so the client resolves them from its local descriptor.
   - Remote peers', enemies' and movers' sounds play nothing on a client: those events are host-only until peer audio lands.
 

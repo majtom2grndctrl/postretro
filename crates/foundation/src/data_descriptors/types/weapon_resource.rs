@@ -1,5 +1,5 @@
 // Heat and cell variants of the weapon `resource` union: authored tuning and validation.
-// See: context/lib/entity_model.md §Components (Weapon vocabulary)
+// See: context/lib/entity_model.md §Components (Weapon resources)
 
 use serde::{Deserialize, Serialize};
 
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn weapon_heat_resource_rejects_unknown_overheat_behavior_and_missing_fields() {
+    fn weapon_heat_and_cell_resources_reject_unknown_behavior_and_missing_fields() {
         let mut vent = heat();
         vent["overheatBehavior"] = serde_json::json!("vent");
         assert!(serde_json::from_value::<WeaponResource>(vent).is_err());

@@ -5,7 +5,9 @@ use std::collections::HashSet;
 
 use glam::Vec3;
 
-use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks};
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+
+use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks_within};
 use super::charts::{Chart, check_chart_extents, plan_charts};
 use super::{CompositedAtlas, LightmapBakeError};
 use crate::bake_control::BakeControl;
@@ -71,6 +73,30 @@ pub fn prepare_atlas_ordered(
     ordering: BlockOrdering<'_>,
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
+    prepare_atlas_within(
+        geom,
+        static_lights,
+        texel_density,
+        scale_regions,
+        ordering,
+        LIGHTMAP_POOL_LAYER_EDGE,
+        control,
+    )
+}
+
+/// [`prepare_atlas_ordered`] packing blocks against `pool_edge` rather than
+/// the runtime's, so tests can bake multi-block cells from small charts.
+/// Charts are still checked against the runtime pool edge; callers keep them
+/// within `pool_edge`.
+pub(crate) fn prepare_atlas_within(
+    geom: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+    ordering: BlockOrdering<'_>,
+    pool_edge: u32,
+    control: &BakeControl,
+) -> Result<PreparedAtlas, LightmapBakeError> {
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(PreparedAtlas {
             charts: Vec::new(),
@@ -92,7 +118,7 @@ pub fn prepare_atlas_ordered(
         // the direction scale, which the placeholder id-22 header carries.
         let charts = plan_charts(geom, texel_density, scale_regions)?;
         let pack = check_chart_extents(&charts, texel_density, scale_regions)
-            .and_then(|()| pack_cell_blocks(&charts, ordering, control));
+            .and_then(|()| pack_cell_blocks_within(&charts, ordering, pool_edge, control));
         return Ok(match pack {
             Ok(pack) => PreparedAtlas {
                 charts,
@@ -118,7 +144,7 @@ pub fn prepare_atlas_ordered(
 
     let charts = plan_charts(geom, texel_density, scale_regions)?;
     check_chart_extents(&charts, texel_density, scale_regions)?;
-    let pack = pack_cell_blocks(&charts, ordering, control)?;
+    let pack = pack_cell_blocks_within(&charts, ordering, pool_edge, control)?;
     if !pack.placements.is_empty() {
         assign_lightmap_uvs(geom, &charts, &pack.placements, &pack.layout);
     }

@@ -1,6 +1,7 @@
-// Per-cell lightmap block packing: one cell's padded charts in one aligned rectangle.
+// Per-cell lightmap block packing: one cell's padded charts in one or more aligned rectangles.
 // See: context/lib/build_pipeline.md §PRL section IDs (Lightmap id 22)
 
+#[cfg(test)]
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::atlas_pack::MaxRects;
@@ -28,9 +29,117 @@ impl PackedBlock {
         u64::from(self.width) * u64::from(self.height)
     }
 
-    pub(crate) fn fits_pool_layer(&self) -> bool {
-        self.width <= LIGHTMAP_POOL_LAYER_EDGE && self.height <= LIGHTMAP_POOL_LAYER_EDGE
+    pub(crate) fn fits(&self, edge: u32) -> bool {
+        self.width <= edge && self.height <= edge
     }
+}
+
+/// One block of a cell: the cell-local indices of the charts it holds,
+/// ascending, and their packing (`block.placements` parallel to `members`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CellSubBlock {
+    pub members: Vec<usize>,
+    pub block: PackedBlock,
+}
+
+/// Pack one cell's padded chart extents into as many `align`-multiple blocks
+/// as it needs, each within `pool_edge`. A cell that fits one pool layer packs
+/// exactly as [`pack_cell_block`]. An oversized cell fills a pool-edge block
+/// largest chart first, trims it to its packed content, and repeats on the
+/// charts that did not fit until the rest pack into one block the same way a
+/// fitting cell does. A chart reaches a later block only after failing every
+/// earlier one; free space only shrinks, so it fits no earlier block at the
+/// end either. Empty for a cell without charts.
+///
+/// Every chart must fit `pool_edge` on both axes (the caller's
+/// `check_chart_extents`).
+pub(crate) fn pack_cell_blocks_within(
+    charts: &[(u32, u32)],
+    align: u32,
+    pool_edge: u32,
+) -> Vec<CellSubBlock> {
+    let area_of = |&(w, h): &(u32, u32)| u64::from(w) * u64::from(h);
+    let pool_area = u64::from(pool_edge) * u64::from(pool_edge);
+    let mut remaining: Vec<usize> = (0..charts.len()).collect();
+    let mut blocks = Vec::new();
+    while !remaining.is_empty() {
+        // Charts covering more than a layer's area cannot pack into one, so
+        // skip the tight candidate search for them.
+        let area: u64 = remaining.iter().map(|&i| area_of(&charts[i])).sum();
+        if area <= pool_area {
+            let sizes: Vec<(u32, u32)> = remaining.iter().map(|&i| charts[i]).collect();
+            let tight = pack_cell_block_within(&sizes, align, pool_edge)
+                .expect("a non-empty chart set packs a block");
+            if tight.fits(pool_edge) {
+                blocks.push(CellSubBlock {
+                    members: remaining,
+                    block: tight,
+                });
+                break;
+            }
+        }
+        let (filled, rest) = fill_pool_layer_block(charts, &remaining, align, pool_edge);
+        blocks.push(filled);
+        remaining = rest;
+    }
+    blocks
+}
+
+/// Fill one `pool_edge²` block from `remaining` (largest first, ties by
+/// index), trimmed to the aligned bounding box of what it placed; return it
+/// and the charts it could not place, ascending.
+fn fill_pool_layer_block(
+    charts: &[(u32, u32)],
+    remaining: &[usize],
+    align: u32,
+    pool_edge: u32,
+) -> (CellSubBlock, Vec<usize>) {
+    let align_up = |value: u32| value.div_ceil(align) * align;
+    let area_of = |i: usize| u64::from(charts[i].0) * u64::from(charts[i].1);
+    let mut order = remaining.to_vec();
+    order.sort_by(|&a, &b| area_of(b).cmp(&area_of(a)).then(a.cmp(&b)));
+
+    let mut bin = MaxRects::new(pool_edge, pool_edge);
+    let mut placed: Vec<(usize, (u32, u32))> = Vec::new();
+    let mut rest = Vec::new();
+    for index in order {
+        let (w, h) = charts[index];
+        match bin.insert(w, h) {
+            Some(origin) => placed.push((index, origin)),
+            None => rest.push(index),
+        }
+    }
+    assert!(
+        !placed.is_empty(),
+        "every chart fits a pool layer, so an empty block places the largest"
+    );
+    placed.sort_unstable_by_key(|&(index, _)| index);
+    rest.sort_unstable();
+    let width = align_up(
+        placed
+            .iter()
+            .map(|&(i, (x, _))| x + charts[i].0)
+            .max()
+            .unwrap_or(0),
+    );
+    let height = align_up(
+        placed
+            .iter()
+            .map(|&(i, (_, y))| y + charts[i].1)
+            .max()
+            .unwrap_or(0),
+    );
+    (
+        CellSubBlock {
+            members: placed.iter().map(|&(index, _)| index).collect(),
+            block: PackedBlock {
+                width,
+                height,
+                placements: placed.iter().map(|&(_, origin)| origin).collect(),
+            },
+        },
+        rest,
+    )
 }
 
 /// Pack one cell's padded chart extents `(width, height)` into the
@@ -41,13 +150,24 @@ impl PackedBlock {
 ///
 /// Placements are multiples of `align` only at the block origin; charts sit
 /// anywhere inside. The caller rejects a block larger than a pool layer.
+#[cfg(test)]
 pub(crate) fn pack_cell_block(charts: &[(u32, u32)], align: u32) -> Option<PackedBlock> {
+    pack_cell_block_within(charts, align, LIGHTMAP_POOL_LAYER_EDGE)
+}
+
+/// [`pack_cell_block`] against a `pool_edge` other than the runtime's, so
+/// tests can drive multi-block cells with small charts.
+pub(crate) fn pack_cell_block_within(
+    charts: &[(u32, u32)],
+    align: u32,
+    pool_edge: u32,
+) -> Option<PackedBlock> {
     if charts.is_empty() {
         return None;
     }
     assert!(
-        align > 0 && LIGHTMAP_POOL_LAYER_EDGE % align == 0,
-        "block alignment {align} does not divide the pool layer edge"
+        align > 0 && pool_edge % align == 0,
+        "block alignment {align} does not divide the pool layer edge {pool_edge}"
     );
     let area_of = |&(w, h): &(u32, u32)| u64::from(w) * u64::from(h);
     let align_up = |value: u32| value.div_ceil(align) * align;
@@ -67,8 +187,8 @@ pub(crate) fn pack_cell_block(charts: &[(u32, u32)], align: u32) -> Option<Packe
         .map(|&f| align_up(((side * f).ceil() as u32).max(max_width)))
         .collect();
     widths.push(align_up(max_width));
-    if align_up(max_width) <= LIGHTMAP_POOL_LAYER_EDGE {
-        widths.push(LIGHTMAP_POOL_LAYER_EDGE);
+    if align_up(max_width) <= pool_edge {
+        widths.push(pool_edge);
     }
     widths.sort_unstable();
     widths.dedup();
@@ -79,7 +199,7 @@ pub(crate) fn pack_cell_block(charts: &[(u32, u32)], align: u32) -> Option<Packe
         let block = shortest_block(charts, &order, width, floor, align);
         // A block that fits a pool layer beats any that does not; then the
         // smaller area, then the squarer shape.
-        let key = |b: &PackedBlock| (!b.fits_pool_layer(), b.area(), b.width.max(b.height));
+        let key = |b: &PackedBlock| (!b.fits(pool_edge), b.area(), b.width.max(b.height));
         if best.as_ref().is_none_or(|b| key(&block) < key(b)) {
             best = Some(block);
         }

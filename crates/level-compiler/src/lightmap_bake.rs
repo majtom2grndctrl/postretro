@@ -21,6 +21,8 @@ mod charts;
 mod encode;
 mod reference;
 
+#[cfg(test)]
+pub(crate) use atlas_layout::prepare_atlas_within;
 use atlas_layout::scatter_chart_into_atlas;
 pub use atlas_layout::{PreparedAtlas, prepare_atlas, prepare_atlas_ordered};
 #[cfg(test)]

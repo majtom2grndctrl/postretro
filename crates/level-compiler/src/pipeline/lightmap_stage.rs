@@ -993,4 +993,111 @@ mod tests {
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// `count` 12 m quads in one cell. At the fixture's 0.25 m/texel each
+    /// charts at 52², so under a 64-texel test pool edge the cell takes one
+    /// block per quad.
+    fn quads_in_one_cell(count: usize) -> GeometryResult {
+        let mut geometry = quad_geometry();
+        geometry.geometry.vertices.clear();
+        geometry.geometry.indices.clear();
+        geometry.geometry.faces.clear();
+        geometry.face_index_ranges.clear();
+        for quad in 0..count {
+            let mut next = quad_geometry();
+            for vertex in &mut next.geometry.vertices {
+                vertex.position[0] = vertex.position[0] * 12.0 + 14.0 * quad as f32;
+                vertex.position[2] *= 12.0;
+            }
+            let vertex_offset = geometry.geometry.vertices.len() as u32;
+            let index_offset = geometry.geometry.indices.len() as u32;
+            geometry.geometry.vertices.extend(next.geometry.vertices);
+            geometry.geometry.indices.extend(
+                next.geometry
+                    .indices
+                    .into_iter()
+                    .map(|index| index + vertex_offset),
+            );
+            geometry.geometry.faces.extend(next.geometry.faces);
+            geometry
+                .face_index_ranges
+                .extend(next.face_index_ranges.into_iter().map(|mut range| {
+                    range.index_offset += index_offset;
+                    range
+                }));
+        }
+        geometry
+    }
+
+    /// (lightmap bytes, shadowmask bytes, block count) of a fused cold bake of
+    /// one multi-block cell on `workers` threads.
+    fn multi_block_fused_outputs(workers: usize, uncompressed: bool) -> (Vec<u8>, Vec<u8>, usize) {
+        let args = test_args();
+        let config = config(uncompressed);
+        let mut light = point_light(DVec3::new(20.0, 6.0, 6.0), [1.0, 0.5, 0.2]);
+        light.falloff_range = 40.0;
+        let lights = vec![light];
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let mut geometry = quads_in_one_cell(3);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(workers, false)), &progress);
+        ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .expect("build fused fixture pool")
+            .install(|| {
+                let prepared = lightmap_bake::prepare_atlas_within(
+                    &mut geometry,
+                    &static_lights,
+                    config.lightmap_density,
+                    &[],
+                    lightmap_bake::BlockOrdering::by_cell_id(config.direction_texel_scale),
+                    64,
+                    &control,
+                )
+                .expect("multi-block fixture must prepare");
+                let blocks = prepared.layout.blocks.len();
+                let output = bake_fused_prepared(
+                    &args,
+                    None,
+                    &control,
+                    &BakeControl::unrestricted(),
+                    &mut geometry,
+                    &static_lights,
+                    &alpha_lights,
+                    Some(&selection),
+                    &bvh,
+                    &primitives,
+                    &config,
+                    prepared,
+                )
+                .expect("multi-block fused bake must succeed");
+                (
+                    output.lightmap.section.to_bytes(),
+                    output
+                        .shadowmask
+                        .expect("selected light must emit a shadowmask")
+                        .to_bytes(),
+                    blocks,
+                )
+            })
+    }
+
+    #[test]
+    fn multi_block_cell_section_bytes_are_identical_with_one_worker_and_many() {
+        for uncompressed in [false, true] {
+            let one = multi_block_fused_outputs(1, uncompressed);
+            let many = multi_block_fused_outputs(4, uncompressed);
+            assert_eq!(one.2, 3, "the fixture cell splits into three blocks");
+            let section = postretro_level_format::lightmap::LightmapSection::from_bytes(&one.0)
+                .expect("multi-block lightmap decodes");
+            assert!(section.blocks.iter().all(|block| block.cell_id == 0));
+            assert_eq!(one, many, "uncompressed = {uncompressed}");
+        }
+    }
 }

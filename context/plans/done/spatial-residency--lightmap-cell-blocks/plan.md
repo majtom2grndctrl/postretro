@@ -1,7 +1,7 @@
 # spatial-residency--lightmap-cell-blocks — plan of record
 
 mode: resumable
-status: approved
+status: landed (owner, 2026-09-29)
 read at: 6526dc627
 
 Owner approved 2026-09-28: AC 1 and AC 7 restated as proposed below (applied to `index.md`), the id-22 header confirmed (mode in header, Rg8 direction fixed, densities dropped; applied to `index.md` Wire format), and the plan approved.

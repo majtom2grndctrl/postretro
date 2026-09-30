@@ -100,3 +100,4 @@ The doc comment at the top of `crates/level-format/src/bvh.rs` names four downst
 ## Open questions
 
 - The shipped `--bvh-cluster-max-extent` default is unknown until Task 7 sweeps it. This is a genuine measurement, not a design gap: the split rule and its escape hatch are decided, only the constant is open, and Task 7 states the condition under which the plan stops instead of shipping one.
+- The compiler's bake rays share this BVH. `bvh_build::build_bvh` returns the live `Bvh` that the SH, lightmap, chunk-light-list, and billboard-scatter bakes traverse, built from the same `collect_primitives` output Task 3 clusters. Clustering therefore raises triangle tests per bake ray and may change float tie-breaks, and so bake bytes. This plan must either weigh bake cost or keep a fine-grained BVH for the bakes; coordinate with `bake-parallelism-large-maps` lever 5, whose traversal baseline is the per-face leaf set.

@@ -4,7 +4,7 @@ description: >
   Multi-agent review of a draft spec in `context/plans/drafts/`. Spawns
   two parallel reviewers — a broad reviewer and a codebase-anchor
   reviewer that fact-checks every named identifier against source.
-  Auto-applies mechanical fixes via a GPT 5.5 worker with medium reasoning
+  Auto-applies mechanical fixes via a GPT-6 Luna worker with medium reasoning
   effort unless --no-auto-apply is set. Recommends apply /
   re-review / promote.
   Use after a draft session, or when a human wants to validate before
@@ -12,6 +12,10 @@ description: >
 ---
 
 # Review Draft Spec
+
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. Reviewers: GPT-6.1 Sol at high. Mechanical fix worker: GPT-6 Luna at medium. Escalate unresolved architecture or conflicting evidence to GPT-6 Astra at high or xhigh.
 
 Two reviewers in parallel. One broad, one anchored to source. Aggregate findings, auto-apply mechanical fixes, recommend whether to apply more, re-review, or promote.
 
@@ -33,9 +37,9 @@ Read the full spec yourself before delegating. Decisions about which reviewers t
 
 ### 3. Run reviewers in parallel
 
-One message, two `Agent` tool calls. No sequential rounds.
+One message, two `Agent` tool calls. Both reviewers use `model: "gpt-6.1-sol"` and `reasoning_effort: "high"`. No sequential rounds.
 
-#### Broad reviewer (GPT 5.5 high reasoning effort)
+#### Broad reviewer (GPT-6.1 Sol high reasoning effort)
 
 Receives:
 - Full spec content inline
@@ -51,7 +55,7 @@ Receives:
 
 Output: list of `{ location, problem, fix }` triples. "No issues found" if clean. No padding, no praise.
 
-#### Codebase-anchor reviewer (GPT 5.5 high reasoning effort)
+#### Codebase-anchor reviewer (GPT-6.1 Sol high reasoning effort)
 
 Receives:
 - Full spec content inline
@@ -75,7 +79,7 @@ Then split into two buckets:
 
 | Bucket | Examples | Default action |
 |---|---|---|
-| Mechanical | Casing fix, missing AC bullet, wire-format pin, deletion of stale phrase | Auto-apply via `model: "gpt-5.5"` with `reasoning_effort: "medium"` (unless `--no-auto-apply`) |
+| Mechanical | Casing fix, missing AC bullet, wire-format pin, deletion of stale phrase | Auto-apply via `model: "gpt-6-luna"` with `reasoning_effort: "medium"` (unless `--no-auto-apply`) |
 | Architectural | Reshape a contract, decide between two paths, change scope | Surface to caller; do not auto-apply |
 
 Triage is a 30-second judgment, not a heuristic. Make the call inline. Don't delegate it to a sub-agent.
@@ -84,7 +88,7 @@ Triage is a 30-second judgment, not a heuristic. Make the call inline. Don't del
 
 If any mechanical findings exist and `--no-auto-apply` is not set:
 
-Spawn one `worker` agent with `model: "gpt-5.5"` and `reasoning_effort: "medium"`, passing a numbered list of `{ location, problem, fix }` items. One Edit per item. Match the existing prose voice — terse, direct, no rewrites of surrounding paragraphs.
+Spawn one `worker` agent with `model: "gpt-6-luna"` and `reasoning_effort: "medium"`, passing a numbered list of `{ location, problem, fix }` items. One Edit per item. Match the existing prose voice — terse, direct, no rewrites of surrounding paragraphs.
 
 After the agent reports back, re-read the spec to confirm edits landed.
 

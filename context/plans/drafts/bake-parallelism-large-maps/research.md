@@ -1,16 +1,19 @@
 # bake-parallelism-large-maps — research
 
-Derivation and numbers behind the brief. Every path below is relative to `crates/level-compiler/src/`, and every line number was read at 4ae37c4af.
+Derivation and numbers behind the brief. Every path below is relative to `crates/level-compiler/src/`. Source was read at 329fbe07b (`feat/lightmap-cell-blocks`). Line numbers were recorded at 4ae37c4af; spot-checks at 329fbe07b land within a few lines. Later additions cite symbols only.
 
 ## Measurement conditions
 
 | Item | Value |
 |---|---|
 | Map | `content/dev/maps/stress-warren-hallway-inspection.map` |
+| Other host | The owner's 6-core PC routinely bakes the hallway in about 9 h, against about 6 h on the machine below. It is not the yardstick. With fewer permits its stages saturate sooner, so it is the less favorable host for lever 3; the gate measures on the pinned machine. |
 | Machine | Intel i9-9980HK: 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD |
-| Cache mode | Warm (cache enabled), with every entry missing in the first build. The default 2 GiB `--cache-max-size` is smaller than the hallway's live set, so the start-of-build prune evicts it. Base SH therefore runs the approximate grouped path. |
-| Permits | Default `-j`, which is `logical − 2` = 14 (`cli.rs:39-45`). Rayon uses its default global pool of 16 threads, and nothing configures it. |
-| Binary | The live rebake ran `target/debug/prl-build`. `[profile.dev]` gives workspace crates `opt-level = 1` (`Cargo.toml`). The first build's profile was not recorded. Pin this before any before/after comparison. |
+| Cache mode | Warm (cache enabled), with every entry missing in the first build. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares the previous build's entries. |
+| Peak memory | The process's maximum resident set size over the whole build, as the OS reports it (`/usr/bin/time -l` on macOS), on a warm all-miss build. See §Peak memory. |
+| Permits | Default `-j` from `default_jobs_for` (`cli.rs`): logical cores − 1 for 2 to 8 logical cores, logical cores − 2 above 8. This machine: 16 → 14. The global rayon pool is unconfigured, so it has one thread per logical core (16); the governor, not the pool, bounds concurrency. |
+| Binary | A cargo `--release` build of `prl-build`, run warm. Cargo's release profile (`opt-level = 3`, thin LTO) is not `prl-build --release`, which is the cold, uncached ship bake. The numbers on this page predate that pin: the live rebake ran `target/debug/prl-build`, and the first build's profile was not recorded. `[profile.dev]` gives workspace crates `opt-level = 1` and dependencies, `bvh` included, `opt-level = 2`. Re-take the before numbers on the pinned binary. |
+| Baseline | Main after `spatial-residency--lightmap-cell-blocks` lands. Byte-identity baselines and before numbers both come from there. |
 
 ## Where the 5 h 54 m goes
 
@@ -71,7 +74,7 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 |---|---|---|---|
 | SH Bake, warm | One 4³ group per item; its 64 probes run serially. 256 rays per probe; each hit scans the lights; soft visibility uses 4–32 shadow rays. | Placement and compaction. The permit is held across the cache get/put, so fsync time consumes permits. Every group writes an entry, even an all-invalid one. `probe_grid_layout` BSP queries run serially over the full grid. | `sh_group.rs:709-728`, `:373-394`, `:514`, `:535`; `sh_bake.rs:168-181`, `:1158`, `:1293` |
 | SH Bake, cold | One probe per item | Probe-grid layout; atlas pack | `sh_bake.rs:258-279` |
-| Ray kernel (all bakes) | — | `bvh.traverse_iterator` is unordered and tests the infinite ray. It only filters `max_distance` after the triangle test. The BVH has one leaf per (face, bucket). `nearest_traverse_iterator` exists and is unused. | `sh_bake.rs:649`, `:732`; `lightmap_bake.rs:1169`; `billboard_direct_scatter_bake.rs:603`; `chunk_light_list_bake.rs:1027` |
+| Ray kernel (all bakes) | — | `bvh.traverse_iterator` is unordered and tests the infinite ray. It only filters `max_distance` after the triangle test. The BVH has one primitive, so one leaf, per face (`bvh_build::collect_primitives`). See §Ray traversal. | `sh_bake.rs:649`, `:732`; `lightmap_bake.rs:1169`; `billboard_direct_scatter_bake.rs:603`; `chunk_light_list_bake.rs:1027` |
 | Delta SH / Direct SH Delta / Animated Direct | One (affinity cell, light) sub-block per item, about 13.8 KB | The permit covers only the bake; get and put run outside it on all 16 threads. The affinity decomposition is recomputed even though the plan already ran it. Validity masks are built serially. `world_aabb_for_directional` scans every vertex for every entry, including point lights, inside the permit. | `delta_sh_cache.rs:164-219`; `delta_sh_bake.rs:299`, `:370-390`, `:503-521`; `direct_sh_bake.rs:411`, `:539-576`; `pipeline.rs:211`, `:247`, `:301` |
 | Lightmap Bake + ShadowmaskAtlas | One (light, chart) per item, one level deep; texels within a chart run serially | The outer `for layer { for light }` loop is serial, and each iteration ends in a `.collect()` barrier. After it come, serially: sort; `to_bytes`; `put` with fsync; `fold_partition`; `shadowmask.consume_partition`. Per layer: accumulator init, 2× `dilate`, and serial BC6H and direction encode. Up front: serial `layer_input_hash` over layers × lights, each rescanning all vertices, primitives and charts, even in `--release`. There is no per-light chart cull, so most items are empty walks that still take a governor lock. | `pipeline/lightmap_stage.rs:119-133`, `:192-231`, `:349-360`; `lightmap_layer.rs:432-449`, `:485-491`; `bc6h.rs:86-108`; `shadowmask_bake/fill.rs:146-160` |
 | AnimWeightMaps | One animated chunk per item; texels × lights run serially inside | A chunk only splits above 4 lights, so chunks are uneven and have a long tail. `assert_no_overlapping_rects_per_layer` is O(n²) and runs in release. A single whole-stage cache entry. | `animated_light_weight_maps.rs:358-369`; `animated_light_weight_maps/static_atlas_frame.rs:184-233`; `pipeline/animated_atlas_stage.rs:51-103` |
@@ -81,17 +84,54 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 ## Stage dependencies
 
 - **No cross-stage concurrency exists.** There is no `thread::scope`, `rayon::join` or `rayon::scope` in the pipeline (`pipeline/stage_registry.rs:113-141`).
-- **The five SH stages are independent.** SH, Delta SH, Direct SH, Animated Direct and Direct SH Delta read none of each other's outputs. After the bakes, a Direct SH Delta result that cannot be used clears the entity-shadow selection (`pipeline.rs:1291-1321`).
-- **Atlas preparation** needs no SH output. It follows SH only because the SH stages borrow `geo_result` and atlas preparation takes it `&mut` (`pipeline.rs:1692-1710`).
-  - `build_pipeline.md` §Atlas preparation and SH ordering calls the pre-atlas ordering load-bearing. That holds for the fused lightmap/shadowmask walk, which needs the final selection. It does not hold for atlas prep, billboard or ChunkLightList, which are only serialized.
+- **The five SH stages share one join point.** SH, Delta SH, Direct SH, Animated Direct and Direct SH Delta bake without reading each other's output.
+  - After both bakes, Direct SH Delta's usability check (`pack::direct_sh_delta_is_usable_for_selection`) reads Direct SH's output section. An unusable result clears the entity-shadow selection (`pipeline.rs:1291-1321`). That is a join after both bakes, not a reason to serialize them.
+  - The delta CSR plans and the entity-shadow selection come from `plan_delta_bakes`, before SH starts.
+- **Atlas preparation stays after the SH family.** It reads no SH output; the SH stages borrow `geo_result` and atlas preparation takes it `&mut` (`pipeline.rs:1692-1710`). `build_pipeline.md` §Atlas preparation and SH ordering calls the order load-bearing: Direct SH Delta can clear entity-shadow selection wholesale, and deterministic channel assignment must finish before the fused atlas walk. The brief keeps that order; lever 3, if built, overlaps only the SH family among itself and the animated stages with the fused walk.
 - **AnimLightChunks and AnimWeightMaps** read atlas placement and the BVH, not lightmap output.
   - `bake_fused_prepared` takes `geometry: &mut` but never mutates it (`pipeline/lightmap_stage.rs:56`).
   - The only lightmap output read afterwards is `blocks.is_empty()`, in the layout step (`pipeline.rs:1937`).
 
+## Lightmap loop details (lever 1)
+
+- The `layer_input_hash` pre-pass in `bake_fused_prepared` has no `stage_cache` guard, so it also runs cold, where nothing reads the hashes. Each call recomputes `atlas_layout_fingerprint`, which depends on neither light nor layer, and `geometry_slice_hash`, which depends only on the light.
+- `bake_light_layer_controlled` rebuilds `face_indices` by scanning every placement, once per (layer, light).
+- When the lightmap section memo hits but the shadowmask memo misses, a second serial (layer, light) loop in `bake_fused_prepared` calls `load_or_bake_partition` again for the selected lights.
+- `bake_shadowmask_atlas_with_window` and `SHADOWMASK_RESIDENT_LAYER_WINDOW` (4) survive in `shadowmask_bake`. Only tests reach them, through `bake_shadowmask_atlas`, `bake_shadowmask_atlas_cached` and the test-window wrappers. The fused path consumes partitions serially. They are the reuse candidate for lever 1's bounded window.
+- `IncrementalLayerAccumulator::fold_partition` documents that callers fold partitions in global light order and that float addition is neither reordered nor reduced. That order is the determinism guarantee lever 1 keeps.
+- On `feat/lightmap-cell-blocks` the fused walk still loops layer by layer, pushing each finished layer into `BlockSectionBuilder`. Lever 1's premise survives cell blocks.
+
+## Ray traversal (lever 5)
+
+bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `Ray`, which has no length, and calls `Bvh::traverse_iterator`.
+
+| Site | Query | Loop | Callers |
+|---|---|---|---|
+| `sh_bake::closest_hit` | Closest hit | Tests every leaf the iterator yields. A strict `dist < best` keeps the first-visited hit on a tie. `max_distance` is checked only after the triangle test, and the one caller passes `f32::INFINITY`. | `sh_bake::sample_radiance_rgb`: 256 rays per probe, base SH and the delta indirect path |
+| `sh_bake::segment_clear` | Occlusion | Returns on the first hit with `0 < dist < max_distance` | Soft-visibility closures in `bake_probe_direct_rgb` and `sample_radiance_rgb` |
+| `lightmap_bake::segment_clear` | Occlusion | Same | `lightmap_layer` texel bake, `animated_light_weight_maps`, `entity_shadow_select`, `lightmap_bake::reference` |
+| `billboard_direct_scatter_bake::segment_clear` | Occlusion | Same | Billboard direct scatter |
+| `chunk_light_list_bake::segment_clear` | Occlusion | Same. Stops `SAMPLE_END_TOLERANCE_METERS` short of the sample; a directional light's segment is 10,000 m long. | Chunk light list |
+
+- **Closest hit has no early exit.** It tests every leaf the infinite ray crosses, however far beyond the nearest hit.
+- **Occlusion already exits on its first blocker.** Its waste is range and order. A clear segment, the common case for a lit texel, still tests every leaf the ray crosses beyond the light. A blocked segment may test far leaves before the near blocker, because `traverse_iterator` walks depth-first, left child first.
+- **Base SH ray mix.** 256 closest-hit rays per probe, then 4–32 soft-visibility shadow rays per hit and reaching light. Shadow rays likely outnumber closest-hit rays, but each closest-hit ray is infinite and never exits early. Which kind dominates cost is unmeasured.
+- **Left-first order blunts a best-hit bound.** `traverse_iterator` visits the left child first, whatever the ray direction. A closest-hit ray may find far hits before near ones, so its bound shrinks late and prunes little. Occlusion segments do not depend on this: their bound is the segment end, fixed from the start.
+- **Rival shape: near-child-first walk with a tie key.** A stack-based walk that descends the nearer child first finds the nearest hit early, so a best-hit bound prunes most of the tree. It changes visit order, so it must pick the winner by key, not by first visit: (distance, leaf rank in today's depth-first left-first order, triangle offset within the leaf). Today's strict `dist < best` keeps the first-visited hit on a tie, and that key names the same one. A node may be pruned only when it is entered strictly beyond the best distance plus the rounding pad, so a tied hit with a lower rank is never skipped. The leaf rank can come from one depth-first pass at BVH build.
+- **bvh 0.11 API.**
+  - `nearest_traverse_iterator` exists (`Bvh`, `bvh/bvh_impl.rs`) and is unused. It pops nodes from a `BinaryHeap` by AABB entry distance and yields shapes only, not distances. A caller that stops at its best hit must recompute `Ray::intersection_slice_for_aabb` per leaf. The heap allocates per ray despite the type's "without memory allocations" doc, and its comparator `partial_cmp(..).unwrap()` panics on a NaN distance.
+  - `nearest_child_traverse_iterator` is stack-based and allocation-free, but its order is best-effort.
+  - `traverse_iterator` is generic over the public `IntersectsAabb` trait. A caller-defined query can wrap the ray and add a distance bound; interior mutability lets the bound shrink as hits land, without changing visit order.
+  - `Ray::intersection_slice_for_aabb` treats an in-plane NaN slab as a miss, and the ray's own `intersects_aabb` path may not. A bounded query should reject a node only by the distance test, and keep it when the slab distance is undefined.
+- **Byte identity.** Occlusion returns a boolean, so pruning nodes that lie wholly beyond the segment end cannot change it. For closest hit, pruning only nodes entered strictly beyond the best hit, with a small pad for slab-versus-Möller–Trumbore rounding, keeps depth-first visit order and so today's tie winner. Nearest-first ordering changes visit order: a tie at a shared edge could pick the other triangle and its normal, unless the tie key above picks the winner. Profile both shapes on one hallway SH group before choosing.
+- **Baseline leaf set.** Lever 5 is measured on today's per-face leaves. `bvh-leaf-clustering` changes that set; see §Related drafts.
+
 ## Cache budget on large maps
 
 - The cache directory reached **5.2 GB and about 142k entries** mid-build, against a 2 GiB budget.
-- The prune runs only at build start, so the next build evicts most of this build's entries (`cache.rs` `prune_to_budget`).
+- The prune runs once, at build start, right after `StageCache::new` in `main.rs`, LRU by mtime (`StageCache::prune_to_budget`). The next build therefore evicts most of this build's entries.
+- An end-of-build warning already fires when this build's deduplicated live set exceeds the budget (`StageCache::warn_if_live_set_exceeds`). The live set it sums is tracked in memory for the build (`StageCache::live_set`) and not persisted.
+- Orphan `<digest>.tmp` files are never swept: the prune skips them. The next put of the same key truncates and overwrites the file. Note only.
 - Result: every hallway rebake re-bakes the SH family, yet still runs the approximate warm SH path. It pays cold SH cost and gets warm SH quality.
 - The prune is LRU by mtime, so what survives depends on write order. In the second hallway build (feat/lightmap-cell-blocks, 2026-09-29, the same `target/debug` binary family), stages written last in the first build hit:
   - Lightmap Bake 388.7 s against 7,395.4 s, and AnimWeightMaps 1.0 s against 993.9 s.
@@ -100,6 +140,20 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 
   The Lightmap Bake and AnimWeightMaps figures in the table above are all-miss numbers from the first build.
 - `plans/done/lighting-scale--sparse-layer-cache-and-fused-walk` sized the 2 GiB budget against campaign-test layers (≤0.91 GB).
+- **The brief's rule.** The prune spares every entry the previous build read or wrote and applies the budget to older entries only. After the prune the cache is at most the larger of the budget and the previous live set; the build then adds its new generation, as today. Raising the default instead would have to track the largest map anyone builds, and still evicts by write order once that map outgrows it.
+- **Mechanism options, the executor's call.** Record a marker at build start, and at the next build's prune treat every entry with mtime at or after it as live; `get` already bumps mtime through `touch_for_lru` and `put` writes it. Or persist the `live_set` key list at build end. Lever 2 removes or changes the second open in `touch_for_lru`, so the mtime option needs another way to record a hit. A build killed before its end-of-build step must not leave the next prune treating nothing as live and evicting the killed build's entries first; the marker option avoids that, since the marker is written at start.
+
+## Cache write path
+- `StageCache::put` delegates to `put_streamed`, which stages `<digest>.tmp` through `write_streamed_entry` and then renames it into place.
+- `write_streamed_entry` ends with `File::sync_all`, which is `F_FULLFSYNC` on macOS. The brief drops it. A killed or torn write still leaves only a `.tmp` or a failed blake3 check, so either way the next build misses.
+- Every `get` hit calls `touch_for_lru`, a second open for write, to bump the mtime.
+
+## Peak memory
+
+- **What raises co-residency.** Lever 1 holds several lights' baked partitions for a layer at once, plus any awaiting cache write, fold, or shadowmask consume. Lever 3, if built, runs a second stage's working set beside the first. `development_guide.md` §1.4 counts every representation that coexists across production, buffering, serialization, cache writes, return, and cleanup; the lever 1 window row counts partitions at each of those points, not only in the ray kernel.
+- **The delta working-set gate assumes serial stages.** `plans/done/lighting-scale--compile-peak-ram` sets the `--sh-delta-working-set-max-size` gate at 3× the cumulative dense delta bytes (4× under coarsened `--sh-analyze`). Its accounting follows today's run order: the three delta bakes in sequence, the exact-zero drop rebuild freed before compaction allocates, and one share reserved for the base id34/id35 copies held between the delta bakes. Overlapping base SH or the delta bakes with each other puts in-flight bake state beside those buffers, which the factor does not count.
+- **Hallway hosts.** `drafts/compiler-implausible-allocation-guard` records a `--release` hallway compile at lightmap density 0.04 dying on a 16 GiB machine. The request there was an implausible 42.9 TB, not a working set that outgrew the host, so it shows the hallway is compiled on 16 GiB hosts, not how close its peak is to 16 GiB.
+- **Evidence so far.** The live sampler's RSS column (`evidence/cpu-samples.tsv`) peaks at about 3.3 GiB, in Direct SH Delta, on the debug-binary warm rebake. It covers only the last 1,169 s: no SH Bake and no all-miss lightmap bake. The before number must be re-taken on the pinned binary.
 
 ## Prior deferrals
 
@@ -111,10 +165,12 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 - `plans/done/perf-parallel-sh-group-bake`: "Follow-up (deferred, owner-accepted)". The per-entry `sync_all` cost about 45 s across about 900 puts on occlusion-test. It was expected to be minor because "the bake is ray-bound". On the hallway, Direct SH Delta is entirely I/O-bound.
 - `plans/done/build-stage-cache` assumed a single builder and atomic rename, and did not budget fsync cost.
 
-## Related drafts (not overlapping)
+## Related drafts
 
-These drafts cut ray count or peak RAM. This brief cuts idle cores. Both kinds of saving add up.
+These drafts cut ray count or peak RAM. This brief cuts idle cores and per-ray traversal cost. The savings add up.
 - `lighting-scale--cold-sh-bake-contribution-early-out`
 - `lighting-scale--cold-bake-reaching-light-spike`
 - `lighting-scale--sh-delta-cell-major-two-pass-bake`
-- `bvh-leaf-clustering` (render-side leaf granularity; the bake shares the same BVH)
+
+One conflicts:
+- `bvh-leaf-clustering` changes the bake's BVH, not only the render's. `bvh_build::build_bvh` runs `Bvh::build` over `collect_primitives`, which emits one primitive per face today. Every bake ray walks that live tree through `traverse_iterator` (`sh_bake`, `lightmap_bake`, `chunk_light_list_bake`, `billboard_direct_scatter_bake`), and `bvh_build::flatten` makes the render `BvhSection` from the same tree. Its Task 3 emits one primitive per (cell, bucket) run, so each bake leaf holds more triangles: more triangle tests per ray, and float tie-breaks that may differ, and so different bake bytes. Lever 5's baseline is the per-face leaf set; whichever of the two lands second re-takes the hallway SH Bake timing. That draft carries a matching note.

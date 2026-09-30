@@ -10,6 +10,10 @@ argument-hint: "[skill-name]"
 
 # Create Skill
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. GPT-6.1 Sol at medium for workflow design. GPT-6 Luna at low or medium for prescribed wording edits. Reference the shared guidance in new skills that dispatch workers; keep task-specific defaults local.
+
 Design a new Codex skill. Output: `.Codex/skills/<name>/SKILL.md`.
 
 ## Existing skills

@@ -9,7 +9,15 @@ disable-model-invocation: true
 
 # Preflight
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. GPT-6 Luna at low for check execution and reporting; medium for prescribed mechanical fixes. Use GPT-6.1 Sol at high for diagnosis that crosses files or contracts, subject to the auto-fix policy below.
+
 Run quality checks and report results. Fix mechanical issues automatically; escalate design decisions.
+
+## Disk space
+
+After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
 
 ## Checks
 

@@ -11,7 +11,15 @@ argument-hint: "[plan-name]"
 
 # Build Spec
 
+## Model guidance
+
+Read [project model guidance](../model-guidance.md) for selection, escalation, availability, and dispatch rules. Coordinator: GPT-6.1 Sol at medium. Implementation workers use the sizing guide below.
+
 Execute a spec from `context/plans/ready/`. Coordinate — don't produce. Dispatch agents, track progress.
+
+## Disk space
+
+After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
 
 ## Available plans
 
@@ -52,7 +60,7 @@ Use `feature/<plan-name>` as the integration branch for all implementation work.
 
 For each phase in the sequencing section:
 
-**Agent sizing:** Use `model: "gpt-5.6-terra"` for implementation agents. Start with `reasoning_effort: "medium"` for bounded tasks. Promote to `"xhigh"` only when the task has real uncertainty or broad contracts.
+**Agent sizing:** Use `model: "gpt-6.1-sol"` for implementation agents. Start with `reasoning_effort: "medium"` for bounded tasks. Promote to `"xhigh"` only when the task has real uncertainty or broad contracts. Prescribed mechanical propagation can use `gpt-6-luna` at medium. Use `gpt-6-astra` at high or xhigh for unresolved architecture or subtle lifecycle invariants.
 
 Use `"xhigh"` when the task touches any of:
 - GPU contracts, shader layouts, bind groups, or renderer scheduling

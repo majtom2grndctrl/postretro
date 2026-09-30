@@ -247,7 +247,7 @@ pub fn translate_light(
     }
 
     let authored_style = parse_optional_int(props, "style")?.unwrap_or_else(|| {
-        log::warn!("light entity missing 'style'; defaulting to 0 (no animation)");
+        log::info!("light entity missing 'style'; defaulting to 0 (no animation)");
         0
     });
     let directional_animation_authored = light_type == LightType::Directional

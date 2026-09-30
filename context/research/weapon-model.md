@@ -155,7 +155,7 @@ defineEntity({
       // would carry meaningless members (an `ammoType` on a heat gun). Tag it.
       // The ammo variant's numbers live in this block, beside the flat stats.
       resource: {
-        kind: "ammo",              // ResourceKind — "ammo" today; "heat" | "cell" are open
+        kind: "ammo",              // ResourceKind — "ammo" | "heat" | "cell"
         type: "heavy",             // string — authored ASCII identifier; the reserve pool key
         magazine: 30,              // number → u32 — rounds the magazine holds
         costPerShot: 1,            // number → u32 — rounds debited per shot
@@ -179,9 +179,10 @@ defineEntity({
   },
 })
 
-// Resource variants — PROPOSED, sketched here so the union's shape is legible.
-// Their tuning numbers sit flat on the weapon block beside `damage`/`range`,
-// the same placement the shipped flat stats use.
+// Resource variants — heat and cell are BUILT (context/lib/entity_model.md
+// §Weapon resources). As with ammo, their numbers ended up inside the resource
+// block, not flat on the weapon block as first sketched here; `effective()`
+// projects them beside the flat stats. This sketch predates the build.
 //   Heat — passive dissipation + an overheat punish state, no reserve, no reload:
 //     resource: { kind: "heat", overheatBehavior: "lockout" }
 //       // overheatBehavior = "lockout" | "vent"

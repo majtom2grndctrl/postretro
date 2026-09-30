@@ -872,7 +872,8 @@ fn run_after_parsing(
     // (already filtered to empty, non-exterior leaf faces). `None` when no
     // walkable region survives — the section is then omitted and the build still
     // succeeds (SDF-atlas precedent). Cached on blake3(postcard(geo_result) ||
-    // postcard(nav params)), mirroring the SDF stage's `SdfInputs` hash.
+    // postcard(nav params)); this runs before atlas preparation, so the hash
+    // sees no lightmap attributes.
     let navmesh_section = {
         let nav_input_hash = {
             let mut buf =
@@ -1967,22 +1968,10 @@ fn run_after_parsing(
             ..sdf_bake::SdfConfig::default()
         };
         let section = {
-            // Build serialisable inputs for the cache key. Geometry hash also
-            // captures triangle order, so a deterministic geometry result
-            // means a deterministic cache key.
-            let sdf_inputs = sdf_bake::SdfInputs {
-                geometry: geo_result.clone(),
-            };
-            let sdf_input_hash = {
-                let mut buf =
-                    postcard::to_allocvec(&sdf_inputs).expect("postcard serialize SdfInputs");
-                buf.extend_from_slice(
-                    &postcard::to_allocvec(&sdf_config).expect("postcard serialize SdfConfig"),
-                );
-                *blake3::hash(&buf).as_bytes()
-            };
-            let sdf_key =
-                cache::CacheKey::new("sdf_atlas", sdf_bake::STAGE_VERSION, &sdf_input_hash);
+            // Positions, indices and BSP solidity only: the key captures
+            // triangle order, and the lightmap attributes atlas preparation
+            // wrote stay out of it.
+            let sdf_key = sdf_bake::cache_key(&geo_result, &result.tree, &sdf_config);
 
             let cached = stage_cache.as_ref().and_then(|c| c.get(&sdf_key));
             let cached_section = cached.and_then(|bytes| {
@@ -2022,12 +2011,8 @@ fn run_after_parsing(
         None
     };
 
-    // Stamp animated block ids only now: the SDF atlas key above hashes
-    // `geo_result`, and an animated-light edit that moves blocks must not
-    // re-bake the SDF atlas. Lightmap block ids and block-local UVs are
-    // already in that hash (atlas preparation writes them), so a lightmap
-    // layout change misses the SDF cache once; the SDF bake reads positions
-    // only, so its output bytes and stage epoch are unaffected.
+    // Stamp animated block ids. The SDF key above reads no block ids, so this
+    // order is not load-bearing for its cache.
     animated_atlas_stage::stamp_animated_blocks(&mut geo_result, animated_face_blocks.as_ref());
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);

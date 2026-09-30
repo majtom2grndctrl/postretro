@@ -701,9 +701,66 @@ fn warm_weight_map_cache_hit_writes_the_cold_sections_25_and_17() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Pin P1: block ids are stamped on vertices only after the SDF atlas key
-/// hashes the geometry, so editing only an animated light — here its range,
-/// which changes which faces own a block — leaves the SDF atlas stage cached.
+/// A lightmap density edit rewrites lightmap UVs and block ids, which neither
+/// the SDF atlas nor the cell residency set (id 51) reads, so both stages hit
+/// and write the sections a cold build at the new density writes.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn editing_only_lightmap_density_keeps_the_sdf_atlas_and_residency_set_cached() {
+    let ws = workspace_root();
+    let base = std::fs::read_to_string(ws.join("content/dev/maps/sdf-shadow-test.map"))
+        .expect("read sdf-shadow-test.map");
+    assert!(!base.contains("_lightmap_density"));
+    let dense = base.replacen(
+        "\"classname\" \"worldspawn\"",
+        "\"classname\" \"worldspawn\"
+\"_lightmap_density\" \"0.03\"",
+        1,
+    );
+    assert_ne!(dense, base, "sdf-shadow-test.map has a worldspawn");
+    let dir = fresh_dir("postretro_density_edit_cache");
+    let cache = dir.join("cache");
+    let cache_arg = cache.to_str().expect("utf-8 temp path");
+
+    let default_map = dir.join("default.map");
+    std::fs::write(&default_map, &base).expect("write default map");
+    let default = dir.join("default.prl");
+    prl_build_logged(&default_map, &default, &["--cache-dir", cache_arg]);
+
+    let dense_map = dir.join("dense.map");
+    std::fs::write(&dense_map, &dense).expect("write dense map");
+    let warm = dir.join("warm.prl");
+    let warm_log = prl_build_logged(&dense_map, &warm, &["--cache-dir", cache_arg]);
+    let cold = dir.join("cold.prl");
+    prl_build_logged(&dense_map, &cold, &["--no-cache"]);
+
+    // The edit must actually rewrite the lightmap vertex attributes, or the
+    // cache assertions are vacuous.
+    assert_ne!(
+        section_bytes(&default, SectionId::Geometry),
+        section_bytes(&warm, SectionId::Geometry),
+        "the density edit must change the geometry's lightmap attributes",
+    );
+    for stage in ["sdf_atlas", "cell_residency_set"] {
+        assert!(
+            warm_log.contains(&format!("[cache] {stage} hit")),
+            "a density edit must leave {stage} cached: {warm_log}"
+        );
+    }
+    for id in [SectionId::SdfAtlas, SectionId::CellResidencySet] {
+        assert_eq!(
+            section_bytes(&warm, id),
+            section_bytes(&cold, id),
+            "warm section {id:?} must equal cold"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pin P1: the SDF atlas key hashes vertex positions and indices only, so
+/// editing only an animated light — here its range, which changes which
+/// faces own a block — leaves the SDF atlas stage cached.
 #[test]
 #[ignore = "cold prl-build bake; run on demand with -- --ignored"]
 fn editing_only_an_animated_light_keeps_the_sdf_atlas_cached() {

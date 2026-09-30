@@ -183,11 +183,54 @@ fn cache_key_tracks_every_input_section() {
     moved_portal.vertices[0][1] = 0.5;
     let mut moved_plane = locator.clone();
     moved_plane.nodes[2].plane_distance = 11.0;
+    let mut undrawable = cells.clone();
+    undrawable.cells[3].flags &= !postretro_level_format::cells::CELL_FLAG_DRAWABLE;
+    let mut rerouted = cells.clone();
+    rerouted.portal_refs[0] += 1;
+    // Move one ref across a range boundary, leaving the flat refs untouched:
+    // only the per-cell ranges tell the two apart.
+    let mut shifted = cells.clone();
+    let i = (0..shifted.cells.len() - 1)
+        .find(|&i| {
+            shifted.cells[i].portal_ref_count > 1 && shifted.cells[i + 1].portal_ref_count > 0
+        })
+        .expect("adjacent cells with portal refs");
+    shifted.cells[i].portal_ref_count -= 1;
+    shifted.cells[i + 1].portal_ref_start -= 1;
+    shifted.cells[i + 1].portal_ref_count += 1;
     for changed in [
         key(&moved_cell, &portals, &locator),
         key(&cells, &moved_portal, &locator),
         key(&cells, &portals, &moved_plane),
+        key(&undrawable, &portals, &locator),
+        key(&rerouted, &portals, &locator),
+        key(&shifted, &portals, &locator),
     ] {
         assert_ne!(changed, base);
     }
+}
+
+#[test]
+fn cache_key_ignores_face_ranges() {
+    let (cells, portals, locator) = l_corridor_sections();
+    let base = cell_residency_set_cache_key(&cells, &portals, &locator).as_filename();
+    let mut reranged = cells.clone();
+    for record in reranged
+        .cells
+        .iter_mut()
+        .filter(|record| record.is_drawable())
+    {
+        record.face_start += 100;
+        record.face_count += 7;
+    }
+    assert_ne!(reranged.to_bytes(), cells.to_bytes());
+    assert_eq!(
+        cell_residency_set_cache_key(&reranged, &portals, &locator).as_filename(),
+        base,
+    );
+    assert_eq!(
+        bake_uncached(&reranged, &portals, &locator),
+        bake_uncached(&cells, &portals, &locator),
+        "face ranges must not reach the bake either",
+    );
 }

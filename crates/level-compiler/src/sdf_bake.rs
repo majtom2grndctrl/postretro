@@ -41,8 +41,9 @@ use std::time::Instant;
 use glam::{DVec3, Vec3};
 use postretro_level_format::sdf_atlas::{BRICK_SLOT_EMPTY, BRICK_SLOT_INTERIOR, SdfAtlasSection};
 
+use crate::cache::CacheKey;
 use crate::geometry::GeometryResult;
-use crate::partition::{BspTree, find_leaf_for_point};
+use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 
 /// Bump this when the bake algorithm or input layout changes. The cache key
 /// folds it in so a stale on-disk entry from a prior version is automatically
@@ -56,7 +57,13 @@ use crate::partition::{BspTree, find_leaf_for_point};
 // v3: surface bricks now store a 1-voxel apron on every side (stored sample
 // count `(brick_size + 2)^3`, z-major) so the runtime can sample the fine field
 // with hardware trilinear filtering without seams at brick boundaries.
-pub const STAGE_VERSION: u32 = 3;
+// v4: the key hashes vertex positions, indices and BSP solidity instead of
+// the whole `GeometryResult`, so lightmap UVs and block ids no longer
+// participate.
+pub const STAGE_VERSION: u32 = 4;
+
+/// Cache stage id for the whole-section SDF atlas entry.
+pub const STAGE_ID: &str = "sdf_atlas";
 
 /// Default voxel edge length in meters. Sized to give a usable shadow
 /// resolution for retro-scale interiors without exploding atlas memory.
@@ -89,13 +96,64 @@ const SURFACE_BAND_VOXELS: f32 = 1.0;
 /// computation below.
 const COARSE_SAFETY_MARGIN_VOXELS: f32 = 0.866_025_4;
 
-/// Owned, serialisable snapshot of the bake's inputs. Hashed into the cache
-/// key via postcard: a per-stage `*Inputs` struct holds exactly the data the
-/// bake reads, serialised deterministically so the digest captures every input
-/// the outputs depend on.
+/// Serialisable snapshot of what the bake reads, hashed into the cache key
+/// via postcard: every vertex position, referenced or not (the world AABB
+/// spans them all), the index buffer in order, and the BSP solidity the
+/// voxel sign comes from. Lightmap UVs and block ids, texture UVs, normals,
+/// tangents, face metadata and texture names never reach the bake, so atlas
+/// preparation rewriting them leaves the key alone.
 #[derive(serde::Serialize)]
-pub struct SdfInputs {
-    pub geometry: GeometryResult,
+pub struct SdfInputs<'a> {
+    pub positions: Vec<[f32; 3]>,
+    pub indices: &'a [u32],
+    pub solidity: Vec<u8>,
+}
+
+impl<'a> SdfInputs<'a> {
+    pub fn new(geometry: &'a GeometryResult, tree: &BspTree) -> Self {
+        let g = &geometry.geometry;
+        Self {
+            positions: g.vertices.iter().map(|v| v.position).collect(),
+            indices: &g.indices,
+            solidity: solidity_bytes(tree),
+        }
+    }
+}
+
+/// The tree state `point_in_solid` reads: each node's plane and children,
+/// then each leaf's solidity. A brush that emits no faces (culled as
+/// exterior, say) still changes these. Leaf bounds, faces and defining
+/// planes stay out.
+fn solidity_bytes(tree: &BspTree) -> Vec<u8> {
+    fn push_child(bytes: &mut Vec<u8>, child: &BspChild) {
+        let (tag, index) = match *child {
+            BspChild::Node(index) => (0u8, index),
+            BspChild::Leaf(index) => (1u8, index),
+        };
+        bytes.push(tag);
+        bytes.extend_from_slice(&(index as u64).to_le_bytes());
+    }
+    let mut bytes = Vec::with_capacity(16 + tree.nodes.len() * 50 + tree.leaves.len());
+    bytes.extend_from_slice(&(tree.nodes.len() as u64).to_le_bytes());
+    for node in &tree.nodes {
+        for v in node.plane_normal.to_array() {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&node.plane_distance.to_le_bytes());
+        push_child(&mut bytes, &node.front);
+        push_child(&mut bytes, &node.back);
+    }
+    bytes.extend_from_slice(&(tree.leaves.len() as u64).to_le_bytes());
+    bytes.extend(tree.leaves.iter().map(|leaf| u8::from(leaf.is_solid)));
+    bytes
+}
+
+/// Whole-section cache key over `SdfInputs` and `SdfConfig`.
+pub fn cache_key(geometry: &GeometryResult, tree: &BspTree, config: &SdfConfig) -> CacheKey {
+    let mut buf = postcard::to_allocvec(&SdfInputs::new(geometry, tree))
+        .expect("postcard serialize SdfInputs");
+    buf.extend_from_slice(&postcard::to_allocvec(config).expect("postcard serialize SdfConfig"));
+    CacheKey::new(STAGE_ID, STAGE_VERSION, blake3::hash(&buf).as_bytes())
 }
 
 /// CLI-driven configuration. Hashed alongside `SdfInputs` so the cache key
@@ -693,6 +751,79 @@ mod tests {
             &SdfConfig::default(),
         );
         assert_eq!(section, SdfAtlasSection::empty());
+    }
+
+    #[test]
+    fn cache_key_ignores_attributes_the_bake_does_not_read() {
+        let (geo, tree) = wall_scene();
+        let config = SdfConfig::default();
+        let mut restamped = geo.clone();
+        for (i, v) in restamped.geometry.vertices.iter_mut().enumerate() {
+            v.lightmap_uv = [i as u16 * 4096, 65535];
+            v.lightmap_block = 7;
+            v.animated_block = 3;
+            v.uv = [0.25, 0.75];
+            v.normal_oct = [1, 2];
+        }
+        restamped.texture_names.names.push("other".to_owned());
+        restamped.geometry.faces[0].leaf_index = 0;
+        let (_, mut rebounded) = wall_scene();
+        rebounded.leaves[1].bounds.max.x = 9.0;
+        rebounded.leaves[1].face_indices.clear();
+        assert_eq!(
+            cache_key(&restamped, &rebounded, &config).as_filename(),
+            cache_key(&geo, &tree, &config).as_filename(),
+        );
+        let bake = |geometry: &GeometryResult| {
+            bake_sdf_atlas(
+                &SdfBakeCtx {
+                    geometry,
+                    tree: &tree,
+                },
+                &config,
+            )
+            .to_bytes()
+        };
+        assert_eq!(bake(&restamped), bake(&geo));
+    }
+
+    #[test]
+    fn cache_key_tracks_positions_indices_solidity_and_config() {
+        let (geo, tree) = wall_scene();
+        let config = SdfConfig::default();
+        let base = cache_key(&geo, &tree, &config).as_filename();
+        // A phantom vertex: no triangle references it, but it bounds the grid.
+        let mut phantom_moved = geo.clone();
+        phantom_moved.geometry.vertices[6].position[1] += 2.0;
+        let mut retriangulated = geo.clone();
+        retriangulated.geometry.indices[5] = 1;
+        let (_, mut solid_tree) = wall_scene();
+        solid_tree.leaves[1].is_solid = true;
+        let finer = SdfConfig {
+            voxel_size_m: config.voxel_size_m * 0.5,
+            ..config
+        };
+        let smaller_bricks = SdfConfig {
+            brick_size_voxels: config.brick_size_voxels / 2,
+            ..config
+        };
+        for changed in [
+            cache_key(&phantom_moved, &tree, &config),
+            cache_key(&retriangulated, &tree, &config),
+            cache_key(&geo, &solid_tree, &config),
+            cache_key(&geo, &tree, &finer),
+            cache_key(&geo, &tree, &smaller_bricks),
+        ] {
+            assert_ne!(changed.as_filename(), base);
+        }
+        // The phantom vertex and the tree really reach the bake, so keying
+        // them is not vacuous.
+        let bake = |geometry: &GeometryResult, tree: &BspTree| {
+            bake_sdf_atlas(&SdfBakeCtx { geometry, tree }, &config).to_bytes()
+        };
+        let reference = bake(&geo, &tree);
+        assert_ne!(bake(&phantom_moved, &tree), reference);
+        assert_ne!(bake(&geo, &solid_tree), reference);
     }
 
     #[test]

@@ -752,6 +752,21 @@ reports a trailing partial window only as a count. Disabled, unsupported, inacce
 and not-yet-windowed states remain distinct so missing GPU data cannot be mistaken for a
 zero-cost pass.
 
+**Without timestamp support.** Some Metal adapters lack the timestamp features, so the
+engine's GPU timing reports unsupported. On macOS, take per-pass GPU time from an
+Instruments Metal System Trace instead. wgpu forwards pass labels, so the trace groups
+GPU intervals by pass. Record headless with `xcrun xctrace record --template 'Metal
+System Trace' --launch -- <postretro binary> <map>.prl`, then read its tables with
+`xctrace export`. The engine renders no frames while its window is hidden or backgrounded,
+or while the screen is locked. Keep the window in front for the whole capture.
+
+**Machine-state confounders.** On a discrete GPU shared with other processes, Mac frame
+time can depend as much on machine state as on code. Other processes can hold much of the
+VRAM and keep the GPU busy at idle, which pushes the engine into per-frame paging. Before
+blaming code for a frame-time change, close the engine and record idle VRAM and GPU
+utilization from `ioreg -c IOAccelerator` (`inUseVidMemoryBytes`, `vramFreeBytes`,
+`Device Utilization %`). Then A/B an older commit under the same machine state.
+
 ### CPU Stage Timing
 
 `POSTRETRO_CPU_TIMING=1` enables per-stage CPU timing in every build; unset, the timer accumulates, logs and allocates nothing. Stage labels are engine-closed and hierarchical: a substage's time sits inside its parent's. Each crate owns its stage set (`StageSet`) and returns its values upward through its existing outputs: `VisibilityStats::cpu`, `TickEvents::cpu`, `Renderer::cpu_stages()`. The leaf crate `postretro-stage-timing` holds only the mechanism (scope guard, frame record, window fold, optional Tracy bridge), depends on no engine crate and names no stage. The binary (`cpu_timing/`) owns the top-level frame stages and every window, and places each crate's roots under one of its stages by label, so a new stage in an existing crate's set needs no binary edit. Labels are unique across every set the binary folds. Scopes, the per-frame fold and window close are allocation-free; surfaces allocate at most once per window.
@@ -765,6 +780,10 @@ zero-cost pass.
 | Resets | A vsync toggle, level install, level unload or hot-reload commit discards the partial window. The install frame and a reload-commit frame do not count. A new level clears the previous level's window from every surface. |
 | Portal walk | A step-limit trip is a walk frame. A portal-fallback frame adds only to a fallback count. |
 | Absent ≠ zero | A stage that did not run reports absent. Timing off reports unavailable with a reason. Capture reports only complete post-warmup windows, and a partial window only as a count. |
+
+**Reading a window.** A window dominated by `wait_acquire` is GPU-bound, so work on the
+GPU side first. Sim stages sum across a frame's fixed ticks, and a slow frame runs more
+of them. Divide by `ticks` for the per-tick cost before treating a sim stage as expensive.
 
 CPU and GPU windows never align: the GPU window counts completed readbacks. Surfaces: a `[CpuTiming]` log line per window (`label=avg/max`; `(ran/frames)` on partial rows; markers as a frame count), the debug UI Performance tab (`dev-tools`) beside the GPU block, a live-only observe-live `cpu_timing` section (`networking.md` §Not netcode: the live introspection channel), and the capture measurement report's `cpu_stages`. The `tracy` cargo feature makes every stage scope a Tracy zone, with or without the env var; no release, dist or dependency-free diagnostic build enables it.
 

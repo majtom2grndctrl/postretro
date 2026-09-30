@@ -30,6 +30,9 @@ mod reads;
 pub(crate) use preload::LightmapPreloadReads;
 use reads::PairCharge;
 #[cfg(test)]
+#[path = "multi_block_tests.rs"]
+mod multi_block_tests;
+#[cfg(test)]
 #[path = "preload_tests.rs"]
 mod preload_tests;
 #[cfg(test)]

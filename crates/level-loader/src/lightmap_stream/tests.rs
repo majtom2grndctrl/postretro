@@ -690,18 +690,40 @@ fn both_load_modes_reject_a_block_cell_past_the_cells_table() {
 }
 
 #[test]
-fn both_load_modes_reject_a_cell_owned_by_two_blocks() {
-    let mut lightmap = lightmap_section(&[(8, 4), (4, 4)]);
-    lightmap.blocks[1].cell_id = 0;
+fn both_load_modes_accept_a_cell_owning_several_contiguous_blocks_and_one_owning_none() {
+    for (name, cells) in [
+        ("postretro_test_lm_stream_cell_three_blocks.prl", [0, 0, 1]),
+        ("postretro_test_lm_stream_cell_no_blocks.prl", [1, 1, 1]),
+    ] {
+        let mut lightmap = lightmap_section(&[(8, 4), (4, 4), (4, 8)]);
+        for (block, cell) in lightmap.blocks.iter_mut().zip(cells) {
+            block.cell_id = cell;
+        }
+        let fixture = Fixture::with_portals(name, lighting_blobs(&lightmap, None, true));
+        for requested in BOTH_MODES {
+            let world = fixture.load(requested);
+            assert_eq!(world.lightmap_storage().mode(), requested, "{name}");
+        }
+    }
+}
+
+#[test]
+fn both_load_modes_reject_a_cell_whose_blocks_interleave_with_another_cells() {
+    let mut lightmap = lightmap_section(&[(8, 4), (4, 4), (4, 8)]);
+    for (block, cell) in lightmap.blocks.iter_mut().zip([0, 1, 0]) {
+        block.cell_id = cell;
+    }
     let fixture = Fixture::with_portals(
-        "postretro_test_lm_stream_cell_owned_twice.prl",
+        "postretro_test_lm_stream_cell_interleaved.prl",
         lighting_blobs(&lightmap, None, true),
     );
     for requested in BOTH_MODES {
         let message = load_error(&fixture, requested);
         assert!(message.contains("Lightmap validation error"), "{message}");
         assert!(
-            message.contains("block 1 names cell 0, which block 0 already owns"),
+            message.contains(
+                "block 2 names cell 0, whose blocks began at block 0 and were interrupted by block 1"
+            ),
             "{requested:?}: {message}"
         );
     }

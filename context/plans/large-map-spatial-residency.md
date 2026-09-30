@@ -118,8 +118,9 @@ leanings from a read-only dry run (research below).
      layout gives per-block file ranges.
   3. Id 25 weight maps by chunk range.
 - **Packing granularity. Decided: cell blocks.**
-  - Each cell's charts pack into one BC-aligned block. The runtime pool of 2048² layers
-    allocates blocks with a freeing allocator. A dense block id rides in the vertex's
+  - Each cell's charts pack into one or more contiguous BC-aligned blocks (several only
+    when they exceed one pool layer; `lightmap-oversize-cells-and-faces`). The runtime
+    pool of 2048² layers allocates blocks with a freeing allocator. A dense block id rides in the vertex's
     `lightmap_layer` u16, and the vertex stage resolves it to (layer, offset) from a table
     in free bind group 6. UVs become block-local.
   - Rejected: whole layers (over Low from L = 16 m, and over it at L = 0 for

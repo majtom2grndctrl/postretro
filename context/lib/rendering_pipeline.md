@@ -153,7 +153,7 @@ boundary.
 
 **Lightmap cell-block residency.** The static lightmap and shadowmask (ids 22/42) are
 stored as per-cell blocks: each cell's charts pack into one or more contiguous BC-aligned
-blocks (formats: `build_pipeline.md` §PRL section IDs; several per cell is *not built yet*).
+blocks (formats: `build_pipeline.md` §PRL section IDs).
 A block's lightmap and shadowmask halves are one pair: they install and become sampleable in
 the same drain, or not at all. A cell's blocks are not a pair: demand for a cell demands all
 of its blocks, and each installs independently. A face cut across two blocks shows the

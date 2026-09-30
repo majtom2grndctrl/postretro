@@ -47,6 +47,72 @@ pub(super) fn prepare(
     .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))
 }
 
+/// Bytes per bake-layer texel of the warm per-layer accumulator; the cold
+/// plane holds about half. One layer is live at a time.
+const LAYER_PLANE_BYTES_PER_TEXEL: u64 = 57;
+/// Shadowmask raw fill: four mask slots per texel of every bake layer,
+/// empty layer area included, live for the whole layer loop.
+const SHADOWMASK_FILL_BYTES_PER_TEXEL: u64 = 4;
+
+/// The lightmap stage's predicted working-set peak, from the prepared layout
+/// alone (`research.md` §4 of `lightmap-oversize-cells-and-faces`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PredictedLightmapPeak {
+    pub(super) shadowmask_fill: u64,
+    pub(super) layer_plane: u64,
+    /// Encoded ids 22 and 42, twice: the section and its cache copy.
+    pub(super) sections: u64,
+}
+
+impl PredictedLightmapPeak {
+    pub(super) fn total(&self) -> u64 {
+        self.shadowmask_fill + self.layer_plane + self.sections
+    }
+}
+
+pub(super) fn predicted_peak(
+    prepared: &PreparedAtlas,
+    uncompressed_irradiance: bool,
+) -> PredictedLightmapPeak {
+    let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
+    let scale = u64::from(prepared.layout.direction_texel_scale.max(1));
+    let irradiance_bytes_per_texel = if uncompressed_irradiance { 8 } else { 1 };
+    let encoded: u64 = prepared
+        .layout
+        .blocks
+        .iter()
+        .map(|block| {
+            let (w, h) = (u64::from(block.width), u64::from(block.height));
+            // Irradiance, direction (Rg8 at the reduced scale), and both BC5
+            // shadowmask groups.
+            w * h * irradiance_bytes_per_texel + (w / scale) * (h / scale) * 2 + 2 * w * h
+        })
+        .sum();
+    PredictedLightmapPeak {
+        shadowmask_fill: SHADOWMASK_FILL_BYTES_PER_TEXEL
+            * layer_texels
+            * u64::from(prepared.layer_count),
+        layer_plane: LAYER_PLANE_BYTES_PER_TEXEL * layer_texels,
+        sections: 2 * encoded,
+    }
+}
+
+/// `--verbose`: the predicted peak, for comparison with a measured RSS.
+pub(super) fn log_predicted_peak(prepared: &PreparedAtlas, uncompressed_irradiance: bool) {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let peak = predicted_peak(prepared, uncompressed_irradiance);
+    log::info!(
+        "[Compiler] lightmap stage predicted peak {:.0} MiB: shadowmask fill {:.0} + layer plane {:.0} + sections {:.0} ({} blocks on {} bake layers of {}²)",
+        peak.total() as f64 / MIB,
+        peak.shadowmask_fill as f64 / MIB,
+        peak.layer_plane as f64 / MIB,
+        peak.sections as f64 / MIB,
+        prepared.layout.blocks.len(),
+        prepared.layer_count,
+        prepared.atlas_width,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_fused_prepared(
     args: &Args,
@@ -1099,5 +1165,41 @@ mod tests {
             assert!(section.blocks.iter().all(|block| block.cell_id == 0));
             assert_eq!(one, many, "uncompressed = {uncompressed}");
         }
+    }
+
+    #[test]
+    fn predicted_peak_charges_every_bake_layer_one_plane_and_both_sections_twice() {
+        let mut geometry = quads_in_one_cell(3);
+        let lights = vec![point_light(DVec3::new(20.0, 6.0, 6.0), [1.0; 3])];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let prepared = lightmap_bake::prepare_atlas_within(
+            &mut geometry,
+            &static_lights,
+            0.25,
+            &[],
+            lightmap_bake::BlockOrdering::by_cell_id(2),
+            64,
+            &BakeControl::unrestricted(),
+        )
+        .expect("multi-block fixture must prepare");
+        let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
+        let peak = predicted_peak(&prepared, false);
+        assert_eq!(
+            peak.shadowmask_fill,
+            4 * layer_texels * u64::from(prepared.layer_count)
+        );
+        assert_eq!(peak.layer_plane, 57 * layer_texels);
+        let block_texels: u64 = prepared
+            .layout
+            .blocks
+            .iter()
+            .map(|b| u64::from(b.width) * u64::from(b.height))
+            .sum();
+        // BC6H 1 B + direction 2 B / scale² + shadowmask 2 B per texel, twice.
+        assert_eq!(peak.sections, 2 * (block_texels * 3 + block_texels / 4 * 2));
+        assert_eq!(
+            peak.total(),
+            peak.shadowmask_fill + peak.layer_plane + peak.sections
+        );
     }
 }

@@ -103,11 +103,11 @@ impl ReadRoutes {
 }
 
 /// Frame-side handle of the issuer thread. The thread exits once every clone
-/// is dropped and its queue is empty; [`Self::cancel`] stops it before its
-/// next read. A level-scope owner clones it for each resource that submits.
+/// is dropped and its queue is empty, or at [`Self::cancel`], before its next
+/// read. A level-scope owner clones it for each resource that submits.
 #[derive(Debug, Clone)]
 pub(crate) struct ReadIssuer {
-    requests: SyncSender<SubmittedRead>,
+    requests: SyncSender<IssuerMessage>,
     cancel: Arc<AtomicBool>,
     routed: [bool; StreamResource::COUNT],
 }
@@ -144,18 +144,29 @@ impl ReadIssuer {
             return Err("read issuer has no route for this resource");
         }
         self.requests
-            .try_send(SubmittedRead {
+            .try_send(IssuerMessage::Read(SubmittedRead {
                 request,
                 submitted_at: Instant::now(),
-            })
+            }))
             .map_err(|_| "read issuer queue full or disconnected")
     }
 
-    /// Stops the thread before its next read. An OS read already in flight
-    /// finishes; its bytes are released, never delivered.
+    /// Stops the thread before its next read, and wakes it if it is idle, so
+    /// it exits even while another clone of this handle is alive. An OS read
+    /// already in flight finishes; its bytes are released, never delivered.
     pub(crate) fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
+        // Best effort: a full queue already wakes the thread, and a thread
+        // that has exited needs no wake.
+        let _ = self.requests.try_send(IssuerMessage::Wake);
     }
+}
+
+/// What the frame side sends the issuer thread.
+enum IssuerMessage {
+    Read(SubmittedRead),
+    /// Sent by [`ReadIssuer::cancel`] so an idle thread sees the flag.
+    Wake,
 }
 
 /// A request stamped when the frame thread handed it over, so read latency
@@ -219,25 +230,29 @@ impl PlanScratch {
 /// key left its resource's targets, then issues one planned physical read.
 /// Taking new requests between reads lets fresh mandatory work preempt the
 /// rest of the optional tier.
-fn issuer_loop(requests: &Receiver<SubmittedRead>, routes: &ReadRoutes, cancel: &AtomicBool) {
+fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: &AtomicBool) {
     let mut pending: Vec<PendingRead> = Vec::new();
     let mut scratch = PlanScratch::default();
     loop {
         if pending.is_empty() {
-            let Ok(submitted) = requests.recv() else {
-                return;
-            };
-            if !accept(submitted, &mut pending, routes) {
-                return;
-            }
-        }
-        loop {
-            match requests.try_recv() {
-                Ok(submitted) => {
+            match requests.recv() {
+                Ok(IssuerMessage::Read(submitted)) => {
                     if !accept(submitted, &mut pending, routes) {
                         return;
                     }
                 }
+                Ok(IssuerMessage::Wake) => {}
+                Err(_) => return,
+            }
+        }
+        loop {
+            match requests.try_recv() {
+                Ok(IssuerMessage::Read(submitted)) => {
+                    if !accept(submitted, &mut pending, routes) {
+                        return;
+                    }
+                }
+                Ok(IssuerMessage::Wake) => {}
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,
             }

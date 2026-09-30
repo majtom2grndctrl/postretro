@@ -129,8 +129,11 @@ pub(crate) struct DrainBytesOverflow;
 /// whatever its size, so an oversized item cannot stall residency. Admission
 /// stops at the first item over budget rather than skipping ahead to
 /// smaller, lower-ranked work, so frame cost tracks bytes, not item count.
+///
+/// Every rank is unique (resource plus key), so the unstable sort orders
+/// exactly as a stable one would, without the stable sort's buffer.
 pub(crate) fn admit_drain(items: &mut [DrainItem]) -> Result<DrainAdmission, DrainBytesOverflow> {
-    items.sort_by_key(|item| item.rank);
+    items.sort_unstable_by_key(|item| item.rank);
     let mut total = 0u64;
     for (admitted, item) in items.iter().enumerate() {
         let next = total.checked_add(item.bytes).ok_or(DrainBytesOverflow)?;

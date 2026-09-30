@@ -10,7 +10,8 @@ impl ShResidencyController {
     /// Emits a decoded-byte-bounded set of renderer-ready chunks plus an
     /// initial reset or sorted target deltas for the sync-proof path. This path
     /// deliberately never emits evictions or changes targets for budget
-    /// pressure: Task 10's proof gate remains a stable no-eviction baseline.
+    /// pressure: the sync-proof capture path stays a stable no-eviction
+    /// baseline.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn take_drain_batch(&mut self) -> Result<ShDrainBatch, ShResidencyControllerError> {
         self.take_drain_batch_alone(false)

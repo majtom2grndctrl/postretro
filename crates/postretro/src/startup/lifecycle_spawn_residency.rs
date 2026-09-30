@@ -8,11 +8,21 @@ use glam::Vec3;
 use crate::App;
 
 impl App {
-    /// The eye the first level frame presents: the followed local pawn's eye,
-    /// which the first tick moves the camera to, or the install camera when
-    /// no pawn is followed (a pawnless fly camera, a client awaiting its
-    /// pawn). Install carries no reconcile history, so no presentation offset.
+    /// The eye the first level frame presents: the frontend camera pose when
+    /// the frontend menu is up (a backdrop install, which every frame then
+    /// renders from), else the followed local pawn's eye, which the first
+    /// tick moves the camera to, else the install camera when no pawn is
+    /// followed (a pawnless fly camera, a client awaiting its pawn). Install
+    /// carries no reconcile history, so no presentation offset.
     fn spawn_eye_position(&self) -> Vec3 {
+        if self.frontend_menu_is_present()
+            && let Some(frontend) = self
+                .session
+                .as_ref()
+                .and_then(|session| session.frontend.as_ref())
+        {
+            return Vec3::from_array(frontend.camera.position);
+        }
         self.session
             .as_ref()
             .and_then(|session| {

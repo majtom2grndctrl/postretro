@@ -13,14 +13,17 @@ pub struct LightmapStreamCounters {
     pub installs: u64,
     /// Pairs whose payload did not match their block, failed whole.
     pub failed_installs: u64,
-    /// Never-refused pairs deferred because growth waited on a retiring pool.
+    /// Never-refused pairs deferred because growth waited on a retiring pool
+    /// or would pass the device's array-layer limit.
     pub deferred_pairs: u64,
     /// Blocks released: untargeted, over the cap, or evicted for room.
     pub evictions: u64,
     /// Drains that compacted the pool in place through the spare layer.
     pub repacks: u64,
-    /// Same-texture block moves those repacks recorded.
-    pub repack_copies: u64,
+    /// Same-texture copy commands those repacks recorded. A move within one
+    /// layer stages through the spare layer and takes two; a move down from
+    /// a higher layer takes one.
+    pub repack_copy_commands: u64,
     /// Drains that grew a new pool generation.
     pub growths: u64,
     /// Pool texture sets created for this level: the first plus one per

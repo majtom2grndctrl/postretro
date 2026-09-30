@@ -260,6 +260,65 @@ fn no_static_lights_bakes_no_blocks() {
     assert!(section.blocks.is_empty(), "no static light bakes no block");
 }
 
+/// A chart wider than a pool layer rejects the build before block packing,
+/// naming the face and the density it was charted at (here a scale region's).
+#[test]
+fn chart_past_the_pool_layer_edge_rejects_the_build_naming_its_face() {
+    use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+
+    let lights = vec![point_light_above()];
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    // The 1 m quad at 0.04 / 200 m per texel needs 5,000 interior texels.
+    let region = scale_region([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0], 200.0);
+    let mut geo = unit_quad_geometry();
+    let error = prepare_atlas(
+        &mut geo,
+        &static_lights,
+        DEFAULT_TEXEL_DENSITY_METERS,
+        std::slice::from_ref(&region),
+    )
+    .expect_err("a chart past the pool layer edge must fail the build");
+    match error {
+        LightmapBakeError::ChartTooLarge {
+            face_index,
+            width_texels,
+            height_texels,
+            max,
+            density_m_per_texel,
+            ..
+        } => {
+            assert_eq!(face_index, 0);
+            assert_eq!(max, LIGHTMAP_POOL_LAYER_EDGE);
+            assert!(width_texels > max && height_texels > max);
+            assert_eq!(density_m_per_texel, DEFAULT_TEXEL_DENSITY_METERS / 200.0);
+        }
+        other => panic!("expected ChartTooLarge, got {other}"),
+    }
+}
+
+/// Without static light no block is emitted, so a layout the runtime could
+/// not hold is no build error: preparation returns the charts with no
+/// placements, keeps every vertex on block 0, and keeps the direction scale
+/// the placeholder id-22 header carries.
+#[test]
+fn no_static_light_layout_past_the_runtime_limits_returns_no_placements() {
+    let lights: Vec<MapLight> = Vec::new();
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let mut geo = unit_quad_geometry();
+    let prepared = prepare_atlas(&mut geo, &static_lights, 1.0 / 4096.0, &[])
+        .expect("no static light tolerates an oversize layout");
+    assert_eq!(prepared.charts.len(), 1);
+    assert!(prepared.placements.is_empty());
+    assert!(prepared.layout.blocks.is_empty());
+    assert_eq!(prepared.layout.direction_texel_scale, DIRECTION_TEXEL_SCALE);
+    assert!(
+        geo.geometry
+            .vertices
+            .iter()
+            .all(|vertex| vertex.lightmap_block == 0)
+    );
+}
+
 #[test]
 fn single_static_light_produces_nonzero_irradiance() {
     let mut geo = unit_quad_geometry();
@@ -1884,7 +1943,7 @@ fn occluder_produces_dark_texel() {
 fn oversize_face_returns_error_rather_than_panicking() {
     // Regression: the old path clamped atlas_h but left chart placements at pre-clamp
     // coordinates, causing out-of-bounds writes during bake and dilation.
-    let size = 400.0; // 10000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION (8192)
+    let size = 400.0; // 10000 texels at 0.04 m/texel, beyond one pool layer
     let v0 = Vertex::new(
         [0.0, 0.0, 0.0],
         [0.0, 0.0],
@@ -1955,16 +2014,13 @@ fn oversize_face_returns_error_rather_than_panicking() {
             uncompressed_irradiance: false,
         },
     );
-    // A 400 m face is 10000 texels at 0.04 m/texel: its cell block cannot
-    // fit one runtime pool layer, so the build fails naming the cell rather
-    // than placing it.
+    // A 400 m face is 10000 texels at 0.04 m/texel: its chart cannot fit one
+    // runtime pool layer, so the build fails naming the face before packing.
     match result {
-        Err(LightmapBakeError::BlockTooLarge {
-            cell_id: 0,
-            largest_chart_face: 0,
-            ..
-        }) => {}
-        other => panic!("expected BlockTooLarge error, got {other:?}"),
+        Err(LightmapBakeError::ChartTooLarge {
+            face_index: 0, max, ..
+        }) if max == postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE => {}
+        other => panic!("expected ChartTooLarge error, got {other:?}"),
     }
 }
 
@@ -2890,11 +2946,11 @@ fn shadowmask_coverage_threshold_uses_one_shared_comparison() {
     assert!(contribution_covers_shadowmask(above));
 }
 
-/// AC 5: for every lightmapped vertex of a fixture, the block id plus the
-/// block-local UV, resolved through the block's bake-layer origin, addresses
-/// the texel the bake-layer UV addressed before the rebase, within the two
-/// quantizations. The bake-layer UV is recomputed exactly as the pre-block
-/// packer wrote it: the chart's continuous texel over the layer extent.
+/// For every lightmapped vertex of a fixture, the block id plus the block-local
+/// UV, resolved through the block's bake-layer origin, addresses the texel the
+/// bake-layer UV addressed before the rebase, within the two quantizations.
+/// The bake-layer UV is recomputed exactly as the pre-block packer wrote it:
+/// the chart's continuous texel over the layer extent.
 #[test]
 fn block_local_vertex_uv_addresses_the_same_chart_texel_as_the_bake_layer_uv() {
     let mut fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");

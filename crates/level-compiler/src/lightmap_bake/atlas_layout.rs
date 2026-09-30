@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use glam::Vec3;
 
 use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks};
-use super::charts::{Chart, plan_charts};
+use super::charts::{Chart, check_chart_extents, plan_charts};
 use super::{CompositedAtlas, LightmapBakeError};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
@@ -53,14 +53,16 @@ pub fn prepare_atlas(
 
 /// Prepare charts and cell blocks, and assign each vertex its block id and
 /// block-local lightmap UV. Runs `split_shared_vertices`, `plan_charts`,
-/// `pack_cell_blocks`, and `assign_lightmap_uvs`. Does NOT run the per-texel
-/// ray casting.
+/// `check_chart_extents`, `pack_cell_blocks`, and `assign_lightmap_uvs`. Does
+/// NOT run the per-texel ray casting.
 ///
 /// Called once before either bake branch, so the layout is shared. Vertex
 /// splitting and UV writes run on all non-empty geometry with static lights.
 /// Without static lights the section has no blocks, so vertices keep block 0,
 /// but charts and placements are still returned for the animated-light
-/// passes. Empty geometry returns an empty layout without mutating anything.
+/// passes; when those blocks exceed the runtime limits, placements come back
+/// empty instead of failing the build. Empty geometry returns an empty layout
+/// without mutating anything.
 pub fn prepare_atlas_ordered(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
@@ -76,12 +78,7 @@ pub fn prepare_atlas_ordered(
             atlas_width: 1,
             atlas_height: 1,
             layer_count: 1,
-            layout: BlockLayout {
-                direction_texel_scale: super::encode::normalized_direction_texel_scale(
-                    ordering.direction_texel_scale,
-                ),
-                ..BlockLayout::default()
-            },
+            layout: empty_layout(ordering),
         });
     }
 
@@ -90,9 +87,13 @@ pub fn prepare_atlas_ordered(
         // UV bounds and placements even when no static lights exist. Vertex
         // splitting and UV assignment are skipped because the section carries
         // no blocks for any vertex to name. A layout the runtime could not hold
-        // is tolerated here for the same reason.
+        // is tolerated here for the same reason: placements come back empty,
+        // and the animated passes then plan no chunks. The empty layout keeps
+        // the direction scale, which the placeholder id-22 header carries.
         let charts = plan_charts(geom, texel_density, scale_regions)?;
-        return Ok(match pack_cell_blocks(&charts, ordering, control) {
+        let pack = check_chart_extents(&charts, texel_density, scale_regions)
+            .and_then(|()| pack_cell_blocks(&charts, ordering, control));
+        return Ok(match pack {
             Ok(pack) => PreparedAtlas {
                 charts,
                 placements: pack.placements,
@@ -107,7 +108,7 @@ pub fn prepare_atlas_ordered(
                 atlas_width: 1,
                 atlas_height: 1,
                 layer_count: 1,
-                layout: BlockLayout::default(),
+                layout: empty_layout(ordering),
             },
         });
     }
@@ -116,6 +117,7 @@ pub fn prepare_atlas_ordered(
     split_shared_vertices(geom);
 
     let charts = plan_charts(geom, texel_density, scale_regions)?;
+    check_chart_extents(&charts, texel_density, scale_regions)?;
     let pack = pack_cell_blocks(&charts, ordering, control)?;
     if !pack.placements.is_empty() {
         assign_lightmap_uvs(geom, &charts, &pack.placements, &pack.layout);
@@ -129,6 +131,16 @@ pub fn prepare_atlas_ordered(
         layer_count: pack.layer_count,
         layout: pack.layout,
     })
+}
+
+/// A layout with no blocks at the ordering's normalized direction scale.
+fn empty_layout(ordering: BlockOrdering<'_>) -> BlockLayout {
+    BlockLayout {
+        direction_texel_scale: super::encode::normalized_direction_texel_scale(
+            ordering.direction_texel_scale,
+        ),
+        ..BlockLayout::default()
+    }
 }
 
 fn split_shared_vertices(geom: &mut GeometryResult) {

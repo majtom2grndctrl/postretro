@@ -63,7 +63,7 @@ pub(crate) fn pinned_cells(input: &DryRunInput) -> Vec<u32> {
 
 /// What the formula reads, shared by the lead map and direct evaluation.
 pub(crate) struct BriefSetSources<'a> {
-    /// Untruncated hub-metric partners covering `BRIEF_MAX_LEAD_METERS`.
+    /// Untruncated hub-metric partners covering `MAX_LEAD_METERS`.
     pub neighbors: &'a Neighbors,
     /// `visible_sources` output for one dilation.
     pub visible: &'a [Vec<u32>],

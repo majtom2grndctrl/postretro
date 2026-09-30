@@ -5,6 +5,8 @@ pub(crate) mod block_map;
 pub(crate) mod controller;
 pub(crate) mod demand;
 pub(crate) mod levers;
+#[cfg(test)]
+pub(crate) mod prl_test_fixture;
 pub(crate) mod route;
 pub(crate) mod source;
 #[cfg(test)]

@@ -22,8 +22,9 @@ pub(in crate::session) struct PendingShDrain {
 impl ShStreamingSession {
     /// The frame thread only drains completed ownership transfers and queues
     /// work. Positional I/O, hash verification and decode stay on workers.
-    /// SH as the drain's only resource; the level-scope step runs the same
-    /// halves with lightmap blocks sharing the admission.
+    /// A test shim: SH as the drain's only resource, over its own issuer.
+    /// Production runs the same halves through `LevelStreaming::prepare_drains`,
+    /// which its own SH-only test covers.
     #[cfg(test)]
     pub(super) fn prepare_async_batch(
         &mut self,

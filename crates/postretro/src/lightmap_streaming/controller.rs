@@ -17,7 +17,7 @@ use super::source::LightmapBlockSource;
 use crate::sh_streaming::generation::{GenerationClock, ProcessGenerationClock};
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
-use crate::streaming::request::StreamResource;
+use crate::streaming::request::{ReadTier, StreamResource};
 use crate::streaming::target_bitset::TargetBitset;
 
 #[path = "drain.rs"]
@@ -28,6 +28,7 @@ mod preload;
 mod reads;
 
 pub(crate) use preload::LightmapPreloadReads;
+use reads::PairCharge;
 #[cfg(test)]
 #[path = "preload_tests.rs"]
 mod preload_tests;
@@ -39,12 +40,23 @@ mod tests;
 mod threaded_tests;
 
 /// A permit covers one block pair from request until install, refusal, or
-/// discard. Sizes the issuer queue and the completion queue.
+/// discard.
 pub(crate) const MAX_LIGHTMAP_PERMITS: usize = 32;
+/// Issuer queue and completion queue slots for lightmap requests. A pair
+/// submits at most twice while it holds its permit: its read, then one tier
+/// raise if a band pair is promoted in flight. A raise the issuer has already
+/// completed is read, and completed, again.
+pub(crate) const LIGHTMAP_QUEUE_CAPACITY: usize = 2 * MAX_LIGHTMAP_PERMITS;
 /// Pair bytes in hand (in flight, ready, or in a drain) before new requests
 /// wait: four drains' worth. The first request is always allowed, so one
 /// oversized pair still streams.
 pub(crate) const MAX_IN_HAND_PAIR_BYTES: u64 = 4 * MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
+/// Band (optional) reads may hold at most half the permits and half the
+/// in-hand bytes. The other half is a reserve only mandatory and visible
+/// reads use, so prefetch can never keep them from submitting. The first
+/// band pair is always allowed, so one oversized band pair still streams.
+pub(crate) const MAX_BAND_PERMITS: usize = MAX_LIGHTMAP_PERMITS / 2;
+pub(crate) const MAX_BAND_IN_HAND_PAIR_BYTES: u64 = MAX_IN_HAND_PAIR_BYTES / 2;
 /// Failures after which a block is never requested again this generation:
 /// the first, then one retry after it leaves demand and returns (SH's
 /// failed-request policy), so corrupt data is not re-read every frame.
@@ -63,11 +75,23 @@ pub(crate) enum BlockPhase {
     /// The renderer installed it; sampleable until evicted.
     Installed,
     /// A band pair the renderer refused over the cap. Not requested again
-    /// until the pool reports more band headroom than it had at refusal.
+    /// until the pool reports at least one more slot of band headroom than
+    /// it had at refusal.
     Refused,
     /// The read, the payload split, or the renderer's install failed. Not
     /// retried until the block leaves demand and returns, and then only once.
     Failed,
+}
+
+impl BlockPhase {
+    /// Whether the pair is resident or on its way: read, being read, or in
+    /// the renderer's hands. A held block keeps its target only then.
+    fn holds_pair(self) -> bool {
+        matches!(
+            self,
+            Self::InFlight | Self::Ready | Self::InDrain | Self::Installed
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -78,8 +102,12 @@ struct BlockSlot {
     sent: Option<LightmapTarget>,
     /// Queued in `pending_delta`.
     pending_delta: bool,
-    /// Band texels charged against headroom while the pair is in hand.
-    band_texels: u64,
+    /// What the pair is charged against while it is in hand.
+    charge: PairCharge,
+    /// The tier the in-flight read was last submitted at.
+    read_tier: ReadTier,
+    /// Queued in `promotions`.
+    promotion_queued: bool,
     /// Failures this generation; the first warns.
     failures: u8,
     refused_headroom: u64,
@@ -111,12 +139,18 @@ pub(crate) struct LightmapResidencyCounters {
     pub(crate) stale_completions: u64,
     /// Completions for a block with no read in flight; dropped.
     pub(crate) duplicate_completions: u64,
-    /// Visible misses, two disjoint buckets of block-frames drawn on a portal
-    /// walk, counted after the frame's drain. Outside the baked set: drawn
-    /// while not mandatory at lead L (demanded only because it was drawn),
+    /// In-flight band reads resubmitted at the mandatory tier after their
+    /// block became mandatory or visible.
+    pub(crate) tier_raises: u64,
+    /// Batches the renderer failed and rolled back.
+    pub(crate) aborted_drains: u64,
+    /// Visible misses, in two buckets of block-frames drawn on any frame
+    /// that draws cells, counted after the frame's drain. A block may land in
+    /// both. Outside the baked set: drawn while not mandatory at lead L,
     /// resident or not; this is the check on the baked set's dilation.
     pub(crate) drawn_outside_baked_set: u64,
-    /// Drawn while mandatory at lead L but not installed: the stream lagged.
+    /// Drawn while not installed, whatever its class: the stream lagged, or
+    /// a non-portal frame drew a block it may not read.
     pub(crate) drawn_not_resident: u64,
     pub(crate) last_frame_drawn_outside_baked_set: u32,
     pub(crate) last_frame_drawn_not_resident: u32,
@@ -186,17 +220,30 @@ pub(crate) struct LightmapResidencyController {
     requests_due: bool,
     /// This frame's visibility path allows new reads.
     may_request: bool,
+    /// This frame is not a portal walk: it may read only the camera cell's
+    /// baked set and the pins.
+    camera_set_only: bool,
     needs_target_reset: bool,
     drain_outstanding: bool,
     permits_in_use: usize,
     in_hand_bytes: u64,
+    /// Band pairs' share of the permits and in-hand bytes.
+    band_permits: usize,
+    band_in_hand_bytes: u64,
+    /// Slot texels of the band pairs in hand.
     band_committed_texels: u64,
+    /// Slot texels of the mandatory and visible pairs in hand. The renderer
+    /// places them before any band pair, so they come off band headroom.
+    never_refused_texels: u64,
+    /// In-flight band reads whose block became mandatory or visible; their
+    /// requests are resubmitted at the mandatory tier.
+    promotions: Vec<u32>,
     pool: LightmapPoolReport,
     refused_blocks: usize,
     counters: LightmapResidencyCounters,
     residency: LightmapResidencyBytes,
-    /// The latest demand update was a portal walk whose drawn blocks have not
-    /// yet been counted for visible misses.
+    /// The latest demand update drew cells whose blocks have not yet been
+    /// counted for visible misses.
     misses_due: bool,
     /// Reused by outcome validation.
     outcome_scratch: Vec<u32>,
@@ -259,7 +306,9 @@ impl LightmapResidencyController {
                     target: None,
                     sent: None,
                     pending_delta: false,
-                    band_texels: 0,
+                    charge: PairCharge::None,
+                    read_tier: ReadTier::Optional,
+                    promotion_queued: false,
                     refused_headroom: 0,
                     failures: 0,
                 };
@@ -273,11 +322,16 @@ impl LightmapResidencyController {
             request_order_stale: true,
             requests_due: true,
             may_request: false,
+            camera_set_only: false,
             needs_target_reset: true,
             drain_outstanding: false,
             permits_in_use: 0,
             in_hand_bytes: 0,
+            band_permits: 0,
+            band_in_hand_bytes: 0,
             band_committed_texels: 0,
+            never_refused_texels: 0,
+            promotions: Vec::new(),
             pool: LightmapPoolReport::default(),
             refused_blocks: 0,
             counters: LightmapResidencyCounters::default(),
@@ -361,6 +415,7 @@ impl LightmapResidencyController {
             self.in_drain.capacity(),
             self.pending_delta.capacity(),
             self.request_order.capacity(),
+            self.promotions.capacity(),
             self.outcome_scratch.capacity(),
         ]);
         capacities
@@ -368,13 +423,30 @@ impl LightmapResidencyController {
 
     /// Applies one frame's visibility: recomputes baked demand only when the
     /// camera cell or lead changed, updates visible demand on a portal walk,
-    /// and retargets every changed block. A portal walk's drawn blocks are
+    /// and retargets every changed block. A non-portal frame keeps its drawn
+    /// blocks' targets while their pairs are resident or on their way, and
+    /// reads only the camera cell's baked set. The frame's drawn blocks are
     /// counted for visible misses by [`Self::count_visible_misses`], after
     /// the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
         self.may_request = self.demand.update(&self.map, self.levers.lead(), frame);
+        self.camera_set_only = !frame.is_portal_walk();
         self.retarget_dirty();
-        self.misses_due = frame.is_portal_walk();
+        self.misses_due = frame.draws_cells();
+    }
+
+    /// Capture's fixed view: the camera cell's baked set plus every drawn
+    /// cell's block as visible, whatever the visibility path. Capture is an
+    /// offline tool that renders the full view synchronously, so it is exempt
+    /// from the in-play rule that a non-portal frame reads only the camera
+    /// cell's baked set.
+    pub(crate) fn update_capture_view(&mut self, frame: DemandFrame<'_>) {
+        self.demand
+            .update_capture_view(&self.map, self.levers.lead(), frame);
+        self.may_request = true;
+        self.camera_set_only = false;
+        self.retarget_dirty();
+        self.misses_due = frame.draws_cells();
     }
 
     /// Demand from `camera_cell`'s baked set within lead L plus the pins, with
@@ -388,6 +460,7 @@ impl LightmapResidencyController {
         self.demand
             .update_camera_set(&self.map, self.levers.lead(), residency_set, camera_cell);
         self.may_request = true;
+        self.camera_set_only = true;
         self.retarget_dirty();
     }
 
@@ -409,29 +482,35 @@ impl LightmapResidencyController {
     fn retarget_dirty(&mut self) {
         for index in 0..self.demand.dirty_len() {
             let block = self.demand.dirty_at(index);
-            let next = self.demand.target(&self.map, block);
+            let mut next = self.demand.target(&self.map, block);
+            let slot = &self.slots[block as usize];
+            if self.demand.is_held(block) && slot.phase.holds_pair() {
+                next = BlockTarget::held(slot.target, next);
+            }
             self.retarget(block, next);
         }
         self.demand.clear_dirty();
     }
 
-    /// Counts the latest portal walk's drawn blocks into the two visible-miss
+    /// Counts the latest frame's drawn blocks into the two visible-miss
     /// buckets, once. Call after the frame's drain outcome is applied, so a
     /// block that drain installed is resident for the frame that draws it.
-    /// Each drawn block lands in at most one bucket: outside the baked set
-    /// (not mandatory at lead L, resident or not), otherwise not resident. A
-    /// frame without a portal walk, or already counted, reports zero.
+    /// The buckets overlap: outside the baked set counts every drawn block
+    /// not mandatory at lead L, resident or not; not resident counts every
+    /// drawn block not installed, whatever its class. A frame that draws no
+    /// cell, or one already counted, reports zero.
     pub(crate) fn count_visible_misses(&mut self) {
         let (mut outside, mut not_resident) = (0u32, 0u32);
         if std::mem::take(&mut self.misses_due) {
             for &block in self.demand.drawn_blocks() {
                 let slot = &self.slots[block as usize];
-                if slot
+                if !slot
                     .target
-                    .is_some_and(|target| target.class == LightmapBlockClass::Visible)
+                    .is_some_and(|target| target.class == LightmapBlockClass::Mandatory)
                 {
                     outside += 1;
-                } else if slot.phase != BlockPhase::Installed {
+                }
+                if slot.phase != BlockPhase::Installed {
                     not_resident += 1;
                 }
             }
@@ -458,6 +537,9 @@ impl LightmapResidencyController {
             _ => {}
         }
         self.slots[index].target = next;
+        if next.is_some_and(|target| target.class != LightmapBlockClass::Band) {
+            self.promote_in_hand(block);
+        }
         if previous.is_some() != next.is_some() {
             self.targets.set(block, next.is_some());
         }

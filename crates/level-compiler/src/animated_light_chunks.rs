@@ -9,6 +9,7 @@ use postretro_level_format::animated_light_chunks::{
 };
 use postretro_level_format::bvh::BvhSection;
 
+use crate::chart_raster::ChartPlacement;
 use crate::geometry::FaceIndexRange;
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::Chart;
@@ -17,6 +18,43 @@ use crate::lightmap_bake::Chart;
 /// single summary log line. Keeps the compile log readable on pathological
 /// inputs while preserving the first few diagnostic lines.
 const MAX_OVERFLOW_LOG_LINES: u64 = 8;
+
+/// [`build_animated_light_chunks`] for charts atlas preparation may have left
+/// unplaced. Each chunk is baked into a weight map at its chart's placement,
+/// so without placements there is nowhere to bake one: the map gets no chunks.
+///
+/// Placements are missing only on a map without static light whose cell
+/// blocks the runtime could not hold. Its id 22 is a placeholder, and the
+/// runtime leaves animated light inactive over a placeholder, so skipping
+/// the bake matches what such a map renders when its blocks do pack.
+pub fn build_placed_animated_light_chunks(
+    bvh_section: &BvhSection,
+    animated_lights: &AnimatedBakedLights<'_>,
+    face_charts: &[Chart],
+    face_placements: &[ChartPlacement],
+    face_index_ranges: &[FaceIndexRange],
+    lightmap_texel_density: f32,
+) -> (AnimatedLightChunksSection, Vec<(u32, u32)>) {
+    if face_placements.len() != face_charts.len() {
+        if !animated_lights.is_empty() {
+            log::warn!(
+                "[AnimatedLightChunks] no lightmap chart placements (no static light, and cell \
+                 blocks past the runtime limits); baking no animated-light weight maps"
+            );
+        }
+        return (
+            AnimatedLightChunksSection::empty(),
+            vec![(0, 0); bvh_section.leaves.len()],
+        );
+    }
+    build_animated_light_chunks(
+        bvh_section,
+        animated_lights,
+        face_charts,
+        face_index_ranges,
+        lightmap_texel_density,
+    )
+}
 
 /// Build the `AnimatedLightChunksSection` and a parallel per-leaf
 /// `(chunk_range_start, chunk_range_count)` table.
@@ -597,6 +635,49 @@ mod tests {
         );
         assert_eq!(section.chunks.len(), 1);
         assert_eq!(section.light_indices, vec![0]);
+        assert_eq!(ranges[0], (0, 1));
+    }
+
+    /// Charts atlas preparation left unplaced (no static light, blocks past
+    /// the runtime limits) plan no chunks, so the weight-map bake never
+    /// indexes a missing placement; placed charts plan as before.
+    #[test]
+    fn unplaced_charts_plan_no_animated_chunks() {
+        let bvh = make_bvh_with_one_leaf();
+        let lights = vec![animated_point_light()];
+        let influence = vec![InfluenceRecord {
+            center: [0.5, 0.0, 0.5],
+            radius: 5.0,
+        }];
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
+        let charts = [chart_xz_plane()];
+
+        let (section, ranges) = build_placed_animated_light_chunks(
+            &bvh,
+            &envelope,
+            &charts,
+            &[],
+            &one_face_range(),
+            0.04,
+        );
+        assert!(section.chunks.is_empty());
+        assert!(section.light_indices.is_empty());
+        assert_eq!(ranges, vec![(0, 0)]);
+
+        let placed = [ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let (section, ranges) = build_placed_animated_light_chunks(
+            &bvh,
+            &envelope,
+            &charts,
+            &placed,
+            &one_face_range(),
+            0.04,
+        );
+        assert_eq!(section.chunks.len(), 1);
         assert_eq!(ranges[0], (0, 1));
     }
 

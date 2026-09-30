@@ -1,7 +1,7 @@
 //! Sampled potentially-visible sets per camera cell.
 //!
-//! The CellResidencySet bake's visible-set input; the lightmap residency dry
-//! run measures the same sets.
+//! The CellResidencySet bake's visible-set input; the test-only
+//! `lightmap_residency_dry_run` measures the same sets.
 //!
 //! The engine bakes no PVS (id 14 is retired): the runtime walks portals from
 //! the eye every frame. This estimates a cell's PVS by running that same walk
@@ -37,8 +37,8 @@ const INSET_SCALES: [f32; 2] = [0.5, 0.25];
 /// 90° per cube face plus 2° either side, so cells on a face seam are inside
 /// both neighbouring frusta rather than clipped by both.
 pub(crate) const CUBE_FACE_FOV_DEGREES: f32 = 94.0;
-/// Must match `MAX_FOV_DEG` in `crates/postretro/src/camera.rs`; stated in the
-/// dry-run report as the widest camera the bound covers.
+/// Must match `MAX_FOV_DEG` in `crates/postretro/src/camera.rs`; the test-only
+/// dry-run report states it as the widest camera the bound covers.
 #[cfg(test)]
 pub(crate) const RUNTIME_MAX_FOV_DEGREES: f32 = 130.0;
 /// Must match `NEAR` / `FAR` in `crates/postretro/src/camera.rs`: the engine
@@ -61,8 +61,8 @@ const CUBE_FACES: [(Vec3, Vec3); 6] = [
 pub(crate) enum SampleDensity {
     /// Centroid plus the 8 inset corners.
     Sparse,
-    /// The full inset lattice, a superset of `Sparse`. Only the dry run names
-    /// it; the bake reads `SampledPvs::dense` directly.
+    /// The full inset lattice, a superset of `Sparse`. Only tests name it; the
+    /// bake reads `SampledPvs::dense` directly.
     #[cfg_attr(not(test), allow(dead_code))]
     Dense,
 }
@@ -127,8 +127,8 @@ impl SamplingStats {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SampledPvs {
     /// Indexed by cell id; ascending drawable cells plus the cell itself.
-    /// Empty for cells that are not camera cells. Only the dry run's density
-    /// convergence check reads the sparse sets; the bake reads `dense`.
+    /// Empty for cells that are not camera cells. Only tests read the sparse
+    /// sets (the dry run's density convergence check); the bake reads `dense`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub sparse: Vec<Vec<u32>>,
     pub dense: Vec<Vec<u32>>,

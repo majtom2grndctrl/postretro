@@ -5,6 +5,14 @@ use super::*;
 use postretro_test_log_capture::LogCapture;
 use std::time::{Duration, Instant};
 
+/// The level's id 49, decoded as level scope does.
+fn level_hints(world: &postretro_level_loader::LevelWorld) -> Arc<ClusterHints> {
+    let directory = world
+        .cluster_directory()
+        .expect("streamed SH carries id 49");
+    Arc::new(ClusterHints::decode(directory).unwrap())
+}
+
 // Regression: the permitted retry for one failed worker request emitted a duplicate warning.
 #[test]
 fn async_worker_failure_warns_once_across_same_identity_retry() {
@@ -18,6 +26,7 @@ fn async_worker_failure_warns_once_across_same_identity_retry() {
             ..ShResidencySnapshot::default()
         },
         world.cell_visibility.as_ref(),
+        level_hints(&world),
     )
     .unwrap();
     session.mode = ShStreamingMode::Async;
@@ -70,9 +79,13 @@ fn periodic_log_line_appears_once_per_active_interval_and_never_when_idle() {
         effective_floor_bytes: 1024 * 1024,
         ..ShResidencySnapshot::default()
     };
-    let mut session =
-        ShStreamingSession::from_snapshot(manifest, renderer, world.cell_visibility.as_ref())
-            .unwrap();
+    let mut session = ShStreamingSession::from_snapshot(
+        manifest,
+        renderer,
+        world.cell_visibility.as_ref(),
+        level_hints(&world),
+    )
+    .unwrap();
     session.mode = ShStreamingMode::Async;
     session.start_async_workers().unwrap();
     let capture = LogCapture::start();
@@ -139,6 +152,7 @@ fn sync_proof_reads_fill_the_read_counters() {
             ..ShResidencySnapshot::default()
         },
         world.cell_visibility.as_ref(),
+        level_hints(&world),
     )
     .unwrap();
     assert_eq!(session.mode, ShStreamingMode::SyncProof);

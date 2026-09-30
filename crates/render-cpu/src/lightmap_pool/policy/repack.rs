@@ -17,14 +17,17 @@ use super::{LightmapPoolModel, placement_of};
 
 impl LightmapPoolModel {
     /// Repack every resident block plus the ready never-refused `pending`
-    /// under the cap, without reads. Mandatory and visible blocks go first,
-    /// each resident one no higher than the layer it sits in (most
-    /// constrained first, then tallest), then resident band blocks nearest
-    /// lead first; a band block that no longer fits is dropped. Returns
-    /// false, with the model untouched, when some mandatory or visible block
-    /// does not fit.
-    pub(super) fn repack(&mut self, pending: &[u32]) -> bool {
-        let limit = self.cap_eff();
+    /// without reads. Mandatory and visible blocks go below `limit` layers
+    /// first, each resident one no higher than the layer it sits in (most
+    /// constrained first, then tallest); then resident band blocks, nearest
+    /// lead first, below the cap. A band block that no longer fits is
+    /// dropped. Returns false, with the model untouched, when some mandatory
+    /// or visible block does not fit.
+    ///
+    /// `limit` is the cap, or the current layers in a pool that grew past
+    /// it: compacting what is already allocated beats growing again.
+    pub(super) fn repack(&mut self, pending: &[u32], limit: u32) -> bool {
+        let band_limit = self.cap_eff();
         let checkpoint = self.journal.len();
         let mut keep = std::mem::take(&mut self.scratch.repack_keep);
         let mut band = std::mem::take(&mut self.scratch.repack_band);
@@ -36,11 +39,10 @@ impl LightmapPoolModel {
         residents.sort_unstable();
         for &block in &residents {
             let layer = self.slots[block as usize].expect("resident").layer;
-            let bound = (layer + 1).min(limit);
             if self.is_band(block) {
-                band.push((block, bound));
+                band.push((block, (layer + 1).min(band_limit)));
             } else {
-                keep.push((block, bound));
+                keep.push((block, (layer + 1).min(limit)));
             }
         }
         keep.extend(pending.iter().map(|&block| (block, limit)));

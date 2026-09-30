@@ -161,21 +161,47 @@ impl LightmapResidencyController {
         self.pool = outcome.pool;
         if headroom_grew {
             self.requests_due = true;
-            self.unrefuse_below(self.pool.band_headroom_texels);
+            self.unrefuse_with_room(self.pool.band_headroom_texels);
         }
         self.in_drain.clear();
         self.drain_outstanding = false;
         Ok(())
     }
 
-    /// Refused band blocks become requestable again once headroom exceeds
-    /// what the pool had when it refused them.
-    fn unrefuse_below(&mut self, headroom: u64) {
+    /// The renderer failed the outstanding batch and rolled it back whole:
+    /// no pair installed, no target changed, nothing evicted. Every drained
+    /// pair returns to Absent, its buffers and permit released, to be read
+    /// again; the next batch re-sends every target as a reset. Does nothing
+    /// without an outstanding batch.
+    pub(crate) fn abort_drain(&mut self) {
+        if !self.drain_outstanding {
+            return;
+        }
+        for index in 0..self.in_drain.len() {
+            let block = self.in_drain[index];
+            self.release_in_hand(block);
+            self.slots[block as usize].phase = BlockPhase::Absent;
+        }
+        self.in_drain.clear();
+        self.drain_outstanding = false;
+        self.needs_target_reset = true;
+        self.counters.aborted_drains += 1;
+    }
+
+    /// Refused band blocks become requestable again once the pool reports
+    /// room for at least one more of their slots than it had when it refused
+    /// them, so a refused block is not re-read on every small gain.
+    fn unrefuse_with_room(&mut self, headroom: u64) {
         if self.refused_blocks == 0 {
             return;
         }
-        for slot in &mut self.slots {
-            if slot.phase == BlockPhase::Refused && slot.refused_headroom < headroom {
+        for (block, slot) in self.slots.iter_mut().enumerate() {
+            if slot.phase == BlockPhase::Refused
+                && slot
+                    .refused_headroom
+                    .saturating_add(self.map.facts(block as u32).texels)
+                    <= headroom
+            {
                 slot.phase = BlockPhase::Absent;
                 self.refused_blocks -= 1;
             }

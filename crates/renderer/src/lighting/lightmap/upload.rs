@@ -5,10 +5,11 @@
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use wgpu::util::DeviceExt;
 
-/// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
-/// hardware bilinear filtering on this adapter. Checked once at init: the
-/// forward pass samples the irradiance + animated atlases through the linear
-/// sampler, so a non-filterable adapter is rejected (see `Renderer::new`).
+/// Whether `Rgba16Float` (the uncompressed irradiance pool and animated atlas
+/// format) advertises hardware bilinear filtering on this adapter. Checked
+/// once at init: the forward pass samples the irradiance pool and the
+/// animated atlas through the linear sampler, so a non-filterable adapter is
+/// rejected (see `Renderer::new`).
 /// Linear 16-bit-float filtering is core WebGPU and mandated on all targeted
 /// backends, so this holds everywhere the engine is supported.
 pub fn atlas_format_filterable(adapter: &wgpu::Adapter) -> bool {

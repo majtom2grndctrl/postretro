@@ -23,11 +23,14 @@ pub const LIGHTMAP_BLOCK_RECORD_BYTES: usize = 36;
 
 /// Edge of one runtime pool layer. No block may exceed it on either axis;
 /// the compiler rejects such a level and the loader rejects such a record.
+/// Why 2048: a pool layer then costs 14 MiB (BC6H, scale 2, shadowmask), the
+/// step the pool grows by, and the 4096-wide two-group shadowmask layer stays
+/// inside WebGPU's default 8192 texture dimension.
 pub const LIGHTMAP_POOL_LAYER_EDGE: u32 = 2048;
 
-/// Most blocks a level may carry. A vertex names its block as `id + 1` in a
-/// `u16`, with 0 meaning "no lightmap", so ids stop one short of `u16::MAX`.
-pub const MAX_LIGHTMAP_BLOCKS: u32 = u16::MAX as u32 - 1;
+/// Most blocks a level may carry. Block id + 1 must fit a vertex's `u16`;
+/// 0 means no lightmap. So ids run 0..=65534.
+pub const MAX_LIGHTMAP_BLOCKS: u32 = u16::MAX as u32;
 
 /// BC texel block edge. Every block edge is a multiple of it and of the
 /// direction texel scale.
@@ -88,7 +91,8 @@ impl SectionByteRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LightmapHeader {
     pub block_count: u32,
-    /// Irradiance texels per direction texel along each axis (>= 1).
+    /// Irradiance texels per direction texel along each axis: a power of two
+    /// dividing [`LIGHTMAP_POOL_LAYER_EDGE`].
     pub direction_texel_scale: u32,
     pub irradiance_format: u32,
     pub mode: LightmapMode,
@@ -139,8 +143,9 @@ impl LightmapHeader {
     }
 
     /// Parse the fixed header. Rejects an older or unknown version, an unknown
-    /// irradiance format or mode, a zero direction scale, and a block count
-    /// past [`MAX_LIGHTMAP_BLOCKS`].
+    /// irradiance format or mode, a direction scale that is not a power of two
+    /// dividing [`LIGHTMAP_POOL_LAYER_EDGE`], and a block count past
+    /// [`MAX_LIGHTMAP_BLOCKS`].
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         if data.len() < LIGHTMAP_HEADER_BYTES {
             return Err(eof("lightmap section too short for header"));
@@ -160,8 +165,14 @@ impl LightmapHeader {
                 "lightmap block count {block_count} exceeds the vertex id limit {MAX_LIGHTMAP_BLOCKS}"
             )));
         }
-        if direction_texel_scale == 0 {
-            return Err(invalid("lightmap direction texel scale must be nonzero"));
+        // The pool's direction layer is the pool edge divided by the scale;
+        // any other scale leaves the renderer no direction layer to build.
+        if !direction_texel_scale.is_power_of_two()
+            || direction_texel_scale > LIGHTMAP_POOL_LAYER_EDGE
+        {
+            return Err(invalid(format!(
+                "lightmap direction texel scale {direction_texel_scale} is not a power of two dividing the {LIGHTMAP_POOL_LAYER_EDGE}-texel pool layer"
+            )));
         }
         if !matches!(
             irradiance_format,
@@ -217,6 +228,7 @@ impl LightmapBlockIndex {
     /// Rejects: a record with a zero, misaligned, or pool-layer-oversize
     /// extent; a blob length that disagrees with the block's extent and
     /// format; a blob range that overlaps the index or leaves the section; a
+    /// direction blob that does not start where its irradiance blob ends; a
     /// nonzero reserved field.
     pub fn from_prefix(prefix: &[u8], section_len: u64) -> crate::Result<Self> {
         let header = LightmapHeader::from_bytes(prefix)?;
@@ -318,6 +330,12 @@ fn validate_record(
         expected_dir,
         index_len,
         section_len,
+    )?;
+    check_adjacent(
+        "lightmap",
+        block,
+        ("irradiance", record.irradiance),
+        ("direction", record.direction),
     )
 }
 
@@ -350,6 +368,23 @@ pub(crate) fn check_blob(
     Ok(())
 }
 
+/// Shared by ids 22 and 42: a block's second blob starts where its first
+/// ends. A streamed block then reads each section's half as one range.
+pub(crate) fn check_adjacent(
+    section: &str,
+    block: usize,
+    (first_what, first): (&str, SectionByteRange),
+    (second_what, second): (&str, SectionByteRange),
+) -> crate::Result<()> {
+    if first.end() == Some(second.offset) {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "{section} block {block} {second_what} blob at {} does not start where its {first_what} blob ends",
+        second.offset
+    )))
+}
+
 /// One block's baked texels in their stored formats.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightmapBlock {
@@ -370,7 +405,7 @@ pub struct LightmapBlock {
 ///   Header (20 bytes):
 ///     u32 version                (= 3)
 ///     u32 block_count            (<= MAX_LIGHTMAP_BLOCKS)
-///     u32 direction_texel_scale  (>= 1)
+///     u32 direction_texel_scale  (power of two dividing LIGHTMAP_POOL_LAYER_EDGE)
 ///     u32 irradiance_format      (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
 ///     u32 mode                   (LightmapMode: 0 = shadowed, 1 = unshadowed)
 ///   block_count records (36 bytes each), block id = record index:
@@ -380,7 +415,8 @@ pub struct LightmapBlock {
 ///     u64 irradiance_offset, u32 irradiance_len
 ///     u64 direction_offset,  u32 direction_len   (Rg8, extent / scale)
 ///     u32 reserved (= 0)
-///   Blobs, in record order: each block's irradiance, then its direction.
+///   Blobs, in record order: each block's irradiance, then its direction,
+///   adjacent.
 /// ```
 ///
 /// Records and blobs are sorted by owning cluster, then cell id; the
@@ -802,6 +838,46 @@ mod tests {
         assert!(message.contains("vertex id limit"), "{message}");
         bytes[4..8].copy_from_slice(&MAX_LIGHTMAP_BLOCKS.to_le_bytes());
         assert!(LightmapHeader::from_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn block_limit_is_u16_max_so_the_last_block_id_plus_one_fits_a_vertex() {
+        assert_eq!(MAX_LIGHTMAP_BLOCKS, 65_535);
+        let last_block_id = MAX_LIGHTMAP_BLOCKS - 1;
+        assert_eq!(u16::try_from(last_block_id + 1), Ok(u16::MAX));
+    }
+
+    #[test]
+    fn rejects_direction_scale_that_is_not_a_power_of_two_dividing_the_pool_layer() {
+        for scale in [3u32, 6, 12, LIGHTMAP_POOL_LAYER_EDGE * 2] {
+            let mut bytes = LightmapSection::empty(2).to_bytes();
+            bytes[8..12].copy_from_slice(&scale.to_le_bytes());
+            let message = error_message(LightmapHeader::from_bytes(&bytes));
+            assert!(
+                message.contains("power of two dividing"),
+                "{scale}: {message}"
+            );
+        }
+        for scale in [1u32, 2, 8, LIGHTMAP_POOL_LAYER_EDGE] {
+            let mut bytes = LightmapSection::empty(2).to_bytes();
+            bytes[8..12].copy_from_slice(&scale.to_le_bytes());
+            assert!(LightmapHeader::from_bytes(&bytes).is_ok(), "{scale}");
+        }
+    }
+
+    #[test]
+    fn rejects_direction_blob_that_does_not_start_where_its_irradiance_ends() {
+        let mut bytes = two_block_section().to_bytes();
+        // Block 0's direction moved one byte on: still inside the section
+        // and the right length, but no longer adjacent to its irradiance.
+        let at = record_at(0, 20);
+        let offset = read_u64(&bytes, at) + 1;
+        bytes[at..at + 8].copy_from_slice(&offset.to_le_bytes());
+        let message = error_message(LightmapSection::from_bytes(&bytes));
+        let expected = format!(
+            "lightmap block 0 direction blob at {offset} does not start where its irradiance blob ends"
+        );
+        assert!(message.contains(&expected), "{message}");
     }
 
     #[test]

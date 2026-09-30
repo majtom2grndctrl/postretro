@@ -24,7 +24,10 @@ impl Renderer {
     ///
     /// The batch is validated before anything changes. A batch from an
     /// earlier generation (including a previous level's, after a reload) is
-    /// rejected. Growth, repack moves, pair uploads and table writes go to
+    /// rejected. A later generation within the level means a new controller
+    /// that holds nothing resident: its first drain frees every block the
+    /// earlier one held, without reporting them evicted, and keeps the pool
+    /// textures. Growth, repack moves, pair uploads and table writes go to
     /// the GPU in one submission; a pair becomes sampleable in the drain that
     /// uploads all of its planes, never with half of them.
     pub fn drain_lightmap_residency(

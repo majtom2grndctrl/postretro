@@ -163,7 +163,7 @@ impl LightmapStreamState {
         c.last_drain_install_bytes = executed.install_bytes;
         if plan.report.repacked {
             c.repacks += 1;
-            c.repack_copies += executed.copies;
+            c.repack_copy_commands += executed.copies;
         }
         if executed.submitted {
             c.submissions += 1;

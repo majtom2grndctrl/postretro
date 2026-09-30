@@ -26,6 +26,7 @@ use crate::session::sh_residency::{ShStreamingSession, require_sync_proof_mode};
 use crate::sh_streaming::controller::SyncReadResult;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
+use crate::streaming::cluster_hints::decode_level_hints;
 
 use super::lightmap::{
     CaptureLightmapResidency, preload_capture_lightmap, validate_lightmap_overrides,
@@ -94,8 +95,9 @@ impl PreparedCapture {
         let mut world = postretro_level_loader::load_prl(&scene.map)
             .with_context(|| format!("failed to load `{}`", scene.map))?;
         if world.sh_stream_manifest().is_some() {
-            // Validate the PRL first, then enforce Task 10's explicit-mode
-            // gate before GPU initialization can mask its named error.
+            // Validate the PRL first, then enforce the sync-proof mode gate
+            // (`require_sync_proof_mode`) before GPU initialization can mask
+            // its named error.
             require_sync_proof_mode(requested_streaming_mode()?)?;
         }
         validate_lightmap_overrides(scene, &world)?;
@@ -166,13 +168,29 @@ impl PreparedCapture {
             &mut scratch,
             postretro_visibility::TimingGate::OFF,
         );
-        let lightmap_residency =
-            preload_capture_lightmap(&world, &mut renderer, &visible_render, scene)?;
+        // The level's id 49, decoded once for SH and lightmaps.
+        let hints = decode_level_hints(world.cluster_directory())
+            .context("[Capture] id-49 cluster hints")?;
+        let lightmap_residency = preload_capture_lightmap(
+            &world,
+            &mut renderer,
+            &visible_render,
+            scene,
+            hints.as_deref(),
+        )?;
         let sh_streaming = world
             .sh_stream_manifest()
             .cloned()
             .map(|manifest| {
-                ShStreamingSession::for_capture(manifest, world.cell_visibility.as_ref(), &renderer)
+                let hints = hints
+                    .clone()
+                    .context("[Capture] a streamed SH level carries no id 49")?;
+                ShStreamingSession::for_capture(
+                    manifest,
+                    world.cell_visibility.as_ref(),
+                    &renderer,
+                    hints,
+                )
             })
             .transpose()?;
         let max_preload_frames = world

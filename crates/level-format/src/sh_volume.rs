@@ -21,10 +21,10 @@ use crate::sh_reconstruct::{Level, MAX_NODE_SCALE, StoredBrickPrefixSum, stored_
 /// samples serialized after color samples, with a `direction_count` field in the
 /// descriptor header; version 4 — two f16 depth moments (`mean_distance`,
 /// `mean_sq_distance`) appended inside the per-probe record after `validity`;
-/// version 5 — trailing `map-light-index → animated-light section slot` table
-/// (Task 2c of `sdf-static-occluder-shadows`), `u32::MAX` = no slot; version 6 —
-/// base irradiance replaced the per-probe SH coefficients with a 2D octahedral
-/// `Rgba16Float` atlas (per-probe validity/depth moments retained); version 7 —
+/// version 5 — trailing `map-light-index → animated-light section slot` table,
+/// `u32::MAX` = no slot; version 6 — base irradiance replaced the per-probe SH
+/// coefficients with a 2D octahedral `Rgba16Float` atlas (per-probe
+/// validity/depth moments retained); version 7 —
 /// octahedral atlas packing changed from z-stacked grid rows to near-square
 /// linear tile rows and stores `atlas_tiles_per_row` in the header; version 8
 /// — atlas metadata became layer-aware for 2D array texture uploads, storing

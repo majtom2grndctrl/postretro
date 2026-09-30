@@ -1846,10 +1846,11 @@ fn run_after_parsing(
     // it onto the on-disk `BvhLeaf` records at serialization time. Empty section
     // signals no animated lights — no placeholder record is emitted.
     let (animated_light_chunks_section, bvh_chunk_ranges) =
-        animated_light_chunks::build_animated_light_chunks(
+        animated_light_chunks::build_placed_animated_light_chunks(
             &bvh_section,
             &animated_baked_lights,
             &face_charts,
+            &face_placements,
             &geo_result.face_index_ranges,
             final_lightmap_density,
         );

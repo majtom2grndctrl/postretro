@@ -2,9 +2,11 @@
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use crate::lightmap_streaming::controller::MAX_LIGHTMAP_PERMITS;
+use crate::lightmap_streaming::controller::LIGHTMAP_QUEUE_CAPACITY;
+use crate::lightmap_streaming::route::{LightmapCompletion, LightmapRouteLedger};
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::session::sh_async_workers::ShWorkerRetirement;
 use crate::sh_streaming::controller::MAX_STREAM_PERMITS;
@@ -27,7 +29,8 @@ pub(crate) struct LevelReadIssuer {
 
 impl LevelReadIssuer {
     /// Spawns one issuer over the routes present. Its queue covers every
-    /// routed resource's permits, so a submission never finds it full.
+    /// submission the routed resources can have outstanding, so a
+    /// submission never finds it full.
     pub(crate) fn spawn(
         sh: Option<Box<dyn ReadRoute>>,
         lightmap: Option<Box<dyn ReadRoute>>,
@@ -40,7 +43,7 @@ impl LevelReadIssuer {
         }
         if let Some(route) = lightmap {
             routes = routes.with(StreamResource::LightmapBlock, route);
-            queue_capacity += MAX_LIGHTMAP_PERMITS;
+            queue_capacity += LIGHTMAP_QUEUE_CAPACITY;
         }
         let (issuer, handle) = ReadIssuer::spawn(routes, queue_capacity)?;
         Ok(Self {
@@ -80,13 +83,17 @@ impl Drop for LevelReadIssuer {
 }
 
 /// A replaced level's cancelled I/O: SH worker threads, the issuer thread,
-/// and the lightmap source its route may still read through. The frame path
-/// polls it and never joins a live positional read; teardown joins.
+/// the lightmap source its route may still read through, and the completion
+/// queues it may still deliver into. The frame path polls it and never joins
+/// a live positional read; teardown joins.
 #[derive(Debug, Default)]
 pub(crate) struct StreamingRetirement {
     sh: Vec<ShWorkerRetirement>,
     issuers: Vec<JoinHandle<()>>,
     retained_lightmap: Vec<Arc<dyn LightmapBlockSource>>,
+    /// A kept lightmap session's old completion queue, with the ledger its
+    /// deliveries were charged to.
+    lightmap_completions: Vec<(Receiver<LightmapCompletion>, Arc<LightmapRouteLedger>)>,
 }
 
 impl StreamingRetirement {
@@ -102,8 +109,19 @@ impl StreamingRetirement {
         self.retained_lightmap.push(source);
     }
 
+    pub(crate) fn drain_lightmap_completions(
+        &mut self,
+        completions: Receiver<LightmapCompletion>,
+        ledger: Arc<LightmapRouteLedger>,
+    ) {
+        self.lightmap_completions.push((completions, ledger));
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.sh.is_empty() && self.issuers.is_empty() && self.retained_lightmap.is_empty()
+        self.sh.is_empty()
+            && self.issuers.is_empty()
+            && self.retained_lightmap.is_empty()
+            && self.lightmap_completions.is_empty()
     }
 
     /// Joins and releases everything once every thread has finished.
@@ -112,20 +130,29 @@ impl StreamingRetirement {
         if !self.sh.is_empty() || !self.issuers.iter().all(JoinHandle::is_finished) {
             return false;
         }
+        self.join_and_release();
+        true
+    }
+
+    /// Joins the issuers, then releases what they could still reach. Their
+    /// last deliveries are in the old completion queues by then; releasing
+    /// them keeps the kept session's in-memory byte figure exact.
+    fn join_and_release(&mut self) {
         for handle in self.issuers.drain(..) {
             let _ = handle.join();
         }
+        for (completions, ledger) in self.lightmap_completions.drain(..) {
+            while let Ok(completion) = completions.try_recv() {
+                ledger.release(completion.result.read_bytes());
+            }
+        }
         self.retained_lightmap.clear();
-        true
     }
 }
 
 impl Drop for StreamingRetirement {
     fn drop(&mut self) {
         self.sh.clear();
-        for handle in self.issuers.drain(..) {
-            let _ = handle.join();
-        }
-        self.retained_lightmap.clear();
+        self.join_and_release();
     }
 }

@@ -1,34 +1,27 @@
-//! Measurement harness: streamed lightmap residency walks over a real PRL
-//! (spatial-residency--lightmap-cell-blocks AC 22 walk half, AC 23).
-//!
-//! Drives the real runtime path over the dry run's seeded camera walks:
-//! `LightmapStreamingSession` and its `LightmapResidencyController` inside
-//! `LevelStreaming`, whose level-scope issuer thread reads real block pairs
-//! through the level's manifest. Each drain batch is planned by the real
-//! `LightmapPoolModel` (see `pool_mirror`), the renderer's placement policy,
-//! without executing GPU work. Visibility is the runtime portal walk from a
-//! jittered eye point inside each step's cell, so visible demand and both
-//! visible-miss buckets are real. SH does not stream here.
-//!
-//! Time model: the camera dwells in each walk cell for the frames it takes to
-//! travel to the next cell's centre at `RUN_SPEED` m/s at 60 Hz, turning 90°
-//! per frame so every heading is drawn. A frame that ends with reads in
-//! flight sleeps to its 16.7 ms deadline, so disk reads race real time;
-//! frames with nothing in flight run unpaced, which cannot change the result.
-//! Walk paths and eye points are seeded; miss counts depend on read latency.
-//!
-//! Run from the workspace root (debug is fine; the heavy part is the walk):
-//!
-//! ```text
-//! POSTRETRO_LIGHTMAP_WALK_PRL=$PWD/content/dev/maps/campaign-test.prl \
-//!   cargo test -p postretro --bin postretro lightmap_residency_walks_from_prl \
-//!   -- --ignored --nocapture
-//! ```
-//!
-//! Optional: `POSTRETRO_LIGHTMAP_WALK_STEPS` (default 2000),
-//! `POSTRETRO_LIGHTMAP_WALK_RUNS` = `default` | `all` (default `all`: the
-//! default levers plus the cap and lead sweeps). Leave
-//! `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`.
+//! Measurement harness: streamed lightmap residency walks over a real PRL.
+//! See: context/lib/experimental_spikes.md · context/lib/rendering_pipeline.md §4
+
+// Drives the real runtime path over the dry run's seeded camera walks: the
+// lightmap session inside `LevelStreaming`, whose issuer reads real block
+// pairs through the level's manifest. The real `LightmapPoolModel` plans each
+// drain (see `pool_mirror`) without GPU work. Visibility is the runtime
+// portal walk from a jittered eye in each step's cell. SH does not stream.
+//
+// Time model: the camera dwells in each walk cell for the frames it takes to
+// reach the next cell's centre at `RUN_SPEED` m/s at 60 Hz, turning 90° per
+// frame. A frame with reads in flight sleeps to its 16.7 ms deadline, so disk
+// reads race real time. Paths and eyes are seeded; misses depend on latency.
+//
+// Run from the workspace root (debug is fine; the heavy part is the walk):
+//
+//   POSTRETRO_LIGHTMAP_WALK_PRL=$PWD/content/dev/maps/campaign-test.prl \
+//     cargo test -p postretro --bin postretro lightmap_residency_walks_from_prl \
+//     -- --ignored --nocapture
+//
+// Optional: `POSTRETRO_LIGHTMAP_WALK_STEPS` (default 2000),
+// `POSTRETRO_LIGHTMAP_WALK_RUNS` = `default` | `all` (default `all`: the
+// default levers plus the cap and lead sweeps). Leave
+// `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`.
 
 mod paths;
 mod pool_mirror;
@@ -45,6 +38,7 @@ use super::{LightmapLevelView, LightmapStreamingSession};
 use crate::cpu_timing::StreamingStage;
 use crate::lightmap_streaming::levers::LEAD_UNITS_PER_METRE;
 use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
+use crate::streaming::cluster_hints::decode_level_hints;
 use paths::{SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path};
 use pool_mirror::{PoolMirror, PoolStats};
 
@@ -291,7 +285,9 @@ fn run(world: &LevelWorld, walk: &Walk, levers: Levers) -> RunReport {
         block_of_cell[record.cell_id as usize] = block as u32;
     }
 
-    let mut session = LightmapStreamingSession::new(view).expect("lightmap session");
+    let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
+    let mut session =
+        LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
     {
         let lever = session.controller.levers_mut();
         lever.set_pool_cap_layers(levers.cap_layers);
@@ -839,7 +835,9 @@ fn lightmap_install_timing_from_prl() {
             continue;
         }
         let view = LightmapLevelView::of(&world).expect("streams");
-        let mut session = LightmapStreamingSession::new(view).expect("lightmap session");
+        let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
+        let mut session =
+            LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
         let mut mirror =
             PoolMirror::new(view.manifest, session.controller.levers().pool_cap_layers());
         let camera_cell = world.locate_cell(spawn_eye) as u32;

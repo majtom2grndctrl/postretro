@@ -17,11 +17,13 @@ use super::*;
 use crate::LevelWorld;
 use crate::prl_container::PrlContainer;
 use crate::prl_load_test_fixtures::{write_portal_prl_load_fixture, write_prl_load_fixture};
-use crate::prl_streaming::load_prl_with_modes_for_test;
-use crate::sh_stream::{ShStreamingMode, read_container_positionally};
+use crate::prl_streaming::{lightmap_mode_for_table, load_prl_with_modes_for_test};
+use crate::sh_stream::{ShStorage, ShStreamingMode, read_container_positionally};
 
 const LIGHTMAP: u32 = SectionId::Lightmap as u32;
 const SHADOWMASK: u32 = SectionId::ShadowmaskAtlas as u32;
+/// Cells in both the portal and the portal-free load fixtures.
+const FIXTURE_CELLS: usize = 2;
 
 // ---- Fixtures ----
 
@@ -125,7 +127,7 @@ impl Fixture {
         let (file, meta) = read_container_positionally(self.0.to_str().unwrap()).unwrap();
         let container = PrlContainer::from_positional(file, meta, false);
         let (lightmap, mut read) =
-            read_lightmap_for_residency(&container, stream_inputs()).unwrap();
+            read_lightmap_for_residency(&container, stream_inputs(), FIXTURE_CELLS).unwrap();
         let lightmap = lightmap.expect("fixture carries id 22").index;
         let shadowmask = read
             .read_shadowmask(&container, Some(&lightmap))
@@ -172,7 +174,7 @@ fn range_len(range: &std::ops::Range<u64>) -> u64 {
     range.end - range.start
 }
 
-// ---- Mode selection (AC 14, no-portals half) ----
+// ---- Mode selection ----
 
 #[test]
 fn residency_streams_only_with_request_residency_set_portals_file_and_blocks() {
@@ -294,11 +296,11 @@ fn zero_block_level_stays_in_placeholder_mode_when_streaming_is_requested() {
     assert!(world.gpu_lighting_payloads.blocks.is_empty());
 }
 
-// ---- Streaming load holds only the indexes (AC 12, loader half) ----
+// ---- Streaming load holds only the indexes ----
 
 #[test]
 fn streaming_load_reads_exactly_the_id22_and_id42_index_prefixes() {
-    let extents = [(8, 4), (4, 4), (4, 8)];
+    let extents = [(8, 4), (4, 8)];
     let lightmap = lightmap_section(&extents);
     let shadowmask = shadowmask_section(&extents);
     let fixture = Fixture::with_portals(
@@ -316,7 +318,7 @@ fn streaming_load_reads_exactly_the_id22_and_id42_index_prefixes() {
     );
     assert_eq!(world.lightmap, Some(lightmap.index()));
     assert_eq!(manifest.lightmap_index(), &lightmap.index());
-    assert_eq!(manifest.block_count(), 3);
+    assert_eq!(manifest.block_count(), 2);
 
     let reads = world
         .prl_read_counters()
@@ -336,7 +338,7 @@ fn streaming_load_reads_exactly_the_id22_and_id42_index_prefixes() {
 
 #[test]
 fn a_pair_read_adds_exactly_its_two_ranges_to_the_section_counters() {
-    let extents = [(8, 4), (4, 4), (4, 8)];
+    let extents = [(8, 4), (4, 8)];
     let lightmap = lightmap_section(&extents);
     let shadowmask = shadowmask_section(&extents);
     let fixture = Fixture::with_portals(
@@ -504,7 +506,7 @@ fn pair_bytes_of_the_wrong_length_are_rejected() {
     );
 }
 
-// ---- One-block level streams (AC 16, streaming half) ----
+// ---- One-block level streams ----
 
 #[test]
 fn one_block_level_streams_an_index_of_one_record_and_reads_its_pair_on_demand() {
@@ -577,4 +579,192 @@ fn drain_batches_validate_against_the_manifest_block_count_and_tag() {
     batch.target_remove.clear();
     batch.content_tag = [0; 32];
     assert!(manifest.validate_drain_batch(&batch).is_err());
+}
+
+// ---- Load checks both modes share ----
+
+const BOTH_MODES: [LightmapStreamingMode; 2] = [
+    LightmapStreamingMode::AllResident,
+    LightmapStreamingMode::Stream,
+];
+
+fn load_error(fixture: &Fixture, lightmap: LightmapStreamingMode) -> String {
+    let path = fixture.0.to_str().unwrap();
+    match load_prl_with_modes_for_test(path, ShStreamingMode::Off, lightmap) {
+        Ok(_) => panic!("{path}: {lightmap:?} load must fail"),
+        Err(error) => error.to_string(),
+    }
+}
+
+#[test]
+fn both_load_modes_carry_the_id22_header_mode_into_the_world() {
+    let mut lightmap = lightmap_section(&[(8, 4), (4, 4)]);
+    lightmap.mode = LightmapMode::Unshadowed;
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_header_mode.prl",
+        lighting_blobs(&lightmap, None, true),
+    );
+    for requested in BOTH_MODES {
+        let world = fixture.load(requested);
+        assert_eq!(world.lightmap_storage().mode(), requested);
+        assert_eq!(
+            world.lightmap_mode,
+            crate::LightmapMode::Unshadowed,
+            "{requested:?}"
+        );
+    }
+}
+
+#[test]
+fn both_load_modes_reject_a_block_cell_past_the_cells_table() {
+    let mut lightmap = lightmap_section(&[(8, 4), (4, 4)]);
+    lightmap.blocks[1].cell_id = FIXTURE_CELLS as u32;
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_cell_past_count.prl",
+        lighting_blobs(&lightmap, None, true),
+    );
+    for requested in BOTH_MODES {
+        let message = load_error(&fixture, requested);
+        assert!(message.contains("Lightmap validation error"), "{message}");
+        assert!(
+            message.contains("block 1 names cell 2 past the 2-cell Cells table"),
+            "{requested:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn both_load_modes_reject_a_cell_owned_by_two_blocks() {
+    let mut lightmap = lightmap_section(&[(8, 4), (4, 4)]);
+    lightmap.blocks[1].cell_id = 0;
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_cell_owned_twice.prl",
+        lighting_blobs(&lightmap, None, true),
+    );
+    for requested in BOTH_MODES {
+        let message = load_error(&fixture, requested);
+        assert!(message.contains("Lightmap validation error"), "{message}");
+        assert!(
+            message.contains("block 1 names cell 0, which block 0 already owns"),
+            "{requested:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_bogus_selected_light_count_is_rejected_after_reading_only_the_fixed_header() {
+    let extents = [(8, 4), (4, 4)];
+    let lightmap = lightmap_section(&extents);
+    let mut shadowmask = shadowmask_section(&extents).to_bytes();
+    // Fits the section whole, so a bare section-length bound would fetch
+    // nearly all of id 42 before rejecting it.
+    let bogus = (shadowmask.len() - 16) as u32;
+    shadowmask[4..8].copy_from_slice(&bogus.to_le_bytes());
+    let mut blobs = lighting_blobs(&lightmap, None, true);
+    blobs.push(blob(SectionId::ShadowmaskAtlas, shadowmask));
+    let fixture = Fixture::with_portals("postretro_test_lm_stream_bogus_selected.prl", blobs);
+
+    let (file, meta) = read_container_positionally(fixture.0.to_str().unwrap()).unwrap();
+    let container = PrlContainer::from_positional(file, meta, false);
+    let (loaded, mut read) =
+        read_lightmap_for_residency(&container, stream_inputs(), FIXTURE_CELLS).unwrap();
+    let index = loaded.expect("fixture carries id 22").index;
+    let message = match read.read_shadowmask(&container, Some(&index)) {
+        Ok(_) => panic!("a slot table larger than the section allows must fail"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("ShadowmaskAtlas validation error"),
+        "{message}"
+    );
+    assert!(message.contains("cannot hold a"), "{message}");
+    let reads = container.read_counters().expect("positional reads count");
+    assert_eq!(
+        reads.section_bytes(SHADOWMASK),
+        8,
+        "only id 42's fixed header is read"
+    );
+}
+
+#[test]
+fn the_lightmap_environment_gate_is_consulted_only_when_the_table_could_stream() {
+    let lightmap = lightmap_section(&[(8, 4)]);
+    let bad_value = || -> Result<LightmapStreamingMode, PrlLoadError> {
+        Err(lightmap_stream_error(
+            "bad POSTRETRO_LIGHTMAP_STREAMING value",
+        ))
+    };
+    let table = |fixture: &Fixture| {
+        let (_, meta) = read_container_positionally(fixture.0.to_str().unwrap()).unwrap();
+        meta
+    };
+
+    let without_id51 = Fixture::with_portals(
+        "postretro_test_lm_stream_gate_no_id51.prl",
+        lighting_blobs(&lightmap, None, false),
+    );
+    assert_eq!(
+        lightmap_mode_for_table(&table(&without_id51), bad_value).unwrap(),
+        LightmapStreamingMode::Stream,
+        "a level that can never stream ignores the variable"
+    );
+
+    let streamable = Fixture::with_portals(
+        "postretro_test_lm_stream_gate_streamable.prl",
+        lighting_blobs(&lightmap, None, true),
+    );
+    assert!(lightmap_mode_for_table(&table(&streamable), bad_value).is_err());
+}
+
+// ---- Production-default modes over the committed id-49/50/51 fixture ----
+
+/// Carries ids 49, 50 and 51, portals, and a zero-block id 22 (no static
+/// lights), so lightmaps stay in placeholder mode whatever is requested.
+fn hinted_door_fixture() -> String {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl"
+    )
+    .to_owned()
+}
+
+fn assert_placeholder_lightmap_behind_the_residency_rule(world: &LevelWorld) {
+    assert!(world.has_portals);
+    assert!(world.cell_residency_set.is_some());
+    assert_eq!(world.lightmap.as_ref().map(|i| i.records.len()), Some(0));
+    assert!(!world.lightmap_storage().is_streaming());
+    assert!(world.gpu_lighting_payloads.blocks.is_empty());
+}
+
+#[test]
+fn sh_off_with_lightmap_stream_loads_the_hinted_door_fixture() {
+    let world = load_prl_with_modes_for_test(
+        &hinted_door_fixture(),
+        ShStreamingMode::Off,
+        LightmapStreamingMode::Stream,
+    )
+    .expect("SH off with lightmap streaming loads");
+    assert!(matches!(world.sh_storage(), ShStorage::Legacy));
+    assert_placeholder_lightmap_behind_the_residency_rule(&world);
+    assert!(
+        world.prl_read_counters().is_some(),
+        "the loader read through the retained file"
+    );
+}
+
+#[test]
+fn sh_sync_proof_with_lightmap_stream_loads_the_hinted_door_fixture_on_one_file() {
+    let world = load_prl_with_modes_for_test(
+        &hinted_door_fixture(),
+        ShStreamingMode::SyncProof,
+        LightmapStreamingMode::Stream,
+    )
+    .expect("SH sync-proof with lightmap streaming loads");
+    let sh = world.sh_stream_manifest().expect("SH streams from id 50");
+    assert_placeholder_lightmap_behind_the_residency_rule(&world);
+    // The loader read id 22 through the handle SH's manifest retains: one
+    // file for both resources, which a streaming lightmap manifest shares.
+    let reads = world.prl_read_counters().expect("positional load");
+    assert!(Arc::ptr_eq(reads, sh.retained_file().read_counters()));
+    assert!(reads.section_bytes(LIGHTMAP) > 0);
 }

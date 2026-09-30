@@ -70,8 +70,7 @@ impl LightmapResidencyController {
                     );
                     // Held like an issuer read, so the outcome releases it.
                     self.slots[block as usize].phase = BlockPhase::Ready;
-                    self.permits_in_use += 1;
-                    self.in_hand_bytes += pair_bytes;
+                    self.take_permit(block, PairCharge::NeverRefused);
                     reads.pairs += 1;
                     reads.bytes += pair_bytes;
                 }

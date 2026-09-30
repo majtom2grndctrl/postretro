@@ -1,8 +1,9 @@
 //! Byte-exact comparison of an SH streaming trace against its committed
-//! baseline in `testdata/`. The baselines were recorded from the controller
-//! and issuer before the shared streaming layer was extracted; a replay that
-//! differs means SH request order, drain budget, or read order changed.
-//! See: context/plans/in-progress/spatial-residency--lightmap-cell-blocks/index.md (AC 18)
+//! baseline in `testdata/`. See: context/lib/testing_guide.md
+//!
+//! The baselines were recorded from the SH controller and issuer before the
+//! resource-neutral streaming layer was extracted. A replay that differs
+//! means SH request order, drain budget, or read order changed.
 
 use std::path::PathBuf;
 

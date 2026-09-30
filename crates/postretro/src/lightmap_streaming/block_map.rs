@@ -12,7 +12,8 @@ const NO_BLOCK: u32 = u32::MAX;
 /// What the controller needs about one block for the level's lifetime.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockFacts {
-    /// Irradiance texels: the unit of the pool's band headroom.
+    /// Texels of the block's pool slot, its extent rounded up to the slot
+    /// alignment: what placing it takes from the pool's band headroom.
     pub(crate) texels: u64,
     /// Upload bytes of the id-22 half (irradiance plus direction).
     pub(crate) lightmap_bytes: u64,
@@ -58,6 +59,8 @@ impl LevelBlockMap {
             ));
         }
         let block_count = source.block_count();
+        let alignment = source.block_alignment().max(1);
+        let slot_edge = |edge: u16| u64::from(u32::from(edge).next_multiple_of(alignment));
         let mut cell_to_block = vec![NO_BLOCK; cell_count];
         let mut blocks = Vec::with_capacity(block_count as usize);
         let mut pinned_blocks = Vec::new();
@@ -97,7 +100,7 @@ impl LevelBlockMap {
                 pinned_blocks.push(block);
             }
             blocks.push(BlockFacts {
-                texels: u64::from(summary.width) * u64::from(summary.height),
+                texels: slot_edge(summary.width) * slot_edge(summary.height),
                 lightmap_bytes,
                 shadowmask_bytes,
                 ranges: read_ranges,

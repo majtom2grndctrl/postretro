@@ -185,11 +185,32 @@ fn a_device_that_cannot_hold_a_streamed_pool_or_its_shadowmask_degrades_with_an_
         errors[0].contains("maxTextureDimension2D 1024"),
         "{errors:?}"
     );
-    assert!(
-        errors[1].contains("maxTextureArrayLayers is 1"),
-        "{errors:?}"
-    );
+    assert!(errors[1].contains("maxTextureArrayLayers 1"), "{errors:?}");
     assert!(errors[2].contains("ShadowmaskAtlas rejected"), "{errors:?}");
+}
+
+// The streamed pool holds the all-resident ceiling the same way, spare layer
+// included.
+#[test]
+fn a_streamed_level_too_big_to_hold_at_once_still_streams_and_one_layer_short_degrades() {
+    // Five 1024² blocks need two 2048² layers, three with the spare. A device
+    // with two layers can still stream a subset; the pool model defers growth
+    // past it. A device with one layer cannot hold a layer plus the spare.
+    let fixture = fixture(&[(1024, 1024); 5]);
+    assert!(matches!(
+        streaming_plan_for(&fixture, 8192, 3),
+        StaticPool::Streaming(_)
+    ));
+    assert!(matches!(
+        streaming_plan_for(&fixture, 8192, 2),
+        StaticPool::Streaming(_)
+    ));
+    let logs = capture_logs(|| {
+        assert_eq!(streaming_plan_for(&fixture, 8192, 1), StaticPool::Rejected);
+    });
+    let errors = renderer_errors(&logs);
+    assert_eq!(errors.len(), 1, "{logs:?}");
+    assert!(errors[0].contains("needs 2 array layer(s)"), "{errors:?}");
 }
 
 #[test]

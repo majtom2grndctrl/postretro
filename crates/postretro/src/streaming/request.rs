@@ -100,9 +100,11 @@ pub(crate) struct ReadIdentity {
 /// Invariants the issuer keeps for every request, whatever its resource:
 /// - Mandatory requests of every resource are read before optional requests
 ///   of any; within a tier, ranges are read in ascending file offset.
-/// - Nearby ranges of one resource coalesce into one physical read under
-///   `COALESCE_MAX_GAP_BYTES` and `COALESCE_MAX_SPAN_BYTES`. A read never
-///   spans two resources, so each resource's reader validates its own spans.
+/// - Ranges of one resource coalesce into one physical read under
+///   `COALESCE_MAX_SPAN_BYTES`: SH ranges across gaps up to
+///   `COALESCE_MAX_GAP_BYTES`, lightmap blocks only when byte-contiguous. A
+///   read never spans two resources, so each resource's reader validates its
+///   own spans.
 /// - New submissions are taken after every physical read, so fresh mandatory
 ///   work preempts queued optional work.
 /// - A request whose key its resource no longer targets is cancelled before
@@ -111,7 +113,8 @@ pub(crate) struct ReadIdentity {
 ///   is cancelled or failed whole.
 /// - A submission identical to a request still pending at the issuer (same
 ///   resource, key, and identity) is absorbed: no second read, no second
-///   completion. It can only raise the pending request's tier.
+///   completion. It can only raise the pending request's tier. A submission
+///   the issuer has already completed is read again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReadRequest {
     pub(crate) resource: StreamResource,

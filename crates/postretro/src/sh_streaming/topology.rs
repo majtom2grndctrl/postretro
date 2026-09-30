@@ -46,20 +46,27 @@ impl PlannerTopology {
         self.adjacency.len()
     }
 
+    /// `hints` is the level's id 49 decoded once at level scope; it must be
+    /// the same directory `manifest` carries.
     pub(super) fn from_manifest(
         manifest: &ShStreamManifest,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_manifest_view(ManifestTopologyView {
-            directory: manifest.cluster_directory(),
-            payloads: manifest.payloads(),
-            base: manifest.base(),
-            adjacency: manifest.cluster_adjacency(),
-            seam_portals: manifest.seam_portals(),
-        })
+        Self::from_manifest_view(
+            ManifestTopologyView {
+                directory: manifest.cluster_directory(),
+                payloads: manifest.payloads(),
+                base: manifest.base(),
+                adjacency: manifest.cluster_adjacency(),
+                seam_portals: manifest.seam_portals(),
+            },
+            hints,
+        )
     }
 
     pub(super) fn from_manifest_view(
         manifest: ManifestTopologyView<'_>,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
         let directory = manifest.directory;
         let cluster_count =
@@ -77,8 +84,13 @@ impl PlannerTopology {
             ));
         }
 
-        let hints = ClusterHints::decode(directory)
-            .map_err(|error| ShResidencyControllerError::InvalidTopology(error.to_string()))?;
+        if hints.priority.len() != cluster_count
+            || hints.cell_to_cluster.len() != directory.runtime_cell_count as usize
+        {
+            return Err(ShResidencyControllerError::InvalidTopology(
+                "id-49 hints disagree with the manifest's directory".into(),
+            ));
+        }
 
         let mut seam_portals = Vec::with_capacity(manifest.seam_portals.len());
         for seam in manifest.seam_portals {
@@ -269,7 +281,7 @@ impl PlannerTopology {
             .map(|entry| entry.hash)
             .collect();
         Ok(Self {
-            hints: Arc::new(hints),
+            hints,
             adjacency,
             seam_portals,
             owners: owners

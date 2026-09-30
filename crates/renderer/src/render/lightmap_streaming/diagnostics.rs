@@ -42,8 +42,8 @@ pub struct LightmapStreamingLiveDiagnostics {
     pub failed_reads: u64,
     pub failed_installs: u64,
     pub cancelled_reads: u64,
-    /// Visible misses, two disjoint buckets of drawn block-frames: drawn but
-    /// outside the baked set at lead L, and drawn in it but not yet resident.
+    /// Visible misses in drawn block-frames, two buckets that may overlap:
+    /// drawn but outside the baked set at lead L, and drawn but not resident.
     pub drawn_outside_baked_set: u64,
     pub drawn_not_resident: u64,
     pub last_frame_drawn_outside_baked_set: u32,

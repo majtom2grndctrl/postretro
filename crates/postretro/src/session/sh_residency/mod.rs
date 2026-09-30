@@ -15,6 +15,7 @@ use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement, ShWorkerStats}
 use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
 use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
+use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::issuer::ReadRoute;
 
 #[cfg(feature = "capture")]
@@ -54,18 +55,21 @@ pub(crate) struct ShStreamingSession {
 
 impl ShStreamingSession {
     /// Builds a controller from the renderer's actual allocation snapshot.
-    /// `cell_visibility` is the same level's id-46 section, if loaded.
+    /// `cell_visibility` is the same level's id-46 section, if loaded;
+    /// `hints` is its id 49, decoded once for every streamed resource.
     #[cfg(feature = "capture")]
     pub(crate) fn from_renderer(
         manifest: Arc<ShStreamManifest>,
         cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self> {
         Self::from_renderer_with_mode(
             manifest,
             cell_visibility,
             renderer,
             ShStreamingMode::SyncProof,
+            hints,
         )
     }
 
@@ -74,34 +78,42 @@ impl ShStreamingSession {
         cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
         mode: ShStreamingMode,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self> {
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
-        let mut session = Self::from_snapshot(manifest.clone(), snapshot, cell_visibility)?;
+        let mut session = Self::from_snapshot(manifest.clone(), snapshot, cell_visibility, hints)?;
         session.mode = mode;
         Ok(session)
     }
 
     /// Capture-specific spelling of [`Self::from_renderer`]. It deliberately
-    /// has no mode selection; the capture caller applies the shared Task 10
-    /// gate before it creates this proof controller.
+    /// has no mode selection; the capture caller applies the sync-proof mode
+    /// gate (`require_sync_proof_mode`) before it creates this proof
+    /// controller.
     #[cfg(feature = "capture")]
     pub(crate) fn for_capture(
         manifest: Arc<ShStreamManifest>,
         cell_visibility: Option<&CellVisibility>,
         renderer: &Renderer,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        Self::from_renderer(manifest, cell_visibility, renderer)
+        Self::from_renderer(manifest, cell_visibility, renderer, hints)
     }
 
     pub(in crate::session) fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
         cell_visibility: Option<&CellVisibility>,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self> {
-        let controller =
-            ShResidencyController::new(manifest.clone(), budget_inputs(snapshot), cell_visibility)?;
+        let controller = ShResidencyController::new(
+            manifest.clone(),
+            budget_inputs(snapshot),
+            cell_visibility,
+            hints,
+        )?;
         Ok(Self {
             manifest,
             mode: ShStreamingMode::SyncProof,
@@ -120,7 +132,12 @@ impl ShStreamingSession {
         manifest: &Arc<ShStreamManifest>,
         mode: ShStreamingMode,
     ) -> bool {
-        Arc::ptr_eq(&self.manifest, manifest) && self.mode == mode
+        self.is_for_manifest(manifest) && self.mode == mode
+    }
+
+    /// Whether this session streams `manifest`, in whatever mode.
+    pub(in crate::session) fn is_for_manifest(&self, manifest: &Arc<ShStreamManifest>) -> bool {
+        Arc::ptr_eq(&self.manifest, manifest)
     }
 
     /// Starts SH-only workers with their own issuer. Production shares one
@@ -293,17 +310,19 @@ impl ShStreamingSession {
 
 impl Drop for ShStreamingSession {
     fn drop(&mut self) {
-        // The manager joins its workers while this session still retains the
-        // manifest/file. Cancellation never bypasses completion identity.
+        // Stopping cancels the workers' handle on the level-scope issuer,
+        // whose thread the level owner joins, and joins the decode threads
+        // while this session still retains the manifest and its file.
+        // Cancellation never bypasses completion identity.
         if let Some(mut workers) = self.workers.take() {
             workers.stop();
         }
     }
 }
 
-/// Applies the temporary Task 10 runtime gate after the loader has already
-/// validated a streamed manifest. Windowed play and static capture share this
-/// exact decision; legacy/off never has a manifest to reach it.
+/// Applies the sync-proof mode gate after the loader has already validated a
+/// streamed manifest: static capture streams SH only in sync-proof mode.
+/// Legacy/off never has a manifest to reach it.
 #[cfg(any(test, feature = "capture"))]
 pub(crate) fn require_sync_proof_mode(mode: ShStreamingMode) -> Result<()> {
     match mode {

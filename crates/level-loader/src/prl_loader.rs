@@ -1926,6 +1926,7 @@ pub(crate) fn load_prl_from_container(
             has_usable_portals: portal_data.is_some(),
             has_retained_file: container.retained_file().is_some(),
         },
+        cells.len(),
     )?;
     let lightmap_index = lightmap.as_ref().map(|lightmap| &lightmap.index);
     crate::prl_lightmap::validate_vertex_lightmap_blocks(&vertices, lightmap_index)?;
@@ -2894,12 +2895,18 @@ pub(crate) fn load_prl_from_container(
         (Vec::new(), false)
     };
 
+    // Both load modes keep the id-22 header, which carries the bake mode.
+    let lightmap_mode = lightmap
+        .as_ref()
+        .map_or(LightmapMode::default(), |lightmap| {
+            LightmapMode::from(lightmap.index.header.mode)
+        });
     let lighting = LoadedLighting {
         lights,
         light_influences,
         sh_volume,
         lightmap,
-        lightmap_mode: LightmapMode::default(),
+        lightmap_mode,
         sdf_atlas,
         chunk_light_list,
         animated_light_chunks,
@@ -2959,8 +2966,6 @@ pub(crate) fn load_prl_from_container(
             None => ShStorage::Legacy,
         },
         lightmap,
-        // Current bakes load as Shadowed. Unshadowed remains for legacy PRL
-        // wire compatibility; new lightmaps should carry baked visibility.
         lightmap_mode: lighting.lightmap_mode,
         sdf_atlas: lighting.sdf_atlas,
         chunk_light_list: lighting.chunk_light_list,

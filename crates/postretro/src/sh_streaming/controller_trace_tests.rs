@@ -4,9 +4,9 @@
 //! the extraction must replay it unchanged (brief AC 18). The issuer half is
 //! `session/sh_async_workers/issuer_trace_tests.rs`.
 //!
-//! The driver follows the production async frame (`session/sh_residency.rs`
-//! `prepare_async_batch`): update targets, admit last frame's completions,
-//! promote, drain plus requests, then apply the renderer's outcome. A
+//! The driver follows the production async frame (`LevelStreaming::prepare_drains`
+//! with SH alone): update targets, admit last frame's completions, promote,
+//! drain plus requests, then apply the renderer's outcome. A
 //! simulated issuer completes every outstanding request next frame. It
 //! cancels one whose cluster left the target set, unless the schedule marked
 //! that read as already in flight; in-flight reads complete as prepared. The

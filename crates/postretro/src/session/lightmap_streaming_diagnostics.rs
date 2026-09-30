@@ -134,8 +134,8 @@ fn format_line(
          ({reads} reads, id 22 {read_22}, id 42 {read_42}), {installs} installs, \
          {evictions} evictions, {refusals} refusals, {deferrals} deferrals, \
          {failed_installs} failed installs, {failed_reads} failed reads, {repacks} repacks, \
-         {growths} growths, visible misses {outside} outside baked set / {not_resident} not \
-         resident \
+         {growths} growths, visible misses (may overlap) {outside} outside baked set, \
+         {not_resident} not resident \
          | now: lead {lead:.1} of {max_lead:.1} m, resident {resident_blocks} of {blocks} \
          blocks {resident} (id 22 {resident_22}, id 42 {resident_42}), mandatory \
          {mandatory_blocks} blocks {mandatory} (id 22 {mandatory_22}, id 42 {mandatory_42}), \
@@ -252,11 +252,11 @@ mod tests {
         assert_eq!(live.lightmap_bytes_read, 1_000);
     }
 
-    // AC 22: each drawn block is a miss in at most one bucket. Camera 0 draws
-    // block 0 (mandatory, not yet resident), block 5 (outside the baked set,
-    // not resident) and, after installs, block 1 (mandatory, resident).
+    // AC 22: visible misses in two overlapping buckets. Camera 0 draws block
+    // 0 (mandatory, not yet resident), block 5 (outside the baked set, not
+    // resident) and, after installs, block 1 (mandatory, resident).
     #[test]
-    fn visible_misses_land_in_exactly_one_bucket() {
+    fn visible_misses_count_every_drawn_non_resident_block_and_every_block_outside_the_set() {
         let mut rig = Rig::corridor(None);
         let batch = rig.portal(0, &[0, 5]).unwrap();
         rig.controller.count_visible_misses();
@@ -266,8 +266,8 @@ mod tests {
                 counters.last_frame_drawn_outside_baked_set,
                 counters.last_frame_drawn_not_resident
             ),
-            (1, 1),
-            "block 5 is outside the set, block 0 in it but absent; neither twice"
+            (1, 2),
+            "block 5 is outside the set and absent, so in both; block 0 is absent"
         );
 
         rig.install_all(&batch, headroom(8));
@@ -451,7 +451,7 @@ mod tests {
             "{line}"
         );
         assert!(
-            line.contains("visible misses 1 outside baked set / 2 not resident"),
+            line.contains("visible misses (may overlap) 1 outside baked set, 2 not resident"),
             "{line}"
         );
         assert!(line.contains("lead 16.0 of 32.0 m"), "{line}");

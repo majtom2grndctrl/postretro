@@ -3,21 +3,26 @@
 
 mod hooks;
 mod io;
+mod sessions;
 #[cfg(test)]
 mod tests;
 
+use std::sync::{Arc, Weak};
+
 use anyhow::Result;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
-use postretro_level_loader::ShDrainBatch;
+use postretro_level_loader::{LightmapStreamManifest, ShDrainBatch};
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 pub(crate) use io::{LevelReadIssuer, StreamingRetirement};
+pub(crate) use sessions::WantedStreaming;
 
 use super::lightmap_residency::LightmapStreamingSession;
 use super::sh_residency::ShStreamingSession;
 use crate::cpu_timing::StreamingStage;
 use crate::lightmap_streaming::demand::DemandFrame;
+use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::shared_drain::SharedDrain;
 
 /// One frame's visibility, as every streamed resource reads it.
@@ -34,17 +39,24 @@ pub(crate) struct StreamingFrame<'a> {
 }
 
 /// Streaming state whose lifetime is one loaded level: the lightmap session,
-/// the one issuer both resources read through, a cancelled predecessor's
-/// retirement, and the reused merged drain. SH's session stays on `Session`
-/// (it is read by diagnostics and outcome hooks) and is passed in; this owner
-/// replaces and retires the two together, so neither outlives the issuer
-/// they share.
+/// the one issuer both resources read through, the level's id-49 hints
+/// decoded once for both, a cancelled predecessor's retirement, and the
+/// reused merged drain. SH's session stays on `Session` (it is read by
+/// diagnostics and outcome hooks) and is passed in; this owner retires the
+/// issuer whenever either session is replaced, so no session outlives the
+/// issuer it reads through.
 #[derive(Debug, Default)]
 pub(crate) struct LevelStreaming {
     lightmap: Option<LightmapStreamingSession>,
     reads: Option<LevelReadIssuer>,
     retirement: Option<StreamingRetirement>,
     drain: SharedDrain,
+    /// The sessions' level's id 49, decoded once for every resource.
+    hints: Option<Arc<ClusterHints>>,
+    /// A lightmap the renderer does not stream (it fell back to the
+    /// placeholder). Its level runs without lightmap streaming. Weak, so it
+    /// keeps the manifest's allocation, never the manifest.
+    declined_lightmap: Option<Weak<LightmapStreamManifest>>,
 }
 
 impl LevelStreaming {

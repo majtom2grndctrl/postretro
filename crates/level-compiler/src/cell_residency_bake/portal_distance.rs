@@ -6,8 +6,8 @@
 //! This rebuilds the bake's portal hub metric from Cells (id 38) and Portals
 //! (id 15) — cell AABB center to portal centroid to next cell center, shortest
 //! path — and keeps every partner within a bound. The residency bake reads it
-//! as the movement lead; the lightmap residency dry run checks it against the
-//! stored id-46 records.
+//! as the movement lead; the test-only `lightmap_residency_dry_run` checks it
+//! against the stored id-46 records.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;

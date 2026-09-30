@@ -1,5 +1,7 @@
 // Shared runtime LevelWorld data model for slim visibility-only worlds and
-// full PRL loads. File decoding lives in prl_loader.rs behind `load-prl`.
+// full PRL loads. File decoding lives behind `load-prl`: prl_loader.rs, with
+// prl_lightmap.rs for ids 22/42/24/25 and prl_file.rs for the retained file
+// and read counters.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::error::Error as StdError;
@@ -424,10 +426,9 @@ pub struct MapLight {
 /// static-light visibility (shadow) term, or carries unshadowed irradiance
 /// for runtime SDF visibility to multiply in.
 ///
-/// Current bakes load as `Shadowed`: a missing lightmap-mode marker decodes
-/// that way, and shadowed bakes omit the marker for wire compatibility.
-/// `Unshadowed` remains for legacy wire compatibility, not as current bake
-/// output.
+/// Read from the id-22 header in both load modes; a level without id 22
+/// loads as `Shadowed`. The compiler bakes `Shadowed` today; `Unshadowed` is
+/// a valid header value the runtime honors.
 #[cfg(feature = "load-prl")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
@@ -436,10 +437,18 @@ pub enum LightmapMode {
     #[default]
     Shadowed,
     /// Visibility term removed from the bake. Forward MUST multiply by SDF
-    /// visibility to recover shadowed lighting. Retained for legacy wire
-    /// compatibility.
-    #[allow(dead_code)]
+    /// visibility to recover shadowed lighting.
     Unshadowed,
+}
+
+#[cfg(feature = "load-prl")]
+impl From<prl_format::lightmap::LightmapMode> for LightmapMode {
+    fn from(mode: prl_format::lightmap::LightmapMode) -> Self {
+        match mode {
+            prl_format::lightmap::LightmapMode::Shadowed => Self::Shadowed,
+            prl_format::lightmap::LightmapMode::Unshadowed => Self::Unshadowed,
+        }
+    }
 }
 
 /// Runtime view of the `CellDrawIndex` PRL section (id 37): each cell's owned
@@ -619,8 +628,8 @@ pub struct LevelWorld {
     pub lightmap: Option<LightmapBlockIndex>,
     /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
     /// or carries unshadowed irradiance that requires runtime SDF visibility
-    /// multiplication (`Unshadowed`). Legacy PRLs without the on-disk marker
-    /// parse as `Shadowed`.
+    /// multiplication (`Unshadowed`). Taken from the id-22 header; `Shadowed`
+    /// when id 22 is absent.
     #[cfg(feature = "load-prl")]
     pub lightmap_mode: LightmapMode,
     /// `None` → no static-occluder SDF atlas (legacy PRL or empty-geometry
@@ -5460,8 +5469,8 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// AC 12/13 (loader half): a DirectShVolume section round-trips through the
-    /// PRL container and is surfaced on `LevelWorld`, BC6H tag preserved.
+    /// A DirectShVolume section round-trips through the PRL container and is
+    /// surfaced on `LevelWorld`, BC6H tag preserved.
     #[test]
     fn load_prl_parses_direct_sh_volume_section() {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
@@ -6121,7 +6130,7 @@ mod tests {
         assert_eq!(
             world.animated_billboard_direct_scatter_delta_volumes,
             Some(animated_scatter),
-            "P7 requires an animated compose path that can seed the base with an empty sum"
+            "the animated compose path keeps an empty pair to seed the base with an empty sum"
         );
         assert!(
             world.animated_direct_sh_delta_volumes.is_none(),

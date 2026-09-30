@@ -5,13 +5,14 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
-use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_loader::{
     LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest, PrlReadCounters,
 };
-use postretro_renderer::{LightmapStreamCounters, LightmapStreamingLiveDiagnostics};
+use postretro_renderer::{
+    LightmapResidencyDrainError, LightmapStreamCounters, LightmapStreamingLiveDiagnostics,
+};
 
 use super::lightmap_streaming_diagnostics::{
     LightmapStreamingLogWindow, SectionReadBytes, assemble_live_diagnostics,
@@ -35,12 +36,12 @@ mod walk_measurement;
 
 /// The loaded level's streamed-lightmap inputs. Present only when the level's
 /// `LightmapStorage` is `Streaming`, which the loader selects only with a
-/// usable id-51 set and portals.
+/// usable id-51 set and portals. The level's id-49 hints are decoded once at
+/// level scope and passed beside it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LightmapLevelView<'a> {
     pub(crate) manifest: &'a Arc<LightmapStreamManifest>,
     pub(crate) residency_set: &'a CellResidencySetSection,
-    pub(crate) cluster_directory: Option<&'a ClusterDirectorySection>,
 }
 
 impl<'a> LightmapLevelView<'a> {
@@ -48,8 +49,33 @@ impl<'a> LightmapLevelView<'a> {
         Some(Self {
             manifest: world.lightmap_stream_manifest()?,
             residency_set: world.cell_residency_set.as_ref()?,
-            cluster_directory: world.cluster_directory(),
         })
+    }
+}
+
+/// What a renderer lightmap-drain error means for the level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RendererDrainFailure {
+    /// The renderer holds no streamed pool: it fell back to the placeholder
+    /// lightmap (device limits). The level stops streaming its lightmap.
+    NotStreaming,
+    /// A GPU-side failure the renderer rolled back whole. The pairs return
+    /// to Absent and are read again.
+    RolledBack,
+    /// The batch broke the drain contract (identity, ids, generation): a bug,
+    /// and fatal.
+    Contract,
+}
+
+impl RendererDrainFailure {
+    pub(crate) fn of(error: &LightmapResidencyDrainError) -> Self {
+        match error {
+            LightmapResidencyDrainError::NotStreaming => Self::NotStreaming,
+            LightmapResidencyDrainError::InvalidBatch(_)
+            | LightmapResidencyDrainError::StaleGeneration { .. }
+            | LightmapResidencyDrainError::GenerationResetRequired { .. } => Self::Contract,
+            _ => Self::RolledBack,
+        }
     }
 }
 
@@ -84,6 +110,8 @@ pub(crate) struct LightmapStreamingSession {
     awaiting_renderer: Option<LightmapDrainBatch>,
     /// The level file's per-section read counters; `None` for a test source.
     read_counters: Option<Arc<PrlReadCounters>>,
+    /// Renderer drains that failed and were rolled back; the first warns.
+    rolled_back_drains: u64,
     live: LightmapStreamingLiveDiagnostics,
     log_window: LightmapStreamingLogWindow,
 }
@@ -98,11 +126,13 @@ impl std::fmt::Debug for LightmapStreamingSession {
 }
 
 impl LightmapStreamingSession {
-    pub(crate) fn new(view: LightmapLevelView<'_>) -> Result<Self> {
+    /// `hints` is the level's id 49, decoded once at level scope; `None`
+    /// without id 49.
+    pub(crate) fn new(view: LightmapLevelView<'_>, hints: Option<&ClusterHints>) -> Result<Self> {
         let mut session = Self::with_source(
             Arc::new(ManifestBlockSource::new(Arc::clone(view.manifest))),
             view.residency_set,
-            view.cluster_directory,
+            hints,
         )?;
         session.manifest = Some(Arc::downgrade(view.manifest));
         session.read_counters = Some(Arc::clone(view.manifest.read_counters()));
@@ -112,14 +142,10 @@ impl LightmapStreamingSession {
     pub(in crate::session) fn with_source(
         source: Arc<dyn LightmapBlockSource>,
         residency_set: &CellResidencySetSection,
-        cluster_directory: Option<&ClusterDirectorySection>,
+        hints: Option<&ClusterHints>,
     ) -> Result<Self> {
-        let hints = cluster_directory
-            .map(ClusterHints::decode)
-            .transpose()
-            .context("[Lightmap streaming] id-49 cluster hints")?;
         let controller =
-            LightmapResidencyController::new(Arc::clone(&source), residency_set, hints.as_ref())?;
+            LightmapResidencyController::new(Arc::clone(&source), residency_set, hints)?;
         let ledger = Arc::new(LightmapRouteLedger::default());
         let (route, completions) = lightmap_route(
             Arc::clone(&source),
@@ -135,6 +161,7 @@ impl LightmapStreamingSession {
             route: Some(route),
             awaiting_renderer: None,
             read_counters: None,
+            rolled_back_drains: 0,
             live: LightmapStreamingLiveDiagnostics::default(),
             log_window: LightmapStreamingLogWindow::default(),
         })
@@ -144,6 +171,12 @@ impl LightmapStreamingSession {
         self.manifest
             .as_ref()
             .is_some_and(|streamed| std::ptr::eq(streamed.as_ptr(), Arc::as_ptr(manifest)))
+    }
+
+    /// The streamed manifest's identity, without keeping it alive; `None`
+    /// for a test source.
+    pub(in crate::session) fn manifest_identity(&self) -> Option<Weak<LightmapStreamManifest>> {
+        self.manifest.clone()
     }
 
     /// Demand from the camera cell's baked set and the pins alone: the spawn
@@ -157,14 +190,15 @@ impl LightmapStreamingSession {
             .update_camera_set(residency_set, camera_cell);
     }
 
-    /// Demand from one frame's visibility without draining: capture's fixed
-    /// view, before its preload.
+    /// Capture's fixed view: its camera cell's baked set plus every drawn
+    /// cell's block as visible, whatever the visibility path, without
+    /// draining. See [`LightmapResidencyController::update_capture_view`].
     #[cfg_attr(
         not(feature = "capture"),
         allow(dead_code, reason = "capture's preload reads its view's demand")
     )]
-    pub(crate) fn update_demand(&mut self, frame: DemandFrame<'_>) {
-        self.controller.update(frame);
+    pub(crate) fn update_capture_demand(&mut self, frame: DemandFrame<'_>) {
+        self.controller.update_capture_view(frame);
     }
 
     /// Makes the current mandatory and visible targets resident before a
@@ -173,17 +207,29 @@ impl LightmapStreamingSession {
     /// batch, and applies its outcome. Blocks in `keep_missing` stay
     /// targeted but unread. Call after a demand update and before this
     /// session's first drain or read.
+    ///
+    /// A renderer error is returned as the typed
+    /// [`LightmapResidencyDrainError`] (see [`RendererDrainFailure::of`]),
+    /// after the controller has taken the batch's pairs back.
     pub(crate) fn preload(
         &mut self,
         keep_missing: &[u32],
-        install: impl FnOnce(LightmapDrainBatch) -> Result<LightmapDrainOutcome>,
+        install: impl FnOnce(
+            LightmapDrainBatch,
+        ) -> Result<LightmapDrainOutcome, LightmapResidencyDrainError>,
     ) -> Result<LightmapPreloadSummary> {
         if self.awaiting_renderer.is_some() {
             bail!("[Lightmap streaming] preload found a parked drain batch");
         }
         let started = Instant::now();
         let (batch, reads) = self.controller.preload_batch(keep_missing)?;
-        let outcome = install(batch)?;
+        let outcome = match install(batch) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.controller.abort_drain();
+                return Err(error.into());
+            }
+        };
         let summary = LightmapPreloadSummary {
             reads,
             installed: outcome.installed.len() as u32,
@@ -206,6 +252,23 @@ impl LightmapStreamingSession {
         self.route
             .take()
             .map(|route| Box::new(route) as Box<dyn ReadRoute>)
+    }
+
+    /// The level-scope issuer is being replaced while this session lives on
+    /// (only SH changed). A fresh route waits for the next issuer; every read
+    /// in flight on the old one returns to Absent, to be read again, while
+    /// ready, drained and resident pairs stay. Returns the old completion
+    /// queue: the retiring issuer may still deliver into it, and whatever it
+    /// delivers must release its bytes once that thread has joined.
+    pub(in crate::session) fn detach_from_issuer(&mut self) -> Receiver<LightmapCompletion> {
+        let (route, completions) = lightmap_route(
+            Arc::clone(&self.source),
+            Arc::clone(self.controller.target_bitset()),
+            Arc::clone(&self.ledger),
+        );
+        self.route = Some(route);
+        self.controller.cancel_in_flight();
+        std::mem::replace(&mut self.completions, completions)
     }
 
     /// First half of this frame's drain: demand from this frame's visibility,
@@ -268,6 +331,27 @@ impl LightmapStreamingSession {
 
     pub(crate) fn apply_outcome(&mut self, outcome: LightmapDrainOutcome) -> Result<()> {
         self.controller.apply_outcome(outcome).map_err(Into::into)
+    }
+
+    /// The renderer failed the parked batch. The controller takes its pairs
+    /// back (they return to Absent and are read again) and re-sends every
+    /// target in the next batch. A rolled-back drain warns once per session.
+    pub(crate) fn renderer_drain_failed(
+        &mut self,
+        error: &LightmapResidencyDrainError,
+    ) -> RendererDrainFailure {
+        self.controller.abort_drain();
+        let failure = RendererDrainFailure::of(error);
+        if failure == RendererDrainFailure::RolledBack {
+            self.rolled_back_drains += 1;
+            if self.rolled_back_drains == 1 {
+                log::warn!(
+                    "[Lightmap streaming] renderer drain failed and was rolled back: {error}; \
+                     its pairs will be read again"
+                );
+            }
+        }
+        failure
     }
 
     /// Closes the frame after its drain outcome: counts the frame's visible
@@ -345,7 +429,6 @@ impl LightmapStreamingSession {
         self.source
     }
 
-    #[cfg(test)]
     pub(in crate::session) fn ledger(&self) -> &Arc<LightmapRouteLedger> {
         &self.ledger
     }

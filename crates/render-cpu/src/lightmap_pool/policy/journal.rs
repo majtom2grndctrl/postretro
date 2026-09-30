@@ -1,4 +1,4 @@
-// Undo journal for one drain's model mutations: install rollback and drain abort (P7).
+// Undo journal for one drain's model mutations: install rollback and drain abort.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use super::plan::{EvictionReason, NotAPlannedUpload};
@@ -33,7 +33,8 @@ pub(super) enum JournalOp {
 pub(super) struct Touched {
     pub block: u32,
     pub start: Option<Slot>,
-    /// The reason of its latest eviction this drain, if any.
+    /// The reason of its latest eviction this drain, if any. A residency
+    /// reset's free has none, so no outcome reports it.
     pub reason: Option<EvictionReason>,
 }
 
@@ -120,6 +121,17 @@ impl LightmapPoolModel {
             .free(slot)
             .expect("a resident slot names its live allocation");
         self.journal.push(JournalOp::Free { block, slot });
+    }
+
+    /// Free every resident block for a new generation's first drain. The
+    /// frees are journaled, so an aborted drain restores them, and their
+    /// table writes land with the drain; clearing the reason keeps them out
+    /// of the evicted list.
+    pub(super) fn forget_residency(&mut self) {
+        while let Some(&block) = self.resident.last() {
+            self.release(block, EvictionReason::Untargeted);
+            self.touched[self.touch_index[block as usize] as usize].reason = None;
+        }
     }
 
     pub(super) fn record_growth(&mut self, previous_layers: u32) {

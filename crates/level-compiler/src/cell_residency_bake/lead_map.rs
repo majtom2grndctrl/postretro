@@ -6,8 +6,9 @@
 //! `W(c, L)` is `c` plus every cell within untruncated hub-metric distance
 //! `L`; `PVS` is the sampled set from `pvs_sampling`; `Dil(S)` adds every
 //! one-hop portal neighbour of a cell in `S`. Pinned clusters are not baked:
-//! the runtime adds them from id 49.
-//! See: context/plans/in-progress/spatial-residency--lightmap-cell-blocks/index.md
+//! the runtime adds them from id 49. The runtime chooses its lead up to the
+//! baked maximum.
+//! See: context/lib/build_pipeline.md §PRL section IDs (CellResidencySet)
 
 use postretro_level_format::cell_residency_set::{CellResidencySetSection, ResidencyEntry};
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
@@ -15,8 +16,9 @@ use rayon::prelude::*;
 
 use super::portal_distance::{Neighbors, PortalGraphInput};
 
-/// Baked maximum lead, in metres.
-pub(crate) const BRIEF_MAX_LEAD_METERS: u32 = 32;
+/// Baked maximum lead, in metres; the runtime lead slider tops out here.
+/// 32 m is about two seconds of sustained movement (11–15 m/s) plus dash bursts.
+pub(crate) const MAX_LEAD_METERS: u32 = 32;
 
 pub(crate) fn meters_fixed(meters: u32) -> u32 {
     meters * CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE

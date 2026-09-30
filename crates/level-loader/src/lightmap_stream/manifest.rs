@@ -48,9 +48,9 @@ pub struct LightmapStreamManifest {
 }
 
 impl LightmapStreamManifest {
-    /// Validate that every block's blobs pair into one contiguous range per
-    /// section (irradiance then direction; group A then group B), as the wire
-    /// format lays them out, so a pair is exactly two reads.
+    /// The id-22/42 index parsers already hold each block's blobs adjacent
+    /// (irradiance then direction; group A then group B), so a pair is
+    /// exactly two reads.
     pub(crate) fn new(
         file: Arc<PrlFile>,
         lightmap: LightmapBlockIndex,
@@ -69,17 +69,11 @@ impl LightmapStreamManifest {
                 ));
             }
         };
-        for (block, record) in lightmap.records.iter().enumerate() {
-            check_contiguous(block, "irradiance", record.irradiance, record.direction)?;
-        }
         if let Some(shadowmask) = &shadowmask {
             if shadowmask.records.len() != lightmap.records.len() {
                 return Err(lightmap_stream_error(
                     "shadowmask block count differs from the lightmap's",
                 ));
-            }
-            for (block, record) in shadowmask.records.iter().enumerate() {
-                check_contiguous(block, "shadowmask group A", record.group_a, record.group_b)?;
             }
         }
         Ok(Self {
@@ -128,8 +122,9 @@ impl LightmapStreamManifest {
     }
 
     /// The file region a span read may cover: from the first to the last
-    /// byte of ids 22 and 42 together. The issuer coalesces adjacent block
-    /// reads and may join id 22's tail to id 42's head, gap included.
+    /// byte of ids 22 and 42 together. The issuer merges lightmap reads only
+    /// when their ranges are byte-contiguous, which can join id 22's tail to
+    /// id 42's head when the two sections touch.
     pub fn span_region(&self) -> Range<u64> {
         match &self.shadowmask_section {
             Some(shadowmask) => {
@@ -168,8 +163,8 @@ impl LightmapStreamManifest {
     }
 
     /// One counted positional read of an absolute span, which may cover
-    /// several blocks' ranges and the gaps between them, across the id-22/42
-    /// boundary. A span reaching outside [`Self::span_region`] is rejected
+    /// several byte-contiguous block ranges, across the id-22/42 boundary
+    /// when the sections touch. A span reaching outside [`Self::span_region`] is rejected
     /// before allocation.
     pub fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
         let region = self.span_region();
@@ -258,22 +253,6 @@ fn entry_range(entry: &SectionEntry) -> Result<Range<u64>, PrlLoadError> {
         ))
     })?;
     Ok(entry.offset..end)
-}
-
-fn check_contiguous(
-    block: usize,
-    what: &str,
-    first: SectionByteRange,
-    second: SectionByteRange,
-) -> Result<(), PrlLoadError> {
-    if first.end() == Some(second.offset) {
-        Ok(())
-    } else {
-        Err(lightmap_stream_error(format!(
-            "block {block} {what} blob does not end where its partner blob starts; \
-             streaming reads each pair half as one range"
-        )))
-    }
 }
 
 /// `first_offset..second.end()` inside `section`, made absolute. The index

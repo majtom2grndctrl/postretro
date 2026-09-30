@@ -39,7 +39,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
             Some(_) => Some(requested_streaming_mode()?),
         },
-        lightmap: requested_lightmap_streaming_mode()?,
+        lightmap: lightmap_mode_for_table(&metadata, requested_lightmap_streaming_mode)?,
     };
     load_prl_with_modes(
         file,
@@ -89,6 +89,21 @@ fn load_prl_with_modes(
         sh_manifest,
         modes.lightmap,
     )
+}
+
+/// A table that can never stream lightmaps bypasses the lightmap environment
+/// gate, as a PRL without id 50 bypasses SH's, so a bad value cannot fail it.
+/// The unset default stands in, and the load's residency rule logs why the
+/// level stays all-resident.
+pub(crate) fn lightmap_mode_for_table(
+    metadata: &prl_format::ContainerMeta,
+    requested: impl FnOnce() -> Result<LightmapStreamingMode, PrlLoadError>,
+) -> Result<LightmapStreamingMode, PrlLoadError> {
+    if table_may_stream_lightmaps(metadata) {
+        requested()
+    } else {
+        Ok(LightmapStreamingMode::Stream)
+    }
 }
 
 fn table_may_stream_lightmaps(metadata: &prl_format::ContainerMeta) -> bool {

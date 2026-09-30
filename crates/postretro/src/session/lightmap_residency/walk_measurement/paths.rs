@@ -1,12 +1,10 @@
-//! Seeded camera walks over portal adjacency between camera cells, for the
-//! runtime lightmap residency walks.
-//!
-//! A port of the dry run's `camera_walks.rs`
-//! (`crates/level-compiler/src/lightmap_residency_dry_run/`), which is
-//! test-only code in the `prl-build` binary and unreachable from here. Same
-//! camera cells (neither solid nor exterior, ascending id), same adjacency,
-//! same SplitMix64 and seed, so a runtime walk of N steps is the first N
-//! steps of the dry run's walk.
+//! Seeded camera walks over portal adjacency, for the lightmap residency walks.
+//! See: context/lib/experimental_spikes.md
+
+// A port of the dry run's `camera_walks.rs` (level-compiler
+// `lightmap_residency_dry_run/`), test-only code in the `prl-build` binary.
+// Same camera cells (neither solid nor exterior, ascending id), adjacency,
+// SplitMix64 and seed, so a runtime walk of N steps is the dry run's first N.
 
 use std::collections::VecDeque;
 

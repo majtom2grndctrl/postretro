@@ -64,6 +64,7 @@ struct Scratch {
 ///
 /// The pool texture always carries `layers() + 1` array layers: the last is
 /// the spare a repack stages same-layer moves through, never a second pool.
+/// `layers()` never passes the device limit the model was built with.
 /// Each drain produces a [`DrainPlan`] the GPU layer executes in order; the
 /// model has already applied it, and journals every mutation so the GPU
 /// layer can [`fail_install`](Self::fail_install) one pair or
@@ -85,6 +86,9 @@ pub struct LightmapPoolModel {
     used_texels: Vec<u64>,
     layers: u32,
     cap_layers: u32,
+    /// Usable layers the device can hold beside the spare. Growth never
+    /// plans past it; a pair that would need it is deferred.
+    max_layers: u32,
     retiring: bool,
     texture_allocations: u32,
     journal: Vec<JournalOp>,
@@ -97,20 +101,36 @@ pub struct LightmapPoolModel {
 }
 
 impl LightmapPoolModel {
-    /// A model for a level's blocks, nothing resident. The first generation
-    /// holds `min(cap_layers, L)` layers, where `L` is what the level needs
-    /// all-resident: the pool never pre-allocates past what every block
-    /// together would fill. `None` for a zero-sized block or one larger than
-    /// an `edge`² layer; the loader rejects both.
+    /// A model for a level's blocks, nothing resident, with no device layer
+    /// limit. The first generation holds `min(cap_layers, L)` layers, where
+    /// `L` is what the level needs all-resident: the pool never
+    /// pre-allocates past what every block together would fill. `None` for a
+    /// zero-sized block or one larger than an `edge`² layer; the loader
+    /// rejects both.
     pub fn new(
         extents: Vec<(u32, u32)>,
         alignment: u32,
         edge: u32,
         cap_layers: u32,
     ) -> Option<Self> {
+        Self::with_layer_limit(extents, alignment, edge, cap_layers, u32::MAX)
+    }
+
+    /// [`new`](Self::new) bounded by the device: the active generation never
+    /// holds more than `max_layers` usable layers (the device's
+    /// `maxTextureArrayLayers` minus the spare). A mandatory or visible pair
+    /// that would need a layer past it is deferred, a counted transient
+    /// miss, as while a generation retires.
+    pub fn with_layer_limit(
+        extents: Vec<(u32, u32)>,
+        alignment: u32,
+        edge: u32,
+        cap_layers: u32,
+        max_layers: u32,
+    ) -> Option<Self> {
         let alignment = alignment.max(1);
         let ceiling = super::place_all_resident(&extents, alignment, edge)?.layer_count;
-        let layers = cap_layers.min(ceiling);
+        let layers = cap_layers.min(ceiling).min(max_layers);
         let count = extents.len();
         Some(Self {
             edge,
@@ -124,6 +144,7 @@ impl LightmapPoolModel {
             used_texels: vec![0; layers as usize],
             layers,
             cap_layers,
+            max_layers,
             retiring: false,
             texture_allocations: 1,
             journal: Vec::new(),

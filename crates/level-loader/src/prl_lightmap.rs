@@ -30,9 +30,11 @@ pub(crate) struct LoadedShadowmask {
 }
 
 /// Absent id 22 is placeholder mode: no cell blocks, and every vertex must
-/// carry block 0. Present, it parses strictly; any fault fails the load.
+/// carry block 0. Present, it parses strictly against the level's
+/// `cell_count` cells; any fault fails the load.
 pub(crate) fn read_lightmap(
     container: &PrlContainer,
+    cell_count: usize,
 ) -> Result<Option<LoadedLightmap>, PrlLoadError> {
     let Some(data) = container.read_section(SectionId::Lightmap as u32)? else {
         log::warn!("[PRL] Lightmap section missing — static direct lighting disabled for this map");
@@ -40,6 +42,7 @@ pub(crate) fn read_lightmap(
     };
     let index = LightmapBlockIndex::from_prefix(&data, data.len() as u64)
         .map_err(|err| section_validation_from_error("Lightmap", err))?;
+    validate_lightmap_block_cells(&index, cell_count)?;
     let blocks: Vec<LightmapBlockPayload> = index
         .records
         .iter()
@@ -56,6 +59,37 @@ pub(crate) fn read_lightmap(
         blocks.iter().map(|b| b.direction.len()).sum::<usize>(),
     );
     Ok(Some(LoadedLightmap { index, blocks }))
+}
+
+/// Reject a block whose cell lies past the Cells table, and a cell owned by
+/// more than one block: each cell's charts pack into exactly one block, and
+/// residency maps a cell to its one block. Both load modes run this.
+pub(crate) fn validate_lightmap_block_cells(
+    index: &LightmapBlockIndex,
+    cell_count: usize,
+) -> Result<(), PrlLoadError> {
+    let mut owner: Vec<Option<usize>> = vec![None; cell_count];
+    for (block, record) in index.records.iter().enumerate() {
+        let cell = record.cell_id;
+        let Some(slot) = owner.get_mut(cell as usize) else {
+            return Err(section_validation(
+                "Lightmap",
+                format!(
+                    "block {block} names cell {cell} past the {cell_count}-cell Cells table; recompile with `prl-build`"
+                ),
+            ));
+        };
+        if let Some(first) = *slot {
+            return Err(section_validation(
+                "Lightmap",
+                format!(
+                    "block {block} names cell {cell}, which block {first} already owns; recompile with `prl-build`"
+                ),
+            ));
+        }
+        *slot = Some(block);
+    }
+    Ok(())
 }
 
 /// Id 42 pairs with id 22 block for block, so every fault fails the load:

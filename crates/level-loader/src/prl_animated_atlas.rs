@@ -302,8 +302,8 @@ mod tests {
         assert!(message.contains("below the lower bound"), "{message}");
     }
 
-    // AC 6 (loader half): an animated block outside its cell block rejects in
-    // every build, not only under the vertex mismatch policy.
+    // An animated block outside its cell block rejects in every build, not
+    // only under the vertex mismatch policy.
     #[test]
     fn animated_block_outside_its_cell_block_is_rejected_in_every_build() {
         let mut past_edge = section(1024);

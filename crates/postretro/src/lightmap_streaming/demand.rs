@@ -44,6 +44,24 @@ impl BlockTarget {
     pub(crate) fn rank(self, block: u32) -> DrainRank {
         DrainRank::lightmap_block(self.drain_class, self.priority, self.lead, block)
     }
+
+    /// The target of a block a non-portal frame draws while its pair is
+    /// resident or on its way: whichever of the block's current target and
+    /// the one demand now gives it ranks higher, so the drawn block is never
+    /// freed or demoted under the frame that draws it.
+    pub(crate) fn held(current: Option<Self>, demanded: Option<Self>) -> Option<Self> {
+        let rank = |target: Option<Self>| match target.map(|target| target.class) {
+            None => 0,
+            Some(LightmapBlockClass::Band) => 1,
+            Some(LightmapBlockClass::Visible) => 2,
+            Some(LightmapBlockClass::Mandatory) => 3,
+        };
+        if rank(current) > rank(demanded) {
+            current
+        } else {
+            demanded
+        }
+    }
 }
 
 /// What the baked set says about a block from the current camera cell.
@@ -62,18 +80,24 @@ struct DemandSlot {
     /// Drawn on the latest portal-walk frame.
     drawn: bool,
     drawn_epoch: u32,
+    /// Drawn on the latest non-portal frame: the controller keeps its target
+    /// while its pair is resident or on its way.
+    held: bool,
+    held_epoch: u32,
     /// Queued in `BlockDemand::dirty`.
     dirty: bool,
 }
 
-/// How a visibility path shapes this frame's demand (brief: non-portal paths).
+/// How a visibility path shapes this frame's demand. Only a portal walk adds
+/// drawn cells to demand; every other path demands the camera cell's baked
+/// set alone, and its drawn blocks are only held.
 enum PathDemand {
     /// Baked set plus visible demand from the drawn cells.
     PortalWalk,
-    /// Baked set only; the frustum-culled drawn set adds nothing.
+    /// Baked set; the frustum-culled drawn cells are held, never demanded.
     CameraSet,
-    /// Solid or exterior camera cell: its baked set when it has one;
-    /// otherwise keep current demand and request nothing new.
+    /// Solid or exterior camera cell: as `CameraSet` when the cell has a
+    /// baked set; otherwise keep current demand and request nothing new.
     CameraSetOrHold,
     /// Empty world: no residency-set lookup, no change, no requests.
     Hold,
@@ -108,6 +132,12 @@ impl DemandFrame<'_> {
     pub(crate) fn is_portal_walk(&self) -> bool {
         matches!(self.path, VisibilityPath::PrlPortal { .. })
     }
+
+    /// Whether the frame draws cells whose visible misses count: every path
+    /// but the empty world, which draws no cell.
+    pub(crate) fn draws_cells(&self) -> bool {
+        !matches!(self.path, VisibilityPath::EmptyWorldFallback)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -132,11 +162,19 @@ pub(crate) struct BlockDemand {
     /// This portal frame's drawn blocks; the previous frame's while marking.
     drawn: Vec<u32>,
     drawn_scratch: Vec<u32>,
+    /// This non-portal frame's drawn blocks; the previous frame's while
+    /// marking.
+    held: Vec<u32>,
+    held_scratch: Vec<u32>,
+    /// Whether the latest drawn set is `held` (a non-portal frame) rather
+    /// than `drawn`.
+    drawn_set_is_held: bool,
     /// Blocks whose demand may have changed since the controller last looked.
     dirty: Vec<u32>,
     /// Camera cell and lead the baked part was computed for.
     key: Option<(u32, u32)>,
     epoch: u32,
+    held_epoch: u32,
     counters: DemandCounters,
 }
 
@@ -149,6 +187,8 @@ impl BlockDemand {
                     baked: Baked::None,
                     drawn: false,
                     drawn_epoch: 0,
+                    held: false,
+                    held_epoch: 0,
                     dirty: false,
                 };
                 map.block_count()
@@ -156,9 +196,13 @@ impl BlockDemand {
             baked_blocks: Vec::new(),
             drawn: Vec::new(),
             drawn_scratch: Vec::new(),
+            held: Vec::new(),
+            held_scratch: Vec::new(),
+            drawn_set_is_held: false,
             dirty: Vec::new(),
             key: None,
             epoch: 0,
+            held_epoch: 0,
             counters: DemandCounters::default(),
         };
         for &block in map.pinned_blocks() {
@@ -168,6 +212,11 @@ impl BlockDemand {
     }
 
     /// Applies one frame. Returns whether the frame may issue new reads.
+    ///
+    /// A non-portal frame demands only the camera cell's baked set. Its drawn
+    /// blocks are held instead: the controller keeps a held block's target
+    /// while its pair is resident or on its way, so the renderer never frees
+    /// a block the frame draws, and never reads one for it.
     pub(crate) fn update(
         &mut self,
         map: &LevelBlockMap,
@@ -181,24 +230,46 @@ impl BlockDemand {
                 if self.key != Some((camera_cell, lead)) {
                     let entries = self.lookup(frame.residency_set, camera_cell);
                     if entries.is_empty() {
+                        // Current demand stands. Holds follow what this frame
+                        // draws, and its visible misses are counted.
+                        self.mark_held(map, frame.visible_cells);
                         return false;
                     }
                     self.recompute(map, camera_cell, lead, entries);
                 }
                 self.clear_drawn();
+                self.mark_held(map, frame.visible_cells);
                 true
             }
             PathDemand::CameraSet => {
                 self.recompute_if_changed(map, frame.residency_set, camera_cell, lead);
                 self.clear_drawn();
+                self.mark_held(map, frame.visible_cells);
                 true
             }
             PathDemand::PortalWalk => {
                 self.recompute_if_changed(map, frame.residency_set, camera_cell, lead);
+                self.clear_held();
                 self.mark_drawn(map, frame.visible_cells);
                 true
             }
         }
+    }
+
+    /// Capture's fixed view: the camera cell's baked set, plus every drawn
+    /// cell's block as visible whatever the visibility path. An empty world
+    /// looks up no residency set.
+    pub(crate) fn update_capture_view(
+        &mut self,
+        map: &LevelBlockMap,
+        lead: u32,
+        frame: DemandFrame<'_>,
+    ) {
+        if frame.draws_cells() {
+            self.recompute_if_changed(map, frame.residency_set, frame.camera_cell, lead);
+        }
+        self.clear_held();
+        self.mark_drawn(map, frame.visible_cells);
     }
 
     /// Demand from `camera_cell`'s baked set and the pins alone, with no drawn
@@ -213,6 +284,7 @@ impl BlockDemand {
     ) {
         self.recompute_if_changed(map, residency_set, camera_cell, lead);
         self.clear_drawn();
+        self.clear_held();
     }
 
     /// The block's current target, or `None` when nothing demands it.
@@ -268,9 +340,25 @@ impl BlockDemand {
             .copied()
     }
 
-    /// Blocks drawn on the latest portal-walk frame.
+    /// Blocks the latest frame drew: the portal walk's drawn blocks, or a
+    /// non-portal frame's held ones.
     pub(crate) fn drawn_blocks(&self) -> &[u32] {
-        &self.drawn
+        if self.drawn_set_is_held {
+            &self.held
+        } else {
+            &self.drawn
+        }
+    }
+
+    /// Whether the latest non-portal frame drew `block`.
+    pub(crate) fn is_held(&self, block: u32) -> bool {
+        self.slots[block as usize].held
+    }
+
+    /// Whether the camera cell's baked set (lead L, the band) or the pins
+    /// name `block`: all a non-portal frame may read.
+    pub(crate) fn in_camera_set(&self, map: &LevelBlockMap, block: u32) -> bool {
+        map.facts(block).pinned || self.slots[block as usize].baked != Baked::None
     }
 
     pub(crate) fn counters(&self) -> DemandCounters {
@@ -278,11 +366,13 @@ impl BlockDemand {
     }
 
     #[cfg(test)]
-    pub(crate) fn buffer_capacities(&self) -> [usize; 4] {
+    pub(crate) fn buffer_capacities(&self) -> [usize; 6] {
         [
             self.baked_blocks.capacity(),
             self.drawn.capacity(),
             self.drawn_scratch.capacity(),
+            self.held.capacity(),
+            self.held_scratch.capacity(),
             self.dirty.capacity(),
         ]
     }
@@ -309,9 +399,9 @@ impl BlockDemand {
         }
     }
 
-    /// Replaces the baked part with `entries` split at `lead`. Blocks in both
-    /// the old and new set are marked dirty; the controller drops the ones
-    /// whose target did not change.
+    /// Replaces the baked part with `entries` split at `lead`. Blocks in
+    /// either the old or the new set are marked dirty; the controller drops
+    /// the ones whose target did not change.
     fn recompute(
         &mut self,
         map: &LevelBlockMap,
@@ -343,22 +433,17 @@ impl BlockDemand {
 
     fn mark_drawn(&mut self, map: &LevelBlockMap, visible_cells: &VisibleCells) {
         self.epoch = self.epoch.wrapping_add(1);
+        self.drawn_set_is_held = false;
         std::mem::swap(&mut self.drawn, &mut self.drawn_scratch);
         self.drawn.clear();
-        // The portal walk always hands over a culled set.
-        if let VisibleCells::Culled(cells) = visible_cells {
-            for &cell in cells {
-                let Some(block) = map.block_of_cell(cell) else {
-                    continue;
-                };
-                let slot = &mut self.slots[block as usize];
-                slot.drawn_epoch = self.epoch;
-                if !slot.drawn {
-                    slot.drawn = true;
-                    self.mark_dirty(block);
-                }
-                self.drawn.push(block);
+        for block in drawn_blocks_of(map, visible_cells) {
+            let slot = &mut self.slots[block as usize];
+            slot.drawn_epoch = self.epoch;
+            if !slot.drawn {
+                slot.drawn = true;
+                self.mark_dirty(block);
             }
+            self.drawn.push(block);
         }
         for index in 0..self.drawn_scratch.len() {
             let block = self.drawn_scratch[index];
@@ -380,6 +465,44 @@ impl BlockDemand {
         self.drawn.clear();
     }
 
+    /// Records a non-portal frame's drawn blocks as held. Becoming held
+    /// changes no target by itself; a block that stops being held is marked
+    /// dirty, so the controller re-evaluates, and may release, it.
+    fn mark_held(&mut self, map: &LevelBlockMap, visible_cells: &VisibleCells) {
+        self.held_epoch = self.held_epoch.wrapping_add(1);
+        self.drawn_set_is_held = true;
+        std::mem::swap(&mut self.held, &mut self.held_scratch);
+        self.held.clear();
+        for block in drawn_blocks_of(map, visible_cells) {
+            let slot = &mut self.slots[block as usize];
+            slot.held_epoch = self.held_epoch;
+            slot.held = true;
+            self.held.push(block);
+        }
+        for index in 0..self.held_scratch.len() {
+            let block = self.held_scratch[index];
+            let slot = &mut self.slots[block as usize];
+            if slot.held && slot.held_epoch != self.held_epoch {
+                slot.held = false;
+                self.mark_dirty(block);
+            }
+        }
+        self.held_scratch.clear();
+    }
+
+    /// Ends every hold: a portal walk decides visible demand itself.
+    fn clear_held(&mut self) {
+        for index in 0..self.held.len() {
+            let block = self.held[index];
+            let slot = &mut self.slots[block as usize];
+            if slot.held {
+                slot.held = false;
+                self.mark_dirty(block);
+            }
+        }
+        self.held.clear();
+    }
+
     fn mark_dirty(&mut self, block: u32) {
         let slot = &mut self.slots[block as usize];
         if !slot.dirty {
@@ -387,4 +510,20 @@ impl BlockDemand {
             self.dirty.push(block);
         }
     }
+}
+
+/// The blocks of the cells `visible_cells` draws; every block for `DrawAll`.
+/// A cell without charts has no block.
+fn drawn_blocks_of<'a>(
+    map: &'a LevelBlockMap,
+    visible_cells: &'a VisibleCells,
+) -> impl Iterator<Item = u32> + 'a {
+    let (cells, every) = match visible_cells {
+        VisibleCells::Culled(cells) => (cells.as_slice(), 0..0),
+        VisibleCells::DrawAll => (&[][..], 0..map.block_count() as u32),
+    };
+    cells
+        .iter()
+        .filter_map(|&cell| map.block_of_cell(cell))
+        .chain(every)
 }

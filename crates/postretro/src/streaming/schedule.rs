@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use super::request::{ReadTier, StreamResource};
 
-/// Largest run of unrequested bytes one physical read may cover and discard.
+/// Largest run of unrequested bytes one SH read may cover and discard.
 pub(crate) const COALESCE_MAX_GAP_BYTES: u64 = 256 * 1024;
 /// Largest span one coalesced read may cover. A single range above it is
 /// read alone.
@@ -41,11 +41,22 @@ impl ReadPlan {
     }
 }
 
+/// Largest run of unrequested bytes one read of `resource` may cover. Lightmap
+/// blocks merge only byte-contiguous ranges, so the bytes read from ids 22
+/// and 42 are exactly the requested blocks plus the index.
+const fn max_gap_bytes(resource: StreamResource) -> u64 {
+    match resource {
+        StreamResource::Sh => COALESCE_MAX_GAP_BYTES,
+        StreamResource::LightmapBlock => 0,
+    }
+}
+
 /// Plans the next physical read. The mandatory tier, across every resource,
 /// is served first whenever it has any pending range, so optional work never
 /// delays it. Within the chosen tier the lowest offset starts the read, and
 /// the ranges that follow it in offset order merge while they belong to the
-/// same resource and the gap and span caps hold. Offset ties keep slot order.
+/// same resource and the resource's gap cap and the span cap hold. Offset
+/// ties keep slot order.
 pub(crate) fn plan_next_read(slots: &[RangeSlot]) -> Option<ReadPlan> {
     let tier = if slots.iter().any(|slot| slot.tier == ReadTier::Mandatory) {
         ReadTier::Mandatory
@@ -58,6 +69,7 @@ pub(crate) fn plan_next_read(slots: &[RangeSlot]) -> Option<ReadPlan> {
     in_tier.sort_by_key(|&index| (slots[index].range.start, slots[index].range.end));
     let (&first, rest) = in_tier.split_first()?;
     let resource = slots[first].resource;
+    let max_gap = max_gap_bytes(resource);
     let mut span = slots[first].range.clone();
     let mut members = vec![first];
     for &index in rest {
@@ -65,7 +77,7 @@ pub(crate) fn plan_next_read(slots: &[RangeSlot]) -> Option<ReadPlan> {
         let gap = slot.range.start.saturating_sub(span.end);
         let merged_end = span.end.max(slot.range.end);
         if slot.resource != resource
-            || gap > COALESCE_MAX_GAP_BYTES
+            || gap > max_gap
             || merged_end - span.start > COALESCE_MAX_SPAN_BYTES
         {
             break;
@@ -212,6 +224,23 @@ mod tests {
             slot(true, 101 + COALESCE_MAX_GAP_BYTES, 50),
         ];
         assert_eq!(plan_next_read(&over_cap).unwrap().members, vec![0]);
+    }
+
+    // Lightmap reads never discard bytes: a range one byte past the last one
+    // starts a new read, while an adjacent range joins it.
+    #[test]
+    fn lightmap_ranges_merge_only_when_byte_contiguous() {
+        let lightmap = |start: u64, len: u64| RangeSlot {
+            resource: StreamResource::LightmapBlock,
+            tier: ReadTier::Mandatory,
+            range: start..start + len,
+        };
+        let slots = [lightmap(0, 100), lightmap(100, 50), lightmap(151, 10)];
+        let plan = plan_next_read(&slots).unwrap();
+        assert_eq!(plan.members, vec![0, 1]);
+        assert_eq!(plan.span, 0..150);
+        assert_eq!(plan.gap_bytes(&slots), 0);
+        assert_eq!(drain_order(&slots), vec![vec![0, 1], vec![2]]);
     }
 
     #[test]

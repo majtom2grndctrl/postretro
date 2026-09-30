@@ -1,4 +1,4 @@
-//! Brief-set residency: each dilation's lead map to `BRIEF_MAX_LEAD_METERS`,
+//! Brief-set residency: each dilation's lead map to `MAX_LEAD_METERS`,
 //! checked against direct evaluation, costed as cell blocks at each movement
 //! lead; the prefetch band at `SIM_LEAD_METERS`; the would-be residency
 //! section's size; and the band-aware pool walks over the dilated set.
@@ -16,7 +16,7 @@ use super::mandatory::mandatory_bytes;
 use super::render::percentile_desc;
 use super::visible_set::{MOVEMENT_LEADS_METERS, VisibleSetInputs};
 use crate::cell_residency_bake::lead_map::{
-    BRIEF_MAX_LEAD_METERS, LeadMap, meters_fixed, portal_neighbours,
+    LeadMap, MAX_LEAD_METERS, meters_fixed, portal_neighbours,
 };
 
 /// Wire format of the brief's cell residency set: a four-`u32` header,
@@ -90,7 +90,7 @@ pub(crate) struct BriefSetResult {
 }
 
 pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> BriefSetResult {
-    let max_lead_meters = BRIEF_MAX_LEAD_METERS;
+    let max_lead_meters = MAX_LEAD_METERS;
     assert!(
         MOVEMENT_LEADS_METERS
             .iter()

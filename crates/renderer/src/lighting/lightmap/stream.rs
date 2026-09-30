@@ -42,6 +42,8 @@ pub enum LightmapResidencyDrainError {
     /// A new generation must open with a target reset.
     GenerationResetRequired { current: u64, received: u64 },
     /// Growth needs more array layers (spare included) than the device has.
+    /// The model plans within the device limit and defers a pair past it, so
+    /// this means the model and the device disagree.
     GpuCapacity {
         required_layers: u32,
         max_layers: u32,
@@ -101,7 +103,9 @@ pub(crate) struct LightmapStreamState {
     with_shadowmask: bool,
     content_tag: [u8; 32],
     max_array_layers: u32,
-    /// Generation of the last accepted batch; 0 before the first.
+    /// Generation of the last accepted batch; 0 before the first. One
+    /// generation is one controller: a batch under a new one comes from a
+    /// fresh controller that holds nothing resident.
     generation: u64,
     /// Highest generation any earlier level install accepted. A batch at or
     /// below it is from a previous level.
@@ -124,11 +128,13 @@ impl LightmapStreamState {
         plan: &StreamingPoolPlan,
         generation_floor: u64,
     ) -> Self {
-        let model = LightmapPoolModel::new(
+        // The spare layer takes one of the device's array layers.
+        let model = LightmapPoolModel::with_layer_limit(
             plan.extents.clone(),
             plan.header.block_alignment(),
             LIGHTMAP_POOL_LAYER_EDGE,
             plan.pool_cap_layers,
+            plan.max_array_layers.saturating_sub(1),
         )
         .expect("plan_streaming_pool checked that every block fits a pool layer");
         let format = PoolFormat::from_header(&plan.header);
@@ -193,10 +199,6 @@ impl LightmapStreamState {
         &self.table
     }
 
-    pub(crate) fn pool_layers(&self) -> u32 {
-        self.model.layers()
-    }
-
     /// The highest generation this level or an earlier one accepted; the
     /// next level install rejects batches at or below it.
     pub(crate) fn generation_high_water(&self) -> u64 {
@@ -219,6 +221,14 @@ impl LightmapStreamState {
     /// A pair whose payload does not match its block fails whole: none of its
     /// planes upload and its entry stays non-resident. It is reported in
     /// `failed`, its payload dropped. Deferred pairs are returned owned.
+    ///
+    /// A batch under a new generation, after the first, comes from a new
+    /// controller, which holds nothing resident. Its drain starts from an
+    /// empty residency: every placement is freed and every entry turns
+    /// non-resident in the same submission, with no eviction reported, while
+    /// the textures and any retiring generation stand. The app keeps one
+    /// controller per level install where it can; this keeps the pool in
+    /// step when it replaces one mid-level.
     pub(crate) fn drain(
         &mut self,
         device: &wgpu::Device,
@@ -244,7 +254,11 @@ impl LightmapStreamState {
         debug_assert_eq!(self.model.retiring(), self.retiring.is_some());
 
         let started = std::time::Instant::now();
-        self.model.plan_batch(&batch);
+        if self.generation != 0 && batch.generation != self.generation {
+            self.model.plan_batch_from_empty(&batch);
+        } else {
+            self.model.plan_batch(&batch);
+        }
         self.fail_mismatched_payloads(&batch);
         let executed = match self.execute(device, queue, &batch.ready) {
             Ok(executed) => executed,
@@ -279,6 +293,8 @@ impl LightmapStreamState {
         let mut failed = std::mem::take(&mut self.failed_scratch);
         failed.clear();
         for upload in &self.model.plan().uploads {
+            // A linear scan per upload: the drain's byte budget bounds the
+            // batch, so this stays small beside the uploads themselves.
             let reason = match batch.ready.iter().find(|p| p.block == upload.block) {
                 Some(prepared) => payload_mismatch(
                     &self.header,

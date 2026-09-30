@@ -229,9 +229,11 @@ struct AnimationDescriptor {
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 
 // Group 4 — baked directional lightmap (static direct lighting). Bindings 0,
-// 1 and 6 are the cell-block pool: 2048² layers holding each block at the
-// pool layer and offset its group-6 table entry names (or the 1×1 neutral
-// placeholders in placeholder mode). See context/lib/rendering_pipeline.md §4.
+// 1 and 6 are the cell-block pool, holding each block at the pool layer and
+// offset its group-6 table entry names (or the 1×1 neutral placeholders in
+// placeholder mode). Irradiance layers are 2048², direction layers
+// (2048 / direction texel scale)², and shadowmask layers 4096×2048 with the
+// two mask groups side by side. See context/lib/rendering_pipeline.md §4.
 @group(4) @binding(0) var lightmap_irradiance: texture_2d_array<f32>;
 @group(4) @binding(1) var lightmap_direction: texture_2d_array<f32>;
 // Non-filtering (Nearest) sampler — used only for the octahedral direction
@@ -275,10 +277,10 @@ struct AnimatedBlockTable {
 // `sample_lightmap_irradiance`, `sample_lightmap_direction`,
 // `sample_lightmap_animated`, `animated_block_uv` (with its `AnimatedBlockUv`
 // result) and `sample_shadowmask_atlas` — live in `lightmap_sample.wgsl`,
-// concatenated after this source at pipeline-build time (render/mod.rs
-// `SHADER_SOURCE`). The snippet declares no bindings: it reads the group-4
-// bindings, `animated_block_table` and the group-6 `lightmap_block_table`
-// declared here by lexical name.
+// concatenated after this source at pipeline-build time
+// (render/pipeline_layout.rs `SHADER_SOURCE`). The snippet declares no
+// bindings: it reads the group-4 bindings, `animated_block_table` and the
+// group-6 `lightmap_block_table` declared here by lexical name.
 
 // Group 5 — dynamic spot light shadow maps.
 // See context/lib/rendering_pipeline.md §4.
@@ -436,8 +438,8 @@ fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer:
 // constants (`SPOT_SHADOW_PCF_RADIUS`, `CUBE_NEAR_CLIP`, `CUBE_FACE_RESOLUTION`,
 // `POINT_SHADOW_DEPTH_BIAS`) and the `cube_face_ndc_depth` reconstruction — live
 // in `shadow_sample.wgsl`, concatenated after this source at pipeline-build time
-// (render/mod.rs `SHADER_SOURCE`). The snippet declares no bindings: it reads the
-// group-5 `spot_shadow_depth`, `spot_shadow_compare`,
+// (render/pipeline_layout.rs `SHADER_SOURCE`). The snippet declares no bindings:
+// it reads the group-5 `spot_shadow_depth`, `spot_shadow_compare`,
 // `light_space_matrices`, and `point_shadow_cube` declared above by lexical name.
 // The no-cube body markers around `sample_point_shadow`'s body travel WITH the
 // moved body into the snippet, so `strip_point_shadow_cube` still neutralizes it
@@ -448,11 +450,12 @@ fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer:
 // source.)
 
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
-// concatenated after this source at pipeline-build time (render/mod.rs
-// `SHADER_SOURCE`). It reads the composed atlas, filtering sampler, depth
-// moments, and grid metadata declared above by lexical name. The helper gets
-// invalid (in-wall) status from the carried word, downweights backfacing
-// probes, applies moment visibility, and renormalizes survivors.
+// concatenated after this source at pipeline-build time
+// (render/pipeline_layout.rs `SHADER_SOURCE`). It reads the composed atlas,
+// filtering sampler, depth moments, and grid metadata declared above by
+// lexical name. The helper gets invalid (in-wall) status from the carried
+// word, downweights backfacing probes, applies moment visibility, and
+// renormalizes survivors.
 
 // Normal-offset wrapper. Biases the lookup toward the lit side and derives the
 // grid index / sub-cell fraction, then defers the corrected 8-corner blend to

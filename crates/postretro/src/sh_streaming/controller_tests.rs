@@ -453,10 +453,12 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         world.cell_visibility.is_some(),
         "fixture carries id 46, so the planner runs the real warm walk"
     );
+    let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
     let mut controller = ShResidencyController::with_clock(
         manifest,
         ShGpuBudgetInputs::default(),
         world.cell_visibility.as_ref(),
+        hints,
         &FixedGenerationClock::new(1),
     )
     .unwrap();
@@ -768,10 +770,12 @@ fn sync_proof_reads_retained_manifest_and_releases_cpu_phases_after_install() {
     let index = &manifest.payloads().index[0];
     let payload_len = index.payload_len;
     let decoded_bytes = index.decoded_bytes;
+    let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
     let mut controller = ShResidencyController::with_clock(
         manifest,
         ShGpuBudgetInputs::default(),
         world.cell_visibility.as_ref(),
+        hints,
         &FixedGenerationClock::new(1),
     )
     .unwrap();

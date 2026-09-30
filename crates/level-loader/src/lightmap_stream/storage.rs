@@ -52,8 +52,9 @@ pub(crate) enum LightmapResidencyReason {
     NoUsablePortals,
     /// No id-51 residency set.
     NoResidencySet,
-    /// The container was read from a whole image with no retained handle
-    /// (a test-only load path).
+    /// The container was read from a whole-file image with no retained
+    /// handle: the load path taken when neither SH nor the section table can
+    /// stream.
     NoRetainedFile,
     /// No id 22, or zero blocks: placeholder mode.
     NoLightmapBlocks,

@@ -143,8 +143,8 @@ pub struct FaceMeta {
 ///   f32 u, f32 v                             (base UV, 8 bytes)
 ///   u16 normal_u, u16 normal_v               (octahedral normal, 4 bytes)
 ///   u16 tangent_u, u16 tangent_v_with_sign   (octahedral tangent + sign, 4 bytes)
-///   u16 lm_u, u16 lm_v                       (quantized lightmap UV, 4 bytes)
-///   u16 lm_layer, u16 animated_block         (lightmap array layer + animated block id, 4 bytes)
+///   u16 lm_u, u16 lm_v                       (block-local lightmap UV, 4 bytes)
+///   u16 lightmap_block, u16 animated_block   (cell block id + 1 + animated block id, 4 bytes)
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GeometrySection {
@@ -307,7 +307,7 @@ impl GeometrySection {
             let tangent_v_with_sign = u16::from_le_bytes([data[offset + 26], data[offset + 27]]);
             let lm_u = u16::from_le_bytes([data[offset + 28], data[offset + 29]]);
             let lm_v = u16::from_le_bytes([data[offset + 30], data[offset + 31]]);
-            let lm_layer = u16::from_le_bytes([data[offset + 32], data[offset + 33]]);
+            let lightmap_block = u16::from_le_bytes([data[offset + 32], data[offset + 33]]);
             let animated_block = u16::from_le_bytes([data[offset + 34], data[offset + 35]]);
 
             vertices.push(Vertex {
@@ -316,7 +316,7 @@ impl GeometrySection {
                 normal_oct: [normal_u, normal_v],
                 tangent_packed: [tangent_u, tangent_v_with_sign],
                 lightmap_uv: [lm_u, lm_v],
-                lightmap_block: lm_layer,
+                lightmap_block,
                 animated_block,
             });
             offset += VERTEX_SIZE;

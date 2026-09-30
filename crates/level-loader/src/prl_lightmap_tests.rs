@@ -135,7 +135,7 @@ fn load_ok(sections: Vec<SectionBlob>, name: &str) -> LevelWorld {
     result.unwrap_or_else(|error| panic!("{name}: the load must succeed: {error}"))
 }
 
-// ---- AC 17: load rejects each malformed or stale cell-block input ----
+// ---- Load rejects each malformed or stale cell-block input ----
 
 #[test]
 fn load_rejects_an_older_lightmap_section_version() {
@@ -321,7 +321,7 @@ fn load_rejects_a_stale_geometry_container_version() {
     );
 }
 
-// ---- AC 16: zero- and one-block levels ----
+// ---- Zero- and one-block levels ----
 
 #[test]
 fn level_without_a_lightmap_loads_in_placeholder_mode_and_warns_once() {
@@ -333,6 +333,11 @@ fn level_without_a_lightmap_loads_in_placeholder_mode_and_warns_once() {
     assert!(world.lightmap.is_none());
     assert!(world.shadowmask_atlas.is_none());
     assert_eq!(world.gpu_lighting_payloads, GpuLightingPayloads::default());
+    assert_eq!(
+        world.lightmap_mode,
+        crate::LightmapMode::Shadowed,
+        "no id-22 header to read a mode from"
+    );
 }
 
 #[test]

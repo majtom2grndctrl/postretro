@@ -1,8 +1,9 @@
-//! The renderer's lightmap drain without the GPU: the real
-//! `LightmapPoolModel` plans every batch exactly as
-//! `renderer::lighting::lightmap::stream::LightmapStreamState::drain` does,
-//! and the outcome is built the same way. Texture work is not executed; its
-//! size is counted from the plan.
+//! The renderer's lightmap drain without the GPU, for the residency walks.
+//! See: context/lib/experimental_spikes.md
+
+// The real `LightmapPoolModel` plans every batch as the renderer's lightmap
+// stream drain does, and the outcome is built the same way. Texture work is
+// not executed; its size is counted from the plan.
 
 use std::time::Instant;
 

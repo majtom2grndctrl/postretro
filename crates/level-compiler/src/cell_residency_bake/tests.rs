@@ -26,7 +26,7 @@ fn bake_covers_every_cell_with_sorted_ranges_and_the_camera_first() {
     let (cells, portals, locator) = l_corridor_sections();
     let section = bake_uncached(&cells, &portals, &locator).expect("usable portals");
     assert_eq!(section.camera_cell_count(), cells.cells.len());
-    assert_eq!(section.max_lead, meters_fixed(BRIEF_MAX_LEAD_METERS));
+    assert_eq!(section.max_lead, meters_fixed(MAX_LEAD_METERS));
     assert!(
         section.entries_for(L_SOLID as usize).is_empty(),
         "a solid cell is no camera cell"
@@ -65,8 +65,8 @@ fn lead_grows_the_set_and_the_corner_hides_the_far_leg() {
     };
     // From the start of the X leg the far end of the Z leg is neither in view
     // nor within the maximum lead.
-    assert!(!at(BRIEF_MAX_LEAD_METERS).contains(&10), "{range:?}");
-    assert!(at(0).len() < at(BRIEF_MAX_LEAD_METERS).len(), "{range:?}");
+    assert!(!at(MAX_LEAD_METERS).contains(&10), "{range:?}");
+    assert!(at(0).len() < at(MAX_LEAD_METERS).len(), "{range:?}");
     // The whole X leg is in view down the corridor at lead 0.
     for cell in 0..5 {
         assert!(at(0).contains(&cell), "{range:?}");

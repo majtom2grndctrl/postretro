@@ -128,6 +128,8 @@ impl BlockOrdering<'_> {
     }
 
     fn sort_key(&self, cell_id: u32) -> (u32, u32) {
+        // Empty `cell_clusters` means no partition, so the cell id alone orders;
+        // a cell past a non-empty table sorts after every cluster.
         let cluster = self.cell_clusters.get(cell_id as usize).copied().unwrap_or(
             if self.cell_clusters.is_empty() {
                 0
@@ -175,6 +177,21 @@ pub(crate) fn check_block_limits(
     Ok(())
 }
 
+/// Face of the largest chart among `members` by texel area, the lowest face
+/// on ties: the face an oversize-block error names.
+fn largest_chart_face(charts: &[Chart], members: &[usize]) -> usize {
+    members
+        .iter()
+        .copied()
+        .max_by_key(|&i| {
+            (
+                u64::from(charts[i].width_texels) * u64::from(charts[i].height_texels),
+                std::cmp::Reverse(i),
+            )
+        })
+        .unwrap_or(0)
+}
+
 /// Charts packed into cell blocks, and the blocks packed into bake layers.
 #[derive(Debug)]
 pub(crate) struct BlockedPack {
@@ -189,6 +206,7 @@ pub(crate) struct BlockedPack {
 /// cluster-major (cluster, then cell id), reject what the runtime cannot hold,
 /// and pack blocks in block order into uniform bake layers so the per-layer
 /// bake, shadowmask fill, and cache partitions keep their layer loops.
+/// Callers reject charts past a pool layer first (`check_chart_extents`).
 pub(crate) fn pack_cell_blocks(
     charts: &[Chart],
     ordering: BlockOrdering<'_>,
@@ -226,16 +244,7 @@ pub(crate) fn pack_cell_blocks(
                 cell_id: *cell_id,
                 width: block.width,
                 height: block.height,
-                largest_chart_face: members
-                    .iter()
-                    .copied()
-                    .max_by_key(|&i| {
-                        (
-                            u64::from(charts[i].width_texels) * u64::from(charts[i].height_texels),
-                            std::cmp::Reverse(i),
-                        )
-                    })
-                    .unwrap_or(0),
+                largest_chart_face: largest_chart_face(charts, members),
             }),
     )?;
 
@@ -253,7 +262,7 @@ pub(crate) fn pack_cell_blocks(
                 width: packed[group].width,
                 height: packed[group].height,
                 max: MAX_ATLAS_DIMENSION,
-                largest_chart_face: cells[group].1[0],
+                largest_chart_face: largest_chart_face(charts, &cells[group].1),
             },
         })?;
 

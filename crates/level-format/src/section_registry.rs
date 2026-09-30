@@ -24,8 +24,9 @@ pub enum SectionId {
     /// Flat list of texture name strings, indexed by `FaceMeta.texture_index`.
     TextureNames = 16,
 
-    /// Geometry section: 28-byte vertices (position + UV + octahedral normal
-    /// + octahedral tangent with bitangent sign) and 8-byte `FaceMeta`.
+    /// Geometry section: 36-byte vertices (position + UV + octahedral normal
+    /// + octahedral tangent with bitangent sign + block-local lightmap UV +
+    /// lightmap cell block id + 1 + animated block id) and 8-byte `FaceMeta`.
     Geometry = 17,
 
     /// AlphaLights section (interim). Flat per-light record array for the
@@ -48,10 +49,11 @@ pub enum SectionId {
     /// See `light_influence::LightInfluenceSection`.
     LightInfluence = 21,
 
-    /// Directional lightmap atlas: per-texel irradiance + dominant incoming
-    /// direction from static (non-dynamic) lights. Sampled at runtime via
-    /// per-vertex lightmap UVs; bumped-Lambert correction applies normal-map
-    /// response to the baked direction. See `lightmap::LightmapSection`.
+    /// Directional lightmap as per-cell blocks: per-texel irradiance +
+    /// dominant incoming direction from static (non-dynamic) lights. A vertex
+    /// names its block and a block-local UV; bumped-Lambert correction applies
+    /// normal-map response to the baked direction. See
+    /// `lightmap::LightmapSection`.
     Lightmap = 22,
 
     /// World-space uniform chunk grid with per-chunk static-light index lists.
@@ -176,8 +178,8 @@ pub enum SectionId {
     DirectShDeltaVolumes = 41,
 
     /// Per-selected-light baked world-visibility masks for up to four
-    /// overlapping selected lights, packed as two BC5 `.rg` mask groups
-    /// side by side per layer (slot `s` in group `s / 2`, channel `s % 2`).
+    /// overlapping selected lights, stored per id-22 cell block as two BC5
+    /// `.rg` group planes (slot `s` in group `s / 2`, channel `s % 2`).
     /// See `shadowmask_atlas::ShadowmaskAtlasSection`.
     ShadowmaskAtlas = 42,
 

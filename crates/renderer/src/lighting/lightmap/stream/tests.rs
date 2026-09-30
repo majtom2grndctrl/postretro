@@ -306,7 +306,7 @@ fn repack_through_the_spare_layer_keeps_every_block_on_its_own_texels_without_a_
 
     let counters = stream.state.counters();
     assert_eq!(counters.repacks, 1);
-    assert_eq!(counters.repack_copies, plan.copies.len() as u64);
+    assert_eq!(counters.repack_copy_commands, plan.copies.len() as u64);
     assert_eq!(
         counters.pool_texture_sets, 1,
         "a repack creates no pool texture"
@@ -567,12 +567,13 @@ fn a_batch_from_another_generation_is_rejected_without_mutating_state() {
     stream.assert_samples_own_texels();
 }
 
-// A growth past the device's array-layer limit aborts the whole drain before
-// submission: the model, the table and the counters are as they were.
+// A pair that needs growth past the device's array-layer limit is deferred
+// and owned back, a transient miss: nothing grows, nothing is submitted, and
+// the table stays as it was.
 #[test]
-fn growth_past_the_device_layer_limit_aborts_the_drain_untouched() {
+fn a_pair_needing_growth_past_the_device_layer_limit_is_deferred() {
     let Some(mut stream) = Stream::with_max_layers(
-        "growth_past_the_device_layer_limit_aborts_the_drain_untouched",
+        "a_pair_needing_growth_past_the_device_layer_limit_is_deferred",
         &[(WIDE, 1100), (WIDE, 1200)],
         1,
         2,
@@ -581,22 +582,57 @@ fn growth_past_the_device_layer_limit_aborts_the_drain_untouched() {
     };
     stream.drain(stream.reset(vec![mandatory(0)], vec![stream.prepared(0)]));
     let table = stream.table();
+    let before = stream.state.counters();
+    let outcome = stream.drain(stream.delta(vec![mandatory(1)], vec![], vec![stream.prepared(1)]));
+    assert!(outcome.installed.is_empty() && !outcome.pool.grew);
+    let deferred: Vec<u32> = outcome.deferred.iter().map(|p| p.block).collect();
+    assert_eq!(deferred, vec![1], "the pair is owned back");
     let counters = stream.state.counters();
-    let error = stream
-        .try_drain(stream.delta(vec![mandatory(1)], vec![], vec![stream.prepared(1)]))
-        .unwrap_err();
+    assert_eq!(counters.deferred_pairs, before.deferred_pairs + 1);
     assert_eq!(
-        error,
-        LightmapResidencyDrainError::GpuCapacity {
-            required_layers: 3,
-            max_layers: 2
-        }
+        counters.submissions, before.submissions,
+        "nothing submitted"
     );
-    assert_eq!(stream.state.counters(), counters);
+    assert_eq!(counters.pool_texture_sets, 1);
     assert_eq!(stream.state.model().layers(), 1);
     assert!(!stream.state.model().retiring());
     assert!(!stream.state.model().is_resident(1));
     assert_eq!(stream.table(), table);
+    stream.assert_samples_own_texels();
+}
+
+// A new generation mid-level comes from a fresh controller that holds nothing
+// resident: its first drain frees every placement in the same submission,
+// reports none of them evicted, and installs only what its batch carries.
+#[test]
+fn a_new_generation_starts_from_an_empty_residency_without_reporting_evictions() {
+    let Some(mut stream) = Stream::new(
+        "a_new_generation_starts_from_an_empty_residency_without_reporting_evictions",
+        &[(8, 8), (8, 8), (8, 8)],
+        1,
+    ) else {
+        return;
+    };
+    stream.drain(stream.reset(
+        vec![mandatory(0), mandatory(1)],
+        vec![stream.prepared(0), stream.prepared(1)],
+    ));
+    let before = stream.state.counters();
+
+    stream.generation = 2;
+    let outcome =
+        stream.drain(stream.reset(vec![mandatory(1), mandatory(2)], vec![stream.prepared(2)]));
+    assert_eq!(outcome.installed, vec![2]);
+    assert!(outcome.evicted.is_empty(), "{:?}", outcome.evicted);
+    assert!(!stream.state.model().is_resident(0));
+    assert!(
+        !stream.state.model().is_resident(1),
+        "the new controller never read block 1"
+    );
+    let counters = stream.state.counters();
+    assert_eq!(counters.last_drain_table_writes, 3);
+    assert_eq!(counters.evictions, before.evictions);
+    assert_eq!(counters.pool_texture_sets, 1, "the textures stand");
     stream.assert_samples_own_texels();
 }
 
@@ -748,8 +784,8 @@ fn reload_while_a_generation_retires_releases_both_pools_and_refuses_the_old_gen
         )
         .expect("grow for C");
     assert!(grown.pool.grew && meter_changed);
-    assert_eq!(resources.pool_layers, 2);
     let state = resources.stream_state().expect("streamed");
+    assert_eq!(state.counters().pool_layers, 2);
     assert_eq!(
         resources.residency[0].bytes,
         installed_rows[0].bytes * 3 / 2,

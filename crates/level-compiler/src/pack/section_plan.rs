@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// Id 51's PRL table entry version. The loader does not check it: the
+/// payload's own version (`CELL_RESIDENCY_SET_VERSION`) rejects a stale section.
+const CELL_RESIDENCY_SET_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -406,7 +410,7 @@ pub(super) fn build_finalized_section_plan<'a>(
     if let Some(section) = cell_residency_set {
         sections.push(PlannedSection::new(
             SectionId::CellResidencySet as u32,
-            1,
+            CELL_RESIDENCY_SET_CONTAINER_VERSION,
             section.byte_len(),
             || Ok(section.to_bytes()),
         ));

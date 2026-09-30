@@ -870,18 +870,21 @@ impl App {
         }
 
         // Teleport the camera to the first player spawn (or the geometry center
-        // when the map has none). Independent of spawn success.
+        // when the map has none). Independent of spawn success. A teleport
+        // holds both interpolation endpoints, so a frame before the first tick
+        // renders from this eye, the one the spawn preload made resident,
+        // rather than blending from the previous level's pose.
         if let Some((pos, angles)) = products.first_spawn {
             self.camera.position = pos;
             // angles is engine-convention radians (YXZ): x=pitch, y=yaw.
             self.camera.yaw = angles.y;
             self.camera.pitch = angles.x;
-            self.frame_timing.push_state(InterpolableState::new(pos));
+            self.frame_timing.hold_state(InterpolableState::new(pos));
         } else if let Some(world) = self.level.as_ref() {
             // Fallback when no player_spawn: center on level geometry.
             self.camera.position = world.spawn_position();
             self.frame_timing
-                .push_state(InterpolableState::new(self.camera.position));
+                .hold_state(InterpolableState::new(self.camera.position));
         }
         // `--start-pose` moves the local pawn (or, pawnless, the fly camera)
         // to a checked-in measurement probe instead of the map spawn, on the
@@ -903,7 +906,7 @@ impl App {
             self.camera.yaw = pose.yaw;
             self.camera.pitch = pose.pitch;
             self.frame_timing
-                .push_state(InterpolableState::new(pose.position));
+                .hold_state(InterpolableState::new(pose.position));
             log::info!(
                 "[Startup] start pose {:?} yaw {:.1}° pitch {:.1}° ({})",
                 pose.position,
@@ -2637,6 +2640,37 @@ pub(crate) mod tests {
                 .pending_death_events
                 .is_empty(),
             "level unload must discard deferred death events from the old level",
+        );
+    }
+
+    // Regression: unload left the streaming sessions alive, so the level's
+    // manifest and its retained file lived on until the next install.
+    #[test]
+    fn unload_level_releases_the_level_streaming_state() {
+        use crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl;
+        use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
+
+        let mut app = test_app();
+        let prl = StreamedLightmapPrl::write();
+        let world = prl.load();
+        let view = LightmapLevelView::of(&world).expect("the fixture streams its lightmap");
+        let manifest = std::sync::Arc::downgrade(view.manifest);
+        let session = LightmapStreamingSession::new(view, None).unwrap();
+        app.session
+            .as_mut()
+            .expect("test app session installed")
+            .level_streaming
+            .install_lightmap(session);
+        app.level = Some(world);
+
+        app.unload_level();
+
+        let session = app.session.as_ref().expect("test app session installed");
+        assert!(session.level_streaming.lightmap().is_none());
+        assert!(!session.level_streaming.is_retiring());
+        assert!(
+            manifest.upgrade().is_none(),
+            "the manifest and its retained file are released at unload"
         );
     }
 

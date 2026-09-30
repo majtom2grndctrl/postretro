@@ -10,6 +10,7 @@ use crate::lightmap_streaming::demand::DemandFrame;
 use crate::render::Renderer;
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::session::lightmap_residency::{LightmapLevelView, LightmapStreamingSession};
+use crate::streaming::cluster_hints::ClusterHints;
 
 /// How the captured level owned its lightmap blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,16 +74,20 @@ pub(super) fn validate_lightmap_overrides(scene: &CaptureScene, world: &LevelWor
 }
 
 /// Make the view's mandatory and visible lightmap blocks resident before any
-/// captured frame, as capture preloads SH. Reads are synchronous through the
-/// level's positional reader and install in one renderer drain, so no async
-/// timing can reach a capture; after this the pool never changes, since
-/// capture runs no further lightmap drain. Forced-missing blocks stay
-/// targeted and unread. A capture fails rather than render a partial set.
+/// captured frame, as capture preloads SH. Every block the view draws is
+/// targeted visible, whatever its visibility path, since capture renders the
+/// full view. Reads are synchronous through the level's positional reader
+/// and install in one renderer drain, so no async timing can reach a
+/// capture; after this the pool never changes, since capture runs no
+/// further lightmap drain. Forced-missing blocks stay targeted and unread. A
+/// capture fails rather than render a partial set. `hints` is the level's id
+/// 49, decoded once for SH and lightmaps.
 pub(super) fn preload_capture_lightmap(
     world: &LevelWorld,
     renderer: &mut Renderer,
     visible_render: &VisibleRenderPreparation,
     scene: &CaptureScene,
+    hints: Option<&ClusterHints>,
 ) -> Result<CaptureLightmapResidency> {
     let block_count = world
         .lightmap
@@ -109,21 +114,21 @@ pub(super) fn preload_capture_lightmap(
         });
     };
 
-    let mut session = LightmapStreamingSession::new(view)?;
+    let mut session = LightmapStreamingSession::new(view, hints)?;
     if let Some(cap) = scene.lightmap_pool_cap_layers {
         session.levers_mut().set_pool_cap_layers(cap);
     }
-    session.update_demand(DemandFrame {
+    session.update_capture_demand(DemandFrame {
         residency_set: view.residency_set,
         camera_cell: visible_render.stats.camera_cell,
         path: visible_render.stats.path,
         visible_cells: &visible_render.visible_cells,
     });
-    let summary = session.preload(&scene.force_missing_lightmap_blocks, |batch| {
-        renderer
-            .drain_lightmap_residency(batch)
-            .context("[Capture] lightmap preload drain")
-    })?;
+    let summary = session
+        .preload(&scene.force_missing_lightmap_blocks, |batch| {
+            renderer.drain_lightmap_residency(batch)
+        })
+        .context("[Capture] lightmap preload drain")?;
     if summary.reads.failed != 0
         || summary.failed_installs != 0
         || summary.deferred != 0

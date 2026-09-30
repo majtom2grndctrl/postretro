@@ -288,15 +288,9 @@ pub(crate) fn build_full_renderer(
 
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
     // Full init never carries a level's payloads (`install_level_geometry`
-    // uploads them), so this plans against none: a level index here takes the
-    // placeholder path, and the animated atlas has no block frame.
-    let static_pool = crate::lighting::lightmap::plan_static_pool(
-        geometry.and_then(|g| g.lightmap),
-        geometry.and_then(|g| g.shadowmask_atlas),
-        &[],
-        device.limits().max_texture_dimension_2d,
-        device.limits().max_texture_array_layers,
-    );
+    // plans the pool and uploads them), so it binds the placeholder pool and
+    // the animated atlas has no block frame. Level install replaces both.
+    let static_pool = crate::lighting::lightmap::StaticPool::Absent;
     let animated_lightmap = animated_lightmap::with_dummy_fallback(
         animated_lightmap::AnimatedLightmapResources::new(
             device,
@@ -326,7 +320,8 @@ pub(crate) fn build_full_renderer(
         ),
     );
 
-    // Group 4: lightmap pool + animated atlas (real or 1×1 zero dummy).
+    // Group 4: placeholder lightmap pool + animated atlas (real or 1×1 zero
+    // dummy).
     // Group 6: the vertex block table.
     let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(device);
     let block_table_bind_group_layout =
@@ -334,8 +329,8 @@ pub(crate) fn build_full_renderer(
     let lightmap_resources = LightmapResources::new(
         device,
         queue,
-        geometry.and_then(|g| g.lightmap),
-        geometry.and_then(|g| g.shadowmask_atlas),
+        None,
+        None,
         &static_pool,
         postretro_level_loader::GpuLightingPayloads::default(),
         &lightmap_bind_group_layout,

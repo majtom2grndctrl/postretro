@@ -20,7 +20,7 @@ use super::brief_set::{
 use super::{read_dry_run_input, run_dry_run};
 use crate::bake_control::BakeControl;
 use crate::cell_residency_bake::lead_map::{
-    BRIEF_MAX_LEAD_METERS, LeadMap, meters_fixed, portal_neighbours,
+    LeadMap, MAX_LEAD_METERS, meters_fixed, portal_neighbours,
 };
 use crate::cell_residency_bake::portal_distance::{
     Neighbors, portal_graph_from_sections, recompute_pairs,
@@ -29,9 +29,9 @@ use crate::cell_residency_bake::pvs_sampling::sample_pvs;
 use crate::cell_residency_bake::test_fixtures::{L_OPEN_CELLS, l_corridor_sections};
 use crate::cell_residency_bake::{camera_cells, cell_residency_set_bake_cached};
 
-/// AC 2 on a synthetic level: the baked section, encoded and decoded as the
-/// PRL carries it, equals direct evaluation of the dilated, unpinned set for
-/// every camera cell at every breakpoint of either side.
+/// On a synthetic level, the baked section, encoded and decoded as the PRL
+/// carries it, equals direct evaluation of the dilated, unpinned set for every
+/// camera cell at every breakpoint of either side.
 #[test]
 fn residency_set_bake_matches_direct_evaluation() {
     let (cells, portals, locator) = l_corridor_sections();
@@ -54,7 +54,7 @@ fn residency_set_bake_matches_direct_evaluation() {
     let cameras = camera_cells(&cells);
     let neighbors = Neighbors::from_pairs(
         cells.cells.len(),
-        &recompute_pairs(&graph, meters_fixed(BRIEF_MAX_LEAD_METERS)),
+        &recompute_pairs(&graph, meters_fixed(MAX_LEAD_METERS)),
     );
     let pvs = sample_pvs(&world, &cameras, &BakeControl::unrestricted());
     let visible = visible_sources(&pvs.dense, &portal_neighbours(&graph), Dilation::OneHop);
@@ -80,7 +80,7 @@ fn residency_set_bake_matches_direct_evaluation() {
     let grows = cameras.iter().any(|&camera| {
         map.mandatory(camera, 0, &[]).len()
             < map
-                .mandatory(camera, meters_fixed(BRIEF_MAX_LEAD_METERS), &[])
+                .mandatory(camera, meters_fixed(MAX_LEAD_METERS), &[])
                 .len()
     });
     let dilates = cameras
@@ -88,22 +88,21 @@ fn residency_set_bake_matches_direct_evaluation() {
         .any(|&camera| direct_set(&bare, camera, 0).len() < map.mandatory(camera, 0, &[]).len());
     assert!(grows && dilates, "grows {grows}, dilates {dilates}");
 
-    // AC 3, bake half: the bake reads no pins. The far end of the Z leg is
-    // out of lead and view from the start of the X leg, so it is not baked
-    // for camera 0; were its cluster pinned, the runtime would add it from
-    // id 49 at every lead, and the baked relation would stay as it is.
+    // The bake reads no pins. The far end of the Z leg is out of lead and view
+    // from the start of the X leg, so it is not baked for camera 0; were its
+    // cluster pinned, the runtime would add it from id 49 at every lead, and
+    // the baked relation would stay as it is.
     let far = L_OPEN_CELLS - 1;
-    let max = meters_fixed(BRIEF_MAX_LEAD_METERS);
+    let max = meters_fixed(MAX_LEAD_METERS);
     assert!(!map.mandatory(0, max, &[]).contains(&far));
     assert!(!direct_set(&sources, 0, max).contains(&far));
     assert!(map.mandatory(0, 0, &[far]).contains(&far));
 }
 
-/// AC 2 end to end and AC 3's bake half, on the hinted doorway fixture: a
-/// compiled PRL's id 51 equals the dry run's direct evaluation (read through
-/// the dry run's own PRL reader and report), a pinned cell enters no camera
-/// cell's baked set merely for being pinned, and removing the pin leaves id
-/// 51 byte-identical.
+/// On the hinted doorway fixture, end to end: a compiled PRL's id 51 equals
+/// the dry run's direct evaluation (read through the dry run's own PRL reader
+/// and report), a pinned cell enters no camera cell's baked set merely for
+/// being pinned, and removing the pin leaves id 51 byte-identical.
 #[test]
 fn compiled_residency_set_matches_direct_evaluation_and_ignores_pins() {
     let dir = tempfile::tempdir().expect("temporary output directory");
@@ -129,14 +128,14 @@ fn compiled_residency_set_matches_direct_evaluation_and_ignores_pins() {
     assert!(check.checked >= report.camera_cells.len(), "{check:?}");
     assert!(report.render().contains("baked id 51 vs direct evaluation"));
 
-    // AC 3, bake half. The fixture pins a near-side cluster.
+    // Pins stay out of the bake. The fixture pins a near-side cluster.
     let pinned = pinned_cells(&input);
     assert!(!pinned.is_empty(), "the fixture must pin a cluster");
     let graph = input.portal_graph.as_ref().expect("portal graph");
     let world = input.visibility_world.as_ref().expect("visibility world");
     let neighbors = Neighbors::from_pairs(
         input.cell_count(),
-        &recompute_pairs(graph, meters_fixed(BRIEF_MAX_LEAD_METERS)),
+        &recompute_pairs(graph, meters_fixed(MAX_LEAD_METERS)),
     );
     let pvs = sample_pvs(world, &report.camera_cells, &BakeControl::unrestricted());
     let visible = visible_sources(&pvs.dense, &portal_neighbours(graph), Dilation::OneHop);
@@ -151,7 +150,7 @@ fn compiled_residency_set_matches_direct_evaluation_and_ignores_pins() {
     // byte comparison below. The per-cell rule still holds for each entry.
     let map = LeadMap::from_section(&baked);
     for &camera in &report.camera_cells {
-        for lead in [0, meters_fixed(16), meters_fixed(BRIEF_MAX_LEAD_METERS)] {
+        for lead in [0, meters_fixed(16), meters_fixed(MAX_LEAD_METERS)] {
             let set = map.mandatory(camera, lead, &[]);
             let reached = direct_set(&unpinned, camera, lead);
             for &cell in &pinned {

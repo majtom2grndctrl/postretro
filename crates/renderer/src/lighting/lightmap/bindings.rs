@@ -19,11 +19,12 @@ pub const BIND_DIRECTION: u32 = 1;
 pub const BIND_SAMPLER: u32 = 2;
 /// Animated-light contribution atlas (Rgba16Float). Composed each frame by
 /// `render::animated_lightmap`; forward pass samples alongside the static
-/// atlas. See: context/lib/rendering_pipeline.md §4
+/// irradiance pool. See: context/lib/rendering_pipeline.md §4
 pub const BIND_ANIMATED_ATLAS: u32 = 3;
-/// Filtering (Linear) sampler. Used for the irradiance and animated atlases so
-/// baked penumbra ramps read as continuous gradients under magnification
-/// instead of stair-stepping at atlas-texel boundaries. `Rgba16Float`
+/// Filtering (Linear) sampler. Used for the irradiance pool, the animated
+/// atlas and the shadowmask pool so baked penumbra ramps read as continuous
+/// gradients under magnification instead of stair-stepping at texel
+/// boundaries. `Rgba16Float`
 /// linear-filterability is a hard runtime requirement checked at init
 /// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
@@ -109,8 +110,10 @@ pub(crate) fn block_table_bind_group_layout_entries() -> [wgpu::BindGroupLayoutE
     }]
 }
 
-/// The linear lightmap sampler. Clamp-to-edge is what the shadowmask
-/// helper's per-group clamp reproduces inside each half of the atlas.
+/// The linear lightmap sampler. Clamp-to-edge guards only the texture
+/// border: the block-rect clamp in `lightmap_pool_uv` keeps bilinear taps
+/// inside the block, and so inside the block's own half of the shadowmask
+/// pool.
 pub(crate) fn filtering_sampler_descriptor() -> wgpu::SamplerDescriptor<'static> {
     wgpu::SamplerDescriptor {
         label: Some("Lightmap Sampler (Linear)"),

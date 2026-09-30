@@ -4,12 +4,11 @@
 //! camera cell, over the visibility world the runtime loader builds from the
 //! same Cells, Portals and CellLocator sections; dilates each sampled set by
 //! one portal hop; and records, per camera cell, every cell within portal-path
-//! lead `BRIEF_MAX_LEAD_METERS` plus each such cell's dilated set, tagged with
+//! lead `MAX_LEAD_METERS` plus each such cell's dilated set, tagged with
 //! the smallest lead that makes it mandatory. Pins are not baked (id 49 carries
 //! them). A level whose portals the loader would reject has no meaningful set:
 //! no section is emitted and the runtime runs lightmaps all-resident.
-//! See: context/lib/build_pipeline.md §PRL section IDs, §Build Cache ·
-//! context/plans/in-progress/spatial-residency--lightmap-cell-blocks/index.md
+//! See: context/lib/build_pipeline.md §PRL section IDs, §Build Cache
 
 pub(crate) mod lead_map;
 pub(crate) mod portal_distance;
@@ -29,8 +28,7 @@ use postretro_level_loader::LevelWorld;
 use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use lead_map::{
-    BRIEF_MAX_LEAD_METERS, LeadSources, build_lead_map, dilate_one_hop, meters_fixed,
-    portal_neighbours,
+    LeadSources, MAX_LEAD_METERS, build_lead_map, dilate_one_hop, meters_fixed, portal_neighbours,
 };
 use portal_distance::{Neighbors, portal_graph_from_sections, recompute_pairs};
 use pvs_sampling::{SamplingStats, sample_pvs};
@@ -130,7 +128,7 @@ fn bake(
 ) -> CellResidencySetSection {
     let started = std::time::Instant::now();
     let cell_count = cells.cells.len();
-    let max_lead = meters_fixed(BRIEF_MAX_LEAD_METERS);
+    let max_lead = meters_fixed(MAX_LEAD_METERS);
     let graph = portal_graph_from_sections(cells, portals);
     let neighbors = Neighbors::from_pairs(cell_count, &recompute_pairs(&graph, max_lead));
     let pvs = sample_pvs(world, cameras, control);
@@ -147,7 +145,7 @@ fn bake(
     );
     let section = map.into_section();
     log::info!(
-        "[Compiler] CellResidencySet: {} camera cells, {} entries (max {} per camera), {} bytes, max lead {BRIEF_MAX_LEAD_METERS} m, {:.3} s",
+        "[Compiler] CellResidencySet: {} camera cells, {} entries (max {} per camera), {} bytes, max lead {MAX_LEAD_METERS} m, {:.3} s",
         cameras.len(),
         section.entries.len(),
         (0..cell_count)
@@ -191,7 +189,7 @@ pub(crate) fn cell_residency_set_cache_key(
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
-    hasher.update(&meters_fixed(BRIEF_MAX_LEAD_METERS).to_le_bytes());
+    hasher.update(&meters_fixed(MAX_LEAD_METERS).to_le_bytes());
     hasher.update(&postretro_visibility::PORTAL_WALK_EPOCH.to_le_bytes());
     CacheKey::new(
         CELL_RESIDENCY_SET_STAGE_ID,

@@ -177,6 +177,40 @@ fn view_preload_reads_visible_blocks_and_keeps_forced_misses_unread() {
     assert!(!rig.controller.settled(), "a mandatory block is missing");
 }
 
+// Capture renders its full view synchronously, so on a non-portal path its
+// preload still targets every drawn block as visible, not only the camera
+// cell's baked set.
+#[test]
+fn capture_view_on_a_step_limit_path_preloads_every_drawn_block() {
+    let mut rig = Rig::corridor(None);
+    let mut model = pool_model(&rig.source);
+    rig.controller.update_capture_view(DemandFrame {
+        residency_set: &rig.set,
+        camera_cell: 0,
+        path: postretro_visibility::VisibilityPath::PortalStepLimitFallback {
+            considered: 10,
+            accepted: 3,
+        },
+        visible_cells: &postretro_visibility::VisibleCells::Culled(vec![0, 5, 6]),
+    });
+    for block in [5, 6] {
+        assert_eq!(
+            rig.controller.target(block).map(|target| target.class),
+            Some(LightmapBlockClass::Visible),
+            "drawn block {block}"
+        );
+    }
+
+    let (batch, reads) = rig.controller.preload_batch(&[]).unwrap();
+    assert_eq!(reads.pairs, 5, "blocks 0, 1 and 2, and the drawn 5 and 6");
+    rig.controller
+        .apply_outcome(model_drain(&mut model, batch))
+        .unwrap();
+    for block in [0, 1, 2, 5, 6] {
+        assert!(model.is_resident(block), "block {block} resident");
+    }
+}
+
 // A pair whose read fails stays non-resident; the spawn set reads as
 // unsettled rather than settled over a hole.
 #[test]
@@ -259,6 +293,10 @@ impl LightmapBlockSource for FailingSource {
 
     fn block_summary(&self, block: u32) -> Option<BlockSummary> {
         self.inner.block_summary(block)
+    }
+
+    fn block_alignment(&self) -> u32 {
+        self.inner.block_alignment()
     }
 
     fn block_file_ranges(&self, block: u32) -> Result<LightmapBlockFileRanges, PrlLoadError> {

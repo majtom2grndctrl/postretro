@@ -379,7 +379,7 @@ impl From<LightmapResidencyReport> for LightmapResidencyReportJson {
 
 /// Lightmap block residency at the captured instant: the mode, blocks
 /// resident of the level's total, the streamed pool's layers and cap, and
-/// (streaming only) the AC 22 counters.
+/// (streaming only) the residency counters.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LightmapStreamingReportJson {
     mode: Cow<'static, str>,
@@ -412,7 +412,8 @@ impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
 /// Streamed lightmap counters after the capture's preload drain. Bytes are
 /// per section: `lightmap` is id 22, `shadowmask` is id 42. Mandatory is the
 /// view's camera cell's baked set within `lead_metres`, plus the pins.
-/// Visible misses are the view's drawn blocks in two disjoint buckets.
+/// Visible misses are the view's drawn blocks in two buckets, which may
+/// overlap: outside the baked set, and not resident.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LightmapStreamingCountersJson {
     lead_metres: f32,
@@ -861,7 +862,7 @@ mod tests {
         assert!(lightmap.get("counters").is_none(), "no counters, no object");
     }
 
-    // AC 22: a streamed capture records the residency counters under
+    // A streamed capture records the residency counters under
     // `lightmap_streaming.counters`, field for field.
     #[test]
     fn lightmap_streaming_counters_serialize_every_measured_field() {

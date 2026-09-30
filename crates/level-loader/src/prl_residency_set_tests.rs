@@ -87,7 +87,7 @@ fn a_level_without_a_residency_set_loads_with_none() {
     assert_eq!(world.expect("load").cell_residency_set, None);
 }
 
-// ---- AC 17: load rejects the residency-section rows ----
+// ---- Load rejects malformed residency-section rows ----
 
 #[test]
 fn load_rejects_a_residency_entry_naming_a_cell_past_the_cell_count() {

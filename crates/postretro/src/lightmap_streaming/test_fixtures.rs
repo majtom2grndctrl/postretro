@@ -163,6 +163,12 @@ impl LightmapBlockSource for TestBlockSource {
         })
     }
 
+    /// The BC edge: the alignment of a level with a direction scale of 1,
+    /// 2 or 4.
+    fn block_alignment(&self) -> u32 {
+        4
+    }
+
     fn block_file_ranges(&self, block: u32) -> Result<LightmapBlockFileRanges, PrlLoadError> {
         let spec = &self.blocks[block as usize];
         Ok(LightmapBlockFileRanges {

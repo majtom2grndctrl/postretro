@@ -59,9 +59,12 @@ pub const DIRECTION_TEXEL_SCALE: u32 = 2;
 pub(crate) const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Largest internal bake-layer edge. Bake layers are compiler working planes,
-/// never shipped; blocks are at most one pool layer
-/// (`LIGHTMAP_POOL_LAYER_EDGE`), so the layer sizing never reaches this cap in
-/// production, but the reference packer and the dry run still use it.
+/// never shipped. The layer packer sizes a layer to the smallest power of two
+/// that holds the largest group alone, and a cell block is at most one pool
+/// layer (`LIGHTMAP_POOL_LAYER_EDGE`), so cell-block packing passes this cap
+/// but never needs it. It binds the chart-level packer tests and the dry run
+/// use, whose leaf groups no pool layer bounds, and the shadowmask width limit
+/// derives from it.
 pub(crate) const MAX_ATLAS_DIMENSION: u32 = 8192;
 
 /// Most internal bake layers. Each layer is a unit of the per-light cache

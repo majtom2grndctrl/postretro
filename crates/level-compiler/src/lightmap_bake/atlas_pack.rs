@@ -32,12 +32,11 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 
 /// Pack charts into a multi-layer atlas with leaf-aware MaxRects binning.
 ///
-/// `max_dim` bounds each layer's width and height (production passes
+/// `max_dim` bounds each layer's width and height (the dry run passes
 /// [`MAX_ATLAS_DIMENSION`]; tests pass a small value). Every chart's largest
-/// side must be `≤ max_dim` or [`LightmapBakeError::ChartTooLarge`] is returned
-/// (this is the single source of truth for that check). The number of layers is
-/// capped at [`MAX_ATLAS_LAYERS`]; exceeding it yields
-/// [`LightmapBakeError::LayerOverflow`].
+/// side must be `≤ max_dim` or [`LightmapBakeError::ChartTooLarge`] is
+/// returned. The number of layers is capped at [`MAX_ATLAS_LAYERS`]; exceeding
+/// it yields [`LightmapBakeError::LayerOverflow`].
 ///
 /// Leaf cohesion is a hard invariant: all charts of one BVH leaf land on a
 /// single layer (a leaf is the runtime draw/visibility unit, so straddling a
@@ -62,9 +61,10 @@ pub(crate) fn pack_layers(
 }
 
 /// [`pack_layers`] with an explicit layer ceiling in place of
-/// [`MAX_ATLAS_LAYERS`]. Production always goes through `pack_layers`; the
-/// lightmap residency dry run raises the ceiling so a small capped layer size
-/// can be measured even when its layer count would exceed the runtime floor.
+/// [`MAX_ATLAS_LAYERS`]. Only tests and the dry run call this; production
+/// packs cell blocks (`block_layout::pack_cell_blocks`). The dry run raises
+/// the ceiling so a small capped layer size can be measured even when its
+/// layer count would exceed the runtime floor.
 #[cfg(test)]
 pub(crate) fn pack_layers_with_layer_limit(
     charts: &[Chart],
@@ -81,8 +81,8 @@ pub(crate) fn pack_layers_with_layer_limit(
         });
     }
 
-    // ChartTooLarge is now owned here: a single chart wider/taller than a layer
-    // can never be placed, regardless of how many layers we open.
+    // A single chart wider or taller than a layer can never be placed,
+    // regardless of how many layers open.
     for (face_index, chart) in charts.iter().enumerate() {
         if chart.width_texels > max_dim || chart.height_texels > max_dim {
             return Err(LightmapBakeError::ChartTooLarge {

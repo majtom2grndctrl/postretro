@@ -21,14 +21,16 @@ pub(crate) struct BlockSummary {
 ///
 /// Contract: `block_file_ranges` returns the same ranges for a block for the
 /// source's lifetime; `read_file_span` returns exactly the span's length or
-/// an error, may cover several blocks and the gaps between them across the
-/// id-22/42 boundary, and is called on the issuer thread, or by a
-/// synchronous preload that runs before the issuer starts;
+/// an error, may cover several byte-contiguous block ranges (across the
+/// id-22/42 boundary when the sections touch), and is called on the issuer
+/// thread, or by a synchronous preload that runs before the issuer starts;
 /// `payload_from_pair_bytes` rejects buffers whose lengths disagree with the
 /// block's ranges.
 pub(crate) trait LightmapBlockSource: Send + Sync {
     fn block_count(&self) -> u32;
     fn block_summary(&self, block: u32) -> Option<BlockSummary>;
+    /// The pool slot alignment every block edge rounds up to.
+    fn block_alignment(&self) -> u32;
     fn block_file_ranges(&self, block: u32) -> Result<LightmapBlockFileRanges, PrlLoadError>;
     fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError>;
     fn payload_from_pair_bytes(
@@ -88,6 +90,10 @@ impl LightmapBlockSource for ManifestBlockSource {
                 width: record.width,
                 height: record.height,
             })
+    }
+
+    fn block_alignment(&self) -> u32 {
+        self.manifest.lightmap_index().header.block_alignment()
     }
 
     fn block_file_ranges(&self, block: u32) -> Result<LightmapBlockFileRanges, PrlLoadError> {

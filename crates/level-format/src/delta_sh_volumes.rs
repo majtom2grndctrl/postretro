@@ -4,7 +4,7 @@
 // stored only for the affinity cells it actually touches. Consumed by the
 // runtime compose pass that blends animated lights into the irradiance atlas.
 //
-// See: context/plans/done/lighting-animated-sh/
+// See: context/lib/rendering_pipeline.md §4 (Animated SH delta volumes)
 
 use crate::FormatError;
 use crate::octahedral::{

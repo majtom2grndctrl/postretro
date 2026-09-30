@@ -13,6 +13,7 @@ use super::budget::{FixedGpuCharges, ShGpuBudgetInputs, ShResidencyAccounting};
 use super::generation::{GenerationClock, ProcessGenerationClock};
 use super::topology::PlannerTopology;
 use super::warm_set::{WarmSet, WarmSource};
+use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::DrainClass;
 
 #[path = "drain.rs"]
@@ -277,16 +278,19 @@ pub(crate) struct ShResidencyController {
 
 impl ShResidencyController {
     /// `cell_visibility` is the same level's loaded id-46 section; the
-    /// controller builds its own per-cell adjacency from it.
+    /// controller builds its own per-cell adjacency from it. `hints` is the
+    /// level's id 49, decoded once at level scope for every resource.
     pub(crate) fn new(
         manifest: Arc<ShStreamManifest>,
         gpu_budget: ShGpuBudgetInputs,
         cell_visibility: Option<&CellVisibility>,
+        hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
         Self::with_clock(
             manifest,
             gpu_budget,
             cell_visibility,
+            hints,
             &ProcessGenerationClock,
         )
     }
@@ -295,9 +299,10 @@ impl ShResidencyController {
         manifest: Arc<ShStreamManifest>,
         gpu_budget: ShGpuBudgetInputs,
         cell_visibility: Option<&CellVisibility>,
+        hints: Arc<ClusterHints>,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
-        let topology = PlannerTopology::from_manifest(&manifest)?;
+        let topology = PlannerTopology::from_manifest(&manifest, hints)?;
         let warm_source =
             WarmSource::from_cell_visibility(cell_visibility, topology.hints.cell_to_cluster.len());
         Self::from_parts(Some(manifest), topology, warm_source, clock, gpu_budget)
@@ -369,7 +374,7 @@ impl ShResidencyController {
         self.accounting
     }
 
-    /// Task 9 updates actual fixed metadata, whole-resident scatter, and pool
+    /// Updates actual fixed metadata, whole-resident scatter, and pool
     /// capacity after the renderer allocates or grows its physical resources.
     pub(crate) fn update_gpu_charges(
         &mut self,

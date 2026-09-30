@@ -18,7 +18,7 @@ use super::storage::{
 use crate::prl::PrlLoadError;
 use crate::prl_container::PrlContainer;
 use crate::prl_file::PrlFile;
-use crate::prl_lightmap::{LoadedLightmap, LoadedShadowmask};
+use crate::prl_lightmap::{LoadedLightmap, LoadedShadowmask, validate_lightmap_block_cells};
 use crate::prl_loader::{section_validation, section_validation_from_error};
 use crate::sh_stream::{ShStreamManifest, read_vec_at, validate_positional_entry_bounds};
 
@@ -35,22 +35,25 @@ pub(crate) struct LightmapResidencyRead {
 /// Read id 22 for the residency `inputs` allow. When nothing but the block
 /// count stands between the level and streaming, only the index prefix is
 /// read positionally and the payloads stay on disk; otherwise the section is
-/// read whole, as the all-resident path always has.
+/// read whole, as the all-resident path always has. Either way each block's
+/// cell is checked against the level's `cell_count` cells.
 pub(crate) fn read_lightmap_for_residency(
     container: &PrlContainer,
     inputs: LightmapResidencyInputs,
+    cell_count: usize,
 ) -> Result<(Option<LoadedLightmap>, LightmapResidencyRead), PrlLoadError> {
     let file = container
         .retained_file()
         .filter(|_| inputs.blocker().is_none());
     let Some(file) = file else {
-        let lightmap = crate::prl_lightmap::read_lightmap(container)?;
+        let lightmap = crate::prl_lightmap::read_lightmap(container, cell_count)?;
         let block_count = lightmap.as_ref().map_or(0, |l| l.index.header.block_count);
         let (mode, reason) = select_lightmap_residency(inputs, block_count);
         log_lightmap_residency(mode, reason, block_count);
         return Ok((lightmap, residency_read(mode, Vec::new())));
     };
-    let Some((index, prefix)) = read_lightmap_index_prefix(file, container.metadata())? else {
+    let Some((index, prefix)) = read_lightmap_index_prefix(file, container.metadata(), cell_count)?
+    else {
         log::warn!("[PRL] Lightmap section missing — static direct lighting disabled for this map");
         let (mode, reason) = select_lightmap_residency(inputs, 0);
         log_lightmap_residency(mode, reason, 0);
@@ -161,6 +164,7 @@ impl LightmapResidencyRead {
 fn read_lightmap_index_prefix(
     file: &PrlFile,
     meta: &ContainerMeta,
+    cell_count: usize,
 ) -> Result<Option<(LightmapBlockIndex, Vec<u8>)>, PrlLoadError> {
     let Some(entry) = meta.find_section(SectionId::Lightmap as u32) else {
         return Ok(None);
@@ -176,11 +180,14 @@ fn read_lightmap_index_prefix(
     extend_prefix(file, entry, &mut prefix, index_len)?;
     let index = LightmapBlockIndex::from_prefix(&prefix, entry.size)
         .map_err(|err| section_validation_from_error("Lightmap", err))?;
+    validate_lightmap_block_cells(&index, cell_count)?;
     Ok(Some((index, prefix)))
 }
 
 /// Id 42's fixed header, then its slot table through the block count, then
 /// its records, each step reading only the bytes the last one proved needed.
+/// The slot table's length is bounded against the section before it is read,
+/// so a bogus selected light count cannot pull in the blobs.
 fn read_shadowmask_index_prefix(
     file: &PrlFile,
     meta: &ContainerMeta,
@@ -193,7 +200,8 @@ fn read_shadowmask_index_prefix(
     let invalid = |err| section_validation_from_error("ShadowmaskAtlas", err);
     let mut prefix = Vec::new();
     extend_prefix(file, entry, &mut prefix, 8)?;
-    let through_count = shadowmask_prefix_len_through_block_count(&prefix).map_err(invalid)?;
+    let through_count = shadowmask_prefix_len_through_block_count(&prefix, entry.size, lightmap)
+        .map_err(invalid)?;
     extend_prefix(file, entry, &mut prefix, through_count as u64)?;
     if prefix.len() == through_count {
         let at = through_count - 4;

@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(irradiance_tile_source_texel(5, 5, n, border), [0, 0]);
     }
 
-    /// Rust ↔ WGSL octahedral mapping parity (the plan's open question).
+    /// Rust ↔ WGSL octahedral mapping parity.
     ///
     /// The Rust encoder here and the WGSL decoder in `sh_sample.wgsl` are
     /// hand-mirrored (no codegen), so this test pins the shared convention with

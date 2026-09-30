@@ -1,5 +1,6 @@
-//! Level-scope streaming proofs: one issuer for SH and lightmaps, reload and
-//! unload lifetimes. See: context/lib/testing_guide.md · plan AC 13, 19; P3, P9, P12
+//! Level-scope streaming proofs: one issuer for SH and lightmaps, session
+//! replacement, the spawn preload, renderer drain failures, reload and unload
+//! lifetimes. See: context/lib/testing_guide.md · plan AC 11, 13, 19; P3, P9, P12
 
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
@@ -7,18 +8,67 @@ use std::sync::Arc;
 use std::thread::ThreadId;
 
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
-use postretro_level_loader::{LightmapDrainOutcome, PrlLoadError, ShStreamingMode};
-use postretro_renderer::ShResidencySnapshot;
+use postretro_level_loader::{
+    LevelWorld, LightmapDrainOutcome, PrlLoadError, ShStreamManifest, ShStreamingMode,
+};
+use postretro_renderer::{LightmapResidencyDrainError, ShResidencySnapshot};
 use postretro_visibility::VisibleCells;
 
 use super::*;
 use crate::lightmap_streaming::controller::BlockPhase;
+use crate::lightmap_streaming::prl_test_fixture::{
+    StreamedLightmapPrl, eye_in_cell, manifest_pool_model,
+};
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::lightmap_streaming::test_fixtures::*;
+use crate::session::lightmap_residency::LightmapLevelView;
 use crate::session::sh_async_workers::{ShAsyncWorkers, ShWorkerSource};
 use crate::session::sh_residency::sync_manifest_test_fixture;
 use crate::sh_streaming::controller::ShClusterRequest;
 use crate::streaming::request::StreamResource;
+
+/// SH's id 49, decoded as level scope does.
+fn sh_hints(manifest: &ShStreamManifest) -> Arc<ClusterHints> {
+    Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap())
+}
+
+/// An SH session over `manifest` in `mode`, budgeted as the tests' renderer.
+fn sh_session(
+    world: &LevelWorld,
+    manifest: Arc<ShStreamManifest>,
+    mode: ShStreamingMode,
+) -> ShStreamingSession {
+    let hints = sh_hints(&manifest);
+    let mut session = ShStreamingSession::from_snapshot(
+        manifest,
+        ShResidencySnapshot {
+            effective_floor_bytes: 1024 * 1024,
+            ..ShResidencySnapshot::default()
+        },
+        world.cell_visibility.as_ref(),
+        hints,
+    )
+    .unwrap();
+    session.set_mode_for_test(mode);
+    session
+}
+
+/// The renderer's lightmap drain, standing in with the pool model: plans
+/// the parked batch and applies its outcome through the level owner.
+fn model_drains_lightmap(
+    level: &mut LevelStreaming,
+    sh: &mut Option<ShStreamingSession>,
+    model: &mut postretro_render_cpu::lightmap_pool::LightmapPoolModel,
+) {
+    let Some(batch) = level
+        .lightmap_mut()
+        .and_then(LightmapStreamingSession::take_drain_batch_for_renderer)
+    else {
+        return;
+    };
+    let outcome = model_drain(model, batch);
+    level.apply_lightmap_drain(sh, Ok(outcome)).unwrap();
+}
 
 fn frame<'a>(
     visible_cells: &'a VisibleCells,
@@ -138,7 +188,8 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
     log.wait_for_reads(1);
 
     // Camera 1: blocks 0, 1, 2 (lead 0) and 3 (10 m) are mandatory; block 4
-    // (24 m) is band and waits for the first outcome's headroom.
+    // (24 m) is band and waits for the first outcome's headroom, which must
+    // hold the four mandatory pairs in flight as well.
     let visible = VisibleCells::Culled(Vec::new());
     let mut drain = SharedDrain::default();
     for _ in 0..2 {
@@ -159,7 +210,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
         lightmap.take_drain_batch_for_renderer().unwrap();
         lightmap
             .apply_outcome(LightmapDrainOutcome {
-                pool: headroom(4),
+                pool: headroom(5),
                 ..LightmapDrainOutcome::default()
             })
             .unwrap();
@@ -279,6 +330,7 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
             ..ShResidencySnapshot::default()
         },
         world.cell_visibility.as_ref(),
+        sh_hints(&manifest),
     )
     .unwrap();
     sh.set_mode_for_test(ShStreamingMode::Async);
@@ -329,4 +381,313 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
         level.drain_capacity() > 0,
         "the drain buffer is kept for reuse"
     );
+}
+
+/// A session factory for levels that stream no SH.
+fn no_sh(
+    _: Arc<ShStreamManifest>,
+    _: ShStreamingMode,
+    _: Option<Arc<ClusterHints>>,
+) -> anyhow::Result<ShStreamingSession> {
+    unreachable!("the level streams no SH")
+}
+
+// SH alone through the production drain step: the level issuer spawns over
+// SH's route, the cluster installs, and retirement then joins every thread
+// and releases every manifest clone.
+#[test]
+fn sh_only_level_streams_through_the_level_drain_step_and_retires_cleanly() {
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
+    let baseline = Arc::strong_count(&manifest);
+    let mut sh = Some(sh_session(
+        &world,
+        Arc::clone(&manifest),
+        ShStreamingMode::Async,
+    ));
+    let mut level = LevelStreaming::default();
+    let visible = VisibleCells::Culled(vec![0]);
+    let cpu = StageFrame::default();
+
+    wait_until("the SH install", || {
+        let batch = level
+            .prepare_drains(&mut sh, None, frame(&visible, 0, &cpu))
+            .unwrap();
+        sh.as_mut().unwrap().accept_drain_for_test(&batch).unwrap();
+        sh.as_ref().unwrap().all_targets_sampleable()
+    });
+    assert!(level.lightmap().is_none());
+    assert!(Arc::strong_count(&manifest) > baseline);
+
+    level.retire(&mut sh);
+    assert!(sh.is_none());
+    wait_until("retired threads", || {
+        level.poll_retirement();
+        !level.is_retiring()
+    });
+    assert_eq!(
+        Arc::strong_count(&manifest),
+        baseline,
+        "workers, issuer and session released"
+    );
+}
+
+// AC 11 through the level owner the install path drives: the spawn eye's
+// camera cell's mandatory set is resident in the renderer's pool before the
+// first drain step, and the first frame keeps the preloaded session.
+#[test]
+fn spawn_preload_makes_the_spawn_set_resident_and_the_first_frame_keeps_the_session() {
+    let prl = StreamedLightmapPrl::write();
+    let world = prl.load();
+    let view = LightmapLevelView::of(&world).unwrap();
+    let mut model = manifest_pool_model(view.manifest);
+    let wanted = WantedStreaming {
+        sh: None,
+        lightmap: Some(view),
+        cluster_directory: world.cluster_directory(),
+    };
+    let mut level = LevelStreaming::default();
+    let mut sh = None;
+    assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
+
+    // Spawn in cell 0: cells 0 and 1 are mandatory at the default lead, and
+    // cell 2 is the prefetch band.
+    level
+        .install_spawn_lightmap(&mut sh, &world, eye_in_cell(0), |batch| {
+            Ok(model_drain(&mut model, batch))
+        })
+        .unwrap();
+    let session = level.lightmap().unwrap();
+    for block in [0, 1] {
+        assert_eq!(
+            session.controller().phase(block),
+            BlockPhase::Installed,
+            "spawn block {block}"
+        );
+        assert!(model.is_resident(block), "spawn block {block} in the pool");
+    }
+    assert!(
+        !model.is_resident(2),
+        "band blocks wait for in-play prefetch"
+    );
+    assert!(session.settled());
+    let generation = session.controller().generation();
+
+    // The first frame: the same session and controller, no reset, nothing
+    // mandatory read again.
+    assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0, 1]);
+    level
+        .prepare_drains(&mut sh, Some(view.residency_set), frame(&visible, 0, &cpu))
+        .unwrap();
+    let session = level.lightmap().unwrap();
+    assert_eq!(session.controller().generation(), generation);
+    let batch = session
+        .parked_batch()
+        .expect("the first frame drains after the preload");
+    assert!(batch.target_reset.is_none(), "not a fresh controller");
+    assert!(batch.ready.is_empty());
+}
+
+// Regression: an SH mode change mid-level replaced the lightmap session too,
+// and the fresh controller's outcome validation then failed fatally against
+// the renderer's pool, still full of the level's blocks.
+#[test]
+fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks() {
+    let prl = StreamedLightmapPrl::write();
+    let world = prl.load();
+    let view = LightmapLevelView::of(&world).unwrap();
+    let mut model = manifest_pool_model(view.manifest);
+    let (_temp, sh_path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let sh_world = postretro_level_loader::load_prl(sh_path.to_str().unwrap()).unwrap();
+    let sh_manifest = Arc::clone(
+        sh_world
+            .sh_stream_manifest()
+            .expect("id 50 selects streaming"),
+    );
+    // The SH fixture is a level of its own, so its session decodes its own
+    // hints rather than the lightmap level's.
+    let make_sh = |manifest, mode, _: Option<Arc<ClusterHints>>| {
+        anyhow::Ok(sh_session(&sh_world, manifest, mode))
+    };
+    let wanted = |mode| WantedStreaming {
+        sh: Some((&sh_manifest, mode)),
+        lightmap: Some(view),
+        cluster_directory: world.cluster_directory(),
+    };
+    let mut level = LevelStreaming::default();
+    let mut sh = None;
+    assert!(
+        level
+            .ensure_sessions(&mut sh, wanted(ShStreamingMode::SyncProof), &make_sh)
+            .unwrap()
+    );
+    level
+        .install_spawn_lightmap(&mut sh, &world, eye_in_cell(0), |batch| {
+            Ok(model_drain(&mut model, batch))
+        })
+        .unwrap();
+    let generation = level.lightmap().unwrap().controller().generation();
+
+    // One frame as the app runs it: both drains, the renderer accepting all.
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0]);
+    let mut run_frame = |level: &mut LevelStreaming, sh: &mut Option<ShStreamingSession>| {
+        let batch = level
+            .prepare_drains(sh, Some(view.residency_set), frame(&visible, 0, &cpu))
+            .unwrap();
+        sh.as_mut().unwrap().accept_drain_for_test(&batch).unwrap();
+        model_drains_lightmap(level, sh, &mut model);
+    };
+    run_frame(&mut level, &mut sh);
+    run_frame(&mut level, &mut sh);
+
+    assert!(
+        level
+            .ensure_sessions(&mut sh, wanted(ShStreamingMode::Async), &make_sh)
+            .unwrap()
+    );
+    assert!(
+        sh.as_ref()
+            .unwrap()
+            .is_for(&sh_manifest, ShStreamingMode::Async)
+    );
+    let lightmap = level.lightmap().expect("the lightmap session is kept");
+    assert_eq!(lightmap.controller().generation(), generation);
+    for block in [0, 1] {
+        assert_eq!(lightmap.controller().phase(block), BlockPhase::Installed);
+    }
+
+    // SH now streams through the next issuer, and every lightmap outcome
+    // still applies against the same pool.
+    wait_until("the async SH install and the band block", || {
+        run_frame(&mut level, &mut sh);
+        sh.as_ref().unwrap().all_targets_sampleable()
+            && level.lightmap().unwrap().controller().phase(2) == BlockPhase::Installed
+    });
+    assert_eq!(
+        level.lightmap().unwrap().controller().generation(),
+        generation
+    );
+}
+
+// A renderer that fell back to the placeholder (device limits) does not
+// stream the lightmap: the level drops its lightmap session with one warning
+// rather than exiting, and later frames never recreate it.
+#[test]
+fn a_renderer_that_does_not_stream_the_lightmap_declines_it_for_the_level() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let prl = StreamedLightmapPrl::write();
+    let world = prl.load();
+    let wanted = WantedStreaming {
+        sh: None,
+        lightmap: LightmapLevelView::of(&world),
+        cluster_directory: world.cluster_directory(),
+    };
+    let mut level = LevelStreaming::default();
+    let mut sh = None;
+    assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
+
+    level
+        .install_spawn_lightmap(&mut sh, &world, eye_in_cell(0), |_| {
+            Err(LightmapResidencyDrainError::NotStreaming)
+        })
+        .unwrap();
+    assert!(level.lightmap().is_none());
+    for _ in 0..3 {
+        assert!(
+            !level.ensure_sessions(&mut sh, wanted, no_sh).unwrap(),
+            "nothing streams"
+        );
+        assert!(level.lightmap().is_none());
+    }
+    capture.assert_logged_once(log::Level::Warn, "does not stream this level's lightmap");
+}
+
+// A drain the renderer rolled back returns its pairs to the controller, which
+// reads them again under a target reset; a drain-contract violation is fatal.
+#[test]
+fn a_rolled_back_renderer_drain_returns_its_pairs_and_a_contract_violation_is_fatal() {
+    let source = TestBlockSource::new(corridor_blocks(64, true));
+    let set = corridor_set();
+    let visible = VisibleCells::Culled(Vec::new());
+    let cpu = StageFrame::default();
+    let mut level = LevelStreaming::default();
+    level.install_lightmap(lightmap_session(&source));
+    let mut sh = None;
+
+    // Camera 6 demands blocks 5 and 6; frames run until a batch carries them.
+    let mut drained = Vec::new();
+    wait_until("a batch with ready pairs", || {
+        level
+            .prepare_drains(&mut sh, Some(&set), frame(&visible, 6, &cpu))
+            .unwrap();
+        let batch = level
+            .lightmap_mut()
+            .unwrap()
+            .take_drain_batch_for_renderer()
+            .expect("no outcome is outstanding");
+        if batch.ready.is_empty() {
+            level
+                .apply_lightmap_drain(
+                    &mut sh,
+                    Ok(LightmapDrainOutcome {
+                        pool: headroom(8),
+                        ..LightmapDrainOutcome::default()
+                    }),
+                )
+                .unwrap();
+            return false;
+        }
+        drained = batch.ready.iter().map(|prepared| prepared.block).collect();
+        true
+    });
+
+    level
+        .apply_lightmap_drain(
+            &mut sh,
+            Err(LightmapResidencyDrainError::GpuCapacity {
+                required_layers: 9,
+                max_layers: 8,
+            }),
+        )
+        .unwrap();
+    let controller = level.lightmap().unwrap().controller();
+    for &block in &drained {
+        assert_eq!(controller.phase(block), BlockPhase::Absent, "block {block}");
+    }
+    assert_eq!(controller.counters().aborted_drains, 1);
+
+    level
+        .prepare_drains(&mut sh, Some(&set), frame(&visible, 6, &cpu))
+        .unwrap();
+    let reset = level
+        .lightmap()
+        .unwrap()
+        .parked_batch()
+        .expect("the controller is not wedged");
+    assert!(
+        reset.target_reset.is_some(),
+        "the renderer rolled the deltas back"
+    );
+    let mut installed = Vec::new();
+    wait_until("the pairs read again", || {
+        installed.extend(renderer_installs_lightmap_batch(&mut level));
+        level
+            .prepare_drains(&mut sh, Some(&set), frame(&visible, 6, &cpu))
+            .unwrap();
+        drained.iter().all(|block| installed.contains(block))
+    });
+
+    let error = level
+        .apply_lightmap_drain(
+            &mut sh,
+            Err(LightmapResidencyDrainError::InvalidBatch(
+                "a block past the table".into(),
+            )),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("renderer drain"), "{error}");
 }

@@ -10,7 +10,7 @@ Owner approved 2026-09-28: AC 1 and AC 7 restated as proposed below (applied to 
 
 Path and research claims checked against source at 6526dc627. No Decision premise was found false.
 
-- **Vertex attribute location.** Research §3 says location 4 carries the static-layer field. → Location 4 is only the UV. The static layer is location 5, `lightmap_layer_block`, a `Uint16x2` at offset 32: `.x` is the layer and `.y` the animated block id (`forward.wgsl:365-367`, `renderer_init_pipelines.rs:96-107`). Planning around it: block id + 1 replaces `.x`. That caps a level at 65,534 blocks, the overflow limit AC 1 tests.
+- **Vertex attribute location.** Research §3 says location 4 carries the static-layer field. → Location 4 is only the UV. The static layer is location 5, `lightmap_layer_block`, a `Uint16x2` at offset 32: `.x` is the layer and `.y` the animated block id (`forward.wgsl:365-367`, `renderer_init_pipelines.rs:96-107`). Planning around it: block id + 1 replaces `.x`. That caps a level at 65,535 blocks, the overflow limit AC 1 tests.
 - **Fragment sampled budget.** "Forward FRAGMENT sits at 15/16 sampled." → It is 16/16 with cube-array support and 15/16 without (`pipeline_budget_tests.rs:153-159`). The Decision holds more strongly: no fragment binding is free.
 - **Varyings.** `VertexOutput` has 8 user locations, and wgpu 29 allows 16 (15 on downlevel). The engine requests the default limit. Planning: add one flat `vec4<u32>` (pool offset xy, block extent xy) beside the existing flat layer and animated id, for 9 locations. The block extent feeds the shadowmask clamp.
 - **Shadowmask clamp.** `sample_shadowmask_atlas` clamps only U, per mask-group half. It never clamps V (`forward.wgsl:744-745`). Planning: clamp U and V to the block's half-texel rect in the pool layer.
@@ -78,7 +78,7 @@ Path and research claims checked against source at 6526dc627. No Decision premis
 Shared seams fixed before delegation. Workers build against them and do not change them.
 
 - **Format types** live in `level-format`. Workers read the source; it is the contract.
-  - `lightmap.rs` (id 22 v3): `LightmapHeader`, `LightmapBlockIndex::from_prefix`, `LightmapSection`, `LightmapBlockPayload`, `LIGHTMAP_POOL_LAYER_EDGE` (2048) and `MAX_LIGHTMAP_BLOCKS` (65,534).
+  - `lightmap.rs` (id 22 v3): `LightmapHeader`, `LightmapBlockIndex::from_prefix`, `LightmapSection`, `LightmapBlockPayload`, `LIGHTMAP_POOL_LAYER_EDGE` (2048) and `MAX_LIGHTMAP_BLOCKS` (65,535: block id + 1 fits the vertex's u16).
   - `shadowmask_atlas.rs` (id 42 `SMB6`): `ShadowmaskBlockIndex::from_prefix` and `shadowmask_prefix_len_through_block_count`, both validated against the id-22 index.
   - `animated_light_weight_maps.rs` (id 25 v5): `AnimatedBlock { lightmap_block, block_x, block_y, .. }` and `chunk_block_origin`.
   - `geometry.rs`: `Vertex::lightmap_block` is block id + 1, 0 meaning none. The UV is block-local. `GEOMETRY_CONTAINER_VERSION` = 2; the compiler writes it and the loader rejects any other. `render-data` `WorldVertex::lightmap_block` mirrors this.
@@ -101,7 +101,7 @@ Shared seams fixed before delegation. Workers build against them and do not chan
 ## Delegated answers
 
 - **Allocator** — the shelf allocator (`BlockPool`), moved from the dry run to `render-cpu` so the renderer and the dry run share one implementation. Repack counts are reported in the findings. It was measured; guillotine was not.
-- **Baked maximum lead** — 32 m (`BRIEF_MAX_LEAD_METERS`). It is the measured basis. Every row fits Low at 170.0 MiB worst.
+- **Baked maximum lead** — 32 m (`MAX_LEAD_METERS`). It is the measured basis. Every row fits Low at 170.0 MiB worst.
 - **Default L** — 16 m, the lean. Worst mandatory set is 136.5 MiB and 12 shelf layers.
 - **Default pool cap** — 15 layers (210 MiB). At L = 16 m it never grows, and band retain repacks on 2.54% of tour steps (research §1).
 - **Budget unit** — one per-drain byte budget, shared: SH decoded bytes plus block upload bytes against today's `MAX_INSTALL_DECODED_BYTES_PER_DRAIN` (8 MiB). The first request is always admitted, and a lightmap/shadowmask pair is admitted or deferred whole (P12). Keeping SH's constant leaves SH-only behaviour unchanged (AC 18).
@@ -188,6 +188,32 @@ Split-first commits precede the task that extends each file. Every task ends wit
 - Demand from the baked set is recomputed only on a camera-cell or L change. Visible-block demand reuses per-frame buffers. No steady-state allocation (AC 15).
 - Block-table writes happen only on install, eviction or repack, never per frame (AC 15).
 - Uploads stay within the shared drain budget (Delegated answers).
+
+## Review loop
+
+- **Pass 1 (2026-09-29).** 12 agents: 7 tracers, a wire-format verifier, 2 adversarial testers and 2 hygiene passes. No 🔴 findings; about 20 🟡 findings plus nits.
+- **Owner decisions:** see Corrections, "Review decisions".
+- **Fixed** in four crate batches:
+  - loader and format: the id-22 mode wired through; adjacency as a parser invariant; block `cell_id` and direction-scale checks; slot-table padding and count bounds; the conditional env gate;
+  - compiler: the oversize-block panic; an early chart-size check; the id-51 container constant;
+  - pool policy and renderer: no band eviction for a pair that defers or grows; repack within the live layers before growing; defer at the device layer limit; residency reset on a new generation; the full-init error;
+  - runtime:
+    - contiguous-only lightmap reads (AC 12), proved with a real-manifest test;
+    - drawn blocks kept on non-portal frames;
+    - a mandatory read reserve and tier raise on promotion;
+    - the aligned band gate and refusal backoff;
+    - miss counts that match AC 22;
+    - the lightmap session kept across SH changes;
+    - an issuer cancel that wakes the thread;
+    - streaming state released at unload;
+    - preload fixes for the frontend backdrop, the zero-tick frame and non-portal captures;
+    - hints decoded once;
+    - degrade instead of exit on renderer errors.
+  - Comment drift was fixed in every crate.
+- **Integrator correction:** the renderer fix batch made a streamed level degrade to the placeholder when every block at once would pass the device's layer limit. That was reverted: such a level still streams (with a warning), and the pool model defers growth past the device limit.
+- **Gate:**
+  - focused suites pass: level-format 574, loader 273, render-cpu 244, renderer 731 (GPU), compiler 1,395, engine 1,068, 1,134 with capture;
+  - the AC 4 and AC 7 GPU captures pass again.
 
 ## Findings log
 

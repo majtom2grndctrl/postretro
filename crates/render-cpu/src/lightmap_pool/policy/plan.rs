@@ -10,8 +10,8 @@ use super::super::{BlockPlacement, BlockTableEntry};
 pub enum EvictionReason {
     /// It left every target.
     Untargeted,
-    /// A band block at or past the cap's layers (P8): the cap was lowered,
-    /// or a block placed past it by growth dropped into the band.
+    /// A band block at or past the cap's layers: the cap was lowered, or a
+    /// block placed past it by growth dropped into the band.
     OverCap,
     /// A band block evicted, farthest lead first, to make room for a
     /// mandatory or visible pair, or dropped by a repack.
@@ -88,7 +88,8 @@ pub struct DrainPlan {
     /// Band pairs with no room under the cap, and pairs no longer targeted.
     pub refused: Vec<u32>,
     /// Mandatory or visible pairs that needed growth while a generation was
-    /// still retiring: a counted transient miss.
+    /// still retiring, or a layer past the device limit: a counted transient
+    /// miss.
     pub deferred: Vec<u32>,
     /// Uploads the GPU layer failed and the model rolled back.
     pub failed: Vec<u32>,

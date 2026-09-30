@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use postretro_level_loader::PrlLoadError;
 
-use super::controller::MAX_LIGHTMAP_PERMITS;
+use super::controller::LIGHTMAP_QUEUE_CAPACITY;
 use super::source::LightmapBlockSource;
 use crate::streaming::issuer::{ReadOutcome, ReadRecord, ReadRoute};
 use crate::streaming::request::ReadRequest;
@@ -53,6 +53,9 @@ pub(crate) struct LightmapRouteLedger {
     in_memory_bytes: AtomicU64,
     physical_reads: AtomicU64,
     span_bytes: AtomicU64,
+    /// Bytes read only to bridge ranges; lightmap reads merge only
+    /// byte-contiguous ranges, so this stays 0.
+    gap_bytes: AtomicU64,
 }
 
 impl LightmapRouteLedger {
@@ -64,6 +67,12 @@ impl LightmapRouteLedger {
     /// read of several pairs counts once.
     pub(crate) fn physical_reads(&self) -> u64 {
         self.physical_reads.load(Ordering::Acquire)
+    }
+
+    /// Bytes the issuer read for this route and discarded between ranges.
+    #[cfg(test)]
+    pub(crate) fn gap_bytes(&self) -> u64 {
+        self.gap_bytes.load(Ordering::Acquire)
     }
 
     /// The frame thread consumed `bytes` of delivered payload.
@@ -81,14 +90,15 @@ pub(crate) struct LightmapReadRoute {
     completed: SyncSender<LightmapCompletion>,
 }
 
-/// The route plus the frame side's completion receiver. Controller permits
-/// bound every outstanding request, so the queue never fills.
+/// The route plus the frame side's completion receiver. It holds every
+/// completion the controller's submissions can produce (see
+/// [`LIGHTMAP_QUEUE_CAPACITY`]), so a delivery never waits on the frame.
 pub(crate) fn lightmap_route(
     source: Arc<dyn LightmapBlockSource>,
     targets: Arc<TargetBitset>,
     ledger: Arc<LightmapRouteLedger>,
 ) -> (LightmapReadRoute, Receiver<LightmapCompletion>) {
-    let (completed, receiver) = sync_channel(MAX_LIGHTMAP_PERMITS);
+    let (completed, receiver) = sync_channel(LIGHTMAP_QUEUE_CAPACITY);
     (
         LightmapReadRoute {
             source,
@@ -124,6 +134,9 @@ impl ReadRoute for LightmapReadRoute {
         self.ledger
             .span_bytes
             .fetch_add(read.span_bytes, Ordering::AcqRel);
+        self.ledger
+            .gap_bytes
+            .fetch_add(read.gap_bytes, Ordering::AcqRel);
     }
 
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool {
@@ -155,3 +168,7 @@ impl ReadRoute for LightmapReadRoute {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "route_tests.rs"]
+mod tests;

@@ -389,3 +389,25 @@ fn shared_issuer_absorbs_repeat_submissions_of_a_pending_key_into_one_read() {
         .collect();
     assert_eq!(block.len(), 1);
 }
+
+// Regression: cancel only set a flag, so an idle issuer blocked in its queue
+// kept running while any clone of its handle was alive, and shutdown
+// depended on the order handles were dropped.
+#[test]
+fn cancel_stops_an_idle_issuer_while_another_handle_is_alive() {
+    let mut harness = Harness::new();
+    let issuer = harness.issuer.take().unwrap();
+    let other = issuer.clone();
+    issuer.cancel();
+    drop(issuer);
+
+    let handle = harness.handle.take().unwrap();
+    harness
+        .log
+        .wait_until("the cancelled issuer thread", |_| handle.is_finished());
+    handle.join().unwrap();
+    assert!(
+        other.submit(sh(0, M, 1)).is_err(),
+        "the thread is gone; the live clone cannot queue work"
+    );
+}

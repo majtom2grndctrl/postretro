@@ -1,18 +1,13 @@
-// Shared lightmap helpers (binding-agnostic): the vertex-stage cell-block
-// resolve, and the static, animated and shadowmask pool samplers.
+// Shared lightmap helpers (binding-agnostic): vertex-stage block resolve and pool samplers.
 // See: context/lib/rendering_pipeline.md §4, §8
-//
-// `resolve_lightmap_block`, `sample_lightmap_irradiance`,
-// `sample_lightmap_direction`, `sample_lightmap_animated`,
-// `animated_block_uv` and `sample_shadowmask_atlas`. These helpers declare no
-// bindings: the consumer declares the group-4 lightmap textures
-// (`lightmap_irradiance`, `lightmap_direction`, `animated_lm_atlas`,
-// `shadowmask_atlas`), the samplers (`lightmap_sampler`,
+
+// These helpers declare no bindings. The consumer declares the group-4
+// lightmap textures (`lightmap_irradiance`, `lightmap_direction`,
+// `animated_lm_atlas`, `shadowmask_atlas`), the samplers (`lightmap_sampler`,
 // `lightmap_filtering_sampler`), the `animated_block_table` uniform with its
 // `AnimatedBlockTable` struct, and the group-6 `lightmap_block_table` before
-// this file is textually concatenated. The helpers reference those
-// consumer-declared globals by lexical resolution — the same precedent as
-// `shadow_sample.wgsl`.
+// this file is concatenated; the helpers read those globals by name, as
+// `shadow_sample.wgsl` does.
 
 // Pool layer edge in texels: `LIGHTMAP_POOL_LAYER_EDGE` in level-format. The
 // 1×1 placeholders read the same texel at any coordinate, so placeholder mode

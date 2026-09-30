@@ -110,8 +110,8 @@ fn unflagged_cell_is_mandatory_only_through_lead_or_visibility() {
 }
 
 /// Camera 0's band is blocks 3 (20 m, cluster 1) and 4 (30 m, cluster 2).
-/// Returns the band read order once the pool reports `band_blocks` of room,
-/// and the order the two pairs drain in.
+/// Returns the band read order once the pool reports `band_blocks` of room
+/// and the mandatory pairs are placed, and the order the band pairs drain in.
 fn band_order(hints: Option<&ClusterHints>, band_blocks: u64) -> (Vec<u32>, Vec<u32>) {
     let mut rig = Rig::corridor(hints);
     let batch = rig.portal(0, &[]).unwrap();
@@ -122,6 +122,12 @@ fn band_order(hints: Option<&ClusterHints>, band_blocks: u64) -> (Vec<u32>, Vec<
     );
     rig.install_all(&batch, headroom(band_blocks));
     rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    assert!(
+        rig.requests.is_empty(),
+        "band waits for the mandatory pairs in hand"
+    );
+    rig.install_all(&batch, headroom(band_blocks));
     let batch = rig.portal(0, &[]).unwrap();
     let band_reads = rig.requested_blocks();
     rig.install_all(&batch, headroom(band_blocks));
@@ -151,7 +157,8 @@ fn priority_region_reorders_band_prefetch() {
 
 // ---- AC 9 (CPU side): band reads against headroom, refusals ----
 
-// AC 9: mandatory reads ignore headroom; band reads stop at it.
+// AC 9: mandatory reads ignore headroom; band reads stop at the headroom
+// left once the mandatory pairs in hand are placed.
 #[test]
 fn band_reads_stop_at_the_pool_headroom_while_mandatory_reads_do_not() {
     let mut rig = Rig::corridor(None);
@@ -159,21 +166,30 @@ fn band_reads_stop_at_the_pool_headroom_while_mandatory_reads_do_not() {
     assert_eq!(rig.requested_blocks(), vec![0, 1, 2], "no headroom yet");
     rig.install_all(&batch, headroom(1));
     rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    assert!(
+        rig.requests.is_empty(),
+        "the three mandatory pairs in hand claim the one block of room first"
+    );
+    rig.install_all(&batch, headroom(1));
     rig.portal(0, &[]);
     assert_eq!(rig.requested_blocks(), vec![3], "one block of band room");
 }
 
 // AC 9: a refused band block is not requested again until the pool reports
-// more band headroom than it had when it refused.
+// room for one more of its slots than it had when it refused.
 #[test]
 fn refused_band_block_is_not_requested_again_until_headroom_grows() {
     let mut rig = Rig::corridor(None);
     let batch = rig.portal(0, &[]).unwrap();
     rig.install_all(&batch, headroom(1));
     rig.complete_all();
-    let batch = rig.portal(0, &[]).unwrap();
-    rig.install_all(&batch, headroom(1));
-    rig.complete_all();
+    // The mandatory pairs install, then block 3 is read into the band room.
+    for _ in 0..2 {
+        let batch = rig.portal(0, &[]).unwrap();
+        rig.install_all(&batch, headroom(1));
+        rig.complete_all();
+    }
     let batch = rig.portal(0, &[]).unwrap();
     assert_eq!(
         batch.ready.iter().map(|p| p.block).collect::<Vec<_>>(),
@@ -456,8 +472,8 @@ fn spawn_cell_with_an_empty_baked_range_starts_empty_and_requests_nothing() {
 }
 
 // P11: on the first portal-walk frame, a drawn cell outside the baked set is
-// demanded visible at the mandatory tier, counts as a miss outside the baked
-// set (once, not also as not resident), and may never be refused.
+// demanded visible at the mandatory tier, counts as a miss both outside the
+// baked set and not resident, and may never be refused.
 #[test]
 fn drawn_cell_outside_the_baked_set_is_visible_demand_never_refused() {
     let mut rig = Rig::corridor(None);
@@ -472,7 +488,7 @@ fn drawn_cell_outside_the_baked_set_is_visible_demand_never_refused() {
     rig.controller.count_visible_misses();
     let counters = rig.controller.counters();
     assert_eq!(counters.last_frame_drawn_outside_baked_set, 1, "block 5");
-    assert_eq!(counters.last_frame_drawn_not_resident, 1, "block 0");
+    assert_eq!(counters.last_frame_drawn_not_resident, 2, "blocks 0 and 5");
     assert!(
         batch
             .target_reset
@@ -707,4 +723,261 @@ fn outcome_naming_a_pair_both_installed_and_failed_is_rejected() {
         BlockPhase::InDrain,
         "nothing applied"
     );
+}
+
+// ---- Non-portal frames hold what they draw ----
+
+const STEP_LIMIT: VisibilityPath = VisibilityPath::PortalStepLimitFallback {
+    considered: 10,
+    accepted: 3,
+};
+
+// A non-portal frame keeps the target of a drawn block that is resident, so
+// the renderer never frees a block the frame draws, and reads nothing for
+// it. The hold ends once the block is no longer drawn.
+#[test]
+fn step_limit_frame_keeps_a_drawn_resident_visible_block_without_reading() {
+    let mut rig = Rig::corridor(None);
+    rig.settle(0, &[5], headroom(8));
+    assert_eq!(rig.controller.phase(5), BlockPhase::Installed);
+    assert_eq!(rig.controller.target(5), visible(5));
+    let reads = rig.controller.counters().reads_requested;
+
+    let batch = rig
+        .frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![0, 5]))
+        .unwrap();
+    assert_eq!(
+        rig.controller.target(5),
+        visible(5),
+        "held while drawn and resident"
+    );
+    assert!(batch.target_remove.is_empty(), "the renderer keeps block 5");
+    assert!(rig.requests.is_empty());
+    assert_eq!(rig.controller.counters().reads_requested, reads);
+    rig.install_all(&batch, headroom(8));
+
+    let batch = rig
+        .frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![0]))
+        .unwrap();
+    assert_eq!(rig.controller.target(5), None, "no longer drawn");
+    assert_eq!(batch.target_remove, vec![5]);
+}
+
+// A drawn block whose read is already in flight is held too: the read is
+// not cancelled under the frame that draws it.
+#[test]
+fn step_limit_frame_keeps_a_drawn_block_whose_read_is_in_flight() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(0, &[0, 5]).unwrap();
+    assert!(rig.requested_blocks().contains(&5));
+    rig.install_all(&batch, headroom(8));
+
+    rig.frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![5]));
+    assert_eq!(rig.controller.target(5), visible(5));
+    assert_eq!(rig.controller.phase(5), BlockPhase::InFlight);
+}
+
+// A drawn block that is not resident is neither held nor requested on a
+// non-portal frame (it lies outside the camera cell's baked set), and it
+// counts as a visible miss in both buckets.
+#[test]
+fn step_limit_frame_neither_reads_nor_holds_a_drawn_absent_block_and_counts_it() {
+    let mut rig = Rig::corridor(None);
+    rig.settle(0, &[], headroom(8));
+
+    let batch = rig
+        .frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![0, 5]))
+        .unwrap();
+    assert_eq!(rig.controller.target(5), None);
+    assert!(
+        rig.requests.is_empty(),
+        "outside the camera cell's baked set"
+    );
+    rig.install_all(&batch, headroom(8));
+    rig.controller.count_visible_misses();
+    let counters = rig.controller.counters();
+    assert_eq!(counters.last_frame_drawn_not_resident, 1, "block 5");
+    assert_eq!(counters.last_frame_drawn_outside_baked_set, 1, "block 5");
+}
+
+// ---- Band reads leave mandatory work its reserve ----
+
+// Band reads may hold at most half the permits; the other half is a reserve
+// mandatory and visible reads always get, even with the band in flight.
+#[test]
+fn band_reads_hold_at_most_half_the_permits_and_mandatory_reads_use_the_reserve() {
+    // Camera 0: cell 0 at lead 0 and 24 band cells. Camera 1: 15 new cells
+    // at lead 0.
+    let mut rows = vec![(0, 0, 0)];
+    rows.extend((1..=24).map(|cell| (0, cell, 20)));
+    rows.extend((25..=39).map(|cell| (1, cell, 0)));
+    let blocks = (0..40)
+        .map(|block| BlockSpec::standard(block, block, 64, true))
+        .collect();
+    let mut rig = Rig::new(blocks, residency_set(40, &rows, 32), None);
+    let room = LightmapPoolReport {
+        layers: 1,
+        band_headroom_texels: 1 << 30,
+        ..LightmapPoolReport::default()
+    };
+
+    let batch = rig.portal(0, &[]).unwrap();
+    assert_eq!(rig.requested_blocks(), vec![0]);
+    rig.install_all(&batch, room);
+    rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    assert_eq!(
+        rig.requested_blocks(),
+        (1..=16).collect::<Vec<_>>(),
+        "16 of the 24 band blocks: half the permits"
+    );
+    rig.install_all(&batch, room);
+    rig.requests.clear();
+
+    // The band reads are still in flight when camera 1's set arrives.
+    rig.portal(1, &[]);
+    assert_eq!(
+        rig.requested_blocks(),
+        (25..=39).collect::<Vec<_>>(),
+        "every mandatory read fits the reserve"
+    );
+    assert_eq!(rig.controller.permits_in_use(), 16 + 15);
+}
+
+// A band read promoted in flight is resubmitted at the mandatory tier, so
+// the issuer raises the pending request's tier; the permit is not taken
+// twice, and the pair installs once.
+#[test]
+fn band_read_promoted_in_flight_is_resubmitted_at_the_mandatory_tier() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    let band: Vec<(u32, ReadTier)> = rig
+        .requests
+        .iter()
+        .map(|request| (request.key, request.tier))
+        .collect();
+    assert_eq!(band, vec![(3, ReadTier::Optional), (4, ReadTier::Optional)]);
+    rig.install_all(&batch, headroom(8));
+    rig.requests.clear();
+
+    // Camera 2 makes blocks 3 (lead 0) and 4 (12 m) mandatory while their
+    // reads are in flight; block 5 is its band.
+    let batch = rig.portal(2, &[]).unwrap();
+    let raised: Vec<u32> = rig
+        .requests
+        .iter()
+        .filter(|request| request.tier == ReadTier::Mandatory)
+        .map(|request| request.key)
+        .collect();
+    assert_eq!(raised, vec![3, 4]);
+    assert_eq!(rig.controller.counters().tier_raises, 2);
+    assert_eq!(rig.controller.phase(3), BlockPhase::InFlight);
+    assert_eq!(rig.controller.permits_in_use(), 3, "blocks 3, 4 and 5");
+    rig.install_all(&batch, headroom(8));
+
+    let installs = rig.controller.counters().installs;
+    rig.complete_all();
+    let batch = rig.portal(2, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    assert_eq!(rig.controller.phase(3), BlockPhase::Installed);
+    assert_eq!(rig.controller.counters().installs, installs + 3);
+    assert_eq!(rig.controller.counters().duplicate_completions, 0);
+}
+
+// ---- Band headroom in pool slots ----
+
+// Band reads are charged the block's pool slot, its extent rounded up to the
+// slot alignment, not its raw texels.
+#[test]
+fn band_reads_charge_the_aligned_slot_of_each_block() {
+    let mut blocks = corridor_blocks(64, true);
+    for block in [3, 4] {
+        // 62 × 62 texels take a 64 × 64 slot.
+        blocks[block].width = 62;
+        blocks[block].height = 62;
+    }
+    let mut rig = Rig::new(blocks, corridor_set(), None);
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(0));
+    rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    // Room for both blocks' raw texels (2 × 3844), not for both slots.
+    let room = LightmapPoolReport {
+        layers: 1,
+        band_headroom_texels: 7_700,
+        ..LightmapPoolReport::default()
+    };
+    rig.install_all(&batch, room);
+    rig.portal(0, &[]);
+    assert_eq!(rig.requested_blocks(), vec![3], "one 64 × 64 slot of room");
+}
+
+// A refused band block is re-read only once the pool has room for a whole
+// slot more than at its refusal, not on any small gain.
+#[test]
+fn refused_band_block_waits_for_a_whole_slot_of_new_headroom() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(1));
+    rig.complete_all();
+    for _ in 0..2 {
+        let batch = rig.portal(0, &[]).unwrap();
+        rig.install_all(&batch, headroom(1));
+        rig.complete_all();
+    }
+    rig.portal(0, &[]).unwrap();
+    rig.controller
+        .apply_outcome(LightmapDrainOutcome {
+            refused: vec![3],
+            pool: headroom(1),
+            ..LightmapDrainOutcome::default()
+        })
+        .unwrap();
+    let room = |texels| LightmapPoolReport {
+        layers: 1,
+        band_headroom_texels: texels,
+        ..LightmapPoolReport::default()
+    };
+
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, room(2 * 64 * 64 - 1));
+    assert_eq!(
+        rig.controller.phase(3),
+        BlockPhase::Refused,
+        "short of a slot"
+    );
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, room(2 * 64 * 64));
+    assert_eq!(
+        rig.controller.phase(3),
+        BlockPhase::Absent,
+        "a whole slot more"
+    );
+}
+
+// ---- Renderer failures ----
+
+// A drain the renderer rolled back returns every drained pair to Absent,
+// releases its permit, and re-sends every target in the next batch.
+#[test]
+fn aborted_drain_returns_its_pairs_and_resets_the_targets() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(6, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+    let batch = rig.portal(6, &[]).unwrap();
+    assert_eq!(batch.ready.len(), 2);
+
+    rig.controller.abort_drain();
+    for block in [5, 6] {
+        assert_eq!(rig.controller.phase(block), BlockPhase::Absent);
+    }
+    assert_eq!(rig.controller.permits_in_use(), 0);
+    assert_eq!(rig.controller.in_hand_bytes(), 0);
+    let batch = rig.portal(6, &[]).expect("no outcome is outstanding");
+    assert!(batch.target_reset.is_some());
+    assert_eq!(rig.requested_blocks(), vec![5, 6], "read again");
 }

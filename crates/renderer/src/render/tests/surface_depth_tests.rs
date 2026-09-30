@@ -295,9 +295,9 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
     // Asserted POSITIVELY, per call site, because the negative form this
     // replaced — no line contains both `lightmap_uv` and `depth.` — was vacuous
     // against the one refactor that actually breaks the constraint:
-    // `sample_lightmap_irradiance(shade_uv, in.lightmap_layer)` contains
-    // neither token, so the test stayed green while the atlas was sampled at
-    // the marched UV. The shadowmask path is the worse half of that hole, since
+    // `sample_lightmap_irradiance(shade_uv, ...)` in place of
+    // `in.lightmap_texel` contains neither token, so the test stayed green
+    // while the atlas was sampled at the marched UV. The shadowmask path is the worse half of that hole, since
     // it is a layered atlas and `shadowmask_union_subtraction` forwards one
     // UV to every promoted light on the fragment.
     // Forward plus the lightmap sampling helpers it composes.
@@ -324,13 +324,10 @@ fn surface_depth_honors_the_hard_renderer_constraints() {
             }
             call_sites += 1;
             let args = &cursor[..cursor.find(')').unwrap_or(cursor.len())];
-            // The FIRST argument must be the UV itself, verbatim. Asserting
-            // only that the token appears somewhere in the window would pass
-            // `sample_lightmap_irradiance(in.lightmap_uv + parallax, ..)`,
-            // which is precisely the offset this constraint forbids.
-            // The UV must appear as a WHOLE argument, not merely somewhere in
-            // the window: `sample_lightmap_irradiance(in.lightmap_uv + parallax,
-            // ..)` contains the token but is exactly the offset this forbids.
+            // The texel must appear as a WHOLE argument, not merely somewhere
+            // in the window: `sample_lightmap_irradiance(in.lightmap_texel +
+            // parallax, ..)` contains the token but is exactly the offset this
+            // forbids.
             // Its position varies — `shadowmask_union_subtraction` takes the
             // world position first — so match any argument, not the first.
             let accepted: &[&str] = if call == "sample_lightmap_animated(" {

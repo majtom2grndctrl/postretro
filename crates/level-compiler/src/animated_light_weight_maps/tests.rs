@@ -1494,10 +1494,10 @@ fn two_cell_block_fixture() -> (
     (geo, prepared, chunk_section, section)
 }
 
-/// AC 6 (compiler half): every animated block's key, resolved through its
-/// cell block's bake-layer origin, lands on its face's chart placement, and
-/// every chunk's block-local origin lands on the bake-layer rect the chunk
-/// was baked at; the compact repack keeps both.
+/// Every animated block's key, resolved through its cell block's bake-layer
+/// origin, lands on its face's chart placement, and every chunk's block-local
+/// origin lands on the bake-layer rect the chunk was baked at; the compact
+/// repack keeps both.
 #[test]
 fn animated_block_keys_address_the_same_chart_texels_as_their_bake_layer_rects() {
     let (geo, prepared, chunk_section, mut section) = two_cell_block_fixture();
@@ -1578,7 +1578,7 @@ fn animated_block_keys_address_the_same_chart_texels_as_their_bake_layer_rects()
     );
 }
 
-/// AC 6 (compiler half): a rect leaving its cell block cannot be keyed in it.
+/// A rect leaving its cell block cannot be keyed in it.
 #[test]
 fn animated_rebase_rejects_a_rect_outside_its_cell_block() {
     let (_, prepared, _, _) = two_cell_block_fixture();

@@ -7,7 +7,8 @@ use super::*;
 
 impl ShResidencyController {
     /// Reads at most one target chunk synchronously. This is intentionally a
-    /// proof-only entry point; Task 11 replaces production use with workers.
+    /// proof-only entry point (sync-proof mode); in async mode the workers
+    /// read.
     pub(crate) fn read_one_sync_at_target_time(
         &mut self,
     ) -> Result<SyncReadResult, ShResidencyControllerError> {

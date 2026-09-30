@@ -2,6 +2,7 @@
 //! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use postretro_level_format::cluster_directory::{
     CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection,
@@ -60,6 +61,16 @@ impl ClusterHints {
             priority,
         })
     }
+}
+
+/// A level's id-49 hints, decoded once at level scope and shared by every
+/// streamed resource of that level; `None` for a level without id 49.
+pub(crate) fn decode_level_hints(
+    directory: Option<&ClusterDirectorySection>,
+) -> Result<Option<Arc<ClusterHints>>, ClusterHintsError> {
+    directory
+        .map(|directory| ClusterHints::decode(directory).map(Arc::new))
+        .transpose()
 }
 
 fn cell_to_cluster(directory: &ClusterDirectorySection) -> Result<Vec<u32>, ClusterHintsError> {

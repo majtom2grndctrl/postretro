@@ -19,9 +19,7 @@ use postretro_level_format::SectionId;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
-use postretro_render_cpu::lightmap_pool::{
-    BLOCK_TABLE_ENTRY_BYTES, block_table_bytes, placeholder_block_table,
-};
+use postretro_render_cpu::lightmap_pool::{block_table_bytes, placeholder_block_table};
 use wgpu::util::DeviceExt;
 
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
@@ -57,21 +55,10 @@ pub struct LightmapResources {
     pub bind_group: wgpu::BindGroup,
     /// Group 6: the vertex-stage block table.
     pub block_table_bind_group: wgpu::BindGroup,
-    /// Whether the cell-block pool is bound (false = placeholder mode).
-    #[allow(dead_code)]
-    pub present: bool,
     /// Whether the shadowmask pool is bound (false = 2x1x1 fully-visible
     /// placeholder). Rejected or absent shadowmask data uses this all-visible
     /// fallback so static specular remains fully lit.
     pub shadowmask_present: bool,
-    /// Usable pool layers bound (0 in placeholder mode). A streamed pool's
-    /// texture carries one more, its spare.
-    #[allow(dead_code)]
-    pub pool_layers: u32,
-    /// Block-table entries written since this resource set was built. Install
-    /// writes every entry once; only a streamed drain that changes an entry
-    /// writes more.
-    block_table_entries_written: u64,
     /// Static irradiance, static direction and shadowmask meter rows, read
     /// from the textures this set actually binds.
     pub residency: [ResidencyAllocation; 3],
@@ -108,8 +95,9 @@ impl LightmapResources {
     /// explicit at this renderer boundary rather than wrapped in a one-use
     /// parameter type.
     ///
-    /// `pool` is the plan `plan_static_pool` or `plan_streaming_pool` made;
-    /// the animated atlas was built against the same plan. The all-resident
+    /// `pool` is the plan `plan_static_pool` or `plan_streaming_pool` made,
+    /// or `StaticPool::Absent` before any level; the animated atlas was built
+    /// against the same plan. The all-resident
     /// upload owns the GPU-only payloads and drops them once the pool holds
     /// their texels; the level keeps only the block indices. A streamed pool
     /// starts empty and rejects drain generations at or below
@@ -146,8 +134,8 @@ impl LightmapResources {
                 mipmap_filter: wgpu::MipmapFilterMode::Nearest,
                 ..Default::default()
             }),
-            // Linear sampler for the irradiance + animated atlases and the
-            // BC5 shadowmask. Turns baked penumbra ramps into continuous
+            // Linear sampler for the irradiance pool, the animated atlas and
+            // the BC5 shadowmask pool. Turns baked penumbra ramps into continuous
             // gradients under magnification. Always used — Rgba16Float
             // linear-filterability is a hard runtime requirement;
             // non-filterable adapters are rejected at init (see
@@ -216,14 +204,10 @@ impl LightmapResources {
         };
         // The pool now holds every all-resident texel; the payloads end here.
         drop(payloads);
-        let (present, pool_layers, shadowmask_present) = match pool {
-            StaticPool::Blocks(plan) => (true, plan.pool.layer_count, plan.with_shadowmask),
-            StaticPool::Streaming(plan) => (
-                true,
-                stream.as_ref().map_or(0, LightmapStreamState::pool_layers),
-                plan.with_shadowmask,
-            ),
-            _ => (false, 0, false),
+        let shadowmask_present = match pool {
+            StaticPool::Blocks(plan) => plan.with_shadowmask,
+            StaticPool::Streaming(plan) => plan.with_shadowmask,
+            _ => false,
         };
 
         let lightmap_state = match pool {
@@ -260,7 +244,6 @@ impl LightmapResources {
         ];
 
         let bind_group = group4.bind(device, &irradiance_tex, &direction_tex, &shadowmask_tex);
-        let block_table_entries_written = table_buffer.size() / BLOCK_TABLE_ENTRY_BYTES as u64;
         let block_table_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lightmap Block Table Bind Group"),
             layout: block_table_bind_group_layout,
@@ -273,10 +256,7 @@ impl LightmapResources {
         Self {
             bind_group,
             block_table_bind_group,
-            present,
             shadowmask_present,
-            pool_layers,
-            block_table_entries_written,
             residency,
             group4,
             generation_high_water: stream
@@ -285,12 +265,6 @@ impl LightmapResources {
             stream,
             streamed_shadowmask_placeholder,
         }
-    }
-
-    /// Block-table entries written since install (AC 15's write counter).
-    #[allow(dead_code)]
-    pub(crate) fn block_table_entries_written(&self) -> u64 {
-        self.block_table_entries_written
     }
 
     /// The generation floor the next level install hands its streamed pool.
@@ -334,10 +308,8 @@ impl LightmapResources {
                 meter_changed,
             },
         ) = stream.drain(device, queue, batch)?;
-        self.block_table_entries_written = stream.counters().table_entries_written;
         if pool_replaced {
             let textures = stream.textures();
-            self.pool_layers = stream.pool_layers();
             let [irradiance_row, direction_row, shadowmask_row] = &mut self.residency;
             refresh_row(irradiance_row, &textures.irradiance);
             refresh_row(direction_row, &textures.direction);

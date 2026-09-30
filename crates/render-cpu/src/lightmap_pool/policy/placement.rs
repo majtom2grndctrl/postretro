@@ -6,22 +6,40 @@ use std::cmp::Reverse;
 use postretro_level_loader::{LightmapDrainBatch, LightmapTarget};
 
 use super::plan::{BlockUpload, EvictionReason, PlannedEviction, PoolGrowth};
-use super::{DrainPlan, DrainRequest, LightmapPoolModel, Target, placement_of};
+use super::{DrainPlan, DrainRequest, JournalOp, LightmapPoolModel, Slot, Target, placement_of};
 
 impl LightmapPoolModel {
     /// Plan one drain from the controller's batch. Only the ready pairs'
     /// block ids are read, never their payloads.
     pub fn plan_batch(&mut self, batch: &LightmapDrainBatch) -> &DrainPlan {
+        self.plan_batch_inner(batch, false)
+    }
+
+    /// [`plan_batch`](Self::plan_batch) for the first batch of a new
+    /// generation while the model still holds an earlier one's residency. A
+    /// new generation comes from a new controller, which holds nothing
+    /// resident: the drain first frees every placement, and its table writes
+    /// turn those entries non-resident. The frees are not reported evicted,
+    /// since the new controller never saw those blocks resident. The layers,
+    /// the textures and any retiring generation stand.
+    pub fn plan_batch_from_empty(&mut self, batch: &LightmapDrainBatch) -> &DrainPlan {
+        self.plan_batch_inner(batch, true)
+    }
+
+    fn plan_batch_inner(&mut self, batch: &LightmapDrainBatch, from_empty: bool) -> &DrainPlan {
         let mut ready = std::mem::take(&mut self.scratch.ready);
         ready.clear();
         ready.extend(batch.ready.iter().map(|prepared| prepared.block));
-        self.plan_drain(DrainRequest {
-            pool_cap_layers: batch.pool_cap_layers,
-            target_reset: batch.target_reset.as_deref(),
-            target_set: &batch.target_set,
-            target_remove: &batch.target_remove,
-            ready: &ready,
-        });
+        self.plan_drain_inner(
+            DrainRequest {
+                pool_cap_layers: batch.pool_cap_layers,
+                target_reset: batch.target_reset.as_deref(),
+                target_set: &batch.target_set,
+                target_remove: &batch.target_remove,
+                ready: &ready,
+            },
+            from_empty,
+        );
         self.scratch.ready = ready;
         &self.plan
     }
@@ -29,19 +47,28 @@ impl LightmapPoolModel {
     /// Plan one drain and apply it to the model.
     ///
     /// Frees blocks that left every target, then evicts band blocks at or
-    /// past the cap (P8). Mandatory and visible pairs are never refused:
-    /// with no room under the current layers they evict band blocks
-    /// farthest lead first, then repack in place if every mandatory and
-    /// visible block fits under the cap, then grow a new generation, or
-    /// defer while one is still retiring. Band pairs fit under the cap or
-    /// are refused; they never repack or grow the pool.
+    /// past the cap. Mandatory and visible pairs are never refused. With no
+    /// room under the current layers, a pair evicts band blocks farthest
+    /// lead first, then puts back each victim whose rect is still free. Failing
+    /// that, the drain repacks in place: under the cap, then, in a pool
+    /// already grown past the cap, within its layers. Failing that, it grows
+    /// a new generation. A pair that needs growth while a generation still
+    /// retires, or a layer past the device limit, is deferred. Band pairs
+    /// fit under the cap or are refused; they never repack or grow the pool.
     pub fn plan_drain(&mut self, request: DrainRequest<'_>) -> &DrainPlan {
+        self.plan_drain_inner(request, false)
+    }
+
+    fn plan_drain_inner(&mut self, request: DrainRequest<'_>, from_empty: bool) -> &DrainPlan {
         self.drain += 1;
         self.journal.clear();
         self.touched.clear();
         self.plan.clear();
         self.scratch.victims_built = false;
 
+        if from_empty {
+            self.forget_residency();
+        }
         let cap_before = self.cap_eff();
         self.set_cap(request.pool_cap_layers);
         let full_scan = request.target_reset.is_some() || self.cap_eff() < cap_before;
@@ -74,9 +101,9 @@ impl LightmapPoolModel {
         }
     }
 
-    /// P8: band blocks never sit at or past the cap's layers. A lowered cap
-    /// (or a reset) scans every resident block; otherwise only blocks whose
-    /// class changed this drain can have become such a band block.
+    /// Band blocks never sit at or past the cap's layers. A lowered cap (or
+    /// a reset) scans every resident block; otherwise only blocks whose class
+    /// changed this drain can have become such a band block.
     fn evict_band_over_cap(&mut self, full_scan: bool, target_set: &[LightmapTarget]) {
         let cap = self.cap_eff();
         let mut over = std::mem::take(&mut self.scratch.over_cap);
@@ -139,7 +166,9 @@ impl LightmapPoolModel {
             // evicted above as victims too, since their texels are still in
             // the pool until this plan executes.
             self.rollback_to(checkpoint);
-            repacked = self.repack(&list);
+            let cap = self.cap_eff();
+            repacked =
+                self.repack(&list, cap) || (self.layers > cap && self.repack(&list, self.layers));
             if !repacked {
                 self.place_with_growth(&list);
             }
@@ -149,31 +178,57 @@ impl LightmapPoolModel {
     }
 
     /// Place under the cap, then anywhere in the current layers, evicting
-    /// band blocks farthest lead first until one of those fits.
+    /// band blocks farthest lead first until one of those fits. Evictions
+    /// stand only when the block ends up placed, and then only for victims
+    /// that cannot go back where they were: a failed attempt restores every
+    /// victim, so a pair that then grows or defers costs the band nothing.
     fn place_without_growth(&mut self, block: u32) -> bool {
         let (width, height) = self.alloc_extent(block);
+        let checkpoint = self.journal.len();
         loop {
-            let cap = self.cap_eff();
-            let layers = self.layers;
-            let slot = self
-                .pool
-                .allocate_within(width, height, Some(cap as usize))
-                .or_else(|| {
-                    (layers > cap)
-                        .then(|| {
-                            self.pool
-                                .allocate_within(width, height, Some(layers as usize))
-                        })
-                        .flatten()
-                });
-            if let Some(slot) = slot {
+            if let Some(slot) = self.allocate_in_layers(width, height) {
                 self.place(block, slot);
+                self.reinstate_spare_victims(checkpoint);
                 return true;
             }
             let Some(victim) = self.next_victim() else {
+                self.rollback_to(checkpoint);
                 return false;
             };
             self.release(victim, EvictionReason::Pressure);
+        }
+    }
+
+    /// First fit under the cap, then within the current layers.
+    fn allocate_in_layers(&mut self, width: u32, height: u32) -> Option<Slot> {
+        let cap = self.cap_eff();
+        let under_cap = self.pool.allocate_within(width, height, Some(cap as usize));
+        if under_cap.is_some() || self.layers <= cap {
+            return under_cap;
+        }
+        let layers = self.layers as usize;
+        self.pool.allocate_within(width, height, Some(layers))
+    }
+
+    /// After a placement closes the journal, put back each victim evicted
+    /// before the last one whose rect is still free: farthest-lead-first
+    /// order can evict blocks the final slot never touched. The last victim
+    /// is the one that made room. A reinstated victim returns to the top of
+    /// the victim stack in lead order, so the next pair still evicts
+    /// farthest first.
+    fn reinstate_spare_victims(&mut self, checkpoint: usize) {
+        let placed_at = self.journal.len() - 1;
+        if placed_at <= checkpoint + 1 {
+            return;
+        }
+        for at in (checkpoint..placed_at - 1).rev() {
+            let JournalOp::Free { block, slot } = self.journal[at] else {
+                continue;
+            };
+            if self.pool.restore(slot).is_ok() {
+                self.place(block, slot);
+                self.scratch.victims.push(block);
+            }
         }
     }
 
@@ -200,9 +255,10 @@ impl LightmapPoolModel {
         None
     }
 
-    /// The repack could not fit every mandatory and visible block under the
-    /// cap: grow past it. One generation per drain, and none while the last
-    /// one is still retiring; a pair that needs growth then is deferred.
+    /// No repack could fit every mandatory and visible block: grow past the
+    /// current layers. One generation per drain, none while the last one is
+    /// still retiring, and never past the device's layer limit; a pair that
+    /// needs growth then is deferred.
     fn place_with_growth(&mut self, list: &[u32]) {
         let retiring = self.retiring;
         let start_layers = self.layers;
@@ -215,10 +271,11 @@ impl LightmapPoolModel {
                 continue;
             }
             let (width, height) = self.alloc_extent(block);
-            let slot = self
-                .pool
-                .allocate_within(width, height, None)
-                .expect("an uncapped pool places any block that fits a layer");
+            let limit = Some(self.max_layers as usize);
+            let Some(slot) = self.pool.allocate_within(width, height, limit) else {
+                self.plan.deferred.push(block);
+                continue;
+            };
             self.place(block, slot);
             if slot.layer >= self.layers {
                 if self.layers == start_layers {
@@ -265,10 +322,15 @@ impl LightmapPoolModel {
             }
         }
         for touched in &self.touched {
-            if touched.start.is_some() && !self.is_resident(touched.block) {
+            // A residency reset's frees carry no reason: no outcome reports
+            // them.
+            if let Some(reason) = touched.reason
+                && touched.start.is_some()
+                && !self.is_resident(touched.block)
+            {
                 self.plan.evicted.push(PlannedEviction {
                     block: touched.block,
-                    reason: touched.reason.expect("an evicted block records why"),
+                    reason,
                 });
             }
         }

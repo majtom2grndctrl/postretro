@@ -4,6 +4,8 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Compiler pipeline
 
 > Validated 2026-09-29 (`/validate-plan`: Direction sound); `/review-brief` findings ruled 2026-09-30. Next: owner sign-off.
 
+> Coordination: `drafts/lightmap-oversize-cells-and-faces` re-seeds lightmap soft-visibility noise chart-locally, so every map's lightmap-family bytes change once. Take this brief's output-byte baselines after that lands, or retake them. It cuts oversize faces at atlas preparation, after the SH family, so SH timing baselines hold. Its block packing stays per-cell parallel, and it leaves the serial layer loop unchanged.
+
 ## Problem
 Owner-raised, from a 5 h 54 m hallway bake. Parallelism was deferred while maps were small (`research.md` §Prior deferrals). `stress-warren-hallway-inspection.map` breaks that assumption. The base SH bake is 56% of the wall time and already runs at the 14-permit cap, so more threads cannot help it; cheaper rays can. The rest of the build averages about 3 busy cores, not 14. The causes are all in code. The lightmap bake is a serial loop over (atlas layer × light), with a fork-join barrier and a serial tail between each pair. Each small cache entry pays a full-device fsync and a create-and-rename in one flat directory, which leaves the delta SH stages idle in syscalls. Under the 2 GiB default the start-of-build prune evicts the hallway's SH family, so each rebake re-bakes it. Stages with no data dependency run one after another. Every ray walks the BVH unbounded and unordered, testing geometry past its segment end or behind its nearest hit. When done, the hallway bake keeps its permits busy outside the base SH bake, every bake does less traversal work per ray, and output bytes are unchanged.
 

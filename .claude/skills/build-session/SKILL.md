@@ -18,6 +18,10 @@ Two moves: settle the design with the owner, then build it.
 
 Process is yours to choose. Track boundaries, how wide to go, when to stop — judgment calls, and you have better information than this file does. The rules below are the ones that cost real work when broken.
 
+## Disk space
+
+After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
+
 ## 1. Conversation
 
 The owner cares about a few details. Not all of them. Get up to speed from the repo, not from their turns.

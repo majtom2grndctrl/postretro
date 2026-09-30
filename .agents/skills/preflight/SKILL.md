@@ -11,6 +11,10 @@ disable-model-invocation: true
 
 Run quality checks and report results. Fix mechanical issues automatically; escalate design decisions.
 
+## Disk space
+
+After every numbered workflow step or task, check free space on the workspace filesystem. If less than 15 GB remains, clear Cargo incremental build caches in the active target directory and any workflow-owned target directories. Recheck. If space is still below 15 GB, clear Cargo's downloaded crate archive cache. Recheck before continuing. Delete only caches; keep full target directories, source checkouts, worktrees, and unrelated files.
+
 ## Checks
 
 Run these **sequentially**, not in parallel. They share one `target/` dir and

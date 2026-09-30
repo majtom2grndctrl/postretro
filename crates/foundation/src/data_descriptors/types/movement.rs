@@ -337,12 +337,13 @@ pub struct SlideParams {
 }
 
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,
-/// strafe tilt, ambient sway, state-transition impulse). OPTIONAL on [`PlayerMovementDescriptor`] — absent
+/// strafe tilt, ambient sway, state-transition impulse, sustained slide). OPTIONAL on [`PlayerMovementDescriptor`] — absent
 /// disables view feel entirely (no `ViewFeelParams` materialized). When present,
 /// each motion is independently optional; an absent sub-object disables that
 /// motion. Present bob, tilt, and sway blocks require all tuning fields except
 /// the optional `groundedOnly` gate. A present impulse block requires its top-level
-/// fields while its per-state rows stay sparse. View feel is consumed by the
+/// fields while its per-state rows stay sparse. Slide requires all four fields.
+/// View feel is consumed by the
 /// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewFeelParams {
@@ -355,6 +356,32 @@ pub struct ViewFeelParams {
     /// Optional state-transition impulse tuning. Absent ⇒ state edges produce
     /// no camera displacement while script reaction addresses remain available.
     pub impulse: Option<ImpulseParams>,
+    /// Optional sustained slide camera dip and FOV increase. Absent ⇒ no slide view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide: Option<SlideViewParams>,
+}
+
+/// Sustained slide view tuning. All four fields are required when present.
+/// Presentation follows the current sliding state; it never changes collision
+/// or aim. Field names are camelCase in scripts and snake_case in Rust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SlideViewParams {
+    /// Downward eye displacement in metres. Must be finite and ≥ 0.
+    pub eye_drop: f32,
+    /// Horizontal FOV increase in degrees. Must be finite in [0, 90].
+    pub fov_increase: f32,
+    /// Exponential response rate while sliding, finite in [0.1, 240] 1/sec.
+    pub enter_rate: f32,
+    /// Exponential response rate after sliding, finite in [0.1, 240] 1/sec.
+    pub exit_rate: f32,
+}
+
+impl SlideViewParams {
+    /// Supported response-rate range, in 1/sec.
+    pub const MIN_RATE: f32 = 0.1;
+    pub const MAX_RATE: f32 = 240.0;
+    /// Maximum authored horizontal FOV increase, in degrees.
+    pub const MAX_FOV_INCREASE: f32 = 90.0;
 }
 
 /// Render-rate state-transition impulse tuning. A present block requires a

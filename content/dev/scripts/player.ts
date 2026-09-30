@@ -112,6 +112,12 @@ export const playerEntity = defineEntity({
       // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
       sounds: positionalSoundMovementSounds,
       viewFeel: {
+        slide: {
+          eyeDrop: 0.15,
+          fovIncrease: 5,
+          enterRate: 18,
+          exitRate: 12,
+        },
         bob: {
           verticalFrequency: 0.25,
           lateralFrequency: 0.125,
@@ -140,8 +146,8 @@ export const playerEntity = defineEntity({
             },
             slide: {
               tension: 9,
-              enter: { fov: 8, pitch: -2.5, roll: 1.5 },
-              exit: { fov: -2, pitch: 1.5, roll: 0 },
+              enter: { fov: 0, pitch: -2.5, roll: 1.5 },
+              exit: { fov: 0, pitch: 1.5, roll: 0 },
             },
           },
         },

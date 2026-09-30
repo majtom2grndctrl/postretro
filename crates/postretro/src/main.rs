@@ -756,7 +756,7 @@ pub(crate) struct App {
     /// clears all state so no motion continuity leaks between camera drivers.
     view_feel_followed_pawn: Option<postretro_entities::EntityId>,
     /// Last descriptor used by the render integrator. A hot-reloaded change
-    /// invalidates transition impulses while preserving independent bob,
+    /// invalidates movement-state effects while preserving independent bob,
     /// tilt, and sway continuity for the same followed pawn.
     view_feel_descriptor: Option<postretro_foundation::ViewFeelParams>,
 
@@ -1425,7 +1425,7 @@ fn followed_player_pawn(
 
 /// Reconcile render-rate view-feel state with the camera's current driver.
 /// Descriptor refresh on the same pawn invalidates only movement-state
-/// impulses; a different pawn or no driver invalidates all evaluator state.
+/// effects; a different pawn or no driver invalidates all evaluator state.
 fn sync_view_feel_driver(
     state: &mut view_feel::ViewFeelState,
     followed_pawn: &mut Option<postretro_entities::EntityId>,
@@ -1445,7 +1445,7 @@ fn sync_view_feel_driver(
     if *followed_pawn != Some(pawn) {
         *state = view_feel::ViewFeelState::default();
     } else if descriptor.as_ref() != Some(params) {
-        state.clear_impulses();
+        state.clear_state_effects();
     }
 
     *followed_pawn = Some(pawn);
@@ -3525,6 +3525,14 @@ impl ApplicationHandler for App {
                                         params: params.clone(),
                                         velocity: component.velocity,
                                         is_grounded: component.is_grounded(),
+                                        movement_state: component.movement_state.kind(),
+                                        eye_height_above_feet: frame_eye::presented_eye_clearance(
+                                            presented_eye.y,
+                                            self.camera.position.y,
+                                            component.capsule.eye_height
+                                                + component.capsule.half_height
+                                                + component.capsule.radius,
+                                        ),
                                     }
                                 })
                             })

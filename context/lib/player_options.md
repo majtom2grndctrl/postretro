@@ -54,7 +54,7 @@ The runtime options bridge saves accepted menu changes after a deterministic 250
 
 ## 5. Accessibility Preferences
 
-`view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. Clamped on load. Multiplies presented bob, tilt, sway, and state-transition FOV/pitch/roll impulses at render assembly. `0` suppresses all view-feel presentation; impulse integration continues.
+`view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. Clamped on load. Multiplies presented bob, tilt, sway, and state-transition FOV/pitch/roll impulses and sustained slide dip/FOV at render assembly. `0` suppresses all view-feel presentation; impulse integration continues.
 
 An `accessibility` group in `PlayerOptions` holds the player's accommodations: reduce motion and its per-effect scales, the flash limiter, and bus volumes and mono. `view_feel_scale` joins the group but keeps its top-level key. Theme variant, text scale, captions and cues, and remapped input bindings are further accommodations their owning units add to the same group later (§6; `ui.md` §1, §2). The panel (`ui.md` §4.1) carries every field the group currently holds.
 

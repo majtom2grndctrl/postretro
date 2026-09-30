@@ -515,6 +515,47 @@ the old state's exit address before the new state's entry address, so a
 
 ---
 
+## Slide camera feel
+
+`components.movement.viewFeel.slide` authors a sustained camera dip and wider
+horizontal field of view while the player is sliding. Leave it out to preserve
+the existing camera presentation. It is independent of movement slide tuning;
+`movement.slide` still controls whether the player can slide.
+
+```typescript
+viewFeel: {
+  slide: { eyeDrop: 0.15, fovIncrease: 5, enterRate: 18, exitRate: 12 },
+}
+```
+
+```lua
+viewFeel = {
+  slide = { eyeDrop = 0.15, fovIncrease = 5, enterRate = 18, exitRate = 12 },
+}
+```
+
+All four fields are required when the block is present. Wrong types, non-finite
+numbers, and values outside these ranges reject the descriptor at load time.
+
+| Field | Units | Accepted values |
+|---|---|---|
+| `eyeDrop` | metres downward | finite and ≥ 0; 0 disables the dip |
+| `fovIncrease` | horizontal degrees | finite in [0, 90]; 0 disables the increase |
+| `enterRate` | per second | finite in [0.1, 240] |
+| `exitRate` | per second | finite in [0.1, 240] |
+
+Larger response rates approach the target sooner. The dip and FOV increase hold
+throughout the current slide, then ease back to zero on every exit, including
+crouch, stand, jump, and dash. They compose with bob and transition impulses.
+The dip retains at least 0.05 m of eye-to-feet clearance, and the renderer clamps
+the final FOV. These are camera effects: collision and aim stay unchanged.
+
+Both channels follow the player's resolved view-feel scale, including reduced
+motion. `viewFeel.impulse.states.slide` remains a separate entry/exit kick;
+keep its FOV channel small or zero when authoring a sustained FOV increase.
+
+---
+
 ## Runtime values
 
 Most descriptor fields are plain literals — you write a number, the engine reads
@@ -2445,7 +2486,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.reduceMotion` | boolean | Reduce motion. Follows the OS setting until the player chooses. |
 | `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
 | `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
-| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway) scale. |
+| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide) scale. |
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |

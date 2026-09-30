@@ -783,11 +783,20 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ViewFeelParams")
-        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse` is independently optional; an absent sub-object disables that motion.")
+        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion.")
         .field("bob?", "BobParams", "Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("tilt?", "TiltParams", "Optional strafe-tilt tuning. When omitted, strafe tilt is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("sway?", "SwayParams", "Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("impulse?", "ImpulseParams", "Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse.")
+        .field("slide?", "SlideViewParams", "Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect.")
+        .finish();
+    registry
+        .register_type("SlideViewParams")
+        .doc("Sustained slide camera tuning. The current slide state holds the dip and FOV increase; every exit eases both back to zero. This affects presentation only, composed with bob and impulses and scaled by view-feel accessibility settings.")
+        .field("eyeDrop", "f32", "Downward eye displacement in metres. Must be finite and ≥ 0; 0 disables the dip. Presentation retains at least 0.05 m of eye-to-feet clearance.")
+        .field("fovIncrease", "f32", "Horizontal field-of-view increase in degrees. Must be finite in [0, 90]; 0 disables the increase. The renderer clamps final FOV.")
+        .field("enterRate", "f32", "Exponential response rate while sliding, in 1/sec. Must be finite in [0.1, 240]; larger values enter sooner.")
+        .field("exitRate", "f32", "Exponential response rate after sliding, in 1/sec. Must be finite in [0.1, 240]; larger values return sooner.")
         .finish();
     registry
         .register_type("BobParams")

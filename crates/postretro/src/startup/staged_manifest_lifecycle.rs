@@ -13,7 +13,7 @@ use postretro_scripting_core::staged_manifest::{
 
 use crate::App;
 
-fn invalidate_refreshed_view_feel_impulses(
+fn invalidate_refreshed_view_feel_state_effects(
     outcome: &StagedManifestCommitOutcome,
     followed_pawn: Option<postretro_entities::EntityId>,
     state: &mut crate::view_feel::ViewFeelState,
@@ -32,7 +32,7 @@ fn invalidate_refreshed_view_feel_impulses(
         return false;
     }
 
-    state.clear_impulses();
+    state.clear_state_effects();
     true
 }
 
@@ -147,7 +147,7 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
-            invalidate_refreshed_view_feel_impulses(
+            invalidate_refreshed_view_feel_state_effects(
                 &outcome,
                 self.view_feel_followed_pawn,
                 &mut self.view_feel_state,
@@ -420,6 +420,7 @@ mod tests {
 
     fn lifecycle_view_feel(impulse_tension: f32) -> ViewFeelParams {
         ViewFeelParams {
+            slide: None,
             bob: Some(BobParams {
                 vertical_frequency: 1.0,
                 lateral_frequency: 0.5,
@@ -471,10 +472,16 @@ mod tests {
 
     // Regression: movement refresh either kept an old kick or reset unrelated view feel.
     #[test]
-    fn followed_pawn_movement_refresh_clears_only_view_feel_impulses() {
+    fn followed_pawn_movement_refresh_clears_only_view_feel_state_effects() {
         let followed = postretro_entities::EntityId::from_raw(4);
         let remote = postretro_entities::EntityId::from_raw(8);
-        let before = lifecycle_view_feel(12.0);
+        let mut before = lifecycle_view_feel(12.0);
+        before.slide = Some(postretro_foundation::SlideViewParams {
+            eye_drop: 0.15,
+            fov_increase: 5.0,
+            enter_rate: 18.0,
+            exit_rate: 12.0,
+        });
         let mut after = before.clone();
         after.impulse.as_mut().unwrap().tension = 24.0;
         let edge = crate::view_feel::TimedMovementEdge {
@@ -514,6 +521,14 @@ mod tests {
                 || !approx_eq(kicked.sway_pitch, 0.0)
                 || !approx_eq(kicked.sway_roll, 0.0)
         );
+        let held_slide = crate::view_feel::slide::evaluate(
+            before.slide.as_ref(),
+            MovementStateKind::Slide,
+            &mut state,
+            1.0,
+            1.0,
+        );
+        assert!(held_slide.eye_drop > 0.1);
         let continuous_state = state;
 
         let remote_outcome = StagedManifestCommitOutcome::Committed {
@@ -523,10 +538,22 @@ mod tests {
             dropped_missing_targets: 0,
             changed_movement_entities: vec![remote],
         };
-        assert!(!invalidate_refreshed_view_feel_impulses(
+        assert!(!invalidate_refreshed_view_feel_state_effects(
             &remote_outcome,
             Some(followed),
             &mut state,
+        ));
+        let remote_slide = crate::view_feel::slide::evaluate(
+            before.slide.as_ref(),
+            MovementStateKind::Slide,
+            &mut state,
+            0.0,
+            1.0,
+        );
+        assert!(approx_eq(remote_slide.eye_drop, held_slide.eye_drop));
+        assert!(approx_eq(
+            remote_slide.fov_increase,
+            held_slide.fov_increase
         ));
         let after_remote = crate::view_feel::evaluate_with_edges(
             &before,
@@ -549,11 +576,20 @@ mod tests {
             dropped_missing_targets: 0,
             changed_movement_entities: vec![followed],
         };
-        assert!(invalidate_refreshed_view_feel_impulses(
+        assert!(invalidate_refreshed_view_feel_state_effects(
             &followed_outcome,
             Some(followed),
             &mut state,
         ));
+        let refreshed_slide = crate::view_feel::slide::evaluate(
+            after.slide.as_ref(),
+            MovementStateKind::Slide,
+            &mut state,
+            0.0,
+            1.0,
+        );
+        assert!(approx_eq(refreshed_slide.eye_drop, 0.0));
+        assert!(approx_eq(refreshed_slide.fov_increase, 0.0));
         crate::sync_view_feel_driver(
             &mut state,
             &mut cached_pawn,

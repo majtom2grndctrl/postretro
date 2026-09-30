@@ -56,6 +56,7 @@ mod js {
     pub mod entity;
     pub mod manifest;
     pub mod movement;
+    pub mod movement_view_feel;
     pub mod reactions;
     pub mod readers;
     pub mod ui_binds;
@@ -67,6 +68,7 @@ mod lua {
     pub mod manifest;
     pub mod maps;
     pub mod movement;
+    pub mod movement_view_feel;
     pub mod reactions;
     pub mod ui_binds;
     pub mod ui_widgets;
@@ -97,6 +99,7 @@ pub use postretro_foundation::data_descriptors::types::{
 pub use js::entity::*;
 pub use js::manifest::*;
 pub use js::movement::*;
+pub use js::movement_view_feel::*;
 pub use js::reactions::*;
 pub use js::readers::*;
 pub use js::ui_binds::*;
@@ -106,6 +109,7 @@ pub use lua::entity::*;
 pub use lua::manifest::*;
 pub use lua::maps::*;
 pub use lua::movement::*;
+pub use lua::movement_view_feel::*;
 pub use lua::reactions::*;
 pub use lua::ui_binds::*;
 pub use lua::ui_widgets::*;

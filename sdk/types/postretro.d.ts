@@ -840,7 +840,7 @@ declare module "postretro" {
     minDurationMs: number;
   };
 
-  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse` is independently optional; an absent sub-object disables that motion. */
+  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion. */
   export type ViewFeelParams = {
     /** Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`. */
     bob?: BobParams;
@@ -850,6 +850,20 @@ declare module "postretro" {
     sway?: SwayParams;
     /** Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse. */
     impulse?: ImpulseParams;
+    /** Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect. */
+    slide?: SlideViewParams;
+  };
+
+  /** Sustained slide camera tuning. The current slide state holds the dip and FOV increase; every exit eases both back to zero. This affects presentation only, composed with bob and impulses and scaled by view-feel accessibility settings. */
+  export type SlideViewParams = {
+    /** Downward eye displacement in metres. Must be finite and ≥ 0; 0 disables the dip. Presentation retains at least 0.05 m of eye-to-feet clearance. */
+    eyeDrop: number;
+    /** Horizontal field-of-view increase in degrees. Must be finite in [0, 90]; 0 disables the increase. The renderer clamps final FOV. */
+    fovIncrease: number;
+    /** Exponential response rate while sliding, in 1/sec. Must be finite in [0.1, 240]; larger values enter sooner. */
+    enterRate: number;
+    /** Exponential response rate after sliding, in 1/sec. Must be finite in [0.1, 240]; larger values return sooner. */
+    exitRate: number;
   };
 
   /** Distance-phased head-bob tuning. Vertical and lateral motion have independent cadences. All fields are required except `groundedOnly`, which defaults to true. */

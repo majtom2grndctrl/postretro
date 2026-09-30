@@ -58,7 +58,7 @@ impl RenderCamera {
         // Clamp aspect to avoid degenerate projection (near-zero aspect produces
         // vfov near PI, which makes tan(vfov/2) explode).
         let safe_aspect = aspect.max(0.1);
-        // Preserve the prior projection bit-for-bit when no impulse is active:
+        // Preserve the prior projection bit-for-bit when no FOV effect is active:
         // reusing HFOV avoids an otherwise harmless add/clamp rounding change.
         let hfov = if fov_offset_degrees == 0.0 {
             HFOV

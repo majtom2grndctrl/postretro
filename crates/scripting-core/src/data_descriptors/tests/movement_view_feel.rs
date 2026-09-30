@@ -1,4 +1,4 @@
-// Tests: view-feel bob, tilt, sway, and transition-impulse parsing/validation.
+// Tests: view-feel bob, tilt, sway, and transition-impulse, and slide parsing/validation.
 
 use super::super::*;
 use super::common::*;
@@ -73,7 +73,7 @@ fn lua_movement_view_feel_absent_is_valid_and_disabled() {
     assert!(d.movement.expect("movement present").view_feel.is_none());
 }
 
-// Present `viewFeel` with all three motions absent is valid (empty bundle).
+// Present `viewFeel` with all motions absent is valid (empty bundle).
 
 #[test]
 fn js_movement_view_feel_present_empty_disables_each_motion() {
@@ -83,6 +83,8 @@ fn js_movement_view_feel_present_empty_disables_each_motion() {
     assert!(vf.bob.is_none());
     assert!(vf.tilt.is_none());
     assert!(vf.sway.is_none());
+    assert!(vf.impulse.is_none());
+    assert!(vf.slide.is_none());
 }
 
 #[test]
@@ -93,6 +95,8 @@ fn lua_movement_view_feel_present_empty_disables_each_motion() {
     assert!(vf.bob.is_none());
     assert!(vf.tilt.is_none());
     assert!(vf.sway.is_none());
+    assert!(vf.impulse.is_none());
+    assert!(vf.slide.is_none());
 }
 
 #[test]
@@ -608,4 +612,304 @@ fn lua_movement_view_feel_sway_not_a_table_is_rejected() {
     let src = lua_movement_with_view_feel(r#"{ sway = 3 }"#);
     let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
     assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+// Sustained slide is independent of impulse.states.slide and movement.slide.
+
+fn slide_view_body(fields: &[(&str, &str)], lua: bool) -> String {
+    let separator = if lua { " = " } else { ": " };
+    let fields = fields
+        .iter()
+        .map(|(key, value)| format!("{key}{separator}{value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{ slide{separator}{{ {fields} }} }}")
+}
+
+const SLIDE_VIEW_FIELDS: [(&str, &str); 4] = [
+    ("eyeDrop", "0.15"),
+    ("fovIncrease", "5"),
+    ("enterRate", "18"),
+    ("exitRate", "12"),
+];
+
+fn parse_slide_view_pair(fields: &[(&str, &str)]) -> (ViewFeelParams, ViewFeelParams) {
+    let js = eval_js(
+        &js_movement_with_view_feel(&slide_view_body(fields, false)),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_movement_with_view_feel(&slide_view_body(fields, true)),
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    (
+        js.movement.unwrap().view_feel.unwrap(),
+        lua.movement.unwrap().view_feel.unwrap(),
+    )
+}
+
+fn slide_view_errors(fields: &[(&str, &str)]) -> [DescriptorError; 2] {
+    [
+        eval_js(
+            &js_movement_with_view_feel(&slide_view_body(fields, false)),
+            |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err(),
+        ),
+        eval_lua(
+            &lua_movement_with_view_feel(&slide_view_body(fields, true)),
+            |v| entity_descriptor_from_lua(v).unwrap_err(),
+        ),
+    ]
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_parses_four_required_fields() {
+    let (js, lua) = parse_slide_view_pair(&SLIDE_VIEW_FIELDS);
+    for view in [js, lua] {
+        let slide = view.slide.unwrap();
+        assert!((slide.eye_drop - 0.15).abs() < 1e-6);
+        assert!((slide.fov_increase - 5.0).abs() < 1e-6);
+        assert!((slide.enter_rate - 18.0).abs() < 1e-6);
+        assert!((slide.exit_rate - 12.0).abs() < 1e-6);
+        assert!(view.impulse.is_none());
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_accepts_zero_channels_and_range_endpoints() {
+    for fields in [
+        [
+            ("eyeDrop", "0"),
+            ("fovIncrease", "0"),
+            ("enterRate", "0.1"),
+            ("exitRate", "240"),
+        ],
+        [
+            ("eyeDrop", "1"),
+            ("fovIncrease", "90"),
+            ("enterRate", "240"),
+            ("exitRate", "0.1"),
+        ],
+    ] {
+        let (js, lua) = parse_slide_view_pair(&fields);
+        for view in [js, lua] {
+            let slide = view.slide.unwrap();
+            for (actual, (_, expected)) in [
+                slide.eye_drop,
+                slide.fov_increase,
+                slide.enter_rate,
+                slide.exit_rate,
+            ]
+            .into_iter()
+            .zip(fields)
+            {
+                assert!((actual - expected.parse::<f32>().unwrap()).abs() < 1e-6);
+            }
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_requires_every_field() {
+    for (missing, _) in SLIDE_VIEW_FIELDS {
+        let fields: Vec<_> = SLIDE_VIEW_FIELDS
+            .into_iter()
+            .filter(|(key, _)| *key != missing)
+            .collect();
+        for error in slide_view_errors(&fields) {
+            assert_eq!(error, DescriptorError::MissingField { field: missing });
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_rejects_wrong_scalar_types() {
+    for (field, _) in SLIDE_VIEW_FIELDS {
+        for value in ["true", "\"1\"", "{}"] {
+            let fields = SLIDE_VIEW_FIELDS
+                .map(|(key, original)| (key, if key == field { value } else { original }));
+            for error in slide_view_errors(&fields) {
+                assert!(
+                    matches!(error, DescriptorError::InvalidShape { .. }),
+                    "{error}"
+                );
+                assert!(error.to_string().contains(field), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_rejects_out_of_range_values() {
+    for (field, values) in [
+        ("eyeDrop", &[-0.01][..]),
+        ("fovIncrease", &[-0.01, 90.01][..]),
+        ("enterRate", &[0.0, 0.09, 240.01][..]),
+        ("exitRate", &[0.0, 0.09, 240.01][..]),
+    ] {
+        for value in values {
+            let value = value.to_string();
+            let fields = SLIDE_VIEW_FIELDS.map(|(key, original)| {
+                (
+                    key,
+                    if key == field {
+                        value.as_str()
+                    } else {
+                        original
+                    },
+                )
+            });
+            for error in slide_view_errors(&fields) {
+                assert!(
+                    matches!(error, DescriptorError::InvalidShape { .. }),
+                    "{error}"
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("movement.viewFeel.slide.{field}")),
+                    "{error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_rejects_values_that_round_to_valid_f32_boundaries() {
+    for (field, value) in [
+        ("eyeDrop", "-1e-100"),
+        ("fovIncrease", "-1e-100"),
+        ("fovIncrease", "90.000001"),
+        ("enterRate", "0.0999999999"),
+        ("enterRate", "240.000001"),
+        ("exitRate", "0.0999999999"),
+        ("exitRate", "240.000001"),
+    ] {
+        let fields = SLIDE_VIEW_FIELDS
+            .map(|(key, original)| (key, if key == field { value } else { original }));
+        for error in slide_view_errors(&fields) {
+            assert!(
+                matches!(error, DescriptorError::InvalidShape { .. }),
+                "{error}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("movement.viewFeel.slide.{field}")),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_rejects_non_finite_and_f32_overflow() {
+    for (field, _) in SLIDE_VIEW_FIELDS {
+        for (js_value, lua_value) in [
+            ("Infinity", "math.huge"),
+            ("-Infinity", "-math.huge"),
+            ("NaN", "0/0"),
+            ("1e100", "1e100"),
+        ] {
+            let js_fields = SLIDE_VIEW_FIELDS
+                .map(|(key, original)| (key, if key == field { js_value } else { original }));
+            let lua_fields = SLIDE_VIEW_FIELDS
+                .map(|(key, original)| (key, if key == field { lua_value } else { original }));
+            let errors = [
+                eval_js(
+                    &js_movement_with_view_feel(&slide_view_body(&js_fields, false)),
+                    |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err(),
+                ),
+                eval_lua(
+                    &lua_movement_with_view_feel(&slide_view_body(&lua_fields, true)),
+                    |v| entity_descriptor_from_lua(v).unwrap_err(),
+                ),
+            ];
+            for error in errors {
+                assert!(
+                    matches!(error, DescriptorError::InvalidShape { .. }),
+                    "{error}"
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("movement.viewFeel.slide.{field}")),
+                    "{error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_rejects_non_object_blocks() {
+    for value in ["3", "true", "\"bad\""] {
+        let errors = [
+            eval_js(
+                &js_movement_with_view_feel(&format!("{{ slide: {value} }}")),
+                |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err(),
+            ),
+            eval_lua(
+                &lua_movement_with_view_feel(&format!("{{ slide = {value} }}")),
+                |v| entity_descriptor_from_lua(v).unwrap_err(),
+            ),
+        ];
+        for error in errors {
+            assert!(
+                matches!(error, DescriptorError::InvalidShape { .. }),
+                "{error}"
+            );
+            assert!(
+                error.to_string().contains("movement.viewFeel.slide"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_slide_omission_preserves_existing_motion() {
+    let bodies = [
+        format!("{{ bob: {JS_BOB_FULL}, slide: null }}"),
+        format!("{{ bob: {JS_BOB_FULL}, slide: undefined }}"),
+    ];
+    for body in bodies {
+        let descriptor = eval_js(&js_movement_with_view_feel(&body), |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        let view = descriptor.movement.unwrap().view_feel.unwrap();
+        assert!(view.bob.is_some());
+        assert!(view.slide.is_none());
+    }
+    let descriptor = eval_lua(
+        &lua_movement_with_view_feel(
+            "{ sway = { amplitude = 0.5, frequency = 0.4, speedScale = 0.2 }, slide = nil }",
+        ),
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    let view = descriptor.movement.unwrap().view_feel.unwrap();
+    assert!(view.sway.is_some());
+    assert!(view.slide.is_none());
+}
+
+#[test]
+fn movement_view_feel_slide_serde_omission_preserves_existing_serialized_shapes() {
+    let descriptor = eval_js(
+        &js_movement_with_view_feel(&format!("{{ bob: {JS_BOB_FULL} }}")),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let view = descriptor.movement.unwrap().view_feel.unwrap();
+    let json = serde_json::to_value(&view).unwrap();
+    assert!(json.get("slide").is_none());
+    let decoded: ViewFeelParams = serde_json::from_value(json).unwrap();
+    assert!(decoded.slide.is_none());
+    assert!(decoded.bob.is_some());
+
+    let (view, _) = parse_slide_view_pair(&SLIDE_VIEW_FIELDS);
+    let json = serde_json::to_value(&view).unwrap();
+    assert!(json.get("slide").is_some());
+    let decoded: ViewFeelParams = serde_json::from_value(json).unwrap();
+    let slide = decoded.slide.unwrap();
+    assert!((slide.eye_drop - 0.15).abs() < 1e-6);
+    assert!((slide.fov_increase - 5.0).abs() < 1e-6);
 }

@@ -72,7 +72,7 @@ mod tests {
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FireMode, ForgivenessParams,
         GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode, SlideParams,
-        SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
+        SlideViewParams, SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -144,6 +144,12 @@ mod tests {
                 tilt: None,
                 sway: None,
                 impulse: None,
+                slide: Some(SlideViewParams {
+                    eye_drop: 0.15,
+                    fov_increase: 5.0,
+                    enter_rate: 18.0,
+                    exit_rate: 12.0,
+                }),
             }),
         }
     }
@@ -208,7 +214,7 @@ mod tests {
             entry_boost: 2.0,
             min_duration_ms: 120.0,
         });
-        assert!(descriptor.view_feel.is_some());
+        assert!(descriptor.view_feel.as_ref().unwrap().slide.is_some());
         descriptor.sounds = Some(postretro_foundation::MovementSounds {
             land: Some("sfx/land".to_string()),
             jump: Some("sfx/jump".to_string()),

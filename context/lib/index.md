@@ -68,7 +68,7 @@
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
 - **Multi-threaded AI pathfinding readiness / scheduling blocker** → `ai_pathfinding_mt_readiness.md`
-- **Player movement / movement states / FPS feel** → `movement.md`
+- **Player movement / movement states / FPS feel / slide camera dip and FOV** → `movement.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`

@@ -34,6 +34,16 @@ pub struct ReplicatedWeaponProjection {
     pub reload_progress: Option<SlotSample<f32>>,
     /// `player.reloadActive`.
     pub reload_active: Option<SlotSample<bool>>,
+    /// `player.heat`, absent for a slot whose weapon runs no heat.
+    pub heat: Option<SlotSample<Option<f32>>>,
+    /// `player.overheatAt`, with the same absence as [`Self::heat`].
+    pub overheat_at: Option<SlotSample<Option<f32>>>,
+    /// `player.overheated`; a weapon without heat reads `false`.
+    pub overheated: Option<SlotSample<bool>>,
+    /// `player.cell`, absent for a slot whose weapon runs no cell.
+    pub cell: Option<SlotSample<Option<f32>>>,
+    /// `player.cellCapacity`, with the same absence as [`Self::cell`].
+    pub cell_capacity: Option<SlotSample<Option<f32>>>,
 }
 
 impl ReplicatedWeaponProjection {
@@ -50,6 +60,11 @@ impl ReplicatedWeaponProjection {
         take(&mut self.reserve, fresh.reserve);
         take(&mut self.reload_progress, fresh.reload_progress);
         take(&mut self.reload_active, fresh.reload_active);
+        take(&mut self.heat, fresh.heat);
+        take(&mut self.overheat_at, fresh.overheat_at);
+        take(&mut self.overheated, fresh.overheated);
+        take(&mut self.cell, fresh.cell);
+        take(&mut self.cell_capacity, fresh.cell_capacity);
     }
 }
 
@@ -70,12 +85,16 @@ pub enum ClientPullPresentation {
     /// The host's `Empty`: the dry-fire sound only.
     DryFire,
     /// The host's silent `Rejected`: a reload the pull cannot cancel is
-    /// running. Nothing is heard or seen.
+    /// running, or the weapon is overheated. Nothing is heard or seen.
     Silent,
 }
 
-/// Choose a pull's presentation from the replicated magazine and reload
+/// Choose a pull's presentation from the replicated resource and reload
 /// state, mirroring what the host authorizes:
+///
+/// - An overheated heat weapon is refused silently. The crossing shot itself
+///   fires: the latch it sets arrives a round trip later.
+/// - A cell weapon whose charge cannot pay for a shot dry fires.
 ///
 /// - An idle weapon whose magazine cannot pay for a shot dry fires; with ammo
 ///   it fires.
@@ -86,16 +105,29 @@ pub enum ClientPullPresentation {
 ///   projection replays; live progress stays below 1 while a reload runs, so
 ///   the weapon is idle.
 ///
-/// A weapon without ammo presents a fire, as does any value used that is
-/// absent or describes a slot other than `active_slot`. So does a magazine
-/// the host names absent for this slot: the host holds a resourceless weapon
-/// there, which never dry fires.
+/// A resourceless weapon presents a fire, as does any value used that is
+/// absent or describes a slot other than `active_slot`. So does a magazine or
+/// charge the host names absent for this slot: the host holds a weapon of
+/// another kind there, which this rule cannot judge.
 pub fn client_pull_presentation(
     weapon: &WeaponComponent,
     active_slot: usize,
     projection: &ReplicatedWeaponProjection,
 ) -> ClientPullPresentation {
-    let Some(ammo) = weapon.effective().ammo else {
+    let effective = weapon.effective();
+    if effective.heat.is_some() {
+        return match sample_for_slot(projection.overheated, active_slot) {
+            Some(true) => ClientPullPresentation::Silent,
+            _ => ClientPullPresentation::Fire,
+        };
+    }
+    if let Some(cell) = effective.cell {
+        return match sample_for_slot(projection.cell, active_slot) {
+            Some(Some(charge)) if charge < cell.cost_per_shot => ClientPullPresentation::DryFire,
+            _ => ClientPullPresentation::Fire,
+        };
+    }
+    let Some(ammo) = effective.ammo else {
         return ClientPullPresentation::Fire;
     };
     let (Some(Some(magazine)), Some(reload_active)) = (
@@ -253,5 +285,184 @@ mod tests {
                 "{presentation:?}, projectile launch {launch}, contacts {contacts}",
             );
         }
+    }
+
+    fn resource_weapon(resource: serde_json::Value) -> WeaponComponent {
+        let descriptor: postretro_entities::data_descriptors::WeaponDescriptor =
+            serde_json::from_value(serde_json::json!({
+                "damage": 10.0,
+                "range": 64.0,
+                "fireRateMs": 100.0,
+                "fireMode": "auto",
+                "resolution": "hitscan",
+                "resource": resource,
+            }))
+            .unwrap();
+        WeaponComponent::from_descriptor(&descriptor)
+    }
+
+    fn heat_weapon() -> WeaponComponent {
+        resource_weapon(serde_json::json!({
+            "kind": "heat", "heatPerShot": 10.0, "overheatAt": 80.0, "coolPerSecond": 20.0
+        }))
+    }
+
+    fn cell_weapon() -> WeaponComponent {
+        resource_weapon(serde_json::json!({
+            "kind": "cell", "capacity": 40.0, "costPerShot": 4.0, "regenPerSecond": 8.0
+        }))
+    }
+
+    fn on_slot<T>(slot: usize, value: T) -> Option<SlotSample<T>> {
+        Some(SlotSample { slot, value })
+    }
+
+    #[test]
+    fn client_pull_an_overheated_heat_weapon_presents_silent_only_for_its_own_slot() {
+        use ClientPullPresentation::{Fire, Silent};
+        let weapon = heat_weapon();
+        let overheated = |slot, value| ReplicatedWeaponProjection {
+            overheated: on_slot(slot, value),
+            heat: on_slot(slot, Some(80.0)),
+            ..ReplicatedWeaponProjection::default()
+        };
+        assert_eq!(
+            client_pull_presentation(&weapon, 1, &overheated(1, true)),
+            Silent
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 1, &overheated(1, false)),
+            Fire,
+            "a hot but unlatched weapon fires, including the crossing shot"
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 1, &overheated(0, true)),
+            Fire,
+            "a latch that names another slot describes another weapon"
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 1, &ReplicatedWeaponProjection::default()),
+            Fire,
+            "nothing replicated yet"
+        );
+    }
+
+    #[test]
+    fn client_pull_a_cell_below_cost_presents_dry_fire_only_for_its_own_slot() {
+        use ClientPullPresentation::{DryFire, Fire};
+        let weapon = cell_weapon();
+        let charge = |slot, value| ReplicatedWeaponProjection {
+            cell: on_slot(slot, value),
+            cell_capacity: on_slot(slot, value.map(|_| 40.0)),
+            ..ReplicatedWeaponProjection::default()
+        };
+        assert_eq!(
+            client_pull_presentation(&weapon, 2, &charge(2, Some(3.9))),
+            DryFire
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 2, &charge(2, Some(4.0))),
+            Fire,
+            "a charge that exactly pays the cost fires"
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 2, &charge(1, Some(0.0))),
+            Fire,
+            "an empty cell that names another slot describes another weapon"
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 2, &charge(2, None)),
+            Fire,
+            "the host names this slot's weapon cell-less"
+        );
+        assert_eq!(
+            client_pull_presentation(&weapon, 2, &ReplicatedWeaponProjection::default()),
+            Fire,
+            "nothing replicated yet"
+        );
+    }
+
+    #[test]
+    fn client_pull_a_resource_rule_reads_only_its_own_kind() {
+        use ClientPullPresentation::Fire;
+        // An empty magazine or cell never silences a heat weapon, and a latch
+        // never dry-fires a cell weapon: each rule reads its own kind's value.
+        let everything_empty = ReplicatedWeaponProjection {
+            magazine: on_slot(0, Some(0.0)),
+            reload_active: on_slot(0, false),
+            overheated: on_slot(0, false),
+            cell: on_slot(0, Some(0.0)),
+            ..ReplicatedWeaponProjection::default()
+        };
+        assert_eq!(
+            client_pull_presentation(&heat_weapon(), 0, &everything_empty),
+            Fire
+        );
+        let latched = ReplicatedWeaponProjection {
+            overheated: on_slot(0, true),
+            ..ReplicatedWeaponProjection::default()
+        };
+        assert_eq!(client_pull_presentation(&cell_weapon(), 0, &latched), Fire);
+    }
+
+    #[test]
+    fn client_pull_merge_carries_heat_and_cell_samples_and_absences() {
+        let mut held = ReplicatedWeaponProjection {
+            heat: on_slot(0, Some(30.0)),
+            overheat_at: on_slot(0, Some(80.0)),
+            overheated: on_slot(0, true),
+            cell: on_slot(0, None),
+            cell_capacity: on_slot(0, None),
+            ..ReplicatedWeaponProjection::default()
+        };
+        held.merge(&ReplicatedWeaponProjection {
+            heat: on_slot(1, None),
+            overheated: on_slot(1, false),
+            cell: on_slot(1, Some(12.0)),
+            ..ReplicatedWeaponProjection::default()
+        });
+        assert_eq!(held.heat, on_slot(1, None), "a fresh absence replaces heat");
+        assert_eq!(held.overheat_at, on_slot(0, Some(80.0)), "not carried");
+        assert_eq!(held.overheated, on_slot(1, false));
+        assert_eq!(held.cell, on_slot(1, Some(12.0)));
+        assert_eq!(held.cell_capacity, on_slot(0, None), "not carried");
+    }
+
+    #[test]
+    fn client_pull_fire_gate_never_simulates_heat_or_cell() {
+        // Connected clients read replicated heat and cell; the local fire gate
+        // neither consults nor advances them.
+        let pull = crate::weapon::FireButtonState {
+            pressed: true,
+            active: true,
+        };
+        let mut hot = heat_weapon();
+        let latched = {
+            let heat = hot.heat.as_mut().unwrap();
+            heat.heat = 80.0;
+            heat.overheated = true;
+            *heat
+        };
+        assert!(crate::weapon::advance_client_fire_state(
+            &mut hot,
+            pull,
+            0.5,
+            &[]
+        ));
+        assert_eq!(hot.heat, Some(latched), "no cooling, no latch clear");
+
+        let mut drained = cell_weapon();
+        let empty = {
+            let cell = drained.cell.as_mut().unwrap();
+            cell.charge = 0.0;
+            *cell
+        };
+        assert!(crate::weapon::advance_client_fire_state(
+            &mut drained,
+            pull,
+            5.0,
+            &[]
+        ));
+        assert_eq!(drained.cell, Some(empty), "no regeneration");
     }
 }

@@ -854,6 +854,8 @@ pub(crate) struct App {
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
     client_reload_edges: sound_events::ClientReloadEdges,
+    /// Connected-client overheat cue derived from the replicated latch.
+    client_overheat_edge: sound_events::ClientOverheatEdge,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
     /// Subsumes the previous `level_load_fired` one-shot flag.
@@ -3047,7 +3049,7 @@ impl ApplicationHandler for App {
                     &mut pending_weapon_script_events,
                 );
                 if self.is_connected_client() {
-                    self.observe_client_reload_edges(&mut client_sounds);
+                    self.observe_client_weapon_edges(&mut client_sounds);
                 }
 
                 // Status overlays are host/single-player presentation facts.
@@ -6997,30 +6999,34 @@ impl App {
         }
     }
 
-    /// Derive the local pawn's reload edges from its replicated owner-private
-    /// reload and ammo slots, and queue the sounds its weapon names. A
-    /// connected client runs no host weapon machine, so this is how it hears
-    /// its own reloads, one round trip late (`audio.md` §4). Each value names
-    /// the host wieldable slot it describes, so edges and sounds follow the
-    /// weapon the host projects rather than a local switch the host has not
-    /// yet performed.
-    fn observe_client_reload_edges(
+    /// Derive the local pawn's reload edges and overheat cue from its
+    /// replicated owner-private weapon slots, and queue the sounds its weapon
+    /// names. A connected client runs no host weapon machine, so this is how
+    /// it hears its own reloads and overheats, one round trip late
+    /// (`audio.md` §4). Each value names the host wieldable slot it describes,
+    /// so edges and sounds follow the weapon the host projects rather than a
+    /// local switch the host has not yet performed.
+    fn observe_client_weapon_edges(
         &mut self,
         client_sounds: &mut Vec<postretro_audio::SoundRequest>,
     ) {
+        use postretro_entities::components::weapon::WeaponComponent;
+
         let Some(session) = self.session.as_ref() else {
             return;
         };
         let script_ctx = &session.scripting.script_ctx;
         let registry = script_ctx.registry.borrow();
         let projection = netcode::client_weapon_projection(session.net_endpoint.as_ref());
-        let reading = sound_events::ReloadReading::from_projection(&projection, |slot| {
+        let held_at = |slot: usize| {
             let pawn = registry.local_player_movement_pawn()?;
             let inventory = registry.get_component::<Inventory>(pawn).ok()?;
             let weapon = inventory.wieldables.get(slot).copied().flatten()?;
-            let component = registry
-                .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-                .ok()?;
+            let component = registry.get_component::<WeaponComponent>(weapon).ok()?;
+            Some((inventory, weapon, component))
+        };
+        let reading = sound_events::ReloadReading::from_projection(&projection, |slot| {
+            let (inventory, weapon, component) = held_at(slot)?;
             let ammo_stats = component.effective().ammo?;
             Some(sound_events::ProjectedWeapon {
                 weapon,
@@ -7029,25 +7035,47 @@ impl App {
                 capacity: ammo_stats.capacity,
             })
         });
-        let weapon = match reading {
+        let reload_weapon = match reading {
             sound_events::ReloadReading::Sample(sample) => Some(sample.weapon),
             _ => None,
         };
-        let addresses = self.client_reload_edges.observe_reading(reading);
-        if addresses.is_empty() {
+        let overheat = sound_events::OverheatReading::from_projection(&projection, |slot| {
+            let (inventory, weapon, component) = held_at(slot)?;
+            component.heat?;
+            Some(sound_events::ProjectedHeatWeapon {
+                weapon,
+                wielded: inventory.active_slot == slot,
+            })
+        });
+        let overheat_weapon = match overheat {
+            sound_events::OverheatReading::Sample(sample) => Some(sample.weapon),
+            _ => None,
+        };
+        // Edges come only from a sample, which names its weapon.
+        let mut cues = Vec::new();
+        let reload_addresses = self.client_reload_edges.observe_reading(reading);
+        if let Some(weapon) = reload_weapon {
+            cues.extend(reload_addresses.into_iter().map(|address| (weapon, address)));
+        }
+        if self.client_overheat_edge.observe_reading(overheat)
+            && let Some(weapon) = overheat_weapon
+        {
+            cues.push((weapon, "overheat"));
+        }
+        if cues.is_empty() {
             return;
         }
-        let (Some(weapon), Some(pawn)) = (weapon, registry.local_player_movement_pawn()) else {
+        let Some(pawn) = registry.local_player_movement_pawn() else {
             return;
         };
         let emitter = postretro_sim::emission::entity_emitter(&registry, pawn);
-        let weapon_name = postretro_sim::emission::descriptor_name(&registry, weapon);
         let mut scene = sound_events::AnchorScene {
             registry: &registry,
             world: self.level.as_ref(),
             movers: &mut self.kinematic_mover_render,
         };
-        for address in addresses {
+        for (weapon, address) in cues {
+            let weapon_name = postretro_sim::emission::descriptor_name(&registry, weapon);
             if let Some(request) = sound_events::weapon_sound(
                 &session.scripting.descriptor_sounds,
                 address,

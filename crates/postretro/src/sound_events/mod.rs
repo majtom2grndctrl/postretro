@@ -4,11 +4,13 @@
 // See: context/lib/audio.md §4
 
 mod anchors;
+mod client_overheat;
 mod client_reload;
 mod descriptors;
 mod movers;
 
 pub(crate) use anchors::{AnchorScene, listener_attached_key};
+pub(crate) use client_overheat::{ClientOverheatEdge, OverheatReading, ProjectedHeatWeapon};
 pub(crate) use client_reload::{ClientReloadEdges, ProjectedWeapon, ReloadReading};
 pub(crate) use descriptors::{
     DescriptorSoundTable, ai_sounds, movement_sound, warn_unknown_sound_keys,

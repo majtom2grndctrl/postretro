@@ -1646,6 +1646,7 @@ pub(crate) mod tests {
             client_fire_resolutions: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             client_reload_edges: Default::default(),
+            client_overheat_edge: Default::default(),
             boot_state: BootState::Running,
             splash_frame: 0,
             os_wait_from: None,

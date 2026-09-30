@@ -18,6 +18,9 @@ use postretro_entities::{
 };
 use postretro_scripting_core::StoreIdentityLedger;
 
+mod resource_projection;
+use resource_projection::{ResourceSlotProjection, record_resource_sample};
+
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
 /// stream's *shape* changes (a new field, a reordered tag) so an old client's
 /// fingerprint can never accidentally match a new server's.
@@ -59,8 +62,9 @@ enum ReplicatedWireShape {
     /// `[slot, number]`.
     WieldableSlotNumber,
     /// `[slot, number]`, or `[slot]`: the host names a slot whose weapon has
-    /// no value here (a resourceless weapon's magazine and reserve). The
-    /// client clears the store value, as the host HUD clears it.
+    /// no value here (the magazine of a weapon without ammo, the heat of one
+    /// without heat). The client clears the store value, as the host HUD
+    /// clears it.
     WieldableSlotOptionalNumber,
     /// `[slot, flag]`; the flag travels as `0.0` or `1.0`.
     WieldableSlotBoolean,
@@ -72,7 +76,7 @@ impl ReplicatedWireShape {
             WEAPON_COOLDOWN_SLOT | RELOAD_PROGRESS_SLOT => Self::WieldableSlotNumber,
             MAGAZINE_SLOT | RESERVE_SLOT => Self::WieldableSlotOptionalNumber,
             RELOAD_ACTIVE_SLOT => Self::WieldableSlotBoolean,
-            _ => Self::Plain,
+            _ => resource_projection::wire_shape(name).unwrap_or(Self::Plain),
         }
     }
 
@@ -115,6 +119,9 @@ fn record_weapon_sample(
     slot: usize,
     value: Option<&SlotValue>,
 ) {
+    if record_resource_sample(projection, name, slot, value) {
+        return;
+    }
     let count = |value: Option<&SlotValue>| match value {
         Some(SlotValue::Number(value)) => Some(Some(*value)),
         None => Some(None),
@@ -844,13 +851,13 @@ impl HostStateReplication {
             .iter()
             .map(|e| (e.slot_id, e.name.clone(), e.scope))
             .collect();
-        let owner_projections: Vec<(EntityId, u64, AmmoSlotProjection)> = owners
+        let owner_projections: Vec<(EntityId, u64, WeaponSlotProjection)> = owners
             .iter()
             .map(|(pawn, client_id)| {
                 (
                     pawn,
                     client_id,
-                    AmmoSlotProjection::for_pawn(registry, pawn),
+                    WeaponSlotProjection::for_pawn(registry, pawn),
                 )
             })
             .collect();
@@ -873,14 +880,14 @@ impl HostStateReplication {
                     }
                 }
                 ReplicationScope::OwnerPrivatePlayer => {
-                    for (pawn, client_id, ammo_projection) in &owner_projections {
+                    for (pawn, client_id, weapon_slots) in &owner_projections {
                         if let Some(value) = owner_private_source_value(
                             slot_table,
                             registry,
                             &name,
                             *pawn,
                             weapon_owners,
-                            ammo_projection,
+                            weapon_slots,
                         ) {
                             self.tracker
                                 .ingest_owner_private(slot_id, *client_id, value);
@@ -910,8 +917,9 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 
 /// The per-owner source value for an owner-private slot. Descriptor-fed player slots
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
-/// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, and
-/// reload state resolve through its `Inventory` to the sibling `WeaponComponent`;
+/// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, heat,
+/// cell, and reload state resolve through its `Inventory` to the sibling
+/// `WeaponComponent`;
 /// ammo reserve reads the owning pawn's `AmmoReserve`. Per-owner mod slots read
 /// the value for this pawn's seat before the global fallback. Any other
 /// owner-private slot falls back to the slot table's current global value.
@@ -922,7 +930,7 @@ fn owner_private_source_value(
     name: &str,
     pawn: EntityId,
     _weapon_owners: &WeaponOwners,
-    ammo_projection: &AmmoSlotProjection,
+    weapon_slots: &WeaponSlotProjection,
 ) -> Option<WireSlotValue> {
     if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
         return slot_value_to_wire(&value);
@@ -930,7 +938,7 @@ fn owner_private_source_value(
     if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn) {
         return value;
     }
-    if let Some(value) = ammo_projection.wire_sample(name) {
+    if let Some(value) = weapon_slots.wire_sample(name) {
         return value;
     }
     // A correlated slot's descriptor is an array; its plain table value would
@@ -978,10 +986,11 @@ fn descriptor_ammo_for_pawn(
     pawn: EntityId,
     _weapon_owners: &WeaponOwners,
 ) -> Option<Option<SlotValue>> {
-    AmmoSlotProjection::for_pawn(registry, pawn).slot_value(name)
+    WeaponSlotProjection::for_pawn(registry, pawn).slot_value(name)
 }
 
-struct AmmoSlotProjection {
+/// One owner's slot-correlated weapon values, from its own pawn's active weapon.
+struct WeaponSlotProjection {
     weapon: Option<EntityId>,
     /// The host wieldable slot every value describes: the pawn's active slot,
     /// whether or not it holds a weapon. `None` for a pawn with no inventory.
@@ -990,9 +999,10 @@ struct AmmoSlotProjection {
     reserve: Option<f32>,
     reload_progress: f32,
     reload_active: bool,
+    resource: ResourceSlotProjection,
 }
 
-impl AmmoSlotProjection {
+impl WeaponSlotProjection {
     fn for_pawn(registry: &EntityRegistry, pawn: EntityId) -> Self {
         let inventory = if registry.exists(pawn) {
             registry.get_component::<Inventory>(pawn).ok()
@@ -1030,6 +1040,7 @@ impl AmmoSlotProjection {
             reserve,
             reload_progress,
             reload_active,
+            resource: ResourceSlotProjection::of(wieldable_slot, component),
         }
     }
 
@@ -1058,6 +1069,9 @@ impl AmmoSlotProjection {
     ///   and any weapon the client holds in slot 0 is, for the host, not
     ///   reloading. Sending nothing would leave a client's stale reload flag up.
     fn wire_sample(&self, name: &str) -> Option<Option<WireSlotValue>> {
+        if let Some(sample) = self.resource.wire_sample(name) {
+            return Some(sample);
+        }
         let value = self.slot_value(name)?;
         let sample = match name {
             MAGAZINE_SLOT | RESERVE_SLOT => self.wieldable_slot.and_then(|slot| match value {
@@ -1802,7 +1816,6 @@ mod tests {
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
-                "player.weaponResource",
                 "net.alpha",
                 "net.bravo",
             ]
@@ -1833,7 +1846,6 @@ mod tests {
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
-                "player.weaponResource",
             ]
         );
         assert!(!schema.to_net_schema().is_empty());
@@ -1888,8 +1900,8 @@ mod tests {
         let schema = build_test_schema(&table);
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
-        // Two mod slots plus the owner-private engine player slots.
-        assert_eq!(net.len(), 9);
+        // Two mod slots plus the twelve owner-private engine player slots.
+        assert_eq!(net.len(), 14);
         let alpha = net
             .descriptor(schema.id_for("net.alpha").expect("alpha descriptor exists"))
             .expect("alpha descriptor exists");
@@ -2091,7 +2103,6 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
-            "player.weaponResource",
             "player.heat",
             "player.overheatAt",
             "player.overheated",
@@ -2117,7 +2128,6 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
-            "player.weaponResource",
             "player.heat",
             "player.overheatAt",
             "player.overheated",
@@ -2185,7 +2195,6 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
-            "player.weaponResource",
             "player.heat",
             "player.overheatAt",
             "player.overheated",
@@ -2237,7 +2246,6 @@ mod tests {
             "player.maxHealth",
             "player.reloadActive",
             "player.reloadProgress",
-            "player.weaponResource",
             "player.heat",
             "player.overheatAt",
             "player.overheated",
@@ -2754,7 +2762,7 @@ mod tests {
         // magazine and reserve are not sent, as the host HUD leaves them. The
         // reload defaults are sent, as the host HUD writes them, named as
         // slot 0 for want of a slot.
-        let projection = AmmoSlotProjection::for_pawn(&registry, pawn);
+        let projection = WeaponSlotProjection::for_pawn(&registry, pawn);
         for name in [MAGAZINE_SLOT, RESERVE_SLOT] {
             assert_eq!(projection.wire_sample(name), Some(None), "{name}");
         }
@@ -3201,7 +3209,7 @@ mod tests {
                 name,
                 pawn,
                 &weapon_owners,
-                &AmmoSlotProjection::for_pawn(&registry, pawn),
+                &WeaponSlotProjection::for_pawn(&registry, pawn),
             );
             assert!(
                 matches!(value, None | Some(WireSlotValue::Array(_))),

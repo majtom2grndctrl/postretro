@@ -1,6 +1,6 @@
 // Player state publisher. Host publishes authoritative health at each impact seam and
 // republishes health, ammo, heat/cell, and reload slots for HUD consumers after game logic;
-// every role publishes local display-only `player.weapon.*` slots.
+// every role publishes the local display-only weapon name, spread and resource-kind slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use std::collections::HashSet;
@@ -230,7 +230,7 @@ impl PlayerHudStatePublisher {
             // These switching display slots are local on every role: their inventory
             // source is locally owned, so no host projection exists to replicate.
             let values = weapon_hud_values(&self.ctx.registry.borrow());
-            self.publish_local_weapon_state(values.effective_spread_degrees);
+            self.publish_local_weapon_state(&values);
             return values.sampled;
         }
         self.tick_and_report_sampled_weapon()
@@ -262,15 +262,16 @@ impl PlayerHudStatePublisher {
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
         self.publish_local_per_owner_mod_slots();
+        let values = weapon_hud_values(&self.ctx.registry.borrow());
+        self.publish_local_weapon_state(&values);
         let WeaponHudValues {
             sampled: sampled_weapon,
             ammo,
             resource,
             reload_progress,
             reload_active,
-            effective_spread_degrees,
-        } = weapon_hud_values(&self.ctx.registry.borrow());
-        self.publish_local_weapon_state(effective_spread_degrees);
+            ..
+        } = values;
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
@@ -310,10 +311,6 @@ impl PlayerHudStatePublisher {
     /// weapon of another kind is an authoritative absence: its number slots
     /// clear and the latch reads false.
     fn publish_resource_values(&mut self, resource: ResourceHud) {
-        self.write_hud_slot(
-            "player.weaponResource",
-            SlotValue::Enum(resource.kind().as_str().to_string()),
-        );
         match resource {
             ResourceHud::Heat {
                 heat,
@@ -359,7 +356,7 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    fn publish_local_weapon_state(&mut self, effective_spread_degrees: f32) {
+    fn publish_local_weapon_state(&mut self, values: &WeaponHudValues) {
         let (current, pending, switching) =
             weapon_state_values(&self.ctx.registry.borrow(), self.pending_weapon_slot);
         self.write_hud_slot("player.weapon.current", SlotValue::String(current));
@@ -368,7 +365,19 @@ impl PlayerHudStatePublisher {
 
         // Spread is local predicted state, so every role publishes it from its
         // own active component before a connected client returns early.
-        self.write_hud_slot("player.spread", SlotValue::Number(effective_spread_degrees));
+        self.write_hud_slot(
+            "player.spread",
+            SlotValue::Number(values.effective_spread_degrees),
+        );
+        // The kind follows the local active weapon, like the weapon name: the
+        // host's owner-private projection has no per-pawn source for it. With
+        // no live active weapon the prior kind stands (staleness contract).
+        if values.sampled.is_some() {
+            self.write_hud_slot(
+                "player.weaponResource",
+                SlotValue::Enum(values.resource.kind().as_str().to_string()),
+            );
+        }
     }
 
     /// Refresh unaddressed HUD reads of mod-owned per-owner slots from the
@@ -1781,5 +1790,55 @@ mod tests {
             Some(SlotValue::Enum("cell".into()))
         );
         assert_eq!(slot(&ctx, "player.cell"), Some(SlotValue::Number(40.0)));
+    }
+
+    #[test]
+    fn connected_client_publishes_its_own_resource_kind_but_never_the_values() {
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        equip_resource_weapon(&ctx, pawn, cell_resource());
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick_for_role(true, None);
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("cell".into())),
+            "the kind comes from the client's own active weapon"
+        );
+        for replicated in [
+            "player.heat",
+            "player.overheatAt",
+            "player.cell",
+            "player.cellCapacity",
+        ] {
+            assert_eq!(
+                slot(&ctx, replicated),
+                None,
+                "{replicated} reaches a client only through replication"
+            );
+        }
+        assert_eq!(
+            slot(&ctx, "player.overheated"),
+            Some(SlotValue::Boolean(false)),
+            "the latch keeps its catalog default until replicated"
+        );
+
+        equip_resource_weapon(&ctx, pawn, heat_resource());
+        publisher.tick_for_role(true, None);
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("heat".into()))
+        );
+
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, Inventory::default())
+            .unwrap();
+        publisher.tick_for_role(true, None);
+        assert_eq!(
+            slot(&ctx, "player.weaponResource"),
+            Some(SlotValue::Enum("heat".into())),
+            "no active weapon keeps the last kind"
+        );
     }
 }

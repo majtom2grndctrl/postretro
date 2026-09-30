@@ -525,7 +525,10 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         persist: false,
         capability: EngineStateCapability::Readonly,
         // Which resource the active weapon runs; `none` names a resourceless weapon.
-        network: ReplicationScope::OwnerPrivatePlayer,
+        // Every role publishes it from its own active weapon, like
+        // `player.weapon.current`: a replicated plain value would hand every
+        // client the host player's kind.
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "player.heat",
@@ -1325,7 +1328,6 @@ mod tests {
             "player.reloadActive",
             "player.reloadProgress",
             "player.weaponCooldownMs",
-            "player.weaponResource",
             "player.heat",
             "player.overheatAt",
             "player.overheated",
@@ -1345,6 +1347,7 @@ mod tests {
 
         for wire_name in [
             "player.spread",
+            "player.weaponResource",
             "player.weapon.current",
             "player.weapon.pending",
             "player.weapon.switching",
@@ -1369,7 +1372,6 @@ mod tests {
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
-                "player.weaponResource",
                 "player.heat",
                 "player.overheatAt",
                 "player.overheated",
@@ -1389,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn weapon_resource_slots_are_readonly_owner_private_with_health_style_defaults() {
+    fn weapon_resource_slots_are_readonly_with_health_style_defaults_and_a_local_kind() {
         let catalog = engine_state_catalog().unwrap();
         let find = |wire_name: &str| {
             *catalog
@@ -1441,7 +1443,13 @@ mod tests {
             assert_eq!(entry.sdk_path.join("."), wire_name);
             assert_eq!(entry.capability, EngineStateCapability::Readonly);
             assert!(!entry.persist, "{wire_name}");
-            assert_eq!(entry.network, ReplicationScope::OwnerPrivatePlayer);
+            let expected = if wire_name == "player.weaponResource" {
+                // Published locally on every role from its own active weapon.
+                ReplicationScope::None
+            } else {
+                ReplicationScope::OwnerPrivatePlayer
+            };
+            assert_eq!(entry.network, expected, "{wire_name}");
         }
     }
 }

@@ -56,7 +56,8 @@ Field names are camelCase on the author surface. Rust mirrors them in snake_case
 - Spawn state: heat 0 and not overheated; cell charge at capacity. `idle_ms` starts at 0 for both.
 - Hot reload (`refresh_from_descriptor`):
   - Same kind: replace the tuning and keep the live values, clamping them into the new bounds.
-  - Different kind: rebuild the resource fresh from the descriptor.
+  - Different kind: rebuild heat or cell fresh from the descriptor. The magazine is live state and survives ammo being added or removed. The one exception (owner decision, after review): a switch from heat or cell into ammo loads a full magazine, as at spawn.
+- A level transition doesn't carry heat or cell (owner decision, after review). The carried loadout keeps magazines only, so a cell arrives full and an overheat clears. Carrying them would widen `CarriedState` and the netcode seat harvest; that is a non-goal for this feature.
   - The overheated latch survives a same-kind reload.
 - `effective()` projects the heat and cell tuning as `Option` members of `EffectiveStats`, beside the existing `ammo`.
 
@@ -169,7 +170,7 @@ Run every command from the worktree root. Each command must report a nonzero tes
 ## Status
 
 Tracks A and B are complete (`50077af65`, `9710f022d`), along with the content, docs and context work. Remaining:
-- one review pass;
+- ~~one review pass~~ done (`525644736`); two owner decisions applied;
 - `/preflight`, on hold until the owner clears concurrent builds;
 - the PR.
 

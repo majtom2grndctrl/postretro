@@ -127,9 +127,15 @@ impl WeaponComponent {
 
     /// Hot reload of the resource tuning. Same-kind heat or cell retunes and
     /// keeps the live values; a kind change rebuilds heat and cell fresh. The
-    /// magazine is live state and is left alone.
+    /// magazine is live state that survives ammo being added or removed, with
+    /// one exception: a switch from heat or cell into ammo loads a full
+    /// magazine, as at spawn, because no magazine of that weapon was ever live.
     pub(super) fn refresh_resource(&mut self, desc: &WeaponDescriptor) {
+        let was_heat_or_cell = self.heat.is_some() || self.cell.is_some();
         self.ammo = ammo_tuning(desc);
+        if was_heat_or_cell && let Some(ammo) = self.ammo.as_ref() {
+            self.magazine = ammo.capacity;
+        }
         match (
             desc.resource.as_ref(),
             self.heat.as_mut(),
@@ -365,6 +371,25 @@ mod tests {
             .refresh_from_descriptor(&descriptor(Some(WeaponResource::Heat(heat_tuning(100.0)))));
         assert_eq!(component.cell, None);
         assert_eq!(component.heat, Some(WeaponHeat::fresh(heat_tuning(100.0))));
+    }
+
+    #[test]
+    fn weapon_resource_reload_from_heat_or_cell_into_ammo_loads_a_full_magazine() {
+        for from in [
+            WeaponResource::Heat(heat_tuning(100.0)),
+            WeaponResource::Cell(cell_tuning(40.0)),
+        ] {
+            let mut component = WeaponComponent::from_descriptor(&descriptor(Some(from)));
+            assert_eq!(component.magazine, 0);
+            component.refresh_from_descriptor(&descriptor(Some(ammo())));
+            assert_eq!(component.magazine, 12);
+        }
+
+        // Ammo to ammo keeps the live, partly spent magazine.
+        let mut component = WeaponComponent::from_descriptor(&descriptor(Some(ammo())));
+        component.magazine = 5;
+        component.refresh_from_descriptor(&descriptor(Some(ammo())));
+        assert_eq!(component.magazine, 5);
     }
 
     #[test]

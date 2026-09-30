@@ -1,6 +1,6 @@
 # bake-parallelism-large-maps — research
 
-Derivation and numbers behind the brief. Every path below is relative to `crates/level-compiler/src/`. Source was read at 329fbe07b (`feat/lightmap-cell-blocks`). Line numbers were recorded at 4ae37c4af; spot-checks at 329fbe07b land within a few lines. Later additions cite symbols only.
+Derivation and numbers behind the brief. Every path below is relative to `crates/level-compiler/src/`. Source was re-read by symbol at 4db4473f7 (`main`). Line numbers were recorded at 4ae37c4af and may have drifted. Later additions cite symbols only.
 
 ## Measurement conditions
 
@@ -9,11 +9,11 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 | Map | `content/dev/maps/stress-warren-hallway-inspection.map` |
 | Other host | The owner's 6-core PC routinely bakes the hallway in about 9 h, against about 6 h on the machine below. It is not the yardstick. With fewer permits its stages saturate sooner, so it is the less favorable host for lever 3; the gate measures on the pinned machine. |
 | Machine | Intel i9-9980HK: 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD |
-| Cache mode | Warm (cache enabled), with every entry missing in the first build. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares the previous build's entries. |
+| Cache mode | Warm (cache enabled), with every entry missing in the first build. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares each map's record. |
 | Peak memory | The process's maximum resident set size over the whole build, as the OS reports it (`/usr/bin/time -l` on macOS), on a warm all-miss build. See §Peak memory. |
 | Permits | Default `-j` from `default_jobs_for` (`cli.rs`): logical cores − 1 for 2 to 8 logical cores, logical cores − 2 above 8. This machine: 16 → 14. The global rayon pool is unconfigured, so it has one thread per logical core (16); the governor, not the pool, bounds concurrency. |
 | Binary | A cargo `--release` build of `prl-build`, run warm. Cargo's release profile (`opt-level = 3`, thin LTO) is not `prl-build --release`, which is the cold, uncached ship bake. The numbers on this page predate that pin: the live rebake ran `target/debug/prl-build`, and the first build's profile was not recorded. `[profile.dev]` gives workspace crates `opt-level = 1` and dependencies, `bvh` included, `opt-level = 2`. Re-take the before numbers on the pinned binary. |
-| Baseline | Main after `spatial-residency--lightmap-cell-blocks` lands. Byte-identity baselines and before numbers both come from there. |
+| Baseline | Main after `spatial-residency--lightmap-cell-blocks` (landed). Byte-identity baselines and before numbers both come from there. |
 
 ## Where the 5 h 54 m goes
 
@@ -34,6 +34,7 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 - So SH used 145–154k CPU-s. That is **13.2–14.0 cores busy, which is the 14-permit cap**.
 - The per-thread CPU time agrees. All 16 rayon workers had used about 150–165 CPU-min each.
 - Base SH parallelism is saturated. On 8 physical cores, those 14 logical threads are already hyperthreaded.
+- Lever 5 is the main lever on base SH's 11,939 s. Lever 2 also trims it: each SH group holds its permit across a cache put that ends in `sync_all`. Lever 4's `probe_grid_layout` candidate runs serially at its start. The other levers target the roughly 9,300 s around it.
 
 **Everything else ran at about 3 cores.** In the first build, assume SH ran at the same 13.2–14.0 cores over 11,939 s. That accounts for 158–167k CPU-s.
 - About 23–32k CPU-s remain for the other stages, which took 9,323 s of wall time. That is 2.4–3.5 cores on average.
@@ -50,6 +51,7 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 | Lightmap Bake + ShadowmaskAtlas, warm hit, whole 557 s window (logged as "Shadowmask atlas bake" / "ShadowmaskAtlas"; both start at 13,371 s) | 56 | 100 | 99 | 100 | 100 | 19 |
 | Packing and writing | 4 | 84 | 43 | 98 | 100 | 18 |
 
+- Direct SH Delta on this debug-binary rebake: median 0.14 busy cores, mean 0.20. Every other busy-cores figure here is a mean, so the brief's row compares means, re-taken under the pinned conditions.
 - The 1402% Billboard sample is 14 cores, so that stage saturates the cap.
 - For its first ~90 s the lightmap bake runs on exactly one core. A 2 s stack sample shows the main thread in `lightmap_layer::cache_keys::layer_input_hash` → `atlas_layout_fingerprint`: blake3 over every chart and placement, fed 4–8 bytes per `update` call. That hash does not depend on the light or layer, but the serial pre-pass runs it for every (layer, light) pair (`pipeline/lightmap_stage.rs:119-133`). Meanwhile all rayon workers wait on a condvar. The raw stack sample was not retained; the frames above are its content.
 - **Even a warm lightmap hit is single-threaded.** In the second build the lightmap layers hit the cache. Lightmap Bake (388.7 s) and ShadowmaskAtlas (168.2 s) together sat at exactly one core for the whole window. That time is the serial pre-pass hash plus the per-partition work: `get` with its blake3 verify, fold, shadowmask fill, dilate, and BC6H. So about 9 minutes of every warm hallway rebake uses 1 of 14 permits. Only lever 1's serial-tail and hash-hoisting parts would change that; its light-axis ray parallelism would not.
@@ -92,14 +94,23 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
   - `bake_fused_prepared` takes `geometry: &mut` but never mutates it (`pipeline/lightmap_stage.rs:56`).
   - The only lightmap output read afterwards is `blocks.is_empty()`, in the layout step (`pipeline.rs:1937`).
 
+## Lever 3 gate
+
+- **Absolute bar.** The hallway bakes in about 6 h on the pinned machine and about 9 h on the owner's 6-core PC. 15 minutes per build repays the added complexity; a percentage would move with the host.
+- **Overlap recovers only idle permits.** A stage beside the saturated base SH bake competes for the same global governor and gains nothing. While base SH runs, all 16 rayon workers are either permitted or parked in the governor.
+- **Earlier levers shrink its target.** Lever 2 removes the I/O-bound delta idle time overlap mostly targets. Lever 1 shrinks the AnimWeightMaps gain.
+- **Most invasive lever.** `pipeline/stage_registry.rs` has no cross-stage concurrency today (§Stage dependencies). `development_guide.md` §1.4: no measured bottleneck, no optimization.
+- **Precedent.** The fused Lightmap + ShadowmaskAtlas bake already runs one foreground and one background stage under one governor.
+
 ## Lightmap loop details (lever 1)
 
 - The `layer_input_hash` pre-pass in `bake_fused_prepared` has no `stage_cache` guard, so it also runs cold, where nothing reads the hashes. Each call recomputes `atlas_layout_fingerprint`, which depends on neither light nor layer, and `geometry_slice_hash`, which depends only on the light.
 - `bake_light_layer_controlled` rebuilds `face_indices` by scanning every placement, once per (layer, light).
 - When the lightmap section memo hits but the shadowmask memo misses, a second serial (layer, light) loop in `bake_fused_prepared` calls `load_or_bake_partition` again for the selected lights.
 - `bake_shadowmask_atlas_with_window` and `SHADOWMASK_RESIDENT_LAYER_WINDOW` (4) survive in `shadowmask_bake`. Only tests reach them, through `bake_shadowmask_atlas`, `bake_shadowmask_atlas_cached` and the test-window wrappers. The fused path consumes partitions serially. They are the reuse candidate for lever 1's bounded window.
+- Partition cache get and put run outside the governor permit, as `delta_sh_cache::bake_or_load_delta_subblocks` does ("Permit guards ray work, not cache I/O"; a hit checkpoints without a permit). Base SH's group bake is the other precedent: it holds its permit across get and put, so fsync time consumes permits.
 - `IncrementalLayerAccumulator::fold_partition` documents that callers fold partitions in global light order and that float addition is neither reordered nor reduced. That order is the determinism guarantee lever 1 keeps.
-- On `feat/lightmap-cell-blocks` the fused walk still loops layer by layer, pushing each finished layer into `BlockSectionBuilder`. Lever 1's premise survives cell blocks.
+- On main after cell blocks the fused walk still loops layer by layer, pushing each finished layer into `BlockSectionBuilder`. Lever 1's premise survives cell blocks.
 
 ## Ray traversal (lever 5)
 
@@ -140,8 +151,11 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
 
   The Lightmap Bake and AnimWeightMaps figures in the table above are all-miss numbers from the first build.
 - `plans/done/lighting-scale--sparse-layer-cache-and-fused-walk` sized the 2 GiB budget against campaign-test layers (≤0.91 GB).
-- **The brief's rule.** The prune spares every entry the previous build read or wrote and applies the budget to older entries only. After the prune the cache is at most the larger of the budget and the previous live set; the build then adds its new generation, as today. Raising the default instead would have to track the largest map anyone builds, and still evicts by write order once that map outgrows it.
-- **Mechanism options, the executor's call.** Record a marker at build start, and at the next build's prune treat every entry with mtime at or after it as live; `get` already bumps mtime through `touch_for_lru` and `put` writes it. Or persist the `live_set` key list at build end. Lever 2 removes or changes the second open in `touch_for_lru`, so the mtime option needs another way to record a hit. A build killed before its end-of-build step must not leave the next prune treating nothing as live and evicting the killed build's entries first; the marker option avoids that, since the marker is written at start.
+- **Bound under the brief's rule.** After the prune the cache is at most the larger of the budget and the total spared set; the build then adds its new generation, as today.
+- **Why per map, and why the last success.** The cache directory is shared by every map under the workspace root (`build_pipeline.md` §Build Cache, Location). A campaign-test build between two hallway builds would otherwise expose the hallway's set. In plain mode the cache is constructed and pruned before parsing, so a parse error or a `--sh-delta-working-set-max-size` refusal still runs a prune while touching nothing. Stopping a 6 h bake is the most common hallway event. Sparing only the previous build would cost an SH re-bake (about 11,000 s) after any of these.
+- **Why memo hits count.** A `lightmap_section` hit reads no per-light partition, and a `shadowmask_atlas` hit requests none. `build_pipeline.md` §Build Cache calls those partitions the recompose fallback when a light changes. Unmarked, a no-edit rebuild leaves them untouched, and the first light edit after it re-bakes every light.
+- **Why not raise the default.** It would have to track the largest map anyone builds, and still evicts by write order once that map outgrows it.
+- **Mechanism, the executor's call.** Nothing persists which entries a build touched: `live_entries` (`StageCache::live_set`) is in memory only, and prune sorts by mtime alone. Options: a per-map key list appended as the build touches entries and promoted to the map's record on success, or a per-map start marker read against mtime. Lever 2 removes or changes the second open in `touch_for_lru`, so an mtime scheme needs another way to record a hit. A record written only at end of build loses a stopped build's touches: the only end-of-build hook runs on success or a returned error, never on a kill. A build reads its map's record before recording its own start (pin P6).
 
 ## Cache write path
 - `StageCache::put` delegates to `put_streamed`, which stages `<digest>.tmp` through `write_streamed_entry` and then renames it into place.
@@ -154,6 +168,24 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
 - **The delta working-set gate assumes serial stages.** `plans/done/lighting-scale--compile-peak-ram` sets the `--sh-delta-working-set-max-size` gate at 3× the cumulative dense delta bytes (4× under coarsened `--sh-analyze`). Its accounting follows today's run order: the three delta bakes in sequence, the exact-zero drop rebuild freed before compaction allocates, and one share reserved for the base id34/id35 copies held between the delta bakes. Overlapping base SH or the delta bakes with each other puts in-flight bake state beside those buffers, which the factor does not count.
 - **Hallway hosts.** `drafts/compiler-implausible-allocation-guard` records a `--release` hallway compile at lightmap density 0.04 dying on a 16 GiB machine. The request there was an implausible 42.9 TB, not a working set that outgrew the host, so it shows the hallway is compiled on 16 GiB hosts, not how close its peak is to 16 GiB.
 - **Evidence so far.** The live sampler's RSS column (`evidence/cpu-samples.tsv`) peaks at about 3.3 GiB, in Direct SH Delta, on the debug-binary warm rebake. It covers only the last 1,169 s: no SH Bake and no all-miss lightmap bake. The before number must be re-taken on the pinned binary.
+
+## Ordering pins
+
+Orderings an Acceptance row must exercise. Each row that rests on a pin cites it by id.
+
+| Pin | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Lightmap window of two or more lights on one atlas layer | Light k+1's partition (baked or loaded) is ready before light k's | Fold and shadowmask consume run in ascending global light order. Bytes equal the window-1 bake. |
+| P2 | Bounded traversal query (lever 5) | A node's slab distance is undefined (the ray lies in a bounding-box face plane). Or the first triangle reached is the one the ray starts on (hit at or below `RAY_EPSILON`). | The undefined-slab node is kept. A rejected sub-epsilon hit never tightens the bound. The answer equals today's scan. |
+| P3 | Lightmap window partly admitted | Permits drop to 1, or pause is set, after some of the window's chart items are admitted and before the rest | Admitted items finish. Later items admit one at a time, and none while paused. No permitted item waits on another. The bake completes with unthrottled bytes. |
+| P4 | Lever 3 built, with AnimWeightMaps overlapping the fused walk | The lightmap-emptiness input to `layout_animated_atlas` is taken before the walk finishes | It equals the finished section's `blocks.is_empty()` for no static lights, all-SDF static lights, and a section-memo hit. |
+| P5 | A light whose bounds reach only some of a layer's charts, and a directional light that reaches all | The chart cull runs before the window bakes | Partitions are byte-identical to an unculled bake. Culled charts still count toward the published progress total. |
+| P6 | An entry written before build N−1 began and only read by N−1, a successful build of the same map | N−1's hit takes lever 2's cheaper path, with no second open and no mtime bump. N reads the map's record in `construct_stage_cache` before recording its own start. | N's prune keeps it, and spares N−1's record rather than N's empty one. |
+| P7 | Build N−1 of a map killed mid-build, after a successful build N−2 of the same map | N−1 read and wrote entries but never reached its end-of-build step | N's prune spares every entry N−1 read or wrote before the kill, and N−2's record. |
+| P8 | Build N−1 hits both the lightmap and the shadowmask section memos, over budget | N−1 reads no per-light partition and succeeds, replacing the record; N changes one light's intensity | N's prune keeps every partition the memos summarize. N re-bakes only the edited light's partitions and hits the rest. |
+| P9 | One cache directory, budget smaller than map A's set | Build A, then map B, then A | B's prune spares A's record. The third build's prune spares both records, and it has zero misses. |
+| P10 | Build of A fails at parse, between two successful builds of A | The failed build constructs and prunes the cache, then touches nothing | A's record is unchanged. The third build evicts the same entries it would without the failed build, and has zero misses. |
+| P11 | Lightmap window of two or more lights at one permit | One light's partition cache put, or in a warm case its get, is held open while another light, a cache miss, has chart ray work ready | The chart work admits and runs before the I/O is released; I/O holds no permit. At most one chart item runs at a time. The bake completes with unthrottled bytes. |
 
 ## Prior deferrals
 

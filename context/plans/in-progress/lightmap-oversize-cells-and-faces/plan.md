@@ -1,42 +1,12 @@
 # lightmap-oversize-cells-and-faces — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: e5eb0807c
 
-## Block
-
-**Decision "An oversized cell's split is bounded, not shaped" and Acceptance [1] row 3 cannot hold for every input.** Proposed restatement below; owner decides.
-
-Evidence (source at `e5eb0807c`):
-
-- `atlas_pack::choose_layer_dim` sizes every bake layer to the smallest power of two that hosts the largest group alone. Cell blocks are at most the 2048 pool edge, so the bake-layer edge is at most 2048 (`MAX_ATLAS_DIMENSION` = 8192 is only the cap).
-- `atlas_pack::pack_groups_into_layers` is next-fit: it never revisits a closed layer.
-- Two charts wider and taller than half a pool edge cannot share one 2048² block or one 2048² bake layer.
-
-Counterexample: a convex 44 m cube room is one BSP cell (`research.md` §1). At 0.04 m/texel each of its six faces charts at 1100 + 2·2 padding = 1104² texels. No two fit one block or one layer, so any packer produces six blocks on six bake layers. Their texel area is 6 × 1104² ≈ 7.31 M texels ≈ 1.74 layers, so the bound allows 3 layers.
-
-The bound also fails for small charts on very large cells, because MaxRects fill is below 100%. At 90% fill, 11 full blocks plus a small remainder occupy 12 layers, while their texel area (≈ 9.95 layers) allows 11. The bound holds only when fill approaches 100%, which no rectangle packer guarantees.
-
-The two failing maps probably stay within the bound, estimated from the `research.md` §1 extents and not measured: movement-feel cell 27 has ~630² panels, and kinematic-platform cell 12 has two ~1595 × 1473 charts plus three small ones. The problem is the universal claim, which a test must prove.
-
-### Proposed wording (recommended)
-
-The research's intent (§4) holds: near-edge split blocks each closing a mostly used layer is the waste to avoid, and "full-edge blocks plus one tight remainder" is the fix. The proposal states that fill rule instead of the numeric bound, and keeps the numeric bound only where chart shape allows it.
-
-Decision, replacing its second to fourth sentences:
-
-> An oversized cell fills each block before opening the next: a chart moves to a later block only when it fits no earlier block's free space. Each block is trimmed to its packed content, so shipped texels never pay for empty block area. Bake layers pay only for the waste a block's own shape forces, never for a split that could have filled an earlier block.
-
-Acceptance [1] row 3, replacing it:
-
-> - [ ] [1] An oversized cell's blocks are each trimmed to their packed content, and no chart in a later block of that cell fits the free space left in an earlier one (checked by reinsertion). On a synthetic cell whose charts are each at most a quarter pool edge on both axes and whose texel area fits in 4 layers, the blocks together occupy at most one bake layer more than their texel area needs.
-
-The fixture limits (quarter-edge charts, at most 4 layers of area) keep the numeric bound inside what MaxRects fill actually achieves. The executor will confirm the limits in the first task's test. If they have to change, only the numeric part changes.
-
-### Alternative
-
-Keep the bound and let bake layers grow past the pool edge, for example to 4096 or 8192, so several pool-edge blocks share a bake layer. This does not make the bound universal: rigid rectangles still leave shape-forced gaps, just at a larger scale. It also raises the per-layer bake peak about 4× (warm plane ~912 MiB at 4096², `research.md` §4). Not recommended.
+## Owner rulings
+- 2026-09-30: the oversized-split bound was unachievable in general (a 44 m single-cell cube room charts six 1104² faces that no two share a 2048 block or bake layer: 6 layers where the bound allowed 3; and MaxRects fill < 100% breaks it on very large cells). Owner took the recommended restatement: the Decision now states a fill rule (a chart moves to a later block only when it fits no earlier block's free space; blocks trimmed), and Acceptance [1] row 3 tests that rule by reinsertion, keeping the numeric bound only on a quarter-edge, ≤4-layer synthetic cell. `index.md` and `build_pipeline.md` §Compiler pipeline carry the new wording. Rejected: bake layers larger than the pool edge.
+- 2026-09-30: plan approved.
 
 ## Corrections
 - Brief *Path* "Update with the change" lists `build_pipeline.md` and `rendering_pipeline.md` edits. Promotion (`492162d0a`) already wrote the post-change contracts with *Not built yet* markers, so each merge removes its markers and adjusts wording rather than writing new sections.
@@ -53,7 +23,7 @@ Keep the bound and let bake layers grow past the pool edge, for example to 4096 
 |---|---|---|
 | [1] Oversized cell → ≥2 blocks within pool edge; each chart in exactly one block; each vertex names its chart's block | `block_layout` unit test on a synthetic oversized cell; `atlas_layout` vertex-block assertion | achievable as stated |
 | [1] Cell fitting one layer → one block with pre-change extent and placements | `block_layout` test comparing against `pack_cell_block` output | achievable as stated |
-| [1] Oversized split trimmed and bounded | — | **needs restatement** (see Block) |
+| [1] Oversized split trimmed; no later-block chart fits an earlier block (reinsertion); numeric bound on a quarter-edge ≤4-layer synthetic cell | `block_layout` unit tests | achievable as stated |
 | [1] Block ids, placements and section bytes identical at 1 and many workers | `block_layout` worker-count test (new; `research.md` §5 notes none exists) | achievable as stated |
 | [1] Loader accepts contiguous multi-block and zero-block cells, rejects interleaved and out-of-range cells; runtime resolves each cell to its contiguous blocks (P10) | `prl_lightmap` tests; `block_map` tests | achievable as stated |
 | [1] Demand: multi-block mandatory/visible cell demands all blocks | `demand` unit test | achievable as stated |
@@ -92,7 +62,7 @@ The Path merges three times: [1], then [2], then [3]. Each merge runs its own pr
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Multi-block cell packing (thinnest slice, riskiest premise): fill-then-trim split in `pack_cell_blocks`/`pack_cell_block`, `(cluster, cell, sub-block)` order, limits over every block; worker-count test; bound fixture | integrating executor | Block cleared | |
+| 1 | Multi-block cell packing (thinnest slice, riskiest premise): fill-then-trim split in `pack_cell_blocks`/`pack_cell_block`, `(cluster, cell, sub-block)` order, limits over every block; worker-count test; bound fixture | integrating executor | — | |
 | 2 | Loader contiguity rule (`validate_lightmap_block_cells`) and runtime `LevelBlockMap` cell → block range | integrating executor | 1 | |
 | 3 | `BlockDemand` and install: all blocks per cell, per-block resident flags, release with in-flight discard, install/preload/settle (P12–P16) | delegated worker (runtime `lightmap_streaming`, `session/lightmap_residency`) | 2 | |
 | 4 | Dry run `CellBlocks` / `stored_repack_matches` and walk measurement per block | delegated worker (`lightmap_residency_dry_run`, `walk_measurement`) | 2 | |

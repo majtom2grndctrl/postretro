@@ -51,8 +51,8 @@ use postretro_render_data::material;
 
 use super::{
     CellData, CellDrawIndex, CellLocatorChild, CellLocatorNodeData, CellVisibility,
-    CoupledCellPair, FaceMeta, FalloffModel, LevelWorld, LightType, LightmapMode, MapLight,
-    PortalData, PrlLoadError, ShadowType,
+    CoupledCellPair, FaceMeta, FalloffModel, LevelWorld, LightType, MapLight, PortalData,
+    PrlLoadError, ShadowType,
 };
 use crate::lightmap_stream::{LightmapResidencyInputs, LightmapStreamingMode};
 use crate::prl::{KinematicGeometry, LoadedKinematicWaypoint};
@@ -2896,11 +2896,7 @@ pub(crate) fn load_prl_from_container(
     };
 
     // Both load modes keep the id-22 header, which carries the bake mode.
-    let lightmap_mode = lightmap
-        .as_ref()
-        .map_or(LightmapMode::default(), |lightmap| {
-            LightmapMode::from(lightmap.index.header.mode)
-        });
+    let lightmap_mode = crate::prl_lightmap::lightmap_mode(lightmap.as_ref());
     let lighting = LoadedLighting {
         lights,
         light_influences,

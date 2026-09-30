@@ -260,12 +260,11 @@ impl Renderer {
         self.full().sdf_atlas_resources.present
     }
 
-    /// Lightmap bake mode read from the PRL (Shadowed = visibility baked in).
-    /// Under the disjoint-direct design, `sdf` lights are excluded from
-    /// `lm_irr` at bake time, so the forward pass never multiplies SDF
-    /// visibility into the static-lightmap term; this accessor is retained
-    /// only for legacy-PRL compatibility.
-    #[allow(dead_code)]
+    /// Lightmap bake mode, recorded from the id-22 header. The compiler
+    /// writes only `Shadowed` (visibility baked in). `Unshadowed` is not
+    /// honoured: the forward pass never multiplies SDF visibility into the
+    /// static term, so it renders as the baked irradiance with no shadow
+    /// term. No caller reads it yet.
     pub fn lightmap_mode(&self) -> postretro_level_loader::LightmapMode {
         self.full().lightmap_mode
     }

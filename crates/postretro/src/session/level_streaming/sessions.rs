@@ -1,5 +1,6 @@
 //! Which streaming sessions a level needs, their replacement, the spawn
-//! preload, and the renderer's lightmap drain result. See: context/lib/rendering_pipeline.md §4
+//! preload, and the renderer's lightmap drain result.
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::sync::Arc;
 
@@ -69,14 +70,17 @@ impl LevelStreaming {
         if sh_current && lightmap_current {
             return Ok(true);
         }
-        let level_changed =
-            self.lightmap.as_ref().is_some_and(|streaming| {
-                !lightmap.is_some_and(|view| streaming.is_for(view.manifest))
-            }) || sh.as_ref().is_some_and(|streaming| {
-                !wanted
-                    .sh
-                    .is_some_and(|(manifest, _)| streaming.is_for_manifest(manifest))
-            });
+        // A declined lightmap is still the same level, so this compares the
+        // manifest wanted before the decline filter.
+        let level_changed = self.lightmap.as_ref().is_some_and(|streaming| {
+            !wanted
+                .lightmap
+                .is_some_and(|view| streaming.is_for(view.manifest))
+        }) || sh.as_ref().is_some_and(|streaming| {
+            !wanted
+                .sh
+                .is_some_and(|(manifest, _)| streaming.is_for_manifest(manifest))
+        });
         // Cancel the old I/O now. Its threads retire off the frame path; the
         // replacement issuer starts only after they have joined.
         if lightmap_current && self.lightmap.is_some() {
@@ -84,10 +88,13 @@ impl LevelStreaming {
         } else {
             self.retire(sh);
         }
+        // Hints belong to the level: a session replaced within it keeps
+        // them, and a new manifest invalidates them.
         if level_changed {
             self.hints = None;
         }
         if self.hints.is_none() {
+            // Tagged for the shared layer: the hints serve both resources.
             self.hints = decode_level_hints(wanted.cluster_directory)
                 .context("[Streaming] id-49 cluster hints")?;
         }
@@ -132,19 +139,26 @@ impl LevelStreaming {
         }
     }
 
-    /// The renderer does not stream this level's lightmap: it fell back to
-    /// the placeholder lightmap. The manifest is declined, so no later frame
-    /// recreates its session, and every session retires with the issuer they
-    /// share; the next frame recreates SH alone.
-    pub(crate) fn decline_lightmap(&mut self, sh: &mut Option<ShStreamingSession>) {
-        if let Some(lightmap) = &self.lightmap {
-            self.declined_lightmap = lightmap.manifest_identity();
+    /// The level stops streaming its lightmap. The manifest is declined, so
+    /// no later frame recreates its session. The caller logs why.
+    ///
+    /// SH is untouched: this may run between SH's drain batch and its
+    /// outcome. Without a running issuer the session drops whole, its route
+    /// with it. With one, the issuer's lightmap route delivers into the
+    /// session's queue, and a closed queue would stop the issuer SH reads
+    /// through too. The session is then parked, inert, until the next
+    /// frame's [`Self::ensure_sessions`] retires it with the issuer and
+    /// recreates SH alone.
+    pub(crate) fn decline_lightmap(&mut self) {
+        let Some(lightmap) = self.lightmap.as_mut() else {
+            return;
+        };
+        self.declined_lightmap = lightmap.manifest_identity();
+        if self.reads.is_none() {
+            self.lightmap = None;
+        } else {
+            lightmap.park_declined();
         }
-        log::warn!(
-            "[Lightmap streaming] the renderer does not stream this level's lightmap; the level \
-             renders with the placeholder lightmap"
-        );
-        self.retire(sh);
     }
 
     fn declined(&self, manifest: &Arc<LightmapStreamManifest>) -> bool {
@@ -165,7 +179,6 @@ impl LevelStreaming {
     /// drain-contract violation is fatal.
     pub(crate) fn install_spawn_lightmap(
         &mut self,
-        sh: &mut Option<ShStreamingSession>,
         level: &LevelWorld,
         spawn_eye: Vec3,
         install: impl FnOnce(
@@ -186,7 +199,8 @@ impl LevelStreaming {
                 };
                 return match RendererDrainFailure::of(drain_error) {
                     RendererDrainFailure::NotStreaming => {
-                        self.decline_lightmap(sh);
+                        warn_not_streaming();
+                        self.decline_lightmap();
                         Ok(())
                     }
                     RendererDrainFailure::RolledBack => {
@@ -217,13 +231,16 @@ impl LevelStreaming {
     /// outcome goes to the controller. An error returns the batch's pairs
     /// to the controller; then a renderer that does not stream the lightmap
     /// declines it for the level, a rolled-back drain carries on, and a
-    /// drain-contract violation is fatal.
+    /// drain-contract violation is fatal. A rollback that recurs on
+    /// [`MAX_CONSECUTIVE_ROLLED_BACK_DRAINS`] drains in a row declines the
+    /// lightmap too, with one error, rather than re-reading every pair
+    /// forever. Declining leaves SH's session, and its pending outcome,
+    /// alone.
     pub(crate) fn apply_lightmap_drain(
         &mut self,
-        sh: &mut Option<ShStreamingSession>,
         result: Result<LightmapDrainOutcome, LightmapResidencyDrainError>,
     ) -> Result<()> {
-        let Some(lightmap) = self.lightmap.as_mut() else {
+        let Some(lightmap) = self.lightmap_mut() else {
             return Ok(());
         };
         let error = match result {
@@ -232,13 +249,38 @@ impl LevelStreaming {
         };
         match lightmap.renderer_drain_failed(&error) {
             RendererDrainFailure::NotStreaming => {
-                self.decline_lightmap(sh);
+                warn_not_streaming();
+                self.decline_lightmap();
                 Ok(())
             }
-            RendererDrainFailure::RolledBack => Ok(()),
+            RendererDrainFailure::RolledBack => {
+                if lightmap.consecutive_rolled_back_drains() >= MAX_CONSECUTIVE_ROLLED_BACK_DRAINS {
+                    log::error!(
+                        "[Lightmap streaming] {MAX_CONSECUTIVE_ROLLED_BACK_DRAINS} renderer drains \
+                         in a row failed and were rolled back (last: {error}); lightmap \
+                         streaming stops for this level, and blocks not yet resident render \
+                         without static light"
+                    );
+                    self.decline_lightmap();
+                }
+                Ok(())
+            }
             RendererDrainFailure::Contract => {
                 Err(anyhow::Error::new(error).context("[Lightmap streaming] renderer drain"))
             }
         }
     }
+}
+
+/// Renderer drains that fail and roll back, in a row, before the level stops
+/// streaming its lightmap. A transient failure clears within a drain or two;
+/// eight in a row (about 0.13 s at 60 fps) means the failure recurs every
+/// drain, and each one re-reads every pair it carried.
+pub(crate) const MAX_CONSECUTIVE_ROLLED_BACK_DRAINS: u32 = 8;
+
+fn warn_not_streaming() {
+    log::warn!(
+        "[Lightmap streaming] the renderer does not stream this level's lightmap; the level \
+         renders with the placeholder lightmap"
+    );
 }

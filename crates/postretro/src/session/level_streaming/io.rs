@@ -124,9 +124,13 @@ impl StreamingRetirement {
             && self.lightmap_completions.is_empty()
     }
 
-    /// Joins and releases everything once every thread has finished.
+    /// Joins and releases everything once every thread has finished. Every
+    /// poll first empties the old lightmap completion queues: a retiring
+    /// issuer blocked delivering into a full one could otherwise never see
+    /// its cancel and finish.
     pub(crate) fn try_finish(&mut self) -> bool {
         self.sh.retain_mut(|retirement| !retirement.try_finish());
+        self.release_lightmap_completions();
         if !self.sh.is_empty() || !self.issuers.iter().all(JoinHandle::is_finished) {
             return false;
         }
@@ -134,17 +138,25 @@ impl StreamingRetirement {
         true
     }
 
-    /// Joins the issuers, then releases what they could still reach. Their
-    /// last deliveries are in the old completion queues by then; releasing
-    /// them keeps the kept session's in-memory byte figure exact.
-    fn join_and_release(&mut self) {
-        for handle in self.issuers.drain(..) {
-            let _ = handle.join();
-        }
-        for (completions, ledger) in self.lightmap_completions.drain(..) {
+    /// Releases every delivery waiting in the old lightmap completion
+    /// queues, keeping the kept session's in-memory byte figure exact.
+    fn release_lightmap_completions(&self) {
+        for (completions, ledger) in &self.lightmap_completions {
             while let Ok(completion) = completions.try_recv() {
                 ledger.release(completion.result.read_bytes());
             }
+        }
+    }
+
+    /// Releases the old completion queues, then joins the issuers, then drops
+    /// what they could still reach. A delivery into a dropped queue fails,
+    /// wakes a blocked issuer, and releases its own bytes, so neither the
+    /// join nor the byte figure waits on the frame.
+    fn join_and_release(&mut self) {
+        self.release_lightmap_completions();
+        self.lightmap_completions.clear();
+        for handle in self.issuers.drain(..) {
+            let _ = handle.join();
         }
         self.retained_lightmap.clear();
     }

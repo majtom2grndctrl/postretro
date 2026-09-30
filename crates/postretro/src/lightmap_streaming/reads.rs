@@ -89,6 +89,7 @@ impl LightmapResidencyController {
                     PairCharge::NeverRefused
                 },
             );
+            self.demand.recheck_if_held(block);
             self.counters.reads_requested += 1;
         }
         Ok(())
@@ -148,9 +149,9 @@ impl LightmapResidencyController {
     /// never-refused charge; a band read in flight is queued for a tier
     /// raise.
     pub(super) fn promote_in_hand(&mut self, block: u32) {
-        let facts = *self.map.facts(block);
         let slot = &mut self.slots[block as usize];
         if slot.charge == PairCharge::Band {
+            let facts = *self.map.facts(block);
             slot.charge = PairCharge::NeverRefused;
             self.band_permits -= 1;
             self.band_in_hand_bytes -= facts.pair_bytes();
@@ -175,6 +176,7 @@ impl LightmapResidencyController {
             if self.slots[block as usize].phase == BlockPhase::InFlight {
                 self.release_in_hand(block);
                 self.slots[block as usize].phase = BlockPhase::Absent;
+                self.demand.recheck_if_held(block);
                 self.counters.cancelled_reads += 1;
             }
         }
@@ -239,6 +241,7 @@ impl LightmapResidencyController {
                 self.counters.cancelled_reads += 1;
                 self.release_in_hand(block);
                 self.slots[block as usize].phase = BlockPhase::Absent;
+                self.demand.recheck_if_held(block);
                 return Ok(());
             }
             LightmapReadResult::Failed(error) => {
@@ -294,6 +297,7 @@ impl LightmapResidencyController {
         } else {
             BlockPhase::Absent
         };
+        self.demand.recheck_if_held(block);
     }
 
     fn identity(&self) -> ReadIdentity {

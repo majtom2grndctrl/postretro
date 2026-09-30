@@ -151,7 +151,12 @@ pub(crate) fn plan_streaming_pool(
     let header = index.header;
     let extents = block_extents(index);
     let shape = place_pool(&header, &extents, max_texture_dimension_2d).and_then(|pool| {
-        array_layers_fit(2, extents.len(), max_texture_array_layers).map(|()| pool)
+        array_layers_fit(
+            MIN_STREAMED_ARRAY_LAYERS,
+            extents.len(),
+            max_texture_array_layers,
+        )
+        .map(|()| pool)
     });
     if let Ok(pool) = &shape
         && pool.layer_count + 1 > max_texture_array_layers
@@ -190,6 +195,9 @@ pub(crate) fn plan_streaming_pool(
         max_array_layers: max_texture_array_layers,
     })
 }
+
+/// The smallest streamed pool texture: one pool layer plus the repack spare.
+const MIN_STREAMED_ARRAY_LAYERS: u32 = 2;
 
 fn block_extents(index: &LightmapBlockIndex) -> Vec<(u32, u32)> {
     index

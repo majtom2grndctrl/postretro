@@ -3,8 +3,8 @@
 // Governing context: context/lib/build_pipeline.md
 
 use crate::lightmap::{
-    LightmapBlockIndex, SectionByteRange, check_adjacent, check_blob, eof, invalid, read_u32,
-    read_u64, slice_range,
+    LightmapBlockIndex, SectionByteRange, check_adjacent, check_after_previous_block, check_blob,
+    eof, invalid, read_u32, read_u64, slice_range,
 };
 
 pub const SHADOWMASK_CHANNEL_DROPPED: u8 = 0xFF;
@@ -44,31 +44,69 @@ pub fn group_plane_len(width: u32, height: u32) -> Option<u64> {
 /// the block count, id 22's block count of records, and each block's two
 /// group planes. A bogus `selected_light_count` then never makes a reader
 /// fetch more than the index.
+///
+/// The bound is sized from id 22, so an id 42 with fewer blocks or smaller
+/// group planes fails it too. `block_count` is id 42's count when the reader
+/// already holds it (see [`shadowmask_block_count_offset`]); a count that
+/// differs from id 22's is then named in the error.
 pub fn shadowmask_prefix_len_through_block_count(
     fixed_header: &[u8],
     section_len: u64,
     lightmap: &LightmapBlockIndex,
+    block_count: Option<u32>,
 ) -> crate::Result<usize> {
+    let (selected, table) = slot_table(fixed_header)?;
+    let room = section_len.saturating_sub(min_bytes_beside_the_slot_table(lightmap)?);
+    if table <= room {
+        return Ok(FIXED_HEADER_BYTES + table as usize + 4);
+    }
+    let lightmap_blocks = lightmap.records.len();
+    Err(invalid(match block_count {
+        Some(count) if count as usize != lightmap_blocks => format!(
+            "shadowmask block count {count} does not match the lightmap's {lightmap_blocks}, \
+             or its {table}-byte slot table (selected_light_count {selected}) is too large \
+             for the {section_len}-byte section"
+        ),
+        known => format!(
+            "shadowmask section of {section_len} bytes cannot hold a {table}-byte slot table \
+             (selected_light_count {selected}) beside the records and group planes of id 22's \
+             {lightmap_blocks} blocks: slot table too large, or the {} disagree with id 22",
+            if known.is_some() {
+                "group planes"
+            } else {
+                "block count or group planes"
+            }
+        ),
+    }))
+}
+
+/// Where id 42's block count sits, past the fixed header and padded slot
+/// table, when the section holds all four of its bytes. A reader whose
+/// slot-table bound failed can fetch the count alone to diagnose it.
+pub fn shadowmask_block_count_offset(fixed_header: &[u8], section_len: u64) -> Option<u64> {
+    let (_, table) = slot_table(fixed_header).ok()?;
+    let offset = FIXED_HEADER_BYTES as u64 + table;
+    (offset + 4 <= section_len).then_some(offset)
+}
+
+/// The fixed header's `selected_light_count` and its slot table's padded
+/// length, once the format tag checks out.
+fn slot_table(fixed_header: &[u8]) -> crate::Result<(u32, u64)> {
     if fixed_header.len() < FIXED_HEADER_BYTES {
         return Err(eof("shadowmask section too short for header"));
     }
     check_format_tag(read_u32(fixed_header, 0))?;
     let selected = read_u32(fixed_header, 4);
-    let table = u64::from(selected) + padding_to_4(selected as usize) as u64;
-    let room = section_len.saturating_sub(min_bytes_beside_the_slot_table(lightmap)?);
-    if table > room {
-        return Err(invalid(format!(
-            "shadowmask section of {section_len} bytes cannot hold a {table}-byte slot table \
-             (selected_light_count {selected}) beside the records and group planes of the \
-             lightmap's {} blocks",
-            lightmap.records.len()
-        )));
-    }
-    Ok(FIXED_HEADER_BYTES + table as usize + 4)
+    Ok((
+        selected,
+        u64::from(selected) + padding_to_4(selected as usize) as u64,
+    ))
 }
 
 /// Fixed header, block count, and id 22's block count of records and group
-/// plane pairs: every byte of a section except its slot table.
+/// plane pairs: every byte of a valid section except its slot table. Blobs
+/// are disjoint (both parsers reject overlap), so a valid section's planes
+/// sum to at most the bytes after its index.
 fn min_bytes_beside_the_slot_table(lightmap: &LightmapBlockIndex) -> crate::Result<u64> {
     let overflow = || invalid("shadowmask section size overflows");
     let mut total = (lightmap.records.len() as u64)
@@ -113,14 +151,18 @@ impl ShadowmaskBlockIndex {
     /// table padding, a block count that differs from id 22's, a group blob
     /// whose length disagrees with its lightmap block's extent, a blob range
     /// outside the section blobs, a group B blob that does not start where
-    /// group A ends, and a nonzero reserved field.
+    /// group A ends, a block whose blobs start before the previous block's
+    /// end, and a nonzero reserved field.
     pub fn from_prefix(
         prefix: &[u8],
         section_len: u64,
         lightmap: &LightmapBlockIndex,
     ) -> crate::Result<Self> {
+        let held_count = shadowmask_block_count_offset(prefix, section_len)
+            .and_then(|at| prefix.get(at as usize..at as usize + 4))
+            .map(|count| read_u32(count, 0));
         let through_count =
-            shadowmask_prefix_len_through_block_count(prefix, section_len, lightmap)?;
+            shadowmask_prefix_len_through_block_count(prefix, section_len, lightmap, held_count)?;
         if prefix.len() < through_count {
             return Err(eof("shadowmask section truncated in channel table"));
         }
@@ -159,6 +201,7 @@ impl ShadowmaskBlockIndex {
             )));
         }
         let mut records = Vec::with_capacity(block_count);
+        let mut blobs_end = index_len;
         for (block, lightmap_record) in lightmap.records.iter().enumerate() {
             let at = through_count + block * SHADOWMASK_BLOCK_RECORD_BYTES;
             let record = ShadowmaskBlockRecord {
@@ -198,6 +241,13 @@ impl ShadowmaskBlockIndex {
                 block,
                 ("group A", record.group_a),
                 ("group B", record.group_b),
+            )?;
+            blobs_end = check_after_previous_block(
+                "shadowmask",
+                block,
+                ("group A", record.group_a),
+                record.group_b,
+                blobs_end,
             )?;
             records.push(record);
         }
@@ -418,7 +468,8 @@ mod tests {
         let bytes = section.to_bytes();
         let (section_len, lm_index) = (bytes.len() as u64, lm.index());
         let through =
-            shadowmask_prefix_len_through_block_count(&bytes[..8], section_len, &lm_index).unwrap();
+            shadowmask_prefix_len_through_block_count(&bytes[..8], section_len, &lm_index, None)
+                .unwrap();
         assert_eq!(through, 8 + 4 + 4);
         let index_len = section.index().index_byte_len();
         assert_eq!(index_len, through + 2 * SHADOWMASK_BLOCK_RECORD_BYTES);
@@ -438,6 +489,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fewer_blocks_than_the_lightmap_as_a_count_mismatch() {
+        // One block against id 22's two: the section is too small for the
+        // slot-table bound sized from id 22, which names the count it holds.
+        let bytes = section_for(&lightmap(&[(8, 4)]), vec![0]).to_bytes();
+        let more = lightmap(&[(8, 4), (4, 12)]).index();
+        let message = error_message(ShadowmaskAtlasSection::from_bytes(&bytes, &more));
+        assert!(
+            message.contains("shadowmask block count 1 does not match the lightmap's 2"),
+            "{message}"
+        );
+        // A streaming reader holding only the fixed header names every cause.
+        let message = error_message(shadowmask_prefix_len_through_block_count(
+            &bytes[..8],
+            bytes.len() as u64,
+            &more,
+            None,
+        ));
+        assert!(
+            message.contains("the block count or group planes disagree with id 22"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn rejects_group_length_that_disagrees_with_the_lightmap_extent() {
         let lm = lightmap(&[(8, 4)]);
         let bytes = section_for(&lm, vec![0]).to_bytes();
@@ -447,6 +522,36 @@ mod tests {
             &narrower.index(),
         ));
         assert!(message.contains("group A blob"), "{message}");
+        // Wider id-22 blocks need larger planes than the section holds, so
+        // the slot-table bound fails first; the count matches, so it names
+        // the planes.
+        let wider = lightmap(&[(12, 4)]);
+        let message = error_message(ShadowmaskAtlasSection::from_bytes(&bytes, &wider.index()));
+        assert!(
+            message.contains("slot table too large, or the group planes disagree with id 22"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_group_blobs_that_overlap_the_previous_block() {
+        let lm = lightmap(&[(8, 4), (4, 12)]);
+        let section = section_for(&lm, vec![0]);
+        let mut bytes = section.to_bytes();
+        let first = section.index().records[0];
+        // Block 1's pair moved onto block 0's: adjacent and inside the
+        // section, but sharing its bytes.
+        let at = 8 + 4 + 4 + SHADOWMASK_BLOCK_RECORD_BYTES;
+        let group_len = u64::from(section.index().records[1].group_a.len);
+        bytes[at..at + 8].copy_from_slice(&first.group_a.offset.to_le_bytes());
+        bytes[at + 12..at + 20].copy_from_slice(&(first.group_a.offset + group_len).to_le_bytes());
+        let message = error_message(ShadowmaskAtlasSection::from_bytes(&bytes, &lm.index()));
+        let expected = format!(
+            "shadowmask block 1 group A blob at {} starts before the previous block's blobs end at {}",
+            first.group_a.offset,
+            first.group_b.end().unwrap()
+        );
+        assert!(message.contains(&expected), "{message}");
     }
 
     #[test]
@@ -484,7 +589,8 @@ mod tests {
         // Header, count, one record and two 32-byte planes leave 4 bytes:
         // exactly the one-slot table padded to 4.
         assert_eq!(
-            shadowmask_prefix_len_through_block_count(&bytes[..8], section_len, &index).unwrap(),
+            shadowmask_prefix_len_through_block_count(&bytes[..8], section_len, &index, None)
+                .unwrap(),
             8 + 4 + 4
         );
         // A count that still fits the section whole, as a bare section-length
@@ -495,10 +601,15 @@ mod tests {
             &bytes[..8],
             section_len,
             &index,
+            None,
         ));
         assert!(message.contains("cannot hold a"), "{message}");
+        assert!(message.contains("slot table too large"), "{message}");
+        // The whole section reads a bogus "count" from the blob bytes past
+        // the table, so the error names both causes.
         let message = error_message(ShadowmaskAtlasSection::from_bytes(&bytes, &index));
-        assert!(message.contains("cannot hold a"), "{message}");
+        assert!(message.contains("slot table"), "{message}");
+        assert!(message.contains("too large"), "{message}");
     }
 
     #[test]

@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use postretro_level_format::lightmap::{LIGHTMAP_HEADER_BYTES, LightmapBlockIndex, LightmapHeader};
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, shadowmask_prefix_len_through_block_count,
+    SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, shadowmask_block_count_offset,
+    shadowmask_prefix_len_through_block_count,
 };
 use postretro_level_format::{ContainerMeta, SectionEntry, SectionId};
 
@@ -200,8 +201,24 @@ fn read_shadowmask_index_prefix(
     let invalid = |err| section_validation_from_error("ShadowmaskAtlas", err);
     let mut prefix = Vec::new();
     extend_prefix(file, entry, &mut prefix, 8)?;
-    let through_count = shadowmask_prefix_len_through_block_count(&prefix, entry.size, lightmap)
-        .map_err(invalid)?;
+    let bound = |block_count| {
+        shadowmask_prefix_len_through_block_count(&prefix, entry.size, lightmap, block_count)
+    };
+    let through_count = match bound(None) {
+        Ok(through_count) => through_count,
+        // A failed bound may be a block count that disagrees with id 22.
+        // Fetch just the four count bytes, off the happy path, to say which.
+        Err(err) => {
+            let held_count = match shadowmask_block_count_offset(&prefix, entry.size) {
+                Some(at) => {
+                    let bytes = read_vec_at(file, entry.offset + at, 4, "id-42 block count")?;
+                    Some(u32::from_le_bytes(bytes[..4].try_into().unwrap()))
+                }
+                None => None,
+            };
+            return Err(invalid(bound(held_count).err().unwrap_or(err)));
+        }
+    };
     extend_prefix(file, entry, &mut prefix, through_count as u64)?;
     if prefix.len() == through_count {
         let at = through_count - 4;
@@ -210,8 +227,9 @@ fn read_shadowmask_index_prefix(
             .checked_mul(SHADOWMASK_BLOCK_RECORD_BYTES as u64)
             .and_then(|records| records.checked_add(through_count as u64))
             .ok_or_else(|| section_validation("ShadowmaskAtlas", "index length overflows"))?;
-        // A count that disagrees with id 22 fails in `from_prefix` below;
-        // never read records for it.
+        // A count above id 22's passes the bound above and fails in
+        // `from_prefix` below; never read records for it. A count below
+        // usually fails the bound, which names it.
         if block_count as usize == lightmap.records.len() {
             extend_prefix(file, entry, &mut prefix, index_len)?;
         }

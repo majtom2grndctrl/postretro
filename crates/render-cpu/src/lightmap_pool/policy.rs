@@ -119,8 +119,9 @@ impl LightmapPoolModel {
     /// [`new`](Self::new) bounded by the device: the active generation never
     /// holds more than `max_layers` usable layers (the device's
     /// `maxTextureArrayLayers` minus the spare). A mandatory or visible pair
-    /// that would need a layer past it is deferred, a counted transient
-    /// miss, as while a generation retires.
+    /// that would need a layer past it is deferred, a counted miss that,
+    /// unlike one while a generation retires, lasts until the resident set
+    /// shrinks.
     pub fn with_layer_limit(
         extents: Vec<(u32, u32)>,
         alignment: u32,

@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use log::Level;
 use postretro_level_format::cell_residency_set::{CellResidencySetSection, ResidencyEntry};
 use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES, LightmapBlock,
@@ -11,6 +12,7 @@ use postretro_level_format::lightmap::{
 };
 use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
 use postretro_level_format::{SectionBlob, SectionId};
+use postretro_test_log_capture::LogCapture;
 
 use super::storage::{LightmapResidencyReason, select_lightmap_residency};
 use super::*;
@@ -229,6 +231,42 @@ fn residency_streams_only_with_request_residency_set_portals_file_and_blocks() {
         ),
         "a zero-block level stays in placeholder mode"
     );
+    assert_eq!(
+        select_lightmap_residency(
+            LightmapResidencyInputs {
+                has_retained_file: false,
+                ..stream_inputs()
+            },
+            0
+        ),
+        (
+            LightmapStreamingMode::AllResident,
+            LightmapResidencyReason::NoLightmapBlocks
+        ),
+        "without id 22 the load keeps no file; the missing blocks are the reason"
+    );
+}
+
+#[test]
+fn a_level_without_id22_logs_no_lightmap_blocks_as_its_residency_reason() {
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_no_id22_reason.prl",
+        vec![blob(
+            SectionId::CellResidencySet,
+            residency_set().to_bytes(),
+        )],
+    );
+    let capture = LogCapture::start();
+    let world = fixture.load(LightmapStreamingMode::Stream);
+    assert_eq!(
+        world.lightmap_storage().mode(),
+        LightmapStreamingMode::AllResident
+    );
+    capture.assert_logged_once(
+        Level::Info,
+        "Lightmap residency: all-resident, 0 cell block(s) (level has no lightmap cell blocks",
+    );
+    capture.assert_not_logged(Level::Info, "retained file");
 }
 
 #[test]
@@ -605,6 +643,7 @@ fn both_load_modes_carry_the_id22_header_mode_into_the_world() {
         lighting_blobs(&lightmap, None, true),
     );
     for requested in BOTH_MODES {
+        let capture = LogCapture::start();
         let world = fixture.load(requested);
         assert_eq!(world.lightmap_storage().mode(), requested);
         assert_eq!(
@@ -612,6 +651,23 @@ fn both_load_modes_carry_the_id22_header_mode_into_the_world() {
             crate::LightmapMode::Unshadowed,
             "{requested:?}"
         );
+        capture.assert_logged_once(Level::Warn, UNSHADOWED_WARNING);
+    }
+}
+
+const UNSHADOWED_WARNING: &str = "lightmap mode Unshadowed is recorded but not honoured";
+
+#[test]
+fn a_shadowed_level_does_not_warn_about_the_lightmap_mode() {
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_shadowed_no_mode_warning.prl",
+        lighting_blobs(&lightmap_section(&[(8, 4), (4, 4)]), None, true),
+    );
+    for requested in BOTH_MODES {
+        let capture = LogCapture::start();
+        let world = fixture.load(requested);
+        assert_eq!(world.lightmap_mode, crate::LightmapMode::Shadowed);
+        capture.assert_not_logged(Level::Warn, UNSHADOWED_WARNING);
     }
 }
 
@@ -652,7 +708,26 @@ fn both_load_modes_reject_a_cell_owned_by_two_blocks() {
 }
 
 #[test]
-fn a_bogus_selected_light_count_is_rejected_after_reading_only_the_fixed_header() {
+fn both_load_modes_name_a_shadowmask_with_fewer_blocks_than_the_lightmap() {
+    // Id 42 sized for one block against id 22's two fails the slot-table
+    // bound sized from id 22; the error still names the count.
+    let lightmap = lightmap_section(&[(8, 4), (4, 4)]);
+    let shadowmask = shadowmask_section(&[(8, 4)]);
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_fewer_shadowmask_blocks.prl",
+        lighting_blobs(&lightmap, Some(&shadowmask), true),
+    );
+    for requested in BOTH_MODES {
+        let message = load_error(&fixture, requested);
+        assert!(
+            message.contains("shadowmask block count 1 does not match the lightmap's 2"),
+            "{requested:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_bogus_selected_light_count_is_rejected_without_reading_the_slot_table() {
     let extents = [(8, 4), (4, 4)];
     let lightmap = lightmap_section(&extents);
     let mut shadowmask = shadowmask_section(&extents).to_bytes();
@@ -677,12 +752,15 @@ fn a_bogus_selected_light_count_is_rejected_after_reading_only_the_fixed_header(
         message.contains("ShadowmaskAtlas validation error"),
         "{message}"
     );
-    assert!(message.contains("cannot hold a"), "{message}");
+    // The bogus table puts blob bytes where the count would sit, so the
+    // error names both causes.
+    assert!(message.contains("slot table"), "{message}");
+    assert!(message.contains("too large"), "{message}");
     let reads = container.read_counters().expect("positional reads count");
     assert_eq!(
         reads.section_bytes(SHADOWMASK),
-        8,
-        "only id 42's fixed header is read"
+        8 + 4,
+        "only id 42's fixed header, then the four bytes where the count would sit, are read"
     );
 }
 

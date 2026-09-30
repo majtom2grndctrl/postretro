@@ -57,7 +57,6 @@ fn sh_session(
 /// the parked batch and applies its outcome through the level owner.
 fn model_drains_lightmap(
     level: &mut LevelStreaming,
-    sh: &mut Option<ShStreamingSession>,
     model: &mut postretro_render_cpu::lightmap_pool::LightmapPoolModel,
 ) {
     let Some(batch) = level
@@ -67,7 +66,7 @@ fn model_drains_lightmap(
         return;
     };
     let outcome = model_drain(model, batch);
-    level.apply_lightmap_drain(sh, Ok(outcome)).unwrap();
+    level.apply_lightmap_drain(Ok(outcome)).unwrap();
 }
 
 fn frame<'a>(
@@ -454,7 +453,7 @@ fn spawn_preload_makes_the_spawn_set_resident_and_the_first_frame_keeps_the_sess
     // Spawn in cell 0: cells 0 and 1 are mandatory at the default lead, and
     // cell 2 is the prefetch band.
     level
-        .install_spawn_lightmap(&mut sh, &world, eye_in_cell(0), |batch| {
+        .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
             Ok(model_drain(&mut model, batch))
         })
         .unwrap();
@@ -525,7 +524,7 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
             .unwrap()
     );
     level
-        .install_spawn_lightmap(&mut sh, &world, eye_in_cell(0), |batch| {
+        .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
             Ok(model_drain(&mut model, batch))
         })
         .unwrap();
@@ -539,7 +538,7 @@ fn sh_mode_change_mid_level_keeps_the_lightmap_session_and_its_resident_blocks()
             .prepare_drains(sh, Some(view.residency_set), frame(&visible, 0, &cpu))
             .unwrap();
         sh.as_mut().unwrap().accept_drain_for_test(&batch).unwrap();
-        model_drains_lightmap(level, sh, &mut model);
+        model_drains_lightmap(level, &mut model);
     };
     run_frame(&mut level, &mut sh);
     run_frame(&mut level, &mut sh);
@@ -591,7 +590,7 @@ fn a_renderer_that_does_not_stream_the_lightmap_declines_it_for_the_level() {
     assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
 
     level
-        .install_spawn_lightmap(&mut sh, &world, eye_in_cell(0), |_| {
+        .install_spawn_lightmap(&world, eye_in_cell(0), |_| {
             Err(LightmapResidencyDrainError::NotStreaming)
         })
         .unwrap();
@@ -604,6 +603,149 @@ fn a_renderer_that_does_not_stream_the_lightmap_declines_it_for_the_level() {
         assert!(level.lightmap().is_none());
     }
     capture.assert_logged_once(log::Level::Warn, "does not stream this level's lightmap");
+}
+
+// Regression: a renderer that stopped streaming the lightmap mid-level retired
+// SH between SH's drain batch and its outcome, and applying that outcome
+// without an SH session exited the game.
+#[test]
+fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let prl = StreamedLightmapPrl::write();
+    let world = prl.load();
+    let view = LightmapLevelView::of(&world).unwrap();
+    let mut model = manifest_pool_model(view.manifest);
+    let (_temp, sh_path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let sh_world = postretro_level_loader::load_prl(sh_path.to_str().unwrap()).unwrap();
+    let sh_manifest = Arc::clone(
+        sh_world
+            .sh_stream_manifest()
+            .expect("id 50 selects streaming"),
+    );
+    let make_sh = |manifest, mode, _: Option<Arc<ClusterHints>>| {
+        anyhow::Ok(sh_session(&sh_world, manifest, mode))
+    };
+    let wanted = WantedStreaming {
+        sh: Some((&sh_manifest, ShStreamingMode::SyncProof)),
+        lightmap: Some(view),
+        cluster_directory: world.cluster_directory(),
+    };
+    let mut level = LevelStreaming::default();
+    let mut sh = None;
+    assert!(level.ensure_sessions(&mut sh, wanted, &make_sh).unwrap());
+    level
+        .install_spawn_lightmap(&world, eye_in_cell(0), |batch| {
+            Ok(model_drain(&mut model, batch))
+        })
+        .unwrap();
+
+    // SH's batch is out when the renderer declines the lightmap.
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0]);
+    let sh_batch = level
+        .prepare_drains(&mut sh, Some(view.residency_set), frame(&visible, 0, &cpu))
+        .unwrap();
+    level
+        .lightmap_mut()
+        .unwrap()
+        .take_drain_batch_for_renderer()
+        .expect("the frame parks a lightmap batch");
+    level
+        .apply_lightmap_drain(Err(LightmapResidencyDrainError::NotStreaming))
+        .unwrap();
+    assert!(
+        level.lightmap().is_none(),
+        "no lightmap work after the decline"
+    );
+    sh.as_mut()
+        .expect("SH outlives the decline")
+        .accept_drain_for_test(&sh_batch)
+        .unwrap();
+
+    // Later frames retire the declined session with the issuer and stream SH
+    // alone; the lightmap session never returns.
+    for _ in 0..3 {
+        assert!(level.ensure_sessions(&mut sh, wanted, &make_sh).unwrap());
+        assert!(level.lightmap().is_none());
+        let sh_batch = level
+            .prepare_drains(&mut sh, Some(view.residency_set), frame(&visible, 0, &cpu))
+            .unwrap();
+        sh.as_mut()
+            .unwrap()
+            .accept_drain_for_test(&sh_batch)
+            .unwrap();
+    }
+    capture.assert_logged_once(log::Level::Warn, "does not stream this level's lightmap");
+}
+
+/// One frame of a lightmap-only level: its renderer drain either fails and
+/// rolls back, or the pool model installs the batch.
+fn lightmap_drain_frame(
+    level: &mut LevelStreaming,
+    wanted: WantedStreaming<'_>,
+    model: &mut postretro_render_cpu::lightmap_pool::LightmapPoolModel,
+    rolled_back: bool,
+) {
+    let mut sh = None;
+    assert!(level.ensure_sessions(&mut sh, wanted, no_sh).unwrap());
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0]);
+    let residency_set = wanted.lightmap.unwrap().residency_set;
+    level
+        .prepare_drains(&mut sh, Some(residency_set), frame(&visible, 0, &cpu))
+        .unwrap();
+    let batch = level
+        .lightmap_mut()
+        .and_then(LightmapStreamingSession::take_drain_batch_for_renderer)
+        .expect("every frame parks a batch");
+    let result = if rolled_back {
+        Err(LightmapResidencyDrainError::Upload("staging failed".into()))
+    } else {
+        Ok(model_drain(model, batch))
+    };
+    level.apply_lightmap_drain(result).unwrap();
+}
+
+// A rollback that recurs on every drain declines the lightmap for the level
+// with one error, rather than re-reading every pair forever. A shorter run,
+// or one a successful drain breaks, keeps streaming.
+#[test]
+fn a_rollback_recurring_on_every_drain_declines_the_lightmap_with_one_error() {
+    use super::sessions::MAX_CONSECUTIVE_ROLLED_BACK_DRAINS;
+
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let prl = StreamedLightmapPrl::write();
+    let world = prl.load();
+    let view = LightmapLevelView::of(&world).unwrap();
+    let mut model = manifest_pool_model(view.manifest);
+    let wanted = WantedStreaming {
+        sh: None,
+        lightmap: Some(view),
+        cluster_directory: world.cluster_directory(),
+    };
+    let mut level = LevelStreaming::default();
+    let short_run = MAX_CONSECUTIVE_ROLLED_BACK_DRAINS - 1;
+
+    for _ in 0..short_run {
+        lightmap_drain_frame(&mut level, wanted, &mut model, true);
+    }
+    lightmap_drain_frame(&mut level, wanted, &mut model, false);
+    for _ in 0..short_run {
+        lightmap_drain_frame(&mut level, wanted, &mut model, true);
+    }
+    assert!(level.lightmap().is_some(), "no run reached the bound");
+    capture.assert_not_logged(log::Level::Error, "in a row failed");
+
+    lightmap_drain_frame(&mut level, wanted, &mut model, true);
+    assert!(level.lightmap().is_none(), "declined for the level");
+    let mut sh = None;
+    for _ in 0..3 {
+        assert!(
+            !level.ensure_sessions(&mut sh, wanted, no_sh).unwrap(),
+            "nothing streams"
+        );
+    }
+    capture.assert_logged_once(log::Level::Error, "in a row failed and were rolled back");
 }
 
 // A drain the renderer rolled back returns its pairs to the controller, which
@@ -631,13 +773,10 @@ fn a_rolled_back_renderer_drain_returns_its_pairs_and_a_contract_violation_is_fa
             .expect("no outcome is outstanding");
         if batch.ready.is_empty() {
             level
-                .apply_lightmap_drain(
-                    &mut sh,
-                    Ok(LightmapDrainOutcome {
-                        pool: headroom(8),
-                        ..LightmapDrainOutcome::default()
-                    }),
-                )
+                .apply_lightmap_drain(Ok(LightmapDrainOutcome {
+                    pool: headroom(8),
+                    ..LightmapDrainOutcome::default()
+                }))
                 .unwrap();
             return false;
         }
@@ -646,13 +785,10 @@ fn a_rolled_back_renderer_drain_returns_its_pairs_and_a_contract_violation_is_fa
     });
 
     level
-        .apply_lightmap_drain(
-            &mut sh,
-            Err(LightmapResidencyDrainError::GpuCapacity {
-                required_layers: 9,
-                max_layers: 8,
-            }),
-        )
+        .apply_lightmap_drain(Err(LightmapResidencyDrainError::GpuCapacity {
+            required_layers: 9,
+            max_layers: 8,
+        }))
         .unwrap();
     let controller = level.lightmap().unwrap().controller();
     for &block in &drained {
@@ -682,12 +818,45 @@ fn a_rolled_back_renderer_drain_returns_its_pairs_and_a_contract_violation_is_fa
     });
 
     let error = level
-        .apply_lightmap_drain(
-            &mut sh,
-            Err(LightmapResidencyDrainError::InvalidBatch(
-                "a block past the table".into(),
-            )),
-        )
+        .apply_lightmap_drain(Err(LightmapResidencyDrainError::InvalidBatch(
+            "a block past the table".into(),
+        )))
         .unwrap_err();
     assert!(error.to_string().contains("renderer drain"), "{error}");
+}
+
+// Regression: a retiring issuer blocked delivering into a kept lightmap
+// session's full old completion queue never finished, because retirement
+// emptied that queue only once the issuer had.
+#[test]
+fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
+    use crate::lightmap_streaming::route::{
+        LightmapCompletion, LightmapReadResult, LightmapRouteLedger,
+    };
+    use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, ReadTier};
+
+    let (completions, queue) = std::sync::mpsc::sync_channel(1);
+    let issuer = std::thread::spawn(move || {
+        for key in 0..3 {
+            let request = ReadRequest {
+                resource: StreamResource::LightmapBlock,
+                key,
+                tier: ReadTier::Mandatory,
+                identity: ReadIdentity {
+                    generation: 1,
+                    content_tag: [0; 32],
+                    item_hash: [0; 32],
+                },
+                ranges: ReadRanges::one(0..64),
+            };
+            let _ = completions.send(LightmapCompletion {
+                request,
+                result: LightmapReadResult::Cancelled,
+            });
+        }
+    });
+    let mut retirement = StreamingRetirement::default();
+    retirement.add_issuer(issuer);
+    retirement.drain_lightmap_completions(queue, Arc::new(LightmapRouteLedger::default()));
+    wait_until("the blocked issuer to finish", || retirement.try_finish());
 }

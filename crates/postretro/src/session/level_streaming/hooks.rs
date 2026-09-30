@@ -1,5 +1,6 @@
 //! `Session` entry points for level-scope streaming: replacement, the frame's
-//! drain step, and the lightmap renderer seam. See: context/lib/rendering_pipeline.md §4
+//! drain step, and the lightmap renderer seam.
+//! See: context/lib/rendering_pipeline.md §4
 
 use std::sync::Arc;
 
@@ -70,12 +71,10 @@ impl crate::session::Session {
         )? {
             return Ok(());
         }
-        self.level_streaming.install_spawn_lightmap(
-            &mut self.sh_streaming,
-            level,
-            spawn_eye,
-            |batch| renderer.drain_lightmap_residency(batch),
-        )?;
+        self.level_streaming
+            .install_spawn_lightmap(level, spawn_eye, |batch| {
+                renderer.drain_lightmap_residency(batch)
+            })?;
         if !self.lightmap_residency_settled() {
             // A failed read already warned; its block renders SH-only.
             log::warn!(
@@ -157,10 +156,9 @@ impl crate::session::Session {
                 renderer.drain_lightmap_residency(batch)
             };
             let _scope = cpu.scope(StreamingStage::LightmapResidency);
-            self.level_streaming
-                .apply_lightmap_drain(&mut self.sh_streaming, result)?;
+            self.level_streaming.apply_lightmap_drain(result)?;
         }
-        // A renderer that does not stream the lightmap declined it above.
+        // The drain above may have declined the lightmap for the level.
         let Some(lightmap) = self.level_streaming.lightmap_mut() else {
             return Ok(());
         };

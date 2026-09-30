@@ -259,10 +259,25 @@ impl LightmapPoolModel {
     /// current layers. One generation per drain, none while the last one is
     /// still retiring, and never past the device's layer limit; a pair that
     /// needs growth then is deferred.
+    ///
+    /// Once one pair is deferred at the device limit, the pool cannot grow
+    /// again this drain, so the pairs after it skip the victim walk: each
+    /// takes free space it fits as is, or is deferred. Without the skip, a
+    /// level past the device limit repeats a full walk per pair on every
+    /// drain, since its deferred pairs come back ready. A later drain walks
+    /// again, so a changed resident set still gets its chance.
     fn place_with_growth(&mut self, list: &[u32]) {
         let retiring = self.retiring;
         let start_layers = self.layers;
         for &block in list {
+            let (width, height) = self.alloc_extent(block);
+            if self.plan.device_limited {
+                match self.allocate_in_layers(width, height) {
+                    Some(slot) => self.place(block, slot),
+                    None => self.plan.deferred.push(block),
+                }
+                continue;
+            }
             if self.place_without_growth(block) {
                 continue;
             }
@@ -270,10 +285,10 @@ impl LightmapPoolModel {
                 self.plan.deferred.push(block);
                 continue;
             }
-            let (width, height) = self.alloc_extent(block);
             let limit = Some(self.max_layers as usize);
             let Some(slot) = self.pool.allocate_within(width, height, limit) else {
                 self.plan.deferred.push(block);
+                self.plan.device_limited = true;
                 continue;
             };
             self.place(block, slot);
@@ -322,9 +337,8 @@ impl LightmapPoolModel {
             }
         }
         for touched in &self.touched {
-            // A residency reset's frees carry no reason: no outcome reports
-            // them.
             if let Some(reason) = touched.reason
+                && !touched.forgotten
                 && touched.start.is_some()
                 && !self.is_resident(touched.block)
             {

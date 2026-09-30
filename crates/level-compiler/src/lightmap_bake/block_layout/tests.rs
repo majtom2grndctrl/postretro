@@ -128,26 +128,39 @@ fn cell_block_pack_rejects_a_block_past_the_pool_layer_edge_and_accepts_one_at_i
     let pack = pack(&at_edge, BlockOrdering::by_cell_id(2));
     assert_eq!(pack.layout.blocks[0].width, LIGHTMAP_POOL_LAYER_EDGE);
 
-    let past_edge = [chart(9, 9, 0), chart(12, LIGHTMAP_POOL_LAYER_EDGE + 1, 5)];
+    // Each of cell 5's charts fits a pool layer, so the earlier chart-size
+    // check passes them; together they cover more than a layer's area, so no
+    // block holding all three can fit one.
+    let side = LIGHTMAP_POOL_LAYER_EDGE * 3 / 4;
+    let past_edge = [
+        chart(9, 9, 0),
+        chart(side, side, 5),
+        chart(side, side, 5),
+        chart(side, side, 5),
+    ];
+    assert!(
+        super::super::charts::check_chart_extents(&past_edge, 1.0, &[]).is_ok(),
+        "every chart fits a pool layer on its own"
+    );
     let error = pack_cell_blocks(
         &past_edge,
         BlockOrdering::by_cell_id(2),
         &BakeControl::unrestricted(),
     )
-    .expect_err("a cell block taller than a pool layer must fail the build");
+    .expect_err("a cell block past a pool layer must fail the build");
     match error {
         LightmapBakeError::BlockTooLarge {
             cell_id,
+            width,
             height,
             max,
             largest_chart_face,
-            ..
         } => {
             assert_eq!(
                 (cell_id, max, largest_chart_face),
                 (5, LIGHTMAP_POOL_LAYER_EDGE, 1)
             );
-            assert!(height > LIGHTMAP_POOL_LAYER_EDGE);
+            assert!(width > LIGHTMAP_POOL_LAYER_EDGE || height > LIGHTMAP_POOL_LAYER_EDGE);
         }
         other => panic!("expected BlockTooLarge, got {other}"),
     }

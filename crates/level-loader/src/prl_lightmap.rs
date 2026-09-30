@@ -11,7 +11,7 @@ use postretro_level_format::lightmap::{
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_render_data::geometry::WorldVertex;
 
-use crate::prl::PrlLoadError;
+use crate::prl::{LightmapMode, PrlLoadError};
 use crate::prl_container::PrlContainer;
 use crate::prl_loader::{section_validation, section_validation_from_error};
 
@@ -90,6 +90,21 @@ pub(crate) fn validate_lightmap_block_cells(
         *slot = Some(block);
     }
     Ok(())
+}
+
+/// The id-22 bake mode, `Shadowed` without id 22. The forward pass never
+/// multiplies SDF visibility into the static term, so an `Unshadowed` level
+/// is recorded, not honoured, and warns once per load.
+pub(crate) fn lightmap_mode(lightmap: Option<&LoadedLightmap>) -> LightmapMode {
+    let mode = lightmap.map_or(LightmapMode::default(), |lightmap| {
+        LightmapMode::from(lightmap.index.header.mode)
+    });
+    if mode == LightmapMode::Unshadowed {
+        log::warn!(
+            "[PRL] lightmap mode Unshadowed is recorded but not honoured; static light renders without its shadow term"
+        );
+    }
+    mode
 }
 
 /// Id 42 pairs with id 22 block for block, so every fault fails the load:

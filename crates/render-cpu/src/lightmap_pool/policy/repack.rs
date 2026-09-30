@@ -93,6 +93,12 @@ impl LightmapPoolModel {
         let mut moves = std::mem::take(&mut self.scratch.moves);
         moves.clear();
         for touched in &self.touched {
+            // A forgotten block resident again was re-placed from a ready
+            // pair, so its upload fills the new slot. Copying its old texels
+            // would be wasted work, and the copy could run upward.
+            if touched.forgotten {
+                continue;
+            }
             let (Some(start), Some(now)) = (touched.start, self.slots[touched.block as usize])
             else {
                 continue;

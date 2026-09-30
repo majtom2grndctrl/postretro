@@ -121,6 +121,7 @@ impl LightmapResidencyController {
         for &block in &outcome.evicted {
             self.residency.remove_resident(self.map.facts(block));
             self.slots[block as usize].phase = BlockPhase::Absent;
+            self.demand.recheck_if_held(block);
             self.counters.evictions += 1;
             self.requests_due = true;
         }
@@ -135,6 +136,7 @@ impl LightmapResidencyController {
             let slot = &mut self.slots[block as usize];
             slot.phase = BlockPhase::Refused;
             slot.refused_headroom = outcome.pool.band_headroom_texels;
+            self.demand.recheck_if_held(block);
             self.refused_blocks += 1;
             self.counters.refusals += 1;
         }
@@ -171,8 +173,9 @@ impl LightmapResidencyController {
     /// The renderer failed the outstanding batch and rolled it back whole:
     /// no pair installed, no target changed, nothing evicted. Every drained
     /// pair returns to Absent, its buffers and permit released, to be read
-    /// again; the next batch re-sends every target as a reset. Does nothing
-    /// without an outstanding batch.
+    /// again; a held one is re-evaluated at the next demand update, so it is
+    /// not read at the raised class its pair earned. The next batch re-sends
+    /// every target as a reset. Does nothing without an outstanding batch.
     pub(crate) fn abort_drain(&mut self) {
         if !self.drain_outstanding {
             return;
@@ -181,6 +184,7 @@ impl LightmapResidencyController {
             let block = self.in_drain[index];
             self.release_in_hand(block);
             self.slots[block as usize].phase = BlockPhase::Absent;
+            self.demand.recheck_if_held(block);
         }
         self.in_drain.clear();
         self.drain_outstanding = false;

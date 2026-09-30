@@ -800,6 +800,87 @@ fn step_limit_frame_neither_reads_nor_holds_a_drawn_absent_block_and_counts_it()
     assert_eq!(counters.last_frame_drawn_outside_baked_set, 1, "block 5");
 }
 
+// Regression: a held band block kept its band target, so the renderer could
+// evict it over the cap while a non-portal frame drew it.
+#[test]
+fn step_limit_frame_raises_a_drawn_resident_band_block_to_visible() {
+    let mut rig = Rig::corridor(None);
+    rig.settle(0, &[], headroom(8));
+    assert_eq!(rig.controller.phase(3), BlockPhase::Installed);
+    assert_eq!(rig.controller.target(3), band(3, 20));
+
+    let batch = rig
+        .frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![0, 3]))
+        .unwrap();
+    assert_eq!(rig.controller.target(3), visible(3), "held while drawn");
+    assert_eq!(batch.target_set, vec![visible(3).unwrap()]);
+    assert!(rig.requests.is_empty());
+    let error = rig
+        .controller
+        .apply_outcome(LightmapDrainOutcome {
+            evicted: vec![3],
+            ..LightmapDrainOutcome::default()
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("cannot be evicted"), "{error}");
+}
+
+// Regression: a held block kept a mandatory target demand no longer gave it,
+// so it stayed in the mandatory gauge and out of the outside-the-baked-set
+// miss bucket.
+#[test]
+fn held_block_that_left_the_mandatory_set_is_visible_and_counts_outside_it() {
+    let mut rig = Rig::corridor(None);
+    rig.settle(0, &[], headroom(8));
+    assert_eq!(rig.controller.target(2), mandatory(2, 8));
+
+    // Camera 5's baked set is blocks 3 to 6; block 2 is drawn but outside it.
+    let batch = rig
+        .frame(5, STEP_LIMIT, &VisibleCells::Culled(vec![2]))
+        .unwrap();
+    assert_eq!(rig.controller.target(2), visible(2), "held, not mandatory");
+    let bytes = rig.controller.residency_bytes();
+    assert_eq!(bytes.mandatory_blocks, 4, "blocks 3, 4, 5 and 6");
+    rig.install_all(&batch, headroom(8));
+    rig.controller.count_visible_misses();
+    let counters = rig.controller.counters();
+    assert_eq!(counters.last_frame_drawn_outside_baked_set, 1, "block 2");
+    assert_eq!(counters.last_frame_drawn_not_resident, 0);
+}
+
+// Regression: a held block whose pair a rolled-back drain returned to Absent
+// kept the visible target its pair earned, and was read again at the
+// mandatory tier on a frame that may read only its band class.
+#[test]
+fn held_block_whose_drain_rolled_back_is_read_at_its_demanded_class() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    assert_eq!(rig.requested_blocks(), vec![3, 4], "the band");
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+
+    // Block 3's pair is ready: held, it is visible and drains.
+    let batch = rig
+        .frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![3]))
+        .unwrap();
+    assert_eq!(rig.controller.target(3), visible(3));
+    assert!(batch.ready.iter().any(|prepared| prepared.block == 3));
+    rig.controller.abort_drain();
+    assert_eq!(rig.controller.phase(3), BlockPhase::Absent);
+
+    rig.frame(0, STEP_LIMIT, &VisibleCells::Culled(vec![3]));
+    assert_eq!(rig.controller.target(3), band(3, 20), "no pair, no hold");
+    let request = rig
+        .requests
+        .iter()
+        .find(|request| request.key == 3)
+        .expect("a band block of the camera set is read again");
+    assert_eq!(request.tier, ReadTier::Optional);
+}
+
 // ---- Band reads leave mandatory work its reserve ----
 
 // Band reads may hold at most half the permits; the other half is a reserve

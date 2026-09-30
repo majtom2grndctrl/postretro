@@ -112,3 +112,26 @@ fn restore_undoes_frees_newest_first_even_after_their_shelves_merged() {
     let whole = pool.allocate(64, 64).unwrap();
     assert_eq!((whole.layer, whole.x, whole.y), (0, 0, 0));
 }
+
+// Shelf A (64 high) held V1 and V2; both freed, then P took its top 40 rows,
+// leaving an empty 24-row shelf below. Restoring V1 needs those 24 rows, but
+// P holds its span: the restore is refused before it borrows anything.
+#[test]
+fn a_refused_restore_leaves_the_layer_untouched() {
+    let mut layer = ShelfLayer::new(128, 64);
+    let v1 = layer.allocate(64, 64, 1).unwrap();
+    let v2 = layer.allocate(64, 64, 2).unwrap();
+    assert_eq!((v1, v2), ((0, 0), (64, 0)));
+    layer.free(v1.0, v1.1, 64, 64, 1).unwrap();
+    layer.free(v2.0, v2.1, 64, 64, 2).unwrap();
+    assert_eq!(layer.allocate(128, 40, 3), Some((0, 0)));
+
+    let before = layer.clone();
+    assert_eq!(layer.restore(0, 0, 64, 64, 1), Err(RestoreConflict));
+    assert_eq!(layer, before, "the empty rows below stay unborrowed");
+    assert_eq!(
+        layer.allocate(128, 24, 4),
+        Some((0, 40)),
+        "the 24 free rows still take a block"
+    );
+}

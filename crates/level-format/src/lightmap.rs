@@ -47,8 +47,9 @@ pub const IRRADIANCE_FORMAT_BC6H: u32 = 1;
 /// Selects how the lightmap was baked.
 ///
 /// - `Shadowed` (default): static-light shadows are folded into irradiance.
-/// - `Unshadowed`: full static-light irradiance with no visibility term; the
-///   runtime multiplies SDF visibility into the static term instead.
+/// - `Unshadowed`: full static-light irradiance with no visibility term. The
+///   runtime records this mode but does not honour it: no pass multiplies SDF
+///   visibility into the static term, so the compiler writes only `Shadowed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
     #[default]
@@ -229,7 +230,8 @@ impl LightmapBlockIndex {
     /// extent; a blob length that disagrees with the block's extent and
     /// format; a blob range that overlaps the index or leaves the section; a
     /// direction blob that does not start where its irradiance blob ends; a
-    /// nonzero reserved field.
+    /// block whose blobs start before the previous block's end; a nonzero
+    /// reserved field.
     pub fn from_prefix(prefix: &[u8], section_len: u64) -> crate::Result<Self> {
         let header = LightmapHeader::from_bytes(prefix)?;
         let index_len = header
@@ -248,6 +250,7 @@ impl LightmapBlockIndex {
         }
         let align = header.block_alignment();
         let mut records = Vec::with_capacity(header.block_count as usize);
+        let mut blobs_end = index_len;
         for block in 0..header.block_count as usize {
             let at = LIGHTMAP_HEADER_BYTES + block * LIGHTMAP_BLOCK_RECORD_BYTES;
             let record = LightmapBlockRecord {
@@ -270,6 +273,13 @@ impl LightmapBlockIndex {
                 )));
             }
             validate_record(&header, block, &record, align, index_len, section_len)?;
+            blobs_end = check_after_previous_block(
+                "lightmap",
+                block,
+                ("irradiance", record.irradiance),
+                record.direction,
+                blobs_end,
+            )?;
             records.push(record);
         }
         Ok(Self { header, records })
@@ -383,6 +393,27 @@ pub(crate) fn check_adjacent(
         "{section} block {block} {second_what} blob at {} does not start where its {first_what} blob ends",
         second.offset
     )))
+}
+
+/// Shared by ids 22 and 42: a block's adjacent blob pair starts at or after
+/// `previous_end`, where the previous block's pair (or the index) ends, so
+/// blobs are disjoint and in record order. The compiler writes them so, and
+/// id 42's slot-table bound counts each blob byte once. Returns this pair's
+/// end. Callers have already checked both ranges with [`check_blob`].
+pub(crate) fn check_after_previous_block(
+    section: &str,
+    block: usize,
+    (first_what, first): (&str, SectionByteRange),
+    second: SectionByteRange,
+    previous_end: u64,
+) -> crate::Result<u64> {
+    if first.offset < previous_end {
+        return Err(invalid(format!(
+            "{section} block {block} {first_what} blob at {} starts before the previous block's blobs end at {previous_end}; blobs must be disjoint and in record order",
+            first.offset
+        )));
+    }
+    Ok(second.offset + u64::from(second.len))
 }
 
 /// One block's baked texels in their stored formats.
@@ -878,6 +909,45 @@ mod tests {
             "lightmap block 0 direction blob at {offset} does not start where its irradiance blob ends"
         );
         assert!(message.contains(&expected), "{message}");
+    }
+
+    #[test]
+    fn rejects_blobs_that_overlap_or_leave_record_order() {
+        let section = two_block_section();
+        let index = section.index();
+        let (first, second) = (index.records[0], index.records[1]);
+        let first_len = u64::from(first.irradiance.len + first.direction.len);
+        let second_len = u64::from(second.irradiance.len + second.direction.len);
+        let start = first.irradiance.offset;
+        let place = |bytes: &mut Vec<u8>, block: usize, record: &LightmapBlockRecord, at: u64| {
+            let irradiance = record_at(block, 8);
+            bytes[irradiance..irradiance + 8].copy_from_slice(&at.to_le_bytes());
+            let direction = record_at(block, 20);
+            let direction_at = at + u64::from(record.irradiance.len);
+            bytes[direction..direction + 8].copy_from_slice(&direction_at.to_le_bytes());
+        };
+
+        // Block 1's pair laid over block 0's: each pair adjacent and inside
+        // the section, but the two share bytes.
+        let mut overlapping = section.to_bytes();
+        place(&mut overlapping, 1, &second, start);
+        let message = error_message(LightmapSection::from_bytes(&overlapping));
+        let expected = format!(
+            "lightmap block 1 irradiance blob at {start} starts before the previous block's blobs end at {}",
+            start + first_len
+        );
+        assert!(message.contains(&expected), "{message}");
+
+        // The same bytes with the two pairs swapped: disjoint, but block 1's
+        // blobs come first.
+        let mut reversed = section.to_bytes();
+        place(&mut reversed, 0, &first, start + second_len);
+        place(&mut reversed, 1, &second, start);
+        let message = error_message(LightmapSection::from_bytes(&reversed));
+        assert!(
+            message.contains("disjoint and in record order"),
+            "{message}"
+        );
     }
 
     #[test]

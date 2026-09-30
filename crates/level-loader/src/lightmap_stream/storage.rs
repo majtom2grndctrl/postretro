@@ -54,7 +54,8 @@ pub(crate) enum LightmapResidencyReason {
     NoResidencySet,
     /// The container was read from a whole-file image with no retained
     /// handle: the load path taken when neither SH nor the section table can
-    /// stream.
+    /// stream. With the checks above passed, the table lacks only id 22, so
+    /// a level with no blocks reports `NoLightmapBlocks` instead.
     NoRetainedFile,
     /// No id 22, or zero blocks: placeholder mode.
     NoLightmapBlocks,
@@ -68,7 +69,7 @@ impl LightmapResidencyReason {
             Self::NoUsablePortals => "level has no usable portals",
             Self::NoResidencySet => "level has no CellResidencySet (id 51)",
             Self::NoRetainedFile => "level was not read through a retained file",
-            Self::NoLightmapBlocks => "level has no lightmap cell blocks",
+            Self::NoLightmapBlocks => "level has no lightmap cell blocks (id 22 absent or empty)",
         }
     }
 }
@@ -109,19 +110,20 @@ pub(crate) fn select_lightmap_residency(
     inputs: LightmapResidencyInputs,
     block_count: u32,
 ) -> (LightmapStreamingMode, LightmapResidencyReason) {
-    if let Some(reason) = inputs.blocker() {
-        return (LightmapStreamingMode::AllResident, reason);
-    }
-    if block_count == 0 {
-        return (
-            LightmapStreamingMode::AllResident,
-            LightmapResidencyReason::NoLightmapBlocks,
-        );
-    }
-    (
-        LightmapStreamingMode::Stream,
-        LightmapResidencyReason::Streamed,
-    )
+    let reason = match inputs.blocker() {
+        // A missing id 22 is why the load kept no file, so name the cause.
+        Some(LightmapResidencyReason::NoRetainedFile) | None if block_count == 0 => {
+            LightmapResidencyReason::NoLightmapBlocks
+        }
+        Some(reason) => reason,
+        None => {
+            return (
+                LightmapStreamingMode::Stream,
+                LightmapResidencyReason::Streamed,
+            );
+        }
+    };
+    (LightmapStreamingMode::AllResident, reason)
 }
 
 pub(crate) fn log_lightmap_residency(

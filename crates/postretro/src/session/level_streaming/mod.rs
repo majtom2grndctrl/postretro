@@ -60,12 +60,18 @@ pub(crate) struct LevelStreaming {
 }
 
 impl LevelStreaming {
+    /// The level's lightmap session; `None` once the level declined it, even
+    /// while a declined session waits for retirement.
     pub(crate) fn lightmap(&self) -> Option<&LightmapStreamingSession> {
-        self.lightmap.as_ref()
+        self.lightmap
+            .as_ref()
+            .filter(|session| !session.is_declined())
     }
 
     pub(crate) fn lightmap_mut(&mut self) -> Option<&mut LightmapStreamingSession> {
-        self.lightmap.as_mut()
+        self.lightmap
+            .as_mut()
+            .filter(|session| !session.is_declined())
     }
 
     /// Installs a fresh lightmap session. Call only after [`Self::retire`],
@@ -150,7 +156,11 @@ impl LevelStreaming {
                     path: frame.path,
                     visible_cells: frame.visible_cells,
                 });
-        let lightmap_drains = match (self.lightmap.as_mut(), lightmap_frame) {
+        let lightmap = self
+            .lightmap
+            .as_mut()
+            .filter(|session| !session.is_declined());
+        let lightmap_drains = match (lightmap, lightmap_frame) {
             (Some(lightmap), Some(lightmap_frame)) => {
                 let _scope = frame.cpu.scope(StreamingStage::LightmapResidency);
                 lightmap.begin_drain(lightmap_frame, &mut self.drain)?;

@@ -88,9 +88,13 @@ pub struct DrainPlan {
     /// Band pairs with no room under the cap, and pairs no longer targeted.
     pub refused: Vec<u32>,
     /// Mandatory or visible pairs that needed growth while a generation was
-    /// still retiring, or a layer past the device limit: a counted transient
-    /// miss.
+    /// still retiring, or a layer past the device limit: a counted miss.
+    /// Transient while retiring; at the device limit it lasts until the
+    /// resident set shrinks (see `device_limited`).
     pub deferred: Vec<u32>,
+    /// A pair was deferred because the pool holds the device's every usable
+    /// layer. The pairs after it this drain skipped the victim walk.
+    pub device_limited: bool,
     /// Uploads the GPU layer failed and the model rolled back.
     pub failed: Vec<u32>,
     pub evicted: Vec<PlannedEviction>,
@@ -111,6 +115,7 @@ impl DrainPlan {
         self.installed.clear();
         self.refused.clear();
         self.deferred.clear();
+        self.device_limited = false;
         self.failed.clear();
         self.evicted.clear();
         self.report = LightmapPoolReport::default();

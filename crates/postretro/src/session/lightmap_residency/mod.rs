@@ -60,7 +60,8 @@ pub(crate) enum RendererDrainFailure {
     /// lightmap (device limits). The level stops streaming its lightmap.
     NotStreaming,
     /// A GPU-side failure the renderer rolled back whole. The pairs return
-    /// to Absent and are read again.
+    /// to Absent and are read again, until the failure recurs on too many
+    /// drains in a row and the level stops streaming its lightmap.
     RolledBack,
     /// The batch broke the drain contract (identity, ids, generation): a bug,
     /// and fatal.
@@ -74,7 +75,8 @@ impl RendererDrainFailure {
             LightmapResidencyDrainError::InvalidBatch(_)
             | LightmapResidencyDrainError::StaleGeneration { .. }
             | LightmapResidencyDrainError::GenerationResetRequired { .. } => Self::Contract,
-            _ => Self::RolledBack,
+            LightmapResidencyDrainError::GpuCapacity { .. }
+            | LightmapResidencyDrainError::Upload(_) => Self::RolledBack,
         }
     }
 }
@@ -112,6 +114,11 @@ pub(crate) struct LightmapStreamingSession {
     read_counters: Option<Arc<PrlReadCounters>>,
     /// Renderer drains that failed and were rolled back; the first warns.
     rolled_back_drains: u64,
+    /// Rolled-back drains since the renderer last returned an outcome.
+    consecutive_rolled_back_drains: u32,
+    /// The level declined this lightmap while the issuer still delivers into
+    /// this session; it does no work until its retirement.
+    declined: bool,
     live: LightmapStreamingLiveDiagnostics,
     log_window: LightmapStreamingLogWindow,
 }
@@ -162,6 +169,8 @@ impl LightmapStreamingSession {
             awaiting_renderer: None,
             read_counters: None,
             rolled_back_drains: 0,
+            consecutive_rolled_back_drains: 0,
+            declined: false,
             live: LightmapStreamingLiveDiagnostics::default(),
             log_window: LightmapStreamingLogWindow::default(),
         })
@@ -330,6 +339,7 @@ impl LightmapStreamingSession {
     }
 
     pub(crate) fn apply_outcome(&mut self, outcome: LightmapDrainOutcome) -> Result<()> {
+        self.consecutive_rolled_back_drains = 0;
         self.controller.apply_outcome(outcome).map_err(Into::into)
     }
 
@@ -344,6 +354,7 @@ impl LightmapStreamingSession {
         let failure = RendererDrainFailure::of(error);
         if failure == RendererDrainFailure::RolledBack {
             self.rolled_back_drains += 1;
+            self.consecutive_rolled_back_drains += 1;
             if self.rolled_back_drains == 1 {
                 log::warn!(
                     "[Lightmap streaming] renderer drain failed and was rolled back: {error}; \
@@ -352,6 +363,24 @@ impl LightmapStreamingSession {
             }
         }
         failure
+    }
+
+    /// Rolled-back drains since the renderer last returned an outcome.
+    pub(crate) fn consecutive_rolled_back_drains(&self) -> u32 {
+        self.consecutive_rolled_back_drains
+    }
+
+    /// The level declined this lightmap, but the running issuer still
+    /// delivers into this session's queue: it stays, inert, until the level
+    /// retires it with the issuer. Its parked batch is dropped unsent.
+    pub(in crate::session) fn park_declined(&mut self) {
+        self.declined = true;
+        self.awaiting_renderer = None;
+    }
+
+    /// Whether the level declined this lightmap; see [`Self::park_declined`].
+    pub(in crate::session) fn is_declined(&self) -> bool {
+        self.declined
     }
 
     /// Closes the frame after its drain outcome: counts the frame's visible

@@ -411,3 +411,29 @@ fn cancel_stops_an_idle_issuer_while_another_handle_is_alive() {
         "the thread is gone; the live clone cannot queue work"
     );
 }
+
+// Regression: a cancel exit dropped pending requests without releasing the
+// bytes of their ranges already read, so a kept lightmap session's ledger
+// over-reported in-flight read bytes forever.
+#[test]
+fn cancel_releases_the_held_bytes_of_a_half_read_pair() {
+    let mut harness = Harness::new();
+    let second = at(5);
+    harness.log.hold(&second);
+    harness.submit(block_pair(9, M, 1, 5));
+    // The first range is in hand; the second is being read.
+    harness.log.wait_for_reads(2);
+    harness.issuer.as_ref().unwrap().cancel();
+    harness.log.release(&second);
+
+    let handle = harness.handle.take().unwrap();
+    harness
+        .log
+        .wait_until("the cancelled issuer thread", |_| handle.is_finished());
+    handle.join().unwrap();
+    assert!(
+        harness.log.deliveries().is_empty(),
+        "a cancelled issuer delivers nothing"
+    );
+    assert_eq!(harness.log.charged.load(Ordering::SeqCst), 0);
+}

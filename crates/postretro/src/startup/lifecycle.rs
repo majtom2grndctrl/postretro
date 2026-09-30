@@ -870,21 +870,15 @@ impl App {
         }
 
         // Teleport the camera to the first player spawn (or the geometry center
-        // when the map has none). Independent of spawn success. A teleport
-        // holds both interpolation endpoints, so a frame before the first tick
-        // renders from this eye, the one the spawn preload made resident,
-        // rather than blending from the previous level's pose.
+        // when the map has none). Independent of spawn success.
         if let Some((pos, angles)) = products.first_spawn {
             self.camera.position = pos;
             // angles is engine-convention radians (YXZ): x=pitch, y=yaw.
             self.camera.yaw = angles.y;
             self.camera.pitch = angles.x;
-            self.frame_timing.hold_state(InterpolableState::new(pos));
         } else if let Some(world) = self.level.as_ref() {
             // Fallback when no player_spawn: center on level geometry.
             self.camera.position = world.spawn_position();
-            self.frame_timing
-                .hold_state(InterpolableState::new(self.camera.position));
         }
         // `--start-pose` moves the local pawn (or, pawnless, the fly camera)
         // to a checked-in measurement probe instead of the map spawn, on the
@@ -905,8 +899,6 @@ impl App {
             self.camera.position = pose.position;
             self.camera.yaw = pose.yaw;
             self.camera.pitch = pose.pitch;
-            self.frame_timing
-                .hold_state(InterpolableState::new(pose.position));
             log::info!(
                 "[Startup] start pose {:?} yaw {:.1}° pitch {:.1}° ({})",
                 pose.position,
@@ -915,6 +907,16 @@ impl App {
                 if moved { "local pawn" } else { "camera only" },
             );
         }
+        // The spawn eye, computed once: the followed local pawn's eye (the
+        // point every tick moves the camera to), else the camera placed above.
+        // Both interpolation endpoints hold it, so a frame before the first
+        // tick renders from this eye, the one the spawn preload made
+        // resident, and the first tick blends from it rather than from the
+        // pawn's origin or the previous level's pose.
+        let spawn_eye = self.followed_pawn_eye().unwrap_or(self.camera.position);
+        self.camera.position = spawn_eye;
+        self.frame_timing
+            .hold_state(InterpolableState::new(spawn_eye));
 
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
         // were created in segment B; this is the windowed GPU half.

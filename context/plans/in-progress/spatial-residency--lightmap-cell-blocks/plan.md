@@ -215,6 +215,25 @@ Split-first commits precede the task that extends each file. Every task ends wit
   - focused suites pass: level-format 574, loader 273, render-cpu 244, renderer 731 (GPU), compiler 1,395, engine 1,068, 1,134 with capture;
   - the AC 4 and AC 7 GPU captures pass again.
 
+- **Pass 2 (2026-09-29).** 5 agents scoped to the pass-1 fix diff. No 🔴 findings; about 11 🟡 findings.
+- **Fixed:**
+  - non-portal holds pin drawn resident blocks at Visible (Mandatory only if demand still says so) and re-evaluate on phase change;
+  - install holds the same spawn eye the preload reads;
+  - issuer cancel exits release pending bytes;
+  - a mid-level decline no longer retires SH mid-frame;
+  - retirement drains the old completion queue;
+  - 8 consecutive rolled-back drains decline the lightmap for the level;
+  - `ShelfLayer::restore` checks before it mutates;
+  - device-limit deferral skips the victim walk for the rest of the drain and logs once;
+  - `Unshadowed` is recorded but not honoured, with a load warning and consistent docs;
+  - id-42 mismatch errors name the real cause;
+  - blob pairs must be disjoint and in record order;
+  - the AC 1 oversize test uses the reachable multi-chart path.
+- **Gate:**
+  - focused suites pass: format 577, loader 276, render-cpu 246, renderer 731, compiler 1,395, engine 1,075 (1,141 with capture);
+  - the AC 4 and AC 7 captures pass;
+  - clippy is clean.
+
 ## Findings log
 
 Raw measurements for the findings note (AC 22–25), recorded as they arrive.

@@ -10,11 +10,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use log::Level;
 use postretro_level_loader::{
     LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapTarget,
     PreparedLightmapBlock,
 };
 use postretro_render_cpu::lightmap_pool::BlockTableEntry;
+use postretro_test_log_capture::LogCapture;
 
 use super::super::pool_sample_test::{
     BoundLightmap, GpuCtx, SCALE, assert_near, direction_texel, expected_texel, gpu_or_skip,
@@ -568,8 +570,9 @@ fn a_batch_from_another_generation_is_rejected_without_mutating_state() {
 }
 
 // A pair that needs growth past the device's array-layer limit is deferred
-// and owned back, a transient miss: nothing grows, nothing is submitted, and
-// the table stays as it was.
+// and owned back: nothing grows, nothing is submitted, and the table stays as
+// it was. The miss lasts while the pair stays wanted, so it warns once per
+// level however many drains defer it.
 #[test]
 fn a_pair_needing_growth_past_the_device_layer_limit_is_deferred() {
     let Some(mut stream) = Stream::with_max_layers(
@@ -583,6 +586,7 @@ fn a_pair_needing_growth_past_the_device_layer_limit_is_deferred() {
     stream.drain(stream.reset(vec![mandatory(0)], vec![stream.prepared(0)]));
     let table = stream.table();
     let before = stream.state.counters();
+    let logs = LogCapture::start();
     let outcome = stream.drain(stream.delta(vec![mandatory(1)], vec![], vec![stream.prepared(1)]));
     assert!(outcome.installed.is_empty() && !outcome.pool.grew);
     let deferred: Vec<u32> = outcome.deferred.iter().map(|p| p.block).collect();
@@ -599,6 +603,10 @@ fn a_pair_needing_growth_past_the_device_layer_limit_is_deferred() {
     assert!(!stream.state.model().is_resident(1));
     assert_eq!(stream.table(), table);
     stream.assert_samples_own_texels();
+
+    let outcome = stream.drain(stream.delta(vec![], vec![], vec![stream.prepared(1)]));
+    assert_eq!(outcome.deferred.len(), 1, "deferred again");
+    logs.assert_logged_once(Level::Warn, "a permanent miss");
 }
 
 // A new generation mid-level comes from a fresh controller that holds nothing

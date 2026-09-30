@@ -17,7 +17,8 @@ use rayon::prelude::*;
 use super::portal_distance::{Neighbors, PortalGraphInput};
 
 /// Baked maximum lead, in metres; the runtime lead slider tops out here.
-/// 32 m is about two seconds of sustained movement (11–15 m/s) plus dash bursts.
+/// 32 m is roughly two to three seconds of sustained movement at 11–15 m/s;
+/// dash bursts shorten that.
 pub(crate) const MAX_LEAD_METERS: u32 = 32;
 
 pub(crate) fn meters_fixed(meters: u32) -> u32 {

@@ -1,7 +1,4 @@
-// Shared runtime LevelWorld data model for slim visibility-only worlds and
-// full PRL loads. File decoding lives behind `load-prl`: prl_loader.rs, with
-// prl_lightmap.rs for ids 22/42/24/25 and prl_file.rs for the retained file
-// and read counters.
+// Runtime LevelWorld data model, shared by slim visibility-only worlds and full PRL loads.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::error::Error as StdError;
@@ -423,21 +420,21 @@ pub struct MapLight {
 }
 
 /// Whether the lightmap section's baked irradiance already includes the
-/// static-light visibility (shadow) term, or carries unshadowed irradiance
-/// for runtime SDF visibility to multiply in.
+/// static-light visibility (shadow) term.
 ///
 /// Read from the id-22 header in both load modes; a level without id 22
-/// loads as `Shadowed`. The compiler bakes `Shadowed` today; `Unshadowed` is
-/// a valid header value the runtime honors.
+/// loads as `Shadowed`. The compiler bakes only `Shadowed`. `Unshadowed` is a
+/// valid header value that is recorded but not honoured: the forward pass
+/// never multiplies SDF visibility into the static term, and load warns.
 #[cfg(feature = "load-prl")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
-    /// Static-light visibility folded into the bake. Forward must NOT multiply
-    /// by SDF visibility.
+    /// Static-light visibility folded into the bake.
     #[default]
     Shadowed,
-    /// Visibility term removed from the bake. Forward MUST multiply by SDF
-    /// visibility to recover shadowed lighting.
+    /// Visibility term left out of the bake. Recovering it needs SDF
+    /// visibility in the forward pass, which does not exist, so the static
+    /// term renders unshadowed.
     Unshadowed,
 }
 
@@ -626,10 +623,9 @@ pub struct LevelWorld {
     /// live in `gpu_lighting_payloads` until install.
     #[cfg(feature = "load-prl")]
     pub lightmap: Option<LightmapBlockIndex>,
-    /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
-    /// or carries unshadowed irradiance that requires runtime SDF visibility
-    /// multiplication (`Unshadowed`). Taken from the id-22 header; `Shadowed`
-    /// when id 22 is absent.
+    /// Whether the lightmap bake includes static-light visibility. Taken from
+    /// the id-22 header; `Shadowed` when id 22 is absent. Recorded only:
+    /// `Unshadowed` is not honoured (see [`LightmapMode`]).
     #[cfg(feature = "load-prl")]
     pub lightmap_mode: LightmapMode,
     /// `None` → no static-occluder SDF atlas (legacy PRL or empty-geometry

@@ -1562,7 +1562,7 @@ fn follow_camera_to_local_pawn(
 
 /// The followed local pawn's eye: its registry position, plus the presentation
 /// offset, plus the capsule's eye height. The one place the eye offset is
-/// applied, so level install derives the spawn camera cell from the same
+/// applied, so level install holds, and preloads lightmaps for, the same
 /// point the first tick moves the camera to.
 fn local_pawn_eye_position(
     registry: &postretro_entities::EntityRegistry,

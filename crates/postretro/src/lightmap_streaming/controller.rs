@@ -42,10 +42,14 @@ mod threaded_tests;
 /// A permit covers one block pair from request until install, refusal, or
 /// discard.
 pub(crate) const MAX_LIGHTMAP_PERMITS: usize = 32;
-/// Issuer queue and completion queue slots for lightmap requests. A pair
-/// submits at most twice while it holds its permit: its read, then one tier
-/// raise if a band pair is promoted in flight. A raise the issuer has already
-/// completed is read, and completed, again.
+/// Issuer queue and completion queue slots for lightmap requests: a read per
+/// permit, and as many again for tier raises. A raise the issuer accepts
+/// while its pair is still pending joins that read. It is read, and
+/// completed, a second time only when its pair finished in the one physical
+/// read in progress as the raise was accepted. That duplicate reads at the
+/// mandatory tier, before every optional original, so duplicates never wait
+/// behind the band reads that could crowd them; and raises come only from
+/// band reads in flight, at most [`MAX_BAND_PERMITS`] at once.
 pub(crate) const LIGHTMAP_QUEUE_CAPACITY: usize = 2 * MAX_LIGHTMAP_PERMITS;
 /// Pair bytes in hand (in flight, ready, or in a drain) before new requests
 /// wait: four drains' worth. The first request is always allowed, so one
@@ -85,7 +89,8 @@ pub(crate) enum BlockPhase {
 
 impl BlockPhase {
     /// Whether the pair is resident or on its way: read, being read, or in
-    /// the renderer's hands. A held block keeps its target only then.
+    /// the renderer's hands. Only then is a held block raised to at least
+    /// visible.
     fn holds_pair(self) -> bool {
         matches!(
             self,
@@ -423,11 +428,11 @@ impl LightmapResidencyController {
 
     /// Applies one frame's visibility: recomputes baked demand only when the
     /// camera cell or lead changed, updates visible demand on a portal walk,
-    /// and retargets every changed block. A non-portal frame keeps its drawn
-    /// blocks' targets while their pairs are resident or on their way, and
-    /// reads only the camera cell's baked set. The frame's drawn blocks are
-    /// counted for visible misses by [`Self::count_visible_misses`], after
-    /// the frame's drain.
+    /// and retargets every changed block. A non-portal frame keeps a drawn
+    /// block whose pair is resident or on its way, as visible or, when demand
+    /// names it so, mandatory, and reads only the camera cell's baked set.
+    /// The frame's drawn blocks are counted for visible misses by
+    /// [`Self::count_visible_misses`], after the frame's drain.
     pub(crate) fn update(&mut self, frame: DemandFrame<'_>) {
         self.may_request = self.demand.update(&self.map, self.levers.lead(), frame);
         self.camera_set_only = !frame.is_portal_walk();
@@ -483,9 +488,8 @@ impl LightmapResidencyController {
         for index in 0..self.demand.dirty_len() {
             let block = self.demand.dirty_at(index);
             let mut next = self.demand.target(&self.map, block);
-            let slot = &self.slots[block as usize];
-            if self.demand.is_held(block) && slot.phase.holds_pair() {
-                next = BlockTarget::held(slot.target, next);
+            if self.demand.is_held(block) && self.slots[block as usize].phase.holds_pair() {
+                next = Some(BlockTarget::held(next));
             }
             self.retarget(block, next);
         }

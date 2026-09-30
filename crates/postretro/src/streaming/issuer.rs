@@ -35,7 +35,8 @@ pub(crate) trait ReadRoute: Send {
     /// They stay charged after delivery until the resource consumes them.
     fn charge_read_bytes(&self, bytes: u64);
     /// Returns charged bytes that will never be delivered: a failed or
-    /// cancelled read, or a request cancelled or failed after a partial read.
+    /// cancelled read, a request cancelled or failed after a partial read,
+    /// or a partly read request still pending when the issuer exits.
     fn release_read_bytes(&self, bytes: u64);
     /// Counters for one successful physical read.
     fn record_read(&self, read: &ReadRecord<'_>);
@@ -195,6 +196,26 @@ impl PendingRead {
     }
 }
 
+/// The issuer thread's pending reads. Every exit (cancel, disconnect, a gone
+/// receiver) drops them, returning each partly read request's held bytes to
+/// its route: a kept resource's ledger outlives this thread.
+struct PendingReads<'a> {
+    reads: Vec<PendingRead>,
+    routes: &'a ReadRoutes,
+}
+
+impl Drop for PendingReads<'_> {
+    fn drop(&mut self) {
+        for read in self.reads.drain(..) {
+            if read.held_bytes != 0 {
+                self.routes
+                    .route(read.request.resource)
+                    .release_read_bytes(read.held_bytes);
+            }
+        }
+    }
+}
+
 /// Planner input rebuilt before every read, kept across reads so steady
 /// streaming reuses its capacity.
 #[derive(Default)]
@@ -231,13 +252,17 @@ impl PlanScratch {
 /// Taking new requests between reads lets fresh mandatory work preempt the
 /// rest of the optional tier.
 fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: &AtomicBool) {
-    let mut pending: Vec<PendingRead> = Vec::new();
+    let mut pending_reads = PendingReads {
+        reads: Vec::new(),
+        routes,
+    };
+    let pending = &mut pending_reads.reads;
     let mut scratch = PlanScratch::default();
     loop {
         if pending.is_empty() {
             match requests.recv() {
                 Ok(IssuerMessage::Read(submitted)) => {
-                    if !accept(submitted, &mut pending, routes) {
+                    if !accept(submitted, pending, routes) {
                         return;
                     }
                 }
@@ -248,7 +273,7 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
         loop {
             match requests.try_recv() {
                 Ok(IssuerMessage::Read(submitted)) => {
-                    if !accept(submitted, &mut pending, routes) {
+                    if !accept(submitted, pending, routes) {
                         return;
                     }
                 }
@@ -260,14 +285,14 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
         if cancel.load(Ordering::Acquire) {
             return;
         }
-        if !cancel_departed(&mut pending, routes) {
+        if !cancel_departed(pending, routes) {
             return;
         }
-        scratch.collect(&pending);
+        scratch.collect(pending);
         let Some(plan) = plan_next_read(&scratch.slots) else {
             continue;
         };
-        if !issue_read(&plan, &mut pending, &mut scratch, routes, cancel) {
+        if !issue_read(&plan, pending, &mut scratch, routes, cancel) {
             return;
         }
     }
@@ -361,6 +386,7 @@ fn issue_read(
         route.release_read_bytes(payload_bytes);
     }
     if cancelled {
+        // The pending reads' held bytes are released as the loop exits.
         return false;
     }
     let bytes = match result {
@@ -413,6 +439,8 @@ fn deliver_completed(
             let read = taken[pending_index].take().expect("checked above");
             let request = read.request;
             if !route.deliver(request, ReadOutcome::Read(read.into_parts())) {
+                // Undelivered requests go back, to be released as the loop exits.
+                pending.extend(taken.into_iter().flatten());
                 return false;
             }
         }
@@ -454,6 +482,8 @@ fn fail_members(
                 .expect("a single request takes the original"),
         };
         if !route.deliver(read.request, ReadOutcome::Failed(error)) {
+            // Undelivered requests go back, to be released as the loop exits.
+            pending.extend(taken.into_iter().flatten());
             return false;
         }
     }

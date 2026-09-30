@@ -250,8 +250,14 @@ impl ShelfLayer {
                 self.shelves.insert(index + 1, rest);
             }
         } else {
+            // Every check runs before the borrow below mutates anything, so a
+            // refused restore leaves the layer exactly as it was.
             let shelf = &self.shelves[index];
-            if shelf.y != y {
+            let span_free = shelf
+                .spans
+                .iter()
+                .any(|s| !s.used() && s.x <= x && x + width <= s.x + s.width);
+            if shelf.y != y || !span_free {
                 return Err(RestoreConflict);
             }
             if shelf.height < height {
@@ -276,7 +282,7 @@ impl ShelfLayer {
             .spans
             .iter()
             .position(|s| !s.used() && s.x <= x && x + width <= s.x + s.width)
-            .ok_or(RestoreConflict)?;
+            .expect("checked above: the rect lies in one free span");
         let span = shelf.spans[span_index];
         let mut at = span_index;
         if x > span.x {

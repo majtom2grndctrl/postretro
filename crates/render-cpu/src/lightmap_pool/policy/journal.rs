@@ -33,9 +33,13 @@ pub(super) enum JournalOp {
 pub(super) struct Touched {
     pub block: u32,
     pub start: Option<Slot>,
-    /// The reason of its latest eviction this drain, if any. A residency
-    /// reset's free has none, so no outcome reports it.
+    /// The reason of its latest eviction this drain, if any.
     pub reason: Option<EvictionReason>,
+    /// Freed by a residency reset. Its `start` stays, so the table write
+    /// that turns its entry non-resident still diffs; but the new controller
+    /// never saw it resident, so it is never reported evicted, and any slot
+    /// it holds now came from an upload, never a repack move.
+    pub forgotten: bool,
 }
 
 impl LightmapPoolModel {
@@ -81,6 +85,7 @@ impl LightmapPoolModel {
             block,
             start: self.slots[b],
             reason: None,
+            forgotten: false,
         });
     }
 
@@ -125,12 +130,13 @@ impl LightmapPoolModel {
 
     /// Free every resident block for a new generation's first drain. The
     /// frees are journaled, so an aborted drain restores them, and their
-    /// table writes land with the drain; clearing the reason keeps them out
-    /// of the evicted list.
+    /// table writes land with the drain. Each is marked forgotten rather
+    /// than having its `start` cleared: a cleared start would drop the table
+    /// write for a block that stays non-resident.
     pub(super) fn forget_residency(&mut self) {
         while let Some(&block) = self.resident.last() {
             self.release(block, EvictionReason::Untargeted);
-            self.touched[self.touch_index[block as usize] as usize].reason = None;
+            self.touched[self.touch_index[block as usize] as usize].forgotten = true;
         }
     }
 

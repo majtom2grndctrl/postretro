@@ -117,6 +117,8 @@ pub(crate) struct LightmapStreamState {
     upload_scratch: Vec<u8>,
     failed_scratch: Vec<u32>,
     counters: LightmapStreamCounters,
+    /// A deferral at the device's layer limit was logged for this level.
+    device_limit_warned: bool,
 }
 
 impl LightmapStreamState {
@@ -188,6 +190,7 @@ impl LightmapStreamState {
             upload_scratch: Vec::new(),
             failed_scratch: Vec::new(),
             counters,
+            device_limit_warned: false,
         }
     }
 
@@ -269,7 +272,27 @@ impl LightmapStreamState {
         };
         self.generation = batch.generation;
         self.record_drain(executed, started, &mut effects);
+        self.warn_device_limit_once();
         Ok((self.outcome(batch), effects))
+    }
+
+    /// A deferral at the device limit repeats every drain the same blocks
+    /// stay wanted, so it is logged once per level, as the lasting miss it
+    /// is; `deferred_pairs` still counts each one.
+    fn warn_device_limit_once(&mut self) {
+        if !self.model.plan().device_limited || self.device_limit_warned {
+            return;
+        }
+        self.device_limit_warned = true;
+        log::warn!(
+            "[Renderer] Streamed lightmap: the pool holds all {} usable array layer(s) the \
+             device allows (maxTextureArrayLayers {}, one kept as the repack spare) and \
+             mandatory or visible cell blocks still do not fit; they stay missing, a permanent \
+             miss rather than a transient one, until fewer blocks are wanted. Logged once per \
+             level",
+            self.model.layers(),
+            self.max_array_layers,
+        );
     }
 
     fn check_generation(

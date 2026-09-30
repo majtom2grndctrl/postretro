@@ -46,20 +46,14 @@ impl BlockTarget {
     }
 
     /// The target of a block a non-portal frame draws while its pair is
-    /// resident or on its way: whichever of the block's current target and
-    /// the one demand now gives it ranks higher, so the drawn block is never
-    /// freed or demoted under the frame that draws it.
-    pub(crate) fn held(current: Option<Self>, demanded: Option<Self>) -> Option<Self> {
-        let rank = |target: Option<Self>| match target.map(|target| target.class) {
-            None => 0,
-            Some(LightmapBlockClass::Band) => 1,
-            Some(LightmapBlockClass::Visible) => 2,
-            Some(LightmapBlockClass::Mandatory) => 3,
-        };
-        if rank(current) > rank(demanded) {
-            current
-        } else {
-            demanded
+    /// resident or on its way: mandatory only while demand names it
+    /// mandatory, otherwise visible. The renderer never evicts either, so the
+    /// drawn block is not freed under the frame that draws it, and a stale
+    /// mandatory target never lingers in the mandatory gauge.
+    pub(crate) fn held(demanded: Option<Self>) -> Self {
+        match demanded {
+            Some(target) if target.class == LightmapBlockClass::Mandatory => target,
+            _ => Self::VISIBLE,
         }
     }
 }
@@ -80,8 +74,8 @@ struct DemandSlot {
     /// Drawn on the latest portal-walk frame.
     drawn: bool,
     drawn_epoch: u32,
-    /// Drawn on the latest non-portal frame: the controller keeps its target
-    /// while its pair is resident or on its way.
+    /// Drawn on the latest non-portal frame: the controller raises its target
+    /// to at least visible while its pair is resident or on its way.
     held: bool,
     held_epoch: u32,
     /// Queued in `BlockDemand::dirty`.
@@ -214,9 +208,10 @@ impl BlockDemand {
     /// Applies one frame. Returns whether the frame may issue new reads.
     ///
     /// A non-portal frame demands only the camera cell's baked set. Its drawn
-    /// blocks are held instead: the controller keeps a held block's target
-    /// while its pair is resident or on its way, so the renderer never frees
-    /// a block the frame draws, and never reads one for it.
+    /// blocks are held instead: the controller raises a held block to at
+    /// least visible while its pair is resident or on its way, so the
+    /// renderer never frees a block the frame draws, and never reads one for
+    /// it.
     pub(crate) fn update(
         &mut self,
         map: &LevelBlockMap,
@@ -355,6 +350,14 @@ impl BlockDemand {
         self.slots[block as usize].held
     }
 
+    /// `block`'s pair came or went. A held block's target depends on whether
+    /// it has a pair, so a held block is queued for the next retarget.
+    pub(crate) fn recheck_if_held(&mut self, block: u32) {
+        if self.slots[block as usize].held {
+            self.mark_dirty(block);
+        }
+    }
+
     /// Whether the camera cell's baked set (lead L, the band) or the pins
     /// name `block`: all a non-portal frame may read.
     pub(crate) fn in_camera_set(&self, map: &LevelBlockMap, block: u32) -> bool {
@@ -465,9 +468,9 @@ impl BlockDemand {
         self.drawn.clear();
     }
 
-    /// Records a non-portal frame's drawn blocks as held. Becoming held
-    /// changes no target by itself; a block that stops being held is marked
-    /// dirty, so the controller re-evaluates, and may release, it.
+    /// Records a non-portal frame's drawn blocks as held. A block that
+    /// becomes held or stops being held is marked dirty, so the controller
+    /// re-evaluates it: raises it while it has a pair, or releases it.
     fn mark_held(&mut self, map: &LevelBlockMap, visible_cells: &VisibleCells) {
         self.held_epoch = self.held_epoch.wrapping_add(1);
         self.drawn_set_is_held = true;
@@ -476,7 +479,10 @@ impl BlockDemand {
         for block in drawn_blocks_of(map, visible_cells) {
             let slot = &mut self.slots[block as usize];
             slot.held_epoch = self.held_epoch;
-            slot.held = true;
+            if !slot.held {
+                slot.held = true;
+                self.mark_dirty(block);
+            }
             self.held.push(block);
         }
         for index in 0..self.held_scratch.len() {

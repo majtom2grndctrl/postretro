@@ -3,8 +3,7 @@
 
 use postretro_level_format::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 // The default pool cap in 2048² layers is the renderer's, which sizes the
-// first pool generation with it. At the default lead the pool never grows on
-// the measured maps, and band retention repacks on 2.54% of tour steps.
+// first pool generation with it.
 use postretro_renderer::DEFAULT_LIGHTMAP_POOL_CAP_LAYERS as DEFAULT_POOL_CAP_LAYERS;
 
 /// Default lead L in metres.

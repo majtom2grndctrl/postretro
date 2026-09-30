@@ -1062,3 +1062,26 @@ fn aborted_drain_returns_its_pairs_and_resets_the_targets() {
     assert!(batch.target_reset.is_some());
     assert_eq!(rig.requested_blocks(), vec![5, 6], "read again");
 }
+
+// A declined session drops its ready payloads: every ready pair returns to
+// Absent with its permit and in-hand bytes released.
+#[test]
+fn releasing_ready_pairs_drops_their_payloads_and_in_hand_bytes() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(6, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+    for block in [5, 6] {
+        assert_eq!(rig.controller.phase(block), BlockPhase::Ready);
+    }
+    assert!(rig.controller.in_hand_bytes() > 0);
+
+    rig.controller.release_ready();
+    for block in [5, 6] {
+        assert_eq!(rig.controller.phase(block), BlockPhase::Absent);
+    }
+    assert_eq!(rig.controller.permits_in_use(), 0);
+    assert_eq!(rig.controller.in_hand_bytes(), 0);
+    let batch = rig.portal(6, &[]).unwrap();
+    assert!(batch.ready.is_empty(), "nothing left to drain");
+}

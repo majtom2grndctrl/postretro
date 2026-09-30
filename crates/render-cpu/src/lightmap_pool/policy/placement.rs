@@ -262,20 +262,24 @@ impl LightmapPoolModel {
     ///
     /// Once a pair is deferred at the device limit, it failed with every
     /// band victim evicted, so a later pair this drain at least as wide and
-    /// as tall cannot fit either: it skips the victim walk, taking free space
-    /// it fits as is or being deferred. A smaller pair still walks, so one
-    /// oversized pair that stays wanted never starves pairs that fit by
-    /// evicting band blocks. Without the skip, a level past the device limit
-    /// repeats a full walk per such pair on every drain, since its deferred
-    /// pairs come back ready.
+    /// as tall as that one pair cannot fit either: it skips the victim walk,
+    /// taking free space it fits as is or being deferred. Any other pair
+    /// still walks, so an oversized pair that stays wanted never starves
+    /// pairs that fit by evicting band blocks. Each deferred extent is
+    /// compared on its own: a pair larger than a componentwise minimum of
+    /// two deferred extents may still fit. The skip lasts one drain. Without
+    /// it, a level past the device limit repeats a full walk per such pair on
+    /// every drain, since its deferred pairs come back ready.
     fn place_with_growth(&mut self, list: &[u32]) {
         let retiring = self.retiring;
         let start_layers = self.layers;
-        // Smallest extent deferred at the device limit this drain.
-        let mut limited: Option<(u32, u32)> = None;
+        // Extents deferred at the device limit this drain; none contains
+        // another.
+        let mut limited = std::mem::take(&mut self.scratch.device_limited);
+        limited.clear();
         for &block in list {
             let (width, height) = self.alloc_extent(block);
-            if limited.is_some_and(|(w, h)| width >= w && height >= h) {
+            if limited.iter().any(|&(w, h)| w <= width && h <= height) {
                 match self.allocate_in_layers(width, height) {
                     Some(slot) => self.place(block, slot),
                     None => self.plan.deferred.push(block),
@@ -293,10 +297,9 @@ impl LightmapPoolModel {
             let Some(slot) = self.pool.allocate_within(width, height, limit) else {
                 self.plan.deferred.push(block);
                 self.plan.device_limited = true;
-                limited = Some(match limited {
-                    Some((w, h)) => (w.min(width), h.min(height)),
-                    None => (width, height),
-                });
+                // This extent contains no entry, or it would have skipped.
+                limited.retain(|&(w, h)| width > w || height > h);
+                limited.push((width, height));
                 continue;
             };
             self.place(block, slot);
@@ -307,6 +310,7 @@ impl LightmapPoolModel {
                 self.layers = slot.layer + 1;
             }
         }
+        self.scratch.device_limited = limited;
         if self.layers > start_layers {
             self.plan.growth = Some(PoolGrowth {
                 from_layers: start_layers,

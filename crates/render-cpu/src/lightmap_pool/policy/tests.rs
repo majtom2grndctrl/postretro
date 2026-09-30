@@ -592,6 +592,57 @@ fn after_a_deferral_at_the_device_limit_only_pairs_as_large_skip_the_victim_walk
     assert_eq!(deferred, vec![2, 5]);
     assert!(h.model.is_resident(3) && h.model.is_resident(4));
     assert_disjoint_within_layers(&h.model);
+
+    // The skip lasts one drain: with the layer holding only band block 1,
+    // block 5 walks the next drain and evicts it.
+    let plan = h.drain(&[band(1, 1)], &[0, 2, 3, 4], &[1]);
+    assert_eq!(plan.installed, vec![1]);
+    let plan = h.drain(&[], &[], &[5]);
+    assert!(!plan.device_limited);
+    assert_eq!(plan.installed, vec![5]);
+    assert_eq!(h.evicted(), vec![(1, EvictionReason::Pressure)]);
+    assert_disjoint_within_layers(&h.model);
+}
+
+// One usable layer at the device limit, two 32-high shelves: mandatory block
+// 0 and band block 1 fill the top one, mandatory block 2 and band block 3 the
+// bottom one. Block 4 (48x64) and block 5 (64x32) are deferred at the limit.
+// Block 6 (56x32) contains neither extent, though it contains their
+// componentwise minimum (48x32): it walks and fits where band block 1 was.
+#[test]
+fn a_pair_containing_no_single_deferred_extent_still_walks_at_the_device_limit() {
+    let extents = [
+        (8, 32),
+        (56, 32),
+        (16, 32),
+        (48, 32),
+        (48, 64),
+        (64, 32),
+        (56, 32),
+    ];
+    let mut h = Harness::with_layer_limit(&extents, 1, 1);
+    let plan = h.drain(&[mandatory(0), band(1, 1)], &[], &[0, 1]);
+    assert_eq!(plan.installed, vec![0, 1]);
+    let plan = h.drain(&[mandatory(2), band(3, 2)], &[], &[2, 3]);
+    assert_eq!(plan.installed, vec![2, 3]);
+    let shelf = |h: &Harness, block: usize| h.model.slots[block].unwrap().y;
+    assert_eq!((shelf(&h, 0), shelf(&h, 1)), (0, 0));
+    assert_eq!((shelf(&h, 2), shelf(&h, 3)), (32, 32));
+
+    let set = [mandatory(4), mandatory(5), mandatory(6)];
+    let plan = h.drain(&set, &[], &[4, 5, 6]);
+    assert!(plan.device_limited);
+    assert_eq!(plan.deferred, vec![4, 5]);
+    assert_eq!(plan.installed, vec![6], "6 walks and evicts band block 1");
+    assert_eq!(h.evicted(), vec![(1, EvictionReason::Pressure)]);
+    assert!(h.model.is_resident(3), "band block 3 is put back");
+    assert_disjoint_within_layers(&h.model);
+
+    // Blocks 4 and 5 come back ready and stay deferred; 6 stays resident.
+    let plan = h.drain(&[], &[], &[4, 5]);
+    assert_eq!(plan.deferred, vec![4, 5]);
+    assert!(h.model.is_resident(6));
+    assert_disjoint_within_layers(&h.model);
 }
 
 // A new generation's first batch starts from nothing resident: every entry

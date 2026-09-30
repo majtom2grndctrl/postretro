@@ -52,6 +52,8 @@ struct Scratch {
     victims: Vec<u32>,
     victims_built: bool,
     over_cap: Vec<u32>,
+    /// Extents deferred at the device layer limit this drain.
+    device_limited: Vec<(u32, u32)>,
     /// `(block, highest layer + 1 it may land in)`.
     repack_keep: Vec<(u32, u32)>,
     repack_band: Vec<(u32, u32)>,
@@ -291,6 +293,7 @@ impl LightmapPoolModel {
             s.band_ready.capacity(),
             s.victims.capacity(),
             s.over_cap.capacity(),
+            s.device_limited.capacity(),
             s.repack_keep.capacity(),
             s.repack_band.capacity(),
             s.repack_residents.capacity(),

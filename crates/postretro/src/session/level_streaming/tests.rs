@@ -657,6 +657,11 @@ fn a_mid_level_lightmap_decline_keeps_sh_for_its_pending_outcome() {
         level.lightmap().is_none(),
         "no lightmap work after the decline"
     );
+    let parked = level.lightmap.as_ref().expect("the issuer keeps it parked");
+    assert!(parked.is_declined());
+    let controller = parked.controller();
+    assert_eq!(controller.in_hand_bytes(), 0, "parking holds no pair");
+    assert_eq!(controller.permits_in_use(), 0);
     sh.as_mut()
         .expect("SH outlives the decline")
         .accept_drain_for_test(&sh_batch)

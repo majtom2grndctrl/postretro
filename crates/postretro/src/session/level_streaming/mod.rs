@@ -61,7 +61,7 @@ pub(crate) struct LevelStreaming {
 
 impl LevelStreaming {
     /// The level's lightmap session; `None` once the level declined it, even
-    /// while a declined session waits for retirement.
+    /// while the declined session stays parked for the rest of the level.
     pub(crate) fn lightmap(&self) -> Option<&LightmapStreamingSession> {
         self.lightmap
             .as_ref()

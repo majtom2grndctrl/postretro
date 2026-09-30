@@ -187,6 +187,17 @@ impl LightmapResidencyController {
         self.promotions.clear();
     }
 
+    /// The session stopped streaming: every ready pair's payload is dropped,
+    /// its permit and charges released, and the pair returns to Absent.
+    /// In-flight, drained, and installed pairs are untouched.
+    pub(crate) fn release_ready(&mut self) {
+        while let Some((block, _)) = self.ready.pop_first() {
+            self.release_in_hand(block);
+            self.slots[block as usize].phase = BlockPhase::Absent;
+            self.demand.recheck_if_held(block);
+        }
+    }
+
     pub(super) fn rebuild_request_order(&mut self) {
         let mut order = std::mem::take(&mut self.request_order);
         order.clear();

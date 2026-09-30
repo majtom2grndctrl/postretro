@@ -117,7 +117,9 @@ pub(crate) struct LightmapStreamingSession {
     /// Rolled-back drains since the renderer last returned an outcome.
     consecutive_rolled_back_drains: u32,
     /// The level declined this lightmap while the issuer still delivers into
-    /// this session; it does no work until its retirement.
+    /// this session. It stays parked for the rest of the level, untargeted,
+    /// holding no payload and only draining its completion queue, until the
+    /// level unloads or changes.
     declined: bool,
     live: LightmapStreamingLiveDiagnostics,
     log_window: LightmapStreamingLogWindow,
@@ -371,11 +373,17 @@ impl LightmapStreamingSession {
     }
 
     /// The level declined this lightmap, but the running issuer still
-    /// delivers into this session's queue: it stays, inert, until the level
-    /// retires it with the issuer. Its parked batch is dropped unsent.
+    /// delivers into this session's queue: it stays parked, inert, for the
+    /// rest of the level, and retires when the level unloads or changes. Its
+    /// parked batch is dropped unsent. The controller never admits another
+    /// completion, so every pair in hand, in flight, ready or drained,
+    /// releases its payload, permit and in-hand bytes.
     pub(in crate::session) fn park_declined(&mut self) {
         self.declined = true;
         self.awaiting_renderer = None;
+        self.controller.abort_drain();
+        self.controller.release_ready();
+        self.controller.cancel_in_flight();
         // Untarget every block so the shared issuer cancels this session's
         // pending reads at once instead of reading them for nothing.
         self.controller

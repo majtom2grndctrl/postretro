@@ -34,9 +34,12 @@ use portal_distance::{Neighbors, portal_graph_from_sections, recompute_pairs};
 use pvs_sampling::{SamplingStats, sample_pvs};
 
 pub const CELL_RESIDENCY_SET_STAGE_ID: &str = "cell_residency_set";
-/// Bump when sampling, dilation, the lead metric, the maximum lead, or the
-/// section encoding changes.
-pub const CELL_RESIDENCY_SET_STAGE_VERSION: u32 = 1;
+/// Bump when sampling, dilation, the lead metric, the maximum lead, the
+/// section encoding, or the key's inputs change.
+///
+/// v2: the key hashes the Cells fields the walk reads instead of the encoded
+/// section, so per-cell face ranges no longer participate.
+pub const CELL_RESIDENCY_SET_STAGE_VERSION: u32 = 2;
 
 /// Camera cells: every cell the camera can stand in (not solid, not
 /// exterior), charted or not. Ascending.
@@ -175,17 +178,22 @@ fn log_sampling(stats: &SamplingStats) {
     );
 }
 
-/// Whole-section key over every input the bake reads: the encoded Cells,
-/// Portals and CellLocator sections, the maximum lead, and the runtime portal
-/// walk's epoch (the sampled sets are that walk's output). Lights, charts and
-/// hints never participate, so a lighting-only edit hits.
+/// Whole-section key over every input the bake reads: the Cells fields the
+/// walk reads, the encoded Portals and CellLocator sections, the maximum lead,
+/// and the runtime portal walk's epoch (the sampled sets are that walk's
+/// output). Lights, charts and hints never participate, so a lighting-only
+/// edit hits.
 pub(crate) fn cell_residency_set_cache_key(
     cells: &CellsSection,
     portals: &PortalsSection,
     locator: &CellLocatorSection,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
-    for bytes in [cells.to_bytes(), portals.to_bytes(), locator.to_bytes()] {
+    for bytes in [
+        walk_cell_bytes(cells),
+        portals.to_bytes(),
+        locator.to_bytes(),
+    ] {
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
@@ -196,4 +204,32 @@ pub(crate) fn cell_residency_set_cache_key(
         CELL_RESIDENCY_SET_STAGE_VERSION,
         hasher.finalize().as_bytes(),
     )
+}
+
+/// The Cells section without face ranges: per cell its bounds, flags and
+/// portal-ref range (an empty range's start zeroed, as the encoder does),
+/// then the portal refs. The walk reads drawability from the flags and face
+/// counts only for stats, so atlas preparation re-ranging faces without
+/// changing any cell's drawability leaves the key alone.
+fn walk_cell_bytes(cells: &CellsSection) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(16 + cells.cells.len() * 36 + cells.portal_refs.len() * 4);
+    bytes.extend_from_slice(&(cells.cells.len() as u64).to_le_bytes());
+    for cell in &cells.cells {
+        for v in cell.bounds_min.iter().chain(&cell.bounds_max) {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&cell.flags.to_le_bytes());
+        let portal_ref_start = if cell.portal_ref_count == 0 {
+            0
+        } else {
+            cell.portal_ref_start
+        };
+        bytes.extend_from_slice(&portal_ref_start.to_le_bytes());
+        bytes.extend_from_slice(&cell.portal_ref_count.to_le_bytes());
+    }
+    bytes.extend_from_slice(&(cells.portal_refs.len() as u64).to_le_bytes());
+    for portal_ref in &cells.portal_refs {
+        bytes.extend_from_slice(&portal_ref.to_le_bytes());
+    }
+    bytes
 }

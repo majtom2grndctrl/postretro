@@ -55,9 +55,7 @@ pub fn shadowmask_prefix_len_through_block_count(
     check_format_tag(read_u32(fixed_header, 0))?;
     let selected = read_u32(fixed_header, 4);
     let table = u64::from(selected) + padding_to_4(selected as usize) as u64;
-    let room = section_len
-        .checked_sub(min_bytes_beside_the_slot_table(lightmap)?)
-        .unwrap_or(0);
+    let room = section_len.saturating_sub(min_bytes_beside_the_slot_table(lightmap)?);
     if table > room {
         return Err(invalid(format!(
             "shadowmask section of {section_len} bytes cannot hold a {table}-byte slot table \

@@ -24,9 +24,9 @@ pub enum SectionId {
     /// Flat list of texture name strings, indexed by `FaceMeta.texture_index`.
     TextureNames = 16,
 
-    /// Geometry section: 36-byte vertices (position + UV + octahedral normal
-    /// + octahedral tangent with bitangent sign + block-local lightmap UV +
-    /// lightmap cell block id + 1 + animated block id) and 8-byte `FaceMeta`.
+    /// Geometry section: 36-byte vertices (position, UV, octahedral normal,
+    /// octahedral tangent with bitangent sign, block-local lightmap UV,
+    /// lightmap cell block id + 1, animated block id) and 8-byte `FaceMeta`.
     Geometry = 17,
 
     /// AlphaLights section (interim). Flat per-light record array for the

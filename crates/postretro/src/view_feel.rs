@@ -16,6 +16,7 @@ use postretro_foundation::{
 
 mod bob;
 mod impulse;
+pub(crate) mod slide;
 mod sway;
 mod tilt;
 
@@ -45,6 +46,8 @@ pub(crate) struct ViewFeelState {
     /// One critically-damped transient spring per closed movement-state key.
     /// The state remains app-owned and presentation-only, never replicated.
     impulse_springs: [impulse::ImpulseSpring; 4],
+    /// Sustained slide presentation, independent of transition kicks.
+    slide_blend: f32,
 }
 
 impl Default for ViewFeelState {
@@ -56,15 +59,17 @@ impl Default for ViewFeelState {
             bob_lateral_phase: 0.0,
             sway_clock: 0.0,
             impulse_springs: [impulse::ImpulseSpring::ZERO; 4],
+            slide_blend: 0.0,
         }
     }
 }
 
 impl ViewFeelState {
-    /// Discard transition kicks derived from movement state that no longer
+    /// Discard transition kicks and sustained slide presentation for state that no longer
     /// exists while preserving independent bob, tilt, and sway continuity.
-    pub(crate) fn clear_impulses(&mut self) {
+    pub(crate) fn clear_state_effects(&mut self) {
         self.impulse_springs = [impulse::ImpulseSpring::ZERO; 4];
+        self.slide_blend = 0.0;
     }
 }
 
@@ -314,6 +319,7 @@ mod tests {
 
     fn bob_only(b: BobParams) -> ViewFeelParams {
         ViewFeelParams {
+            slide: None,
             bob: Some(b),
             tilt: None,
             sway: None,
@@ -323,6 +329,7 @@ mod tests {
 
     fn tilt_only(t: TiltParams) -> ViewFeelParams {
         ViewFeelParams {
+            slide: None,
             bob: None,
             tilt: Some(t),
             sway: None,
@@ -332,6 +339,7 @@ mod tests {
 
     fn sway_only(s: SwayParams) -> ViewFeelParams {
         ViewFeelParams {
+            slide: None,
             bob: None,
             tilt: None,
             sway: Some(s),
@@ -341,6 +349,7 @@ mod tests {
 
     fn impulse_params(states: ImpulseStates) -> ViewFeelParams {
         ViewFeelParams {
+            slide: None,
             bob: None,
             tilt: None,
             sway: None,
@@ -750,6 +759,7 @@ mod tests {
     #[test]
     fn global_scale_zero_produces_zero_for_all_motions() {
         let params = ViewFeelParams {
+            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
@@ -771,6 +781,7 @@ mod tests {
         // Compare scale = 1 against an independently scaled reference: scaling by
         // 2.0 must double every channel relative to scale = 1.
         let params = ViewFeelParams {
+            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
@@ -797,6 +808,7 @@ mod tests {
     #[test]
     fn zero_frame_dt_leaves_integrator_state_unchanged() {
         let params = ViewFeelParams {
+            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
@@ -827,6 +839,7 @@ mod tests {
     #[test]
     fn absent_bob_disables_only_bob() {
         let params = ViewFeelParams {
+            slide: None,
             bob: None,
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
@@ -844,6 +857,7 @@ mod tests {
     #[test]
     fn absent_tilt_disables_only_tilt() {
         let params = ViewFeelParams {
+            slide: None,
             bob: Some(bob(false)),
             tilt: None,
             sway: Some(sway(0.5, false)),
@@ -867,6 +881,7 @@ mod tests {
     #[test]
     fn absent_sway_disables_only_sway() {
         let params = ViewFeelParams {
+            slide: None,
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: None,
@@ -1102,6 +1117,7 @@ mod tests {
         assert_eq!(eye, Vec3::ZERO);
 
         let no_impulse = ViewFeelParams {
+            slide: None,
             bob: None,
             tilt: None,
             sway: None,
@@ -1146,7 +1162,7 @@ mod tests {
         );
         assert!(kicked.impulse_fov > 0.0);
 
-        evaluator_state.clear_impulses();
+        evaluator_state.clear_state_effects();
         let cleared =
             evaluate_with_edges(&params, 0.0, 0.0, true, &[], &mut evaluator_state, 0.0, 1.0);
 

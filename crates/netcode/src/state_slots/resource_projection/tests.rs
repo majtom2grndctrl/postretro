@@ -312,13 +312,7 @@ fn a_kind_switch_clears_the_outgoing_values_on_the_client() {
     let mut client_table = SlotTable::new();
     let mut client = ClientStateApply::new();
     let mut step = |registry: &EntityRegistry, sequence: u32| {
-        host.ingest_frame(
-            &table,
-            &identity(),
-            registry,
-            &owners,
-            &WeaponOwners::new(),
-        );
+        host.ingest_frame(&table, &identity(), registry, &owners, &WeaponOwners::new());
         let records = host.produce_for_client(CLIENT_A, sequence).unwrap();
         let outcome = client.apply_snapshot_state(
             &mut client_table,
@@ -336,7 +330,10 @@ fn a_kind_switch_clears_the_outgoing_values_on_the_client() {
     };
     let (_, projection, applied) = step(&registry, 0);
     assert_eq!(projection.overheated, sample(0, true));
-    assert_eq!(applied_slot(&applied, HEAT_SLOT), Some(SlotValue::Number(80.0)));
+    assert_eq!(
+        applied_slot(&applied, HEAT_SLOT),
+        Some(SlotValue::Number(80.0))
+    );
 
     // The host switches to a cell gun in slot 1.
     let cell_id = registry.spawn(Transform::default());
@@ -352,13 +349,20 @@ fn a_kind_switch_clears_the_outgoing_values_on_the_client() {
         Some(&present(1, 0.0)),
         "the latch reads false for a weapon without heat"
     );
-    assert_eq!(applied_slot(&applied, HEAT_SLOT), None, "cleared, not left at 80");
+    assert_eq!(
+        applied_slot(&applied, HEAT_SLOT),
+        None,
+        "cleared, not left at 80"
+    );
     assert_eq!(applied_slot(&applied, OVERHEAT_AT_SLOT), None);
     assert_eq!(
         applied_slot(&applied, OVERHEATED_SLOT),
         Some(SlotValue::Boolean(false))
     );
-    assert_eq!(applied_slot(&applied, CELL_SLOT), Some(SlotValue::Number(20.0)));
+    assert_eq!(
+        applied_slot(&applied, CELL_SLOT),
+        Some(SlotValue::Number(20.0))
+    );
     assert_eq!(projection.heat, sample(1, None));
     assert_eq!(projection.overheated, sample(1, false));
     assert_eq!(projection.cell, sample(1, Some(20.0)));

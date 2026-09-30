@@ -7055,7 +7055,11 @@ impl App {
         let mut cues = Vec::new();
         let reload_addresses = self.client_reload_edges.observe_reading(reading);
         if let Some(weapon) = reload_weapon {
-            cues.extend(reload_addresses.into_iter().map(|address| (weapon, address)));
+            cues.extend(
+                reload_addresses
+                    .into_iter()
+                    .map(|address| (weapon, address)),
+            );
         }
         if self.client_overheat_edge.observe_reading(overheat)
             && let Some(weapon) = overheat_weapon
@@ -14246,14 +14250,30 @@ mod tests {
             Some(&SlotValue::Array(vec![0.0, 0.0])),
             "engine-owned screen.shake defaults to zero offset and is cloned",
         );
+        // The resource kind and the overheat latch default to `none` and
+        // false, so both are value-bearing; the heat and cell numbers are not.
+        assert_eq!(
+            snapshot.get("player.weaponResource"),
+            Some(&SlotValue::Enum("none".to_string())),
+            "engine-owned player.weaponResource defaults to none and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.overheated"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.overheated defaults false and is cloned",
+        );
         assert!(
             !snapshot.contains_key("player.maxHealth"),
             "value-less slots are skipped",
         );
+        assert!(
+            !snapshot.contains_key("player.cell"),
+            "value-less weapon-resource numbers are skipped",
+        );
         assert_eq!(
             snapshot.len(),
-            36,
-            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
+            38,
+            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
         );
     }
 

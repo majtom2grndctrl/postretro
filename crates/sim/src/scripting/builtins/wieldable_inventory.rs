@@ -632,7 +632,10 @@ mod tests {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| {
-                stem.ends_with("_test")
+                // A `tests.rs` file is the body of a `#[cfg(test)] mod tests;`
+                // declared by its parent module, so it only compiles for tests.
+                stem == "tests"
+                    || stem.ends_with("_test")
                     || stem.ends_with("_tests")
                     || stem.ends_with("_test_fixtures")
                     || stem.ends_with("_harness")

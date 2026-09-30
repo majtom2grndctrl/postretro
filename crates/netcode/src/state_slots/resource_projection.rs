@@ -62,15 +62,21 @@ impl ResourceSlotProjection {
         let effective = weapon.effective();
         Self {
             wieldable_slot: Some(slot),
-            heat: weapon.heat.zip(effective.heat).map(|(live, tuning)| HeatValues {
-                heat: live.heat,
-                overheat_at: tuning.overheat_at,
-                overheated: live.overheated,
-            }),
-            cell: weapon.cell.zip(effective.cell).map(|(live, tuning)| CellValues {
-                charge: live.charge,
-                capacity: tuning.capacity,
-            }),
+            heat: weapon
+                .heat
+                .zip(effective.heat)
+                .map(|(live, tuning)| HeatValues {
+                    heat: live.heat,
+                    overheat_at: tuning.overheat_at,
+                    overheated: live.overheated,
+                }),
+            cell: weapon
+                .cell
+                .zip(effective.cell)
+                .map(|(live, tuning)| CellValues {
+                    charge: live.charge,
+                    capacity: tuning.capacity,
+                }),
         }
     }
 

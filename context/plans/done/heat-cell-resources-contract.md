@@ -170,9 +170,9 @@ Run every command from the worktree root. Each command must report a nonzero tes
 ## Status
 
 Tracks A and B are complete (`50077af65`, `9710f022d`), along with the content, docs and context work. Remaining:
-- ~~one review pass~~ done (`525644736`); two owner decisions applied;
-- `/preflight`, on hold until the owner clears concurrent builds;
-- the PR.
+- The review pass is done (`525644736`), and two owner decisions are applied.
+- Preflight passes: fmt, clippy, the full `cargo test` suite (about 8,676 tests), `cargo check --release` and `crate-graph --check`.
+- The PR is open.
 
 Known pre-existing issues not caused by this branch:
 - clippy's `too_many_arguments` on `ingest_hit_declaration_for_test` in `crates/netcode/src/lib.rs`, a file unchanged from `main`;

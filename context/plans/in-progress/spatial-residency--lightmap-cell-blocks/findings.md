@@ -178,6 +178,7 @@ Time to first frame, stream against all-resident. The windowed `[Startup]` line 
 | Same, release | 1.49–1.60 s (3.67 s cold) | 1.55–1.62 s | 5.99–6.01 s | 9.92–10.08 s |
 
 - **The hallway reaches its first frame about 4 s sooner when it streams**, in debug and in release. It also never holds the 1 GiB whole payload.
+- **Windowed confirmation (owner, Windows):** the hallway's `prl_parse` is 868 ms (25%) shorter when streamed. See the AC 27 handoff below.
 - On campaign the difference is noise.
 
 ## AC 25: dry-run dilation cost
@@ -274,4 +275,29 @@ This Mac lacks `TIMESTAMP_QUERY`, so the timing ran on the owner's Windows box. 
   - The owner reports the hallway back above 60 fps throughout. It ran below that before, a slowdown that predates this branch.
   - The lightmap meter reads 224 MiB static: irradiance 64, direction 32 and shadowmask 128 MiB, which is 15 layers plus the spare. The animated pair adds 36 MiB (24 + 12), for 260 MiB in total. That matches the walk harness's first generation at cap 15. All-resident, the same map holds about 1.38 GiB of static pool.
   - GPU timing at one pose: cull 0.00 ms, depth prepass 0.02 ms, forward 2.75 ms, SH compose 0.74 ms, animated direct SH compose 0.97 ms, billboard direct scatter compose 0.15 ms, bloom 0.25 ms, promoted depth cache 0.04 ms, resolve 0.04 ms.
-- **Still pending:** the same pose with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`, for the forward-pass delta (the shader is identical, so the delta isolates residency effects); campaign-test; and repack drain GPU time.
+- **Hallway comparison (owner, 2026-09-29, Windows, GTX 1660 Super, v-sync off, one pose, one sample per mode, branch as of `9914cd4e3`):**
+
+  | Pass | All-resident | Streamed | Delta |
+  |---|---|---|---|
+  | forward | 3.46 ms | 2.69 ms | −0.77 ms (−22%) |
+  | depth prepass | 0.03 ms | 0.02 ms | −0.01 ms |
+  | SH compose | 0.73 ms | 0.73 ms | 0 |
+  | animated direct SH compose | 0.94 ms | 0.96 ms | +0.02 ms |
+  | billboard direct scatter compose | 0.14 ms | 0.14 ms | 0 |
+  | bloom | 0.31 ms | 0.24 ms | −0.07 ms |
+  | promoted depth cache | 0.04 ms | 0.04 ms | 0 |
+  | resolve | 0.06 ms | 0.04 ms | −0.02 ms |
+  | sum of timed passes | 5.71 ms | 4.86 ms | −0.85 ms |
+  | lightmap meter | 1,450 MiB | 260 MiB | −1,190 MiB (5.6× less) |
+
+  - The lightmap meter, all-resident: static irradiance 404, direction 202 and shadowmask 808 MiB, plus the animated pair (24 + 12). Streamed: 64 + 32 + 128 static, plus the same animated 36 MiB.
+  - **Streaming does not cost forward time here; it saves it.** Both modes run the same shader, block-table fetch and per-lookup offset, so this delta isolates residency: 16 pool layers against about 100. The likely cause is texture-cache and VRAM pressure, with 1.4 GiB of lightmap on a 6 GiB card, but it was not profiled. The streamed forward time repeats the earlier partial result (2.75 ms).
+  - **The cost of the fetch and offset against `main`'s whole-atlas path is not isolated.** Measuring it needs a pre-branch build at the same pose. Both modes here sit well inside a 60 fps frame, and the owner reports the hallway smooth either way on this card.
+  - **Level load, windowed (`[Startup]`):**
+    - `prl_parse`: 3,478.4 ms all-resident, 2,609.9 ms streamed (−868 ms, −25%);
+    - `worker_delivered`: 3,490.1 ms against 2,611.4 ms;
+    - `texture_upload`: 143.5 ms against 156.1 ms (+12.6 ms, which includes the spawn preload).
+
+    This is the windowed number AC 24 could not read on the Mac, and it agrees with the headless proxies.
+- **Not measured:** campaign-test in either mode, and repack drain GPU time. `[GpuTiming]` has no scope around the lightmap drain's copies.
+- **Owner impression:** positive. The memory headroom leaves the engine room to grow, and streaming gives the margin laptops need. One more Mac visual pass is planned. The Mac's separate performance drain predates this branch and will be pursued on its own.

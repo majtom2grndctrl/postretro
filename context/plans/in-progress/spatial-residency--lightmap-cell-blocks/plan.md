@@ -137,10 +137,10 @@ Numbered in brief order.
 | 21 BGL: FRAGMENT unchanged; only VERTEX addition is the block table | `forward_bindings_add_only_the_vertex_block_table` (pipeline_budget_tests.rs) | achievable as stated | pass |
 | 22 Walk metrics logged and in capture JSON (both maps) | measurement run; recorded in findings | reported | reported: `findings.md` (walk metrics, both maps; no visible misses after spawn at default levers) |
 | 23 Lightmap residency CPU time in `[CpuTiming]` | new `RenderStage`/`FrameStage` entry; measurement run | reported | reported: `findings.md` (`lightmap_residency`, `lightmap_drain` stages; payload-split spikes to 37 ms recorded as a follow-up) |
-| 24 PRL size delta and time-to-first-frame delta vs whole-resident | measurement run on both maps | reported | reported: `findings.md` (PRL +4.6% campaign, +5.9% hallway; hallway first frame about 4 s sooner, measured by headless proxies) |
+| 24 PRL size delta and time-to-first-frame delta vs whole-resident | measurement run on both maps | reported | reported: `findings.md` (PRL +4.6% campaign, +5.9% hallway; hallway first frame about 4 s sooner by headless proxies; windowed on Windows, `prl_parse` 868 ms shorter) |
 | 25 Dry-run dilation cost (worst/p95 with and without) | ignored yardstick rerun on new PRLs | reported | reported: `findings.md` (dilation cost worst/p95 with and without) |
 | 26 Owner walk, both maps, sliders live | owner, in-engine | manual | pending: owner walk on both maps with the Streaming-tab sliders (pop-in, seams, animated lights) |
-| 27 Windows `POSTRETRO_GPU_TIMING=1` forward delta | Windows handoff (no timestamp queries on this Mac) | manual | partial: Windows streamed hallway recorded (above 60 fps, forward 2.75 ms, meter 260 MiB); all-resident delta, campaign-test both modes and repack-drain GPU time outstanding |
+| 27 Windows `POSTRETRO_GPU_TIMING=1` forward delta | Windows handoff (no timestamp queries on this Mac) | manual | hallway met: Windows GTX 1660 Super, v-sync off, one pose, forward 3.46 ms all-resident against 2.69 ms streamed (−22%), meter 1,450 against 260 MiB (`findings.md`); not measured: campaign-test, repack drain GPU time (no GPU scope), and the fetch cost against `main` |
 | 28 Findings note | `findings.md` beside this plan, owner reads | manual | done: `findings.md` |
 
 ### AC 1 — restatement (approved)

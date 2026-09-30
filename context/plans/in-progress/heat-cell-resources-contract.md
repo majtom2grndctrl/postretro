@@ -160,3 +160,24 @@ Run every command from the worktree root. Each command must report a nonzero tes
 ## Open
 
 - Whether `overheatBehavior` grows `"vent"` (a manual early vent), and what it means. The enum is the seam; nothing else is built for it.
+
+## Status at pause (2026-09-29)
+
+Landed on the branch:
+- **Track A** (`50077af65`): all of its gates are green except clippy and `sound_events`, both carried into Track B's gate.
+- **Content, docs and context:** the plasma rifle is the cell reference, the dev HUD has a cell bar, `docs/scripting-reference.md` covers heat and cell, and `entity_model.md` and the router are updated. `tsc` shows no errors in the edited dev scripts. Ten errors already exist in seven other dev scripts.
+- **Track B:** committed as WIP in `b5a4cad9d`. Resume in this order:
+  1. Rerun `cargo test -p postretro-netcode --lib state_slots` to confirm a fixture edit that expects 14 slots, up from 9.
+  2. `resource_projection::tests::a_malformed_heat_or_cell_sample_rejects_the_batch` fails: the client accepts `[slot, -1.0]` on `player.cell`. Check whether `apply_store_slot_batch` enforces readonly engine-slot ranges for correlated samples. If it doesn't, drop that row and report it; don't widen the change.
+  3. Run the whole `cargo test -p postretro-netcode --lib`.
+  4. Run `cargo test -p postretro --bin postretro sound_events`. This is the first compile of the `main.rs` wiring (`observe_client_weapon_edges`, `client_overheat_edge`).
+  5. Update `context/lib/networking.md` §Combat authority:
+     - the heat and cell owner-private values and their absences;
+     - the pull rules: overheated → silent, a short cell → dry fire;
+     - the overheat cue: the rising edge of the replicated latch for the wielded slot;
+     - the resource kind is local on every role.
+  6. Run `cargo check --workspace --all-targets`, then clippy with the command from Track B's acceptance.
+  7. Squash the WIP commit.
+- Then: one `opus` review pass, `/preflight`, and the PR. Manual visual proof is still owed.
+
+Disk: run builds with `CARGO_INCREMENTAL=0`. After each step, if free space is under 15 GB, clear the worktree's incremental cache or `cargo clean -p` the PostRetro crates. On macOS, `timeout` isn't available.

@@ -43,6 +43,8 @@ No `dispatch_workgroups_indirect`, render bundle or `*_indirect_count` call exis
 
 ## Load check
 
+The rejection is a hard error, never a clamp, and the install check follows suit.
+
 `validate_bvh_structure` (`prl_loader.rs`) runs inside `load_prl` for every build. It rejects:
 - a leaf's `index_offset` or `index_count` that is not a multiple of 3;
 - `checked_add` overflow of `index_offset + index_count`;
@@ -64,3 +66,15 @@ The gate is `debug_assertions` alone (owner, after `/validate-plan`). The `dev-t
 Taken on a Radeon Pro 5300M under Metal, not re-taken here, and **provisional, pending reconciliation** of the validation-only cost. About 1.29 ms/frame on `stress-warren-hallway-inspection` (8,437 leaves) and 0.37 ms/frame on `campaign-test` (774 leaves).
 
 A frame issues L·(2 + uncached shadow slots) indirect draws, so the 3.5× cost ratio against the 10.9× leaf ratio reflects shadow-cache state as well as L. The draft session's pose and cache state are not recorded. The manual row pins map spawn and records cache state.
+
+## Pins
+
+| id | scenario | ordering | expected |
+|---|---|---|---|
+| P1 | A boot or runtime load whose geometry fails the install range check | The range check runs before the first install step | The load ends as a failed load: frontend on a runtime load, error exit on the boot load. Nothing of the rejected level is installed, and no unwind is needed. |
+| P2 | A second level installs, or a level reinstalls | The world index buffer is replaced and every indirect-args buffer is recreated in the same install, before any frame draws | Every slot of the new level starts zeroed, and no slot written for the previous level is drawn against the new index buffer. |
+| P3 | The variable is set, then levels load, reinstall or change | The variable is read once, at renderer instance creation. The device takes its state then, and every later level install runs under it | The logged state holds for the whole run, and no level install reads the variable. |
+| P4 | A cold shadow cache fill and the camera depth and forward passes in one frame | The shadow cone cull writes its region before the cache fill draws it, and a warm key skips both. The camera passes read only the camera buffer, after the camera cull | Any region drawn holds this frame's cull or an earlier light's write for the same leaf, so every draw stays in range. |
+| P5 | Geometry with zero BVH leaves | The install check runs over no leaves, and no cull owner is built | Install is accepted, and no indirect draw is issued. |
+| P6 | A leaf with no indices, or a tree-walk reject after an earlier submit of the same leaf | The reject zeroes only the count, so the slot keeps the leaf's offset | The slot draws nothing, and its offset is at or before the index count. |
+| P7 | Any pass issuing an indirect world draw, now or after a geometry-residency change | The pass binds the world index buffer immediately before the indirect draw | The bound buffer is the whole checked Geometry index array, never a sub-slice or another buffer. |

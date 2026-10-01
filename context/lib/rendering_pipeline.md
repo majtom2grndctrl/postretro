@@ -23,6 +23,8 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 **View vs. sim split.** View angles (yaw, pitch) update at render rate from raw input; player position updates inside the fixed-tick loop and is interpolated between tick states. Evanescent inputs (mouse delta) are consumed at render rate so they are never lost on zero-tick frames. See `input.md §3`.
 
+**Per-frame uploads (decided, not yet built).** The renderer owns every per-frame buffer and texture write: those made while recording, those the binary triggers through the renderer before rendering, and every renderer setter's, settings and dev-tools included. All stage into one recycled, renderer-owned upload batch, the mechanism streaming installs use (§4) with its own pool, because each direct queue write allocates driver staging that the next submit frees. The batch's copies go first in the first frame, drain or capture submit after the write; splash, readback and dev-tools submits never carry one. Copies keep program order, so a later overlapping write wins; the batch never deduplicates or merges, and redundant writes are fixed at the writer. A batch lives for one frame entry: an acquire failure submits it alone, since writers' CPU mirrors already count those bytes uploaded, and none is pending at frame entry, hot-reload commit, level install or unload. Only writes made before the batch exists (boot splash, load, install), writes inside streaming drains, and glyphon's and egui's internal writes stay direct. A direct write never follows a batched write to the same resource before that batch submits.
+
 ---
 
 ## 2. Visibility and Traversal
@@ -356,6 +358,14 @@ Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer stora
 World geometry is organized into a global BVH at compile time. Each BVH leaf covers one `(face, material_bucket)` pair. Leaves are sorted by material bucket so each bucket owns a contiguous slot range in the indirect buffer.
 
 **Draw flow.** Portal traversal (§2) produces a visible-cell bitmask → the camera cull (§7.1) writes or zeros each leaf's indirect buffer slot, via either the candidate path (gathers only the visible cells' leaves from the baked `CellDrawIndex` CSR) or the tree-walk fallback (walks the whole BVH, testing each leaf's AABB and cell bit) → opaque pass issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range. `CellDrawIndex` is required for non-empty BVH maps; missing or invalid required indexes fail load.
+
+**Indirect-args invariant (decided, not yet built).** Release builds turn off wgpu's indirect-call validation (§12), which otherwise turns a bad indirect call into a silent no-op. Out-of-range arguments then become undefined behavior, so four guarantees take its place:
+1. Each indirect slot holds zero or its own leaf's baked record (leaf index count and offset, instance count 1, base vertex and first instance 0), with any field zeroed by a reject. Only the camera and shadow cull shaders write the args, and no writer computes them.
+2. Every leaf's index range lies within the Geometry index array. The loader checks it, and level install checks it again before its first step in every build, so a rejected level installs nothing and ends as a failed load.
+3. Every indirect draw binds that checked index array whole. Indirect-args buffers are created only by the level install that creates it, so no slot outlives its index buffer.
+4. No indirect-drawn shader reads `vertex_index` or `instance_index`, and the engine issues no indirect dispatch.
+
+Revisit the release default before adding an indirect draw or dispatch that reads those built-ins, GPU compaction of indirect records, computed indirect arguments, or any change to the leaf-to-index-buffer mapping.
 
 **Global vs. per-region.** One BVH over all static geometry. Global wins on shader simplicity and tree quality. Per-region is the pivot path if a cell-heavy map regresses on frame time — tighter cache behavior at the cost of more bookkeeping and storage buffers. Pivot only when global is measured to fall short. No hardware ray tracing — not in baseline wgpu.
 
@@ -848,6 +858,10 @@ of them. Divide by `ticks` for the per-tick cost before treating a sim stage as 
 CPU and GPU windows never align: the GPU window counts completed readbacks. Surfaces: a `[CpuTiming]` log line per window (`label=avg/max`; `(ran/frames)` on partial rows; markers as a frame count), the debug UI Performance tab (`dev-tools`) beside the GPU block, a live-only observe-live `cpu_timing` section (`networking.md` §Not netcode: the live introspection channel), and the capture measurement report's `cpu_stages`. The `tracy` cargo feature makes every stage scope a Tracy zone, with or without the env var; no release, dist or dependency-free diagnostic build enables it.
 
 **Measurement probes.** `--start-pose x,y,z,yaw_deg,pitch_deg` starts the session's first gameplay install at a pose (pawn origin, engine meters) instead of the map spawn. `walk_reach_probe_search` (`candidate_cull_probes.rs`, on demand) ranks stress-map poses by portals the walk considers; probes and their launch line live in `content/dev/maps/stress-warren.README.md`. The portal-walk parallelization gate (walk > 0.5 ms and ≥ 5% of work CPU, release) was evaluated at the `stress-warren-mini` probe and not met: 0.36 ms, 1.9% of work (`plans/done/cpu-frame-profiling`).
+
+### Indirect-Call Validation
+
+Decided, not yet built. Release builds create the wgpu instance with indirect-call validation off, with or without `dev-tools`; debug builds keep wgpu's default, on. Windowed and offscreen-capture renderers share the policy, and no other wgpu validation flag changes. `WGPU_VALIDATION_INDIRECT_CALL` overrides that one bit in any build: unset applies the build default, `0` clears it, and any other value, empty included, sets it. Like `WGPU_BACKEND` it is a wgpu-named safety toggle, not `POSTRETRO_*` instrumentation (`development_guide.md` §6.4). The renderer logs the effective state once at instance creation, noting when the override set it. Release safety rests on the indirect-args invariant (§5). Set it to `1` for a same-binary baseline when measuring the validation's `render_submit` cost.
 
 ### Debug-Line Renderer
 

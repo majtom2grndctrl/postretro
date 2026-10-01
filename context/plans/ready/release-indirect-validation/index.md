@@ -2,7 +2,7 @@
 
 Brief · compact · reads: `context/lib/rendering_pipeline.md` §5, §7.1, §12 · `context/lib/development_guide.md` §3.5, §6.4 · `context/lib/build_pipeline.md` §PRL section IDs · read at 832e20c8a
 
-> `/validate-plan`: Direction sound, with amendments the owner decided (2026-10-01). Next: owner sign-off.
+> `/validate-plan`: Direction sound, with amendments the owner decided (2026-10-01). Owner signed off; promoted to `ready/` (2026-10-01).
 
 ## Problem
 Developer-raised, from CPU profiling on this Mac (Radeon Pro 5300M, Metal). wgpu-core 29.0.1 validates every indirect draw while encoding, and its default instance flags keep that validation on in release builds. The cause is the per-draw `DrawBatcher::add` plus the injected validation pass, both inside `CommandEncoder::finish` under the `render_submit` stage. The depth prepass, the forward pass and each uncached shadow slot each draw one indirect record per BVH leaf. The cost therefore follows shadow-cache state as well as the leaf count; the provisional numbers and the draw-count formula are in `research.md` §Measurements. When this is done, release builds skip that work, and an engine-owned range check plus a writer invariant take over the safety it gave. Debug builds keep wgpu's validation.
@@ -23,7 +23,7 @@ Developer-raised, from CPU profiling on this Mac (Radeon Pro 5300M, Metal). wgpu
   - computed (non-baked) indirect arguments;
   - any change to the leaf-to-index-buffer mapping, such as geometry/BVH residency (`plans/large-map-spatial-residency.md` stage 5's generalization) or `bvh-leaf-clustering`.
 - **§3.5 consultation.** Clearing the bit uses a safe API (the `flags` field of `InstanceDescriptor`), and no `unsafe` block appears. It does opt into wgpu's documented undefined behavior when the invariant breaks. The owner's sign-off on this brief counts as the `development_guide.md` §3.5 consultation, and the invariant above is the agreed mitigation.
-- **Landing order (owner).** Upload batching (`context/plans/drafts/per-frame-upload-batching/`) lands first, then this brief, then `visible-span-draws` (`context/plans/drafts/visible-span-draws/`), then `bvh-leaf-clustering`. This brief's manual proof measures with upload batching already landed.
+- **Landing order (owner).** Upload batching (`context/plans/ready/per-frame-upload-batching/`) lands first, then this brief, then `visible-span-draws` (`context/plans/drafts/visible-span-draws/`), then `bvh-leaf-clustering`. This brief's manual proof measures with upload batching already landed.
 - **Non-goals.** Draw count belongs to `visible-span-draws`. The two stack, because wgpu-hal Metal's `draw_indexed_indirect` still calls `drawIndexedPrimitives` once per draw. No other wgpu validation flag changes, so `InstanceFlags::with_env` is not adopted: it would also honor `WGPU_VALIDATION`, `WGPU_DEBUG` and `WGPU_GPU_BASED_VALIDATION`. The wgpu version stays as is, because no released wgpu changes the per-draw Metal loop.
 
 ## Acceptance

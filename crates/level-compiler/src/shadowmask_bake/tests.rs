@@ -3374,8 +3374,8 @@ fn pre_analytic_layer_cache_is_reused_without_rebake() {
 
 #[test]
 fn shadowmask_cache_epochs_pin_sparse_layer_values() {
-    assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 5);
-    assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 7);
+    assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 6);
+    assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 8);
     assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 4);
 }
 

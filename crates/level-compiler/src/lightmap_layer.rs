@@ -8,13 +8,15 @@ use rayon::prelude::*;
 use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
-use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
+use crate::chart_raster::{
+    ChartPlacement, chart_interior_dims, chart_texel_seed, chart_texel_world_position,
+};
 use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
     BlockLayout, Chart, CompositedAtlas, light_contribution_and_direction,
-    light_texel_contribution_and_visibility, segment_clear, texel_seed,
+    light_texel_contribution_and_visibility, segment_clear,
 };
 #[cfg(test)]
 use crate::map_data::LightType;
@@ -36,7 +38,10 @@ pub use cache_keys::{
 /// separately from the per-group SH and animated-weight-map stages.
 ///
 /// v7: layers are internal bake layers holding packed cell blocks.
-pub const LAYER_FORMAT_VERSION: u32 = 7;
+///
+/// v8: soft-visibility seeds key on the chart's frame and texel
+/// (`chart_raster::chart_texel_seed`), not bake-layer coordinates.
+pub const LAYER_FORMAT_VERSION: u32 = 8;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -343,7 +348,7 @@ pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DV
 /// Bake one light's contribution layer across the shared atlas.
 ///
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
-/// light: same chart interior walk, same `texel_seed`, same
+/// light: same chart interior walk, same `chart_texel_seed`, same
 /// `light_texel_contribution_and_visibility` helper (which shares the
 /// monolithic Lambert + soft-visibility math). Directional lights are
 /// evaluated across every chart texel, but sparse records are emitted only for
@@ -572,7 +577,7 @@ pub(crate) fn for_each_light_layer_chart_texel(
 
             let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
             let surface_normal = chart.normal;
-            let seed = texel_seed(atlas_x as u32, atlas_y as u32);
+            let seed = chart_texel_seed(chart, tx, ty);
 
             let sample = ChartWalkSample {
                 idx,

@@ -50,7 +50,11 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// `ShadowmaskAtlasSection::to_bytes` payload semantics.
 ///
 /// v5: `SMB6`, one pair of BC5 group planes per lightmap cell block.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 5;
+///
+/// v6: raw visibility follows the chart-local soft-visibility seeds. The key
+/// also folds `LAYER_FORMAT_VERSION`, whose bump already misses old memos;
+/// this one marks the stage's own output change.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 6;
 
 /// A pool layer holds the two mask groups side by side, so it is
 /// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device

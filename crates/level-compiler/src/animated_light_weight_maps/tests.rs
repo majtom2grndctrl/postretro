@@ -926,6 +926,74 @@ fn soft_light_partial_occluder_emits_fractional_weight() {
     );
 }
 
+/// `floor_plus_partial_blocker_geometry` with a far 1 m quad prepended in
+/// the same cell: the floor becomes face 1 and, packed after the equal-size
+/// far quad, moves inside the cell block and so in the bake layer.
+fn far_quad_then_floor_plus_partial_blocker_geometry() -> GeometryResult {
+    let mut geo = floor_plus_partial_blocker_geometry();
+    let section = &mut geo.geometry;
+    let mut vertices = xz_quad_face(0.0, 1.0, 500.0);
+    vertices.append(&mut section.vertices);
+    section.vertices = vertices;
+    let mut indices = vec![0, 1, 2, 0, 2, 3];
+    indices.extend(section.indices.iter().map(|&index| index + 4));
+    section.indices = indices;
+    section.faces.insert(
+        0,
+        FaceMeta {
+            leaf_index: 0,
+            texture_index: 0,
+        },
+    );
+    for range in &mut geo.face_index_ranges {
+        range.index_offset += 6;
+    }
+    geo.face_index_ranges.insert(
+        0,
+        FaceIndexRange {
+            index_offset: 0,
+            index_count: 6,
+        },
+    );
+    geo
+}
+
+/// Soft-visibility seeds key on the chart, not its bake-layer coordinates or
+/// face index: the floor's penumbra weights are identical after an unrelated
+/// quad renumbers it and moves its placement.
+#[test]
+fn moved_and_renumbered_chart_bakes_identical_animated_weights() {
+    let alone = bake_with_geometry_and_chunks(
+        floor_plus_partial_blocker_geometry(),
+        vec![soft_animated_point_light_above()],
+        |charts| full_face_chunk(charts, 0, vec![0]),
+    );
+    let shifted = bake_with_geometry_and_chunks(
+        far_quad_then_floor_plus_partial_blocker_geometry(),
+        vec![soft_animated_point_light_above()],
+        |charts| full_face_chunk(charts, 1, vec![0]),
+    );
+    assert_ne!(
+        alone.to_bytes(),
+        shifted.to_bytes(),
+        "the far quad must move the floor's block placement"
+    );
+    let hard_max = alone
+        .texel_lights
+        .iter()
+        .map(|tl| tl.weight)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        alone
+            .texel_lights
+            .iter()
+            .any(|tl| tl.weight > WEIGHT_EPSILON && tl.weight < hard_max * 0.95),
+        "fixture must bake a penumbra"
+    );
+    assert_eq!(alone.offset_counts, shifted.offset_counts);
+    assert_eq!(alone.texel_lights, shifted.texel_lights);
+}
+
 /// Task 4: fully-occluded texels under a soft light still emit *no* entry —
 /// soft visibility of 0 means "drop", same sparsity as the old binary gate.
 /// The full (large) blocker covers the whole floor, so every disk sample is

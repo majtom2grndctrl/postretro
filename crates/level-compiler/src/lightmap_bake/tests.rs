@@ -2996,16 +2996,171 @@ fn direction_reduction_is_deterministic_in_fixed_row_major_order() {
     );
 }
 
-/// `texel_seed` is a pure deterministic function of `(x, y)` — same coords
-/// give the same seed, and distinct coords decorrelate (so adjacent penumbra
-/// texels don't share a sample rotation). Guards against accidentally
-/// reintroducing process-varying hashing.
+/// Append an axis-aligned horizontal quad `[x, x + size] × [z, z + size]` at
+/// height `y`, facing `+Y`, as one face of `leaf`.
+fn push_floor_quad(geometry: &mut GeometryResult, x: f32, z: f32, size: f32, y: f32, leaf: u32) {
+    let mut quad = unit_quad_geometry();
+    for vertex in &mut quad.geometry.vertices {
+        vertex.position = [
+            x + vertex.position[0] * size,
+            y,
+            z + vertex.position[2] * size,
+        ];
+    }
+    quad.geometry.faces[0].leaf_index = leaf;
+    let vertex_offset = geometry.geometry.vertices.len() as u32;
+    let index_offset = geometry.geometry.indices.len() as u32;
+    geometry.geometry.vertices.extend(quad.geometry.vertices);
+    geometry.geometry.indices.extend(
+        quad.geometry
+            .indices
+            .into_iter()
+            .map(|index| index + vertex_offset),
+    );
+    geometry.geometry.faces.extend(quad.geometry.faces);
+    geometry
+        .face_index_ranges
+        .extend(quad.face_index_ranges.into_iter().map(|mut range| {
+            range.index_offset += index_offset;
+            range
+        }));
+}
+
+/// A 6 m floor in cell 1 under a 2 m occluder, lit by an area light so the
+/// occluder casts a soft penumbra across the floor. With `far_quad`, an unlit
+/// 3 m quad in cell 0 precedes them: it renumbers both faces and takes the
+/// bake layer's corner, so cell 1's block lands beside it.
+fn penumbra_cell_geometry(far_quad: bool) -> GeometryResult {
+    let mut geometry = unit_quad_geometry();
+    geometry.geometry.vertices.clear();
+    geometry.geometry.indices.clear();
+    geometry.geometry.faces.clear();
+    geometry.face_index_ranges.clear();
+    if far_quad {
+        push_floor_quad(&mut geometry, 500.0, 500.0, 3.0, 0.0, 0);
+    }
+    push_floor_quad(&mut geometry, 0.0, 0.0, 6.0, 0.0, 1);
+    push_floor_quad(&mut geometry, 2.0, 2.0, 2.0, 1.0, 1);
+    geometry
+}
+
+fn penumbra_cell_bake(far_quad: bool) -> LightmapBakeOutput {
+    let mut geometry = penumbra_cell_geometry(far_quad);
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let mut light = point_light_above();
+    light.origin = DVec3::new(3.0, 3.0, 3.0);
+    light.falloff_range = 8.0;
+    light.light_size = 1.0;
+    let lights = vec![light];
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let mut inputs = LightmapBakeCtx {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &mut geometry,
+        lights: &static_lights,
+        scale_regions: &[],
+    };
+    bake_lightmap_controlled(
+        &mut inputs,
+        &LightmapConfig {
+            lightmap_density: 0.1,
+            area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+            direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            uncompressed_irradiance: true,
+        },
+        &BakeControl::unrestricted(),
+    )
+    .unwrap()
+}
+
+/// Soft-visibility seeds key on the chart, not its bake-layer coordinates or
+/// face index: a chart that moves in the atlas because an unrelated quad
+/// joined the map ahead of it bakes exactly the same texels.
 #[test]
-fn texel_seed_is_deterministic_and_position_varying() {
-    assert_eq!(texel_seed(3, 7), texel_seed(3, 7));
-    assert_ne!(texel_seed(3, 7), texel_seed(7, 3));
-    assert_ne!(texel_seed(0, 0), texel_seed(0, 1));
-    assert_ne!(texel_seed(0, 0), texel_seed(1, 0));
+fn moved_and_renumbered_chart_bakes_identical_texels() {
+    let alone = penumbra_cell_bake(false);
+    let shifted = penumbra_cell_bake(true);
+
+    // The floor is face 0 alone and face 1 once the far quad precedes it,
+    // and its bake-layer placement moves.
+    let (floor_alone, floor_shifted) = (alone.placements[0], shifted.placements[1]);
+    assert_ne!(
+        (floor_alone.x, floor_alone.y),
+        (floor_shifted.x, floor_shifted.y),
+        "the far quad must move the floor's bake-layer texel coordinates"
+    );
+
+    let cell_block = |section: &LightmapSection| {
+        let blocks: Vec<_> = section.blocks.iter().filter(|b| b.cell_id == 1).collect();
+        assert_eq!(blocks.len(), 1);
+        blocks[0].clone()
+    };
+    let (before, after) = (cell_block(&alone.section), cell_block(&shifted.section));
+
+    // The occluder's penumbra must reach the floor, or seeds never matter:
+    // some irradiance texels sit strictly between the darkest and brightest.
+    let red: Vec<f32> = before
+        .irradiance
+        .chunks_exact(8)
+        .map(|texel| f16_bits_to_f32(u16::from_le_bytes([texel[0], texel[1]])))
+        .collect();
+    let (lo, hi) = red
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+    let penumbra = red
+        .iter()
+        .filter(|&&r| r > lo + 0.05 * (hi - lo) && r < hi - 0.05 * (hi - lo))
+        .count();
+    assert!(
+        penumbra > 10,
+        "fixture must bake a penumbra, got {penumbra} texels"
+    );
+
+    assert_eq!((before.width, before.height), (after.width, after.height));
+    assert_eq!(
+        before.irradiance, after.irradiance,
+        "irradiance moved with the chart"
+    );
+    assert_eq!(
+        before.direction, after.direction,
+        "direction moved with the chart"
+    );
+}
+
+/// `chart_texel_seed` is a pure function of the chart's frame and texel:
+/// the same texel of the same frame always draws the same samples, wherever
+/// the chart is placed, while neighbouring texels and other frames
+/// decorrelate. Guards against reintroducing process-varying hashing.
+#[test]
+fn chart_texel_seed_depends_on_frame_and_texel_only() {
+    use crate::chart_raster::chart_texel_seed;
+
+    let chart = synthetic_chart_leaf(16, 16, 0);
+    let mut elsewhere = chart.clone();
+    elsewhere.leaf_index = 9;
+    elsewhere.width_texels = 40;
+    assert_eq!(
+        chart_texel_seed(&chart, 3, 7),
+        chart_texel_seed(&elsewhere, 3, 7)
+    );
+    assert_ne!(
+        chart_texel_seed(&chart, 3, 7),
+        chart_texel_seed(&chart, 7, 3)
+    );
+    assert_ne!(
+        chart_texel_seed(&chart, 0, 0),
+        chart_texel_seed(&chart, 0, 1)
+    );
+    assert_ne!(
+        chart_texel_seed(&chart, 0, 0),
+        chart_texel_seed(&chart, 1, 0)
+    );
+    let mut moved = chart.clone();
+    moved.origin += glam::Vec3::new(0.0, 0.0, 0.25);
+    assert_ne!(
+        chart_texel_seed(&chart, 3, 7),
+        chart_texel_seed(&moved, 3, 7)
+    );
 }
 
 #[test]

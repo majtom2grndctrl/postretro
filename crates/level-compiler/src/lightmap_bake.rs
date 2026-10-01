@@ -452,9 +452,9 @@ fn bake_layered_section_controlled(
 
 /// Bake one global atlas layer into a one-layer composited buffer.
 ///
-/// `placement.layer` is intentionally retained while baking so the fixed
-/// atlas-space sample seed stays unchanged. It is rebased only for the scatter
-/// destination because the temporary atlas has exactly one layer.
+/// The placement only routes the scatter, its layer rebased to 0 because the
+/// temporary atlas has exactly one layer; seeds come from the chart, not the
+/// placement.
 #[allow(clippy::too_many_arguments)]
 fn bake_atlas_layer_controlled(
     bvh: &Bvh<f32, 3>,
@@ -497,7 +497,6 @@ fn bake_atlas_layer_controlled(
             geometry,
             static_lights,
             chart,
-            placement,
             area_sample_count,
         );
 
@@ -764,26 +763,6 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation.
-/// An FNV-1a hash of the atlas-space `(x, y)` — a fixed integer mix, never a
-/// `RandomState` or any hash whose seed varies between processes — so the bake is
-/// byte-identical across separate runs (the build cache reuses stored bytes
-/// verbatim and would break on any run-to-run drift); `soft_visibility` XORs this
-/// with `SAMPLING_LATTICE_OFFSET` internally.
-///
-/// The animated weight-map stage derives its own per-texel seed with a different
-/// mixer (SplitMix64). The two need not match: they bake into INDEPENDENT atlases,
-/// so each only needs to be deterministic within its own stage — not byte-identical
-/// to the other.
-pub(crate) fn texel_seed(x: u32, y: u32) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = FNV_OFFSET;
-    h = (h ^ x as u64).wrapping_mul(FNV_PRIME);
-    h = (h ^ y as u64).wrapping_mul(FNV_PRIME);
-    h
-}
-
 // `soft_visibility` and its sampling helpers are the Task-2 deliverable of
 // `baked-soft-lightmap-shadows`. The static lightmap bake (Task 3) calls
 // `soft_visibility` in the per-texel loop above; the animated weight-map and SH
@@ -986,8 +965,9 @@ fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
 ///
 /// Determinism: the sample pattern is a fixed Fibonacci lattice (mirroring
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
-/// the caller supplies `seed` deterministically (texel `(x, y)` hash, or
-/// probe/ray/light indices) so the same inputs yield byte-identical output.
+/// the caller supplies `seed` deterministically (`chart_raster::chart_texel_seed`
+/// for texels, or probe/ray/light indices) so the same inputs yield
+/// byte-identical output.
 ///
 /// `full_samples` is the area-sample-count bake knob (Task 6): the escalated
 /// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is a spread
@@ -1282,5 +1262,7 @@ fn dilate_edges(
     }
 }
 
+#[cfg(test)]
+mod reseed_baseline_tests;
 #[cfg(test)]
 mod tests;

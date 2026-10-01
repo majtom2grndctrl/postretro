@@ -1206,4 +1206,119 @@ mod tests {
             peak.shadowmask_fill + peak.layer_plane + peak.sections
         );
     }
+
+    /// Append a horizontal quad `[x, x + size] × [z, z + size]` at height
+    /// `y` as one face of `leaf`.
+    fn push_quad(geometry: &mut GeometryResult, x: f32, z: f32, size: f32, y: f32, leaf: u32) {
+        let mut quad = quad_geometry();
+        for vertex in &mut quad.geometry.vertices {
+            vertex.position = [
+                x + vertex.position[0] * size,
+                y,
+                z + vertex.position[2] * size,
+            ];
+        }
+        quad.geometry.faces[0].leaf_index = leaf;
+        let vertex_offset = geometry.geometry.vertices.len() as u32;
+        let index_offset = geometry.geometry.indices.len() as u32;
+        geometry.geometry.vertices.extend(quad.geometry.vertices);
+        geometry.geometry.indices.extend(
+            quad.geometry
+                .indices
+                .into_iter()
+                .map(|index| index + vertex_offset),
+        );
+        geometry.geometry.faces.extend(quad.geometry.faces);
+        geometry
+            .face_index_ranges
+            .extend(quad.face_index_ranges.into_iter().map(|mut range| {
+                range.index_offset += index_offset;
+                range
+            }));
+    }
+
+    /// A 6 m floor under a 2 m occluder in cell 1, so an area light casts a
+    /// penumbra. With `far_quad`, an unlit 3 m quad in cell 0 precedes them:
+    /// it renumbers both faces and takes the bake layer's corner, so cell 1's
+    /// block lands beside it at other bake-layer coordinates.
+    fn penumbra_cell_geometry(far_quad: bool) -> GeometryResult {
+        let mut geometry = quad_geometry();
+        geometry.geometry.vertices.clear();
+        geometry.geometry.indices.clear();
+        geometry.geometry.faces.clear();
+        geometry.face_index_ranges.clear();
+        if far_quad {
+            push_quad(&mut geometry, 500.0, 500.0, 3.0, 0.0, 0);
+        }
+        push_quad(&mut geometry, 0.0, 0.0, 6.0, 0.0, 1);
+        push_quad(&mut geometry, 2.0, 2.0, 2.0, 1.0, 1);
+        geometry
+    }
+
+    /// Soft-visibility seeds key on the chart through the shipping per-light
+    /// layer walk too: the fused stage bakes a moved, renumbered floor's
+    /// penumbra into identical lightmap and shadowmask block bytes.
+    #[test]
+    fn fused_bake_of_a_moved_and_renumbered_chart_is_byte_identical() {
+        let args = test_args();
+        let config = config(true);
+        let mut light = point_light(DVec3::new(3.0, 3.0, 3.0), [1.0, 0.9, 0.8]);
+        light.falloff_range = 8.0;
+        light.light_size = 1.0;
+        let lights = vec![light];
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let bake = |far_quad: bool| {
+            let output = run_fused_with_geometry(
+                &args,
+                None,
+                &lights,
+                Some(&selection),
+                &config,
+                &BakeControl::unrestricted(),
+                &BakeControl::unrestricted(),
+                penumbra_cell_geometry(far_quad),
+            );
+            let floor = output.lightmap.placements[usize::from(far_quad)];
+            let block = output
+                .lightmap
+                .section
+                .blocks
+                .iter()
+                .position(|block| block.cell_id == 1)
+                .expect("cell 1 bakes a block");
+            let shadowmask = output
+                .shadowmask
+                .expect("the selected light emits a shadowmask");
+            (
+                (floor.x, floor.y),
+                output.lightmap.section.blocks[block].clone(),
+                shadowmask.blocks[block].clone(),
+            )
+        };
+        let (alone_at, alone, alone_mask) = bake(false);
+        let (shifted_at, shifted, shifted_mask) = bake(true);
+        assert_ne!(alone_at, shifted_at, "the far quad must move the floor");
+
+        // The penumbra must reach the floor, or seeds never matter.
+        let red: Vec<u16> = alone
+            .irradiance
+            .chunks_exact(8)
+            .map(|texel| u16::from_le_bytes([texel[0], texel[1]]))
+            .collect();
+        let (lo, hi) = (*red.iter().min().unwrap(), *red.iter().max().unwrap());
+        let penumbra = red
+            .iter()
+            .filter(|&&r| r > lo + (hi - lo) / 20 && r < hi - (hi - lo) / 20)
+            .count();
+        assert!(
+            penumbra > 10,
+            "fixture must bake a penumbra, got {penumbra}"
+        );
+
+        assert_eq!(alone.irradiance, shifted.irradiance);
+        assert_eq!(alone.direction, shifted.direction);
+        assert_eq!(alone_mask, shifted_mask, "shadowmask moved with the chart");
+    }
 }

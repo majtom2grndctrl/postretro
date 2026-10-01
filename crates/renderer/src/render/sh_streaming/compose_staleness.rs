@@ -296,8 +296,16 @@ impl PassStaleness {
             {
                 self.visited += gated.len();
             }
-            plan.rows
-                .extend(gated.iter().copied().filter(|&row| self.is_stale(row)));
+            // SPIKE (sh-compose-half-rate): with POSTRETRO_SPIKE_SH_HALF_RATE=1,
+            // compose only gated rows whose parity matches this frame's. A
+            // skipped row is not committed, so it stays stale and composes on
+            // the next frame of its parity; its stored slot keeps the last
+            // composed value meanwhile (the composed atlases persist).
+            // Pending (residency) rows above are never skipped.
+            let parity = spike_half_rate_parity();
+            plan.rows.extend(gated.iter().copied().filter(|&row| {
+                parity.is_none_or(|p| row % 2 == p) && self.is_stale(row)
+            }));
         }
         plan.rows.sort_unstable();
         plan.rows.dedup();
@@ -372,4 +380,24 @@ fn member_bits(membership: PassMembership) -> u8 {
 
 fn members_index(flags: u8) -> usize {
     usize::from((flags & MEMBER_MASK) >> 1)
+}
+
+static SPIKE_HALF_RATE_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// SPIKE: advance once per planned frame (called from `plan_frame_into`).
+pub(super) fn spike_half_rate_advance_frame() {
+    SPIKE_HALF_RATE_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// SPIKE: `Some(parity)` of rows to compose this frame when half-rate is on.
+fn spike_half_rate_parity() -> Option<u32> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *ENABLED.get_or_init(|| {
+        let on = std::env::var("POSTRETRO_SPIKE_SH_HALF_RATE").is_ok_and(|v| v == "1");
+        if on {
+            log::warn!("[SPIKE] SH compose half-rate: gated rows compose every 2nd frame by parity");
+        }
+        on
+    });
+    enabled.then(|| SPIKE_HALF_RATE_FRAME.load(std::sync::atomic::Ordering::Relaxed) % 2)
 }

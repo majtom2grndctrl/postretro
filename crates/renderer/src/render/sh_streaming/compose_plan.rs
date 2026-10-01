@@ -301,6 +301,7 @@ impl StreamedComposePlanner {
         if !frame.records_compose {
             return;
         }
+        super::compose_staleness::spike_half_rate_advance_frame();
 
         self.indirect.plan_into(
             ComposePass::Indirect,

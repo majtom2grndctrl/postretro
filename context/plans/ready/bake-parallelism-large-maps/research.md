@@ -136,7 +136,7 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
   - `Ray::intersection_slice_for_aabb` treats an in-plane NaN slab as a miss, and the ray's own `intersects_aabb` path may not. A bounded query should reject a node only by the distance test, and keep it when the slab distance is undefined.
 - **Byte identity.** Occlusion returns a boolean, so pruning nodes that lie wholly beyond the segment end cannot change it. For closest hit, pruning only nodes entered strictly beyond the best hit, with a small pad for slab-versus-Möller–Trumbore rounding, keeps depth-first visit order and so today's tie winner. Nearest-first ordering changes visit order: a tie at a shared edge could pick the other triangle and its normal, unless the tie key above picks the winner. Profile both shapes on one hallway SH group before choosing.
 - **A cut map builds the BVH twice.** The pre-atlas build and atlas preparation's rebuild run in sequence, both through `collect_primitives`, so both keep one leaf per face.
-- **Baseline leaf set.** Lever 5 is measured on today's per-face leaves. `bvh-leaf-clustering` changes that set; see §Related drafts.
+- **Baseline leaf set.** Lever 5 is measured on today's per-face leaves. `bvh-leaf-clustering` keeps bakes on that set; see §Related drafts.
 
 ## Cache budget on large maps
 
@@ -206,5 +206,5 @@ These drafts cut ray count or peak RAM. This brief cuts idle cores and per-ray t
 - `lighting-scale--cold-bake-reaching-light-spike`
 - `lighting-scale--sh-delta-cell-major-two-pass-bake`
 
-One conflicts:
-- `bvh-leaf-clustering` changes the bake's BVH, not only the render's. `bvh_build::build_bvh` runs `Bvh::build` over `collect_primitives`, which emits one primitive per face today. Every bake ray walks that live tree through `traverse_iterator` (`sh_bake`, `lightmap_bake`, `chunk_light_list_bake`, `billboard_direct_scatter_bake`), and `bvh_build::flatten` makes the render `BvhSection` from the same tree. Its Task 3 emits one primitive per (cell, bucket) run, so each bake leaf holds more triangles: more triangle tests per ray, and float tie-breaks that may differ, and so different bake bytes. Lever 5's baseline is the per-face leaf set; whichever of the two lands second re-takes the hallway SH Bake timing. That draft carries a matching note.
+Resolved overlap:
+- `bvh-leaf-clustering` clusters only the shipped BVH section. The live tree and primitive list that every bake ray walks through `traverse_iterator` (`sh_bake`, `lightmap_bake`, `chunk_light_list_bake`, `billboard_direct_scatter_bake`) stay one primitive per face, so bake bytes and lever 5's per-face baseline hold. That draft lands after this brief and re-takes the hallway SH Bake timing; with the per-face bake tree it should not move.

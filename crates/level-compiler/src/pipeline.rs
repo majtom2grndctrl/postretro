@@ -26,6 +26,7 @@ mod animated_atlas_stage;
 mod cell_partition;
 mod finalized_publication;
 pub(crate) mod lightmap_stage;
+mod sdf_stage;
 mod stage_registry;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -1973,35 +1974,12 @@ fn run_after_parsing(
             voxel_size_m: args.voxel_size,
             ..sdf_bake::SdfConfig::default()
         };
-        let section = {
-            // Positions, indices and BSP solidity only: the key captures
-            // triangle order, and the lightmap attributes atlas preparation
-            // wrote stay out of it.
-            let sdf_key = sdf_bake::cache_key(&geo_result, &result.tree, &sdf_config);
-
-            let cached = stage_cache.as_ref().and_then(|c| c.get(&sdf_key));
-            let cached_section = cached.and_then(|bytes| {
-                postretro_level_format::sdf_atlas::SdfAtlasSection::from_bytes(&bytes)
-                    .map_err(|e| log::warn!("[cache] corrupt sdf_atlas entry, re-baking: {e}"))
-                    .ok()
-            });
-
-            if let Some(section) = cached_section {
-                log::info!("[cache] sdf_atlas hit");
-                section
-            } else {
-                log::info!("[cache] sdf_atlas miss");
-                let ctx = sdf_bake::SdfBakeCtx {
-                    geometry: &geo_result,
-                    tree: &result.tree,
-                };
-                let section = sdf_bake::bake_sdf_atlas(&ctx, &sdf_config);
-                if let Some(ref c) = stage_cache {
-                    c.put(&sdf_key, &section.to_bytes());
-                }
-                section
-            }
-        };
+        let section = sdf_stage::bake_or_load_sdf_atlas(
+            &geo_result,
+            &result.tree,
+            &sdf_config,
+            stage_cache.as_ref(),
+        );
         finish_stage(
             &mut timings,
             reporter.as_ref(),

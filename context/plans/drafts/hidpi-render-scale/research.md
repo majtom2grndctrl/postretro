@@ -65,7 +65,7 @@ Several passes read `surface_config` directly instead of the value passed to res
 - `WindowExtMacOS::set_simple_fullscreen` avoids Spaces, but fails if the window is already in native fullscreen.
 - macOS transitions are queued while one is in flight. The green button changes state without any engine call.
 - Windows: exclusive is supported, and the screen saver is suppressed in fullscreen. Wayland no-ops exclusive.
-- Moving between displays sends `ScaleFactorChanged`, normally followed by `Resized`. Game UI scale self-corrects, because `device_scale` is computed from the physical size each frame. The egui scale factor is set once at construction.
+- Moving between displays sends `ScaleFactorChanged`, normally followed by `Resized`. Game UI scale self-corrects, because `device_scale` is computed from the physical size each frame. The debug UI already tracks it: every window event reaches egui-winit, and the scale factor is re-read each frame.
 
 ## UI pass move — details
 

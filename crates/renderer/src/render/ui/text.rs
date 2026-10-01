@@ -31,8 +31,8 @@ pub(crate) struct UiTextRenderer {
     /// Device-resolution uniform glyphon maps glyph positions against. Set from
     /// the backbuffer size each frame in `prepare`.
     viewport: Viewport,
-    /// glyphon's glyph atlas, built with the sRGB surface format so coverage
-    /// blends correctly against the sRGB swapchain (see `new`).
+    /// glyphon's glyph atlas in Accurate colour mode: glyph colours convert to
+    /// linear in the shader, and the sRGB UI layer blends in linear space.
     text_atlas: TextAtlas,
     /// One glyphon draw recorder per text span in the mixed paint stream. Each
     /// owns a distinct vertex buffer, so every span can be prepared before the

@@ -1,102 +1,97 @@
-// Post-UI screen-space effects resolve pass + the renderer-owned `scene_color`
-// offscreen target every gameplay scene/UI pass renders into.
+// Screen-space resolve pass, the renderer-owned `scene_color` target every
+// gameplay scene pass renders into, and the native-res UI layer it composites.
 // See: context/lib/rendering_pipeline.md §7.8
 
 use std::collections::HashMap;
 
-use super::SCENE_COLOR_FORMAT;
+use super::{SCENE_COLOR_FORMAT, UI_LAYER_FORMAT};
 use postretro_entities::SlotValue;
 use postretro_render_cpu::flash_clamp::ChannelClamp;
 use postretro_render_cpu::flash_limiter::{LimiterFrameInput, flash_limiter_enabled};
-use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
+use postretro_render_cpu::render_extent::Extent;
+use postretro_render_cpu::screen_effects::{CoversHud, EffectUniform, pack_effect_uniform};
 
-/// The offscreen color target every gameplay scene + UI pass renders into, plus
-/// the fullscreen-triangle resolve pass that samples it into the swapchain.
+/// Which screen effects also reach the UI layer. All off: shake, flash and
+/// vignette act on the scene and leave the HUD untouched. A HUD-covering effect
+/// flips its switch here rather than adding a second source of effect state.
+const COVERS_HUD: CoversHud = CoversHud {
+    flash: false,
+    vignette: false,
+    shake: false,
+};
+
+/// The offscreen scene target, the native-res UI layer, and the
+/// fullscreen-triangle resolve that composites both into the swapchain.
 ///
-/// Modeled on `FogPass::composite_pipeline` / `fog_composite.wgsl`: a
-/// no-vertex-buffer fullscreen triangle (`draw(0..3, 0..1)`). The resolve runs
-/// EVERY frame as the sole swapchain writer for the gameplay path — never
-/// skipped at rest.
+/// The resolve runs EVERY frame as the sole swapchain writer for the gameplay
+/// path — never skipped at rest. It upscales `scene_color` (scene extent) by
+/// nearest integer replication, tonemaps it, applies the screen effects, then
+/// composites the UI layer (surface extent) over it without tonemapping.
 ///
-/// `scene_color` is a linear [`SCENE_COLOR_FORMAT`] target. The resolve samples
-/// it without sRGB decoding, tonemaps to display range, then writes the sRGB
-/// swapchain target so hardware performs the sole store conversion.
-///
-/// **Effect seam.** The resolve composes flash/vignette/shake on top of the
-/// tonemapped scene. [`pack_effect_uniform`] packs the frame's `screen.*` slot
-/// values into [`EffectUniform`] (binding 2 of group 0); the shader applies the
-/// math in `screen_effects.wgsl`. At-rest slot values pack to the identity
-/// uniform and every effect term ALU-collapses to a no-op after tonemapping.
+/// **Effect seam.** [`pack_effect_uniform`] packs the frame's `screen.*` slot
+/// values into [`EffectUniform`]; the shader applies the math in
+/// `screen_effects.wgsl`. At-rest slot values pack to the identity uniform and
+/// every effect term ALU-collapses to a no-op.
 ///
 /// **Photosensitivity limiter.** The channel clamp limits the packed flash and
 /// vignette before the uniform is written. It is CPU-only; the GPU sees an
 /// ordinary effect uniform.
 pub struct ScreenEffectsPass {
-    /// Offscreen color target. The scene/UI passes render here; the resolve
-    /// samples it. Recreated on resize at the surface size.
+    /// Linear HDR scene target at the scene extent. Scene passes render here;
+    /// the resolve loads it.
     color_texture: wgpu::Texture,
-    /// View into `color_texture` used both as the scene/UI passes' color
-    /// attachment and as the resolve's sampled source.
     color_view: wgpu::TextureView,
-    sampler: wgpu::Sampler,
+    /// Premultiplied sRGB UI layer at the surface extent. Game UI renders here,
+    /// cleared transparent every frame; the resolve composites it 1:1.
+    ui_layer_texture: wgpu::Texture,
+    ui_layer_view: wgpu::TextureView,
+    /// A zero-initialized 1×1 layer bound by capture, which has no UI.
+    empty_ui_layer_view: wgpu::TextureView,
     bind_group_layout: wgpu::BindGroupLayout,
-    /// References `color_view`; rebuilt on resize.
+    /// References `color_view` and `ui_layer_view`; rebuilt when either is.
     bind_group: wgpu::BindGroup,
     resolve_pipeline: wgpu::RenderPipeline,
     /// Same shader/operator as the windowed resolve, but targeting deterministic
     /// RGBA8 sRGB capture bytes with transient effects held at rest.
     capture_pipeline: wgpu::RenderPipeline,
-    /// Per-frame effect uniform (flash/vignette/shake). Written every frame from
-    /// the packed snapshot values; persists across resize (recreating the texture
-    /// rebuilds the bind group, which re-references this buffer).
+    /// Per-frame effect uniform. Written every frame; persists across resize.
     effect_buffer: wgpu::Buffer,
     /// The photosensitivity limiter: `screen.flash` / `screen.vignette` limited
     /// as they pack. CPU-side history, advanced once per resolve frame.
     channel_clamp: ChannelClamp,
+    /// [`COVERS_HUD`]; a field so a test can turn one switch on.
+    covers_hud: CoversHud,
 }
 
 impl ScreenEffectsPass {
     pub fn new(
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
+        scene: Extent,
+        surface: Extent,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
-        let (color_texture, color_view) = create_scene_color(device, width, height);
+        let (color_texture, color_view) = create_scene_color(device, scene);
+        let (ui_layer_texture, ui_layer_view) = create_ui_layer(device, surface);
+        let (_empty_ui_layer, empty_ui_layer_view) = create_ui_layer(device, Extent::new(1, 1));
 
-        // NEAREST / pixel-aligned sampling preserves the scene's texel grid.
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Screen Effects Resolve Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-
+        // Both inputs are read with `textureLoad` at integer texel coordinates,
+        // so the resolve needs no sampler.
+        let layer_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Screen Effects BGL"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                layer_entry(0),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -105,6 +100,7 @@ impl ScreenEffectsPass {
                     },
                     count: None,
                 },
+                layer_entry(2),
             ],
         });
 
@@ -120,8 +116,8 @@ impl ScreenEffectsPass {
             device,
             &bind_group_layout,
             &color_view,
-            &sampler,
             &effect_buffer,
+            &ui_layer_view,
         );
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -151,18 +147,20 @@ impl ScreenEffectsPass {
         Self {
             color_texture,
             color_view,
-            sampler,
+            ui_layer_texture,
+            ui_layer_view,
+            empty_ui_layer_view,
             bind_group_layout,
             bind_group,
             resolve_pipeline,
             capture_pipeline,
             effect_buffer,
             channel_clamp: ChannelClamp::default(),
+            covers_hud: COVERS_HUD,
         }
     }
 
-    /// The offscreen color target view the gameplay scene + UI passes render
-    /// into (their color attachment, replacing the swapchain `view`).
+    /// The scene target view every gameplay scene pass renders into.
     pub fn scene_color_view(&self) -> &wgpu::TextureView {
         &self.color_view
     }
@@ -173,19 +171,47 @@ impl ScreenEffectsPass {
         &self.color_texture
     }
 
-    /// Recreate `scene_color` at the new surface size and rebuild the resolve
-    /// bind group. Called alongside the depth-target recreation on resize.
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let (color_texture, color_view) = create_scene_color(device, width, height);
+    /// The native-res UI layer game UI renders into.
+    pub(super) fn ui_layer_view(&self) -> &wgpu::TextureView {
+        &self.ui_layer_view
+    }
+
+    #[cfg(test)]
+    pub(super) fn ui_layer_texture(&self) -> &wgpu::Texture {
+        &self.ui_layer_texture
+    }
+
+    /// Recreate `scene_color` at the scene extent and rebind the resolve.
+    pub fn resize(&mut self, device: &wgpu::Device, scene: Extent) {
+        let (color_texture, color_view) = create_scene_color(device, scene);
         self.color_texture = color_texture;
         self.color_view = color_view;
+        self.rebuild_bind_group(device);
+    }
+
+    /// Recreate the UI layer at the surface extent and rebind the resolve, in
+    /// the same commit that reconfigures the swapchain, so the composited layer
+    /// always matches the swapchain size.
+    pub fn resize_ui_layer(&mut self, device: &wgpu::Device, surface: Extent) {
+        let (ui_layer_texture, ui_layer_view) = create_ui_layer(device, surface);
+        self.ui_layer_texture = ui_layer_texture;
+        self.ui_layer_view = ui_layer_view;
+        self.rebuild_bind_group(device);
+    }
+
+    fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
         self.bind_group = create_bind_group(
             device,
             &self.bind_group_layout,
             &self.color_view,
-            &self.sampler,
             &self.effect_buffer,
+            &self.ui_layer_view,
         );
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_covers_hud(&mut self, covers_hud: CoversHud) {
+        self.covers_hud = covers_hud;
     }
 
     /// Record the resolve pass: a fullscreen-triangle blit from `scene_color`
@@ -199,6 +225,7 @@ impl ScreenEffectsPass {
     ///
     /// The channel clamp limits the packed flash and vignette against
     /// `limiter_frame`'s presented-frame time before the uniform is written.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_resolve(
         &mut self,
         queue: &wgpu::Queue,
@@ -206,6 +233,7 @@ impl ScreenEffectsPass {
         swapchain_view: &wgpu::TextureView,
         slot_values: &HashMap<String, SlotValue>,
         limiter_frame: LimiterFrameInput,
+        scene_divisor: u32,
         timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         let frame = self
@@ -213,6 +241,8 @@ impl ScreenEffectsPass {
             .begin_frame(limiter_frame, flash_limiter_enabled(slot_values));
         let mut uniform = pack_effect_uniform(slot_values);
         self.channel_clamp.apply(&mut uniform, &frame);
+        uniform.covers_hud = self.covers_hud.packed();
+        uniform.scene_divisor = scene_divisor;
         queue.write_buffer(&self.effect_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -249,20 +279,19 @@ impl ScreenEffectsPass {
         width: u32,
         height: u32,
     ) -> wgpu::Texture {
-        queue.write_buffer(
-            &self.effect_buffer,
-            0,
-            bytemuck::bytes_of(&EffectUniform::default()),
-        );
-        let capture_scene_view = self
-            .scene_color_texture()
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Capture renders at divisor 1 with no UI: an at-rest uniform and the
+        // empty layer.
+        let at_rest = EffectUniform {
+            scene_divisor: 1,
+            ..EffectUniform::default()
+        };
+        queue.write_buffer(&self.effect_buffer, 0, bytemuck::bytes_of(&at_rest));
         let capture_bind_group = create_bind_group(
             device,
             &self.bind_group_layout,
-            &capture_scene_view,
-            &self.sampler,
+            &self.color_view,
             &self.effect_buffer,
+            &self.empty_ui_layer_view,
         );
         let capture_texture = create_capture_color(device, width, height);
         let capture_view = capture_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -288,29 +317,54 @@ impl ScreenEffectsPass {
     }
 }
 
-/// Allocate the linear HDR `scene_color` target at the surface size,
-/// single-sample. `RENDER_ATTACHMENT` (scene/UI passes draw into it) +
-/// `TEXTURE_BINDING` (display and capture resolves sample it). `0` dims clamp to
-/// `1` to keep
-/// texture creation valid during transient zero-size resize events (mirrors the
-/// depth target's `prepass_attachment_extent`).
-fn create_scene_color(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
+/// Allocate the linear HDR `scene_color` target at the scene extent,
+/// single-sample. `RENDER_ATTACHMENT` (scene passes draw into it) +
+/// `TEXTURE_BINDING` (display and capture resolves load it).
+fn create_scene_color(device: &wgpu::Device, scene: Extent) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Scene Color Texture"),
         size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
+            width: scene.width,
+            height: scene.height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: SCENE_COLOR_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | TEST_COPY_USAGE,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+/// Tests seed and read back the resolve's inputs; production targets carry no
+/// copy usage.
+const TEST_COPY_USAGE: wgpu::TextureUsages = if cfg!(test) {
+    wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST)
+} else {
+    wgpu::TextureUsages::empty()
+};
+
+/// Allocate the UI layer at the surface extent.
+fn create_ui_layer(device: &wgpu::Device, surface: Extent) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("UI Layer Texture"),
+        size: wgpu::Extent3d {
+            width: surface.width,
+            height: surface.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: UI_LAYER_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | TEST_COPY_USAGE,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -375,8 +429,8 @@ fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     color_view: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
     effect_buffer: &wgpu::Buffer,
+    ui_layer_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Screen Effects Bind Group"),
@@ -388,11 +442,11 @@ fn create_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
+                resource: effect_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: effect_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::TextureView(ui_layer_view),
             },
         ],
     })

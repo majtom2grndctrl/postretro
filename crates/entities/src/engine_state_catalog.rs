@@ -352,6 +352,9 @@ const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
 /// lever, and the middle tier it once had never changed the carve depth.
 /// See `context/lib/player_options.md` §4.
 const SURFACE_DEPTH_QUALITY_VALUES: &[&str] = &["off", "on"];
+/// Scene render resolution: Auto or an integer divisor of the surface. Same
+/// names as the `settings.toml` values. See `context/lib/player_options.md` §4.
+const RENDER_RESOLUTION_VALUES: &[&str] = &["auto", "native", "half", "third", "quarter"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     // Accessibility preferences: engine-owned, readonly, always-live resolved
@@ -821,6 +824,18 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         capability: EngineStateCapability::Writable,
         network: ReplicationScope::None,
     },
+    EngineStateCatalogEntry {
+        wire_name: "options.renderResolution",
+        sdk_path: &["options", "renderResolution"],
+        value_type: EngineStateValueType::Enum {
+            values: RENDER_RESOLUTION_VALUES,
+        },
+        default: EngineStateDefault::Enum("auto"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
     // Accessibility working copies. The flash limiter has none: only the
     // engine panel changes it.
     EngineStateCatalogEntry {
@@ -1089,6 +1104,7 @@ mod tests {
                 "options.mouseSensitivity",
                 "options.musicVolume",
                 "options.reduceMotion",
+                "options.renderResolution",
                 "options.screenShakeScale",
                 "options.sfxVolume",
                 "options.shadowQuality",
@@ -1135,6 +1151,7 @@ mod tests {
             "options.shadowQuality",
             "options.fogQuality",
             "options.surfaceDepthQuality",
+            "options.renderResolution",
             "options.reduceMotion",
             "options.screenShakeScale",
             "options.masterVolume",

@@ -42,14 +42,14 @@ struct BloomParams {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BloomResourcePlan {
     profile: BloomRenderProfile,
-    surface_dimensions: (u32, u32),
+    scene_dimensions: (u32, u32),
 }
 
 impl BloomResourcePlan {
-    fn new(profile: BloomRenderProfile, surface_width: u32, surface_height: u32) -> Self {
+    fn new(profile: BloomRenderProfile, scene_width: u32, scene_height: u32) -> Self {
         Self {
             profile,
-            surface_dimensions: (surface_width.max(1), surface_height.max(1)),
+            scene_dimensions: (scene_width.max(1), scene_height.max(1)),
         }
     }
 
@@ -61,14 +61,14 @@ impl BloomResourcePlan {
         true
     }
 
-    fn resize(&mut self, surface_width: u32, surface_height: u32) {
-        self.surface_dimensions = (surface_width.max(1), surface_height.max(1));
+    fn resize(&mut self, scene_width: u32, scene_height: u32) {
+        self.scene_dimensions = (scene_width.max(1), scene_height.max(1));
     }
 
     fn level_dimensions(&self) -> [(u32, u32); BLOOM_LEVEL_COUNT] {
         bloom_level_dimensions_table(
-            self.surface_dimensions.0,
-            self.surface_dimensions.1,
+            self.scene_dimensions.0,
+            self.scene_dimensions.1,
             self.profile,
         )
     }
@@ -112,8 +112,8 @@ pub struct BloomPass {
 impl BloomPass {
     pub fn new(
         device: &wgpu::Device,
-        surface_width: u32,
-        surface_height: u32,
+        scene_width: u32,
+        scene_height: u32,
         scene_color_texture: &wgpu::Texture,
         profile: BloomRenderProfile,
     ) -> Self {
@@ -130,7 +130,7 @@ impl BloomPass {
         let params_size = std::mem::size_of::<BloomParams>() as u64;
         let params_alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let params_stride = params_size.div_ceil(params_alignment) * params_alignment;
-        let resource_plan = BloomResourcePlan::new(profile, surface_width, surface_height);
+        let resource_plan = BloomResourcePlan::new(profile, scene_width, scene_height);
         let level_dimensions = resource_plan.level_dimensions();
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bloom BGL"),
@@ -166,7 +166,7 @@ impl BloomPass {
         let params_buffer = create_params_buffer(
             device,
             params_stride,
-            resource_plan.surface_dimensions,
+            resource_plan.scene_dimensions,
             &level_dimensions,
             resource_plan.profile,
         );
@@ -289,17 +289,26 @@ impl BloomPass {
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
-        surface_width: u32,
-        surface_height: u32,
+        scene_width: u32,
+        scene_height: u32,
         scene_color_texture: &wgpu::Texture,
     ) {
-        self.resource_plan.resize(surface_width, surface_height);
+        self.resource_plan.resize(scene_width, scene_height);
         self.rebuild_profile_resources(device, scene_color_texture);
     }
 
     /// Apply a new static render profile while retaining the current scene
     /// dimensions. The profile owns the target sizing and pipeline selection,
     /// so all dependent resources are rebuilt together before the next frame.
+    /// Each chain level's allocated down-target size, base first.
+    #[cfg(test)]
+    pub(super) fn level_sizes(&self) -> Vec<(u32, u32)> {
+        self.levels
+            .iter()
+            .map(|level| (level.down_texture.width(), level.down_texture.height()))
+            .collect()
+    }
+
     pub fn set_profile(
         &mut self,
         device: &wgpu::Device,
@@ -320,7 +329,7 @@ impl BloomPass {
         self.params_buffer = create_params_buffer(
             device,
             self.params_stride,
-            self.resource_plan.surface_dimensions,
+            self.resource_plan.scene_dimensions,
             &level_dimensions,
             self.resource_plan.profile,
         );
@@ -504,7 +513,7 @@ fn create_levels(
         .collect()
 }
 
-fn bloom_level_dimensions_table(
+pub(super) fn bloom_level_dimensions_table(
     width: u32,
     height: u32,
     profile: BloomRenderProfile,
@@ -603,13 +612,13 @@ fn bloom_params(
 }
 
 fn bloom_parameter_slots(
-    surface_dimensions: (u32, u32),
+    scene_dimensions: (u32, u32),
     level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
     profile: BloomRenderProfile,
 ) -> Vec<BloomParams> {
     let mut slots = Vec::with_capacity(BLOOM_PARAM_SLOT_COUNT);
     slots.push(bloom_params(
-        surface_dimensions,
+        scene_dimensions,
         level_dimensions[0],
         [0.0, 0.0],
         BLOOM_THRESHOLD,
@@ -659,7 +668,7 @@ fn bloom_parameter_slots(
 
     slots.push(bloom_params(
         level_dimensions[0],
-        surface_dimensions,
+        scene_dimensions,
         [0.0, 0.0],
         0.0,
         BLOOM_INTENSITY,
@@ -672,11 +681,11 @@ fn bloom_parameter_slots(
 fn create_params_buffer(
     device: &wgpu::Device,
     params_stride: u64,
-    surface_dimensions: (u32, u32),
+    scene_dimensions: (u32, u32),
     level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
     profile: BloomRenderProfile,
 ) -> wgpu::Buffer {
-    let slots = bloom_parameter_slots(surface_dimensions, level_dimensions, profile);
+    let slots = bloom_parameter_slots(scene_dimensions, level_dimensions, profile);
     let buffer_size = params_stride * BLOOM_PARAM_SLOT_COUNT as u64;
     let buffer_size =
         usize::try_from(buffer_size).expect("bloom parameter buffer size must fit in usize");

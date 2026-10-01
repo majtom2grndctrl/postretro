@@ -59,6 +59,10 @@ pub(crate) mod gpu_test_harness;
 #[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
+mod render_extent_gpu_test;
+#[cfg(test)]
+mod resolve_composite_gpu_test;
+#[cfg(test)]
 mod sdf_light_select_test;
 #[cfg(test)]
 mod shadowmask_sample_test;
@@ -70,6 +74,7 @@ mod renderer_capture;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
 mod renderer_dynamic_shadow_passes;
+mod renderer_extent;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;
@@ -86,6 +91,7 @@ mod renderer_resources;
 mod renderer_shadow_passes;
 mod renderer_splash;
 mod renderer_state;
+mod renderer_ui_layer;
 mod renderer_types;
 
 #[cfg(test)]
@@ -102,6 +108,11 @@ use winit::window::Window;
 
 /// Linear HDR target shared by every gameplay scene pass.
 pub(super) const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Game UI's native-res layer. sRGB so UI blends in linear space as it did into
+/// scene colour, at a quarter of the bytes of an HDR target; the resolve's load
+/// decodes it. It holds premultiplied colour: both UI blend states take alpha
+/// with `One/OneMinusSrcAlpha` over a transparent clear.
+pub(super) const UI_LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 use crate::compute_cull::ComputeCullPipeline;
 use crate::lighting::lightmap::LightmapResources;

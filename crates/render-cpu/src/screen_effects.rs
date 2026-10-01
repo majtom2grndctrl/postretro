@@ -15,6 +15,8 @@ const SHAKE_REFERENCE_HEIGHT: f32 = 720.0;
 const REDUCE_MOTION_SLOT: &str = "accessibility.reduceMotion";
 const SCREEN_SHAKE_SCALE_SLOT: &str = "accessibility.screenShakeScale";
 
+/// The resolve's per-frame uniform. The effect channels pack from slots here;
+/// the renderer fills the layout fields (`covers_hud`, `scene_divisor`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct EffectUniform {
@@ -22,6 +24,30 @@ pub struct EffectUniform {
     pub vignette: [f32; 4],
     pub shake: [f32; 2],
     pub _pad: [f32; 2],
+    /// Per-effect covers-HUD switches, nonzero = the effect also reaches the
+    /// UI layer. Order matches [`CoversHud`].
+    pub covers_hud: [u32; 3],
+    /// Surface pixels per scene pixel on each axis. 0 reads as 1.
+    pub scene_divisor: u32,
+}
+
+/// Which screen effects reach the UI layer as well as the scene. The single
+/// home for an effect that must cover the HUD.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CoversHud {
+    pub flash: bool,
+    pub vignette: bool,
+    pub shake: bool,
+}
+
+impl CoversHud {
+    pub fn packed(self) -> [u32; 3] {
+        [
+            u32::from(self.flash),
+            u32::from(self.vignette),
+            u32::from(self.shake),
+        ]
+    }
 }
 
 pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUniform {

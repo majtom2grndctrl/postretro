@@ -319,7 +319,7 @@ impl App {
     /// the surface was recreated — the renderer's `ensure_full_ready` no-ops when
     /// already full-ready, so the steady boot path pays nothing on re-entry.
     fn finish_renderer_full_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let (shadow_quality, fog_quality, surface_depth_quality) = self
+        let (shadow_quality, fog_quality, surface_depth_quality, render_resolution) = self
             .session
             .as_ref()
             .map(|session| {
@@ -327,6 +327,7 @@ impl App {
                     session.player_options.shadow_quality,
                     session.player_options.fog_quality,
                     session.player_options.surface_depth_quality,
+                    session.player_options.render_resolution,
                 )
             })
             .unwrap_or_default();
@@ -335,6 +336,11 @@ impl App {
         // placeholder material this build creates already carries the player's
         // tier and no rewrite is needed to catch it up.
         self.apply_player_surface_depth_quality(surface_depth_quality);
+        // Recorded BEFORE `ensure_full_ready`, which commits recorded extents
+        // before building the scene targets: the first full-ready frame is
+        // already at the saved resolution, with no rebuild after full init.
+        // Resume replays this path, so the extents survive suspend.
+        self.apply_player_render_resolution(render_resolution);
         let Some(renderer) = self.renderer.as_mut() else {
             return true;
         };
@@ -617,6 +623,33 @@ mod tests {
     use crate::os_preferences::{OS_REPLY_WAIT, OsPreferenceFeed, OsUpdate};
     use crate::startup::lifecycle::tests::test_app;
     use std::path::PathBuf;
+
+    #[test]
+    fn full_init_applies_render_resolution_before_ensure_full_ready() {
+        let source = include_str!("splash_lifecycle.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("splash_lifecycle test module marker remains present")
+            .0;
+        let body_start = production
+            .find("fn finish_renderer_full_init(")
+            .expect("finish_renderer_full_init exists");
+        let body = &production[body_start..];
+        let body = &body[..body
+            .find("\n    }\n")
+            .expect("finish_renderer_full_init has a closing brace")];
+        let apply = body
+            .find("self.apply_player_render_resolution(render_resolution)")
+            .expect("full init applies the saved render resolution");
+        let full_ready = body
+            .find(".ensure_full_ready()")
+            .expect("full init calls ensure_full_ready");
+        assert!(
+            apply < full_ready,
+            "the saved render resolution must be recorded before ensure_full_ready \
+             builds the scene targets, so no rebuild follows full init"
+        );
+    }
 
     // --- Finding A: the OS-wait gate must see a reply already queued before
     // it runs, not only on a later top-of-frame poll. ---

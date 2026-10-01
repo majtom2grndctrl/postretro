@@ -14,7 +14,7 @@ No source changed under `crates/`, `sdk/`, `content/` or `core/` between the bri
 - Capture: `Renderer::new_offscreen` has no surface. Its extents are fixed at the requested size with divisor 1, and `set_render_resolution` / `set_scale_factor` are recorded but never move them. That satisfies "divisor 1 regardless of option".
 
 ## Delegated answers
-- Label text and placement of the options row — "Render resolution" on the dev frontend's Graphics tab, after Surface Depth, cycling Auto / Native / 1/2 / 1/3 / 1/4. It sits beside the other GPU-cost rows, and the ASCII fractions render in every bundled typeface.
+- Label text and placement of the options row — "Render resolution" on the dev frontend's Graphics tab, after Surface Depth, as a radio set Auto / Native / 1/2 / 1/3 / 1/4 like the neighbouring graphics rows. It sits beside the other GPU-cost rows, and the ASCII fractions render in every bundled typeface.
 - Covers-HUD switches: uniform flags or compile-time constants — uniform flags in `EffectUniform`, packed from one renderer-owned constant (all off). WGSL has no variant system (`rendering_pipeline.md` §8). A uniform also lets a test flip one switch without a second pipeline, at zero added GPU cost.
 
 ## AC-to-proof
@@ -55,11 +55,11 @@ No source changed under `crates/`, `sdk/`, `content/` or `core/` between the bri
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Pure extent chokepoint in render-cpu: `RenderResolutionPolicy`, Auto divisor, scene extent, `ExtentState` record/commit machine (A1, A5, A13–A17, A20) | integrating executor | — | |
-| 2 | Renderer scene extent: record-only setters, frame-start commit, every scene target + fog/bloom/SDF/group-5 from the scene extent, integer nearest upscale in the resolve, capture pinned at divisor 1 (A4, A6, A7, A18, A22–A24) | integrating executor | 1 | |
-| 3 | Binary wiring: scale factor read at `Renderer::new`, Resized/ScaleFactorChanged record-only, commit after the options update, camera + viewmodel aspect from scene extent (A13, A14, A20, A21) | integrating executor | 2 | |
-| 4 | Render-resolution option: `PlayerOptions` field, `options.renderResolution` slot, bridge live apply, render-profile chokepoint with the 1440 cap, full-init re-apply, SDK typedefs, dev frontend Graphics row (A2, A3, A10–A12) | worker | 1 | |
+| 1 | Pure extent chokepoint in render-cpu: `RenderResolutionPolicy`, Auto divisor, scene extent, `ExtentState` record/commit machine (A1, A5, A13–A17, A20) | integrating executor | — | done — `render_extent` tests (13) |
+| 2 | Renderer scene extent: record-only setters, frame-start commit, every scene target + fog/bloom/SDF/group-5 from the scene extent, integer nearest upscale in the resolve, capture pinned at divisor 1 (A4, A6, A7, A18, A22–A24) | integrating executor | 1 | done — `render_extent_gpu_test` (9), `resolve_composite_gpu_test` (4) |
+| 3 | Binary wiring: scale factor read at `Renderer::new`, Resized/ScaleFactorChanged record-only, commit after the options update, camera + viewmodel aspect from scene extent (A13, A14, A20, A21) | integrating executor | 2 | done — `app::render_extents` tests (3) |
+| 4 | Render-resolution option: `PlayerOptions` field, `options.renderResolution` slot, bridge live apply, render-profile chokepoint with the 1440 cap, full-init re-apply, SDK typedefs, dev frontend Graphics row (A2, A3, A10–A12) | worker | 1 | done (worker) — options/render_profile/splash_lifecycle/bridge/catalog/typedef tests |
 | 5 | First-slice falsification: release build, Auto vs Native `[CpuTiming]` on the Mac (forward-pass ms stays with M1) | integrating executor | 3, 4 | |
-| 6 | Native UI layer: sRGB premultiplied layer at surface extent, cleared every frame, own depth; recording moved out of `renderer_render_frame.rs`; resolve composites it (A8, A19, A25) | integrating executor | 2 | |
-| 7 | Covers-HUD switches in `EffectUniform` + resolve, all off (A9) | integrating executor | 6 | |
+| 6 | Native UI layer: sRGB premultiplied layer at surface extent, cleared every frame, own depth; recording moved out of `renderer_render_frame.rs`; resolve composites it (A8, A19, A25) | integrating executor | 2 | done — built with task 2; `ui_layer_is_cleared_every_frame_even_with_no_ui`, `opaque_ui_pixel_reaches_the_target_untonemapped`, source-order tests |
+| 7 | Covers-HUD switches in `EffectUniform` + resolve, all off (A9) | integrating executor | 6 | done — `effects_with_switches_off_…`, `one_covers_hud_switch_…` |
 | 8 | Preflight, review panel, fix loop, full gate | integrating executor | 1–7 | |

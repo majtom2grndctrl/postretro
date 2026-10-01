@@ -12,7 +12,10 @@ use std::path::Path;
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 
 use super::resolved::{OsPreferences, ResolvedAccessibility};
-use super::{CrouchMode, FogQuality, PlayerOptions, ShadowQuality, SurfaceDepthQuality, keys};
+use super::{
+    CrouchMode, FogQuality, PlayerOptions, RenderResolution, ShadowQuality, SurfaceDepthQuality,
+    keys,
+};
 use crate::input::InputSystem;
 use accessibility::AccessibilitySync;
 use save_schedule::SaveSchedule;
@@ -24,6 +27,7 @@ pub(crate) const CROUCH_MODE_SLOT: &str = "options.crouchMode";
 pub(crate) const SHADOW_QUALITY_SLOT: &str = "options.shadowQuality";
 pub(crate) const FOG_QUALITY_SLOT: &str = "options.fogQuality";
 pub(crate) const SURFACE_DEPTH_QUALITY_SLOT: &str = "options.surfaceDepthQuality";
+pub(crate) const RENDER_RESOLUTION_SLOT: &str = "options.renderResolution";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ObservedGenerations {
@@ -33,13 +37,14 @@ struct ObservedGenerations {
     shadow_quality: u64,
     fog_quality: u64,
     surface_depth_quality: u64,
+    render_resolution: u64,
 }
 
 /// Live subsystem effects produced by accepted option-slot changes.
 ///
 /// Input effects are applied by the bridge before this report is returned.
-/// Fog and Surface Depth stay typed until the app-side render-profile
-/// chokepoint translates the tier into renderer parameters. Shadow
+/// Fog, Surface Depth and render resolution stay typed until the app-side
+/// render-profile chokepoint translates them into renderer parameters. Shadow
 /// intentionally has no live effect.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct OptionsApplyEffects {
@@ -47,6 +52,7 @@ pub(crate) struct OptionsApplyEffects {
     pub(crate) invert_y: Option<bool>,
     pub(crate) fog_quality: Option<FogQuality>,
     pub(crate) surface_depth_quality: Option<SurfaceDepthQuality>,
+    pub(crate) render_resolution: Option<RenderResolution>,
     /// The resolved accessibility preferences, when they changed this frame.
     pub(crate) accessibility: Option<ResolvedAccessibility>,
 }
@@ -96,6 +102,11 @@ impl OptionsBridge {
             table,
             SURFACE_DEPTH_QUALITY_SLOT,
             SlotValue::Enum(options.surface_depth_quality.slot_value().to_string()),
+        );
+        self.observed.render_resolution = seed_slot(
+            table,
+            RENDER_RESOLUTION_SLOT,
+            SlotValue::Enum(options.render_resolution.slot_value().to_string()),
         );
         self.accessibility.seed_all(table, options, &self.os);
     }
@@ -290,6 +301,22 @@ impl OptionsBridge {
             self.observed.surface_depth_quality = generation;
         }
 
+        if let Some((generation, SlotValue::Enum(value))) = changed_value(
+            table,
+            RENDER_RESOLUTION_SLOT,
+            &mut self.observed.render_resolution,
+        ) {
+            if let Some(resolution) = RenderResolution::from_slot_value(value) {
+                options.mark_written(keys::RENDER_RESOLUTION);
+                if options.render_resolution != resolution {
+                    options.render_resolution = resolution;
+                    effects.render_resolution = Some(resolution);
+                    changed = true;
+                }
+            }
+            self.observed.render_resolution = generation;
+        }
+
         changed
     }
 
@@ -360,6 +387,7 @@ mod tests {
             shadow_quality: ShadowQuality::Low,
             fog_quality: FogQuality::High,
             surface_depth_quality: SurfaceDepthQuality::Off,
+            render_resolution: RenderResolution::Quarter,
             ..PlayerOptions::default()
         };
         let mut bridge = OptionsBridge::new();
@@ -393,6 +421,10 @@ mod tests {
         assert_eq!(
             table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
             Some(SlotValue::Enum("off".into()))
+        );
+        assert_eq!(
+            table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
+            Some(SlotValue::Enum("quarter".into()))
         );
     }
 
@@ -432,6 +464,13 @@ mod tests {
             )),
             "the slot default must agree with PlayerOptions' default (High)",
         );
+        assert_eq!(
+            table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
+            Some(SlotValue::Enum(
+                options.render_resolution.slot_value().into()
+            )),
+            "the slot default must agree with PlayerOptions' default (Auto)",
+        );
     }
 
     #[test]
@@ -445,6 +484,7 @@ mod tests {
         write(&ctx, SHADOW_QUALITY_SLOT, json!("low"));
         write(&ctx, FOG_QUALITY_SLOT, json!("high"));
         write(&ctx, SURFACE_DEPTH_QUALITY_SLOT, json!("off"));
+        write(&ctx, RENDER_RESOLUTION_SLOT, json!("third"));
 
         let table = ctx.slot_table.borrow();
         assert!(
@@ -474,6 +514,10 @@ mod tests {
             table.get(SURFACE_DEPTH_QUALITY_SLOT).unwrap().value,
             Some(SlotValue::Enum("off".into()))
         );
+        assert_eq!(
+            table.get(RENDER_RESOLUTION_SLOT).unwrap().value,
+            Some(SlotValue::Enum("third".into()))
+        );
         drop(table);
 
         assert!(write_state_slot_json(&ctx, CROUCH_MODE_SLOT, &json!("invalid")).is_err());
@@ -487,6 +531,8 @@ mod tests {
         assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("high")).is_err());
         assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("low")).is_err());
         assert!(write_state_slot_json(&ctx, SURFACE_DEPTH_QUALITY_SLOT, &json!("medium")).is_err());
+        assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!("eighth")).is_err());
+        assert!(write_state_slot_json(&ctx, RENDER_RESOLUTION_SLOT, &json!(2)).is_err());
         assert!(write_state_slot_json(&ctx, INVERT_Y_SLOT, &json!(1)).is_err());
         assert!(write_state_slot_json(&ctx, VIEW_FEEL_SCALE_SLOT, &json!(true)).is_err());
         assert!(write_state_slot_json(&ctx, "options.unknown", &json!(true)).is_err());
@@ -522,6 +568,8 @@ mod tests {
         assert_eq!(effects.fog_quality, None);
         assert_eq!(options.surface_depth_quality, before.surface_depth_quality);
         assert_eq!(effects.surface_depth_quality, None);
+        assert_eq!(options.render_resolution, before.render_resolution);
+        assert_eq!(effects.render_resolution, None);
     }
 
     #[test]
@@ -630,6 +678,37 @@ mod tests {
         );
         assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::On);
         assert_eq!(effects.surface_depth_quality, Some(SurfaceDepthQuality::On));
+        assert_eq!(effects.render_resolution, None);
+        assert_eq!(options.render_resolution, RenderResolution::Auto);
+
+        write(&ctx, RENDER_RESOLUTION_SLOT, json!("half"));
+        let effects = bridge.update(
+            0.0,
+            &mut ctx.slot_table.borrow_mut(),
+            &mut options,
+            &mut input,
+            None,
+        );
+        assert_eq!(options.render_resolution, RenderResolution::Half);
+        assert_eq!(
+            effects.render_resolution,
+            Some(RenderResolution::Half),
+            "the value must be reported so the app can apply it live",
+        );
+        assert_eq!(effects.surface_depth_quality, None);
+        assert_eq!(options.surface_depth_quality, SurfaceDepthQuality::On);
+
+        // Rewriting the value it already holds marks the field written but
+        // reports no live effect.
+        write(&ctx, RENDER_RESOLUTION_SLOT, json!("half"));
+        let effects = bridge.update(
+            0.0,
+            &mut ctx.slot_table.borrow_mut(),
+            &mut options,
+            &mut input,
+            None,
+        );
+        assert_eq!(effects.render_resolution, None);
     }
 
     #[test]

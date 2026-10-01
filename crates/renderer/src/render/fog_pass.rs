@@ -100,13 +100,13 @@ pub struct FogPass {
     #[allow(dead_code)]
     scatter_texture: wgpu::Texture,
     /// Low-res dimensions currently allocated for the scatter target. Used
-    /// to skip reallocation when the surface resizes without changing the
+    /// to skip reallocation when the scene extent changes without changing the
     /// pixel scale.
     scatter_dims: (u32, u32),
 
     /// Group 6 bind group. Rebuilt on any call to `resize` — the depth
     /// view is always re-bound even when scatter dims are unchanged,
-    /// because the surface depth texture is recreated on every resize.
+    /// because the scene depth texture is recreated on every resize.
     pub bind_group: wgpu::BindGroup,
 
     /// Number of dense-packed `FogVolume` records the shader iterates this
@@ -163,8 +163,8 @@ impl FogPass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
-        surface_width: u32,
-        surface_height: u32,
+        scene_width: u32,
+        scene_height: u32,
         pixel_scale: u32,
         depth_view: &wgpu::TextureView,
         camera_bgl: &wgpu::BindGroupLayout,
@@ -173,7 +173,7 @@ impl FogPass {
         cube_array_supported: bool,
     ) -> Self {
         let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
-        let scatter_dims = scatter_dims_for(surface_width, surface_height, pixel_scale);
+        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
 
         // --- Group 6 layout ---
         let raymarch_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -475,15 +475,15 @@ impl FogPass {
     }
 
     /// Resize the scatter target and rebuild the group-6 bind group.
-    /// Call on surface resize or `fog_pixel_scale` change.
+    /// Call on a scene-extent change or `fog_pixel_scale` change.
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
-        surface_width: u32,
-        surface_height: u32,
+        scene_width: u32,
+        scene_height: u32,
         depth_view: &wgpu::TextureView,
     ) {
-        let dims = scatter_dims_for(surface_width, surface_height, self.pixel_scale);
+        let dims = scatter_dims_for(scene_width, scene_height, self.pixel_scale);
         if dims != self.scatter_dims {
             let (tex, view) = create_scatter_target(device, dims.0, dims.1);
             self.scatter_texture = tex;
@@ -505,7 +505,7 @@ impl FogPass {
             });
         }
         // Depth view may have been recreated even if scatter dims are
-        // unchanged (e.g., surface resize that happens to match the scale).
+        // unchanged (e.g., a scene-extent change that happens to match the scale).
         self.bind_group = build_group6(
             device,
             &self.raymarch_bind_group_layout,
@@ -525,8 +525,8 @@ impl FogPass {
         &mut self,
         device: &wgpu::Device,
         scale: u32,
-        surface_width: u32,
-        surface_height: u32,
+        scene_width: u32,
+        scene_height: u32,
         depth_view: &wgpu::TextureView,
     ) {
         let clamped = clamp_fog_pixel_scale(scale);
@@ -534,7 +534,7 @@ impl FogPass {
             return;
         }
         self.pixel_scale = clamped;
-        self.resize(device, surface_width, surface_height, depth_view);
+        self.resize(device, scene_width, scene_height, depth_view);
     }
 
     /// Replace the canonical fog-volume list. The list is the per-frame
@@ -817,7 +817,7 @@ fn compute_active_mask_with_hysteresis(
     in_cell_mask | sticky
 }
 
-fn scatter_dims_for(width: u32, height: u32, pixel_scale: u32) -> (u32, u32) {
+pub(super) fn scatter_dims_for(width: u32, height: u32, pixel_scale: u32) -> (u32, u32) {
     let scale = pixel_scale.max(1);
     let w = (width / scale).max(1);
     let h = (height / scale).max(1);

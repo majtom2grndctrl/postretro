@@ -1,32 +1,35 @@
-// Post-UI screen-space effects resolve. Samples the offscreen `scene_color`
-// target (every gameplay scene + UI pass renders into it) and writes the
-// swapchain. The sole swapchain writer for the gameplay path — runs every
-// frame, never skipped at rest.
+// Screen-space resolve: the gameplay path's sole swapchain writer, run every
+// frame and never skipped at rest.
 //
-// Tonemaps HDR scene color, then composes screen effects (flash / vignette /
-// shake) on top.
-// Windowed effect values are packed CPU-side from the frame's screen-effect
-// slots. Capture binds the same uniform at its default, at-rest value. At rest
-// every effect term is an exact no-op, so only the near-neutral tonemap applies.
+// Upscales the scene by nearest integer replication, tonemaps it, applies the
+// screen effects (flash / vignette / shake), then composites the native-res UI
+// layer over it. The UI layer is not tonemapped. Each effect reaches the UI
+// layer only when its covers-HUD switch is on; all are off by default.
 //
-// `scene_color` is linear Rgba16Float. This shader samples it without an sRGB
-// decode and writes an sRGB target, which performs the sole store conversion.
+// `scene_color` is linear Rgba16Float at the scene extent. The UI layer is a
+// premultiplied sRGB target at the surface extent (a 1×1 transparent texel for
+// capture), so loading it decodes to linear. The output is an sRGB target,
+// which performs the sole store conversion.
 // See context/lib/rendering_pipeline.md §7.8.
 
 @group(0) @binding(0) var scene_color_tex: texture_2d<f32>;
-@group(0) @binding(1) var scene_color_sampler: sampler;
 
 // Mirrors `EffectUniform` in render-cpu/src/screen_effects.rs.
-//   flash    — rgba; `flash.a` is the over-blend weight (0 at rest → no-op).
-//   vignette — `xyz` linear tint + `w` strength (0 at rest → no edge tint).
-//   shake    — UV offset (px→UV conversion done CPU-side); (0,0) at rest.
+//   flash         — rgba; `flash.a` is the over-blend weight (0 at rest → no-op).
+//   vignette      — `xyz` linear tint + `w` strength (0 at rest → no edge tint).
+//   shake         — screen-fraction offset; (0,0) at rest.
+//   covers_hud    — flash, vignette, shake: nonzero = also reaches the UI layer.
+//   scene_divisor — surface pixels per scene pixel on each axis.
 struct EffectUniform {
     flash: vec4<f32>,
     vignette: vec4<f32>,
     shake: vec2<f32>,
     _pad: vec2<f32>,
+    covers_hud: vec3<u32>,
+    scene_divisor: u32,
 }
-@group(0) @binding(2) var<uniform> effect: EffectUniform;
+@group(0) @binding(1) var<uniform> effect: EffectUniform;
+@group(0) @binding(2) var ui_layer_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -63,35 +66,73 @@ fn soft_knee_tonemap(color: vec3<f32>) -> vec3<f32> {
     return color * (compressed_peak / peak);
 }
 
+// Load a texel at an unnormalized coordinate, clamped to the texture like a
+// ClampToEdge sampler. Shake offsets can reach past the edge.
+fn load_clamped(tex: texture_2d<f32>, coord: vec2<f32>) -> vec4<f32> {
+    let last = vec2<i32>(textureDimensions(tex)) - vec2<i32>(1, 1);
+    let texel = clamp(vec2<i32>(floor(coord)), vec2<i32>(0, 0), last);
+    return textureLoad(tex, texel, 0);
+}
+
+// Vignette: tint/darken toward `vignette.rgb` near the edges, center
+// unaffected. At rest `vignette.w == 0`, so the mix weight is exactly 0.
+// Clamped as a shader-side guard: over-1 strength would extrapolate past the
+// tint color.
+fn apply_vignette(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let centered = uv - vec2<f32>(0.5, 0.5);
+    let radial = clamp(dot(centered, centered) * 2.0, 0.0, 1.0);
+    let factor = clamp(effect.vignette.w * radial, 0.0, 1.0);
+    return mix(color, effect.vignette.xyz, factor);
+}
+
+// Flash: over-blend toward `flash.rgb` by `flash.a`; 0 at rest is an exact
+// no-op. Clamped as a shader-side guard against over-1 alpha.
+fn apply_flash(color: vec3<f32>) -> vec3<f32> {
+    return mix(color, effect.flash.xyz, clamp(effect.flash.a, 0.0, 1.0));
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // Shake: pure UV add (px→UV conversion already done CPU-side). At rest
-    // `effect.shake == (0,0)`, so `in.uv + shake == in.uv` exactly — the sample
-    // is the same NEAREST 1:1 texel passthrough as the identity blit.
-    // Note: a large shake amplitude can smear the edge row/column because the
-    // resolve sampler is ClampToEdge with no over-render margin.
-    let sample_uv = in.uv + effect.shake;
-    let scene = textureSample(scene_color_tex, scene_color_sampler, sample_uv);
+    // Nearest integer upscale: surface pixel p shows scene pixel
+    // floor(p / divisor), so every scene pixel covers divisor × divisor surface
+    // pixels and only the overshoot of the last row and column is cropped.
+    // `in.clip.xy` is the pixel centre (p + 0.5), which floors to the same
+    // scene pixel for any integer divisor.
+    let divisor = f32(max(effect.scene_divisor, 1u));
+    let scene_size = vec2<f32>(textureDimensions(scene_color_tex));
+    // Shake is a screen-fraction offset; at rest it adds exactly zero.
+    let scene_coord = in.clip.xy / divisor + effect.shake * scene_size;
+    let scene = load_clamped(scene_color_tex, scene_coord);
     var color = soft_knee_tonemap(scene.rgb);
 
-    // Vignette: tint/darken toward `vignette.rgb` near the edges, center
-    // unaffected. The radial falloff is 0 at the center and rises toward the
-    // corners; it is scaled by the authored strength `vignette.w`. At rest
-    // `vignette.w == 0`, so `clamp(0 * radial, 0.0, 1.0) == 0.0` →
-    // `mix(color, _, 0.0)` returns `color` unchanged.
-    // Clamped here as a shader-side guard: over-1 vignette-strength would
-    // otherwise extrapolate past the tint color.
-    let centered = in.uv - vec2<f32>(0.5, 0.5);
-    let radial = clamp(dot(centered, centered) * 2.0, 0.0, 1.0);
-    let vignette_factor = clamp(effect.vignette.w * radial, 0.0, 1.0);
-    color = mix(color, effect.vignette.xyz, vignette_factor);
+    let covers_flash = effect.covers_hud.x != 0u;
+    let covers_vignette = effect.covers_hud.y != 0u;
+    let covers_shake = effect.covers_hud.z != 0u;
 
-    // Flash: over-blend toward `flash.rgb` by `flash.a`. At rest `flash.a == 0`,
-    // so `clamp(0.0, 0.0, 1.0) == 0.0` → `mix(color, _, 0.0)` returns `color`
-    // unchanged. Clamped here as a shader-side guard: over-1 alpha would
-    // otherwise extrapolate past the flash color.
-    color = mix(color, effect.flash.xyz, clamp(effect.flash.a, 0.0, 1.0));
+    // Scene-only effects run before the UI composite.
+    if !covers_vignette {
+        color = apply_vignette(color, in.uv);
+    }
+    if !covers_flash {
+        color = apply_flash(color);
+    }
 
-    // Alpha is not part of the HDR tonemap; preserve the sampled coverage.
-    return vec4<f32>(color, scene.a);
+    // Composite the premultiplied UI layer 1:1 at native resolution.
+    var ui_coord = in.clip.xy;
+    if covers_shake {
+        ui_coord = ui_coord + effect.shake * vec2<f32>(textureDimensions(ui_layer_tex));
+    }
+    let ui = load_clamped(ui_layer_tex, ui_coord);
+    color = color * (1.0 - ui.a) + ui.rgb;
+    let alpha = scene.a * (1.0 - ui.a) + ui.a;
+
+    // HUD-covering effects run over the composited frame.
+    if covers_vignette {
+        color = apply_vignette(color, in.uv);
+    }
+    if covers_flash {
+        color = apply_flash(color);
+    }
+
+    return vec4<f32>(color, alpha);
 }

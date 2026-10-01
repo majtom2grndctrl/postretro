@@ -15,8 +15,7 @@ pub(crate) fn build_full_renderer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     surface_format: wgpu::TextureFormat,
-    surface_width: u32,
-    surface_height: u32,
+    extents: postretro_render_cpu::render_extent::RenderExtents,
     has_multi_draw_indirect: bool,
     cube_array_supported: bool,
     bloom_render_profile: BloomRenderProfile,
@@ -25,16 +24,9 @@ pub(crate) fn build_full_renderer(
 ) -> Result<FullRenderer> {
     // Dummy buffers until `install_level_geometry` replaces them.
     let geometry: Option<&LevelGeometry> = None;
-    // Surface dimensions captured from the live boot config so resize-then-finish
-    // (surface recreation) builds the full renderer at the current size.
-    struct SurfaceConfigDims {
-        width: u32,
-        height: u32,
-    }
-    let surface_config = SurfaceConfigDims {
-        width: surface_width,
-        height: surface_height,
-    };
+    // Every scene target builds at the committed scene extent, so a full init
+    // after surface recreation or a saved render resolution needs no rebuild.
+    let scene = extents.scene;
 
     let has_geometry = geometry.is_some_and(|g| !g.vertices.is_empty() && !g.indices.is_empty());
 
@@ -47,7 +39,7 @@ pub(crate) fn build_full_renderer(
     } = build_world_vertex_buffers(device, geometry);
 
     let view_proj =
-        build_default_view_projection(surface_config.width as f32 / surface_config.height as f32);
+        build_default_view_projection(scene.aspect());
     let full_lights = geometry.map(|g| g.lights).unwrap_or(&[]);
     let full_influences = geometry.map(|g| g.light_influences).unwrap_or(&[]);
     let filtered_level_lights = filter_dynamic_lights(full_lights, full_influences);
@@ -195,20 +187,15 @@ pub(crate) fn build_full_renderer(
     };
 
     let (_depth_texture, depth_view) =
-        create_depth_texture(device, surface_config.width, surface_config.height);
+        create_depth_texture(device, scene.width, scene.height);
 
     // Post-scene compositor seam: a linear HDR `scene_color` target + sRGB
     // resolve. The scene target is independent from the swapchain format.
-    let screen_effects = ScreenEffectsPass::new(
-        device,
-        surface_config.width,
-        surface_config.height,
-        surface_format,
-    );
+    let screen_effects = ScreenEffectsPass::new(device, scene, extents.surface, surface_format);
     let bloom = BloomPass::new(
         device,
-        surface_config.width,
-        surface_config.height,
+        scene.width,
+        scene.height,
         screen_effects.scene_color_texture(),
         bloom_render_profile,
     );
@@ -365,8 +352,8 @@ pub(crate) fn build_full_renderer(
             chunk_indices: &chunk_grid_indices_buffer,
         },
         sdf_shadow_sh_grid,
-        surface_config.width,
-        surface_config.height,
+        scene.width,
+        scene.height,
     );
 
     // Cube point-shadow pool — built before the spot pool because the
@@ -558,13 +545,14 @@ pub(crate) fn build_full_renderer(
     );
 
     // Gameplay UI owns its quad pipeline, glyphon atlas/renderer, and white
-    // texel. Boot splash rendering uses its separate lightweight pass.
-    let ui = ui::UiPass::new(device, queue, SCENE_COLOR_FORMAT);
+    // texel, and records into the native-res UI layer. Boot splash rendering
+    // uses its separate lightweight pass.
+    let ui = ui::UiPass::new(device, queue, UI_LAYER_FORMAT);
 
     let fog = FogPass::new(
         device,
-        surface_config.width,
-        surface_config.height,
+        scene.width,
+        scene.height,
         postretro_render_cpu::fog_volume::clamp_fog_pixel_scale(0),
         &depth_view,
         &uniform_bind_group_layout,

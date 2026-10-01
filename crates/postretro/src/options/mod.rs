@@ -14,12 +14,14 @@ use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 mod accessibility;
 mod bridge;
 mod document;
+mod graphics;
 mod panel_actions;
 mod resolved;
 
 pub use accessibility::AccessibilityOptions;
 pub(crate) use bridge::OptionsBridge;
 use document::{DocumentWriter, FieldReader, StoredDocument};
+pub use graphics::{FogQuality, RenderResolution, ShadowQuality, SurfaceDepthQuality};
 pub(crate) use panel_actions::{PanelActionOutcome, apply_panel_action, is_numeric_field};
 pub(crate) use resolved::{OsPreferences, apply_to_audio, reduce_motion_from_slots};
 
@@ -41,6 +43,7 @@ pub(crate) mod keys {
     pub(crate) const SHADOW_QUALITY: &str = "shadow_quality";
     pub(crate) const FOG_QUALITY: &str = "fog_quality";
     pub(crate) const SURFACE_DEPTH_QUALITY: &str = "surface_depth_quality";
+    pub(crate) const RENDER_RESOLUTION: &str = "render_resolution";
     pub(crate) const SWITCH_CYCLE_DWELL_MS: &str = "switch_cycle_dwell_ms";
     pub(crate) const SCROLL_NOTCH_PIXELS: &str = "scroll_notch_pixels";
     pub(crate) const ACCESSIBILITY_PANEL_SHOWN: &str = "accessibility_panel_shown";
@@ -81,118 +84,6 @@ impl CrouchMode {
         match value {
             "hold" => Some(Self::Hold),
             "toggle" => Some(Self::Toggle),
-            _ => None,
-        }
-    }
-}
-
-/// Spot-shadow allocation tier. Changes persist on settle but apply only when
-/// the renderer performs a full initialization or installs the next level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShadowQuality {
-    Low,
-    Medium,
-    #[default]
-    High,
-}
-
-impl ShadowQuality {
-    fn slot_value(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    fn from_slot_value(value: &str) -> Option<Self> {
-        match value {
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
-}
-
-/// Volumetric-fog ray-march density tier. Smaller step sizes produce a denser,
-/// higher-quality march and can be applied live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FogQuality {
-    Low,
-    #[default]
-    Medium,
-    High,
-}
-
-impl FogQuality {
-    fn slot_value(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    fn from_slot_value(value: &str) -> Option<Self> {
-        match value {
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
-}
-
-/// Surface Depth (texel-space parallax) on/off switch. Applies live: the
-/// renderer rewrites every installed material's uniform buffer, with no level
-/// reload.
-///
-/// Off/on rather than the low/medium/high used by shadows and fog, because this
-/// is a pure cost lever rather than a quality ladder — design D5. The middle
-/// tier this replaces never changed the carve DEPTH (it only capped the march
-/// budget and shortened the fade), so it read as identical to the full effect
-/// except at grazing angles, where it read as a shallower carve.
-///
-/// Defaults to `On`. The feature ships enabled; this setting exists as an
-/// escape hatch for hardware that struggles, not as an opt-in.
-///
-/// **Stale persisted values.** `settings.toml` files written before the
-/// collapse carry `"low"` or `"high"` — `"high"` being what every save wrote,
-/// since it was the default. Both are accepted as `On` through serde aliases
-/// and rewritten as `"on"` on the next save. This is not a compatibility shim
-/// for a code API (see `development_guide.md` §1.6): a settings file is PLAYER
-/// DATA, and treating the retired names as unrecognized would fall this field
-/// back to its default and keep the stale text in the file indefinitely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SurfaceDepthQuality {
-    /// Force flat — byte-identical to the pre-Surface-Depth render, zero cost.
-    Off,
-    /// The full effect: every material's per-prefix values verbatim, with the
-    /// full self-shadow budget.
-    #[default]
-    #[serde(alias = "low", alias = "high")]
-    On,
-}
-
-impl SurfaceDepthQuality {
-    /// The live slot vocabulary, which is deliberately only the two current
-    /// values: the retired names are tolerated when READING a settings file,
-    /// never as a script-writable state.
-    fn slot_value(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-        }
-    }
-
-    fn from_slot_value(value: &str) -> Option<Self> {
-        match value {
-            "off" => Some(Self::Off),
-            "on" => Some(Self::On),
             _ => None,
         }
     }
@@ -241,6 +132,10 @@ pub struct PlayerOptions {
     /// the per-material uniform buffers, and re-applied on renderer full-init.
     pub surface_depth_quality: SurfaceDepthQuality,
 
+    /// Scene render resolution, applied live and re-applied on renderer
+    /// full-init before the scene targets are built.
+    pub render_resolution: RenderResolution,
+
     /// Optional local override for the mod's cycle-selection dwell. `None`
     /// preserves the mod policy; an explicit zero selects immediately.
     pub switch_cycle_dwell_ms: Option<u32>,
@@ -273,6 +168,7 @@ impl PartialEq for PlayerOptions {
             && self.shadow_quality == other.shadow_quality
             && self.fog_quality == other.fog_quality
             && self.surface_depth_quality == other.surface_depth_quality
+            && self.render_resolution == other.render_resolution
             && self.switch_cycle_dwell_ms == other.switch_cycle_dwell_ms
             && self.scroll_notch_pixels == other.scroll_notch_pixels
             && self.accessibility == other.accessibility
@@ -314,6 +210,7 @@ impl Default for PlayerOptions {
             shadow_quality: ShadowQuality::default(),
             fog_quality: FogQuality::default(),
             surface_depth_quality: SurfaceDepthQuality::default(),
+            render_resolution: RenderResolution::default(),
             switch_cycle_dwell_ms: None,
             scroll_notch_pixels: default_scroll_notch_pixels(),
             accessibility: AccessibilityOptions::default(),
@@ -460,6 +357,9 @@ impl PlayerOptions {
             surface_depth_quality: reader
                 .read(keys::SURFACE_DEPTH_QUALITY)
                 .unwrap_or(defaults.surface_depth_quality),
+            render_resolution: reader
+                .read(keys::RENDER_RESOLUTION)
+                .unwrap_or(defaults.render_resolution),
             switch_cycle_dwell_ms: reader.read(keys::SWITCH_CYCLE_DWELL_MS),
             scroll_notch_pixels: reader
                 .read(keys::SCROLL_NOTCH_PIXELS)
@@ -488,6 +388,7 @@ impl PlayerOptions {
             keys::SURFACE_DEPTH_QUALITY,
             Some(&self.surface_depth_quality),
         );
+        writer.put(keys::RENDER_RESOLUTION, Some(&self.render_resolution));
         writer.put(
             keys::SWITCH_CYCLE_DWELL_MS,
             self.switch_cycle_dwell_ms.as_ref(),
@@ -599,6 +500,7 @@ mod tests {
         assert_eq!(a.shadow_quality, b.shadow_quality);
         assert_eq!(a.fog_quality, b.fog_quality);
         assert_eq!(a.surface_depth_quality, b.surface_depth_quality);
+        assert_eq!(a.render_resolution, b.render_resolution);
         assert_eq!(a.switch_cycle_dwell_ms, b.switch_cycle_dwell_ms);
         assert!(
             (a.scroll_notch_pixels - b.scroll_notch_pixels).abs() < EPSILON,
@@ -619,6 +521,7 @@ mod tests {
             shadow_quality: ShadowQuality::Low,
             fog_quality: FogQuality::High,
             surface_depth_quality: SurfaceDepthQuality::Off,
+            render_resolution: RenderResolution::Third,
             switch_cycle_dwell_ms: Some(250),
             scroll_notch_pixels: 96.0,
             ..PlayerOptions::default()
@@ -764,6 +667,82 @@ mod tests {
         assert_eq!(loaded.surface_depth_quality, SurfaceDepthQuality::On);
         assert!(loaded.invert_y);
         assert_eq!(loaded.fog_quality, FogQuality::Low);
+    }
+
+    #[test]
+    fn render_resolution_persists_each_value_as_its_snake_case_name() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        for (value, wire) in [
+            (RenderResolution::Auto, "auto"),
+            (RenderResolution::Native, "native"),
+            (RenderResolution::Half, "half"),
+            (RenderResolution::Third, "third"),
+            (RenderResolution::Quarter, "quarter"),
+        ] {
+            let options = PlayerOptions {
+                render_resolution: value,
+                ..PlayerOptions::default()
+            };
+            options.save(&path).unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains(&format!("render_resolution = \"{wire}\"")),
+                "{value:?} must persist as `{wire}`; got:\n{text}"
+            );
+            assert_eq!(PlayerOptions::load(&path).render_resolution, value);
+            // The live slot shares the TOML vocabulary.
+            assert_eq!(value.slot_value(), wire);
+            assert_eq!(RenderResolution::from_slot_value(wire), Some(value));
+        }
+        assert_eq!(RenderResolution::from_slot_value("eighth"), None);
+    }
+
+    #[test]
+    fn settings_without_render_resolution_load_as_auto() {
+        let loaded = from_toml("invert_y = true\nfog_quality = \"low\"\n");
+        assert_eq!(loaded.render_resolution, RenderResolution::Auto);
+        assert_eq!(
+            PlayerOptions::default().render_resolution,
+            RenderResolution::Auto
+        );
+    }
+
+    #[test]
+    fn an_unknown_render_resolution_falls_back_to_auto_alone_and_survives_until_written() {
+        let capture = LogCapture::start();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(
+            &path,
+            "invert_y = true\nrender_resolution = \"eighth\"\nfog_quality = \"low\"\n",
+        )
+        .unwrap();
+
+        let mut loaded = PlayerOptions::load(&path);
+        assert_eq!(loaded.render_resolution, RenderResolution::Auto);
+        assert!(loaded.invert_y);
+        assert_eq!(loaded.fog_quality, FogQuality::Low);
+        capture.assert_logged_once(Level::Warn, "unrecognized value for `render_resolution`");
+
+        // A save of another field keeps the unrecognized text (round-trip).
+        loaded.invert_y = false;
+        loaded.mark_written(keys::INVERT_Y);
+        loaded.save(&path).unwrap();
+        let saved: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(saved["render_resolution"].as_str(), Some("eighth"));
+
+        // Writing the field replaces it.
+        let mut reloaded = PlayerOptions::load(&path);
+        reloaded.render_resolution = RenderResolution::Half;
+        reloaded.mark_written(keys::RENDER_RESOLUTION);
+        reloaded.save(&path).unwrap();
+        let saved: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(saved["render_resolution"].as_str(), Some("half"));
+        assert_eq!(
+            PlayerOptions::load(&path).render_resolution,
+            RenderResolution::Half
+        );
     }
 
     #[test]

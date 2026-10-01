@@ -62,6 +62,7 @@ impl Renderer {
         // Capture reports the renderer's CPU stages but no submit: its submit
         // blocks on the device, which is not CPU recording cost.
         self.cpu_frame.clear();
+        self.commit_native_capture_extents();
         let cpu = std::rc::Rc::clone(&self.cpu_frame);
         let drain_scope = cpu.scope(super::cpu_stages::RenderStage::ShDrain);
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
@@ -175,6 +176,7 @@ impl Renderer {
         // The PNG frame is never folded into a CPU window, so its drain goes
         // untimed; clearing keeps a prior sample's stages from reading as its.
         self.cpu_frame.clear();
+        self.commit_native_capture_extents();
         let outcome = self.drain_sh_residency(sh_drain_batch)?;
         let frame = (|| -> Result<(Vec<u8>, bool)> {
             self.update_per_frame_uniforms(view_proj, camera_position, animation_time_seconds);
@@ -202,8 +204,8 @@ impl Renderer {
                 render_world,
             )?;
 
-            let width = self.surface_config.width;
-            let height = self.surface_config.height;
+            let capture_extent = self.render_extents().surface;
+            let (width, height) = (capture_extent.width, capture_extent.height);
             // The PNG path reads tightly packed RGBA8, so resolve HDR scene color to
             // a capture-only LDR target first. Capture shares the window tonemap but
             // uses an at-rest effect uniform instead of transient screen effects.

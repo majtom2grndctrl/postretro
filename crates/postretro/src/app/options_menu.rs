@@ -85,6 +85,13 @@ impl App {
             self.apply_player_surface_depth_quality(quality);
         }
 
+        // Live and record-only: the frame-start extent commit rebuilds once
+        // from the final values, so a resize in the same frame costs no extra
+        // rebuild.
+        if let Some(resolution) = effects.render_resolution {
+            self.apply_player_render_resolution(resolution);
+        }
+
         // Any close path — close button or cancel — writes the
         // first-launch record and flushes a pending panel write.
         let panel_open = self.accessibility_panel_is_open();

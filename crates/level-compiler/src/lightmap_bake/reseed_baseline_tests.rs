@@ -79,8 +79,12 @@ fn block_irradiance(section: &LightmapSection, block: usize) -> Vec<[f32; 3]> {
 #[test]
 #[ignore = "compares two on-demand --release PRLs; see the file header"]
 fn reseeded_prl_differs_from_baseline_only_in_lightmap_family() {
-    let before_path = std::env::var(BASELINE_ENV).expect("set POSTRETRO_RESEED_BASELINE_PRL");
-    let after_path = std::env::var(AFTER_ENV).expect("set POSTRETRO_RESEED_AFTER_PRL");
+    // A blanket `--ignored` run has no PRLs to compare: skip, don't fail.
+    let (Ok(before_path), Ok(after_path)) = (std::env::var(BASELINE_ENV), std::env::var(AFTER_ENV))
+    else {
+        eprintln!("skipped: set {BASELINE_ENV} and {AFTER_ENV} to compare two PRLs");
+        return;
+    };
     let before = sections(&before_path);
     let after = sections(&after_path);
     assert_eq!(

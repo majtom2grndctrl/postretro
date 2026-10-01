@@ -39,8 +39,8 @@ pub(super) fn bake_or_load_weight_maps(
     // split vertices and assigned atlas UVs. Hash that same prepared geometry
     // so the cache key matches the bake inputs. The chunk-section proxy does
     // not see where charts landed, and the cached blocks carry cell-block
-    // keys and bake-layer seeds, so the layout fingerprint (placements and the
-    // cell-block table) is folded too.
+    // keys and block-local texels, so the layout fingerprint (placements and
+    // the cell-block table) is folded too.
     let layout_fingerprint = atlas_layout_fingerprint(&SharedAtlas {
         charts: wm_inputs.face_charts,
         placements: wm_inputs.face_placements,

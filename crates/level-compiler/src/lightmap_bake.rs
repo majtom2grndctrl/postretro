@@ -452,9 +452,9 @@ fn bake_layered_section_controlled(
 
 /// Bake one global atlas layer into a one-layer composited buffer.
 ///
-/// `placement.layer` is intentionally retained while baking so the fixed
-/// atlas-space sample seed stays unchanged. It is rebased only for the scatter
-/// destination because the temporary atlas has exactly one layer.
+/// The placement only routes the scatter, its layer rebased to 0 because the
+/// temporary atlas has exactly one layer; seeds come from the chart, not the
+/// placement.
 #[allow(clippy::too_many_arguments)]
 fn bake_atlas_layer_controlled(
     bvh: &Bvh<f32, 3>,
@@ -965,8 +965,9 @@ fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
 ///
 /// Determinism: the sample pattern is a fixed Fibonacci lattice (mirroring
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
-/// the caller supplies `seed` deterministically (texel `(x, y)` hash, or
-/// probe/ray/light indices) so the same inputs yield byte-identical output.
+/// the caller supplies `seed` deterministically (`chart_raster::chart_texel_seed`
+/// for texels, or probe/ray/light indices) so the same inputs yield
+/// byte-identical output.
 ///
 /// `full_samples` is the area-sample-count bake knob (Task 6): the escalated
 /// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is a spread

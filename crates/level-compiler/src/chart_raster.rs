@@ -23,9 +23,8 @@ pub const CHART_PADDING_TEXELS: u32 = 2;
 pub struct ChartPlacement {
     pub x: u32,
     pub y: u32,
-    /// Atlas array layer this chart landed on. The atlas is a `texture_2d_array`;
-    /// the multi-bin packer (`pack_layers`) keeps all of one BSP leaf's charts on
-    /// a single layer and spills a leaf onto the next layer when it doesn't fit.
+    /// Internal bake layer this chart landed on: a compiler working plane that
+    /// never ships. Charts pack per cell block, and blocks pack into layers.
     pub layer: u32,
 }
 
@@ -44,6 +43,20 @@ pub fn chart_interior_dims(chart: &Chart) -> (i32, i32) {
 /// Matches the frozen lightmap reference's per-texel derivation exactly —
 /// both bakers route their world-position lookups through this function so
 /// they agree on texel centres at chunk boundaries.
+pub fn chart_texel_world_position(
+    chart: &Chart,
+    tx: i32,
+    ty: i32,
+    interior_w: i32,
+    interior_h: i32,
+) -> Vec3 {
+    let u_frac = (tx as f32 + 0.5) / interior_w as f32;
+    let v_frac = (ty as f32 + 0.5) / interior_h as f32;
+    let local_u = chart.uv_min[0] + u_frac * chart.uv_extent[0];
+    let local_v = chart.uv_min[1] + v_frac * chart.uv_extent[1];
+    chart.origin + chart.u_axis * local_u + chart.v_axis * local_v
+}
+
 /// Soft-visibility sample-lattice seed of interior texel `(tx, ty)` of
 /// `chart`'s grid, shared by the static, shadowmask and animated bakes.
 ///
@@ -68,18 +81,4 @@ pub fn chart_texel_seed(chart: &Chart, tx: i32, ty: i32) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
-}
-
-pub fn chart_texel_world_position(
-    chart: &Chart,
-    tx: i32,
-    ty: i32,
-    interior_w: i32,
-    interior_h: i32,
-) -> Vec3 {
-    let u_frac = (tx as f32 + 0.5) / interior_w as f32;
-    let v_frac = (ty as f32 + 0.5) / interior_h as f32;
-    let local_u = chart.uv_min[0] + u_frac * chart.uv_extent[0];
-    let local_v = chart.uv_min[1] + v_frac * chart.uv_extent[1];
-    chart.origin + chart.u_axis * local_u + chart.v_axis * local_v
 }

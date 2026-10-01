@@ -40,7 +40,7 @@ flowchart TD
   S["PlayerOptions: render_resolution"] --> RP["render-profile chokepoint"]
   W["window (binary)"] --> R["Resized / ScaleFactorChanged"]
   RP --> X
-  R --> X["extent chokepoint: surface extent; Auto divisor = max(1, floor(h / 720)); scene extent = ceil(surface / divisor)"]
+  R --> X["extent chokepoint: surface extent; Auto divisor = max(1, floor(scale_factor), ceil(h / cap)), cap from options; scene extent = ceil(surface / divisor)"]
   X --> T["scene targets at scene extent"]
   T --> P["scene passes"]
   X --> L["UI layer: native res, premultiplied sRGB, own depth"]
@@ -73,7 +73,7 @@ Several passes read `surface_config` directly instead of the value passed to res
 - The UI blend is standard alpha, which suits the swapchain. The UI pass owns a private depth target sized to its viewport (`ui.md` §5), independent of scene depth, so it moves with the pass.
 - The text atlas is commented as built for an sRGB surface. Today it draws into an HDR target and is tonemapped, so check colour parity after the move.
 - The flash limiter clamps `screen.flash` and `screen.vignette` in the resolve uniform, and measures luminance from scene colour. UI is not part of that measurement today either.
-- Chosen shape: UI renders into its own native-res layer that the resolve composites, so the resolve stays the sole writer. Order: scene passes, UI layer, resolve, egui (separate submission, Load). The rejected alternative (UI straight to the swapchain after the resolve) would split HUD-covering effects such as the roadmap's optional CRT filter across two passes, and costs a full-res load/store on tile-based GPUs.
+- Chosen shape: UI renders into its own native-res layer that the resolve composites, so the resolve stays the sole writer. Order: scene passes, UI layer, resolve, egui (separate submission, Load). Rejected alternatives (UI after the resolve, as a separate pass or inside the resolve's pass) cannot host a HUD-covering effect such as the roadmap's optional CRT filter, which must sample the composited frame. The layer costs a full-res store plus a read, about 1% of a 30 ms frame here.
 
 ## Prior commitments touched
 

@@ -4,21 +4,22 @@ Brief · compact · reads: `context/lib/rendering_pipeline.md` §7.8, §11, §12
 
 ## Problem
 The developer found that frames on a HiDPI laptop sit well below vsync on every map, tiny or stress. This is an observed defect, and the cause is that the engine shades every scene pixel at the surface's physical size. A Retina window therefore costs about 4× the fill of the same window on a 1× display, and the scene has no render scale. When done:
-- On a HiDPI display the scene renders at logical resolution by default and is upscaled with nearest filtering.
+- On a HiDPI display the scene renders at logical resolution by default and is upscaled with nearest filtering. Very tall panels cap at 1440 scene rows.
 - Players can choose an integer render resolution.
 - Game UI stays sharp at native resolution, untouched by scene screen effects.
 
 The test GPU, a Radeon Pro 5300M, sits at the documented compatibility floor (`rendering_pipeline.md` §10 Target hardware: 5500M-class, must run, not perf-tuned). This brief makes such hardware playable through resolution. It sets no frame-time target. Fewer pixels remove the resolution multiplier, not all per-pixel cost: in a debug build, 4× fewer pixels removed about 42% of the frame.
 
 ## Decisions
-- **The swapchain keeps the physical (surface) size, and the scene gets its own smaller size (scene extent).** Every scene target follows the scene extent: depth, HDR scene colour, bloom, fog scatter, SDF half-res, the spot-shadow bind group and capture. So does the camera aspect. Scene extent = ceil(surface / divisor) per axis, with a minimum of 1. Both extents are derived at one renderer-owned chokepoint, so no target can read the surface size by accident.
-- **Default "Auto" divisor = max(1, floor(surface height / 720)).** It is the largest integer divisor that keeps the scene at least 720 rows tall, recomputed on every resize. This bounds cost by pixels rather than by OS density. Examples:
-  - 1080p gives native.
-  - A 2560×1440 Retina window gives ½.
-  - A 3072×1920 panel gives ½.
-  - 4K gives ⅓ at any OS scale factor, the common Windows setup on floor-class hardware.
-  - A 1× 1440p desktop monitor also gives ½. Native stays one option away.
-  - Rejected: keying on the OS scale factor. It renders native 4K at 100% scaling and loses the cost bound at fractional scale factors.
+- **The swapchain keeps the physical (surface) size, and the scene gets its own smaller size (scene extent).** Every scene target follows the scene extent: depth, HDR scene colour, bloom, fog scatter, SDF half-res, the spot-shadow bind group and capture. So does the camera aspect. Scene extent = ceil(surface / divisor) per axis, with a minimum of 1. Both extents are derived at one renderer-owned chokepoint, so no target can read the surface size by accident. The viewmodel is a scene pass and scales with the scene. A native-resolution viewmodel would later need its own layer.
+- **Default "Auto" divisor = max(1, floor(scale_factor), ceil(surface height / 1440)).**
+  - On HiDPI it renders at logical resolution: this Mac gets ½.
+  - 1× displays up to 1440 rows stay native.
+  - Larger panels cap at 1440 scene rows or fewer: 4K at 100% gets 1080 rows, and 5K at 2× gets 1440.
+  - Auto bounds visible pixel size. It does not tune the default for the compatibility floor (`rendering_pipeline.md` §10). Floor-class GPUs on big panels pick a lower option.
+  - Rejected: a pure pixel-count rule (largest divisor keeping ≥ 720 rows). It shows 2–3× stair-steps on large 1× panels by default, and it hands performance-floor machines a 720-row scene.
+  - Auto is recomputed on every resize and scale-factor change.
+  - The 1440-row cap is player-options policy. It crosses the render-profile chokepoint as renderer vocabulary, never as a constant inside the renderer (`player_options.md` §4).
 - **New player option, Render resolution: Auto / Native / ½ / ⅓ / ¼, integer divisors only.**
   - It is a `PlayerOptions` field mapped at the render-profile chokepoint (`player_options.md` §4).
   - It applies live through a resize.
@@ -36,11 +37,12 @@ The test GPU, a Radeon Pro 5300M, sits at the documented compatibility floor (`r
   - World-only shake is M13's own wanted follow-up (`done/M13--screen-space-effects`).
   - Flash no longer covers the HUD by default. That diverges from M13's flash-over-scene-and-HUD criterion, by owner decision.
   - A future CRT or scanline filter (`roadmap.md` §Post-processing) then has one home: the resolve, after compositing.
+- **Why a UI layer:** it gives HUD-covering effects one home, the resolve after compositing. It costs a full-resolution UI store and read, about 1% of a 30 ms frame on this GPU.
 - **Rivals, rejected:**
-  - **UI drawn straight to the swapchain after the resolve.** It overturns the sole-writer contract and splits any HUD-covering effect, the CRT filter included, across two passes. On tile-based GPUs it also costs a full-resolution load and store.
-  - **Upscaling into a surface-sized scene colour and drawing UI there.** It keeps the contracts at the cost of one extra full-resolution blit (~0.3 ms on this GPU), but it still tonemaps the UI.
-- **The map-owned `fog_pixel_scale` divides the scene extent, not the surface.** An authored map's fog blocks then look the same on a 1× display and on HiDPI at Auto. This keeps fog coarser than the scene, never finer.
-- **Scale-factor changes are handled.** When the window moves to a display with a different scale factor, the debug UI's scale is refreshed, and the following resize recomputes both extents. No handler exists today.
+  - **UI drawn after the resolve, in its own pass or inside the resolve's render pass.** A HUD-covering effect such as the CRT filter must sample the composited frame, which neither form can do without a further pass. The separate-pass form also breaks the sole-writer contract.
+  - **Upscaling into a surface-sized scene colour and drawing UI there.** It keeps the contracts at the cost of one extra full-resolution blit (~0.3 ms here), but it still tonemaps the UI.
+- **The map-owned `fog_pixel_scale` divides the scene extent, not the surface.** An authored map's fog blocks then look the same on a 1× display and on HiDPI at Auto, and fog stays coarser than the scene, never finer. A mod's pixelated bloom blocks likewise scale with the scene extent.
+- **Scale-factor changes are handled.** When the window moves to a display with a different scale factor, the engine recomputes the Auto divisor and refreshes the debug UI's scale. Game UI already self-corrects from the physical size. No handler exists today.
 - **Where things live:** the renderer owns both extents, the upscale, the UI layer and the resolve composite. The binary forwards scale-factor events. Player options own the policy.
 - **Not in this brief:**
   - **Window modes** (windowed, borderless, exclusive fullscreen). A follow-up brief owns them, because they raise boot-order and E23 U4 window-creation questions this work does not need.
@@ -54,8 +56,18 @@ The test GPU, a Radeon Pro 5300M, sits at the documented compatibility floor (`r
 ## Acceptance
 ### Automated
 - [ ] Scene extent is ceil(surface / divisor) per axis for odd and even surfaces, never below 1×1. A divisor larger than the surface clamps.
-- [ ] Auto resolves to divisors 1, 1, 1, 2, 2, 3 for surface heights 719, 1080, 1439, 1440, 1920, 2160. Auto is independent of scale factor.
-- [ ] At Auto, a surface under 1440 rows tall gets a scene extent equal to the surface extent. This is the no-regression row for common 1× displays.
+- [ ] Auto resolves to these divisors for (scale factor, surface height):
+  - (1.0, 1080) → 1
+  - (1.0, 1440) → 1
+  - (1.0, 2160) → 2
+  - (1.25, 1080) → 1
+  - (1.5, 2160) → 2
+  - (2.0, 1440) → 2
+  - (2.0, 1920) → 2
+  - (2.0, 2880) → 2
+  - (3.0, 2160) → 3
+  - (0.5, 720) → 1
+- [ ] At Auto, a 1× surface up to 1440 rows tall gets a scene extent equal to the surface extent. This is the no-regression row for 1× displays.
 - [ ] A resize rebuilds every scene-sized target at the scene extent and the swapchain at the surface extent. No scene target reads the surface size.
 - [ ] Changing the render-resolution option triggers exactly one rebuild with the new extent. So does a scale-factor change and the resize that follows it.
 - [ ] Fog scatter dimensions derive from the scene extent and `fog_pixel_scale`.
@@ -79,6 +91,7 @@ The test GPU, a Radeon Pro 5300M, sits at the documented compatibility floor (`r
   - The UI viewport is set in `renderer_render_frame`; `ui::layout::device_scale` handles UI scale.
   - `startup/render_profile.rs` and the options bridge carry the option.
   - `WindowEvent::Resized` in `main.rs` triggers resize, and the camera aspect is set beside it.
+- **Policy crossing:** render-profile maps the option to renderer vocabulary, for example "auto with an N-row cap" or "fixed divisor d". The renderer combines that with the surface size and scale factor at the extent chokepoint.
 - **Shape:** an explicit scene-extent value threaded through resize. Rival: per-target scale fields. Rejected, because each target would re-derive the extent and could drift.
 - **First slice:** add the scene extent with a hardcoded divisor of 2 and the nearest upscale in the resolve, leaving UI where it is. Measure Auto against Native on the Mac. That falsifies the fill-bound premise before the UI pass moves.
 - **UI layer:** it clears to transparent each frame and is sampled 1:1 by the resolve. The text atlas is commented as built for an sRGB surface, so check colour parity now that it targets an sRGB layer rather than HDR scene colour.

@@ -47,7 +47,7 @@ read at: 83489c52b
 | 30 | Measured finding, on the compatibility-floor Mac under `research.md` §Measurement conditions, on both maps: `[CpuTiming]` medians for `work`, `render_submit`, `render_record` and `render_prep`, before and after. Take both before the sibling briefs in the landing order land. | owner compatibility-floor Mac: before/after timing on both maps | manual, blocks landing | outstanding matched-state repeat; qualified final observations recorded |
 | 31 | Measured finding, on the compatibility-floor Mac on both maps: writes staged per frame, copies per batch, and live staging buffers after warmup over one 120-frame window. Record them in the plan of record. They set the merge follow-up's gate. | owner compatibility-floor Mac: 120-frame upload/copy/live-buffer counters | manual, blocks landing | pass — final warm 120-frame counters on both maps |
 | 32 | A `sample` profile after the change shows `maintain` freeing only glyphon's and egui's staging buffers. Report what share of `render_submit` remains. | owner compatibility-floor Mac: post-change sample attribution | needs restatement; exact proposal below | fail as written; profile complete, owner clarification pending |
-| 33 | Side by side on both maps, no visual difference in: HUD text, skinned meshes and their shadows, smoke, dynamic and animated lights, fog, viewmodel. | owner side-by-side visual check on both maps | manual, blocks landing | outstanding manual proof |
+| 33 | Side by side on both maps, no visual difference in: HUD text, skinned meshes and their shadows, smoke, dynamic and animated lights, fog, viewmodel. | owner side-by-side visual check on both maps | manual, blocks landing | partial — positive campaign walkthrough; hallway and full comparison coverage outstanding |
 | 34 | Both follow-ups are filed: redundant every-frame writes, starting with the bridge-then-slot lights rewrite; and per-target mesh write merging, gated on the measured copy count. | file both follow-ups in context/plans/drafts | achievable as stated | pass — both drafts filed and final total-copy gate recorded |
 
 ## Tasks
@@ -131,7 +131,7 @@ These do not close AC 30: the review found capped-pool size-class starvation and
 
 Separate upload diagnostics exposed the production reproduction: campaign stabilized around 54 writes/copies per frame, ~355 KiB/frame, created/live=5; hallway stabilized at 71 writes/copies, 567,496 bytes/frame, live=6 **but created rose by 120 every 120-frame window** (5965→6085). These are evidence for the review fix, not steady-state resource acceptance. Re-run AC 31 after repair.
 
-Owner replied that both maps have not yet been visually compared. AC 33 remains outstanding; no inferred visual pass.
+At the preliminary checkpoint, the owner had not yet compared both maps. The subsequent campaign walkthrough result is recorded below; AC33 remains open for the remaining comparison coverage.
 
 ### Review and repair checkpoint
 
@@ -152,7 +152,7 @@ Compare the baseline and rebuilt final batched release at the same poses on both
 /private/tmp/postretro-upload-final-bin/postretro content/dev/maps/stress-warren-hallway-inspection.prl --start-pose=42.2656,2.4384,63.3984,0,0
 ```
 
-Check HUD text, skinned meshes and their shadows, smoke, dynamic and animated lights, fog and the viewmodel. Report each map separately. GPU ordering/readback tests and unchanged UI/resolve goldens supplement this check; they cannot infer its result. Owner's current result: not compared yet.
+Check HUD text, skinned meshes and their shadows, smoke, dynamic and animated lights, fog and the viewmodel. Report each map separately. GPU ordering/readback tests and unchanged UI/resolve goldens supplement this check; they cannot infer its result. Owner's current result: positive campaign walkthrough (details below); hallway comparison remains outstanding.
 
 ### Final optimized observations and resource counters
 
@@ -200,3 +200,9 @@ With the engine closed before each observation, record idle GPU utilization/in-u
 ### Results checkpoint and blocking state
 
 All 34 acceptance rows have results: 31 pass, AC30 and AC33 retain outstanding external proof, and AC32 fails its literal owner list with an exact proposed clarification awaiting owner direction. `status: blocked` records the owner-owned AC32 wording issue; after approval, apply only the approved wording and set `test-ready` for remaining manual proof. The implementation/review/focused/preflight gates are complete. No source work remains unless new evidence identifies a concrete defect. The feature remains on `codex/per-frame-upload-batching`; the brief stays in `in-progress/`. Baseline worktree and both copied binaries are retained for the external checks. Do not land or remove those artifacts until blocking results arrive and the owner says “land the plane.”
+
+### Owner visual evidence — campaign walkthrough, 2026-10-01
+
+Owner report: “Walkthrough of campaign-test looked solid. No flickering or stripes. Fog and smoke effects all look as I remember. Character models were the same, and animated SH probes hit models as before.”
+
+Record positive campaign evidence for fog, smoke, character appearance and animated SH lighting, with no observed flickering or stripes. This report compares against remembered appearance; the exact build and a fresh baseline/final side-by-side comparison were not specified. HUD text, character shadows and the viewmodel were not separately reported, so no unobserved feature is inferred as passed. Hallway evidence remains outstanding. AC33 retains a partial result; automated proof and the AC30/AC32 dispositions are unchanged.

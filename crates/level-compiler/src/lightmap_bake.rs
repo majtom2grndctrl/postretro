@@ -1262,4 +1262,6 @@ fn dilate_edges(
 }
 
 #[cfg(test)]
+mod reseed_baseline_tests;
+#[cfg(test)]
 mod tests;

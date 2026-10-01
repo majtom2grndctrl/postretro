@@ -1,7 +1,7 @@
 # per-frame-upload-batching — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: 83489c52b
 
 ## Corrections
@@ -38,7 +38,7 @@ read at: 83489c52b
 | 21 | An options-menu setter changed mid-session, such as fog step size, stages its write in the batch. The counter counts it, and it lands before the next frame's passes (pin P13; Decision: the renderer owns per-frame uploads). | options setter staging/readback | achievable as stated |
 | 22 | When the surface acquire fails, that frame's writes are submitted once, alone. The next drawn frame finds no pending writes from it. A diff-gated write made in the skipped frame is visible to the next drawn frame. Two failures in a row each submit only their own frame's writes. A test-only acquire outcome drives the skip path headless (pin P9). | acquire outcome injection and diff-gated readback | achievable as stated |
 | 23 | A lightmap drain that fails and rolls back submits nothing. The writes staged before it land in the next submit of the same frame, once (pin P1). | failed lightmap drain rollback integration | achievable as stated |
-| 24 | At every frame entry, and at hot-reload commit, level install and level unload, the batch holds no pending write. A debug build fails loudly if one is pending (pin P6). | frame/lifecycle empty assertions | needs owner direction: entry boundary/API conflict |
+| 24 | No uploads from a completed frame remain pending when the next frame’s writes begin. Every successful or skipped windowed frame and every successful capture returns with no pending write, and hot-reload commit, level install and level unload begin with none. A debug build fails loudly if a write remains at those boundaries. Current-frame pre-render writes are allowed at render/capture method entry; fatal exits retain the existing exception (pin P6). | frame/lifecycle empty assertions | achievable with owner-approved exit/lifecycle checks |
 | 25 | Back-to-back submits with no GPU progress take distinct staging buffers. A buffer rejoins the pool only after the submit that read it completes, and the batch path calls no device.poll (pin P5). | back-to-back staging identity and callback tests | achievable as stated |
 | 26 | Capture warmup, sample and PNG captures each submit their own writes with their own work. No write leaks into the next capture or applies twice. | capture warmup/sample/PNG integration tests | achievable as stated |
 | 27 | After warmup, a long run of frames with two frames in flight creates no new staging buffer. The test keeps two in flight by waiting on the submission from two frames back. Live staging buffers, pooled plus in flight, stay at or under four per batch-carrying submit per frame. The byte scratch and the copy list stop growing, and acquire builds no per-call list. | long-run two-in-flight buffer/scratch/copy capacity test | achievable as stated |
@@ -69,24 +69,8 @@ read at: 83489c52b
 - Manual AC 30–33 require compatibility-floor Mac timing, counters, sampling and visual proof. The brief gives no permission to land with gaps, so status becomes test-ready until those results arrive.
 - Owner says “land the plane” after results and review to authorize the landing checkpoint.
 
-## Blocking contract check — P6 / AC 24
+## Resolved contract check — P6 / AC 24
 
-The Decision says “the binary-facing `Renderer` API does not change.” AC 24 says “At every frame entry ... the batch holds no pending write” with a debug assertion. There is no existing Renderer method at the binary's frame-start boundary before all valid writers.
+Owner approved the renderer-internal completion approach on 2026-10-01 (“Let’s proceed and continue”). P6 now forbids uploads from a completed frame carrying into the next one. Assert empty at successful/skipped windowed exits, successful capture exits, and lifecycle boundaries. Valid current-frame prewrites at render/capture entry are allowed. Every nonfatal frame exit consumes the batch; tests cover each exit path. No public begin-frame hook and no binary-facing Renderer API change.
 
-Source evidence (unchanged from brief read revision):
-- `crates/postretro/src/main.rs:2047`: RedrawRequested begins; `poll_os_preferences` follows at 2062.
-- Gameplay options are applied at main.rs:3423, before `commit_render_extents` at 3424. Frontend has the same order at 5626–5627.
-- `crates/renderer/src/render/renderer_state.rs:39`: Surface Depth option setter calls `rewrite_material_surface_depth`; `material_plan.rs:193` directly writes material uniforms. Under the Decision these valid option writes must become staged before the existing extent commit.
-- Gameplay bridge, fog, per-frame uniforms and viewmodel uploads precede `render_frame_indirect` at main.rs:4420. Asserting the whole batch empty at that method's entry would reject them.
-- `crates/postretro/src/capture/setup.rs:71`: capture setup uploads a light bridge snapshot before capture entry; capture entrances similarly cannot assert all pending writes absent.
-- `Renderer::present` is an existing drawn-frame tail, but skipped frames bypass it. Tail checks can establish empty-at-return, but do not provide an assertion at the binary's next frame entry.
-
-Owner question pending: permit an additive, wgpu-free `Renderer::begin_frame()` hook before any frame setter/upload, keeping all existing method signatures; or explicitly change P6 to frame-tail and lifecycle emptiness instead.
-
-Recommended exact Decision clarification if the hook is authorized:
-> Existing binary-facing Renderer method signatures remain unchanged. A wgpu-free `Renderer::begin_frame()` entry hook may be added and called before a windowed or capture frame's first setter/upload to enforce P6.
-
-Alternative exact AC 24 restatement if the owner keeps the API unchanged:
-> At every successful or skipped frame exit, and at hot-reload commit, level install and level unload, the batch holds no pending write. A debug build fails loudly if one is pending. Pre-render writes for the current frame are allowed at renderer render/capture method entry.
-
-No renderer implementation or test change has been made. Resume at Verify source / AC-to-proof after the owner chooses the contract; apply only authorized wording and rerun this check before returning status to active.
+Source rechecked: option setters precede extent commit, light/fog/uniform/viewmodel writes precede render entry, and capture setup precedes capture entry. These writes belong to the upcoming frame. Fatal event-loop exits remain the brief's existing exception. Renderer source remains unchanged since the grounded read revision.

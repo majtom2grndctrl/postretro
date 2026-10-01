@@ -128,6 +128,7 @@ Each pin is cited by an Acceptance row.
 | P10 | Neither mesh pass draws | no world mesh plan and no viewmodel plan this frame | The mesh light parameters are not written. |
 | P11 | Boot splash frame | full renderer absent → splash uniform write → splash submit | The splash submit carries no batch. Its uniform write stays direct, in the boot splash class. A debug build fails loudly if a write is pending there. |
 | P12 | Staging rejects a write | a per-frame writer stages a misaligned or out-of-bounds write | It fails as loudly as a direct write does today. It never drops silently. A rejected bridge write never reports the snapshot committed. |
+| P13 | Options-menu setter mid-session | settings change (for example fog step size) → setter writes → next frame's passes | The write is staged in the batch and counted. It lands before the next frame's passes. |
 
 ## Rivals considered
 

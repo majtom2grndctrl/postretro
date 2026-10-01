@@ -25,7 +25,9 @@ Derivation and evidence behind the brief. Source was read by symbol at 832e20c8a
 - Kernel plus driver time is 64–69% of `render_submit`. The top self-time function is `mach_msg2_trap`, at 39%.
 - Each drop runs `MTLIOAccelBuffer dealloc` → `ioAccelResourceFinalize` → `IOConnectCallMethod`, a synchronous kernel call. The profile shows this. Whether wgpu-hal's Metal buffer destroy makes one kernel call per buffer was not read in source.
 - `render/sh_streaming/gpu/staged_uploads.rs` measured about 40 µs per write call on Metal when it was built (`plans/done/sh-streaming--warm-set-and-io-contract`, T4: install CPU 1208 ms → 223 ms).
-- Combined, staging create and drop cost about 4.3 ms of a 10–12 ms CPU frame on the hallway map. This is a de-inflated estimate: the raw profile sum, about 5 ms, less the sampling inflation. Reconciled figures are pending.
+- Reconciled and de-inflated (stress / campaign): `maintain` drops of `write_buffer` staging cost 2.46 / 1.97 ms inside `render_submit`. Staging creation under `queue.write_buffer`, outside `render_submit`, costs 1.58 / 1.41 ms. Together that is about 4.0 / 3.4 ms. The drops of wgpu's indirect-validation staging buffers (0.15 / 0.21 ms) are excluded: batching does not touch them.
+- Method: bucket-proportional de-inflation, unverified. Each `render_submit` bucket is scaled by the untraced `render_submit` median over the sampled root (0.864 / 0.876); work outside it, by the `work` ratio (0.854 / 0.901). Trap-heavy buckets may inflate differently under `sample`. Validation's share of the drops is split off by its share of staging creations.
+- The memcpy into fresh staging (about 1.0 ms raw on each map) survives batching, apart from first-touch page faults.
 
 ## Why wgpu pays per call
 
@@ -42,6 +44,8 @@ All in wgpu 29.0.1, the version `Cargo.lock` pins.
 
 **Same-resource copies are ordered.** `COPY_DST` is an exclusive use in `wgpu-types`, and `skip_barrier` in `wgpu-core/src/track` skips a barrier only for ordered uses. Two copies into one buffer in one command buffer therefore get a transfer barrier between them, and the later copy wins on every backend. `StagedUploads` already relies on this.
 
+- On Metal the barrier is not issued. wgpu-hal 29.0.1's Metal backend drops every buffer and texture barrier, so the order of copies into one resource rests on Metal's tracked hazards. Today's pending-writes copies already rely on the same thing. The Ordering rows, run on the compatibility-floor Mac, are the proof there.
+
 ## Existing seam
 
 `render/sh_streaming/gpu/staged_uploads.rs` and `staging_pool.rs`, re-exported as `crate::render::{StagedUploads, StagingPool}`.
@@ -55,6 +59,7 @@ All in wgpu 29.0.1, the version `Cargo.lock` pins.
   - Each batch allocates a fresh `copies` vector.
   - Nothing deduplicates.
   - Merging works only for writes that are contiguous in both source and target. Interleaved per-instance and per-palette writes never merge.
+  - Texture writes stage mip 0, aspect All and tightly packed rows only. That covers every per-frame need: at 832e20c8a every steady-state per-frame renderer write is a buffer write, and every renderer write_texture call runs at load or install time.
 
 ## Per-frame write inventory (steady state, without dev-tools)
 
@@ -94,7 +99,7 @@ Every renderer `queue.submit`, outside tests:
 
 **Frame order in the binary** (`crates/postretro/src/main.rs`, gameplay branch): light bridge upload → fog uploads → `update_per_frame_uniforms` → `update_viewmodel_view_projection` → SH stream batch build → lightmap drain (submits) → mesh and mover draw lists → `render_frame_indirect` (SH drain, which submits; acquire; record; frame submit) → `render_debug_ui` → present. Every early return between `update_per_frame_uniforms` and present sets `exit_result` and exits the event loop. The only non-fatal skip is the acquire-failure `Ok(None)` inside `render_frame_indirect`.
 
-**The drain boundary today.** A direct write recorded before a drain lands in that drain's submit, ahead of the drain's copies. Writes recorded after it land in the frame submit. If a per-frame batch stayed open across drains, the binary-side writes would land after the drain copies instead of before. That is safe only while no drain copies into a resource the batch writes, and nothing enforces it. Carrying the batch first in every renderer submit keeps today's order exactly, and costs a second staging acquisition on frames that drain.
+**The drain boundary today.** A direct write recorded before a drain lands in that drain's submit, ahead of the drain's copies. Writes recorded after it land in the frame submit. If a per-frame batch stayed open across drains, the binary-side writes would land after the drain copies instead of before. That is safe only while no drain copies into a resource the batch writes, and nothing enforces it. Carrying the batch first in the frame, drain and capture submits keeps today's order exactly, and costs a second staging acquisition on frames that drain. Splash, readback and dev-tools submits follow no per-frame write, so they carry none.
 
 ## Why the batch is never dropped on a skipped frame
 
@@ -104,6 +109,25 @@ Several writers record a CPU belief that their bytes reached the GPU as soon as 
 - the light bridge, which reports the snapshot committed.
 
 Dropping a batch after any of those runs leaves the GPU stale until an unrelated change re-dirties the data. Today a skipped frame's direct writes stay pending in wgpu and land at the next submit. Unbounded carry-over in a renderer batch would grow every skipped frame, for example while the surface times out repeatedly. Submitting the batch alone on the skipped frame bounds it to one frame and keeps every mirror true.
+
+## Ordering pins
+
+Each pin is cited by an Acceptance row.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Lightmap drain fails and rolls back | binary-side writes staged → lightmap drain errors before its submit → SH drain → frame submit | The drain submits nothing. The staged writes land in the next submit that frame, once. None is dropped. |
+| P2 | Submit with nothing pending | a drain, a dev-tools or readback submit, or an acquire-failure skip runs with an empty batch | No staging buffer is acquired. No batch command buffer joins the submit. A skip with an empty batch submits nothing. |
+| P3 | Drain submits more than once | writes staged → SH drain grows a pool (submit) → drain uploads (submit) | The staged writes ride the first submit, ahead of the growth copies. Later submits in that drain, and the frame submit, carry none of them. |
+| P4 | Two drains in one frame | W1 → lightmap drain submit → W2 → SH drain submit → W3 → frame submit | W1 rides the lightmap drain's submit, W2 the SH drain's, W3 the frame's. Each lands once. |
+| P5 | Back-to-back submits, GPU behind | frame N acquires S and submits → frame N+1 acquires before N completes | N+1 gets a buffer other than S. S rejoins the pool only after N's submit completes, through its map callback. The batch path calls no `device.poll`. |
+| P6 | Lifecycle event with a pending batch | last submit of frame N → frame tail, hot-reload commit, level install or unload → frame N+1 entry | The batch is empty at each. A debug build fails loudly if a write is pending there. |
+| P7 | Batch-carrying submit | pending writes → a frame, drain or capture submit in §Submit inventory | The batch's command buffer is first in the submit. |
+| P8 | Settings write mid-frame | per-frame writes staged → dev-tools panel setter writes directly → frame submit | No setter writes a resource with a pending batched write. The debug assertion holds with every renderer setter called between the per-frame uniform write and the submit. |
+| P9 | Acquire fails twice in a row | frame N stages, acquire fails, submits alone → frame N+1 stages, acquire fails, submits alone → frame N+2 draws | Each skip submits only its own frame's writes. The batch's CPU storage does not grow across skips. N+2 finds nothing pending. |
+| P10 | Neither mesh pass draws | no world mesh plan and no viewmodel plan this frame | The mesh light parameters are not written. |
+| P11 | Boot splash frame | full renderer absent → splash uniform write → splash submit | The splash submit carries no batch. A debug build fails loudly if a write is pending there. |
+| P12 | Staging rejects a write | a per-frame writer stages a misaligned or out-of-bounds write | It fails as loudly as a direct write does today. It never drops silently. A rejected bridge write never reports the snapshot committed. |
 
 ## Rivals considered
 

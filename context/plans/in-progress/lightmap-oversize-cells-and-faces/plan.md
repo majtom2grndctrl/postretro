@@ -7,6 +7,7 @@ read at: e5eb0807c
 ## Owner rulings
 - 2026-09-30: the oversized-split bound was unachievable in general (a 44 m single-cell cube room charts six 1104² faces that no two share a 2048 block or bake layer: 6 layers where the bound allowed 3; and MaxRects fill < 100% breaks it on very large cells). Owner took the recommended restatement: the Decision now states a fill rule (a chart moves to a later block only when it fits no earlier block's free space; blocks trimmed), and Acceptance [1] row 3 tests that rule by reinsertion, keeping the numeric bound only on a quarter-edge, ≤4-layer synthetic cell. `index.md` and `build_pipeline.md` §Compiler pipeline carry the new wording. Rejected: bake layers larger than the pool edge.
 - 2026-09-30: plan approved.
+- 2026-09-30: stress-warren-hallway-inspection is semi-optional (it did not trigger the brief). Its baseline bake (>5 h at `19fb3fc40`) was stopped at milestone [1]; its rows (placements unchanged, peak RSS unchanged, and the [2] byte comparison) are deferred to an owner-scheduled overnight bake. Milestone [1] proves the "unchanged" row on campaign-test, and measures peak RSS cold only on movement-feel and kinematic-platform.
 
 ## Corrections
 - Brief *Path* "Update with the change" lists `build_pipeline.md` and `rendering_pipeline.md` edits. Promotion (`492162d0a`) already wrote the post-change contracts with *Not built yet* markers, so each merge removes its markers and adjusts wording rather than writing new sections.

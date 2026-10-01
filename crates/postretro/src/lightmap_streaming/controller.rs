@@ -480,9 +480,8 @@ impl LightmapResidencyController {
     pub(crate) fn settled(&self) -> bool {
         self.demand.demanded_blocks(&self.map).all(|block| {
             let slot = &self.slots[block as usize];
-            !slot
-                .target
-                .is_some_and(|target| target.class == LightmapBlockClass::Mandatory)
+            slot.target
+                .is_none_or(|target| target.class != LightmapBlockClass::Mandatory)
                 || slot.phase == BlockPhase::Installed
         })
     }
@@ -511,9 +510,9 @@ impl LightmapResidencyController {
         if std::mem::take(&mut self.misses_due) {
             for &block in self.demand.drawn_blocks() {
                 let slot = &self.slots[block as usize];
-                if !slot
+                if slot
                     .target
-                    .is_some_and(|target| target.class == LightmapBlockClass::Mandatory)
+                    .is_none_or(|target| target.class != LightmapBlockClass::Mandatory)
                 {
                     outside += 1;
                 }

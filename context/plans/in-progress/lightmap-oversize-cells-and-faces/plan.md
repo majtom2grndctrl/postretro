@@ -49,13 +49,13 @@ read at: e5eb0807c
 | [3] ChartTooLarge / BlockTooLarge gone (grep); `build_pipeline.md` names the rebuild set (review) | grep gate; review | achievable as stated | later milestone |
 | [2] Chart moved in bake-layer coords, or faces renumbered elsewhere → texels unchanged | lightmap / weight-map seed tests | achievable as stated | later milestone |
 | [2] campaign-test and hallway `--release` at `19fb3fc40` vs after: placements unchanged, sections identical except the listed families, irradiance within recorded tolerance | `#[ignore]` baseline comparison | achievable as stated | later milestone |
-| [1] Both maps render correctly in both streaming modes; kinematic walls fade | owner, in-engine | manual | outstanding — owner, in-engine |
-| [1] One withheld block of the multi-block cell drops only its faces' terms | owner, in-engine | manual | outstanding — owner, in-engine |
+| [1] Both maps render correctly in both streaming modes; kinematic walls fade | owner, in-engine | manual | pass — owner play tests, both streaming modes, both maps |
+| [1] One withheld block of the multi-block cell drops only its faces' terms | owner, in-engine | manual | pass — headless capture of kinematic-platform cell 12 (`force_missing_lightmap_blocks`): block 1 missing changes only the 64 m east wall's lit patches (~30k px); block 2 missing changes only the floor (~97k px); boxes and model unchanged in both pixel diffs |
 | [3] No seam or sparkle across the cut (fade, penumbra, animation), both streaming modes | owner, in-engine | manual | later milestone |
 | [3] No snag walking or sliding across cut floor and wall | owner, in-engine | manual | later milestone |
 | [1] Peak `prl-build` RSS vs `--verbose` prediction; hallway RSS unchanged | executor-recorded run (`research.md` §4 protocol) | manual | recorded cold: movement-feel 406 MiB vs predicted 451; kinematic-platform 394 vs 419. Hallway RSS deferred (owner ruling) |
 | [1] Pool layer count and lightmap byte meter on movement-feel | executor-recorded in-engine run | manual | pass — owner, in-engine, stream mode: 73 of 73 blocks resident (55.4 MiB: id 22 23.7, id 42 31.6), 6 layers (peak 6, cap 15), pool 98.0 MiB = 6 layers + the spare at 14 MiB each, 0 visible misses, 0 refusals/evictions. Matches the walk model exactly (peak held 98.0 MiB). All-resident mode meter: 84 MiB (6 layers) |
-| [1] Visible-miss counts walking into kinematic-platform's multi-block cell | owner, in-engine (dev-tools Streaming tab) | manual | outstanding — owner, in-engine (dev-tools Streaming tab) |
+| [1] Visible-miss counts walking into kinematic-platform's multi-block cell | owner, in-engine (dev-tools Streaming tab) | manual | pass — owner saw none in play; walk model: all 10 blocks (47.4 MiB) preload at spawn, 0 misses over 2000-step random and far-point walks |
 
 ## Tasks
 

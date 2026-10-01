@@ -204,7 +204,6 @@ The compiler accepts the following flags:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o <PATH>` | input path with `.prl` extension | Output `.prl` path. |
-| `--pvs` | off | Emit a precomputed PVS (LeafPvs section) instead of the default portal graph. |
 | `-v`, `--verbose` | off | Detailed per-stage logging. |
 | `--format <FORMAT>` | `idtech2` | Map dialect to parse (e.g. `idtech2`, `idtech3`). |
 | `--sh-probe-spacing <METERS>` | `1.0` | SH irradiance probe grid spacing, in meters. |

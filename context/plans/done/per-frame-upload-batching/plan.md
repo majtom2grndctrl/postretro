@@ -1,7 +1,7 @@
 # per-frame-upload-batching — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: 83489c52b
 
 ## Corrections
@@ -246,3 +246,10 @@ Owner: “If the screen is still on let’s check those other maps. Otherwise I 
 The immediately preceding request identified two acceptance decisions: accept the documented hallway timing qualification and clarify the profile criterion to allow wgpu indirect-validation staging. The owner accepted both. Apply the exact proposed AC32 wording to the brief and proof table. Add only the specific accepted hallway-repeat exception to AC30; research measurement conditions otherwise remain unchanged. AC30 passes by owner acceptance of the qualified measurement, not by inferred machine-state equivalence. AC32 passes under the approved attribution criterion, with the recorded maintain shares and default-feature egui limitation preserved.
 
 All 34 acceptance rows now pass under the approved contract. All four tasks are complete. Source and review/preflight evidence are unchanged; no additional test suite is needed for these document-only updates. Restore compact `status: active`; no blocking proof or owner wording issue remains. Feature branch: `codex/per-frame-upload-batching`. Await the owner's landing instruction before moving the brief, cleaning session artifacts or pushing the feature branch. Acceptance of results is recorded here; it is not inferred as the separate landing instruction.
+
+
+### Landing authorization — 2026-10-01
+
+Owner: “Let’s land the plane!” All 34 acceptance results pass under the approved AC30 qualification and AC32 attribution wording. Move this brief to `context/plans/done/`; no roadmap entry names it. Renderer and UI contracts already describe the implemented upload timeline and lifecycle. The landing update adds storage reuse, callback completion, independent free-pool bounds and the third-party/backend staging exclusion to the renderer contract.
+
+This checkpoint completes the build-brief acceptance and documentation work on `codex/per-frame-upload-batching`; it does not claim a merge to main. The landing procedure archives the attached baseline worktree, removes session-owned `postretro-upload-*` temporary artifacts, cleans only the heavily rebuilt renderer and engine crates in the active and clippy target directories, and pushes the feature branch. Measurement tables, qualifications and test/review results above are the durable evidence; their temporary raw-log and binary paths are historical after cleanup.

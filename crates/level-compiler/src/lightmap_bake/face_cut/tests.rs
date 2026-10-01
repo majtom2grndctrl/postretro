@@ -280,3 +280,258 @@ fn applying_no_cuts_leaves_geometry_and_charts_untouched() {
     assert_eq!(geometry.geometry.vertices, before_vertices);
     assert_eq!(geometry.geometry.indices, before_indices);
 }
+
+/// A 9 m floor in cell 0 under a 2 m occluder straddling its cut lines, lit
+/// by a soft area light whose penumbra and falloff cross both cuts.
+fn penumbra_floor() -> (GeometryResult, Vec<crate::map_data::MapLight>) {
+    let floor = square(0.0, 0.0, 9.0);
+    let mut geometry = floor_faces(&[&floor, &square(3.5, 3.5, 2.0)]);
+    // Raise the occluder 1 m and put both faces in cell 0.
+    let occluder = geometry.face_index_ranges[1];
+    let start = occluder.index_offset as usize;
+    let occluder_vertices: Vec<u32> =
+        geometry.geometry.indices[start..start + occluder.index_count as usize].to_vec();
+    for index in occluder_vertices {
+        geometry.geometry.vertices[index as usize].position[1] = 1.0;
+    }
+    for face in &mut geometry.geometry.faces {
+        face.leaf_index = 0;
+    }
+    let light = crate::map_data::MapLight {
+        origin: glam::DVec3::new(4.2, 3.0, 4.7),
+        carrier: String::new(),
+        light_type: crate::map_data::LightType::Point,
+        intensity: 1.0,
+        color: [1.0, 0.9, 0.8],
+        falloff_model: crate::map_data::FalloffModel::Linear,
+        falloff_range: 9.0,
+        light_size: 1.0,
+        angular_diameter: 0.0,
+        cone_angle_inner: None,
+        cone_angle_outer: None,
+        cone_direction: None,
+        animation: None,
+        bake_only: false,
+        is_dynamic: false,
+        casts_entity_shadows: true,
+        is_animated: false,
+        tags: Vec::new(),
+        shadow_type: crate::map_data::ShadowType::StaticLightMap,
+    };
+    (geometry, vec![light])
+}
+
+/// For every pair of sub-charts of the cut floor, each parent-grid texel both
+/// windows cover, as the two charts' interior texels.
+fn overlap_twins(charts: &[Chart]) -> Vec<((usize, [u32; 2]), (usize, [u32; 2]))> {
+    let windowed: Vec<usize> = (0..charts.len())
+        .filter(|&c| charts[c].window.is_some())
+        .collect();
+    let span = |chart: &Chart| {
+        let window = chart.window.unwrap();
+        let interior = [chart.width_texels - PADDING, chart.height_texels - PADDING];
+        [
+            window.origin[0]..window.origin[0] + interior[0],
+            window.origin[1]..window.origin[1] + interior[1],
+        ]
+    };
+    let mut twins = Vec::new();
+    for (i, &a) in windowed.iter().enumerate() {
+        for &b in &windowed[i + 1..] {
+            let (sa, sb) = (span(&charts[a]), span(&charts[b]));
+            let u = sa[0].start.max(sb[0].start)..sa[0].end.min(sb[0].end);
+            let v = sa[1].start.max(sb[1].start)..sa[1].end.min(sb[1].end);
+            for gy in v.clone() {
+                for gx in u.clone() {
+                    let local = |chart: &Chart| {
+                        let origin = chart.window.unwrap().origin;
+                        [gx - origin[0], gy - origin[1]]
+                    };
+                    twins.push(((a, local(&charts[a])), (b, local(&charts[b]))));
+                }
+            }
+        }
+    }
+    twins
+}
+
+// Across every cut, overlap texels are bit-identical on both sides before
+// encoding: irradiance, direction, and the raw soft visibility the
+// shadowmask quantizes. A vertex on a cut lands on the same parent-grid
+// texel from both sides, within vertex UV quantization (P20).
+#[test]
+fn overlap_texels_bake_bit_identical_across_every_cut() {
+    use crate::bake_control::BakeControl;
+    use crate::bvh_build::build_bvh;
+    use crate::light_namespaces::StaticBakedLights;
+    use crate::lightmap_bake::{BlockOrdering, DEFAULT_AREA_SAMPLE_COUNT, reference};
+    use crate::lightmap_layer::{SharedAtlas, bake_light_layer_controlled};
+
+    let (mut geometry, lights) = penumbra_floor();
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let prepared = crate::lightmap_bake::prepare_atlas_within(
+        &mut geometry,
+        &static_lights,
+        0.1,
+        &[],
+        BlockOrdering::by_cell_id(2),
+        64,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the cut floor prepares");
+    let charts = &prepared.charts;
+    let twins = overlap_twins(charts);
+    assert!(
+        twins.len() > 100,
+        "the cuts overlap: {} twin texels",
+        twins.len()
+    );
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let light_refs: Vec<_> = lights.iter().collect();
+
+    // Irradiance and direction, per sub-chart.
+    let baked: Vec<_> = charts
+        .iter()
+        .map(|chart| {
+            reference::bake_face_chart(
+                &bvh,
+                &primitives,
+                &geometry,
+                &light_refs,
+                chart,
+                DEFAULT_AREA_SAMPLE_COUNT,
+            )
+        })
+        .collect();
+    let at = |chart: usize, [x, y]: [u32; 2]| {
+        let atlas = &baked[chart];
+        ((y + CHART_PADDING_TEXELS) * atlas.atlas_width + x + CHART_PADDING_TEXELS) as usize
+    };
+    let mut penumbra = 0;
+    for &((a, ta), (b, tb)) in &twins {
+        let (ia, ib) = (at(a, ta), at(b, tb));
+        let irradiance = |chart: usize, i: usize| {
+            baked[chart].irradiance[i * 4..i * 4 + 4]
+                .iter()
+                .map(|c| c.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            irradiance(a, ia),
+            irradiance(b, ib),
+            "irradiance at {ta:?}/{tb:?}"
+        );
+        assert_eq!(
+            baked[a].direction[ia].to_array().map(f32::to_bits),
+            baked[b].direction[ib].to_array().map(f32::to_bits),
+            "direction at {ta:?}/{tb:?}"
+        );
+        let red = baked[a].irradiance[ia * 4];
+        if red > 0.0
+            && red
+                < 0.9
+                    * baked[a]
+                        .irradiance
+                        .iter()
+                        .step_by(4)
+                        .cloned()
+                        .fold(0.0, f32::max)
+        {
+            penumbra += 1;
+        }
+    }
+    assert!(penumbra > 0, "a penumbra or falloff gradient crosses a cut");
+
+    // Raw soft visibility, as the shipping per-light layer walk records it.
+    let shared = SharedAtlas {
+        charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let mut visibility = std::collections::HashMap::new();
+    for layer in 0..prepared.layer_count {
+        let partition = bake_light_layer_controlled(
+            &lights[0],
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            layer,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            &BakeControl::unrestricted(),
+        );
+        for texel in &partition.texels {
+            visibility.insert((layer, texel.idx), texel.raw_visibility.to_bits());
+        }
+    }
+    let atlas_key = |chart: usize, [x, y]: [u32; 2]| {
+        let placement = prepared.placements[chart];
+        let (ax, ay) = (
+            placement.x + CHART_PADDING_TEXELS + x,
+            placement.y + CHART_PADDING_TEXELS + y,
+        );
+        (placement.layer, ay * prepared.atlas_width + ax)
+    };
+    let mut compared = 0;
+    for &((a, ta), (b, tb)) in &twins {
+        let (va, vb) = (
+            visibility.get(&atlas_key(a, ta)),
+            visibility.get(&atlas_key(b, tb)),
+        );
+        assert_eq!(va, vb, "visibility at {ta:?}/{tb:?}");
+        compared += usize::from(va.is_some());
+    }
+    assert!(compared > 0, "the light reaches the overlaps");
+
+    // P20: a vertex on a cut maps to the same parent-grid position from both
+    // of its sub-faces.
+    let grid_position = |face: usize, vertex: &Vertex| {
+        let chart = &charts[face];
+        let block = &prepared.layout.blocks[usize::from(vertex.lightmap_block - 1)];
+        let (local_x, local_y) = prepared
+            .layout
+            .local_placement(face, &prepared.placements[face]);
+        let origin = chart.window.map_or([0, 0], |w| w.origin);
+        let texel = |uv: u16, extent: u32, local: u32, origin: u32| {
+            f32::from(uv) / 65535.0 * extent as f32 - local as f32 - CHART_PADDING_TEXELS as f32
+                + origin as f32
+        };
+        [
+            texel(vertex.lightmap_uv[0], block.width, local_x, origin[0]),
+            texel(vertex.lightmap_uv[1], block.height, local_y, origin[1]),
+            block.width.max(block.height) as f32 / 65535.0,
+        ]
+    };
+    let mut seen: std::collections::HashMap<[u32; 3], (usize, [f32; 3])> =
+        std::collections::HashMap::new();
+    let mut shared_cut_vertices = 0;
+    for face in 0..geometry.face_index_ranges.len() {
+        if charts[face].window.is_none() {
+            continue;
+        }
+        for index in face_vertex_indices(&geometry, face) {
+            let vertex = &geometry.geometry.vertices[index as usize];
+            let position = grid_position(face, vertex);
+            match seen.get(&vertex.position.map(f32::to_bits)) {
+                Some(&(other, before)) if other != face => {
+                    let tolerance = before[2] + position[2] + 1.0e-3;
+                    assert!(
+                        (before[0] - position[0]).abs() <= tolerance,
+                        "{before:?} vs {position:?}"
+                    );
+                    assert!(
+                        (before[1] - position[1]).abs() <= tolerance,
+                        "{before:?} vs {position:?}"
+                    );
+                    shared_cut_vertices += 1;
+                }
+                _ => {
+                    seen.insert(vertex.position.map(f32::to_bits), (face, position));
+                }
+            }
+        }
+    }
+    assert!(shared_cut_vertices > 0);
+}

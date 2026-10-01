@@ -47,7 +47,7 @@ No source changed under `crates/`, `sdk/`, `content/` or `core/` between the bri
 | A23 grep gate: no 1440 cap in renderer crate | source-scan test | achievable as stated | pass — `renderer_crate_holds_no_auto_row_cap` |
 | A24 windowless renderer extent change, read back every scene target size | GPU-harness offscreen test (same as A4) | achievable as stated | pass — `extent_changes_rebuild_every_scene_target_at_the_scene_extent` (GPU) |
 | A25 opaque UI pixel reaches swapchain untonemapped | GPU-harness resolve test (run on the Mac) | achievable as stated | pass — `opaque_ui_pixel_reaches_the_target_untonemapped` (GPU, run on the Mac); text/quad parity: `ui_text_through_the_layer_matches_text_drawn_into_scene_colour`, `ui_pass_quads_composite_as_straight_alpha_over_the_scene` |
-| M1 Auto vs Native GPU/CPU ms on two maps | owner, Metal System Trace | manual | partial — see Measurements; Auto stress-map run and Auto per-pass GPU still outstanding |
+| M1 Auto vs Native GPU/CPU ms on two maps | owner, Metal System Trace | manual | reported — see Measurements. Auto's forward pass is ~0.41× Native on both maps, not the ~¼ the row expected |
 | M2 crisp uniform upscale; HUD sharp under every value | owner, in-engine | manual | outstanding — owner |
 | M3 shake/flash/vignette spare the HUD; HUD colours match | owner, in-engine | manual | outstanding — owner |
 | M4 drag between displays updates scene extent, no stretched frame | owner, two displays | manual | outstanding — owner |
@@ -74,8 +74,8 @@ Idle machine state before runs: ~1.1 GB VRAM in use by other processes, ~2.7 GB 
 | Map | Mode | Frame total (CPU timing) | wait_acquire | Forward pass (GPU) |
 |---|---|---|---|---|
 | campaign-test | Native | 36.6–37.4 ms (~27 fps) | 20.6–24.2 ms | 9.6 ms |
-| campaign-test | Auto | 16.5–16.8 ms (vsync-locked 60 fps) | 2.6–7.0 ms | — (trace export crashed: `xctrace` bus error) |
+| campaign-test | Auto | 16.5–16.8 ms (vsync-locked 60 fps) | 2.6–7.0 ms | 3.9 ms |
 | stress-warren-hallway-inspection | Native | 22.2–24.7 ms (~41 fps) | 6.1–9.1 ms | 13.0 ms |
-| stress-warren-hallway-inspection | Auto | — (screen locked; no frames) | — | — |
+| stress-warren-hallway-inspection | Auto | 16.5–18.5 ms (~54 fps) | 0.9–3.8 ms | 5.4 ms |
 
-Native campaign-test also spends 5.6 ms in the kinematic brush pass, 5.3 ms in the viewmodel, 4.7 ms in fog, 5.4 ms in SH compose and 1.9 ms in UI per frame. The fill-bound premise holds: at Auto, campaign-test's GPU wait drops by roughly 15–20 ms and the frame locks to vsync.
+Native campaign-test also spends 5.6 ms in the kinematic brush pass, 5.3 ms in the viewmodel, 4.7 ms in fog, 5.4 ms in SH compose and 1.9 ms in UI per frame. At Auto those drop to 0.3 ms (kinematic brush), 2.0 ms (viewmodel), 2.5 ms (fog) and 0.07 ms (UI); SH compose (~5.3 ms) is resolution-independent. The fill-bound premise holds: campaign-test goes from GPU-bound ~27 fps to vsync-locked 60, and the stress map from ~41 to ~54 fps, where the remaining frame time is mostly CPU work (GPU wait ≤ 3.8 ms). The forward pass falls to ~0.41× of Native on both maps rather than ~¼, so about a third of its cost does not scale with pixel count. That matches the brief's caution that fewer pixels remove the resolution multiplier, not all per-pixel cost. Auto recordings ran 30 s rather than 40 s; the 40 s Auto trace crashed `xctrace export`.

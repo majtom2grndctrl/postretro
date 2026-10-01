@@ -7,15 +7,18 @@ Derivation and numbers behind the brief. Every path below is relative to `crates
 | Item | Value |
 |---|---|
 | Map | `content/dev/maps/stress-warren-hallway-inspection.map` |
-| Other host | The owner's 6-core PC routinely bakes the hallway in about 9 h, against about 6 h on the machine below. It is not the yardstick. With fewer permits its stages saturate sooner, so it is the less favorable host for lever 3; the gate measures on the pinned machine. |
-| Machine | Intel i9-9980HK: 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD |
-| Cache mode | Warm (cache enabled). The run starts on an empty cache directory, a fresh path passed to `--cache-dir`, so every entry misses in the first build. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares each map's record. |
-| Peak memory | The process's maximum resident set size over the whole build. The warm all-miss run runs under `/usr/bin/time -l` (macOS), which reports it. See §Peak memory. |
-| Permits | Default `-j` from `default_jobs_for` (`cli.rs`): logical cores − 1 for 2 to 8 logical cores, logical cores − 2 above 8. This machine: 16 → 14. The global rayon pool is unconfigured, so it has one thread per logical core (16); the governor, not the pool, bounds concurrency. |
-| Binary | `prl-build` built in cargo's release profile (`cargo build --release -p postretro-level-compiler --bin prl-build`: `opt-level = 3`, thin LTO), then run without its own `--release` flag. `prl-build --release` is the cold ship bake, and it implies `--no-cache`. The numbers on this page predate that pin: the live rebake ran `target/debug/prl-build`, and the first build's profile was not recorded. `[profile.dev]` gives workspace crates `opt-level = 1` and dependencies, `bvh` included, `opt-level = 2`. Re-take the before numbers on the pinned binary. |
+| Machine | The owner's Windows PC: 6 cores. It bakes the hallway in about 9 h. Each run records its specs in `machine.txt`: CPU, physical cores, logical processors, RAM, OS, volume, git HEAD and working-tree status. |
+| Other host | The owner's Mac: Intel i9-9980HK, 8 physical cores, 16 logical, 32 GiB RAM, macOS, APFS SSD; 14 permits. It bakes the hallway in about 6 h. It is not the yardstick. Every number on this page comes from it: context, not baselines. |
+| Procedure | `evidence/measure-hallway.ps1` (PowerShell 5.1 or 7) is the canonical run. It builds the binary below, bakes once under these conditions, and samples the process every 10 s into `cpu-samples.tsv`, in the column layout `evidence/stats.sh` reads. `summary.txt` records exit code, wall time, CPU time, peak working set and the Build Summary. Not yet run. |
+| Cache mode | Warm (cache enabled). The run starts on an empty cache directory, a fresh path passed to `--cache-dir`, so every entry misses in the first build. The script creates it inside its run folder and refuses a non-empty one. Warm base SH always runs the approximate grouped path. Under the 2 GiB `--cache-max-size` default, today's start-of-build prune evicts most of the hallway's live set; the brief's prune rule spares each map's record. |
+| Peak memory | The process's peak working set over the whole build, the counter `Process.PeakWorkingSet64` reads. The script reads it after exit and records it in `summary.txt`. See §Peak memory. |
+| Permits | Default `-j` from `default_jobs_for` (`cli.rs`): logical cores − 1 for 2 to 8 logical cores, logical cores − 2 above 8. The run records the value in `machine.txt`, from the binary's `--help` and checked against the rule. The global rayon pool is unconfigured, so it has one thread per logical core; the governor, not the pool, bounds concurrency. |
+| Binary | `prl-build` built in cargo's release profile (`cargo build --release -p postretro-level-compiler --bin prl-build`: `opt-level = 3`, thin LTO), then run without its own `--release` flag, with plain progress (`--no-tui`). The script builds and runs it. `prl-build --release` is the cold ship bake, and it implies `--no-cache`. The numbers on this page predate that pin: the live rebake ran `target/debug/prl-build`, and the first build's profile was not recorded. `[profile.dev]` gives workspace crates `opt-level = 1` and dependencies, `bvh` included, `opt-level = 2`. Re-take the before numbers on the pinned machine and binary. |
 | Baseline | Main after `lightmap-oversize-cells-and-faces` (#544). Byte-identity baselines and before numbers both come from there. That plan recorded no hallway RSS or stage timings; its recorded RSS runs are cold small-map bakes, unusable as before numbers. |
 
 ## Where the 5 h 54 m goes
+
+All numbers in this section come from the Mac (§Measurement conditions, Other host).
 
 **First build.** From the end-of-build summary:
 - Wall time: 21,262 s. User plus system CPU time: 189,875 s. That is 8.9 cores busy on average.
@@ -96,7 +99,8 @@ No sample landed in ray code. The raw stack sample was not retained; the breakdo
 
 ## Lever 3 gate
 
-- **Absolute bar.** The hallway bakes in about 6 h on the pinned machine and about 9 h on the owner's 6-core PC. 15 minutes per build repays the added complexity; a percentage would move with the host.
+- **Absolute bar.** The hallway bakes in about 9 h on the pinned machine and about 6 h on the Mac. 15 minutes per build repays the added complexity; a percentage would move with the host.
+- **The yardstick is the less favorable host.** With fewer permits, its stages saturate sooner and leave fewer idle. A skip decided there is conservative: the Mac, with 14 permits, may clear the bar where the pinned machine does not.
 - **Overlap recovers only idle permits.** A stage beside the saturated base SH bake competes for the same global governor and gains nothing. While base SH runs, all 16 rayon workers are either permitted or parked in the governor.
 - **Earlier levers shrink its target.** Lever 2 removes the I/O-bound delta idle time overlap mostly targets. Lever 1 shrinks the AnimWeightMaps gain.
 - **Most invasive lever.** `pipeline/stage_registry.rs` has no cross-stage concurrency today (§Stage dependencies). `development_guide.md` §1.4: no measured bottleneck, no optimization.
@@ -153,14 +157,14 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
   The Lightmap Bake and AnimWeightMaps figures in the table above are all-miss numbers from the first build.
 - `plans/done/lighting-scale--sparse-layer-cache-and-fused-walk` sized the 2 GiB budget against campaign-test layers (≤0.91 GB).
 - **Bound under the brief's rule.** After the prune the cache is at most the larger of the budget and the total spared set; the build then adds its new generation, as today.
-- **Why per map, and why the last success.** The cache directory is shared by every map under the workspace root (`build_pipeline.md` §Build Cache, Location). A campaign-test build between two hallway builds would otherwise expose the hallway's set. In plain mode the cache is constructed and pruned before parsing, so a parse error or a `--sh-delta-working-set-max-size` refusal still runs a prune while touching nothing. Stopping a 6 h bake is the most common hallway event. Sparing only the previous build would cost an SH re-bake (about 11,000 s) after any of these.
+- **Why per map, and why the last success.** The cache directory is shared by every map under the workspace root (`build_pipeline.md` §Build Cache, Location). A campaign-test build between two hallway builds would otherwise expose the hallway's set. In plain mode the cache is constructed and pruned before parsing, so a parse error or a `--sh-delta-working-set-max-size` refusal still runs a prune while touching nothing. Stopping a 6 to 9 h bake is the most common hallway event. Sparing only the previous build would cost an SH re-bake (about 11,000 s) after any of these.
 - **Why memo hits count.** A `lightmap_section` hit reads no per-light partition, and a `shadowmask_atlas` hit requests none. `build_pipeline.md` §Build Cache calls those partitions the recompose fallback when a light changes. Unmarked, a no-edit rebuild leaves them untouched, and the first light edit after it re-bakes every light.
 - **Why not raise the default.** It would have to track the largest map anyone builds, and still evicts by write order once that map outgrows it.
 - **Mechanism, the executor's call.** Nothing persists which entries a build touched: `live_entries` (`StageCache::live_set`) is in memory only, and prune sorts by mtime alone. Options: a per-map key list appended as the build touches entries and promoted to the map's record on success, or a per-map start marker read against mtime. Lever 2 removes or changes the second open in `touch_for_lru`, so an mtime scheme needs another way to record a hit. A record written only at end of build loses a stopped build's touches: the only end-of-build hook runs on success or a returned error, never on a kill. A build reads its map's record before recording its own start (pin P6).
 
 ## Cache write path
 - `StageCache::put` delegates to `put_streamed`, which stages `<digest>.tmp` through `write_streamed_entry` and then renames it into place.
-- `write_streamed_entry` ends with `File::sync_all`, which is `F_FULLFSYNC` on macOS. The brief drops it. A killed or torn write still leaves only a `.tmp` or a failed blake3 check, so either way the next build misses.
+- `write_streamed_entry` ends with `File::sync_all`, which is `F_FULLFSYNC` on macOS and `FlushFileBuffers` on Windows. The brief drops it. A killed or torn write still leaves only a `.tmp` or a failed blake3 check, so either way the next build misses.
 - Every `get` hit calls `touch_for_lru`, a second open for write, to bump the mtime.
 
 ## Peak memory
@@ -169,7 +173,7 @@ bvh 0.11 (`crates/level-compiler/Cargo.toml`). Every site below builds a stock `
 - **Pre-cut geometry.** On a cut map that needs the SDF atlas, `AtlasStageOutput::pre_cut_geometry` holds a whole geometry copy from atlas preparation until the SDF stage drops it. It already spans the fused walk and the animated stages. If lever 3 overlaps stages in that span, count it as a co-resident term. The hallway is uncut, so its peak carries no copy.
 - **The delta working-set gate assumes serial stages.** `plans/done/lighting-scale--compile-peak-ram` sets the `--sh-delta-working-set-max-size` gate at 3× the cumulative dense delta bytes (4× under coarsened `--sh-analyze`). Its accounting follows today's run order: the three delta bakes in sequence, the exact-zero drop rebuild freed before compaction allocates, and one share reserved for the base id34/id35 copies held between the delta bakes. Overlapping base SH or the delta bakes with each other puts in-flight bake state beside those buffers, which the factor does not count.
 - **Hallway hosts.** `drafts/compiler-implausible-allocation-guard` records a `--release` hallway compile at lightmap density 0.04 dying on a 16 GiB machine. The request there was an implausible 42.9 TB, not a working set that outgrew the host, so it shows the hallway is compiled on 16 GiB hosts, not how close its peak is to 16 GiB.
-- **Evidence so far.** The live sampler's RSS column (`evidence/cpu-samples.tsv`) peaks at about 3.3 GiB, in Direct SH Delta, on the debug-binary warm rebake. It covers only the last 1,169 s: no SH Bake and no all-miss lightmap bake. The before number must be re-taken on the pinned binary.
+- **Evidence so far.** The Mac sampler's RSS column (`evidence/cpu-samples.tsv`) peaks at about 3.3 GiB, in Direct SH Delta, on the debug-binary warm rebake. It covers only the last 1,169 s: no SH Bake and no all-miss lightmap bake. The before number must be re-taken on the pinned machine and binary.
 
 ## Ordering pins
 

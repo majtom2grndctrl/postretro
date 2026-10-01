@@ -55,10 +55,12 @@ The tests are in `crates/level-loader/src/prl.rs`:
 - `load_prl_rejects_bvh_leaf_index_range_overflow` covers overflow.
 - No test names exact-boundary acceptance, though the last leaf of `sample_bvh_section` (offset 3, count 3, against 6 indices) loads in the passing fixtures.
 
-## Build gating precedent
+## Build gating
 
-`prl_animated_atlas.rs` gates strictness with `cfg!(any(debug_assertions, feature = "dev-tools"))`. The renderer crate has its own `dev-tools` feature, which `postretro/dev-tools` enables. `renderer_backends_from_env` is the existing opt-in `WGPU_*` diagnostic override, using `Backends::from_env`.
+The gate is `debug_assertions` alone (owner, after `/validate-plan`). The `dev-tools` gate in `prl_animated_atlas.rs`, `cfg!(any(debug_assertions, feature = "dev-tools"))`, is not a precedent here: that rule is about strictness, and indirect validation is a silent repair. `renderer_backends_from_env` is the existing opt-in `WGPU_*` diagnostic override, using `Backends::from_env`.
 
-## Measurements carried from the draft session
+## Measurements carried from the draft session (provisional)
 
-Taken on a Radeon Pro 5300M under Metal, not re-taken here. `DrawBatcher::add` plus the validation pass cost about 1.29 ms/frame on `stress-warren-hallway-inspection` (8,437 leaves) and 0.37 ms/frame on `campaign-test` (774 leaves). The draft session's camera pose is not recorded, so the manual row pins map spawn instead.
+Taken on a Radeon Pro 5300M under Metal, not re-taken here, and **provisional, pending reconciliation** of the validation-only cost. About 1.29 ms/frame on `stress-warren-hallway-inspection` (8,437 leaves) and 0.37 ms/frame on `campaign-test` (774 leaves).
+
+A frame issues L·(2 + uncached shadow slots) indirect draws, so the 3.5× cost ratio against the 10.9× leaf ratio reflects shadow-cache state as well as L. The draft session's pose and cache state are not recorded. The manual row pins map spawn and records cache state.

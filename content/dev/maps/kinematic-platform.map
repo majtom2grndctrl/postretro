@@ -21,7 +21,7 @@
 ( -16 512 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
 ( -16 -416 0 ) ( 0 -416 160 ) ( 0 -416 0 ) concrete_stone_033 0 0 0 1 1
 ( -16 0 0 ) ( 0 512 0 ) ( -16 512 0 ) concrete_stone_033 0 0 0 1 1
-( -16 512 2528 ) ( 0 0 2528 ) ( -16 0 2528 ) concrete_stone_033 0 0 0 1 1
+( -16 512 3476 ) ( 0 0 3476 ) ( -16 0 3476 ) concrete_stone_033 0 0 0 1 1
 ( 0 432 0 ) ( -16 432 160 ) ( -16 432 0 ) concrete_stone_033 0 0 0 1 1
 ( 0 0 0 ) ( 0 512 160 ) ( 0 512 0 ) concrete_stone_033 0 0 0 1 1
 }
@@ -30,7 +30,7 @@
 ( 3440 512 0 ) ( 3440 0 160 ) ( 3440 0 0 ) concrete_stone_033 0 0 0 1 1
 ( 3440 -416 0 ) ( 3456 -416 160 ) ( 3456 -416 0 ) concrete_stone_033 0 0 0 1 1
 ( 3440 0 0 ) ( 3456 512 0 ) ( 3440 512 0 ) concrete_stone_033 0 0 0 1 1
-( 3440 512 2528 ) ( 3456 0 2528 ) ( 3440 0 2528 ) concrete_stone_033 0 0 0 1 1
+( 3440 512 3476 ) ( 3456 0 3476 ) ( 3440 0 3476 ) concrete_stone_033 0 0 0 1 1
 ( 3456 432 0 ) ( 3440 432 160 ) ( 3440 432 0 ) concrete_stone_033 0 0 0 1 1
 ( 3456 0 0 ) ( 3456 512 160 ) ( 3456 512 0 ) concrete_stone_033 0 0 0 1 1
 }
@@ -39,7 +39,7 @@
 ( 0 -416 0 ) ( 0 -432 160 ) ( 0 -432 0 ) concrete_stone_033 0 0 0 1 1
 ( 0 -432 0 ) ( 512 -432 160 ) ( 512 -432 0 ) concrete_stone_033 0 0 0 1 1
 ( 0 -432 0 ) ( 512 -416 0 ) ( 0 -416 0 ) concrete_stone_033 0 0 0 1 1
-( 0 -416 2528 ) ( 512 -432 2528 ) ( 0 -432 2528 ) concrete_stone_033 0 0 0 1 1
+( 0 -416 3476 ) ( 512 -432 3476 ) ( 0 -432 3476 ) concrete_stone_033 0 0 0 1 1
 ( 512 -416 0 ) ( 0 -416 160 ) ( 0 -416 0 ) concrete_stone_033 0 0 0 1 1
 ( 3440 -432 0 ) ( 3440 -416 160 ) ( 3440 -416 0 ) concrete_stone_033 0 0 0 1 1
 }
@@ -48,18 +48,9 @@
 ( 0 448 0 ) ( 0 432 160 ) ( 0 432 0 ) concrete_stone_033 0 0 0 1 1
 ( 0 432 0 ) ( 512 432 160 ) ( 512 432 0 ) concrete_stone_033 0 0 0 1 1
 ( 0 432 0 ) ( 512 448 0 ) ( 0 448 0 ) concrete_stone_033 0 0 0 1 1
-( 0 448 2528 ) ( 512 432 2528 ) ( 0 432 2528 ) concrete_stone_033 0 0 0 1 1
+( 0 448 3476 ) ( 512 432 3476 ) ( 0 432 3476 ) concrete_stone_033 0 0 0 1 1
 ( 512 448 0 ) ( 0 448 160 ) ( 0 448 0 ) concrete_stone_033 0 0 0 1 1
 ( 3440 432 0 ) ( 3440 448 160 ) ( 3440 448 0 ) concrete_stone_033 0 0 0 1 1
-}
-// brush 5
-{
-( 0 512 2512 ) ( 0 0 2528 ) ( 0 0 2512 ) debug_ceiling_grey 0 0 0 1 1
-( 0 -416 2512 ) ( 512 -416 2528 ) ( 512 -416 2512 ) debug_ceiling_grey 0 0 0 1 1
-( 0 0 2512 ) ( 512 512 2512 ) ( 0 512 2512 ) debug_ceiling_grey 0 0 0 1 1
-( 0 512 2528 ) ( 512 0 2528 ) ( 0 0 2528 ) debug_ceiling_grey 0 0 0 1 1
-( 512 432 2512 ) ( 0 432 2528 ) ( 0 432 2512 ) debug_ceiling_grey 0 0 0 1 1
-( 3440 0 2512 ) ( 3440 512 2528 ) ( 3440 512 2512 ) debug_ceiling_grey 0 0 0 1 1
 }
 // brush 6
 {
@@ -78,6 +69,42 @@
 ( 1120 368 64 ) ( 1248 352 64 ) ( 1120 352 64 ) metal/metal_rough_046a 0 0 0 1 1
 ( 1248 368 0 ) ( 1120 368 64 ) ( 1120 368 0 ) metal/metal_rough_046a 0 0 0 1 1
 ( 1248 352 0 ) ( 1248 368 64 ) ( 1248 368 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// brush gable-south-roof
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_ceiling_grey 0 0 0 1 1
+( 3440 0 0 ) ( 3440 1 0 ) ( 3440 0 -1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -416 0 ) ( 0 -416 1 ) ( 1 -416 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 8 0 ) ( 0 8 1 ) ( -1 8 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 3476 ) ( 1 0 3476 ) ( 0 -1 3476 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -416 2512 ) ( 1 -416 2512 ) ( 0 8 3460 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush gable-north-roof
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_ceiling_grey 0 0 0 1 1
+( 3440 0 0 ) ( 3440 1 0 ) ( 3440 0 -1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 8 0 ) ( 0 8 1 ) ( 1 8 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 432 0 ) ( 0 432 1 ) ( -1 432 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 3476 ) ( 1 0 3476 ) ( 0 -1 3476 ) debug_ceiling_grey 0 0 0 1 1
+( 0 432 2512 ) ( -1 432 2512 ) ( 0 8 3460 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush west-hip-roof
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_ceiling_grey 0 0 0 1 1
+( 332 0 0 ) ( 332 1 0 ) ( 332 0 -1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -416 0 ) ( 0 -416 1 ) ( 1 -416 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 432 0 ) ( 0 432 1 ) ( -1 432 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 3460 ) ( 1 0 3460 ) ( 0 -1 3460 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 2512 ) ( 0 -1 2512 ) ( 1 0 2515 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush gable-shadow-pillar
+{
+( 3190 0 0 ) ( 3190 1 0 ) ( 3190 0 1 ) concrete_stone_033 0 0 0 1 1
+( 3206 0 0 ) ( 3206 1 0 ) ( 3206 0 -1 ) concrete_stone_033 0 0 0 1 1
+( 0 -198 0 ) ( 0 -198 1 ) ( 1 -198 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -150 0 ) ( 0 -150 1 ) ( -1 -150 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 3476 ) ( 1 0 3476 ) ( 0 -1 3476 ) concrete_stone_033 0 0 0 1 1
 }
 }
 // entity 1
@@ -629,4 +656,29 @@
 "_cone2" "32"
 "angles" "-90 0 0"
 "_tags" "e22_carried_light translating_spot_station"
+}
+// entity gable-static-spot
+{
+"classname" "light_spot"
+"origin" "2900 -300 1610"
+"light" "3000"
+"_color" "255 240 220"
+"_falloff_range" "900"
+"_cone" "20"
+"_cone2" "35"
+"angles" "0 24 0"
+"_light_size" "32"
+}
+// entity gable-animated-spot
+{
+"classname" "light_spot"
+"origin" "2900 -380 1610"
+"light" "3000"
+"_color" "180 200 255"
+"_falloff_range" "900"
+"_cone" "20"
+"_cone2" "35"
+"angles" "0 36 0"
+"_light_size" "32"
+"style" "2"
 }

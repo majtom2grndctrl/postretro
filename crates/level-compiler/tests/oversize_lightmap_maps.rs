@@ -103,9 +103,33 @@ fn assert_default_density(map: &str) {
 #[test]
 #[ignore = "multi-minute prl-build bake; run on demand with -- --ignored"]
 fn movement_feel_and_kinematic_platform_compile_at_the_default_density() {
+    let dir = std::env::temp_dir().join("postretro_oversize_lightmap_maps");
+    std::fs::create_dir_all(&dir).expect("mkdir temp out");
     for map in ["movement-feel", "kinematic-platform"] {
         assert_default_density(map);
-        let prl = compile(map, &[]);
+        let (prl, log) = compile_logged(map, &dir, map, &[]);
+        // The reshaped kinematic-platform's gable wall is the one face past a
+        // pool layer at the default density; movement-feel has none.
+        let cuts: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("cutting face"))
+            .collect();
+        match map {
+            "kinematic-platform" => {
+                assert_eq!(
+                    cuts.len(),
+                    1,
+                    "only the gable wall is cut:
+{cuts:#?}"
+                );
+                assert!(cuts[0].contains("facing [0.00, 0.00, 1.00]"), "{}", cuts[0]);
+            }
+            _ => assert!(
+                cuts.is_empty(),
+                "{map} cut a face:
+{cuts:#?}"
+            ),
+        }
         let section = lightmap(&prl);
         let records = block_records(&section);
         assert!(

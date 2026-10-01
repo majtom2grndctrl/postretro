@@ -100,14 +100,7 @@ pub(super) fn prepare_atlas_stage(
         bvh: rebuilt.as_ref().map_or(bvh_section, |r| &r.bvh_section),
     })?;
 
-    let animated_faces = animated_candidate_face_count(inputs.animated_lights, &cut.charts);
-    if animated_faces > ANIMATED_BLOCK_CAP as usize {
-        let error = AnimatedBlockGuardError::BlockCountOverCap {
-            count: animated_faces,
-            cap: ANIMATED_BLOCK_CAP,
-        };
-        anyhow::bail!("Lightmap atlas prepare failed: {error}");
-    }
+    check_animated_block_bound(inputs.animated_lights, &cut.charts)?;
 
     let prepared = lightmap_bake::pack_cut_charts(
         geometry,
@@ -127,6 +120,23 @@ pub(super) fn prepare_atlas_stage(
         rebuilt,
         pre_cut_geometry: cut.pre_cut,
     })
+}
+
+/// Fail on the animated block cap's named error before any bake, from the
+/// conservative count of faces an animated light can reach.
+fn check_animated_block_bound(
+    animated_lights: &AnimatedBakedLights<'_>,
+    charts: &[crate::lightmap_bake::Chart],
+) -> anyhow::Result<()> {
+    let count = animated_candidate_face_count(animated_lights, charts);
+    if count > ANIMATED_BLOCK_CAP as usize {
+        let error = AnimatedBlockGuardError::BlockCountOverCap {
+            count,
+            cap: ANIMATED_BLOCK_CAP,
+        };
+        anyhow::bail!("Lightmap atlas prepare failed: {error}");
+    }
+    Ok(())
 }
 
 /// Rebuild the face-identity set over cut geometry: each leaf's face range

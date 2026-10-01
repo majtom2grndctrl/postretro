@@ -146,6 +146,20 @@ pub fn plan_cut_charts(
     if cuts.is_empty() {
         return Ok(uncut(charts));
     }
+    for cut in &cuts {
+        let chart = &charts[cut.face];
+        log::info!(
+            "[Compiler] cutting face {} (cell {}, at {:.2?} facing {:.2?}): {}x{} texels into {}x{} sub-charts",
+            cut.face,
+            chart.leaf_index,
+            chart.origin.to_array(),
+            chart.normal.to_array(),
+            chart.width_texels,
+            chart.height_texels,
+            cut.u_lines.len() - 1,
+            cut.v_lines.len() - 1,
+        );
+    }
     let pre_cut = geom.clone();
     let cut = apply_face_cuts(geom, &mut charts, &cuts);
     Ok(CutCharts {

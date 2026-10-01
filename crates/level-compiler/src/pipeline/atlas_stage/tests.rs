@@ -440,3 +440,39 @@ fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_wei
     .expect("the shared-vertex and footprint guards pass");
     assert!(layout.is_some_and(|blocks| blocks.iter().flatten().count() >= 4));
 }
+
+// P11: more faces within animated reach than the animated block table holds
+// fails at atlas preparation, before any bake, on the animated cap's error.
+#[test]
+fn animated_reach_past_the_block_cap_fails_by_name_at_atlas_preparation() {
+    use crate::light_namespaces::AnimatedBakedLights;
+    use crate::map_data::LightAnimation;
+
+    let (mut geometry, _) = three_leaf_fixture();
+    let lights = lit();
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let chart = lightmap_bake::plan_cut_charts(&mut geometry, &static_lights, 0.1, &[], 2048)
+        .unwrap()
+        .charts
+        .remove(0);
+    let mut animated = lights[0].clone();
+    animated.animation = Some(LightAnimation {
+        period: 1.0,
+        phase: 0.0,
+        brightness: Some(vec![1.0, 0.5]),
+        color: None,
+        direction: None,
+        start_active: true,
+    });
+    let animated = vec![animated];
+    let animated_lights = AnimatedBakedLights::from_lights(&animated);
+
+    let at_cap = vec![chart.clone(); ANIMATED_BLOCK_CAP as usize];
+    assert!(check_animated_block_bound(&animated_lights, &at_cap).is_ok());
+    let past_cap = vec![chart; ANIMATED_BLOCK_CAP as usize + 1];
+    let error = check_animated_block_bound(&animated_lights, &past_cap)
+        .expect_err("one face past the cap fails")
+        .to_string();
+    assert!(error.contains("exceeds the block-table cap"), "{error}");
+    assert!(error.contains(&ANIMATED_BLOCK_CAP.to_string()), "{error}");
+}

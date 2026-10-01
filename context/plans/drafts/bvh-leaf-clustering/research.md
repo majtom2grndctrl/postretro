@@ -20,7 +20,7 @@ Host: Radeon Pro 5300M, Metal, cargo `--release` engine build, render scale Auto
 | Child | Hallway | campaign-test |
 |---|---|---|
 | `draw_indexed_indirect` (hal → driver) | 0.958 | 0.090 |
-| `multi_draw_indirect` / `DrawContext::add` (incl. `DrawBatcher::add` indirect validation) | 0.843 | 0.075 |
+| `multi_draw_indirect` / `DrawContext::add` inclusive; mostly `DrawBatcher::add`, i.e. indirect validation | 0.843 | 0.075 |
 | Sum | 1.80 | 0.165 |
 
 Ratio ≈ 11×, tracking the draw-count ratio (10.9×). `encode_render_pass` total: 3.82 ms hallway, 2.01 ms campaign-test; the remainder (pass open/begin, bind groups, pipelines, validation-pass injection) is per pass, not per draw.
@@ -33,6 +33,28 @@ Ratio ≈ 11×, tracking the draw-count ratio (10.9×). `encode_render_pass` tot
 | campaign-test | 10.134 | 7.737 | 3.224 | 4.479 |
 
 `render_submit` holds `CommandEncoder::finish` and queue submit. Leaf reduction cuts the per-draw share in proportion, in every pass that draws world geometry indirectly, including shadow fills.
+
+## Reconciled render_submit (2026-10-01)
+
+A reconciliation of the same `sample` runs assigned every `render_submit` sample to exactly one bucket. De-inflated to the untraced medians, the buckets are (stress / campaign, ms per frame):
+- hal `draw_indexed_indirect` (per draw): 0.83 / 0.08;
+- indirect validation: 1.29 / 0.54, of which 1.00 / 0.16 is per draw;
+- other per-draw `encode_render_pass` work: about 0 once validation is off, since the hal call takes a count.
+
+So the 0.843 ms row above is mostly validation, not wgpu-core per-draw work.
+
+**Visible leaves.** Estimated from `CellDrawIndex` over the logged visible cells: about 0.5% of leaves on stress (37–41 of 8,437; at most 1.3%), and about 18% on campaign (138–145 of 774; at most 25.5%).
+
+**Shadow cache.** Warm in both captures: zero uncached world shadow slots per frame, so draws = 2·L.
+
+**Leaf-reduction ceiling.** The `(cell, material_bucket)` pair count in the BVH section is the most clustering can reach before extent splits: stress 8,437 → 5,217 (r ≤ 0.382), campaign 774 → 548 (r ≤ 0.292).
+
+**Clustering's saving in the owner's landing order** (upload batching → release validation → visible spans → clustering):
+- Validation is gone and only visible leaves still draw, so the warm-cache saving is about a·v·r: **≈ 0.002 / 0.004 ms**.
+- Each uncached shadow slot draws every leaf, so it saves about 0.41 × r: **≈ 0.16 ms per slot** on stress, ≈ 0.01 on campaign.
+- Standalone, with validation on, the per-draw saving would be 0.70 / 0.07 ms.
+
+After all four briefs, about 1.7 / 1.9 ms of `render_submit` remains, nearly all per pass: chiefly the new `MTLCommandBuffer` and encoder each render pass creates.
 
 **GPU timing.** This adapter lacks `TIMESTAMP_QUERY`, so `POSTRETRO_GPU_TIMING` reports unsupported. Per-pass GPU time on this Mac comes from an Instruments Metal System Trace (`rendering_pipeline.md` §12, "Without timestamp support").
 

@@ -170,6 +170,7 @@ Bounded cost:
   blocks and bytes, pool growth events, peak pool layers, and misses from blocks
   waiting on a retiring generation. Report the id-51 stage time before and after on
   the hallway.
+- [ ] If multi-block cells (`lightmap-oversize-cells-and-faces`) have landed, repeat the lightmap-cost row on movement-feel and report blocks per over-included cell.
 - [ ] Churn: along a walking route through the shafts and the arena, recorded in
   `research.md` and replayed for each walk,
   report per-frame cells entering and leaving the visible set (p50, p95, max). Snapped
@@ -222,6 +223,7 @@ Bounded cost:
   the near plane and under floating-point slop.
 
 ## Open questions
+- Bake-gap ownership. The bake samples the walk and dilates one hop, but the cell-blocks plan the contingency named is done, and `lightmap-oversize-cells-and-faces` does not widen the bake. The owner re-measures the bake gap before the next review of this brief, after oversize's per-block walk measurement merges, then rules on who widens the bake if the gap is material — owner — **blocks build**
 
 - Snap grid resolution and the lowered cap value — **delegated** (measured: a grid of
   256 cells per NDC unit; a 5,000-step cap never trips on the swept map).

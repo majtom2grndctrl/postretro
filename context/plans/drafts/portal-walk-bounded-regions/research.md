@@ -146,6 +146,10 @@ Source recheck before review; the Problem's mechanism and seams held.
 | Capture | `collect_capture_receiver_draws` | Report residency numbers shift |
 | Diagnostics | `VisibilityStats::walk_reach`, overlays | Counts inflate |
 | Offline dry run (test-only) | `lightmap_residency_dry_run::pvs_sampling` | Its "lower bound" claim becomes false |
+| Lightmap demand | `BlockDemand::mark_drawn` | Walk-frame drawn cells become never-refused Visible blocks; over-inclusion grows the pool and inflates `drawn_outside_baked_set` |
+| id-51 bake | `cell_residency_bake::pvs_sampling::walk_cube_faces` | Over-inclusion enters the baked mandatory set |
+| Capture preload | `capture/lightmap.rs` preload | More blocks preloaded for capture |
+| Walk measurement | `walk_measurement` controller, `drawn_outside_baked_set` | Counts blocks drawn outside the baked set; the bake-gap instrument |
 
 No consumer reads the set as line of sight or checks it for equality at runtime.
 
@@ -220,3 +224,11 @@ Premise pins (premise lens):
   summed degree, with k set from the prototype's worst case with at most 2× headroom.
 - Oracle exception: a backward crossing is classified by sign alone. A ray crosses a
   portal plane once, so any backward crossing is a leak regardless of area.
+
+## Re-grounding at 5d197a5e9
+
+- Every Decisions premise holds: no per-cell state in the flood, the infinite-plane camera bypass, the 20,000-step cap, the bounded fallback, and the hashed `PORTAL_WALK_EPOCH`.
+- Lightmap cell-blocks is on main. `pvs_sampling` now lives in the production `cell_residency_bake` module, and its lower-bound and any-FOV claims sit there and in `lightmap_residency_dry_run/visible_set.rs`. This brief restates both. References above to `feat/lightmap-cell-blocks` describe the code that landed.
+- The consumers new since 0fac87bd3 (lightmap demand, the id-51 bake, capture preload, walk measurement) are now in the consumer table. None of them treats a visible cell as line of sight.
+- The bake-gap instrument is `walk_measurement` with `drawn_outside_baked_set`. It counts blocks, not cells. The exact-walk baseline is in `done/spatial-residency--lightmap-cell-blocks/findings.md`: 415 block-frames over 236 frames on a random walk, and 1,056 over 621 frames on a tour.
+- `lightmap-oversize-cells-and-faces` is order-independent of this brief. The two share no code seam, and its cache-key pin keeps id 51 valid. Pre- and post-change builds share one main commit, so the lightmap layout matches.

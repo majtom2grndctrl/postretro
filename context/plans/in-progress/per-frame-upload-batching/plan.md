@@ -1,7 +1,7 @@
 # per-frame-upload-batching — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: 83489c52b
 
 ## Corrections
@@ -44,9 +44,9 @@ read at: 83489c52b
 | 27 | After warmup, a long run of frames with two frames in flight creates no new staging buffer. The test keeps two in flight by waiting on the submission from two frames back. Live staging buffers, pooled plus in flight, stay at or under four per batch-carrying submit per frame. The byte scratch and the copy list stop growing, and acquire builds no per-call list. | long-run two-in-flight buffer/scratch/copy capacity test | achievable as stated | pass |
 | 28 | After warmup, the per-frame batch's acquire, record and recycle make no heap allocation in renderer code. A counting allocator around a long run of frames proves it. The count leaves out wgpu's boxed map callback, and the test names that exclusion. | existing approved counting allocator, scoped renderer storage windows; exclude wgpu callback allocation | achievable as stated | pass |
 | 29 | A frame whose batch outgrows every pooled buffer gets a fresh buffer. Afterward the per-frame pool's free list stays under its named steady-state cap. | oversized batch and bounded free-pool test | achievable as stated | pass |
-| 30 | Measured finding, on the compatibility-floor Mac under `research.md` §Measurement conditions, on both maps: `[CpuTiming]` medians for `work`, `render_submit`, `render_record` and `render_prep`, before and after. Take both before the sibling briefs in the landing order land. | owner compatibility-floor Mac: before/after timing on both maps | manual, blocks landing | campaign idle match passed; hallway repeat qualified by differing idle memory, strict same-state proof outstanding |
+| 30 | Measured finding, on the compatibility-floor Mac under `research.md` §Measurement conditions, on both maps: `[CpuTiming]` medians for `work`, `render_submit`, `render_record` and `render_prep`, before and after. Take both before the sibling briefs in the landing order land. The recorded hallway repeat is accepted with its documented idle-memory qualification; it does not establish a strict same-state causal comparison. | owner compatibility-floor Mac: before/after timing on both maps | owner-approved qualification | pass — campaign idle match; hallway qualified measurement accepted by owner |
 | 31 | Measured finding, on the compatibility-floor Mac on both maps: writes staged per frame, copies per batch, and live staging buffers after warmup over one 120-frame window. Record them in the plan of record. They set the merge follow-up's gate. | owner compatibility-floor Mac: 120-frame upload/copy/live-buffer counters | manual, blocks landing | pass — final warm 120-frame counters on both maps |
-| 32 | A `sample` profile after the change shows `maintain` freeing only glyphon's and egui's staging buffers. Report what share of `render_submit` remains. | owner compatibility-floor Mac: post-change sample attribution | needs restatement; exact proposal below | fail as written; profile complete, owner clarification pending |
+| 32 | A sample profile attributes remaining temporary staging churn to glyphon, egui and wgpu indirect validation, with no renderer per-frame queue-write staging creation. Report maintain's share of render_submit. | owner compatibility-floor Mac: post-change sample attribution | owner-approved restatement | pass — remaining owners attributed; maintain/submit 61.22% campaign, 61.43% hallway |
 | 33 | Side by side on both maps, no visual difference in: HUD text, skinned meshes and their shadows, smoke, dynamic and animated lights, fog, viewmodel. | owner side-by-side visual check on both maps | manual, blocks landing | pass — owner completed remaining hallway/comparison checks and reported no visual artifacts |
 | 34 | Both follow-ups are filed: redundant every-frame writes, starting with the bridge-then-slot lights rewrite; and per-target mesh write merging, gated on the measured copy count. | file both follow-ups in context/plans/drafts | achievable as stated | pass — both drafts filed and final total-copy gate recorded |
 
@@ -54,10 +54,10 @@ read at: 83489c52b
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin slice: reusable deferred batch, mesh/UI routing, first-slice batch size/copy/timing measurement; choose named pool cap | integrating executor | — | implemented; size/recycling and final counters verified; bounded timing repeat complete, strict hallway same-state proof outstanding (AC30) |
+| 1 | Thin slice: reusable deferred batch, mesh/UI routing, first-slice batch size/copy/timing measurement; choose named pool cap | integrating executor | — | complete; size/recycling and final counters verified; timing complete with owner-accepted hallway qualification |
 | 2 | Route every writer and every submit; preserve drain, acquire-failure, capture and lifecycle order; remove duplicate mesh light params | integrating executor | 1 | implemented; focused GPU ordering/lifecycle tests pass |
 | 3 | Source drift gates, ordering/lifetime/resource tests, real-map offscreen inventory and golden verification; file follow-ups | integrating executor; bounded source-audit worker | 2 | complete; repaired drift/lifetime/pool/inventory proofs and existing goldens passed |
-| 4 | Review-readiness gate, review-panel/fix loop, final preflight; record every AC result and external runbook | integrating executor | 3 | complete automated and visual gates; AC30 strict hallway same-state proof and AC32 owner clarification outstanding |
+| 4 | Review-readiness gate, review-panel/fix loop, final preflight; record every AC result and external runbook | integrating executor | 3 | complete; all automated, visual and measurement gates accepted |
 
 ## Hot-path constraints
 - Reuse shared StagedUploads/StagingPool; retain byte scratch and copy storage. No target deduplication or merging in the per-frame batch.
@@ -66,7 +66,7 @@ read at: 83489c52b
 - Existing every-frame writers remain as contracted; redundant writer follow-ups own future suppression/merging.
 
 ## Landing
-- Manual AC 30–33 require compatibility-floor Mac timing, counters, sampling and visual proof. The brief gives no permission to land with gaps, so status becomes test-ready until those results arrive.
+- Manual AC 30–33 are complete under the owner-approved AC30 qualification and AC32 restatement. All 34 acceptance results pass; no blocking proof remains.
 - Owner says “land the plane” after results and review to authorize the landing checkpoint.
 
 ## Resolved contract check — P6 / AC 24
@@ -236,4 +236,13 @@ Both maps stayed near the 16.6 ms vsync interval. Median wait rose campaign 3.99
 
 Raw logs are `/private/tmp/postretro-upload-repeat-{campaign,hallway}-{A,B}1.log`; A denotes baseline and B batched. Metrics, poses and selected timestamps are `/private/tmp/postretro-upload-repeat-metrics.json`. Idle and selected-state snapshots are `/private/tmp/postretro-upload-repeat-*-state.json`; control log and capture script are `/private/tmp/postretro-upload-repeat-run.log` and `/private/tmp/postretro-upload-repeat-measure.py`.
 
-Current result count remains 32 pass, AC30 outstanding only for strict hallway same-state proof, and AC32 literal wording failed with owner clarification pending. No additional testing is scheduled or running. Executor recommends treating further gameplay testing as optional and considering acceptance of the documented hallway qualification rather than expanding diagnostics. Acceptance of that qualification requires owner direction; it has not been inferred. `status: blocked` remains for AC32. No source work remains unless new concrete evidence identifies a defect; landing still requires resolution of the blocking acceptance items and the owner's explicit landing instruction.
+At this checkpoint, 32 results passed; AC30 remained outstanding only for strict hallway same-state proof, and AC32 literal wording failed with owner clarification pending. No additional testing is scheduled or running. Executor recommends treating further gameplay testing as optional and considering acceptance of the documented hallway qualification rather than expanding diagnostics. Acceptance of that qualification requires owner direction; it has not been inferred. `status: blocked` remains for AC32. No source work remains unless new concrete evidence identifies a defect; landing still requires resolution of the blocking acceptance items and the owner's explicit landing instruction.
+
+
+### Owner acceptance and ready-to-land checkpoint — 2026-10-01
+
+Owner: “If the screen is still on let’s check those other maps. Otherwise I accept.” System read showed `CGSSessionScreenIsLocked: True` and display power state 2 of 4. The screen was locked, so the conditional acceptance applies. Movement-feel and kinematic-platform were not launched, built or counted as tested.
+
+The immediately preceding request identified two acceptance decisions: accept the documented hallway timing qualification and clarify the profile criterion to allow wgpu indirect-validation staging. The owner accepted both. Apply the exact proposed AC32 wording to the brief and proof table. Add only the specific accepted hallway-repeat exception to AC30; research measurement conditions otherwise remain unchanged. AC30 passes by owner acceptance of the qualified measurement, not by inferred machine-state equivalence. AC32 passes under the approved attribution criterion, with the recorded maintain shares and default-feature egui limitation preserved.
+
+All 34 acceptance rows now pass under the approved contract. All four tasks are complete. Source and review/preflight evidence are unchanged; no additional test suite is needed for these document-only updates. Restore compact `status: active`; no blocking proof or owner wording issue remains. Feature branch: `codex/per-frame-upload-batching`. Await the owner's landing instruction before moving the brief, cleaning session artifacts or pushing the feature branch. Acceptance of results is recorded here; it is not inferred as the separate landing instruction.

@@ -1,10 +1,5 @@
-// Shared chart-rasterization math: given a lightmap `Chart` plus its atlas
-// placement, compute the world-space position of any interior texel. Consumed
-// by both `lightmap_bake` (per-face static bake) and `animated_light_weight_maps`
-// (per-chunk animated-light weight bake) so the two bakers never drift at
-// chunk boundaries.
-//
-// See: context/plans/in-progress/animated-light-weight-maps/index.md
+// Shared chart-rasterization math: a chart texel's world position and soft-visibility seed.
+// See: context/lib/build_pipeline.md §Compiler pipeline (atlas preparation)
 
 use glam::Vec3;
 
@@ -49,6 +44,32 @@ pub fn chart_interior_dims(chart: &Chart) -> (i32, i32) {
 /// Matches the frozen lightmap reference's per-texel derivation exactly —
 /// both bakers route their world-position lookups through this function so
 /// they agree on texel centres at chunk boundaries.
+/// Soft-visibility sample-lattice seed of interior texel `(tx, ty)` of
+/// `chart`'s grid, shared by the static, shadowmask and animated bakes.
+///
+/// Keyed on the chart's world-space frame (origin and axes, exact `f32`
+/// bits) and the chart-grid texel, never on its bake-layer placement or its
+/// face index: a chart that moves in the atlas, or keeps its surface while an
+/// unrelated edit renumbers faces, draws the same samples and bakes the same
+/// texels. A fixed integer mix (FNV-1a over the words, then the SplitMix64
+/// finalizer), never a per-process hash, so separate runs agree byte for byte.
+pub fn chart_texel_seed(chart: &Chart, tx: i32, ty: i32) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let frame = [chart.origin, chart.u_axis, chart.v_axis];
+    let words = frame
+        .iter()
+        .flat_map(|v| v.to_array())
+        .map(f32::to_bits)
+        .chain([tx as u32, ty as u32]);
+    let mut z = words.fold(FNV_OFFSET, |h, word| {
+        (h ^ u64::from(word)).wrapping_mul(FNV_PRIME)
+    });
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 pub fn chart_texel_world_position(
     chart: &Chart,
     tx: i32,

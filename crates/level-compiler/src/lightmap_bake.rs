@@ -497,7 +497,6 @@ fn bake_atlas_layer_controlled(
             geometry,
             static_lights,
             chart,
-            placement,
             area_sample_count,
         );
 
@@ -762,26 +761,6 @@ fn spot_cone(light: &MapLight, light_to_surface: Vec3) -> f32 {
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0).max(1.0e-4)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation.
-/// An FNV-1a hash of the atlas-space `(x, y)` — a fixed integer mix, never a
-/// `RandomState` or any hash whose seed varies between processes — so the bake is
-/// byte-identical across separate runs (the build cache reuses stored bytes
-/// verbatim and would break on any run-to-run drift); `soft_visibility` XORs this
-/// with `SAMPLING_LATTICE_OFFSET` internally.
-///
-/// The animated weight-map stage derives its own per-texel seed with a different
-/// mixer (SplitMix64). The two need not match: they bake into INDEPENDENT atlases,
-/// so each only needs to be deterministic within its own stage — not byte-identical
-/// to the other.
-pub(crate) fn texel_seed(x: u32, y: u32) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = FNV_OFFSET;
-    h = (h ^ x as u64).wrapping_mul(FNV_PRIME);
-    h = (h ^ y as u64).wrapping_mul(FNV_PRIME);
-    h
 }
 
 // `soft_visibility` and its sampling helpers are the Task-2 deliverable of

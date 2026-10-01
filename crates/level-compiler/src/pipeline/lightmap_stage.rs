@@ -47,6 +47,76 @@ pub(super) fn prepare(
     .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))
 }
 
+/// Bytes per bake-layer texel of the warm per-layer accumulator
+/// (`lightmap_layer::IncrementalLayerAccumulator`): its `CompositedAtlas`
+/// plane (RGBA f32 irradiance, `Vec3` direction, `bool` coverage = 29, the
+/// whole cold plane) plus `weighted_dir` and `fallback_normal` (`Vec3` each)
+/// and `chart_index` (`u32`). One layer is live at a time.
+const LAYER_PLANE_BYTES_PER_TEXEL: u64 = (4 * 4 + 12 + 1) + 12 + 12 + 4;
+/// Shadowmask raw fill (`shadowmask_bake::allocate_shadowmask_raw_fill`):
+/// four mask slots per texel of every bake layer, empty layer area included,
+/// live for the whole layer loop.
+const SHADOWMASK_FILL_BYTES_PER_TEXEL: u64 = 4;
+
+/// The lightmap stage's predicted working-set peak, from the prepared layout
+/// alone: the shadowmask fill, one layer plane, and the encoded sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PredictedLightmapPeak {
+    pub(super) shadowmask_fill: u64,
+    pub(super) layer_plane: u64,
+    /// Encoded ids 22 and 42, twice: the section and its cache copy.
+    pub(super) sections: u64,
+}
+
+impl PredictedLightmapPeak {
+    pub(super) fn total(&self) -> u64 {
+        self.shadowmask_fill + self.layer_plane + self.sections
+    }
+}
+
+pub(super) fn predicted_peak(
+    prepared: &PreparedAtlas,
+    uncompressed_irradiance: bool,
+) -> PredictedLightmapPeak {
+    let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
+    let scale = u64::from(prepared.layout.direction_texel_scale.max(1));
+    let irradiance_bytes_per_texel = if uncompressed_irradiance { 8 } else { 1 };
+    let encoded: u64 = prepared
+        .layout
+        .blocks
+        .iter()
+        .map(|block| {
+            let (w, h) = (u64::from(block.width), u64::from(block.height));
+            // Irradiance, direction (Rg8 at the reduced scale), and both BC5
+            // shadowmask groups.
+            w * h * irradiance_bytes_per_texel + (w / scale) * (h / scale) * 2 + 2 * w * h
+        })
+        .sum();
+    PredictedLightmapPeak {
+        shadowmask_fill: SHADOWMASK_FILL_BYTES_PER_TEXEL
+            * layer_texels
+            * u64::from(prepared.layer_count),
+        layer_plane: LAYER_PLANE_BYTES_PER_TEXEL * layer_texels,
+        sections: 2 * encoded,
+    }
+}
+
+/// `--verbose`: the predicted peak, for comparison with a measured RSS.
+pub(super) fn log_predicted_peak(prepared: &PreparedAtlas, uncompressed_irradiance: bool) {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let peak = predicted_peak(prepared, uncompressed_irradiance);
+    log::info!(
+        "[Compiler] lightmap stage predicted peak {:.0} MiB: shadowmask fill {:.0} + layer plane {:.0} + sections {:.0} ({} blocks on {} bake layers of {}²)",
+        peak.total() as f64 / MIB,
+        peak.shadowmask_fill as f64 / MIB,
+        peak.layer_plane as f64 / MIB,
+        peak.sections as f64 / MIB,
+        prepared.layout.blocks.len(),
+        prepared.layer_count,
+        prepared.atlas_width,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_fused_prepared(
     args: &Args,
@@ -992,5 +1062,148 @@ mod tests {
 
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `count` 12 m quads in one cell. At the fixture's 0.25 m/texel each
+    /// charts at 52², so under a 64-texel test pool edge the cell takes one
+    /// block per quad.
+    fn quads_in_one_cell(count: usize) -> GeometryResult {
+        let mut geometry = quad_geometry();
+        geometry.geometry.vertices.clear();
+        geometry.geometry.indices.clear();
+        geometry.geometry.faces.clear();
+        geometry.face_index_ranges.clear();
+        for quad in 0..count {
+            let mut next = quad_geometry();
+            for vertex in &mut next.geometry.vertices {
+                vertex.position[0] = vertex.position[0] * 12.0 + 14.0 * quad as f32;
+                vertex.position[2] *= 12.0;
+            }
+            let vertex_offset = geometry.geometry.vertices.len() as u32;
+            let index_offset = geometry.geometry.indices.len() as u32;
+            geometry.geometry.vertices.extend(next.geometry.vertices);
+            geometry.geometry.indices.extend(
+                next.geometry
+                    .indices
+                    .into_iter()
+                    .map(|index| index + vertex_offset),
+            );
+            geometry.geometry.faces.extend(next.geometry.faces);
+            geometry
+                .face_index_ranges
+                .extend(next.face_index_ranges.into_iter().map(|mut range| {
+                    range.index_offset += index_offset;
+                    range
+                }));
+        }
+        geometry
+    }
+
+    /// (lightmap bytes, shadowmask bytes, block count) of a fused cold bake of
+    /// one multi-block cell on `workers` threads.
+    fn multi_block_fused_outputs(workers: usize, uncompressed: bool) -> (Vec<u8>, Vec<u8>, usize) {
+        let args = test_args();
+        let config = config(uncompressed);
+        let mut light = point_light(DVec3::new(20.0, 6.0, 6.0), [1.0, 0.5, 0.2]);
+        light.falloff_range = 40.0;
+        let lights = vec![light];
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let mut geometry = quads_in_one_cell(3);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(workers, false)), &progress);
+        ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .expect("build fused fixture pool")
+            .install(|| {
+                let prepared = lightmap_bake::prepare_atlas_within(
+                    &mut geometry,
+                    &static_lights,
+                    config.lightmap_density,
+                    &[],
+                    lightmap_bake::BlockOrdering::by_cell_id(config.direction_texel_scale),
+                    64,
+                    &control,
+                )
+                .expect("multi-block fixture must prepare");
+                let blocks = prepared.layout.blocks.len();
+                let output = bake_fused_prepared(
+                    &args,
+                    None,
+                    &control,
+                    &BakeControl::unrestricted(),
+                    &mut geometry,
+                    &static_lights,
+                    &alpha_lights,
+                    Some(&selection),
+                    &bvh,
+                    &primitives,
+                    &config,
+                    prepared,
+                )
+                .expect("multi-block fused bake must succeed");
+                (
+                    output.lightmap.section.to_bytes(),
+                    output
+                        .shadowmask
+                        .expect("selected light must emit a shadowmask")
+                        .to_bytes(),
+                    blocks,
+                )
+            })
+    }
+
+    #[test]
+    fn multi_block_cell_section_bytes_are_identical_with_one_worker_and_many() {
+        for uncompressed in [false, true] {
+            let one = multi_block_fused_outputs(1, uncompressed);
+            let many = multi_block_fused_outputs(4, uncompressed);
+            assert_eq!(one.2, 3, "the fixture cell splits into three blocks");
+            let section = postretro_level_format::lightmap::LightmapSection::from_bytes(&one.0)
+                .expect("multi-block lightmap decodes");
+            assert!(section.blocks.iter().all(|block| block.cell_id == 0));
+            assert_eq!(one, many, "uncompressed = {uncompressed}");
+        }
+    }
+
+    #[test]
+    fn predicted_peak_charges_every_bake_layer_one_plane_and_both_sections_twice() {
+        let mut geometry = quads_in_one_cell(3);
+        let lights = vec![point_light(DVec3::new(20.0, 6.0, 6.0), [1.0; 3])];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let prepared = lightmap_bake::prepare_atlas_within(
+            &mut geometry,
+            &static_lights,
+            0.25,
+            &[],
+            lightmap_bake::BlockOrdering::by_cell_id(2),
+            64,
+            &BakeControl::unrestricted(),
+        )
+        .expect("multi-block fixture must prepare");
+        let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
+        let peak = predicted_peak(&prepared, false);
+        assert_eq!(
+            peak.shadowmask_fill,
+            4 * layer_texels * u64::from(prepared.layer_count)
+        );
+        assert_eq!(peak.layer_plane, 57 * layer_texels);
+        let block_texels: u64 = prepared
+            .layout
+            .blocks
+            .iter()
+            .map(|b| u64::from(b.width) * u64::from(b.height))
+            .sum();
+        // BC6H 1 B + direction 2 B / scale² + shadowmask 2 B per texel, twice.
+        assert_eq!(peak.sections, 2 * (block_texels * 3 + block_texels / 4 * 2));
+        assert_eq!(
+            peak.total(),
+            peak.shadowmask_fill + peak.layer_plane + peak.sections
+        );
     }
 }

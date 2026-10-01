@@ -317,7 +317,7 @@ fn sized_blocks(sizes: &[(u32, u32)]) -> CellBlocks {
         Vec::new(),
     ));
     for (cell, &(width, height)) in sizes.iter().enumerate() {
-        assert_eq!(blocks.dims[cell], Some(BlockDims { width, height }));
+        assert_eq!(blocks.cell_dims(cell as u32), [BlockDims { width, height }]);
     }
     blocks
 }

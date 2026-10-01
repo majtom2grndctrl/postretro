@@ -266,7 +266,7 @@ impl DryRunReport {
              Immediate free keeps only M(c, L). No drain budget: every request completes in its \
              step. growth = steps where M(c, L) opened a layer at or past the cap; over cap = \
              steps ending with mandatory blocks past it; hit rate = blocks joining M(c, L) that \
-             were already resident; blocks larger than a pool layer are excluded; demand reads \
+             were already resident, a cell joining counting every block it owns; demand reads \
              make a mandatory block resident, prefetch reads a band block (repack moves are not \
              reads); read MiB/step counts both; thrash = demand and prefetch reads of a block \
              freed within the last {THRASH_WINDOW_STEPS} steps (an arbitrary window)",

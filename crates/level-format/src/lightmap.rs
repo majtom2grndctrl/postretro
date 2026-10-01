@@ -205,7 +205,7 @@ impl LightmapHeader {
 /// One block's index record. Block id is the record's index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LightmapBlockRecord {
-    /// Runtime cell whose charts this block holds.
+    /// Runtime cell some of whose charts this block holds.
     pub cell_id: u32,
     pub width: u16,
     pub height: u16,
@@ -450,8 +450,9 @@ pub struct LightmapBlock {
 ///   adjacent.
 /// ```
 ///
-/// Records and blobs are sorted by owning cluster, then cell id; the
-/// compiler owns that order. Zero blocks is a valid header with no records:
+/// Records and blobs are sorted by owning cluster, then cell id, then
+/// sub-block; the compiler owns that order. A cell owns zero or more
+/// contiguous blocks (the loader rejects interleaving). Zero blocks is a valid header with no records:
 /// a map without static baked light.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightmapSection {

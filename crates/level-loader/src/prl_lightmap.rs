@@ -61,17 +61,20 @@ pub(crate) fn read_lightmap(
     Ok(Some(LoadedLightmap { index, blocks }))
 }
 
-/// Reject a block whose cell lies past the Cells table, and a cell owned by
-/// more than one block: each cell's charts pack into exactly one block, and
-/// residency maps a cell to its one block. Both load modes run this.
+/// Reject a block whose cell lies past the Cells table, and a cell whose
+/// blocks are not contiguous: a cell's charts pack into one or more blocks in
+/// block-id order, and residency maps a cell to that contiguous run. A cell
+/// may own no block. Both load modes run this.
 pub(crate) fn validate_lightmap_block_cells(
     index: &LightmapBlockIndex,
     cell_count: usize,
 ) -> Result<(), PrlLoadError> {
-    let mut owner: Vec<Option<usize>> = vec![None; cell_count];
+    // First block of each cell seen so far.
+    let mut first_block: Vec<Option<usize>> = vec![None; cell_count];
+    let mut previous_cell = None;
     for (block, record) in index.records.iter().enumerate() {
         let cell = record.cell_id;
-        let Some(slot) = owner.get_mut(cell as usize) else {
+        let Some(slot) = first_block.get_mut(cell as usize) else {
             return Err(section_validation(
                 "Lightmap",
                 format!(
@@ -79,15 +82,20 @@ pub(crate) fn validate_lightmap_block_cells(
                 ),
             ));
         };
-        if let Some(first) = *slot {
-            return Err(section_validation(
-                "Lightmap",
-                format!(
-                    "block {block} names cell {cell}, which block {first} already owns; recompile with `prl-build`"
-                ),
-            ));
+        match *slot {
+            None => *slot = Some(block),
+            Some(first) if previous_cell != Some(cell) => {
+                return Err(section_validation(
+                    "Lightmap",
+                    format!(
+                        "block {block} names cell {cell}, whose blocks began at block {first} and were interrupted by block {}; a cell's blocks must be contiguous; recompile with `prl-build`",
+                        block - 1
+                    ),
+                ));
+            }
+            Some(_) => {}
         }
-        *slot = Some(block);
+        previous_cell = Some(cell);
     }
     Ok(())
 }

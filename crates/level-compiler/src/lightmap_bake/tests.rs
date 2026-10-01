@@ -947,6 +947,78 @@ fn assign_lightmap_uvs_writes_block_id_plus_one_and_block_local_uvs() {
     assert!(first_vertex_block(0) > 0 && first_vertex_block(1) > 0);
 }
 
+/// `count` 12 m floor quads in cell 0, side by side along x. At 0.25 m/texel
+/// each charts at 52² texels, so no two share a 64-texel test pool layer.
+fn quads_in_one_cell(count: usize) -> GeometryResult {
+    let mut geometry = unit_quad_geometry();
+    geometry.geometry.vertices.clear();
+    geometry.geometry.indices.clear();
+    geometry.geometry.faces.clear();
+    geometry.face_index_ranges.clear();
+    for quad in 0..count {
+        let mut next = unit_quad_geometry();
+        for vertex in &mut next.geometry.vertices {
+            vertex.position[0] = vertex.position[0] * 12.0 + 14.0 * quad as f32;
+            vertex.position[2] *= 12.0;
+        }
+        let vertex_offset = geometry.geometry.vertices.len() as u32;
+        let index_offset = geometry.geometry.indices.len() as u32;
+        geometry.geometry.vertices.extend(next.geometry.vertices);
+        geometry.geometry.indices.extend(
+            next.geometry
+                .indices
+                .into_iter()
+                .map(|index| index + vertex_offset),
+        );
+        geometry.geometry.faces.extend(next.geometry.faces);
+        geometry
+            .face_index_ranges
+            .extend(next.face_index_ranges.into_iter().map(|mut range| {
+                range.index_offset += index_offset;
+                range
+            }));
+    }
+    geometry
+}
+
+/// A cell too large for one pool layer splits into several blocks, and every
+/// vertex names the block its own face's chart landed in.
+#[test]
+fn oversized_cell_vertices_name_their_own_charts_block() {
+    let lights = vec![point_light_above()];
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let mut geom = quads_in_one_cell(3);
+    let prepared = prepare_atlas_within(
+        &mut geom,
+        &static_lights,
+        0.25,
+        &[],
+        BlockOrdering::by_cell_id(DIRECTION_TEXEL_SCALE),
+        64,
+        &BakeControl::unrestricted(),
+    )
+    .expect("oversized cell prepares");
+    assert_eq!(prepared.layout.blocks.len(), 3, "one block per 52² chart");
+    assert!(prepared.layout.blocks.iter().all(|b| b.cell_id == 0));
+    assert!(
+        prepared
+            .layout
+            .blocks
+            .iter()
+            .all(|b| b.width <= 64 && b.height <= 64)
+    );
+    for (face, range) in geom.face_index_ranges.iter().enumerate() {
+        let expected = prepared.layout.chart_blocks[face] as u16 + 1;
+        let start = range.index_offset as usize;
+        for &index in &geom.geometry.indices[start..start + range.index_count as usize] {
+            assert_eq!(
+                geom.geometry.vertices[index as usize].lightmap_block, expected,
+                "face {face} vertex {index} must name its chart's block"
+            );
+        }
+    }
+}
+
 /// Fix 1 robustness — a single BVH leaf whose charts can't fit even an empty
 /// `max_dim²` layer must return `LeafTooLarge`, not silently corrupt
 /// placements. Leaf cohesion forbids splitting the leaf across layers, so the

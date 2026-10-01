@@ -252,7 +252,7 @@ impl BlockDemand {
     }
 
     /// Capture's fixed view: the camera cell's baked set, plus every drawn
-    /// cell's block as visible whatever the visibility path. An empty world
+    /// cell's blocks as visible whatever the visibility path. An empty world
     /// looks up no residency set.
     pub(crate) fn update_capture_view(
         &mut self,
@@ -419,17 +419,17 @@ impl BlockDemand {
             self.mark_dirty(block);
         }
         self.baked_blocks.clear();
+        // A cell demands all of its blocks, which share its lead.
         for entry in entries {
-            let Some(block) = map.block_of_cell(entry.cell_id) else {
-                continue;
-            };
-            self.slots[block as usize].baked = if entry.lead <= lead {
-                Baked::Mandatory(entry.lead)
-            } else {
-                Baked::Band(entry.lead)
-            };
-            self.mark_dirty(block);
-            self.baked_blocks.push(block);
+            for block in map.blocks_of_cell(entry.cell_id) {
+                self.slots[block as usize].baked = if entry.lead <= lead {
+                    Baked::Mandatory(entry.lead)
+                } else {
+                    Baked::Band(entry.lead)
+                };
+                self.mark_dirty(block);
+                self.baked_blocks.push(block);
+            }
         }
         self.key = Some((camera_cell, lead));
     }
@@ -519,7 +519,7 @@ impl BlockDemand {
 }
 
 /// The blocks of the cells `visible_cells` draws; every block for `DrawAll`.
-/// A cell without charts has no block.
+/// A cell without charts has no block; a cell may have several.
 fn drawn_blocks_of<'a>(
     map: &'a LevelBlockMap,
     visible_cells: &'a VisibleCells,
@@ -530,6 +530,6 @@ fn drawn_blocks_of<'a>(
     };
     cells
         .iter()
-        .filter_map(|&cell| map.block_of_cell(cell))
+        .flat_map(|&cell| map.blocks_of_cell(cell))
         .chain(every)
 }

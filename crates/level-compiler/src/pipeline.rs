@@ -1709,6 +1709,12 @@ fn run_after_parsing(
         &cell_partition.cell_clusters(),
         &atlas_control,
     )?;
+    if args.verbose {
+        lightmap_stage::log_predicted_peak(
+            &prepared_atlas,
+            lightmap_config.uncompressed_irradiance,
+        );
+    }
     let final_lightmap_density = lightmap_config.lightmap_density;
     finish_stage(
         &mut timings,

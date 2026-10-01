@@ -1,6 +1,7 @@
 //! Dynamic fragmentation of a cell-block pool: camera walks across portal
 //! adjacency, and at each step the pool frees blocks that left M(c) and
-//! allocates the ones that joined it with the freeing shelf allocator.
+//! allocates the ones that joined it with the freeing shelf allocator. A cell
+//! in M(c) demands every block it owns.
 //!
 //! Runs an uncapped pool (immediate free) for the peak it grows to, then fixed
 //! pools with immediate free or LRU retention; an allocation that fails with
@@ -150,18 +151,15 @@ pub(crate) fn run_walks(inputs: &SimInputs<'_>) -> PoolWalks {
     }
 }
 
-/// Mandatory blocks of `set` that fit a pool layer, in allocation order:
-/// tallest first, as shelf packing prefers.
+/// Every block of `set`'s cells, keyed by block id, in allocation order:
+/// tallest first, as shelf packing prefers. Every block fits a pool layer.
 pub(crate) fn allocation_order(blocks: &CellBlocks, set: &[u32]) -> Vec<(u32, BlockDims)> {
-    let mut order: Vec<(u32, BlockDims)> = blocks
-        .set_dims(set)
-        .filter(|(_, dims)| dims.fits_pool_layer())
-        .collect();
-    order.sort_by(|(ca, a), (cb, b)| {
+    let mut order: Vec<(u32, BlockDims)> = blocks.set_dims(set).collect();
+    order.sort_by(|(block_a, a), (block_b, b)| {
         b.height
             .cmp(&a.height)
             .then(b.width.cmp(&a.width))
-            .then(ca.cmp(cb))
+            .then(block_a.cmp(block_b))
     });
     order
 }
@@ -176,7 +174,7 @@ pub(crate) fn shelf_layers_from_scratch(blocks: &CellBlocks, set: &[u32]) -> u32
     pool.extent() as u32
 }
 
-/// Resident blocks: slot per cell, and an LRU order keyed by last use.
+/// Resident blocks: slot per block, and an LRU order keyed by last use.
 struct Residency {
     slots: Vec<Option<Slot>>,
     last_used: Vec<u64>,
@@ -185,57 +183,63 @@ struct Residency {
 }
 
 impl Residency {
-    fn new(cell_count: usize) -> Self {
+    fn new(block_count: usize) -> Self {
         Self {
-            slots: vec![None; cell_count],
-            last_used: vec![0; cell_count],
+            slots: vec![None; block_count],
+            last_used: vec![0; block_count],
             lru: BTreeSet::new(),
-            in_set: vec![0; cell_count],
+            in_set: vec![0; block_count],
         }
     }
 
-    fn insert(&mut self, cell: u32, slot: Slot, step: u64) {
-        self.slots[cell as usize] = Some(slot);
-        self.last_used[cell as usize] = step;
-        self.lru.insert((step, cell));
+    fn insert(&mut self, block: u32, slot: Slot, step: u64) {
+        self.slots[block as usize] = Some(slot);
+        self.last_used[block as usize] = step;
+        self.lru.insert((step, block));
     }
 
-    fn evict(&mut self, cell: u32, pool: &mut BlockPool) {
-        if let Some(slot) = self.slots[cell as usize].take() {
+    fn evict(&mut self, block: u32, pool: &mut BlockPool) {
+        if let Some(slot) = self.slots[block as usize].take() {
             pool.free(slot)
                 .expect("a resident slot names its live allocation");
-            self.lru.remove(&(self.last_used[cell as usize], cell));
+            self.lru.remove(&(self.last_used[block as usize], block));
         }
     }
 
-    fn touch(&mut self, cell: u32, step: u64) {
-        if self.slots[cell as usize].is_some() {
-            self.lru.remove(&(self.last_used[cell as usize], cell));
-            self.lru.insert((step, cell));
+    fn touch(&mut self, block: u32, step: u64) {
+        if self.slots[block as usize].is_some() {
+            self.lru.remove(&(self.last_used[block as usize], block));
+            self.lru.insert((step, block));
         }
-        self.last_used[cell as usize] = step;
+        self.last_used[block as usize] = step;
     }
 
-    /// Mark `set` mandatory for `step`: immediate eviction frees every block
-    /// outside it, and every block inside it is stamped with `step`, so only
-    /// blocks outside the set are ever evictable.
-    fn begin_step(&mut self, set: &[u32], step: u64, eviction: Eviction, pool: &mut BlockPool) {
-        for &cell in set {
-            self.in_set[cell as usize] = step;
+    /// Mark the `mandatory` blocks for `step`: immediate eviction frees every
+    /// block outside them, and every block among them is stamped with `step`,
+    /// so only blocks outside the set are ever evictable.
+    fn begin_step(
+        &mut self,
+        mandatory: &[(u32, BlockDims)],
+        step: u64,
+        eviction: Eviction,
+        pool: &mut BlockPool,
+    ) {
+        for &(block, _) in mandatory {
+            self.in_set[block as usize] = step;
         }
         if eviction == Eviction::Immediate {
             let departed: Vec<u32> = self
                 .lru
                 .iter()
-                .map(|&(_, cell)| cell)
-                .filter(|&cell| self.in_set[cell as usize] != step)
+                .map(|&(_, block)| block)
+                .filter(|&block| self.in_set[block as usize] != step)
                 .collect();
-            for cell in departed {
-                self.evict(cell, pool);
+            for block in departed {
+                self.evict(block, pool);
             }
         }
-        for &cell in set {
-            self.touch(cell, step);
+        for &(block, _) in mandatory {
+            self.touch(block, step);
         }
     }
 
@@ -245,7 +249,7 @@ impl Residency {
             .iter()
             .next()
             .filter(|&&(used, _)| used < step)
-            .map(|&(_, cell)| cell)
+            .map(|&(_, block)| block)
     }
 }
 
@@ -262,14 +266,14 @@ fn simulate_unbounded(inputs: &SimInputs<'_>, path: &[u32]) -> UnboundedRun {
     let mut excess_sum = 0i64;
     for (i, &camera) in path.iter().enumerate() {
         let step = i as u64 + 1;
-        let set = &inputs.sets[camera as usize];
-        residency.begin_step(set, step, Eviction::Immediate, &mut pool);
-        for (cell, dims) in allocation_order(inputs.blocks, set) {
-            if residency.slots[cell as usize].is_none() {
+        let order = allocation_order(inputs.blocks, &inputs.sets[camera as usize]);
+        residency.begin_step(&order, step, Eviction::Immediate, &mut pool);
+        for &(block, dims) in &order {
+            if residency.slots[block as usize].is_none() {
                 let slot = pool
                     .allocate(dims.width, dims.height)
                     .expect("an uncapped pool always places a block that fits a layer");
-                residency.insert(cell, slot, step);
+                residency.insert(block, slot, step);
             }
         }
         let extent = pool.extent();
@@ -305,17 +309,16 @@ pub(crate) fn simulate_fixed(
     };
     for (i, &camera) in path.iter().enumerate() {
         let step = i as u64 + 1;
-        let set = &inputs.sets[camera as usize];
-        residency.begin_step(set, step, eviction, &mut pool);
-        let order = allocation_order(inputs.blocks, set);
+        let order = allocation_order(inputs.blocks, &inputs.sets[camera as usize]);
+        residency.begin_step(&order, step, eviction, &mut pool);
         let mut stuck = false;
-        'blocks: for &(cell, dims) in &order {
-            if residency.slots[cell as usize].is_some() {
+        'blocks: for &(block, dims) in &order {
+            if residency.slots[block as usize].is_some() {
                 continue;
             }
             loop {
                 if let Some(slot) = pool.allocate(dims.width, dims.height) {
-                    residency.insert(cell, slot, step);
+                    residency.insert(block, slot, step);
                     break;
                 }
                 match residency.oldest_evictable(step) {
@@ -337,13 +340,13 @@ pub(crate) fn simulate_fixed(
         run.defrag_steps += 1;
         pool.clear();
         residency = Residency::new(inputs.blocks.dims.len());
-        for &cell in set {
-            residency.in_set[cell as usize] = step;
+        for &(block, _) in &order {
+            residency.in_set[block as usize] = step;
         }
         let mut failed = 0;
-        for &(cell, dims) in &order {
+        for &(block, dims) in &order {
             match pool.allocate(dims.width, dims.height) {
-                Some(slot) => residency.insert(cell, slot, step),
+                Some(slot) => residency.insert(block, slot, step),
                 None => failed += 1,
             }
         }

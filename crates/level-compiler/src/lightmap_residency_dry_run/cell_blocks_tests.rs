@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use super::band_pool_sim::{BandPolicy, BandSimInputs, simulate_band};
 use super::block_pool_sim::{
     Eviction, SimInputs, run_walks, shelf_layers_from_scratch, simulate_fixed,
 };
@@ -8,7 +9,7 @@ use super::camera_walks::{
 };
 use super::cell_block_residency::static_maxrects_layers;
 use super::cell_blocks::{BlockDims, CellBlocks};
-use super::dry_run_test_fixtures::{bc6h_formats, chart, input};
+use super::dry_run_test_fixtures::{bc6h_formats, chart, input, multi_block_input};
 use super::mandatory::Granularity;
 use super::visible_set_tests::u_turn_input;
 use super::{ChartRect, ShadowmaskState, run_dry_run};
@@ -66,9 +67,12 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
         Vec::new(),
     );
     let blocks = CellBlocks::new(&fixture);
-    assert_eq!(blocks.dims[2], None, "chartless cell has no block");
-    assert_eq!(blocks.block_bytes[2], 0);
-    assert_eq!(blocks.multi_layer_cells, 0);
+    assert!(
+        blocks.cell_dims(2).is_empty(),
+        "chartless cell has no block"
+    );
+    assert_eq!(blocks.set_bytes(&[2]), 0);
+    assert_eq!(blocks.cells_spanning_stored_blocks, 0);
     let overhead = blocks.overhead();
     assert_eq!(overhead.blocks, 3);
     assert!(overhead.block_texels >= overhead.chart_texels);
@@ -76,12 +80,13 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
     // Block bytes never undercut the cell's texel-exact bytes.
     let rate = fixture.formats.bytes_per_texel();
     for cell in 0..fixture.cell_count() {
-        assert!(blocks.block_bytes[cell] as f64 >= blocks.chart_texels[cell] as f64 * rate);
+        let bytes = blocks.set_bytes(&[cell as u32]);
+        assert!(bytes as f64 >= blocks.chart_texels[cell] as f64 * rate);
     }
 
     let mut split = fixture;
     split.charts[1].layer = 1;
-    assert_eq!(CellBlocks::new(&split).multi_layer_cells, 1);
+    assert_eq!(CellBlocks::new(&split).cells_spanning_stored_blocks, 1);
 }
 
 #[test]
@@ -103,13 +108,13 @@ fn cell_blocks_align_to_the_direction_scale_above_the_bc_block_edge() {
     let blocks = CellBlocks::new(&fixture);
     assert_eq!(blocks.alignment, 8);
     assert_eq!(
-        blocks.dims[0],
-        Some(BlockDims {
+        blocks.cell_dims(0),
+        [BlockDims {
             width: 40,
             height: 24
-        })
+        }]
     );
-    for dims in blocks.dims.iter().flatten() {
+    for dims in &blocks.dims {
         assert_eq!((dims.width % 8, dims.height % 8), (0, 0), "{dims:?}");
     }
     assert!(blocks.block_bytes.iter().all(|&bytes| bytes > 0));
@@ -317,4 +322,78 @@ fn block_bytes_and_their_exact_floor_both_charge_an_omitted_for_width_shadowmask
             .render()
             .contains("exact columns include the omitted id 42")
     );
+}
+
+#[test]
+fn cell_blocks_count_every_block_of_a_cell_past_one_pool_layer() {
+    let fixture = multi_block_input();
+    let formats = &fixture.formats;
+    let blocks = CellBlocks::new(&fixture);
+    let dims = |width, height| BlockDims { width, height };
+    assert_eq!(blocks.blocks_of_cell(0), 0..2);
+    assert_eq!(blocks.cell_dims(0), [dims(2000, 1500), dims(1500, 1500)]);
+    assert_eq!(blocks.cell_dims(1), [dims(64, 64)]);
+    assert!(blocks.dims.iter().all(|d| d.fits_pool_layer()));
+    assert_eq!(blocks.cell_of_block, [0, 0, 1]);
+    let cell0_bytes = formats.layer_bytes_at(2000, 1500) + formats.layer_bytes_at(1500, 1500);
+    assert_eq!(blocks.set_bytes(&[0]), cell0_bytes);
+    assert_eq!(blocks.set_dims(&[0, 1]).count(), 3);
+    let overhead = blocks.overhead();
+    assert_eq!(overhead.blocks, 3);
+    assert_eq!(overhead.multi_block_cells, [0]);
+    assert_eq!(overhead.largest, Some((0, dims(2000, 1500))));
+    let rendered = run_dry_run(&fixture).render();
+    assert!(
+        rendered.contains(
+            "cells packed into several blocks: 1
+    cell 0@"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains(": 2 blocks (2000x1500, 1500x1500)"));
+
+    // The shelf pool places both of cell 0's blocks: neither leaves room for
+    // the other in one layer.
+    assert_eq!(shelf_layers_from_scratch(&blocks, &[0]), 2);
+    let graph = PortalGraphInput {
+        cells: Vec::new(),
+        portals: Vec::new(),
+    };
+    let sets = vec![vec![0]];
+    let sim = SimInputs {
+        blocks: &blocks,
+        camera_cells: &[0],
+        sets: &sets,
+        static_layers: &[2],
+        graph: &graph,
+        static_worst_layers: 2,
+        steps: 1,
+        seed: 0,
+    };
+    let one_layer = simulate_fixed(&sim, &[0], 1, Eviction::Immediate);
+    assert_eq!(
+        (one_layer.hard_fail_steps, one_layer.hard_fail_blocks),
+        (1, 1),
+        "the second block of cell 0 finds no room"
+    );
+    let two_layers = simulate_fixed(&sim, &[0], 2, Eviction::Immediate);
+    assert_eq!(
+        (two_layers.defrag_steps, two_layers.hard_fail_steps),
+        (0, 0)
+    );
+
+    // Cell 0 joining M(c) brings both of its blocks: each is an entering
+    // block and a demand read.
+    let mandatory = vec![vec![1], vec![0, 1]];
+    let band = vec![Vec::new(), Vec::new()];
+    let inputs = BandSimInputs {
+        blocks: &blocks,
+        mandatory: &mandatory,
+        band: &band,
+    };
+    let run = simulate_band(&inputs, &[0, 1], None, BandPolicy::ImmediateFree);
+    assert_eq!((run.entering_blocks, run.entering_resident), (2, 0));
+    assert_eq!(run.demand_reads, 3);
+    assert_eq!(run.read_bytes, blocks.set_bytes(&[0, 1]));
+    assert_eq!(run.peak_layers, 2);
 }

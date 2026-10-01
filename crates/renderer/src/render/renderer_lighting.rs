@@ -1074,13 +1074,8 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.fog.set_pixel_scale(
-            device,
-            scale,
-            scene.width,
-            scene.height,
-            &full.depth_view,
-        );
+        full.fog
+            .set_pixel_scale(device, scale, scene.width, scene.height, &full.depth_view);
     }
 
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {

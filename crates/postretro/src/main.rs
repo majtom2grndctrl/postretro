@@ -12821,7 +12821,7 @@ mod tests {
                 "optionsTabGraphics",
                 "graphics",
                 "optionsPanelGraphics",
-                6,
+                8,
                 &[
                     "optionsShadowLow",
                     "optionsShadowMedium",
@@ -12831,6 +12831,11 @@ mod tests {
                     "optionsFogHigh",
                     "optionsSurfaceDepthOff",
                     "optionsSurfaceDepthOn",
+                    "optionsRenderResolutionAuto",
+                    "optionsRenderResolutionNative",
+                    "optionsRenderResolutionHalf",
+                    "optionsRenderResolutionThird",
+                    "optionsRenderResolutionQuarter",
                 ][..],
             ),
             (
@@ -14356,8 +14361,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            38,
-            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fourteen options slots + ten accessibility slots appear",
+            39,
+            "only the set player.health and default-valued reload-feedback + local weapon display + weapon-resource kind and overheat latch + player.spread + screen effects + input.mode + ui.textEntry + fifteen options slots + ten accessibility slots appear",
         );
     }
 

@@ -91,8 +91,8 @@ mod renderer_resources;
 mod renderer_shadow_passes;
 mod renderer_splash;
 mod renderer_state;
-mod renderer_ui_layer;
 mod renderer_types;
+mod renderer_ui_layer;
 
 #[cfg(test)]
 mod tests;

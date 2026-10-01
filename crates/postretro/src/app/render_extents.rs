@@ -33,12 +33,17 @@ mod tests {
     // as a resize, and the camera is built from the committed extent.
     #[test]
     fn gameplay_frame_commits_extents_after_option_writes_and_before_the_camera() {
-        let options = position(MAIN, "self.update_player_options(frame_dt, options_menu_was_open);", 0);
+        let options = position(
+            MAIN,
+            "self.update_player_options(frame_dt, options_menu_was_open);",
+            0,
+        );
         let commit = position(MAIN, "self.commit_render_extents();", options);
         let eye = position(MAIN, "frame_eye::assemble_frame_eye(", commit);
         let viewmodel = position(MAIN, "renderer.update_viewmodel_view_projection(", eye);
         assert!(
-            MAIN[viewmodel..].trim_start_matches("renderer.update_viewmodel_view_projection(")
+            MAIN[viewmodel..]
+                .trim_start_matches("renderer.update_viewmodel_view_projection(")
                 .trim_start()
                 .starts_with("self.camera.aspect()"),
             "the viewmodel projects at the camera's scene aspect"
@@ -48,10 +53,17 @@ mod tests {
     #[test]
     fn frontend_frame_commits_extents_after_option_writes() {
         let logic = position(MAIN, "fn run_frontend_ui_logic(", 0);
-        let options = position(MAIN, "self.update_player_options(frame_dt, options_menu_was_open);", logic);
+        let options = position(
+            MAIN,
+            "self.update_player_options(frame_dt, options_menu_was_open);",
+            logic,
+        );
         let commit = position(MAIN, "self.commit_render_extents();", options);
         let end = position(MAIN, "\n    }\n", options);
-        assert!(commit < end, "the frontend commit belongs to the same frame logic");
+        assert!(
+            commit < end,
+            "the frontend commit belongs to the same frame logic"
+        );
     }
 
     // P1, P3–P5: window events only record; nothing rebuilds inside a handler.

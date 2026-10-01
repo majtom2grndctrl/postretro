@@ -245,7 +245,11 @@ fn opaque_ui_pixel_reaches_the_target_untonemapped() {
     fixture.write_ui(&[((1, 1), white), ((5, 2), drawn)]);
     let out = fixture.resolve(&no_effects());
 
-    assert_eq!(out.at(1, 1), white, "white UI is not compressed by the knee");
+    assert_eq!(
+        out.at(1, 1),
+        white,
+        "white UI is not compressed by the knee"
+    );
     assert_eq!(out.at(5, 2), drawn);
     assert!(
         out.at(3, 3)[0] < 255,
@@ -283,8 +287,16 @@ fn effects_with_switches_off_leave_opaque_ui_unchanged_and_reach_translucent_ui_
     };
     let scene_only = run(&[]).expect("adapter present");
 
-    assert_eq!(with_ui.at(centre.0, centre.1), opaque, "flash, vignette, shake spare the HUD");
-    assert_eq!(with_ui.at(corner.0, corner.1), opaque, "the vignette edge spares the HUD");
+    assert_eq!(
+        with_ui.at(centre.0, centre.1),
+        opaque,
+        "flash, vignette, shake spare the HUD"
+    );
+    assert_eq!(
+        with_ui.at(corner.0, corner.1),
+        opaque,
+        "the vignette edge spares the HUD"
+    );
 
     let beneath = scene_only.at(translucent_at.0, translucent_at.1);
     let alpha = 128.0 / 255.0;
@@ -328,7 +340,12 @@ fn one_covers_hud_switch_lets_only_its_effect_reach_the_ui() {
         let target = if c == 1 { 1.0 } else { 0.0 };
         linear_to_srgb(lin(c) * 0.5 + target * 0.5)
     });
-    assert_rgb_near(flash.at(centre.0, centre.1), flashed, 1, "flash covers the HUD");
+    assert_rgb_near(
+        flash.at(centre.0, centre.1),
+        flashed,
+        1,
+        "flash covers the HUD",
+    );
     assert_rgb_near(
         flash.at(corner.0, corner.1),
         flashed,
@@ -348,7 +365,12 @@ fn one_covers_hud_switch_lets_only_its_effect_reach_the_ui() {
         let target = if c == 2 { 1.0 } else { 0.0 };
         linear_to_srgb(lin(c) * (1.0 - factor) + target * factor)
     });
-    assert_rgb_near(vignette.at(corner.0, corner.1), vignetted, 1, "vignette covers the HUD");
+    assert_rgb_near(
+        vignette.at(corner.0, corner.1),
+        vignetted,
+        1,
+        "vignette covers the HUD",
+    );
     assert!(
         vignette.at(centre.0, centre.1)[1].abs_diff(opaque[1]) <= 2,
         "only vignette: the centre shows no green flash"
@@ -362,6 +384,14 @@ fn one_covers_hud_switch_lets_only_its_effect_reach_the_ui() {
     .expect("adapter present");
     // A 0.1-screen shake samples the layer 1.4 px right and 0.8 px down, so
     // the centre texel lands one pixel up and to the left of where it was drawn.
-    assert_eq!(shake.at(6, 3), opaque, "only shake: the moved UI is untinted");
-    assert_ne!(shake.at(centre.0, centre.1), opaque, "the UI no longer sits where it was drawn");
+    assert_eq!(
+        shake.at(6, 3),
+        opaque,
+        "only shake: the moved UI is untinted"
+    );
+    assert_ne!(
+        shake.at(centre.0, centre.1),
+        opaque,
+        "the UI no longer sits where it was drawn"
+    );
 }

@@ -23,10 +23,21 @@ fn texture_extent(texture: &wgpu::Texture) -> Extent {
 /// `surface`.
 fn assert_targets(renderer: &Renderer, scene: Extent, surface: Extent, when: &str) {
     let full = renderer.full();
-    assert_eq!(renderer.scene_extent(), scene, "{when}: committed scene extent");
-    assert_eq!(renderer.render_extents().surface, surface, "{when}: committed surface");
     assert_eq!(
-        (renderer.surface_config.width, renderer.surface_config.height),
+        renderer.scene_extent(),
+        scene,
+        "{when}: committed scene extent"
+    );
+    assert_eq!(
+        renderer.render_extents().surface,
+        surface,
+        "{when}: committed surface"
+    );
+    assert_eq!(
+        (
+            renderer.surface_config.width,
+            renderer.surface_config.height
+        ),
         (surface.width, surface.height),
         "{when}: surface configuration"
     );
@@ -92,14 +103,24 @@ fn extent_changes_rebuild_every_scene_target_at_the_scene_extent() {
     let change = renderer.commit_extents().expect("both extents changed");
     assert!(change.surface_changed && change.scene_changed);
     let surface = Extent::new(1001, 563);
-    assert_targets(&renderer, scene_extent(surface, 3), surface, "resize + divisor");
+    assert_targets(
+        &renderer,
+        scene_extent(surface, 3),
+        surface,
+        "resize + divisor",
+    );
     assert_eq!(renderer.commit_extents(), None, "exactly one rebuild");
 
     // A render-resolution change with no resize (P17's renderer half).
     renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 2 });
     let change = renderer.commit_extents().expect("scene changed");
     assert!(change.scene_changed && !change.surface_changed);
-    assert_targets(&renderer, scene_extent(surface, 2), surface, "option change");
+    assert_targets(
+        &renderer,
+        scene_extent(surface, 2),
+        surface,
+        "option change",
+    );
 }
 
 // P10: a level install sets the map's fog pixel scale after an extent change.
@@ -112,7 +133,10 @@ fn fog_pixel_scale_install_divides_the_scene_extent() {
     renderer.commit_extents();
     renderer.set_fog_pixel_scale(3);
     assert_eq!(renderer.full().fog.pixel_scale, 3);
-    assert_eq!(renderer.full().fog.scatter_dims(), scatter_dims_for(320, 180, 3));
+    assert_eq!(
+        renderer.full().fog.scatter_dims(),
+        scatter_dims_for(320, 180, 3)
+    );
 }
 
 // P11: a manifest reload commit sets a new bloom profile after an extent change.
@@ -132,7 +156,11 @@ fn bloom_profile_change_keeps_the_chain_on_the_scene_extent_without_an_extent_re
         renderer.full().bloom.level_sizes(),
         bloom_level_dimensions_table(320, 180, profile).to_vec()
     );
-    assert_eq!(renderer.commit_extents(), None, "the commit touches no extent");
+    assert_eq!(
+        renderer.commit_extents(),
+        None,
+        "the commit touches no extent"
+    );
 }
 
 // AC: capture produces an image at its requested resolution at divisor 1,
@@ -285,8 +313,14 @@ fn gameplay_ui_records_into_its_layer_before_the_sole_swapchain_resolve() {
     assert!(UI_LAYER.contains("screen_effects.ui_layer_view()"));
     assert!(UI_LAYER.contains("full.ui.encode("));
     assert!(UI_LAYER.contains("wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)"));
-    assert!(!UI_LAYER.contains("scene_color"), "UI never targets scene colour");
-    assert!(!RENDER_FRAME.contains("ui.encode("), "UI encoding lives in its own module");
+    assert!(
+        !UI_LAYER.contains("scene_color"),
+        "UI never targets scene colour"
+    );
+    assert!(
+        !RENDER_FRAME.contains("ui.encode("),
+        "UI encoding lives in its own module"
+    );
 
     let ui = RENDER_FRAME
         .find("self.record_ui_layer(encoder, font_system)")
@@ -296,7 +330,9 @@ fn gameplay_ui_records_into_its_layer_before_the_sole_swapchain_resolve() {
         .expect("windowed frame resolves");
     assert!(ui < resolve, "the resolve composites this frame's UI layer");
     assert_eq!(
-        RENDER_FRAME.matches("screen_effects.encode_resolve(").count(),
+        RENDER_FRAME
+            .matches("screen_effects.encode_resolve(")
+            .count(),
         1,
         "one display resolve writes the swapchain"
     );

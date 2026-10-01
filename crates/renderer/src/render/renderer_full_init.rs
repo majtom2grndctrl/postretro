@@ -38,8 +38,7 @@ pub(crate) fn build_full_renderer(
         wireframe_index_count,
     } = build_world_vertex_buffers(device, geometry);
 
-    let view_proj =
-        build_default_view_projection(scene.aspect());
+    let view_proj = build_default_view_projection(scene.aspect());
     let full_lights = geometry.map(|g| g.lights).unwrap_or(&[]);
     let full_influences = geometry.map(|g| g.light_influences).unwrap_or(&[]);
     let filtered_level_lights = filter_dynamic_lights(full_lights, full_influences);
@@ -186,8 +185,7 @@ pub(crate) fn build_full_renderer(
         None
     };
 
-    let (_depth_texture, depth_view) =
-        create_depth_texture(device, scene.width, scene.height);
+    let (_depth_texture, depth_view) = create_depth_texture(device, scene.width, scene.height);
 
     // Post-scene compositor seam: a linear HDR `scene_color` target + sRGB
     // resolve. The scene target is independent from the swapchain format.

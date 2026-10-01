@@ -266,7 +266,10 @@ mod tests {
             assert_eq!(change.extents.surface, ext(2560, 1440));
             assert_eq!(change.extents.scene, ext(1280, 720));
             assert!(change.surface_changed);
-            assert!(!change.scene_changed, "1280x720 at 1x and 2x is the same scene");
+            assert!(
+                !change.scene_changed,
+                "1280x720 at 1x and 2x is the same scene"
+            );
             assert_eq!(state.commit(), None, "exactly one rebuild");
         }
     }

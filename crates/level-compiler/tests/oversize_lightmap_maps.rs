@@ -103,9 +103,33 @@ fn assert_default_density(map: &str) {
 #[test]
 #[ignore = "multi-minute prl-build bake; run on demand with -- --ignored"]
 fn movement_feel_and_kinematic_platform_compile_at_the_default_density() {
+    let dir = std::env::temp_dir().join("postretro_oversize_lightmap_maps");
+    std::fs::create_dir_all(&dir).expect("mkdir temp out");
     for map in ["movement-feel", "kinematic-platform"] {
         assert_default_density(map);
-        let prl = compile(map, &[]);
+        let (prl, log) = compile_logged(map, &dir, map, &[]);
+        // The reshaped kinematic-platform's gable wall is the one face past a
+        // pool layer at the default density; movement-feel has none.
+        let cuts: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("cutting face"))
+            .collect();
+        match map {
+            "kinematic-platform" => {
+                assert_eq!(
+                    cuts.len(),
+                    1,
+                    "only the gable wall is cut:
+{cuts:#?}"
+                );
+                assert!(cuts[0].contains("facing [0.00, 0.00, 1.00]"), "{}", cuts[0]);
+            }
+            _ => assert!(
+                cuts.is_empty(),
+                "{map} cut a face:
+{cuts:#?}"
+            ),
+        }
         let section = lightmap(&prl);
         let records = block_records(&section);
         assert!(
@@ -194,4 +218,112 @@ fn fitting_maps_keep_their_block_extents_and_chart_placements() {
         "no baseline PRL found in {}",
         baseline.display()
     );
+}
+
+/// Compile `content/dev/maps/<map>.map` to `<dir>/<name>.prl` with `--verbose`
+/// and `extra` flags; the PRL path and the build's log.
+fn compile_logged(map: &str, dir: &Path, name: &str, extra: &[String]) -> (PathBuf, String) {
+    let ws = workspace_root();
+    let output = dir.join(format!("{name}.prl"));
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let run = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "--release",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(ws.join(format!("content/dev/maps/{map}.map")))
+        .arg("-o")
+        .arg(&output)
+        .arg("--verbose")
+        .args(extra)
+        .current_dir(&ws)
+        .output()
+        .expect("spawn prl-build");
+    let log =
+        String::from_utf8_lossy(&run.stdout).into_owned() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "prl-build {name} failed:\n{log}");
+    (output, log)
+}
+
+/// The `[Compiler] cut …` summary line, which a build with a cut logs.
+fn cut_summary(log: &str) -> &str {
+    log.lines()
+        .find(|line| line.contains("oversize lightmap face(s) into"))
+        .unwrap_or_else(|| panic!("the build cut no face:\n{log}"))
+}
+
+// P17, P18: density edits that start a cut and then move it re-bake the
+// lightmap family and nothing before atlas preparation: every pre-atlas
+// cache hits, and so do the SDF atlas (whose source switches to the
+// pre-cut geometry when a cut appears) and the cell residency set. The warm
+// build equals a warm build at the new density from an empty cache, and
+// reverting the edit reproduces the first build byte for byte. The cut map
+// loads, its partition rebuild validating against the emitted BVH and cells.
+#[test]
+#[ignore = "multi-minute prl-build bakes; run on demand with -- --ignored"]
+fn density_edit_that_moves_a_cut_keeps_the_pre_atlas_caches() {
+    let map = "sdf-shadow-test";
+    let dir = std::env::temp_dir().join("postretro_cut_density_edit");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let cache = dir.join("cache").to_string_lossy().into_owned();
+    let fresh = dir.join("fresh-cache").to_string_lossy().into_owned();
+    let warm = |density: &str, cache: &str| {
+        ["--lightmap-density", density, "--cache-dir", cache].map(str::to_owned)
+    };
+    let assert_pre_atlas_hits = |log: &str, edit: &str| {
+        for stage in [
+            "sh_group",
+            "direct_sh_volume",
+            "chunk_light_list",
+            "navmesh",
+            "cell_visibility",
+            "sdf_atlas",
+            "cell_residency_set",
+        ] {
+            assert!(
+                log.contains(&format!("[cache] {stage} hit")),
+                "{stage} hit expected after {edit}"
+            );
+            assert!(
+                !log.contains(&format!("[cache] {stage} miss")),
+                "{stage} missed after {edit}"
+            );
+        }
+    };
+
+    let (_, uncut_log) = compile_logged(map, &dir, "uncut", &warm("0.04", &cache));
+    assert!(
+        !uncut_log.contains("oversize lightmap face(s) into"),
+        "the default density cuts nothing"
+    );
+    let (a, a_log) = compile_logged(map, &dir, "a", &warm("0.006", &cache));
+    cut_summary(&a_log);
+    assert_pre_atlas_hits(&a_log, "the edit that starts a cut");
+    // Both cut densities cut the same faces, at different grid lines.
+    let (b, b_log) = compile_logged(map, &dir, "b", &warm("0.005", &cache));
+    cut_summary(&b_log);
+    assert_pre_atlas_hits(&b_log, "the edit that moves the cut");
+
+    let (b_fresh, _) = compile_logged(map, &dir, "b-fresh", &warm("0.005", &fresh));
+    assert!(
+        std::fs::read(&b).unwrap() == std::fs::read(&b_fresh).unwrap(),
+        "the warm build differs from a fresh-cache warm build at the same density"
+    );
+    let (a_again, _) = compile_logged(map, &dir, "a-again", &warm("0.006", &cache));
+    assert!(
+        std::fs::read(&a).unwrap() == std::fs::read(&a_again).unwrap(),
+        "reverting the edit does not reproduce the first build"
+    );
+
+    let world = postretro_level_loader::load_prl(b.to_str().unwrap())
+        .unwrap_or_else(|error| panic!("the cut map must load: {error}"));
+    assert!(!world.cells.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -409,6 +409,7 @@ fn bake_real_multi_layer_fixture(
             width_texels: 64,
             height_texels: 64,
             leaf_index: 0,
+            window: None,
         },
         Chart {
             origin: glam::Vec3::new(2.0, 0.0, 0.0),
@@ -420,12 +421,13 @@ fn bake_real_multi_layer_fixture(
             width_texels: 64,
             height_texels: 64,
             leaf_index: 1,
+            window: None,
         },
     ];
 
     // This is a genuine two-layer pack: each leaf fills a 64x64 layer, so
     // `pack_layers` must open layer 1 without changing placement fields.
-    let pack = pack_layers(&charts, 64, 0.25).expect("fixture charts must pack");
+    let pack = pack_layers(&charts, 64).expect("fixture charts must pack");
     assert_eq!(pack.layer_count, 2, "fixture must exercise both layers");
     let layout = BlockLayout::whole_layers(
         pack.atlas_width,
@@ -1317,6 +1319,7 @@ fn sibling_chunks_with_shared_uv_edge_pack_without_overlap() {
         width_texels: 8,
         height_texels: 8,
         leaf_index: 0,
+        window: None,
     };
     let placement = ChartPlacement {
         x: 0,
@@ -1396,6 +1399,7 @@ fn sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap() {
         width_texels: 3,
         height_texels: 322,
         leaf_index: 0,
+        window: None,
     };
     let placement = ChartPlacement {
         x: 0,
@@ -1442,6 +1446,7 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
         width_texels: 8,
         height_texels: 8,
         leaf_index: 0,
+        window: None,
     };
     let atlas_size = 64u32;
 

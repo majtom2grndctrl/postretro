@@ -53,6 +53,15 @@ pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
         }
         hasher.update(&chart.width_texels.to_le_bytes());
         hasher.update(&chart.height_texels.to_le_bytes());
+        // Only sub-charts fold a window, so uncut layouts keep their keys.
+        if let Some(window) = chart.window {
+            for component in window.grid_uv_min.into_iter().chain(window.grid_uv_extent) {
+                hasher.update(&component.to_le_bytes());
+            }
+            for texels in window.grid_interior.into_iter().chain(window.origin) {
+                hasher.update(&texels.to_le_bytes());
+            }
+        }
     }
     hasher.update(&(atlas.placements.len() as u32).to_le_bytes());
     for p in atlas.placements {

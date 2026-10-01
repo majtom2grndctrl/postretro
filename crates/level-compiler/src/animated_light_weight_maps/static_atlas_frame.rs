@@ -117,20 +117,15 @@ pub(super) fn chunk_atlas_rect(
     // chunk are integer indices `>= ceil(fx_min_interior)` (and `< ceil(fx_max)`
     // for the exclusive max).
     //
-    // Shared boundaries on siblings are not bit-exact: recursive halving of a
-    // non-dyadic chart extent leaves the two sides drifting by ~1e-7 in f32.
-    // When that drift straddles an integer, the two `ceil`s disagree by one
-    // and adjacent atlas rects overlap by a texel row/column. Snap to absorb
-    // the drift before rounding.
-    //
-    // Epsilon is in interior-texel units; observed drift is ~1e-5 there.
-    // The nearest a genuine (non-shared) split can land to an integer in
-    // interior-texel space is 0.5: the subdivider only cuts at UV midpoints,
-    // and a midpoint of any sub-range maps to the midpoint between two adjacent
-    // texel-boundary integers — so 1e-4 is above the noise floor but at least
-    // 5000x clear of any real boundary. See
+    // The subdivider splits chunks on whole texels, so a chunk edge maps to
+    // `t - 0.5` here, half a texel from any integer, and f32 drift in the UV
+    // (which grows with distance into a large chart) cannot flip a `ceil`.
+    // The snap is a second guard for chunk UVs not on texel edges: when
+    // shared-edge drift straddles an integer, the two `ceil`s disagree by one
+    // and adjacent atlas rects overlap by a texel row/column. Epsilon is in
+    // interior-texel units. See
     // `sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap` for a
-    // worked example with the precise drift values the subdivider produces.
+    // worked example with drifted midpoint edges.
     const BOUNDARY_SNAP_EPS: f32 = 1.0e-4;
     let snap_to_int = |x: f32| -> f32 {
         let r = x.round();

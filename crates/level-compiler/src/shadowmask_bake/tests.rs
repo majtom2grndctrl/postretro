@@ -182,6 +182,7 @@ fn one_texel_chart() -> Chart {
         width_texels: 5,
         height_texels: 5,
         leaf_index: 0,
+        window: None,
     }
 }
 

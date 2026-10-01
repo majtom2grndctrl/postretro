@@ -19,6 +19,7 @@ fn chart(width: u32, height: u32, cell: u32) -> Chart {
         width_texels: width,
         height_texels: height,
         leaf_index: cell,
+        window: None,
     }
 }
 
@@ -152,7 +153,10 @@ fn oversized_cell_packs_into_several_blocks_each_within_the_pool_edge() {
         chart(40, 24, 5),
     ];
     assert!(
-        super::super::charts::check_chart_extents(&charts, 1.0, &[]).is_ok(),
+        charts
+            .iter()
+            .all(|c| c.width_texels <= LIGHTMAP_POOL_LAYER_EDGE
+                && c.height_texels <= LIGHTMAP_POOL_LAYER_EDGE),
         "every chart fits a pool layer on its own"
     );
     let pack = pack(&charts, BlockOrdering::by_cell_id(2));
@@ -406,30 +410,11 @@ fn multi_block_pack_is_identical_with_one_worker_and_many() {
 }
 
 #[test]
-fn block_limits_reject_an_extent_past_the_pool_layer_on_either_axis() {
-    let extent = |width, height| BlockExtent {
-        cell_id: 4,
-        width,
-        height,
-        largest_chart_face: 0,
-    };
-    let edge = LIGHTMAP_POOL_LAYER_EDGE;
-    assert!(check_block_limits(1, [extent(edge, edge)]).is_ok());
-    for past in [extent(edge + 4, 4), extent(4, edge + 4)] {
-        let message = check_block_limits(1, [past])
-            .expect_err("oversize block must fail")
-            .to_string();
-        assert!(message.contains("cell 4"), "{message}");
-        assert!(message.contains(&format!("{edge}x{edge}")), "{message}");
-    }
-}
-
-#[test]
 fn block_count_limit_rejects_one_past_the_vertex_id_limit_and_accepts_the_limit() {
-    // Synthetic counts drive the chokepoint directly: packing 65,535 cells is
-    // not what this proves.
-    assert!(check_block_limits(MAX_LIGHTMAP_BLOCKS as usize, []).is_ok());
-    let error = check_block_limits(MAX_LIGHTMAP_BLOCKS as usize + 1, [])
+    // P11: synthetic counts drive the chokepoint directly, which
+    // `pack_cell_blocks_within` feeds every block of every multi-block cell.
+    assert!(check_block_limits(MAX_LIGHTMAP_BLOCKS as usize).is_ok());
+    let error = check_block_limits(MAX_LIGHTMAP_BLOCKS as usize + 1)
         .expect_err("one block past the vertex id limit must fail the build");
     assert!(matches!(
         error,

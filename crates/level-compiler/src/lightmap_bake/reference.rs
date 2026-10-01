@@ -117,7 +117,7 @@ pub(super) fn bake_face_chart(
             let local_x = padding + tx;
             let local_y = padding + ty;
             let idx = (local_y as u32 * chart.width_texels + local_x as u32) as usize;
-            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx, ty);
             let surface_normal = chart.normal;
             let seed = chart_texel_seed(chart, tx, ty);
 

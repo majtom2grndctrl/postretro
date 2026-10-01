@@ -66,7 +66,7 @@ pub(crate) fn pack_cell_sub_blocks(
         charts
             .iter()
             .all(|&(w, h)| w <= pool_edge && h <= pool_edge),
-        "every chart fits the {pool_edge} pool edge (`check_chart_extents`)"
+        "every chart fits the {pool_edge} pool edge (the oversize-face cut)"
     );
     let area_of = |&(w, h): &(u32, u32)| u64::from(w) * u64::from(h);
     let pool_area = u64::from(pool_edge) * u64::from(pool_edge);

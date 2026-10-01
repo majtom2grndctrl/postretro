@@ -59,9 +59,9 @@ pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 6;
 /// A pool layer holds the two mask groups side by side, so it is
 /// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device
 /// texture dimension. The old whole-layer omission rule (id 42 dropped when
-/// the lightmap layer could not double) cannot trigger any more: the build
-/// already rejects a block wider than a pool layer, and the doubled pool
-/// layer fits by construction.
+/// the lightmap layer could not double) cannot trigger any more: the
+/// oversize-face cut and cell packing bound every block by the pool layer
+/// edge, and the doubled pool layer fits by construction.
 pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
 
 const _: () =

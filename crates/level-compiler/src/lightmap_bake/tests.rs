@@ -260,40 +260,55 @@ fn no_static_lights_bakes_no_blocks() {
     assert!(section.blocks.is_empty(), "no static light bakes no block");
 }
 
-/// A chart wider than a pool layer rejects the build before block packing,
-/// naming the face and the density it was charted at (here a scale region's).
+/// A chart wider than a pool layer is cut, not rejected: every sub-chart
+/// fits, and each keeps its parent's density even where its own first vertex
+/// leaves the scale region that set it.
 #[test]
-fn chart_past_the_pool_layer_edge_rejects_the_build_naming_its_face() {
+fn chart_past_the_pool_layer_edge_is_cut_at_its_parents_density() {
     use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
     let lights = vec![point_light_above()];
     let static_lights = StaticBakedLights::from_lights(&lights);
-    // The 1 m quad at 0.04 / 200 m per texel needs 5,000 interior texels.
-    let region = scale_region([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0], 200.0);
+    // The region holds only the quad's first vertex, which sets the whole
+    // face's density: 0.04 / 200 m per texel, 5,000 interior texels a side.
+    let region = scale_region([-1.0, -1.0, -1.0], [0.1, 2.0, 0.1], 200.0);
     let mut geo = unit_quad_geometry();
-    let error = prepare_atlas(
+    let prepared = prepare_atlas(
         &mut geo,
         &static_lights,
         DEFAULT_TEXEL_DENSITY_METERS,
         std::slice::from_ref(&region),
     )
-    .expect_err("a chart past the pool layer edge must fail the build");
-    match error {
-        LightmapBakeError::ChartTooLarge {
-            face_index,
-            width_texels,
-            height_texels,
-            max,
-            density_m_per_texel,
-            ..
-        } => {
-            assert_eq!(face_index, 0);
-            assert_eq!(max, LIGHTMAP_POOL_LAYER_EDGE);
-            assert!(width_texels > max && height_texels > max);
-            assert_eq!(density_m_per_texel, DEFAULT_TEXEL_DENSITY_METERS / 200.0);
+    .expect("an oversize chart is cut, not rejected");
+    assert_eq!(prepared.charts.len(), 9, "three pieces a side");
+    assert_eq!(geo.face_index_ranges.len(), 9);
+
+    let density = DEFAULT_TEXEL_DENSITY_METERS / 200.0;
+    let mut outside_region = 0;
+    for (face, chart) in prepared.charts.iter().enumerate() {
+        assert!(chart.width_texels <= LIGHTMAP_POOL_LAYER_EDGE);
+        assert!(chart.height_texels <= LIGHTMAP_POOL_LAYER_EDGE);
+        let window = chart.window.expect("every piece windows the parent");
+        assert_eq!(window.grid_interior, [5000, 5000]);
+        for axis in 0..2 {
+            let pitch = window.grid_uv_extent[axis] / window.grid_interior[axis] as f32;
+            assert!(
+                (pitch - density).abs() < 1.0e-9,
+                "face {face} pitch {pitch}"
+            );
         }
-        other => panic!("expected ChartTooLarge, got {other}"),
+        let range = geo.face_index_ranges[face];
+        let first = geo.geometry.vertices
+            [geo.geometry.indices[range.index_offset as usize] as usize]
+            .position;
+        if first[0] > 0.1 || first[2] > 0.1 {
+            outside_region += 1;
+        }
     }
+    assert!(
+        outside_region > 0,
+        "some sub-face starts outside the region"
+    );
 }
 
 /// Without static light no block is emitted, so a layout the runtime could
@@ -757,8 +772,8 @@ fn warm_and_cold_atlas_preparation_share_scale_regions() {
 fn pack_layers_is_deterministic() {
     let geo = unit_quad_geometry();
     let charts = plan_charts(&geo, 0.25, &[]).unwrap();
-    let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
-    let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
+    let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION).unwrap();
+    let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION).unwrap();
     assert_eq!(p1.atlas_width, p2.atlas_width);
     assert_eq!(p1.atlas_height, p2.atlas_height);
     assert_eq!(p1.layer_count, p2.layer_count);
@@ -780,9 +795,9 @@ fn pack_layers_overflows_past_max_atlas_layers() {
             .map(|leaf| synthetic_chart_leaf(dim, dim, leaf))
             .collect()
     };
-    let full = pack_layers(&leaves(MAX_ATLAS_LAYERS), dim, 1.0).unwrap();
+    let full = pack_layers(&leaves(MAX_ATLAS_LAYERS), dim).unwrap();
     assert_eq!(full.layer_count, MAX_ATLAS_LAYERS);
-    match pack_layers(&leaves(MAX_ATLAS_LAYERS + 1), dim, 1.0) {
+    match pack_layers(&leaves(MAX_ATLAS_LAYERS + 1), dim) {
         Err(LightmapBakeError::LayerOverflow { max, .. }) => assert_eq!(max, MAX_ATLAS_LAYERS),
         other => panic!("expected LayerOverflow, got {other:?}"),
     }
@@ -803,6 +818,7 @@ fn synthetic_chart_leaf(w: u32, h: u32, leaf_index: u32) -> Chart {
         width_texels: w,
         height_texels: h,
         leaf_index,
+        window: None,
     }
 }
 
@@ -823,7 +839,7 @@ fn pack_layers_opens_second_layer_keeping_each_leaf_cohesive() {
         synthetic_chart_leaf(64, 32, 1),
     ];
 
-    let pack = pack_layers(&charts, max_dim, 0.25).expect("must pack into two layers");
+    let pack = pack_layers(&charts, max_dim).expect("must pack into two layers");
 
     assert_eq!(pack.layer_count, 2, "two full leaves must span two layers");
     assert_eq!(pack.atlas_width, 64);
@@ -1035,8 +1051,8 @@ fn pack_layers_single_oversized_leaf_errors() {
         synthetic_chart_leaf(64, 64, 7),
         synthetic_chart_leaf(64, 64, 7),
     ];
-    let err = pack_layers(&charts, max_dim, 0.25)
-        .expect_err("an oversized single leaf must error, not pack");
+    let err =
+        pack_layers(&charts, max_dim).expect_err("an oversized single leaf must error, not pack");
     match err {
         LightmapBakeError::LeafTooLarge {
             leaf_index,
@@ -1762,7 +1778,7 @@ fn pack_layers_dims_are_pow2_4aligned_under_cap_across_chart_sets() {
         ),
     ];
     for (label, charts) in cases {
-        let pack = pack_layers(charts, MAX_ATLAS_DIMENSION, 0.25)
+        let pack = pack_layers(charts, MAX_ATLAS_DIMENSION)
             .unwrap_or_else(|e| panic!("{label}: pack_layers failed: {e:?}"));
         let (w, h) = (pack.atlas_width, pack.atlas_height);
         assert_eq!(
@@ -2012,9 +2028,9 @@ fn occluder_produces_dark_texel() {
 }
 
 #[test]
-fn oversize_face_returns_error_rather_than_panicking() {
-    // Regression: the old path clamped atlas_h but left chart placements at pre-clamp
-    // coordinates, causing out-of-bounds writes during bake and dilation.
+fn oversize_face_is_cut_into_charts_that_fit_a_pool_layer() {
+    // A 400 m face past one pool layer is cut into sub-charts that each fit
+    // the pool edge, rather than failing the build.
     let size = 400.0; // 10000 texels at 0.04 m/texel, beyond one pool layer
     let v0 = Vertex::new(
         [0.0, 0.0, 0.0],
@@ -2067,33 +2083,33 @@ fn oversize_face_returns_error_rather_than_panicking() {
             index_count: 6,
         }],
     };
-    let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let lights = vec![point_light_above()];
     let static_lights = StaticBakedLights::from_lights(&lights);
-    let mut inputs = LightmapBakeCtx {
-        bvh: &bvh,
-        primitives: &prims,
-        geometry: &mut geo,
-        lights: &static_lights,
-        scale_regions: &[],
-    };
-    let result = bake_lightmap(
-        &mut inputs,
-        &LightmapConfig {
-            lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
-            area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
-            direction_texel_scale: DIRECTION_TEXEL_SCALE,
-            uncompressed_irradiance: false,
-        },
+    let prepared = prepare_atlas(&mut geo, &static_lights, DEFAULT_TEXEL_DENSITY_METERS, &[])
+        .expect("a 400 m face is cut, not rejected");
+    // 10,000 interior texels a side: five pieces of 2,000 plus overlap.
+    assert_eq!(prepared.charts.len(), 25);
+    let edge = postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+    assert!(
+        prepared
+            .charts
+            .iter()
+            .all(|c| c.width_texels <= edge && c.height_texels <= edge)
     );
-    // A 400 m face is 10000 texels at 0.04 m/texel: its chart cannot fit one
-    // runtime pool layer, so the build fails naming the face before packing.
-    match result {
-        Err(LightmapBakeError::ChartTooLarge {
-            face_index: 0, max, ..
-        }) if max == postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE => {}
-        other => panic!("expected ChartTooLarge error, got {other:?}"),
-    }
+    assert!(
+        prepared
+            .layout
+            .blocks
+            .iter()
+            .all(|b| b.width <= edge && b.height <= edge)
+    );
+    let block_count = prepared.layout.blocks.len() as u16;
+    assert!(
+        geo.geometry
+            .vertices
+            .iter()
+            .all(|v| v.lightmap_block >= 1 && v.lightmap_block <= block_count)
+    );
 }
 
 #[test]
@@ -3124,6 +3140,77 @@ fn moved_and_renumbered_chart_bakes_identical_texels() {
     assert_eq!(
         before.direction, after.direction,
         "direction moved with the chart"
+    );
+}
+
+/// A sub-chart window is a view onto its parent's grid: each of its texels
+/// has the parent texel's exact world position and seed, and a vertex maps to
+/// the parent-grid position shifted by the window origin.
+#[test]
+fn chart_window_texels_and_vertices_are_the_parents_bit_for_bit() {
+    use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_seed, chart_texel_world_position};
+
+    let mut geometry = unit_quad_geometry();
+    for vertex in &mut geometry.geometry.vertices {
+        vertex.position[0] *= 7.3;
+        vertex.position[2] *= 3.1;
+    }
+    let parent = plan_charts(&geometry, 0.0137, &[]).unwrap().remove(0);
+    let padding = CHART_PADDING_TEXELS;
+    let (parent_w, parent_h) = (
+        parent.width_texels - 2 * padding,
+        parent.height_texels - 2 * padding,
+    );
+    let origin = [parent_w / 3, parent_h / 4];
+    let (window_w, window_h) = (parent_w / 2, parent_h / 2);
+    let pitch = [
+        parent.uv_extent[0] / parent_w as f32,
+        parent.uv_extent[1] / parent_h as f32,
+    ];
+    let sub = Chart {
+        uv_min: [
+            parent.uv_min[0] + origin[0] as f32 * pitch[0],
+            parent.uv_min[1] + origin[1] as f32 * pitch[1],
+        ],
+        uv_extent: [window_w as f32 * pitch[0], window_h as f32 * pitch[1]],
+        width_texels: window_w + 2 * padding,
+        height_texels: window_h + 2 * padding,
+        window: Some(ChartWindow {
+            grid_uv_min: parent.uv_min,
+            grid_uv_extent: parent.uv_extent,
+            grid_interior: [parent_w, parent_h],
+            origin,
+        }),
+        ..parent.clone()
+    };
+
+    for (tx, ty) in [(0, 0), (5, 9), (window_w as i32 - 1, window_h as i32 - 1)] {
+        let (px, py) = (origin[0] as i32 + tx, origin[1] as i32 + ty);
+        assert_eq!(
+            chart_texel_world_position(&sub, tx, ty)
+                .to_array()
+                .map(f32::to_bits),
+            chart_texel_world_position(&parent, px, py)
+                .to_array()
+                .map(f32::to_bits),
+            "texel ({tx}, {ty})"
+        );
+        assert_eq!(
+            chart_texel_seed(&sub, tx, ty),
+            chart_texel_seed(&parent, px, py)
+        );
+    }
+
+    let vertex = Vec3::new(2.9, 0.0, 1.7);
+    let (sx, sy) = chart_texel_position(&sub, 40, 60, vertex);
+    let (px, py) = chart_texel_position(&parent, 40, 60, vertex);
+    assert!(
+        (sx - (px - origin[0] as f32)).abs() < 1.0e-3,
+        "{sx} vs {px}"
+    );
+    assert!(
+        (sy - (py - origin[1] as f32)).abs() < 1.0e-3,
+        "{sy} vs {py}"
     );
 }
 

@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use postretro_level_format::lightmap::{
-    LIGHTMAP_POOL_LAYER_EDGE, LightmapHeader, LightmapMode, MAX_LIGHTMAP_BLOCKS,
-};
+#[cfg(test)]
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_level_format::lightmap::{LightmapHeader, LightmapMode, MAX_LIGHTMAP_BLOCKS};
 use rayon::prelude::*;
 
 use super::atlas_pack::{GroupPackError, pack_groups_into_layers};
@@ -141,55 +141,18 @@ impl BlockOrdering<'_> {
     }
 }
 
-/// Extent of one packed block, for the limit check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BlockExtent {
-    pub cell_id: u32,
-    pub width: u32,
-    pub height: u32,
-    /// Face whose chart is the block's largest, for the error message.
-    pub largest_chart_face: usize,
-}
-
-/// The one chokepoint for the runtime's block limits: a vertex names a block
-/// as `id + 1` in a `u16`, and every block must fit one pool layer.
-pub(crate) fn check_block_limits(
-    block_count: usize,
-    extents: impl IntoIterator<Item = BlockExtent>,
-) -> Result<(), LightmapBakeError> {
+/// The one chokepoint for the runtime's block-count limit: a vertex names a
+/// block as `id + 1` in a `u16`. Block extents need no check: the
+/// oversize-face cut bounds every chart, and cell packing every block, by the
+/// pool layer edge.
+pub(crate) fn check_block_limits(block_count: usize) -> Result<(), LightmapBakeError> {
     if block_count > MAX_LIGHTMAP_BLOCKS as usize {
         return Err(LightmapBakeError::BlockCountOverflow {
             count: block_count,
             max: MAX_LIGHTMAP_BLOCKS,
         });
     }
-    for extent in extents {
-        if extent.width > LIGHTMAP_POOL_LAYER_EDGE || extent.height > LIGHTMAP_POOL_LAYER_EDGE {
-            return Err(LightmapBakeError::BlockTooLarge {
-                cell_id: extent.cell_id,
-                width: extent.width,
-                height: extent.height,
-                max: LIGHTMAP_POOL_LAYER_EDGE,
-                largest_chart_face: extent.largest_chart_face,
-            });
-        }
-    }
     Ok(())
-}
-
-/// Face of the largest chart among `members` by texel area, the lowest face
-/// on ties: the face an oversize-block error names.
-fn largest_chart_face(charts: &[Chart], members: &[usize]) -> usize {
-    members
-        .iter()
-        .copied()
-        .max_by_key(|&i| {
-            (
-                u64::from(charts[i].width_texels) * u64::from(charts[i].height_texels),
-                std::cmp::Reverse(i),
-            )
-        })
-        .unwrap_or(0)
 }
 
 /// Charts packed into cell blocks, and the blocks packed into bake layers.
@@ -207,8 +170,8 @@ pub(crate) struct BlockedPack {
 /// id, then sub-block), reject what the runtime cannot hold, and pack blocks
 /// in block order into uniform bake layers so the per-layer bake, shadowmask
 /// fill, and cache partitions keep their layer loops. A cell's blocks are
-/// therefore contiguous in block-id order. Callers reject charts past a pool
-/// layer first (`check_chart_extents`).
+/// therefore contiguous in block-id order. Every chart must fit the pool
+/// layer edge (the oversize-face cut).
 #[cfg(test)]
 pub(crate) fn pack_cell_blocks(
     charts: &[Chart],
@@ -261,15 +224,7 @@ pub(crate) fn pack_cell_blocks_within(
         })
         .collect();
 
-    check_block_limits(
-        packed.len(),
-        packed.iter().map(|(cell_id, members, block)| BlockExtent {
-            cell_id: *cell_id,
-            width: block.width,
-            height: block.height,
-            largest_chart_face: largest_chart_face(charts, members),
-        }),
-    )?;
+    check_block_limits(packed.len())?;
 
     let extents: Vec<(u32, u32)> = packed.iter().map(|(_, _, b)| (b.width, b.height)).collect();
     let singles: Vec<Vec<usize>> = (0..packed.len()).map(|i| vec![i]).collect();
@@ -278,15 +233,11 @@ pub(crate) fn pack_cell_blocks_within(
             GroupPackError::LayerOverflow { layer_count, max } => {
                 LightmapBakeError::LayerOverflow { layer_count, max }
             }
-            // Unreachable after the pool-layer check: a block is at most one
-            // pool layer, which is smaller than a bake layer's cap.
-            GroupPackError::GroupTooLarge { group } => LightmapBakeError::BlockTooLarge {
-                cell_id: packed[group].0,
-                width: packed[group].2.width,
-                height: packed[group].2.height,
-                max: MAX_ATLAS_DIMENSION,
-                largest_chart_face: largest_chart_face(charts, &packed[group].1),
-            },
+            // Cell packing bounds every block by the pool layer edge, which
+            // never exceeds a bake layer's cap.
+            GroupPackError::GroupTooLarge { group } => {
+                unreachable!("block {group} exceeds an empty bake layer")
+            }
         })?;
 
     let mut blocks = Vec::with_capacity(packed.len());

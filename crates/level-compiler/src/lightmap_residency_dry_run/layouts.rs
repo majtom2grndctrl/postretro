@@ -124,13 +124,10 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
             .iter()
             .map(|&i| chart_for(&input.charts[i]))
             .collect();
-        match pack_layers_with_layer_limit(&charts, cap, u32::MAX, 0.0) {
+        match pack_layers_with_layer_limit(&charts, cap, u32::MAX) {
             Ok(pack) => break (packed, pack),
             Err(LightmapBakeError::LeafTooLarge { leaf_index, .. }) => {
                 oversize[leaf_index as usize] = true;
-            }
-            Err(LightmapBakeError::ChartTooLarge { face_index, .. }) => {
-                oversize[input.charts[packed[face_index]].cell as usize] = true;
             }
             Err(error) => panic!("capped packing failed: {error}"),
         }
@@ -167,7 +164,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
             .iter()
             .map(|&i| chart_for(&input.charts[i]))
             .collect();
-        let alone = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.0)
+        let alone = pack_layers(&charts, MAX_ATLAS_DIMENSION)
             .expect("a stored cell packs alone within the bake's maximum layer");
         let layer = layer_dims.len() as u32;
         layer_dims.push((alone.atlas_width, alone.atlas_width));
@@ -304,5 +301,6 @@ fn chart_for(rect: &ChartRect) -> Chart {
         width_texels: rect.width,
         height_texels: rect.height,
         leaf_index: rect.cell,
+        window: None,
     }
 }

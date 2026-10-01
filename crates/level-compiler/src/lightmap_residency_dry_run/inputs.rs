@@ -268,7 +268,10 @@ pub(super) fn loader_rejects_portal(vertices: Option<&[[f32; 3]]>) -> bool {
 /// scale) / block extent`, and the face's extreme vertices land exactly on
 /// the interior's integer edges, so rounding the quantized UV bounds (1/32
 /// texel worst case at a 2048-texel block) recovers the placement and padded
-/// size exactly.
+/// size exactly. A cut face's sub-face is the exception: its chart extends
+/// the cut overlap past each inner cut line, beyond its polygon, so it is
+/// recovered smaller than placed, and a stored repack of a cut map can
+/// disagree with the bake's.
 pub(super) fn reconstruct_charts(
     geometry: &GeometrySection,
     bvh: &BvhSection,

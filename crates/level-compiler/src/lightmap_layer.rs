@@ -307,8 +307,7 @@ impl IncrementalLayerAccumulator {
             let atlas_y = texel.idx / atlas.atlas_width;
             let tx = (atlas_x - placement.x - padding) as i32;
             let ty = (atlas_y - placement.y - padding) as i32;
-            let (interior_w, interior_h) = chart_interior_dims(chart);
-            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx, ty);
             let (irradiance, weighted_dir) =
                 reconstruct_light_texel(light, world_p, chart.normal, texel.raw_visibility);
             self.atlas.irradiance[idx * 4] += irradiance.x;
@@ -575,7 +574,7 @@ pub(crate) fn for_each_light_layer_chart_texel(
             // `LightmapLayer.target_layer`, not folded into `idx`.
             let idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
 
-            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+            let world_p = chart_texel_world_position(chart, tx, ty);
             let surface_normal = chart.normal;
             let seed = chart_texel_seed(chart, tx, ty);
 

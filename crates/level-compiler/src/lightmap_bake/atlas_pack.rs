@@ -34,8 +34,8 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 ///
 /// `max_dim` bounds each layer's width and height (the dry run passes
 /// [`MAX_ATLAS_DIMENSION`]; tests pass a small value). Every chart's largest
-/// side must be `≤ max_dim` or [`LightmapBakeError::ChartTooLarge`] is
-/// returned. The number of layers is capped at [`MAX_ATLAS_LAYERS`]; exceeding
+/// side must be `≤ max_dim`, or its leaf cannot be placed and
+/// [`LightmapBakeError::LeafTooLarge`] is returned. The number of layers is capped at [`MAX_ATLAS_LAYERS`]; exceeding
 /// it yields [`LightmapBakeError::LayerOverflow`].
 ///
 /// Leaf cohesion is a hard invariant: all charts of one BVH leaf land on a
@@ -52,12 +52,8 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// Production packs cell blocks instead (`block_layout::pack_cell_blocks_within`);
 /// this chart-level packer remains for the residency dry run and tests.
 #[cfg(test)]
-pub(crate) fn pack_layers(
-    charts: &[Chart],
-    max_dim: u32,
-    density_m_per_texel: f32,
-) -> Result<PackOutput, LightmapBakeError> {
-    pack_layers_with_layer_limit(charts, max_dim, MAX_ATLAS_LAYERS, density_m_per_texel)
+pub(crate) fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBakeError> {
+    pack_layers_with_layer_limit(charts, max_dim, MAX_ATLAS_LAYERS)
 }
 
 /// [`pack_layers`] with an explicit layer ceiling in place of
@@ -70,7 +66,6 @@ pub(crate) fn pack_layers_with_layer_limit(
     charts: &[Chart],
     max_dim: u32,
     max_layers: u32,
-    density_m_per_texel: f32,
 ) -> Result<PackOutput, LightmapBakeError> {
     if charts.is_empty() {
         return Ok(PackOutput {
@@ -83,16 +78,12 @@ pub(crate) fn pack_layers_with_layer_limit(
 
     // A single chart wider or taller than a layer can never be placed,
     // regardless of how many layers open.
-    for (face_index, chart) in charts.iter().enumerate() {
+    for chart in charts {
         if chart.width_texels > max_dim || chart.height_texels > max_dim {
-            return Err(LightmapBakeError::ChartTooLarge {
-                face_index,
-                width_texels: chart.width_texels,
-                height_texels: chart.height_texels,
-                max: max_dim,
-                u_extent_m: chart.uv_extent[0],
-                v_extent_m: chart.uv_extent[1],
-                density_m_per_texel,
+            return Err(LightmapBakeError::LeafTooLarge {
+                leaf_index: chart.leaf_index,
+                chart_count: 1,
+                max_dim,
             });
         }
     }

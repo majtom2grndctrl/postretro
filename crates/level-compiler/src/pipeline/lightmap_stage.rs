@@ -47,15 +47,19 @@ pub(super) fn prepare(
     .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))
 }
 
-/// Bytes per bake-layer texel of the warm per-layer accumulator; the cold
-/// plane holds about half. One layer is live at a time.
-const LAYER_PLANE_BYTES_PER_TEXEL: u64 = 57;
-/// Shadowmask raw fill: four mask slots per texel of every bake layer,
-/// empty layer area included, live for the whole layer loop.
+/// Bytes per bake-layer texel of the warm per-layer accumulator
+/// (`lightmap_layer::IncrementalLayerAccumulator`): its `CompositedAtlas`
+/// plane (RGBA f32 irradiance, `Vec3` direction, `bool` coverage = 29, the
+/// whole cold plane) plus `weighted_dir` and `fallback_normal` (`Vec3` each)
+/// and `chart_index` (`u32`). One layer is live at a time.
+const LAYER_PLANE_BYTES_PER_TEXEL: u64 = (4 * 4 + 12 + 1) + 12 + 12 + 4;
+/// Shadowmask raw fill (`shadowmask_bake::allocate_shadowmask_raw_fill`):
+/// four mask slots per texel of every bake layer, empty layer area included,
+/// live for the whole layer loop.
 const SHADOWMASK_FILL_BYTES_PER_TEXEL: u64 = 4;
 
 /// The lightmap stage's predicted working-set peak, from the prepared layout
-/// alone (`research.md` §4 of `lightmap-oversize-cells-and-faces`).
+/// alone: the shadowmask fill, one layer plane, and the encoded sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PredictedLightmapPeak {
     pub(super) shadowmask_fill: u64,

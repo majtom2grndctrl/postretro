@@ -252,7 +252,7 @@ impl BlockDemand {
     }
 
     /// Capture's fixed view: the camera cell's baked set, plus every drawn
-    /// cell's block as visible whatever the visibility path. An empty world
+    /// cell's blocks as visible whatever the visibility path. An empty world
     /// looks up no residency set.
     pub(crate) fn update_capture_view(
         &mut self,

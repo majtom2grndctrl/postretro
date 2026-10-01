@@ -36,7 +36,7 @@ impl DryRunReport {
         let _ = writeln!(
             out,
             "recovered cells whose charts span >1 stored block: {}",
-            blocks.multi_layer_cells
+            blocks.cells_spanning_stored_blocks
         );
         let ratio_at = |p| percentile_desc(&overhead.ratios, p);
         let worst_ratio = overhead.ratios.first().map_or(String::new(), |&(r, cell)| {

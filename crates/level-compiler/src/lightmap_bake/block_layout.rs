@@ -9,9 +9,7 @@ use postretro_level_format::lightmap::{
 use rayon::prelude::*;
 
 use super::atlas_pack::{GroupPackError, pack_groups_into_layers};
-use super::cell_blocks::{
-    CellSubBlock, PackedBlock, pack_cell_blocks_within as pack_cell_blocks_within_cell,
-};
+use super::cell_blocks::{CellSubBlock, PackedBlock, pack_cell_sub_blocks};
 use super::charts::Chart;
 use super::encode::normalized_direction_texel_scale;
 use super::{LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS};
@@ -149,7 +147,7 @@ pub(crate) struct BlockExtent {
     pub cell_id: u32,
     pub width: u32,
     pub height: u32,
-    /// Face whose chart is the cell's largest, for the error message.
+    /// Face whose chart is the block's largest, for the error message.
     pub largest_chart_face: usize,
 }
 
@@ -247,7 +245,7 @@ pub(crate) fn pack_cell_blocks_within(
                 .iter()
                 .map(|&i| (charts[i].width_texels, charts[i].height_texels))
                 .collect();
-            pack_cell_blocks_within_cell(&sizes, alignment, pool_edge)
+            pack_cell_sub_blocks(&sizes, alignment, pool_edge)
         })
         .collect();
 

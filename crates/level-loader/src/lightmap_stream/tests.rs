@@ -709,23 +709,30 @@ fn both_load_modes_accept_a_cell_owning_several_contiguous_blocks_and_one_owning
 
 #[test]
 fn both_load_modes_reject_a_cell_whose_blocks_interleave_with_another_cells() {
-    let mut lightmap = lightmap_section(&[(8, 4), (4, 4), (4, 8)]);
-    for (block, cell) in lightmap.blocks.iter_mut().zip([0, 1, 0]) {
-        block.cell_id = cell;
-    }
-    let fixture = Fixture::with_portals(
-        "postretro_test_lm_stream_cell_interleaved.prl",
-        lighting_blobs(&lightmap, None, true),
-    );
-    for requested in BOTH_MODES {
-        let message = load_error(&fixture, requested);
-        assert!(message.contains("Lightmap validation error"), "{message}");
-        assert!(
-            message.contains(
-                "block 2 names cell 0, whose blocks began at block 0 and were interrupted by block 1"
-            ),
-            "{requested:?}: {message}"
-        );
+    for (name, cells, expected) in [
+        (
+            "postretro_test_lm_stream_cell_interleaved.prl",
+            &[0, 1, 0][..],
+            "block 2 names cell 0, whose blocks began at block 0 and were interrupted by block 1",
+        ),
+        // A cell returning after another cell's multi-block run.
+        (
+            "postretro_test_lm_stream_cell_interleaved_runs.prl",
+            &[0, 0, 1, 1, 0][..],
+            "block 4 names cell 0, whose blocks began at block 0 and were interrupted by block 3",
+        ),
+    ] {
+        let extents = vec![(4, 4); cells.len()];
+        let mut lightmap = lightmap_section(&extents);
+        for (block, &cell) in lightmap.blocks.iter_mut().zip(cells) {
+            block.cell_id = cell;
+        }
+        let fixture = Fixture::with_portals(name, lighting_blobs(&lightmap, None, true));
+        for requested in BOTH_MODES {
+            let message = load_error(&fixture, requested);
+            assert!(message.contains("Lightmap validation error"), "{message}");
+            assert!(message.contains(expected), "{requested:?}: {message}");
+        }
     }
 }
 

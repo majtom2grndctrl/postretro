@@ -1,6 +1,6 @@
 //! Cell blocks: each cell's charts packed into the blocks the runtime would
 //! allocate, free, and remap with a single UV translation each. Packing is
-//! the bake's own `pack_cell_blocks_within` at the pool layer edge: a cell
+//! the bake's own `pack_cell_sub_blocks` at the pool layer edge: a cell
 //! that fits one pool layer owns one tight block, a larger cell several, so
 //! every block fits a pool layer.
 //!
@@ -14,7 +14,7 @@ use rayon::prelude::*;
 
 use super::{ChartRect, DryRunInput};
 pub(crate) use crate::lightmap_bake::CANDIDATE_WIDTHS;
-use crate::lightmap_bake::pack_cell_blocks_within;
+use crate::lightmap_bake::pack_cell_sub_blocks;
 
 /// Edge of one runtime pool layer, in irradiance texels.
 pub(crate) const POOL_LAYER_EDGE: u32 = LIGHTMAP_POOL_LAYER_EDGE;
@@ -52,7 +52,7 @@ pub(crate) struct CellBlocks {
     /// Id 22 + id 42 bytes of one `POOL_LAYER_EDGE²` pool layer.
     pub pool_layer_bytes: u64,
     /// Cells whose recovered charts sit on more than one stored block.
-    pub multi_layer_cells: usize,
+    pub cells_spanning_stored_blocks: usize,
     /// Texel grid every block extent sits on (`AtlasFormats::block_alignment`).
     pub alignment: u32,
 }
@@ -63,7 +63,7 @@ impl CellBlocks {
         for chart in &input.charts {
             per_cell[chart.cell as usize].push(*chart);
         }
-        let multi_layer_cells = per_cell
+        let cells_spanning_stored_blocks = per_cell
             .iter()
             .filter(|charts| charts.iter().any(|c| c.layer != charts[0].layer))
             .count();
@@ -72,7 +72,7 @@ impl CellBlocks {
             .par_iter()
             .map(|charts| {
                 let sizes: Vec<(u32, u32)> = charts.iter().map(|c| (c.width, c.height)).collect();
-                pack_cell_blocks_within(&sizes, alignment, POOL_LAYER_EDGE)
+                pack_cell_sub_blocks(&sizes, alignment, POOL_LAYER_EDGE)
                     .into_iter()
                     .map(|sub| BlockDims {
                         width: sub.block.width,
@@ -106,7 +106,7 @@ impl CellBlocks {
             pool_layer_bytes: input
                 .formats
                 .layer_bytes_at(POOL_LAYER_EDGE, POOL_LAYER_EDGE),
-            multi_layer_cells,
+            cells_spanning_stored_blocks,
             alignment,
         }
     }

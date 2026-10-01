@@ -9,7 +9,7 @@ use super::cell_blocks::POOL_LAYER_EDGE;
 use super::{ChartRect, DryRunInput, FaceSlot};
 use crate::chart_raster::ChartPlacement;
 use crate::lightmap_bake::{
-    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_cell_blocks_within,
+    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS, pack_cell_sub_blocks,
     pack_layers, pack_layers_with_layer_limit,
 };
 
@@ -213,7 +213,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, cap: u32) -> Layout {
 }
 
 /// Repack every cell's faces in stored order, 1×1 placeholders included, with
-/// the bake's own cell-block packer (`pack_cell_blocks_within`) at the stored
+/// the bake's own cell-block packer (`pack_cell_sub_blocks`) at the stored
 /// alignment and the pool layer edge, and count recovered charts that land
 /// where the PRL says they are. A cell's repacked blocks match its stored
 /// blocks one for one, in block order. Confirms the recovery and the packer
@@ -249,7 +249,7 @@ pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
                 FaceSlot::Placeholder { .. } => (1, 1),
             })
             .collect();
-        let packed = pack_cell_blocks_within(&sizes, align, POOL_LAYER_EDGE);
+        let packed = pack_cell_sub_blocks(&sizes, align, POOL_LAYER_EDGE);
         blocks_packed += packed.len();
         dims_match &= packed.len() == stored_blocks.len();
         for (sub, &block) in packed.iter().zip(stored_blocks) {

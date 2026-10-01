@@ -34,7 +34,7 @@ pub(crate) use atlas_pack::{pack_layers, pack_layers_with_layer_limit};
 pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
 #[cfg(test)]
 pub(crate) use cell_blocks::{
-    CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_blocks_within,
+    CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_sub_blocks,
 };
 pub use charts::Chart;
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
@@ -157,7 +157,7 @@ pub enum LightmapBakeError {
     },
     #[error(
         "lightmap block count {count} exceeds the vertex block-id limit {max}: vertices name a \
-         block as a u16 `id + 1`. Merge cells or bake fewer lightmapped cells."
+         block as a u16 `id + 1`, and a cell past one pool layer counts every one of its blocks. Coarsen the lightmap density, or bake fewer lightmapped cells."
     )]
     BlockCountOverflow { count: usize, max: u32 },
 }

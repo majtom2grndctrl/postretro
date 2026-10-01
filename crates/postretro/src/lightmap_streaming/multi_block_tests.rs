@@ -1,6 +1,6 @@
 //! Multi-block cell proofs: a cell's contiguous blocks share its demand and
 //! install independently (P10, P12, P13, P15, P16).
-//! See: context/lib/testing_guide.md
+//! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
 use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
@@ -72,6 +72,22 @@ fn block_map_resolves_each_cell_to_its_contiguous_blocks_and_rejects_interleavin
         .to_string();
     assert!(
         error.contains("cell 0's blocks are not contiguous"),
+        "{error}"
+    );
+
+    // A cell returning after another cell's multi-block run.
+    let interleaved_runs = TestBlockSource::new(
+        [0, 0, 1, 1, 0]
+            .into_iter()
+            .enumerate()
+            .map(|(block, cell)| BlockSpec::standard(block as u32, cell, 64, true))
+            .collect(),
+    );
+    let error = LevelBlockMap::build(interleaved_runs.as_ref(), 3, None)
+        .expect_err("a cell returning after another's run must be rejected")
+        .to_string();
+    assert!(
+        error.contains("cell 0's blocks are not contiguous: block 4 follows block 1"),
         "{error}"
     );
 }

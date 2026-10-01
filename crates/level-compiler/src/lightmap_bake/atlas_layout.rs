@@ -55,15 +55,15 @@ pub fn prepare_atlas(
 
 /// Prepare charts and cell blocks, and assign each vertex its block id and
 /// block-local lightmap UV. Runs `split_shared_vertices`, `plan_charts`,
-/// `check_chart_extents`, `pack_cell_blocks`, and `assign_lightmap_uvs`. Does
+/// `check_chart_extents`, `pack_cell_blocks_within`, and `assign_lightmap_uvs`. Does
 /// NOT run the per-texel ray casting.
 ///
 /// Called once before either bake branch, so the layout is shared. Vertex
 /// splitting and UV writes run on all non-empty geometry with static lights.
 /// Without static lights the section has no blocks, so vertices keep block 0,
 /// but charts and placements are still returned for the animated-light
-/// passes; when those blocks exceed the runtime limits, placements come back
-/// empty instead of failing the build. Empty geometry returns an empty layout
+/// passes; when a chart or the block count exceeds the runtime limits,
+/// placements come back empty instead of failing the build. Empty geometry returns an empty layout
 /// without mutating anything.
 pub fn prepare_atlas_ordered(
     geom: &mut GeometryResult,

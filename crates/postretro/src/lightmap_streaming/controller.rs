@@ -444,7 +444,7 @@ impl LightmapResidencyController {
     }
 
     /// Capture's fixed view: the camera cell's baked set plus every drawn
-    /// cell's block as visible, whatever the visibility path. Capture is an
+    /// cell's blocks as visible, whatever the visibility path. Capture is an
     /// offline tool that renders the full view synchronously, so it is exempt
     /// from the in-play rule that a non-portal frame reads only the camera
     /// cell's baked set.

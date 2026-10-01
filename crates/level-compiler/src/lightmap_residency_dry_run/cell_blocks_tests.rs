@@ -72,7 +72,7 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
         "chartless cell has no block"
     );
     assert_eq!(blocks.set_bytes(&[2]), 0);
-    assert_eq!(blocks.multi_layer_cells, 0);
+    assert_eq!(blocks.cells_spanning_stored_blocks, 0);
     let overhead = blocks.overhead();
     assert_eq!(overhead.blocks, 3);
     assert!(overhead.block_texels >= overhead.chart_texels);
@@ -86,7 +86,7 @@ fn cell_block_ratio_is_at_least_one_and_a_single_aligned_chart_packs_exactly() {
 
     let mut split = fixture;
     split.charts[1].layer = 1;
-    assert_eq!(CellBlocks::new(&split).multi_layer_cells, 1);
+    assert_eq!(CellBlocks::new(&split).cells_spanning_stored_blocks, 1);
 }
 
 #[test]

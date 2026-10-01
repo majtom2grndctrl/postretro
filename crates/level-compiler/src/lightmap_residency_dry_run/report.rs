@@ -85,7 +85,7 @@ pub(crate) struct DryRunReport {
     pub visible_set: Option<VisibleSetResult>,
     /// Per-unit fixed-size tile packings the visible-set pass costs.
     pub tile_layouts: Vec<TileLayout>,
-    /// Each cell's charts packed into one BC-aligned block.
+    /// Each cell's charts packed into one or more contiguous BC-aligned blocks.
     pub cell_blocks: CellBlocks,
     /// Non-solid, non-exterior cells: every cell the camera can occupy.
     pub camera_cells: Vec<u32>,

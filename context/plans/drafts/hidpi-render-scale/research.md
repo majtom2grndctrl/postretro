@@ -82,3 +82,31 @@ Several passes read `surface_config` directly instead of the value passed to res
 - The fog pixelation is an intended aesthetic, and `fog_pixel_scale` is map authority. A player override of it is a recorded non-goal (`plans/done/title-and-options-screen`).
 - `player_options.md` §4: a graphics option is a `PlayerOptions` field, translated at the render-profile chokepoint, and re-applied at full init. The UI never owns GPU work.
 - Precedent on this hardware class: an earlier fog-quality change was reverted because it dropped a 2020 MacBook Pro below 60 fps.
+
+## Ordering pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Boot on a 2× display | The window opens on the HiDPI display. No scale-factor event follows, because winit reports scale only on change. | The first full-ready frame uses Auto's divisor for the window's current scale factor (½ on the test Mac). The scale factor is read from the window at build, not only from events. |
+| P2 | Saved render resolution at boot | Settings hold ½. The session installs, then full init builds the scene targets. | The first full-ready frame is already at ½, with no rebuild after full init. A saved Auto resolves with the window's scale factor at that moment. |
+| P3 | Scale change on macOS | A scale-factor event, then a resize, in one dispatch. | One rebuild, from the new scale factor and the new size. Nothing is built from the new scale factor with the old size. |
+| P4 | Scale change, inverted order | A resize, then a scale-factor event, before the next frame. | One rebuild, from the final values. |
+| P5 | Scale change, size unchanged | A scale-factor event with no resize. | One rebuild if the divisor changes. None if both extents are unchanged. |
+| P6 | Option and resize together | A resize event, then a render-resolution change applied in the same frame's logic. | One rebuild, at the new option and the new size. |
+| P7 | Minimize and restore | Resize to 0×0, some frames while minimized, then resize back. | No target is built from a zero dimension. While minimized, extents stay at the last non-zero surface. The first restored frame uses the restored size. |
+| P8 | Option change while minimized | The render resolution changes while the surface is 0×0. | Extents derive from the last non-zero surface, and no 1×1 scene target is built. The restored frame shows the new option. |
+| P9 | Auto at the 1440-row boundary | A 1× window resized 1440 → 1441 → 1440 rows. | Divisor 1 → 2 → 1, so the scene goes 1440 → 721 → 1440 rows, with one rebuild per step. Auto keeps no history. |
+| P10 | Level install after an extent change | A resize or option change in the frontend or during load, then the level install sets the map's fog pixel scale. | Fog scatter derives from the scene extent at that moment, not the surface. The install path passes the surface size today. |
+| P11 | Manifest reload after an extent change | The render resolution changes, then a manifest reload commit sets a new bloom profile. | Bloom is sized from the scene extent. The commit leaves both extents untouched and triggers no extent rebuild. |
+| P13 | UI stack empties | Frame N draws UI, frame N+1 has none. | Frame N+1 composites no UI pixels from frame N. Today the UI pass is skipped when empty, so nothing would clear the layer. |
+| P14 | First frame after a resize | The swapchain is rebuilt at the new size, possibly with no UI that frame. | The composited layer matches the swapchain size. No stale-size layer is sampled or stretched. |
+| P15 | First frame after full init | A frontend or first gameplay frame before any UI tree is pushed. | The layer exists and composites as fully transparent. |
+| P16 | Suspend and resume | The renderer is dropped and rebuilt, and the splash replays full init. | The first full-ready frame after resume has the pre-suspend extents, with the scale factor re-read and the option re-applied. |
+| P17 | Option change with no resize | The render resolution changes and no window event arrives. | Camera and viewmodel aspect equal the new scene extent's aspect on the first frame at that extent. |
+
+Capture on the frame the extent changes cannot happen: capture is headless and never resizes. Its divisor is an owner question.
+
+## Rival record (argument behind Decisions)
+
+- The UI layer is chosen for one home for HUD-covering effects (the roadmap's optional CRT filter must sample the composited frame). The rejected forms are UI after the resolve, as its own pass or inside the resolve pass, and upscaling into a surface-sized scene colour (an extra blit, ~0.3 ms here, which still tonemaps UI).
+- Auto: a pure pixel-count rule (largest divisor keeping ≥ 720 rows) was rejected. It shows 2–3× stair-steps on large 1× panels by default and gives performance-floor machines a 720-row scene.

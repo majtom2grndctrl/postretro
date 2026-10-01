@@ -67,16 +67,32 @@ The test GPU, a Radeon Pro 5300M, sits at the documented compatibility floor (`r
   - (2.0, 2880) → 2
   - (3.0, 2160) → 3
   - (0.5, 720) → 1
+  - (1.0, 1441) → 2
+  - (1.0, 1600) → 2
+  - (2.0, 2881) → 3
 - [ ] At Auto, a 1× surface up to 1440 rows tall gets a scene extent equal to the surface extent. This is the no-regression row for 1× displays.
 - [ ] A resize rebuilds every scene-sized target at the scene extent and the swapchain at the surface extent. No scene target reads the surface size.
 - [ ] Changing the render-resolution option triggers exactly one rebuild with the new extent. So does a scale-factor change and the resize that follows it.
-- [ ] Fog scatter dimensions derive from the scene extent and `fog_pixel_scale`.
+- [ ] Fog scatter dimensions derive from the scene extent and `fog_pixel_scale`, both on resize and when a level install or reload sets the map's pixel scale (P10).
 - [ ] Capture produces an image at the scene extent.
 - [ ] Game UI records into the native-resolution UI layer with its own depth target, never into scene colour. The resolve is the only gameplay pass that writes the swapchain. The debug UI still records after it. Frontend frames composite the layer too.
 - [ ] Each screen effect's covers-HUD switch defaults to off. With all switches off, effect strength leaves the composited UI pixels unchanged. With one switch on in a test, only that effect reaches the UI.
 - [ ] Settings without the new field load with Auto. An unknown value falls back to Auto. The field round-trips through save.
 - [ ] Every render-resolution value maps at the chokepoint through an exhaustive match with no wildcard.
-- [ ] The regenerated SDK typedefs include the new `options.*` slot. The dev frontend's graphics tab reads and writes it.
+- [ ] The regenerated SDK typedefs, TypeScript and Luau, include the new `options.*` slot. The dev frontend's graphics tab reads and writes it.
+- [ ] On a 2× display, with no scale-factor event after the window opens, the first gameplay frame's scene extent is half the surface extent (P1).
+- [ ] A saved render resolution other than Auto is in effect on the first full-ready frame, with no rebuild after full init (P2).
+- [ ] Any mix of resize, scale-factor and render-resolution changes between two frames rebuilds once, from the final values. A scale-factor change with no resize still rebuilds when the divisor changes, and does not rebuild when neither extent changes (P3–P6).
+- [ ] A 0×0 resize builds no target and leaves both extents at the last non-zero surface. A render-resolution change while minimized takes effect at the restored size, never at 1×1 (P7, P8).
+- [ ] Auto keeps no history: a window resized from 1440 to 1441 rows and back returns to divisor 1, with one rebuild per step (P9).
+- [ ] Bloom's chain dimensions derive from the scene extent after a resize, a render-resolution change and a manifest reload commit (P11).
+- [ ] A frame with no UI after a frame with UI shows none of the earlier UI. The composited UI layer always matches the swapchain size, including the first frame after a resize or full init and frames with no UI (P13–P15).
+- [ ] After a suspend and resume, the first full-ready frame has the same extents as before the suspend (P16).
+- [ ] Camera and viewmodel aspect equal the scene extent's aspect after a resize and after a render-resolution change with no resize (P17).
+- [ ] When the surface is not divisible by the divisor, every visible scene pixel covers exactly divisor × divisor surface pixels. Only the overshoot at the frame edge is cropped.
+- [ ] Grep gate: the renderer crate holds no 1440-row cap. The cap arrives from player options through the render-profile chokepoint.
+- [ ] A test changes the extent on a renderer with no window and reads back every scene target's size against the scene extent.
+- [ ] An opaque UI pixel reaches the swapchain with the colour it was drawn with, untouched by the tonemap. This is a GPU-harness test; it self-skips without an adapter, so run it on the Mac.
 ### Manual
 - [ ] HiDPI Mac, release build, on campaign-test and stress-warren-hallway-inspection, Auto vs Native: report forward-pass and total GPU ms per frame (Metal System Trace, `rendering_pipeline.md` §12) and the `[CpuTiming]` total. Expected: Auto's forward pass is roughly a quarter of Native's.
 - [ ] Visual: the scene upscale shows crisp, uniform pixels with no filtering blur. HUD text and widgets stay sharp at native resolution under every render-resolution value.

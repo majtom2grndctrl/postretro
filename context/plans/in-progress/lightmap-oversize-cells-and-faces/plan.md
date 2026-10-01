@@ -54,7 +54,7 @@ read at: e5eb0807c
 | [3] No seam or sparkle across the cut (fade, penumbra, animation), both streaming modes | owner, in-engine | manual | later milestone |
 | [3] No snag walking or sliding across cut floor and wall | owner, in-engine | manual | later milestone |
 | [1] Peak `prl-build` RSS vs `--verbose` prediction; hallway RSS unchanged | executor-recorded run (`research.md` §4 protocol) | manual | recorded cold: movement-feel 406 MiB vs predicted 451; kinematic-platform 394 vs 419. Hallway RSS deferred (owner ruling) |
-| [1] Pool layer count and lightmap byte meter on movement-feel | executor-recorded in-engine run | manual | walk model: peak 6 layers, 55.4 MiB resident (id 22 23.7, id 42 31.6); in-engine meter outstanding — owner |
+| [1] Pool layer count and lightmap byte meter on movement-feel | executor-recorded in-engine run | manual | recorded in-engine (owner, 2026-09-30, lightmap streaming reported inactive): 84.00 MiB = static irradiance 24 + direction 12 + shadowmask 48, i.e. 6 pool layers × 14 MiB, matching the walk model's 6-layer peak (55.4 MiB of block bytes) |
 | [1] Visible-miss counts walking into kinematic-platform's multi-block cell | owner, in-engine (dev-tools Streaming tab) | manual | outstanding — owner, in-engine (dev-tools Streaming tab) |
 
 ## Tasks

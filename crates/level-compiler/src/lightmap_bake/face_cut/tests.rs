@@ -535,3 +535,142 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
     }
     assert!(shared_cut_vertices > 0);
 }
+
+// The encoded seam: BC6H encodes each sub-chart's 4×4 blocks on its own, so
+// twin texels on a cut's bilinear footprint can decode differently. Both
+// sides start bit-identical (above); the step a cut leaves must stay within
+// the compression error BC6H already makes on ordinary texels of the same
+// bake (measured: 0.085 at the cut against 0.113 elsewhere). Relative error
+// misleads here: a penumbra block spans lit and shadowed texels, so its dark
+// texels carry large relative but small absolute error.
+#[test]
+fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
+    use crate::bake_control::BakeControl;
+    use crate::bc6h::{decode_bc6h_block_for_tests, f16_bits_to_f32};
+    use crate::bvh_build::build_bvh;
+    use crate::light_namespaces::StaticBakedLights;
+    use crate::lightmap_bake::{
+        BlockOrdering, DEFAULT_AREA_SAMPLE_COUNT, DIRECTION_TEXEL_SCALE, LightmapBakeCtx,
+        LightmapConfig, bake_prepared_lightmap_controlled,
+    };
+
+    let (mut geometry, lights) = penumbra_floor();
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let prepared = crate::lightmap_bake::prepare_atlas_within(
+        &mut geometry,
+        &static_lights,
+        0.1,
+        &[],
+        BlockOrdering::by_cell_id(2),
+        64,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the cut floor prepares");
+    let charts = prepared.charts.clone();
+    let placements = prepared.placements.clone();
+    let layout = prepared.layout.clone();
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let output = bake_prepared_lightmap_controlled(
+        &mut LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &mut geometry,
+            lights: &static_lights,
+            scale_regions: &[],
+        },
+        &LightmapConfig {
+            lightmap_density: 0.1,
+            area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+            direction_texel_scale: DIRECTION_TEXEL_SCALE,
+            uncompressed_irradiance: false,
+        },
+        prepared,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the cut floor bakes");
+
+    let decoded: Vec<Vec<[f32; 3]>> = output
+        .section
+        .blocks
+        .iter()
+        .map(|block| {
+            let (w, h) = (usize::from(block.width), usize::from(block.height));
+            let mut texels = vec![[0.0; 3]; w * h];
+            for (bi, encoded) in block.irradiance.chunks_exact(16).enumerate() {
+                let (bx, by) = ((bi % (w / 4)) * 4, (bi / (w / 4)) * 4);
+                let block = decode_bc6h_block_for_tests(encoded.try_into().unwrap());
+                for (k, texel) in block.iter().enumerate() {
+                    texels[(by + k / 4) * w + bx + k % 4] = texel.map(f16_bits_to_f32);
+                }
+            }
+            texels
+        })
+        .collect();
+    let sample = |face: usize, [x, y]: [u32; 2]| {
+        let block = layout.chart_blocks[face] as usize;
+        let (local_x, local_y) = layout.local_placement(face, &placements[face]);
+        let width = u32::from(output.section.blocks[block].width);
+        decoded[block][((local_y + CHART_PADDING_TEXELS + y) * width
+            + local_x
+            + CHART_PADDING_TEXELS
+            + x) as usize]
+    };
+
+    // Twin texels a fragment on either side of a cut samples: the grid
+    // texels just before and at each cut line.
+    let cut_lines: Vec<u32> = charts
+        .iter()
+        .filter_map(|chart| chart.window)
+        .flat_map(|window| [window.origin[0], window.origin[1]])
+        .filter(|&origin| origin > 0)
+        .map(|origin| origin + CUT_OVERLAP_TEXELS)
+        .collect();
+    let on_footprint = |grid: u32| cut_lines.iter().any(|&c| grid + 1 == c || grid == c);
+    // BC6H's own absolute error on every interior texel, against the exact
+    // pre-encode bake: the noise floor a cut must not exceed.
+    let light_refs: Vec<_> = lights.iter().collect();
+    let mut noise = 0.0f32;
+    for (face, chart) in charts.iter().enumerate() {
+        let exact = super::super::reference::bake_face_chart(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            chart,
+            DEFAULT_AREA_SAMPLE_COUNT,
+        );
+        for y in 0..chart.height_texels - PADDING {
+            for x in 0..chart.width_texels - PADDING {
+                let i = ((y + CHART_PADDING_TEXELS) * exact.atlas_width + x + CHART_PADDING_TEXELS)
+                    as usize;
+                let got = sample(face, [x, y]);
+                for c in 0..3 {
+                    noise = noise.max((got[c] - exact.irradiance[i * 4 + c]).abs());
+                }
+            }
+        }
+    }
+    let (mut worst, mut worst_abs, mut compared) = (0.0f32, 0.0f32, 0usize);
+    for ((a, ta), (b, tb)) in overlap_twins(&charts) {
+        let origin = charts[a].window.unwrap().origin;
+        let grid = [ta[0] + origin[0], ta[1] + origin[1]];
+        if !on_footprint(grid[0]) && !on_footprint(grid[1]) {
+            continue;
+        }
+        let (sa, sb) = (sample(a, ta), sample(b, tb));
+        for c in 0..3 {
+            let step = (sa[c] - sb[c]).abs();
+            worst_abs = worst_abs.max(step);
+            worst = worst.max(step / sa[c].max(sb[c]).max(0.01));
+        }
+        compared += 1;
+    }
+    println!(
+        "encoded seam: {compared} twin texels on cut footprints, worst step {worst_abs:.4} ({worst:.4} relative); BC6H error elsewhere up to {noise:.4}"
+    );
+    assert!(compared > 0);
+    assert!(
+        worst_abs <= noise,
+        "encoded step {worst_abs} at a cut past BC6H's error elsewhere, {noise}"
+    );
+}

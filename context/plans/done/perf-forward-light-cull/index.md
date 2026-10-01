@@ -439,7 +439,7 @@ choice). Map authors should reach for that before either spec's machinery is ass
 - **`context/plans/done/perf-dynamic-light-pvs-cull/`** — shipped the shadow-eligibility origin-cell
   gate, later replaced by the influence-vs-reachable test after the pitch-down bug. This spec's
   predicate is that lesson applied to the forward loop, against the tight set.
-- **`context/plans/drafts/perf-anti-penumbra-pvs/`** — shrinks the drawable PVS at compile time.
+- **`perf-anti-penumbra-pvs`** (retired draft; math now in `context/research/cell-visibility-substrate.md` §Sightline construction) — shrinks the drawable PVS at compile time.
   Complementary and multiplicative: a smaller drawn cell set directly shrinks this cull's input
   and output.
 - **`crates/level-compiler/src/chunk_light_list_bake.rs`** — the baked per-cell light-list

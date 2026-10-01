@@ -5,9 +5,9 @@
 > `context/plans/done/cell-visibility-relation/`, built foundation-first ahead of a wired consumer
 > (that plan's *Alternatives rejected* argues the divergence from this doc's original "build with
 > the first consumer" guidance, still below). This doc now holds what's still unbuilt: the
-> sightline/anti-penumbra tightening, the dynamic-geometry/destructible design, and the
-> generalizability gate for the four intended consumers below, none of which reference the
-> substrate yet.
+> sightline/anti-penumbra tightening (construction in *Sightline construction* below), the
+> dynamic-geometry/destructible design, and the generalizability gate for the four intended
+> consumers below, none of which reference the substrate yet.
 
 ## What it is
 
@@ -28,9 +28,9 @@ The runtime frustum answers "what does *this camera* see *now*" (rendering); thi
 camera cull can answer, and precisely why the precomputed area-source math earns its extra cost
 *here* and not at runtime.
 
-Distinct from the archived `perf-anti-penumbra-pvs` draft, which tightened the *baked rendering* PVS
-— a use the runtime narrowing frustum has superseded. **This substrate is not for camera rendering.**
-It is for the non-camera consumers below.
+Distinct from a baked *rendering* PVS (the retired `perf-anti-penumbra-pvs` draft's goal). The runtime
+portal walk owns render visibility, and the owner has rejected Quake-style full PVS bakes for it.
+**This substrate is not for camera rendering.** It is for the non-camera consumers below.
 
 ## Intended consumers (build *with* the first real one)
 
@@ -236,10 +236,40 @@ Built and documented: `context/lib/build_pipeline.md` §PRL section IDs (id 46);
 not the sightline separating-plane construction this doc originally specified for v1 —
 `context/plans/done/cell-visibility-relation/` made that call explicitly (see its *Alternatives
 rejected*), leaning on the graded axes for discrimination instead. The sightline tightening itself
-stays deferred, unbuilt design (*What it is* above, `perf-anti-penumbra-pvs`); if it lands, it is an
+stays deferred, unbuilt design (*Sightline construction* below); if it lands, it is an
 additive axis, never a redefinition of the now-shipped `perceivable`. Destructibles remain outside
 the bake in practice, not just by policy — the cell-graph-and-portals-only input contract is shaped
 to accept them as dynamic portals (*Dynamic geometry* above), but that consumption isn't wired.
+
+## Sightline construction — deferred axis
+
+Unbuilt. The math for the additive hard-visibility axis above, should a measured render-adjacent
+consumer (net or VFX culling) need it. Audio never consults it: sound bends around corners.
+
+**Wedge.** For portals P_i → P_j, the anti-penumbra is every ray leaving a point of P_i through P_j.
+Bound it with separating planes: each plane passes through an edge of P_i and a vertex of P_j, with P_i
+wholly on one side and P_j wholly on the other. Teller 1992 §4 is the construction; Quake 3
+`vis/flow.c` (`ClipToSeperators`, `FindPassages`) is the production reference.
+
+**Flood.** Visibility depends on the *ordered* portal chain, so a reachability BFS cannot host it.
+Recurse from each source cell, carrying the running wedge (a plane stack) and the portal polygon clipped
+into it. At each next portal, add the new pair's separating planes, Sutherland–Hodgman-clip that portal
+against the stack, and recurse if the remainder exceeds the compiler's portal sliver-area threshold. A non-empty
+clip marks the far cell visible. Wedge-empty termination suffices; add a chain-depth cap only if a
+pathological map provokes it. Floods per source cell are independent, so they parallelize.
+
+**Constraints.**
+- Double precision throughout; narrow to `f32` only at emit. Even so, results are asymmetric at
+  epsilon — union both directions (*Correctness invariants*).
+- Pure tightening of reachability: it may drop pairs, never add them, so zero false negatives holds.
+- Cost grows with chain depth. Quake 3 `vis -full` runs tens of seconds on small-to-medium maps and
+  minutes on large ones. Log bake time and per-cell visible-set counts against reachability on every
+  test map; that pair is the before/after signal.
+- Tests need real convex portal polygons. Degenerate fixtures clip to zero-area wedges and prove
+  nothing.
+- Same clipping shape as the runtime `narrow_frustum`, different inputs. Runtime planes come from a
+  viewer point each frame; wedge planes come from static portal pairs, once, at bake. Keep the code
+  separate.
 
 ## Build guidance
 

@@ -111,7 +111,9 @@ carries `EntityRegistry`/`NavGraph`/`CollisionWorld` but **no `LevelWorld`**, so
 into the AI tick — real plumbing, not a drop-in. This is why the AI broad-phase is a
 *paper-check* consumer here, not a built one.
 
-### Deferred sightline axis's math source — `context/plans/drafts/perf-anti-penumbra-pvs`
+### Deferred sightline axis's math source — `perf-anti-penumbra-pvs` (retired draft)
+
+The draft is retired; its surviving math lives in `context/research/cell-visibility-substrate.md` §Sightline construction.
 
 Sketched the anti-penumbra separating-plane portal flood (Teller 1992 §4; Quake `vis`
 `ClipToSeperators` / `FindPassages`): per adjacent portal pair build a *separating* plane (through

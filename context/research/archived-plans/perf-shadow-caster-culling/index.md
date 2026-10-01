@@ -12,8 +12,8 @@
 > **Related:** `context/lib/rendering_pipeline.md` §4 (dynamic direct, promoted static lights), §7.1
 > steps 6–8 (shadow cone cull + depth passes) · `context/plans/done/perf-dynamic-light-pvs-cull/` (the
 > origin-cell gate history) · `context/plans/ready/static-light-shadowmask-world-receipt/` (the merge
-> that landed `promoted_depth_cache.rs` + `shadow_ranking.rs`) · `context/plans/drafts/perf-anti-penumbra-pvs/`
-> (shrinks the drawable PVS — complementary, not folded in).
+> that landed `promoted_depth_cache.rs` + `shadow_ranking.rs`) · `perf-anti-penumbra-pvs` (retired draft;
+> math now in `context/research/cell-visibility-substrate.md` §Sightline construction).
 
 ## Post-merge baseline
 
@@ -358,8 +358,8 @@ stands in for the `Clear(1.0)` baseline and never leaves stale depth.
 - **`context/plans/done/perf-dynamic-light-pvs-cull/`** — shipped the origin-cell gate, later widened
   to the influence-vs-reachable-cell test. That widening is now protected by the orientation-invariance
   tests; do not re-narrow it.
-- **`context/plans/drafts/perf-anti-penumbra-pvs/`** — shrinks the drawable PVS. Complementary and
-  independent; it does not interact with this plan now that the drawable-PVS gate is out of scope.
+- **`perf-anti-penumbra-pvs`** (retired draft; math now in `context/research/cell-visibility-substrate.md` §Sightline construction) — would have shrunk
+  the drawable PVS. Independent of this plan now that the drawable-PVS gate is out of scope.
 - **`context/plans/ready/perf-forward-light-cull/`** — sibling forward-shading-loop cull for the same
   large-map dynamic-light cost. Independent (no build-order dependency); its tight drawn-cell cull is
   contribution-only and does not touch this plan's wide eligibility gate. Its perf AC reuses the existing

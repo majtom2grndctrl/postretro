@@ -479,7 +479,7 @@ Projectile sprite collections may provide a per-collection additive HDR **emissi
 
 ### 7.5 Fog Volume Composite
 
-Low-resolution raymarched pass over `fog_volume` brush regions. Resolution is governed by the map-owned `fog_pixel_scale` worldspawn property (default 4 — quarter resolution). The independent player fog-quality tier selects a live ray-march step size of 1.0 / 0.5 / 0.25 for low / medium / high (default medium) and never overrides pixel scale. Per sample: shape membership test (AABB as conservative bound), then optional half-space clip plane; accumulates ambient scatter, dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges), and dynamic point-light scatter. The raymarch reads the dynamic-direct bit from the shared group-0 per-frame mask snapshot: when clear, both dynamic scatter loop bounds are zero, so fog and world dynamic direct change together. Ambient scatter continues to follow the mask-selected composed indirect atlas. The raymarch writes in-scattering to a low-res `Rgba16Float` **scatter** target. The march start is jittered from the output pixel and is stationary across frames, which dissolves constant-step shells without shimmer.
+Low-resolution raymarched pass over `fog_volume` brush regions. Resolution is governed by the map-owned `fog_pixel_scale` worldspawn property, which divides the scene extent (§7.8; default 4 — quarter resolution), so a map's fog reads the same at any render resolution. The independent player fog-quality tier selects a live ray-march step size of 1.0 / 0.5 / 0.25 for low / medium / high (default medium) and never overrides pixel scale. Per sample: shape membership test (AABB as conservative bound), then optional half-space clip plane; accumulates ambient scatter, dynamic spot beam scatter (with shadow map occlusion for visible shafts and shadow wedges), and dynamic point-light scatter. The raymarch reads the dynamic-direct bit from the shared group-0 per-frame mask snapshot: when clear, both dynamic scatter loop bounds are zero, so fog and world dynamic direct change together. Ambient scatter continues to follow the mask-selected composed indirect atlas. The raymarch writes in-scattering to a low-res `Rgba16Float` **scatter** target. The march start is jittered from the output pixel and is stationary across frames, which dissolves constant-step shells without shimmer.
 
 **Composite.** `fog_composite.wgsl` samples the current scatter target with nearest filtering and additively blends it over the scene. Its encoded-space triangular-PDF dither suppresses 8-bit swapchain banding. There is no temporal history, reprojection, or resolve pass.
 
@@ -519,14 +519,44 @@ Spatial visible-cell coloring is derived from the drawable `VisibleCells` result
 
 ### 7.8 HDR scene color, bloom, and screen-space resolve
 
-The renderer owns a single-sample, surface-sized linear `Rgba16Float`
-`scene_color` target. Every gameplay scene pass and gameplay UI pass writes
-there; the fullscreen resolve is the sole swapchain writer for the gameplay
-path. It samples `scene_color`, applies the near-neutral soft-knee tonemap,
-then the flash, vignette, and shake effects, and writes the sRGB swapchain.
-The target stores raw linear values; sampling it does not decode sRGB, and the
-swapchain store performs the one display encode. This preserves in-range
-content closely while compressing HDR overshoot rather than hard-clipping it.
+The renderer owns a single-sample linear `Rgba16Float` `scene_color` target at
+the scene extent. Every gameplay scene pass writes there; the fullscreen
+resolve is the sole swapchain writer for the gameplay path. It samples
+`scene_color` through a nearest, pixel-aligned sampler, applies the
+near-neutral soft-knee tonemap, then the screen effects — flash (over-blend
+toward a tint, weighted by flash alpha), vignette (strength-scaled radial edge
+darken/tint), and shake (a pure UV offset applied before the sample) — and
+writes the sRGB swapchain. The effects pack CPU-side from the frame's UI
+snapshot into a per-frame uniform. The target stores raw linear values;
+sampling it does not decode sRGB, and the swapchain store performs the one
+display encode. This preserves in-range content closely while compressing HDR
+overshoot rather than hard-clipping it; in-range parity is a visual/manual-GPU
+gate, not byte identity. See `crates/renderer/src/render/screen_effects.rs`
+and `crates/renderer/src/shaders/screen_effects.wgsl`.
+
+**Scene extent (decided; not yet built).** The swapchain stays at the
+surface's physical size. The scene renders at its own extent: ceil(surface /
+divisor) per axis, minimum 1, for the integer divisor the player's render
+resolution selects (`player_options.md` §4). Every scene target — depth,
+`scene_color`, the bloom chain, fog scatter, the half-res SDF factor, the
+shadow bind group that samples scene depth — and the camera and viewmodel
+aspect follow the scene extent. One renderer-owned chokepoint derives both
+extents, so no scene target reads the surface size. Resize, scale-factor, and
+option changes only record state; the next frame start rebuilds once, from the
+final values, if either extent changed. Today the scene extent is the surface
+extent.
+
+**Upscale and UI layer (decided; not yet built).** The resolve upscales the
+scene by nearest-neighbor integer replication: each scene pixel covers
+divisor × divisor surface pixels, and only the overshoot at the frame edge is
+cropped. Game UI never writes `scene_color`. It renders at native resolution
+into its own layer, cleared transparent each frame, and the resolve composites
+that layer over the upscaled, effected scene without tonemapping it. Frontend
+frames composite the same way. Screen effects apply to the scene only: each has
+a covers-HUD switch in the resolve, all off. Those switches are the single home
+for any effect that must cover the HUD, such as a future CRT filter. Today
+gameplay UI draws into `scene_color`, so the tonemap and all three effects
+reach it.
 
 The renderer-owned bloom compositor runs after fog and before capture,
 wireframe/debug/viewmodel overlays, and gameplay UI. It extracts HDR luminance
@@ -537,9 +567,10 @@ halo without changing any lighting buffer or causing overlays/UI to bloom. Set
 `POSTRETRO_BLOOM=0` to disable the pass for the manual no-bloom emissive check.
 
 **Mod bloom profile.** A mod may set a static bloom profile in its manifest.
-The profile chooses a half, quarter, or eighth-resolution base chain and may
-use texel-addressed pixelated upsample/composite reads. Omission uses the
-half-resolution smooth profile. Downsample and blur stay linear in every mode.
+The profile chooses a base chain at half, quarter, or eighth of the scene
+extent and may use texel-addressed pixelated upsample/composite reads, so its
+look holds at any render resolution. Omission uses the half-resolution smooth
+profile. Downsample and blur stay linear in every mode.
 The renderer owns profile state and resource changes; it persists across level
 changes, resize, and full-renderer recreation. Player overrides and
 per-material bloom tiers are separate features.
@@ -554,8 +585,6 @@ successful present path.
 
 **Boot splash pass.** A renderer-owned pass (`render/splash_pass.rs`) that clears the swapchain (`LoadOp::Clear` black) and, when a logo is installed, draws it as one aspect-preserving textured quad sized by pure GPU-free math. It owns its pipeline, bind group layout, sampler, uploaded logo texture, and uniform — no shared world/UI resources. The app-facing renderer API stays small: install decoded splash pixels, render a black/logo frame, receive a `PresentHandle` after successful submission, clear the logo. Transient or skipped acquire paths return no handle, so startup timing does not advance. The app decodes the PNG on the boot thread (CPU-only, no wgpu) and hands pixels to the renderer, which owns all GPU work. Independent of the UI system: no `UiPass`, `UiImageRegistry`, `UiReadSnapshot`, glyphon, taffy, or UI JSON.
 
-The resolve applies a near-neutral soft-knee tonemap before the existing flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). The former byte-identity resolve contract is superseded: in-range content remains a visual-parity/manual-GPU gate. The resolve sampler is NEAREST / pixel-aligned. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
-
 **Photosensitivity limiter.** An engine flash floor on the screen-effect channels `screen.flash` and `screen.vignette`. On by default; only a player's button press disables it — the engine accessibility panel's control or a menu button firing its field action — never a reaction, manifest field, or script write (`ui.md` §4.1). The enable flag reaches the resolve through the UI snapshot and fails safe: absent or malformed reads as on; only an explicit `false` disables. It is a CPU *channel clamp*: each channel is limited as it packs into the effect uniform, so the GPU sees an ordinary uniform and the limiter adds no GPU work. Each channel keeps its own flash window and is judged by its blend strength (flash alpha, vignette strength) as a full-screen change: an overlay's darker state is its weaker blend. Rules:
 
 - **At most 3 flashes in any 1 s window**, a flash being a pair of opposing transitions (WCAG 2.2, SC 2.3.1). A transition is a same-sign change accumulated from the last extremum (IRIS's model), counted once it reaches 0.1 with the darker state below 0.8, so a smooth strobe counts at any refresh rate. A counted excursion counts once; a reversal starts a new one. A reversal must itself reach the threshold to end an excursion: a smaller dip is not an opposing change under WCAG's pair definition, so a strobe climbing in sub-threshold steps with tiny dips between them still counts.
@@ -568,9 +597,10 @@ Windows and rates run on **presented-frame time** — not frame count, and not U
 
 Nothing else is limited today: world lights and light animation, UI panels, emissives, flipbooks, camera cuts, and load loops through the boot splash reach the player unlimited. A source-level floor for them is planned, not built. A GPU frame limiter over the composited frame was built and withdrawn: its per-cell means could not tell light added to a region from light moved through it, so ordinary camera motion read as flashes.
 
-**Frame capture.** Headless capture runs the same soft-knee
-tonemap into a capture-only `Rgba8UnormSrgb` target after the bloom composite,
-then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
+**Frame capture.** Headless capture renders at its requested resolution,
+divisor 1 whatever the player's render resolution, so captures stay comparable
+across machines. It runs the same soft-knee tonemap into a capture-only
+`Rgba8UnormSrgb` target after the bloom composite, then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the
 readback (per the boundary rule). Capture never presents, so it stays outside
 the photosensitivity limiter and never enters its history.
@@ -733,7 +763,7 @@ Right-handed, Y-up. Forward is −Z. Matches glam defaults and wgpu NDC.
 | Horizontal FOV | 100° | Modern boomer shooter default. Configurable 60°–130°. Vertical FOV derived from aspect ratio. |
 | Near clip | 0.1 units | Close enough for weapon models without z-fighting |
 | Far clip | 4096.0 units | Covers the full coordinate range for large maps |
-| Aspect ratio | Derived from window | Updated on window resize |
+| Aspect ratio | Derived from the scene extent (§7.8) | Updated whenever the scene extent changes; the viewmodel projection follows it |
 
 ### View Matrix
 

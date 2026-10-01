@@ -7,6 +7,11 @@ mod lighting;
 mod render;
 mod shadow_cull;
 
+#[cfg(test)]
+#[global_allocator]
+static UPLOAD_TEST_ALLOCATOR: postretro_sim::alloc_probe::CountingAllocator =
+    postretro_sim::alloc_probe::CountingAllocator;
+
 pub use candidate_cull::{
     GatherStatus, gather_candidate_leaves, visibility_path_uses_candidate_cull,
 };

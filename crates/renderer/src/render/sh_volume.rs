@@ -326,7 +326,7 @@ impl AnimatedLightBuffers {
 
     /// Upload the CPU mirror to the GPU descriptor buffer. No-op when clean.
     /// Must be called before the compose pass and forward pass each frame.
-    pub fn upload_descriptors_if_dirty(&mut self, queue: &wgpu::Queue) {
+    pub fn upload_descriptors_if_dirty(&mut self, queue: &crate::render::uploads::UploadQueue) {
         if !self.dirty {
             return;
         }
@@ -353,6 +353,11 @@ fn descriptor_indices_have_active(
 }
 
 impl ShVolumeResources {
+    #[cfg(test)]
+    pub(crate) fn grid_info_buffer_for_test(&self) -> &wgpu::Buffer {
+        &self.grid_info_buffer
+    }
+
     /// Build group 3 (SH volume) resources. `section` is `None` when the PRL
     /// file had no `OctahedralShVolume` section — in that case dummy 1×1
     /// octahedral atlas textures and a dummy 1×1×1 depth-moment texture are
@@ -898,7 +903,11 @@ impl ShVolumeResources {
             })
     }
 
-    pub fn set_probe_occlusion_enabled(&mut self, queue: &wgpu::Queue, enabled: bool) {
+    pub fn set_probe_occlusion_enabled(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        enabled: bool,
+    ) {
         if self.probe_occlusion_enabled == enabled {
             return;
         }

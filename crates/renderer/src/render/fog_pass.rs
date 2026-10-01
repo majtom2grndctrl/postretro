@@ -641,7 +641,12 @@ impl FogPass {
     /// single-frame deactivations caused by transient portal narrowing.
     /// The repack scratch buffers retain their capacity across frames, so no
     /// allocation occurs on the steady-state per-frame path.
-    pub fn repack_active(&mut self, queue: &wgpu::Queue, cell_mask: u32, now_seconds: f64) {
+    pub fn repack_active(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        cell_mask: u32,
+        now_seconds: f64,
+    ) {
         let active_mask = compute_active_mask_with_hysteresis(
             &mut self.last_active_time,
             self.live_mask,
@@ -711,7 +716,7 @@ impl FogPass {
     /// Upload the per-frame fog params (inv view-proj, camera pos, step size).
     pub fn upload_params(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         inv_view_proj: Mat4,
         camera_position: Vec3,
         near_clip: f32,
@@ -733,7 +738,11 @@ impl FogPass {
     /// Upload the per-frame point-light list for the fog raymarch. Truncates
     /// at `MAX_FOG_POINT_LIGHTS` with a warning. Updates `point_count` so the
     /// next `upload_params` packs the live bound into `FogParams.point_count`.
-    pub fn upload_points(&mut self, queue: &wgpu::Queue, points: &[FogPointLight]) {
+    pub fn upload_points(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        points: &[FogPointLight],
+    ) {
         let count = points.len().min(MAX_FOG_POINT_LIGHTS);
         if points.len() > MAX_FOG_POINT_LIGHTS {
             log::warn!(
@@ -750,7 +759,11 @@ impl FogPass {
     }
 
     /// Upload the per-frame spot-light list for the fog raymarch beams.
-    pub fn upload_spots(&mut self, queue: &wgpu::Queue, spots: &[FogSpotLight]) {
+    pub fn upload_spots(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        spots: &[FogSpotLight],
+    ) {
         let capped = spots
             .len()
             .min(crate::lighting::spot_shadow::SHADOW_POOL_SIZE);

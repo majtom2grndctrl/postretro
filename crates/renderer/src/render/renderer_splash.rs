@@ -13,6 +13,7 @@ impl Renderer {
     /// Present an acquired frame handle. Surface ownership stays inside the
     /// renderer; callers only decide whether to present a returned handle.
     pub fn present(&self, handle: PresentHandle) {
+        self.queue.assert_empty("present");
         handle.present();
     }
 
@@ -22,10 +23,11 @@ impl Renderer {
     /// (e.g. on resume) swaps the texture. Returns the decoded pixel dimensions
     /// for boot logging.
     pub fn install_splash_pixels(&mut self, loaded: &postretro_ui::UiTexture) -> [u32; 2] {
+        self.queue.assert_empty("boot splash install");
         self.boot_splash
             .as_mut()
             .expect("splash pixels require a windowed renderer")
-            .install_logo(&self.device, &self.queue, loaded)
+            .install_logo(&self.device, self.queue.raw(), loaded)
     }
 
     /// Render one boot-splash frame to the swapchain: clear to black, then draw
@@ -37,6 +39,7 @@ impl Renderer {
     /// The boot splash writes the swapchain directly — it never touches
     /// `scene_color`, the UI pass, or `UiReadSnapshot` (rendering_pipeline §7.8).
     pub fn render_splash_frame(&mut self) -> Result<Option<PresentHandle>> {
+        self.queue.assert_empty("boot splash frame");
         // Splash and loading frames have no camera; commit here so a resize
         // still reconfigures the swapchain once before acquire.
         self.commit_extents();
@@ -56,9 +59,10 @@ impl Renderer {
         self.boot_splash
             .as_ref()
             .expect("splash rendering requires a windowed renderer")
-            .encode(&self.queue, &mut encoder, &view, viewport);
+            .encode(self.queue.raw(), &mut encoder, &view, viewport);
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue
+            .submit_unbatched(std::iter::once(encoder.finish()), "boot splash");
         Ok(Some(handle))
     }
 
@@ -107,6 +111,7 @@ impl Renderer {
         &mut self,
         templates: Vec<postretro_scripting_core::data_descriptors::PresentationTemplate>,
     ) {
+        self.queue.assert_empty("committed manifest replacement");
         self.full_mut().ui.replace_presentation_templates(templates);
     }
 

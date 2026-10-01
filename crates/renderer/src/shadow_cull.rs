@@ -244,7 +244,7 @@ impl ShadowCullPipeline {
     /// depth render passes.
     pub fn dispatch_occupied_slots_filtered(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         slot_matrices: &[Option<Mat4>],
         mut should_dispatch: impl FnMut(usize) -> bool,

@@ -61,7 +61,7 @@ impl StreamingAnimatedPass {
 
     pub(in crate::render::sh_streaming::direct_compose) fn clear_all_row_pairs(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) -> Result<(), ShResidencyDrainError> {
         self.sparse.clear_all_row_pairs(queue)
     }
@@ -72,7 +72,7 @@ impl StreamingAnimatedPass {
     )]
     pub(in crate::render::sh_streaming::direct_compose) fn dispatch(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         debug_override: AnimatedDirectShDebugOverride,

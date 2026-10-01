@@ -442,7 +442,7 @@ impl CandidateCullPipeline {
     pub fn dispatch(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         leaf_buffer: &wgpu::Buffer,
         indirect_buffer: &wgpu::Buffer,

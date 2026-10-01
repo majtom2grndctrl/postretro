@@ -2,7 +2,8 @@
 // use a second pipeline but must still ride the one whole-composition encode.
 
 use super::{UiComposition, UiImageRegistry, UiInstance, UiPass, UiRingInstance, UiText, tree};
-use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8_staged, try_init_gpu};
+use crate::render::uploads::UploadQueue;
 
 const TARGET: u32 = 64;
 const RING_SAMPLE: (u32, u32) = (32, 13);
@@ -118,17 +119,30 @@ fn render_layers(ctx: &GpuCtx, layers: &[tree::UiDrawData]) -> Readback {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("ring composition encoder"),
         });
+    let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
     pass.encode(
         &mut font_system,
         &ctx.device,
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         &view,
         [TARGET, TARGET],
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
         &composition,
     );
-    read_texture_rgba8(ctx, &target, TARGET, TARGET, encoder)
+    let expected_writes = 1
+        + composition
+            .batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count()
+        + composition
+            .ring_batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count();
+    assert_eq!(uploads.counts().writes, expected_writes as u64);
+    read_texture_rgba8_staged(ctx, &uploads, &target, TARGET, TARGET, encoder)
 }
 
 #[test]

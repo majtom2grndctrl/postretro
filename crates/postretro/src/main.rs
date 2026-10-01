@@ -5623,11 +5623,12 @@ impl App {
         if has_system_commands {
             self.dispatch_system_commands();
         }
+        // Commit reloads before options stage uploads for the upcoming frame.
+        self.poll_staged_manifest_results();
         self.update_player_options(frame_dt, options_menu_was_open);
         self.commit_render_extents();
         self.reconcile_ui_focus();
         self.apply_frontend_menu_camera_pose_if_present();
-        self.poll_staged_manifest_results();
         true
     }
 

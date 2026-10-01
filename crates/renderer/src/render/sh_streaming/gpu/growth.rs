@@ -47,7 +47,7 @@ impl StreamingGpuPools {
             .and_then(|bytes| bytes.checked_sub(current_direct_active))
             .and_then(|bytes| bytes.checked_add(self.grid_info.size()))
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let replacement = DenseTextures::new(device, queue, base, sources, shape, sh)?;
+        let replacement = DenseTextures::new(device, queue.raw(), base, sources, shape, sh)?;
         let replacement_grid_info = create_grid_info(device, base, shape, probe_occlusion_enabled);
         let (replacement_bind_group, replacement_mesh_bind_group) = create_sample_bind_groups(
             device,
@@ -173,7 +173,7 @@ impl StreamingGpuPools {
         queue.submit(std::iter::once(encoder.finish()));
         let complete = Arc::new(AtomicBool::new(false));
         let callback_complete = Arc::clone(&complete);
-        queue.on_submitted_work_done(move || {
+        queue.raw().on_submitted_work_done(move || {
             callback_complete.store(true, Ordering::Release);
         });
         self.retiring_dense = Some(RetiringDenseGeneration {
@@ -199,7 +199,7 @@ impl StreamingGpuPools {
     pub(in crate::render::sh_streaming) fn grow_sparse(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         required: &SparseCapacityFloors,
@@ -370,7 +370,7 @@ impl StreamingGpuPools {
         let (retiring_promotion_capacity, retiring_animated_capacity) = self
             .direct_compose
             .as_ref()
-            .map_or(Ok((None, None)), |direct| {
+            .map_or(Ok::<_, ShResidencyDrainError>((None, None)), |direct| {
                 Ok((
                     promotion_replacement
                         .as_ref()
@@ -407,7 +407,7 @@ impl StreamingGpuPools {
         queue.submit(std::iter::once(encoder.finish()));
         let complete = Arc::new(AtomicBool::new(false));
         let callback_complete = Arc::clone(&complete);
-        queue.on_submitted_work_done(move || {
+        queue.raw().on_submitted_work_done(move || {
             callback_complete.store(true, Ordering::Release);
         });
         if let Some(replacement) = indirect_replacement {

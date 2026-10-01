@@ -173,7 +173,7 @@ impl SyntheticMap {
         }
     }
 
-    fn base(&self) -> postretro_level_loader::ShStreamBaseMetadata {
+    pub(super) fn base(&self) -> postretro_level_loader::ShStreamBaseMetadata {
         postretro_level_loader::ShStreamBaseMetadata {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -200,7 +200,7 @@ impl SyntheticMap {
         }
     }
 
-    fn sources(&self) -> postretro_level_loader::ShStreamSourceMetadata {
+    pub(super) fn sources(&self) -> postretro_level_loader::ShStreamSourceMetadata {
         let rows = self.row_count() as usize;
         let sparse = |section_id, animation_descriptor_indices| {
             postretro_level_loader::ShStreamSparseMetadata {

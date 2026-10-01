@@ -93,6 +93,7 @@ impl Renderer {
                     fog_reachable.is_empty(),
                     false,
                 )?;
+                self.queue.flush_skipped_frame();
                 return Ok(None);
             };
             let view = handle.surface_view();
@@ -128,6 +129,9 @@ impl Renderer {
             // pass via `render_debug_ui`.
             Ok(Some(handle))
         })();
+        if frame.is_ok() {
+            self.queue.complete_frame();
+        }
         Ok(ShDrainFrameResult {
             outcome,
             compose_submitted,
@@ -341,6 +345,27 @@ impl Renderer {
         let (world_mesh_frame_plan, viewmodel_mesh_frame_plan) =
             mesh_frame_plans_for_passes(mesh_frame_plans.as_ref());
 
+        // Both mesh passes share one params buffer and the same frame values.
+        if render_world && (world_mesh_frame_plan.is_some() || viewmodel_mesh_frame_plan.is_some())
+        {
+            {
+                let frame_light_term_mask = self.frame_light_term_mask();
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.mesh_pass.write_light_params(
+                    queue,
+                    full.total_light_count,
+                    full.light_count,
+                    full.light_count + full.animated_baked_light_count as u32,
+                    full.mesh_dynamic_time,
+                    frame_light_term_mask.bits(),
+                    full.ambient_floor,
+                );
+            }
+        }
+
         if !render_world {
             let full = self.full_mut();
             full.spot_entity_occluders_submitted = 0;
@@ -546,28 +571,6 @@ impl Renderer {
         if render_world {
             if let Some(plan) = world_mesh_frame_plan {
                 let _skinned_scope = cpu.scope(RenderStage::SkinnedMesh);
-                // Mesh group-2 params uniform (binding 4): the runtime-light count, the
-                // frame's render-clock time (the SAME value written to forward
-                // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
-                // so the scripted-light curves the mesh loop evaluates stay
-                // phase-coherent), and the captured light-term mask. The UI's
-                // live value must never be read during recording.
-                {
-                    let frame_light_term_mask = self.frame_light_term_mask();
-                    let Self { queue, full, .. } = self;
-                    let full = full
-                        .as_mut()
-                        .expect("renderer full-init must complete before full-ready paths run");
-                    full.mesh_pass.write_light_params(
-                        queue,
-                        full.total_light_count,
-                        full.light_count,
-                        full.light_count + full.animated_baked_light_count as u32,
-                        full.mesh_dynamic_time,
-                        frame_light_term_mask.bits(),
-                        full.ambient_floor,
-                    );
-                }
                 let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Skinned Mesh Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -802,22 +805,6 @@ impl Renderer {
         if render_world {
             if let Some(plan) = viewmodel_mesh_frame_plan {
                 let _viewmodel_scope = cpu.scope(RenderStage::Viewmodel);
-                {
-                    let frame_light_term_mask = self.frame_light_term_mask();
-                    let Self { queue, full, .. } = self;
-                    let full = full
-                        .as_mut()
-                        .expect("renderer full-init must complete before full-ready paths run");
-                    full.mesh_pass.write_light_params(
-                        queue,
-                        full.total_light_count,
-                        full.light_count,
-                        full.light_count + full.animated_baked_light_count as u32,
-                        full.mesh_dynamic_time,
-                        frame_light_term_mask.bits(),
-                        full.ambient_floor,
-                    );
-                }
                 let mut viewmodel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Skinned Viewmodel Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -892,8 +879,9 @@ impl Renderer {
 
     /// Submit a windowed frame after its scene, UI, and resolve commands have
     /// been recorded. Capture owns a separate submit/readback sequence.
-    fn submit_windowed_frame(&mut self, encoder: wgpu::CommandEncoder) {
+    pub(super) fn submit_windowed_frame(&mut self, encoder: wgpu::CommandEncoder) {
         self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.assert_empty("drawn frame submit");
         self.full_mut().ui.mark_submitted();
 
         #[cfg(feature = "dev-tools")]

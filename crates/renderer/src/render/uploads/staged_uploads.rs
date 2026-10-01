@@ -1,4 +1,4 @@
-//! One staging allocation per residency upload batch.
+//! One shared staging allocation per frame or residency upload batch.
 //!
 //! `Queue::write_buffer` and `Queue::write_texture` allocate a driver staging
 //! buffer per call, roughly 40 µs each on Metal. A real cluster install issues
@@ -8,14 +8,26 @@
 //! into one command buffer, so upload cost scales with copied bytes and copy
 //! count.
 //!
-//! Ordering contract: a batch is submitted before any later queue write or
-//! submission touches the same resources. `Queue::submit` flushes earlier
-//! `write_*` calls ahead of the batch, so program order is preserved as long
-//! as no `write_*` to a batched resource happens between recording a batch
-//! and submitting it.
+//! Copies preserve write order, including overlapping ranges. `UploadQueue`
+//! consumes pending frame writes before the first subsequent scene or drain
+//! submission. Raw queue writes execute ahead of submitted copies, so a raw
+//! write must never follow a pending staged write to the same resource; the
+//! upload chokepoint asserts this and the source drift gate owns raw escapes.
 
-use super::ShResidencyDrainError;
+use super::UploadError;
 use super::staging_pool::StagingPool;
+
+#[inline]
+fn gpu_call<T>(call: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    {
+        super::allocation_tests::exclude_wgpu(call)
+    }
+    #[cfg(not(test))]
+    {
+        call()
+    }
+}
 
 const TEXTURE_ROW_ALIGNMENT: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
 const BUFFER_ALIGNMENT: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
@@ -42,6 +54,11 @@ enum StagedCopy {
 pub(crate) struct StagedUploads {
     bytes: Vec<u8>,
     copies: Vec<StagedCopy>,
+    merge_contiguous: bool,
+    #[cfg(test)]
+    record_windows: u64,
+    #[cfg(test)]
+    record_allocs: u64,
 }
 
 impl StagedUploads {
@@ -55,18 +72,25 @@ impl StagedUploads {
         Self {
             bytes: scratch,
             copies: Vec::new(),
+            merge_contiguous: true,
+            #[cfg(test)]
+            record_windows: 0,
+            #[cfg(test)]
+            record_allocs: 0,
         }
     }
 
     /// Stage `data` for `target[offset..]`. Offset and length follow the
-    /// `Queue::write_buffer` rules (multiples of four bytes). A write that
-    /// continues the previous one in the same buffer extends its copy.
+    /// `Queue::write_buffer` rules (multiples of four bytes). In `from_scratch`
+    /// residency batches, a write continuing the previous one in the same
+    /// buffer extends its copy. Default reusable frame batches keep one copy
+    /// per write.
     pub(crate) fn write_buffer(
         &mut self,
         target: &wgpu::Buffer,
         offset: u64,
         data: &[u8],
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<(), UploadError> {
         self.stage_buffer(target, offset, data.len(), |bytes| {
             bytes.extend_from_slice(data)
         })
@@ -80,7 +104,7 @@ impl StagedUploads {
         target: &wgpu::Buffer,
         offset: u64,
         halves: &[u16],
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<(), UploadError> {
         let len = halves.len().div_ceil(2) * BUFFER_ALIGNMENT;
         self.stage_buffer(target, offset, len, |bytes| append_f16_words(bytes, halves))
     }
@@ -91,27 +115,26 @@ impl StagedUploads {
         offset: u64,
         len: usize,
         append: impl FnOnce(&mut Vec<u8>),
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<(), UploadError> {
         if len == 0 {
             return Ok(());
         }
         if offset % BUFFER_ALIGNMENT as u64 != 0 || len % BUFFER_ALIGNMENT != 0 {
-            return Err(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed buffer upload is not word aligned",
-            });
+            return Err(UploadError::Alignment);
         }
         let size = len as u64;
         let end = offset
             .checked_add(size)
             .filter(|&end| end <= target.size())
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            .ok_or(UploadError::Bounds)?;
         let source_offset = self.bytes.len() as u64;
-        if let Some(StagedCopy::Buffer {
-            target: last_target,
-            source_offset: last_source,
-            target_offset: last_offset,
-            size: last_size,
-        }) = self.copies.last_mut()
+        if self.merge_contiguous
+            && let Some(StagedCopy::Buffer {
+                target: last_target,
+                source_offset: last_source,
+                target_offset: last_offset,
+                size: last_size,
+            }) = self.copies.last_mut()
             && *last_target == *target
             && *last_source + *last_size == source_offset
             && *last_offset + *last_size == offset
@@ -141,18 +164,17 @@ impl StagedUploads {
         bytes_per_row: u32,
         rows_per_image: u32,
         extent: wgpu::Extent3d,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<(), UploadError> {
         let rows = usize::try_from(rows_per_image)
             .ok()
             .and_then(|rows| rows.checked_mul(extent.depth_or_array_layers as usize))
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+            .ok_or(UploadError::Bounds)?;
         let (source_offset, padded_row) =
             stage_texture_rows(&mut self.bytes, data, bytes_per_row as usize, rows)?;
         self.copies.push(StagedCopy::Texture {
             target: target.clone(),
             source_offset: source_offset as u64,
-            bytes_per_row: u32::try_from(padded_row)
-                .map_err(|_| ShResidencyDrainError::SlotOverflow)?,
+            bytes_per_row: u32::try_from(padded_row).map_err(|_| UploadError::Bounds)?,
             rows_per_image,
             origin,
             extent,
@@ -167,7 +189,7 @@ impl StagedUploads {
         self,
         pool: &mut StagingPool,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &super::UploadQueue,
     ) -> Vec<u8> {
         if self.copies.is_empty() {
             return self.bytes;
@@ -190,20 +212,80 @@ impl StagedUploads {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) -> RecordedUploads {
+        let staging = self.record_reusing(pool, device, encoder);
+        RecordedUploads {
+            scratch: self.bytes,
+            staging,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.copies.is_empty()
+    }
+    pub(crate) fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+    pub(crate) fn copy_count(&self) -> usize {
+        self.copies.len()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn touches_buffer(&self, buffer: &wgpu::Buffer) -> bool {
+        self.copies
+            .iter()
+            .any(|copy| matches!(copy, StagedCopy::Buffer { target, .. } if target == buffer))
+    }
+
+    /// Keep both CPU vectors allocated across frame submissions.
+    pub(crate) fn record_reusing(
+        &mut self,
+        pool: &mut StagingPool,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Option<wgpu::Buffer> {
+        #[cfg(test)]
+        {
+            let (result, allocs) = super::allocation_tests::measure_storage(|| {
+                self.record_reusing_inner(pool, device, encoder)
+            });
+            self.record_windows += 1;
+            self.record_allocs += allocs as u64;
+            result
+        }
+        #[cfg(not(test))]
+        {
+            self.record_reusing_inner(pool, device, encoder)
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn storage_capacities(&self) -> (usize, usize) {
+        (self.bytes.capacity(), self.copies.capacity())
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_allocation_counts(&self) -> (u64, u64) {
+        (self.record_windows, self.record_allocs)
+    }
+
+    #[inline]
+    fn record_reusing_inner(
+        &mut self,
+        pool: &mut StagingPool,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Option<wgpu::Buffer> {
         if self.copies.is_empty() {
-            return RecordedUploads {
-                scratch: self.bytes,
-                staging: None,
-            };
+            return None;
         }
         self.bytes
             .resize(self.bytes.len().next_multiple_of(BUFFER_ALIGNMENT), 0);
         let len = self.bytes.len() as u64;
         let staging = pool.acquire(device, len);
-        staging
-            .get_mapped_range_mut(..len)
-            .copy_from_slice(&self.bytes);
-        staging.unmap();
+        let mut mapped = gpu_call(|| staging.get_mapped_range_mut(..len));
+        mapped.copy_from_slice(&self.bytes);
+        gpu_call(|| drop(mapped));
+        gpu_call(|| staging.unmap());
         for copy in &self.copies {
             match copy {
                 StagedCopy::Buffer {
@@ -211,13 +293,15 @@ impl StagedUploads {
                     source_offset,
                     target_offset,
                     size,
-                } => encoder.copy_buffer_to_buffer(
-                    &staging,
-                    *source_offset,
-                    target,
-                    *target_offset,
-                    *size,
-                ),
+                } => gpu_call(|| {
+                    encoder.copy_buffer_to_buffer(
+                        &staging,
+                        *source_offset,
+                        target,
+                        *target_offset,
+                        *size,
+                    )
+                }),
                 StagedCopy::Texture {
                     target,
                     source_offset,
@@ -225,29 +309,30 @@ impl StagedUploads {
                     rows_per_image,
                     origin,
                     extent,
-                } => encoder.copy_buffer_to_texture(
-                    wgpu::TexelCopyBufferInfo {
-                        buffer: &staging,
-                        layout: wgpu::TexelCopyBufferLayout {
-                            offset: *source_offset,
-                            bytes_per_row: Some(*bytes_per_row),
-                            rows_per_image: Some(*rows_per_image),
+                } => gpu_call(|| {
+                    encoder.copy_buffer_to_texture(
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &staging,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: *source_offset,
+                                bytes_per_row: Some(*bytes_per_row),
+                                rows_per_image: Some(*rows_per_image),
+                            },
                         },
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        texture: target,
-                        mip_level: 0,
-                        origin: *origin,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    *extent,
-                ),
+                        wgpu::TexelCopyTextureInfo {
+                            texture: target,
+                            mip_level: 0,
+                            origin: *origin,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        *extent,
+                    )
+                }),
             }
         }
-        RecordedUploads {
-            scratch: self.bytes,
-            staging: Some(staging),
-        }
+        self.bytes.clear();
+        self.copies.clear();
+        Some(staging)
     }
 }
 
@@ -272,7 +357,7 @@ impl RecordedUploads {
 
 /// Append f16 halves packed two per little-endian word, the low half first;
 /// an odd tail pads its word with zero.
-pub(in crate::render::sh_streaming) fn append_f16_words(bytes: &mut Vec<u8>, halves: &[u16]) {
+pub(crate) fn append_f16_words(bytes: &mut Vec<u8>, halves: &[u16]) {
     if cfg!(target_endian = "little") {
         bytes.extend_from_slice(bytemuck::cast_slice(halves));
     } else {
@@ -291,19 +376,16 @@ fn stage_texture_rows(
     data: &[u8],
     row_bytes: usize,
     rows: usize,
-) -> Result<(usize, usize), ShResidencyDrainError> {
+) -> Result<(usize, usize), UploadError> {
     if row_bytes == 0 || rows == 0 || row_bytes.checked_mul(rows) != Some(data.len()) {
-        return Err(ShResidencyDrainError::MalformedChunk {
-            cluster_id: 0,
-            reason: "streamed texture upload rows disagree with their payload",
-        });
+        return Err(UploadError::TexturePayload);
     }
     let padded_row = row_bytes.next_multiple_of(TEXTURE_ROW_ALIGNMENT);
     let start = staging.len().next_multiple_of(TEXTURE_ROW_ALIGNMENT);
     let end = padded_row
         .checked_mul(rows)
         .and_then(|bytes| bytes.checked_add(start))
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        .ok_or(UploadError::Bounds)?;
     staging.resize(start, 0);
     staging.reserve(end - start);
     for row in data.chunks_exact(row_bytes) {

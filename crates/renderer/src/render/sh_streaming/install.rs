@@ -7,7 +7,7 @@ use super::*;
 /// against a state that has no GPU pools.
 pub(super) struct InstallGpu<'a> {
     pub(super) device: &'a wgpu::Device,
-    pub(super) queue: &'a wgpu::Queue,
+    pub(super) queue: &'a crate::render::uploads::UploadQueue,
     pub(super) sh: &'a mut crate::render::sh_volume::ShVolumeResources,
     pub(super) uniform_bind_group_layout: &'a wgpu::BindGroupLayout,
     pub(super) selection_weights: &'a wgpu::Buffer,
@@ -419,7 +419,7 @@ impl ShResidencyState {
         &mut self,
         uploads: StagedUploads,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
     ) {
         if let Some(pools) = self.gpu.as_mut() {
             pools.submit_uploads(uploads, device, queue);

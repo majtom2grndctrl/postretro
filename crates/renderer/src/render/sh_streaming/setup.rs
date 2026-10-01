@@ -332,7 +332,7 @@ impl ShResidencyState {
                 .global_base_slot
                 .checked_add(layout.tile_count)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            Ok(total.max(end))
+            Ok::<_, ShResidencyDrainError>(total.max(end))
         })?;
         let fixed_metadata_bytes = gpu::initial_fixed_metadata_bytes(
             manifest.base(),

@@ -17,7 +17,8 @@
 // thing that fails CI.
 
 use super::{UiBatch, UiComposition, UiDrawList, UiInstance, UiPass};
-use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
+use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8_staged, try_init_gpu};
+use crate::render::uploads::UploadQueue;
 
 /// Offscreen target size. Even width so the left/right halves split cleanly at
 /// `width / 2`. 64*4 = 256 bytes/row already meets `COPY_BYTES_PER_ROW_ALIGNMENT`,
@@ -88,10 +89,11 @@ fn render_two_batches_offscreen(ctx: &GpuCtx) -> Readback {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("multi_batch encoder"),
         });
+    let uploads = UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
     pass.encode(
         &mut font_system,
         &ctx.device,
-        &ctx.queue,
+        &uploads,
         &mut encoder,
         &view,
         viewport,
@@ -99,7 +101,19 @@ fn render_two_batches_offscreen(ctx: &GpuCtx) -> Readback {
         &composition,
     );
 
-    read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
+    let expected_writes = 1
+        + composition
+            .batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count()
+        + composition
+            .ring_batches
+            .iter()
+            .filter(|batch| !batch.instances.is_empty())
+            .count();
+    assert_eq!(uploads.counts().writes, expected_writes as u64);
+    read_texture_rgba8_staged(ctx, &uploads, &target, TARGET_W, TARGET_H, encoder)
 }
 
 /// Two batches drawn into disjoint halves keep their OWN colors: the left half

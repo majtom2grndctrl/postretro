@@ -42,6 +42,9 @@ dev-tools = [
 ]
 
 [dev-dependencies]
+postretro-sim = { workspace = true, features = ["test-support"] }
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 naga = { version = "29", features = ["wgsl-in"] }
 postretro-test-log-capture.workspace = true
 postretro-ui = { workspace = true, features = ["test-fixtures"] }

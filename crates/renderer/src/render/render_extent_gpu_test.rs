@@ -8,11 +8,21 @@ use postretro_render_cpu::render_extent::{Extent, RenderResolutionPolicy, scene_
 use super::Renderer;
 use super::bloom::bloom_level_dimensions_table;
 use super::fog_pass::scatter_dims_for;
-use super::gpu_test_harness::{GpuCtx, read_texture_rgba8};
+use super::gpu_test_harness::{GpuCtx, read_texture_rgba8_staged};
 use super::sdf_shadow::compute_half_res;
 
 fn offscreen(width: u32, height: u32) -> Option<Renderer> {
-    Renderer::new_offscreen(width, height).ok()
+    match Renderer::new_offscreen(width, height) {
+        Ok(renderer) => {
+            eprintln!("[UploadProof] extent adapter case ran");
+            Some(renderer)
+        }
+        Err(error) if error.to_string().contains("requires a GPU adapter") => {
+            eprintln!("[UploadProof] skipped: no extent adapter ({error:#})");
+            None
+        }
+        Err(error) => panic!("extent renderer initialization failed: {error:#}"),
+    }
 }
 
 fn texture_extent(texture: &wgpu::Texture) -> Extent {
@@ -189,10 +199,12 @@ fn capture_renders_at_its_requested_resolution_regardless_of_render_resolution()
         96,
         54,
     );
-    let pixels = renderer
-        .read_texture_rgba8(&capture, 96, 54, encoder)
-        .expect("capture readback");
-    assert_eq!(pixels.len(), 96 * 54 * 4);
+    let ctx = GpuCtx {
+        device: renderer.device.clone(),
+        queue: renderer.queue.raw().clone(),
+    };
+    let pixels = read_texture_rgba8_staged(&ctx, &renderer.queue, &capture, 96, 54, encoder);
+    assert_eq!(pixels.pixels.len(), 96 * 54 * 4);
 }
 
 // P13–P15: the layer always matches the surface and is cleared transparent
@@ -210,7 +222,7 @@ fn ui_layer_is_cleared_every_frame_even_with_no_ui() {
     assert_eq!(texture_extent(&layer), surface);
 
     // Stand in for last frame's UI: opaque texels everywhere.
-    renderer.queue.write_texture(
+    renderer.queue.raw().write_texture(
         layer.as_image_copy(),
         &vec![255u8; (surface.width * surface.height * 4) as usize],
         wgpu::TexelCopyBufferLayout {
@@ -228,9 +240,16 @@ fn ui_layer_is_cleared_every_frame_even_with_no_ui() {
     renderer.record_ui_layer(&mut encoder, &mut font_system);
     let ctx = GpuCtx {
         device: renderer.device.clone(),
-        queue: renderer.queue.clone(),
+        queue: renderer.queue.raw().clone(),
     };
-    let readback = read_texture_rgba8(&ctx, &layer, surface.width, surface.height, encoder);
+    let readback = read_texture_rgba8_staged(
+        &ctx,
+        &renderer.queue,
+        &layer,
+        surface.width,
+        surface.height,
+        encoder,
+    );
     assert!(
         readback.pixels.iter().all(|&b| b == 0),
         "a frame with no UI composites no earlier UI"

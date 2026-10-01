@@ -138,7 +138,10 @@ impl Renderer {
                 &mut readback_encoder,
                 &full.sh_volume_resources.total_atlas_texture,
             );
-            queue.submit(std::iter::once(readback_encoder.finish()));
+            queue.submit_unbatched(
+                std::iter::once(readback_encoder.finish()),
+                "dev-tools probe readback",
+            );
         }
     }
 }

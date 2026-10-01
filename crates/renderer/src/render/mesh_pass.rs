@@ -1444,7 +1444,7 @@ impl MeshPass {
     #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         light_count: u32,
         dynamic_light_count: u32,
         scripted_light_count: u32,
@@ -1639,7 +1639,7 @@ impl MeshPass {
     /// the plan already holds only surviving, in-budget instances.
     pub fn plan_and_upload(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         plans: &[&MeshFramePlan],
         scratch: &mut Vec<BonePaletteEntry>,
         cpu: &postretro_stage_timing::StageFrame<super::cpu_stages::RenderStage>,
@@ -1778,7 +1778,7 @@ impl MeshPass {
     /// the existing group-0 allocation size/layout for bind-group compatibility.
     pub(super) fn write_viewmodel_view_projection(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         view_projection: glam::Mat4,
     ) {
         let mut data = [0u8; UNIFORM_SIZE];

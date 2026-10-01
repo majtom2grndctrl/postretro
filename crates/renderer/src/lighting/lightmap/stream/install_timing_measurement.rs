@@ -34,6 +34,7 @@ fn lightmap_drain_install_timing() {
     let Some(ctx) = gpu_or_skip("lightmap_drain_install_timing") else {
         return;
     };
+    let queue = crate::render::uploads::UploadQueue::new(&ctx.device, ctx.queue.clone(), true);
     let blocks = PAIRS_PER_DRAIN * SETS;
     let extents = vec![(EDGE, EDGE); blocks];
     let fixture = block_fixture(
@@ -102,7 +103,7 @@ fn lightmap_drain_install_timing() {
             }
         };
         let (outcome, _) = state
-            .drain(&ctx.device, &ctx.queue, batch)
+            .drain(&ctx.device, &queue, batch)
             .expect("drain succeeds");
         assert_eq!(outcome.installed.len(), PAIRS_PER_DRAIN);
         micros.push(state.counters().last_drain_install_micros);

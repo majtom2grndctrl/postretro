@@ -98,8 +98,10 @@ impl Renderer {
         let boot_splash = splash_pass::BootSplashPass::new(&device, surface_format);
 
         Ok(Self {
-            device,
-            queue,
+            device: device.clone(),
+            queue: UploadQueue::new(&device, queue, false),
+            #[cfg(test)]
+            injected_acquire_failure: false,
             surface: Some(surface),
             extent_state: postretro_render_cpu::render_extent::ExtentState::new(
                 postretro_render_cpu::render_extent::Extent::new(size.width, size.height),
@@ -188,8 +190,10 @@ impl Renderer {
             surface_depth_quality,
         )?;
         Ok(Self {
-            device,
-            queue,
+            device: device.clone(),
+            queue: UploadQueue::new(&device, queue, true),
+            #[cfg(test)]
+            injected_acquire_failure: false,
             surface: None,
             extent_state,
             // Retained as the renderer's common target dimensions/format store.
@@ -236,7 +240,7 @@ impl Renderer {
         self.commit_extents();
         let full = build_full_renderer(
             &self.device,
-            &self.queue,
+            self.queue.raw(),
             self.surface_config.format,
             self.extent_state.committed(),
             self.has_multi_draw_indirect,
@@ -246,6 +250,7 @@ impl Renderer {
             self.surface_depth_quality,
         )?;
         self.full = Some(Box::new(full));
+        self.queue.enable();
         log::info!("[Renderer] Full renderer initialization complete");
         Ok(())
     }

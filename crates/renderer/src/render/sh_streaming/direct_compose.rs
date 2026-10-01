@@ -377,7 +377,7 @@ impl StreamingDirectCompose {
 
     pub(super) fn clear_all_row_pairs(
         &self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         section_id: u32,
     ) -> Result<(), ShResidencyDrainError> {
         match section_id {
@@ -396,7 +396,7 @@ impl StreamingDirectCompose {
 
     pub(super) fn dispatch_promotion(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         light_term_mask: LightTermMask,
         debug_override: DirectShDebugOverride,
@@ -419,7 +419,7 @@ impl StreamingDirectCompose {
     )]
     pub(super) fn dispatch_animated(
         &mut self,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         debug_override: AnimatedDirectShDebugOverride,

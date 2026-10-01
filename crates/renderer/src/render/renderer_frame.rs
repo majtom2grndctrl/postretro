@@ -71,7 +71,8 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue
+            .submit_unbatched(std::iter::once(encoder.finish()), "PNG readback");
 
         let slice = buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -116,7 +117,17 @@ impl Renderer {
         self.surface_reconfigure_pending = false;
     }
 
+    #[cfg(test)]
+    pub(super) fn inject_acquire_failure_for_test(&mut self) {
+        self.injected_acquire_failure = true;
+    }
+
     pub(super) fn acquire_present_handle(&mut self, phase: &str) -> Result<Option<PresentHandle>> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.injected_acquire_failure) {
+            return Ok(None);
+        }
+
         if self.surface.is_none() {
             anyhow::bail!("{phase} requires a windowed renderer");
         }

@@ -76,6 +76,7 @@ impl Renderer {
     /// retained in boot state so a later full-renderer rebuild keeps the active
     /// profile rather than silently returning to the default.
     pub fn set_bloom_render_profile(&mut self, profile: BloomRenderProfile) {
+        self.queue.assert_empty("hot-reload render-profile commit");
         if self.bloom_render_profile == profile {
             return;
         }

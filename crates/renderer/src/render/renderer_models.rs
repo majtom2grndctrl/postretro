@@ -26,6 +26,8 @@ impl Renderer {
             full,
             ..
         } = self;
+        let _installation = queue.installation();
+        let queue = queue.raw();
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
@@ -299,6 +301,7 @@ impl Renderer {
     /// `"smooth"`-interrupt snapshot store and the per-entity palette cache —
     /// entity seeds are not stable across levels, so stale state must not survive.
     pub fn clear_mesh_pass_for_level_load(&mut self) {
+        self.queue.assert_empty("level mesh install");
         self.full_mut().mesh_pass.clear_for_level_load();
     }
 
@@ -340,7 +343,8 @@ impl Renderer {
             .iter()
             .map(|key_hex| {
                 let key = parse_blake3_key(key_hex);
-                let tex = load_model_diffuse_texture(device, queue, key_hex, key, prm_cache_root);
+                let tex =
+                    load_model_diffuse_texture(device, queue.raw(), key_hex, key, prm_cache_root);
 
                 let character_model_sampler = full
                     .mip_count_character_model_samplers

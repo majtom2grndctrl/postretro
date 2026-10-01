@@ -1377,7 +1377,7 @@ impl SmokePass {
     pub fn record_draws<'a>(
         &'a mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &crate::render::uploads::UploadQueue,
         pass: &mut wgpu::RenderPass<'a>,
         collections: &[(&str, &[u8])],
     ) {

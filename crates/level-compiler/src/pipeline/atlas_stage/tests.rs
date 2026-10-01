@@ -283,3 +283,158 @@ fn scale_region_past_the_bake_layer_cap_fails_by_name_before_cutting() {
     assert!(error.to_string().contains("layer overflow"), "{error}");
     assert!(geometry.face_index_ranges.len() == 3 && geometry.geometry.vertices.len() >= before);
 }
+
+// P8, and the animated term of the overlap contract: a cut face lit by an
+// animated light compiles through the animated path — chunks, weight maps,
+// the compact atlas layout and its shared-vertex and footprint guards — and
+// overlap texels carry bit-identical animated weights on both sides.
+#[test]
+fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_weights() {
+    use std::collections::HashMap;
+
+    use crate::animated_light_chunks::build_placed_animated_light_chunks;
+    use crate::animated_light_weight_maps::{
+        WeightMapInputs, bake_animated_light_weight_maps_controlled,
+    };
+    use crate::chart_raster::CHART_PADDING_TEXELS;
+    use crate::light_namespaces::AnimatedBakedLights;
+    use crate::map_data::LightAnimation;
+
+    // A 9 m floor under a 2 m occluder straddling its cut lines, in cell 1.
+    let (mut geometry, _) = three_leaf_fixture();
+    geometry.geometry.vertices.truncate(0);
+    geometry.geometry.indices.truncate(0);
+    geometry.geometry.faces.truncate(0);
+    geometry.face_index_ranges.truncate(0);
+    push_quad(&mut geometry, 0.0, 9.0, 1);
+    push_quad(&mut geometry, 3.5, 2.0, 1);
+    for vertex in &mut geometry.geometry.vertices[4..] {
+        vertex.position[1] = 1.0;
+        vertex.position[2] += 3.5;
+    }
+
+    let mut lights = lit();
+    let mut animated = lights[0].clone();
+    animated.origin = DVec3::new(4.3, 2.5, 4.6);
+    animated.light_size = 1.0;
+    animated.falloff_range = 9.0;
+    animated.animation = Some(LightAnimation {
+        period: 1.0,
+        phase: 0.0,
+        brightness: Some(vec![1.0, 0.5]),
+        color: None,
+        direction: None,
+        start_active: true,
+    });
+    lights.push(animated);
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&lights);
+    assert_eq!(animated_lights.entries().len(), 1);
+
+    let prepared = lightmap_bake::prepare_atlas_within(
+        &mut geometry,
+        &static_lights,
+        0.1,
+        &[],
+        BlockOrdering::by_cell_id(2),
+        64,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the cut floor prepares");
+    assert!(
+        prepared
+            .charts
+            .iter()
+            .filter(|c| c.window.is_some())
+            .count()
+            >= 4
+    );
+    let (bvh, primitives, bvh_section) = build_bvh(&geometry).unwrap();
+    let (chunks, _) = build_placed_animated_light_chunks(
+        &bvh_section,
+        &animated_lights,
+        &prepared.charts,
+        &prepared.placements,
+        &geometry.face_index_ranges,
+        0.1,
+    );
+    assert!(!chunks.chunks.is_empty());
+    let (animated_list, _) = animated_lights.to_parallel_vecs();
+    let mut weight_maps = bake_animated_light_weight_maps_controlled(
+        &WeightMapInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            chunk_section: &chunks,
+            lights: &animated_list,
+            face_charts: &prepared.charts,
+            face_placements: &prepared.placements,
+            layout: &prepared.layout,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+            static_atlas_layer_count: prepared.layer_count,
+            area_sample_count: 8,
+        },
+        &BakeControl::unrestricted(),
+    )
+    .expect("the animated weights bake");
+
+    // Every texel's weights, keyed by its face's parent-grid texel.
+    let mut by_grid: HashMap<[u32; 2], Vec<(usize, Vec<(u32, u32, [u16; 2])>)>> = HashMap::new();
+    for (index, (chunk, rect)) in chunks
+        .chunks
+        .iter()
+        .zip(&weight_maps.chunk_rects)
+        .enumerate()
+    {
+        let face = chunk.face_index as usize;
+        let Some(origin) = prepared.charts[face].window.map(|w| w.origin) else {
+            continue;
+        };
+        let (_, block_x, block_y) = weight_maps.chunk_block_origin(index).expect("chunk inside its block");
+        let (local_x, local_y) = prepared
+            .layout
+            .local_placement(face, &prepared.placements[face]);
+        for ry in 0..rect.height {
+            for rx in 0..rect.width {
+                let entry =
+                    weight_maps.offset_counts[(rect.texel_offset + ry * rect.width + rx) as usize];
+                let weights = weight_maps.texel_lights
+                    [entry.offset as usize..(entry.offset + entry.count) as usize]
+                    .iter()
+                    .map(|t| (t.light_index, t.weight.to_bits(), t.direction_oct))
+                    .collect();
+                let (cx, cy) = (block_x + rx, block_y + ry);
+                if cx < local_x + CHART_PADDING_TEXELS || cy < local_y + CHART_PADDING_TEXELS {
+                    continue;
+                }
+                let grid = [
+                    cx - local_x - CHART_PADDING_TEXELS + origin[0],
+                    cy - local_y - CHART_PADDING_TEXELS + origin[1],
+                ];
+                by_grid.entry(grid).or_default().push((face, weights));
+            }
+        }
+    }
+    let mut compared = 0;
+    for texels in by_grid.values() {
+        for pair in texels.windows(2) {
+            if pair[0].0 != pair[1].0 {
+                assert_eq!(pair[0].1, pair[1].1, "animated weights differ across a cut");
+                compared += usize::from(!pair[0].1.is_empty());
+            }
+        }
+    }
+    assert!(compared > 0, "lit overlap texels were compared");
+
+    let layout = super::super::animated_atlas_stage::layout_animated_atlas(
+        &mut weight_maps,
+        &chunks,
+        &geometry,
+        &prepared.layout,
+        prepared.atlas_width,
+        false,
+    )
+    .expect("the shared-vertex and footprint guards pass");
+    assert!(layout.is_some_and(|blocks| blocks.iter().flatten().count() >= 4));
+}

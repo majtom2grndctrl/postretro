@@ -113,3 +113,122 @@ Sources:
 - Umbra 3 traversal article (repost)
 - Build engine internals (fabiensanglard.net)
 - Luebke & Georges 1995: PDF unreadable; confirmed only via secondary summaries.
+
+## Re-grounding at 0fac87bd3
+
+Source recheck before review; the Problem's mechanism and seams held.
+
+- `flood`'s only guards are the chain-cycle check, `MAX_PORTAL_CHAIN_DEPTH` and the step
+  budget. `portal_traverse`'s doc rejects a per-cell visited set on purpose: keying on
+  cells drops every chain after the first. The rect's grow-only rule is what makes a
+  per-cell state safe.
+- `camera_on_polygon_plane` true skips `clip_polygon_to_frustum` only; the walk still
+  narrows against the full polygon.
+- The bounded step-limit fallback landed in dc0253ef7: draw set from
+  `visible_cells_frustum_all`, fog reach from `fog_reachable_frustum_fallback`.
+- Walk CPU time landed with `cpu-frame-profiling`: `cpu_stages::record_walk` →
+  `VisibilityStage::PortalWalk` (`portal_walk`) plus considered/accepted/reject counts.
+
+### Visible-set consumers
+
+| Consumer | Symbol | Superset effect |
+|---|---|---|
+| Camera cull | `write_bitmask_from_cells`; `gather_candidate_leaves` | More leaves drawn; out-of-range id falls back to the tree walk |
+| Animated lightmap compose | `AnimatedLightmap::dispatch` | More tiles composed; must share the draw set |
+| Fog reach | `compute_fog_cell_mask` | More volumes marched; empty = draw-all |
+| Shadow eligibility | `light_reaches_visible_cell` | More eligible lights |
+| Shadow slot ranking | `assign_shadow_pool_slots_with_promoted_baked`, `candidate_slot_score` | Score ignores visibility: an extra light can take a slot from an in-view one |
+| SH targets | `ShResidencyController::update_targets` / `visible_clusters` | More non-evictable Visible clusters; unknown cell id is a hard `InvalidTopology` error |
+| SH sampled rows | `SampleRegionIndex::resolve` | More rows composed |
+| Particles | `ParticleRenderCollector::collect_sprite` | More sprites |
+| Meshes | `mesh_visible_in_cell`; cap in `mesh_instances.rs` | Linear `contains` scan; drops at the instance cap are order-dependent |
+| Movers | `mover_visible_against_cell_bounds` | More AABB tests and draws |
+| Capture | `collect_capture_receiver_draws` | Report residency numbers shift |
+| Diagnostics | `VisibilityStats::walk_reach`, overlays | Counts inflate |
+| Offline dry run (test-only) | `lightmap_residency_dry_run::pvs_sampling` | Its "lower bound" claim becomes false |
+| Lightmap demand | `BlockDemand::mark_drawn` | Walk-frame drawn cells become never-refused Visible blocks; over-inclusion grows the pool and inflates `drawn_outside_baked_set` |
+| id-51 bake | `cell_residency_bake::pvs_sampling::walk_cube_faces` | Over-inclusion enters the baked mandatory set |
+| Capture preload | `capture/lightmap.rs` preload | More blocks preloaded for capture |
+| Walk measurement | `walk_measurement` controller, `drawn_outside_baked_set` | Counts blocks drawn outside the baked set; the bake-gap instrument |
+
+No consumer reads the set as line of sight or checks it for equality at runtime.
+
+### id-51 bake vs runtime projection
+
+On `feat/lightmap-cell-blocks`, `pvs_sampling::walk_cube_faces` samples a 3×3×3 lattice
+of eye points per cell, six faces each, with a square 94° projection, then unions,
+dilates one hop (`dilate_one_hop`) and builds the lead map (max lead 32 m). Runtime uses
+the player's FOV (≤130°) and window aspect. The exact walk's result is geometric, so
+the cube faces cover any runtime frustum. The rect's over-inclusion depends on the
+projection: the bounding rect of several openings, and the snap cell's world size,
+change with FOV, aspect and view direction. The one-hop dilation hides some of the
+difference and guarantees none of it. Owner decision (2026-09-29): measure the gap here;
+the lightmap plan widens its bake projections if the gap is material.
+
+## Direction review notes (validate-plan, 2026-09-29)
+
+- Restart-hybrid (exact walk to a budget, discard on a trip, rerun as rect) escapes the
+  order-dependence objection, since the trip depends on total steps, not portal order.
+  Rejected anyway: a trip costs budget plus rect steps, the contract loosens regardless,
+  and the id-51 bake would sample a walk whose meaning changes per pose.
+- `drafts/sh-streaming--reveal-gate-and-warm-horizon` settles on every Visible target, so
+  a superset enlarges its settle set.
+- At promotion, `rendering_pipeline.md` §2's algorithm description ("the id Tech 4
+  approach", "narrows the frustum", "exact portal set") needs a rewrite, not a word swap.
+- The "no PVS bake" decision is what makes "the id-51 bake samples the new walk" load
+  bearing: a geometric bake would remove the projection gap.
+
+## Ordering pins
+
+From `/review-brief` (rows lens, 2026-09-29). Acceptance rows cite these ids.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| O1 | Portal side for the facing filter | Each portal's source side is settled before any walk, from data every fixture and shipped map carries; the per-frame camera side test runs after, per portal. | Fixtures with a one-leaf locator or shared cell bounds still orient every portal correctly. No existing positive visibility assertion changes. Hand-worked risk: the prototype's locator-probe orientation, with its cell-centre fallback, flips a portal in the existing two-path fixture and drops its far cell. |
+| O2 | Re-expansion after descendants | C is reached through a narrow opening and its descendants expand; later, a wider or later-queued path grows C's rect. | C is re-queued and its descendants re-tested against the grown rect; newly exposed cells become visible; C expanded more than once. With the facing filter a cycle cannot drive this, so a diamond of unequal path lengths does. |
+| O3 | Growth of exactly one grid step | One contribution grows an edge by one snap step; another equals or sits inside the rect. Growth compares snapped values. | One-step growth re-queues. A no-op contribution never does, which keeps termination. |
+| O4 | Zero-iteration walk | Camera cell has no portals, or all face away or lie behind the eye. | Walk path, not a fallback. Fog reach is the camera cell alone; the draw set holds it when drawable. Walk time recorded; portal tests equal the camera cell's degree. |
+| O5 | Cap trips mid re-expansion | The cap trips with cells still queued. | The frame uses the fallback sets and discards the partial walk. The walk entry the id-51 bake re-runs on a trip returns only cells the uncapped walk reaches, always including the camera cell. |
+| O6 | Fallback vs walk, same camera | Trip frame vs non-trip frame at one pose; the bypass hands a neighbour the full screen unclipped. | Fallback fog reach contains the walk's fog reach, including a camera beside a portal looking away from it. This corner already fails with today's bypass. |
+| O7 | State across calls | A door toggles between frames; the camera cell changes; bake threads walk concurrently. | Each walk equals a walk from fresh state. |
+| O8 | Locator vs side test | The locator reports A while the camera sits within the bypass distance on B's side of portal A–B. The bypass test runs before the facing test. | A and B both visible, both directions. Beyond the bypass distance, the result is a superset of the oracle's. |
+| O9 | Near-plane slide vs clipping | The near plane slides to the eye before any cell's portals are clipped, not only the camera cell's. | Camera within the render near distance of two consecutive portals (a corner): the cell past the second portal is visible. |
+| O10 | Bypass boundary | Camera on a portal plane just outside the polygon, inside then beyond the bypass distance; separately, on a plane shared by several coplanar slab portals. | Inside: full screen both directions. Beyond: clipped normally. Shared slab plane: cells above, below and their lateral neighbours visible. |
+| O11 | Portal-test counting | Each outbound portal counts once per cell expansion, before any blocked, solid, facing or clip rejection. | Counts match the prototype's "step" and the CPU log's portal-test count; the cap means what it meant during measurement. |
+| O12 | Draw and fog from one walk | Both sets come from the walk's final state, after the worklist drains. | The draw set is exactly the drawable part of fog reach. |
+
+Premise pins (premise lens):
+
+- The walk path's fog reach filters only non-solid; only the step-limit fallback filters
+  exterior. "Non-exterior on fog reach" holds on the walk path because the compiler's
+  exterior flood is closed under portal adjacency (`level-compiler` `visibility` exterior
+  flood). The rect walk keeps this without a new filter.
+- On `feat/lightmap-cell-blocks`, `cell_residency_bake/pvs_sampling.rs` documents its
+  sampled set as a lower bound on visibility that holds for any runtime FOV. The rect
+  walk breaks both claims; whichever plan lands second restates them.
+
+## Owner decisions (2026-09-29, review round)
+
+- `rendering_pipeline.md` §2's "per-frame portal traversal is cheap at modern cell
+  counts" holds only with a per-cell bound; the chain walk is cheap only on hand-placed
+  portals.
+- Landing order: this brief waits for `spatial-residency--lightmap-cell-blocks`, so the
+  bake-gap, pitch and lightmap-cost rows always run here.
+- Lightmap cost: runtime cells outside the baked set are rect over-inclusion (truly
+  visible cells are inside it: the exact walk is geometric and the cube faces cover any
+  FOV, up to eye-point sampling). Their cost is pool growth, and a truly visible block
+  that waits on a retiring generation misses visibly. Making them refusable would also
+  refuse the bake's genuine sampling misses, the error never-refuse exists to prevent.
+- Cost rows assert fixed numbers that fail on the chain walk and catch a rect-walk
+  regression: 32 expansions per cell (prototype worst 17), and portal tests at most k ×
+  summed degree, with k set from the prototype's worst case with at most 2× headroom.
+- Oracle exception: a backward crossing is classified by sign alone. A ray crosses a
+  portal plane once, so any backward crossing is a leak regardless of area.
+
+## Re-grounding at 5d197a5e9
+
+- Every Decisions premise holds: no per-cell state in the flood, the infinite-plane camera bypass, the 20,000-step cap, the bounded fallback, and the hashed `PORTAL_WALK_EPOCH`.
+- Lightmap cell-blocks is on main. `pvs_sampling` now lives in the production `cell_residency_bake` module, and its lower-bound and any-FOV claims sit there and in `lightmap_residency_dry_run/visible_set.rs`. This brief restates both. References above to `feat/lightmap-cell-blocks` describe the code that landed.
+- The consumers new since 0fac87bd3 (lightmap demand, the id-51 bake, capture preload, walk measurement) are now in the consumer table. None of them treats a visible cell as line of sight.
+- The bake-gap instrument is `walk_measurement` with `drawn_outside_baked_set`. It counts blocks, not cells. The exact-walk baseline is in `done/spatial-residency--lightmap-cell-blocks/findings.md`: 415 block-frames over 236 frames on a random walk, and 1,056 over 621 frames on a tour.
+- `lightmap-oversize-cells-and-faces` is order-independent of this brief. The two share no code seam, and its cache-key pin keeps id 51 valid. Pre- and post-change builds share one main commit, so the lightmap layout matches.

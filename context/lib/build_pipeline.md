@@ -388,7 +388,7 @@ Load rejects: another version; an unknown irradiance format or mode; a direction
 
 ### Runtime visibility
 
-Portal traversal normally computes visibility: per-frame flood-fill from the camera cell with frustum narrowing at each portal. Solid-cell, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling; a walk that exceeds its step budget falls back too, but stays bounded — bounded frustum-culled sets drive drawing and fog reach. `CollisionWorld` remains the physics source of truth; cells and portals do not answer collision contacts. See `rendering_pipeline.md` §2.
+Portal traversal normally computes visibility: per-frame flood-fill from the camera cell with frustum narrowing at each portal. Its visible set is a conservative superset of the exact portal set; a per-cell bounded-region walk is decided, not yet built (`rendering_pipeline.md` §2). Solid-cell, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling; a walk that exceeds its step budget falls back too, but stays bounded — bounded frustum-culled sets drive drawing and fog reach. `CollisionWorld` remains the physics source of truth; cells and portals do not answer collision contacts. See `rendering_pipeline.md` §2.
 
 ---
 

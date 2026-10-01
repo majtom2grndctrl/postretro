@@ -123,10 +123,10 @@ Each pin is cited by an Acceptance row.
 | P5 | Back-to-back submits, GPU behind | frame N acquires S and submits → frame N+1 acquires before N completes | N+1 gets a buffer other than S. S rejoins the pool only after N's submit completes, through its map callback. The batch path calls no `device.poll`. |
 | P6 | Lifecycle event with a pending batch | last submit of frame N → frame tail, hot-reload commit, level install or unload → frame N+1 entry | The batch is empty at each. A debug build fails loudly if a write is pending there. |
 | P7 | Batch-carrying submit | pending writes → a frame, drain or capture submit in §Submit inventory | The batch's command buffer is first in the submit. |
-| P8 | Settings write mid-frame | per-frame writes staged → dev-tools panel setter writes directly → frame submit | No setter writes a resource with a pending batched write. The debug assertion holds with every renderer setter called between the per-frame uniform write and the submit. |
+| P8 | Dev-tools setter mid-frame | per-frame writes staged → dev-tools panel setter writes → frame submit | Each setter's write is staged in the batch and counted. It lands before the frame's passes. |
 | P9 | Acquire fails twice in a row | frame N stages, acquire fails, submits alone → frame N+1 stages, acquire fails, submits alone → frame N+2 draws | Each skip submits only its own frame's writes. The batch's CPU storage does not grow across skips. N+2 finds nothing pending. |
 | P10 | Neither mesh pass draws | no world mesh plan and no viewmodel plan this frame | The mesh light parameters are not written. |
-| P11 | Boot splash frame | full renderer absent → splash uniform write → splash submit | The splash submit carries no batch. A debug build fails loudly if a write is pending there. |
+| P11 | Boot splash frame | full renderer absent → splash uniform write → splash submit | The splash submit carries no batch. Its uniform write stays direct, in the boot splash class. A debug build fails loudly if a write is pending there. |
 | P12 | Staging rejects a write | a per-frame writer stages a misaligned or out-of-bounds write | It fails as loudly as a direct write does today. It never drops silently. A rejected bridge write never reports the snapshot committed. |
 
 ## Rivals considered

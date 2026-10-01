@@ -74,7 +74,19 @@ pub(super) fn prepare_atlas_stage(
     )
     .map_err(prepare_error)?;
     let rebuilt = match &cut.face_remap {
-        Some(face_remap) => Some(rebuild_face_identity(geometry, leaves, face_remap)?),
+        Some(face_remap) => {
+            let cut_faces = face_remap.iter().filter(|range| range.len() != 1).count();
+            log::info!(
+                "[Compiler] cut {cut_faces} oversize lightmap face(s) into {} sub-faces; {} faces in all",
+                face_remap
+                    .iter()
+                    .filter(|range| range.len() != 1)
+                    .map(|range| range.len())
+                    .sum::<usize>(),
+                face_remap.last().map_or(0, |range| range.end),
+            );
+            Some(rebuild_face_identity(geometry, leaves, face_remap)?)
+        }
         None => None,
     };
 

@@ -391,7 +391,9 @@ fn cut_face_lit_by_an_animated_light_passes_the_guards_with_matching_overlap_wei
         let Some(origin) = prepared.charts[face].window.map(|w| w.origin) else {
             continue;
         };
-        let (_, block_x, block_y) = weight_maps.chunk_block_origin(index).expect("chunk inside its block");
+        let (_, block_x, block_y) = weight_maps
+            .chunk_block_origin(index)
+            .expect("chunk inside its block");
         let (local_x, local_y) = prepared
             .layout
             .local_placement(face, &prepared.placements[face]);

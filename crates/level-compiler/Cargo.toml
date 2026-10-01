@@ -42,4 +42,5 @@ postretro-visibility.workspace = true
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
 postretro-render-cpu.workspace = true
+postretro-level-loader.workspace = true
 proptest = { workspace = true }

@@ -420,6 +420,7 @@ impl CandidateCullPipeline {
 
     /// The candidate leaves from the most recent [`Self::gather`] that returned
     /// [`GatherStatus::Ok`]. Only meaningful in that case.
+    #[cfg(feature = "dev-tools")]
     pub fn candidates(&self) -> &[u32] {
         &self.gather_out
     }

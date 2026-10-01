@@ -55,7 +55,7 @@ A cut face's padded chart exceeded one pool layer (2,048 texels; ≈ 82 m at the
 
 ## Cell partition coupling
 
-`canonical_cell_partition` (level-format, also run by the loader's ClusterDirectory validation) counts BVH leaves with `index_count != 0` per cell and greedily packs cells into clusters under `primitive_limit` (`DEFAULT_PRIMITIVE_LIMIT = 64`, stored in section 49). Fewer leaves per cell means fewer, larger clusters. That changes 49 and 50, and through cluster-major block order, 22, 42, 25 and vertex `lightmap_block` ids in 17. `build_pipeline.md` §Cluster residency metadata already says the partition counts BVH leaves per cell.
+`canonical_cell_partition` (level-format, also run by the loader's ClusterDirectory validation) counts BVH leaves with `index_count != 0` per cell and greedily packs cells into clusters under `primitive_limit` (`DEFAULT_PRIMITIVE_LIMIT = 64`, stored in section 49). Fewer leaves per cell means fewer, larger clusters. That changes 49 and 50, and through cluster-major block order, 22, 42, 25 and vertex `lightmap_block` ids in 17. `build_pipeline.md` §Cluster residency metadata already says the partition counts BVH leaves per cell. Owner decision (2026-10-01): count faces per cell (`CellRecord.face_count`) instead, which equals today's leaf count because every emitted face has at least three vertices.
 
 ## Bake-tree identity across the face reorder
 

@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 
 use glam::Vec3;
-use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::LightmapBakeError;
 use crate::chart_raster::CHART_PADDING_TEXELS;
@@ -171,39 +170,6 @@ pub(super) fn plan_charts(
         });
     }
     Ok(charts)
-}
-
-/// Reject a chart whose padded extent exceeds a pool layer, before packing:
-/// no cell block could hold it, and the block packer's candidate widths
-/// assume chart extents a pool layer bounds. `texel_density` and
-/// `scale_regions` are the ones `plan_charts` resolved each chart's density
-/// from, so the error names the density the face was charted at.
-pub(super) fn check_chart_extents(
-    charts: &[Chart],
-    texel_density: f32,
-    scale_regions: &[MapLightmapScaleRegion],
-) -> Result<(), LightmapBakeError> {
-    let global_density = texel_density.max(1.0e-4);
-    for (face_index, chart) in charts.iter().enumerate() {
-        if chart.width_texels > LIGHTMAP_POOL_LAYER_EDGE
-            || chart.height_texels > LIGHTMAP_POOL_LAYER_EDGE
-        {
-            return Err(LightmapBakeError::ChartTooLarge {
-                face_index,
-                width_texels: chart.width_texels,
-                height_texels: chart.height_texels,
-                max: LIGHTMAP_POOL_LAYER_EDGE,
-                u_extent_m: chart.uv_extent[0],
-                v_extent_m: chart.uv_extent[1],
-                density_m_per_texel: resolved_chart_density(
-                    chart.origin,
-                    global_density,
-                    scale_regions,
-                ),
-            });
-        }
-    }
-    Ok(())
 }
 
 /// Convert one finite chart extent to its padded texel dimension without a

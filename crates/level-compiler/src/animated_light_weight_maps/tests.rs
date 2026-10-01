@@ -427,7 +427,7 @@ fn bake_real_multi_layer_fixture(
 
     // This is a genuine two-layer pack: each leaf fills a 64x64 layer, so
     // `pack_layers` must open layer 1 without changing placement fields.
-    let pack = pack_layers(&charts, 64, 0.25).expect("fixture charts must pack");
+    let pack = pack_layers(&charts, 64).expect("fixture charts must pack");
     assert_eq!(pack.layer_count, 2, "fixture must exercise both layers");
     let layout = BlockLayout::whole_layers(
         pack.atlas_width,

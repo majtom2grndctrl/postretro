@@ -1,15 +1,17 @@
-// Lightmap atlas preparation: vertex splitting, packing, and lightmap UV write-back.
+// Lightmap atlas preparation: vertex splitting, the oversize-face cut, packing, and lightmap UV write-back.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use glam::Vec3;
 
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks_within};
-use super::charts::{Chart, check_chart_extents, plan_charts};
-use super::{CompositedAtlas, LightmapBakeError};
+use super::charts::{Chart, plan_charts};
+use super::face_cut::{FaceCut, apply_face_cuts, plan_face_cuts, planned_chart_area};
+use super::{CompositedAtlas, LightmapBakeError, MAX_ATLAS_LAYERS};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
 use crate::geometry::GeometryResult;
@@ -54,17 +56,12 @@ pub fn prepare_atlas(
 }
 
 /// Prepare charts and cell blocks, and assign each vertex its block id and
-/// block-local lightmap UV. Runs `split_shared_vertices`, `plan_charts`,
-/// `check_chart_extents`, `pack_cell_blocks_within`, and `assign_lightmap_uvs`. Does
-/// NOT run the per-texel ray casting.
+/// block-local lightmap UV: [`plan_cut_charts`], then [`pack_cut_charts`]
+/// at the runtime pool edge. Does NOT run the per-texel ray casting.
 ///
-/// Called once before either bake branch, so the layout is shared. Vertex
-/// splitting and UV writes run on all non-empty geometry with static lights.
-/// Without static lights the section has no blocks, so vertices keep block 0,
-/// but charts and placements are still returned for the animated-light
-/// passes; when a chart or the block count exceeds the runtime limits,
-/// placements come back empty instead of failing the build. Empty geometry returns an empty layout
-/// without mutating anything.
+/// The compiler pipeline runs the two phases itself, rebuilding the
+/// face-identity set and the cell partition between them; this entry point
+/// keeps the cut geometry and drops the face remap.
 pub fn prepare_atlas_ordered(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
@@ -84,10 +81,8 @@ pub fn prepare_atlas_ordered(
     )
 }
 
-/// [`prepare_atlas_ordered`] packing blocks against `pool_edge` rather than
-/// the runtime's, so tests can bake multi-block cells from small charts.
-/// Charts are still checked against the runtime pool edge; callers keep them
-/// within `pool_edge`.
+/// [`prepare_atlas_ordered`] against `pool_edge` rather than the runtime's,
+/// so tests can cut faces and bake multi-block cells from small charts.
 pub(crate) fn prepare_atlas_within(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
@@ -97,58 +92,143 @@ pub(crate) fn prepare_atlas_within(
     pool_edge: u32,
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
-    if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
-        return Ok(PreparedAtlas {
-            charts: Vec::new(),
-            placements: Vec::new(),
-            atlas_width: 1,
-            atlas_height: 1,
-            layer_count: 1,
-            layout: empty_layout(ordering),
-        });
-    }
+    let cut = plan_cut_charts(geom, static_lights, texel_density, scale_regions, pool_edge)?;
+    pack_cut_charts(
+        geom,
+        static_lights,
+        cut.charts,
+        ordering,
+        pool_edge,
+        control,
+    )
+}
 
+/// Atlas preparation's first phase: the charts after any oversize-face cut.
+pub struct CutCharts {
+    /// One chart per face of the (possibly cut) geometry.
+    pub charts: Vec<Chart>,
+    /// `Some` when a face was cut: the new face range of every old face.
+    pub face_remap: Option<Vec<Range<usize>>>,
+    /// `Some` when a face was cut: the geometry as it stood before the cut,
+    /// faces sharing no vertices and no lightmap attributes written.
+    pub pre_cut: Option<GeometryResult>,
+}
+
+/// Plan charts on the uncut geometry and cut every face whose chart exceeds
+/// `pool_edge` into sub-faces whose charts window its grid. A map without
+/// static light cuts nothing: its charts never ship in blocks. Before any
+/// geometry is cut, an atlas whose cut charts could not fit the bake-layer
+/// cap fails by name.
+pub fn plan_cut_charts(
+    geom: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+    pool_edge: u32,
+) -> Result<CutCharts, LightmapBakeError> {
+    let uncut = |charts| CutCharts {
+        charts,
+        face_remap: None,
+        pre_cut: None,
+    };
+    if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
+        return Ok(uncut(Vec::new()));
+    }
     if static_lights.is_empty() {
-        // Plan charts anyway — the animated-light-chunks builder needs per-face
-        // UV bounds and placements even when no static lights exist. Vertex
-        // splitting and UV assignment are skipped because the section carries
-        // no blocks for any vertex to name. A layout the runtime could not hold
-        // is tolerated here for the same reason: placements come back empty,
-        // and the animated passes then plan no chunks. The empty layout keeps
-        // the direction scale, which the placeholder id-22 header carries.
-        let charts = plan_charts(geom, texel_density, scale_regions)?;
-        let pack = check_chart_extents(&charts, texel_density, scale_regions)
-            .and_then(|()| pack_cell_blocks_within(&charts, ordering, pool_edge, control));
-        return Ok(match pack {
-            Ok(pack) => PreparedAtlas {
-                charts,
-                placements: pack.placements,
-                atlas_width: pack.layer_dim,
-                atlas_height: pack.layer_dim,
-                layer_count: pack.layer_count,
-                layout: pack.layout,
-            },
-            Err(_) => PreparedAtlas {
-                charts,
-                placements: Vec::new(),
-                atlas_width: 1,
-                atlas_height: 1,
-                layer_count: 1,
-                layout: empty_layout(ordering),
-            },
-        });
+        return Ok(uncut(plan_charts(geom, texel_density, scale_regions)?));
     }
 
     // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
     split_shared_vertices(geom);
+    let mut charts = plan_charts(geom, texel_density, scale_regions)?;
+    let cuts = plan_face_cuts(&charts, pool_edge);
+    check_planned_area(&charts, &cuts, pool_edge)?;
+    if cuts.is_empty() {
+        return Ok(uncut(charts));
+    }
+    let pre_cut = geom.clone();
+    let cut = apply_face_cuts(geom, &mut charts, &cuts);
+    Ok(CutCharts {
+        charts,
+        face_remap: Some(cut.face_remap),
+        pre_cut: Some(pre_cut),
+    })
+}
 
-    let charts = plan_charts(geom, texel_density, scale_regions)?;
-    check_chart_extents(&charts, texel_density, scale_regions)?;
+/// Fail by name, before cutting, when the cut charts' area alone needs more
+/// bake layers than the compiler allows.
+fn check_planned_area(
+    charts: &[Chart],
+    cuts: &[FaceCut],
+    pool_edge: u32,
+) -> Result<(), LightmapBakeError> {
+    let layer_area = u64::from(pool_edge) * u64::from(pool_edge);
+    let layers = planned_chart_area(charts, cuts).div_ceil(layer_area);
+    if layers > u64::from(MAX_ATLAS_LAYERS) {
+        return Err(LightmapBakeError::LayerOverflow {
+            layer_count: u32::try_from(layers).unwrap_or(u32::MAX),
+            max: MAX_ATLAS_LAYERS,
+        });
+    }
+    Ok(())
+}
+
+/// Atlas preparation's second phase: pack `charts` into cell blocks in
+/// `ordering` and write every vertex's block id and block-local lightmap UV.
+///
+/// Without static lights the section has no blocks, so vertices keep block
+/// 0, but placements are still returned for the animated-light passes; when a
+/// chart, the block count or the layer count exceeds the runtime limits,
+/// placements come back empty instead of failing the build. Empty geometry
+/// returns an empty layout without mutating anything.
+pub fn pack_cut_charts(
+    geom: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    charts: Vec<Chart>,
+    ordering: BlockOrdering<'_>,
+    pool_edge: u32,
+    control: &BakeControl,
+) -> Result<PreparedAtlas, LightmapBakeError> {
+    let unplaced = |charts| PreparedAtlas {
+        charts,
+        placements: Vec::new(),
+        atlas_width: 1,
+        atlas_height: 1,
+        layer_count: 1,
+        layout: empty_layout(ordering),
+    };
+    if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
+        return Ok(unplaced(charts));
+    }
+    let fits = |chart: &Chart| chart.width_texels <= pool_edge && chart.height_texels <= pool_edge;
+    if static_lights.is_empty() {
+        // The animated-light-chunks builder needs placements even without
+        // static lights; a layout the runtime could not hold just plans no
+        // chunks. The empty layout keeps the direction scale, which the
+        // placeholder id-22 header carries.
+        if !charts.iter().all(fits) {
+            return Ok(unplaced(charts));
+        }
+        return Ok(
+            match pack_cell_blocks_within(&charts, ordering, pool_edge, control) {
+                Ok(pack) => PreparedAtlas {
+                    charts,
+                    placements: pack.placements,
+                    atlas_width: pack.layer_dim,
+                    atlas_height: pack.layer_dim,
+                    layer_count: pack.layer_count,
+                    layout: pack.layout,
+                },
+                Err(_) => unplaced(charts),
+            },
+        );
+    }
+
+    debug_assert!(charts.iter().all(fits), "the cut bounds every chart");
     let pack = pack_cell_blocks_within(&charts, ordering, pool_edge, control)?;
     if !pack.placements.is_empty() {
         assign_lightmap_uvs(geom, &charts, &pack.placements, &pack.layout);
     }
-
     Ok(PreparedAtlas {
         charts,
         placements: pack.placements,

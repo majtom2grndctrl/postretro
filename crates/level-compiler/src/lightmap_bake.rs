@@ -19,12 +19,16 @@ mod block_layout;
 mod cell_blocks;
 mod charts;
 mod encode;
+mod face_cut;
 mod reference;
 
 #[cfg(test)]
 pub(crate) use atlas_layout::prepare_atlas_within;
 use atlas_layout::scatter_chart_into_atlas;
-pub use atlas_layout::{PreparedAtlas, prepare_atlas, prepare_atlas_ordered};
+pub use atlas_layout::{
+    CutCharts, PreparedAtlas, pack_cut_charts, plan_cut_charts, prepare_atlas,
+    prepare_atlas_ordered,
+};
 #[cfg(test)]
 pub(crate) use atlas_layout::{chart_texel_position, quantize_lightmap_uv};
 pub(crate) use atlas_pack::MaxRects;
@@ -99,20 +103,6 @@ pub enum LightmapBakeError {
     )]
     LayerOverflow { layer_count: u32, max: u32 },
     #[error(
-        "lightmap chart too large: face {face_index} needs {width_texels}x{height_texels} texels at \
-         {density_m_per_texel} m/texel (limit {max}); face extent {u_extent_m} x {v_extent_m} m. \
-         Raise `texel_density` or subdivide the face."
-    )]
-    ChartTooLarge {
-        face_index: usize,
-        width_texels: u32,
-        height_texels: u32,
-        max: u32,
-        u_extent_m: f32,
-        v_extent_m: f32,
-        density_m_per_texel: f32,
-    },
-    #[error(
         "lightmap chart has an invalid resolved density: face {face_index} resolved to \
          {density_m_per_texel} m/texel; scale regions must yield a finite positive density"
     )]
@@ -143,21 +133,9 @@ pub enum LightmapBakeError {
         max_dim: u32,
     },
     #[error(
-        "lightmap cell block too large: cell {cell_id}'s charts pack into a {width}x{height} \
-         block, over the {max}x{max} runtime pool layer (largest chart: face \
-         {largest_chart_face}). Raise `texel_density`, lower `_lightmap_scale` over the cell, or \
-         split the cell's surfaces."
-    )]
-    BlockTooLarge {
-        cell_id: u32,
-        width: u32,
-        height: u32,
-        max: u32,
-        largest_chart_face: usize,
-    },
-    #[error(
         "lightmap block count {count} exceeds the vertex block-id limit {max}: vertices name a \
-         block as a u16 `id + 1`, and a cell past one pool layer counts every one of its blocks. Coarsen the lightmap density, or bake fewer lightmapped cells."
+         block as a u16 `id + 1`, and a cell past one pool layer counts every one of its \
+         blocks. Coarsen the lightmap density, or bake fewer lightmapped cells."
     )]
     BlockCountOverflow { count: usize, max: u32 },
 }

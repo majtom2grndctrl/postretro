@@ -15,7 +15,7 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
-use crate::map_data::{MapData, MapLight, ShadowType};
+use crate::map_data::{MapLight, ShadowType};
 use crate::shadowmask_bake;
 
 pub(crate) struct FusedLightingOutput {
@@ -23,28 +23,6 @@ pub(crate) struct FusedLightingOutput {
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
     pub shadowmask_overlap: shadowmask_bake::ShadowmaskOverlapReport,
-}
-
-pub(super) fn prepare(
-    map_data: &MapData,
-    geometry: &mut GeometryResult,
-    static_lights: &StaticBakedLights<'_>,
-    config: &LightmapConfig,
-    cell_clusters: &[u32],
-    control: &BakeControl,
-) -> anyhow::Result<PreparedAtlas> {
-    lightmap_bake::prepare_atlas_ordered(
-        geometry,
-        static_lights,
-        config.lightmap_density,
-        &map_data.lightmap_scale_regions,
-        lightmap_bake::BlockOrdering {
-            direction_texel_scale: config.direction_texel_scale,
-            cell_clusters,
-        },
-        control,
-    )
-    .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))
 }
 
 /// Bytes per bake-layer texel of the warm per-layer accumulator

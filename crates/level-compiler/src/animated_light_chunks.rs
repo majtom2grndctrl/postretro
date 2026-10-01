@@ -421,6 +421,36 @@ fn project_uv_to_world_aabb(chart: &Chart, uv_min: [f32; 2], uv_extent: [f32; 2]
 }
 
 /// Sphere-vs-AABB overlap by closest-point distance.
+/// Faces whose chart overlaps an animated light's influence, by the same
+/// test the chunk builder applies: an upper bound, known at atlas
+/// preparation, on the animated blocks the bake can emit (each animated face
+/// is one block, and the unlit-chunk cull only drops faces).
+pub fn animated_candidate_face_count(
+    animated_lights: &AnimatedBakedLights<'_>,
+    face_charts: &[Chart],
+) -> usize {
+    let spheres: Vec<(Vec3, f32)> = animated_lights
+        .entries()
+        .iter()
+        .map(|e| &e.influence)
+        .filter(|infl| infl.radius != f32::MAX && infl.radius > 0.0)
+        .map(|infl| (Vec3::from(infl.center), infl.radius))
+        .collect();
+    if spheres.is_empty() {
+        return 0;
+    }
+    face_charts
+        .iter()
+        .filter(|chart| {
+            let (aabb_min, aabb_max) =
+                project_uv_to_world_aabb(chart, chart.uv_min, chart.uv_extent);
+            spheres
+                .iter()
+                .any(|&(center, radius)| sphere_overlaps_aabb(center, radius, aabb_min, aabb_max))
+        })
+        .count()
+}
+
 fn sphere_overlaps_aabb(center: Vec3, radius: f32, aabb_min: Vec3, aabb_max: Vec3) -> bool {
     let closest = center.clamp(aabb_min, aabb_max);
     let d = closest - center;

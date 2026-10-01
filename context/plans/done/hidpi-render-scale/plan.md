@@ -1,7 +1,7 @@
 # hidpi-render-scale — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 2d183ec12
 
 No source changed under `crates/`, `sdk/`, `content/` or `core/` between the brief's `read at` (c0def0e9e) and 2d183ec12, so the grounded Decision reads stand.
@@ -48,9 +48,9 @@ No source changed under `crates/`, `sdk/`, `content/` or `core/` between the bri
 | A24 windowless renderer extent change, read back every scene target size | GPU-harness offscreen test (same as A4) | achievable as stated | pass — `extent_changes_rebuild_every_scene_target_at_the_scene_extent` (GPU) |
 | A25 opaque UI pixel reaches swapchain untonemapped | GPU-harness resolve test (run on the Mac) | achievable as stated | pass — `opaque_ui_pixel_reaches_the_target_untonemapped` (GPU, run on the Mac); text/quad parity: `ui_text_through_the_layer_matches_text_drawn_into_scene_colour`, `ui_pass_quads_composite_as_straight_alpha_over_the_scene` |
 | M1 Auto vs Native GPU/CPU ms on two maps | owner, Metal System Trace | manual | reported — see Measurements. Auto's forward pass is ~0.41× Native on both maps, not the ~¼ the row expected |
-| M2 crisp uniform upscale; HUD sharp under every value | owner, in-engine | manual | outstanding — owner |
-| M3 shake/flash/vignette spare the HUD; HUD colours match | owner, in-engine | manual | outstanding — owner |
-| M4 drag between displays updates scene extent, no stretched frame | owner, two displays | manual | outstanding — owner |
+| M2 crisp uniform upscale; HUD sharp under every value | owner, in-engine | manual | pass — owner, in-engine |
+| M3 shake/flash/vignette spare the HUD; HUD colours match | owner, in-engine | manual | accepted on automated proof (owner) — `effects_with_switches_off_…`, `one_covers_hud_switch_…`, UI quad/text parity GPU tests |
+| M4 drag between displays updates scene extent, no stretched frame | owner, two displays | manual | pass — owner, two displays |
 
 ## Tasks
 
